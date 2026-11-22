@@ -3,11 +3,12 @@
 Status: drafted 2026-11-22 at `0337a9b5a` from the owner's answer to the [known issues](../backlog/known-issues.md)
 entry "A removal reroll (`rerollByRemoval` ...) can lose the replies it removes when the tab closes before the server
 admits the replacement job" (owner, 2026-11-22: "a separate plan", against a client-side durable copy or a
-Limitation). Decisions D1 to D9 and questions Q1 to Q4 are proposals the owner has not answered yet. Not audited:
-run the plan-runner audit ([procedure](../reports/audits/plan-runner/README.md)) before any slice.
+Limitation). The owner answered Q1 to Q4 with the proposals on 2026-11-22; D1 to D9 are written to those answers.
+Not audited: run the plan-runner audit ([procedure](../reports/audits/plan-runner/README.md)) before any slice.
 
-Sources: `src/lib/ChatScreens/DefaultChatScreen.svelte` (`reroll`, `rerollByRemoval`), `src/ts/process/rerollHistory.ts`,
-`src/ts/process/serverGeneration.ts`, `src/ts/network/eventFeed.ts` (`serverRerollsInPlace`), `shared/rerollCandidates.ts`,
+Sources: `src/lib/ChatScreens/DefaultChatScreen.svelte` (`reroll`, `rerollByRemoval`),
+`src/ts/process/rerollHistory.ts`, `src/ts/process/serverGeneration.ts`, `src/ts/network/eventFeed.ts`
+(`serverRerollsInPlace`), `shared/rerollCandidates.ts`,
 `server/src/routes/generations.ts` (`parseCreateBody`), `server/src/routes/events.ts` (the `hello` frame),
 `server/src/jobs/generationJobs.ts`, `server/src/prompt/runner.ts`, and `server/src/data/chatStore.ts`, read at
 `0337a9b5a`; the [chat pipeline](../structure/chat-pipeline.md#reroll),
@@ -66,7 +67,7 @@ variable rule of a removal reroll.
 
 ## Decisions
 
-Proposed; the owner has not answered them yet.
+Written to the owner's answers of 2026-11-22 (Q1 to Q4, all as proposed).
 
 - **D1. A tail reroll is a server job.** A new context field `rerollTail: { anchorMessageId, messageIds }` on a
   `reroll` job (never together with `rerollMessageId`) names the tail the tab saw: the message it ends after (or
@@ -101,19 +102,20 @@ Proposed; the owner has not answered them yet.
   tail reroll follows it; it gets a rule of its own only where the tail differs, and the slice names it.
 - **D9. Remote send is unchanged.** A tail reroll still runs on this tab when remote sending is on (Q4).
 
-### Questions for the owner
+### Questions the owner answered
 
-- **Q1. Where the stash lives.** Proposal: a table of its own in the chat SQLite file (one row per running tail
-  reroll), not a chat metadata field, so tabs never receive it and it cannot be edited by a `meta` op. Alternative: a
-  chat field, which tabs would then sync and show nowhere.
-- **Q2. What a successful reroll keeps.** Proposal: the stash is deleted, and the removed bundle stays in the tab's
-  memory for Undo as today. Alternative: keep the last removed bundle on the server so Undo survives a reload; a
-  larger change (a bundle store, its retention, and Undo across devices).
-- **Q3. A reroll while the feed has no current `hello`.** Proposal: refuse with a notice. Today such a reroll takes
-  the lossy removal path even for a single reply. Alternative: keep the client removal path for that case only, as a
-  Limitation.
-- **Q4. Remote send.** Proposal: unchanged (the tail reroll runs on this tab). Alternative: let a host run it, which
-  the server stash now makes possible; the bundle history would still be lost through a host.
+- **Q1. Where the stash lives.** Answered as proposed (owner, 2026-11-22): a table of its own in the chat SQLite file
+  (one row per running tail reroll), not a chat metadata field, so tabs never receive it and it cannot be edited by a
+  `meta` op. Alternative: a chat field, which tabs would then sync and show nowhere.
+- **Q2. What a successful reroll keeps.** Answered as proposed (owner, 2026-11-22): the stash is deleted, and the
+  removed bundle stays in the tab's memory for Undo as today. Alternative: keep the last removed bundle on the server so
+  Undo survives a reload; a larger change (a bundle store, its retention, and Undo across devices).
+- **Q3. A reroll while the feed has no current `hello`.** Answered as proposed (owner, 2026-11-22): refuse with a
+  notice. Today such a reroll takes the lossy removal path even for a single reply. Alternative: keep the client removal
+  path for that case only, as a Limitation.
+- **Q4. Remote send.** Answered as proposed (owner, 2026-11-22): unchanged (the tail reroll runs on this tab).
+  Alternative: let a host run it, which the server stash now makes possible; the bundle history would still be lost
+  through a host.
 
 ## Rules For Every Slice
 
