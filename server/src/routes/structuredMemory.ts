@@ -805,8 +805,8 @@ type RoundRead = {
  *   rebuild with nothing written live, whatever stopped it, a hold and the memory toggle included,
  *   answered `StructuredMemoryAbandonAnswer`: the chat's task is cancelled and the run and what it staged
  *   go, and the memory revision stays. A chat with no run, which is what a repeat finds, answers
- *   `abandoned: false` and cancels nothing. 404 `chatGone`, and 409 `{ error, reason: "fenced" }` while a
- *   job holds the chat (`chatHeld`).
+ *   `abandoned: false` and cancels nothing. 404 `chatGone`, and 409 `{ error, reason: "fenced" }` while
+ *   a job holds the chat (`chatHeld`) or the chat is trashed.
  *
  * All are authenticated, rate-limited, and epoch-checked (412 `EpochMismatch`); 400 for an id that is
  * not a resource id, 503 (`Retry-After`) when the store is closed. Read-route ids and cursors are
@@ -831,12 +831,12 @@ export function registerStructuredMemoryRoutes(
         /** The cap of a restore's body, which holds at once what rounds read one at a time. */
         restoreBodyBytes: number;
         /**
-         * Whether something that can write this chat's memory holds the chat, which refuses an edit, a
-         * revert, a page tool, an import, an inherit, a restore, an adoption, a decline, a reset or a chapter
-         * removal: its task, a job, or its rebuild's run.
+         * Whether the chat is trashed or held by its task, a job, or its rebuild's run. This refuses an
+         * edit, a revert, a page tool, an import, an inherit, a restore, an adoption, a decline, a reset,
+         * or a chapter removal.
          */
         fenced: (characterId: string, chatId: string) => boolean;
-        /** Whether a job holds the chat: the one thing that refuses abandoning its rebuild. */
+        /** Whether a job holds the chat, which refuses abandoning its rebuild. */
         chatHeld: (characterId: string, chatId: string) => boolean;
         /** Ends the chat's queued and running task, so nothing writes a run that is going. */
         cancelTask: (characterId: string, chatId: string) => void;
@@ -2130,7 +2130,7 @@ export function registerStructuredMemoryRoutes(
             if (epoch !== store.epoch()) {
                 return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
             }
-            if (chatHeld(characterId, chatId)) {
+            if (chatHeld(characterId, chatId) || store.chatTrashState(characterId, chatId)?.trashedAt != null) {
                 return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
             }
             try {

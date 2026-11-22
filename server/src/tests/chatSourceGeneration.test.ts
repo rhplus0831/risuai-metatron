@@ -20,9 +20,8 @@ import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { INJECTED_COPY_FAILURE, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 
 // A chat's source generation: an in-memory value the store changes once in the commit of every
-// write that deletes the chat (a permanent deletion through the trash), replaces it whole (a group
-// `replace`), or deletes
-// its character (the cascade), and in no other write; `onChatInvalidated` notices follow the commit
+// write that trashes the chat, deletes it (a permanent deletion through the trash), replaces it whole
+// (a group `replace`), or deletes its character (the cascade), and in no other write; `onChatInvalidated` notices follow the commit
 // and the feed publication, never a rollback; `replaceAll` gives every chat a new value.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -98,7 +97,7 @@ function setup(options: { feed?: boolean } = {}) {
     const gens = () => [gen("k"), gen("k2"), gen("k3"), gen("x", "d")];
     const write = (chatId: string, ops: ChatOp[], characterId = "c") =>
         store.applyChanges({ chats: [group(chatId, rev(chatId, characterId), ops, characterId)] }).chats[0];
-    /** Trash, then permanently delete (two commits, two publications; only the deletion notifies). */
+    /** Trash, then permanently delete (two commits, two publications, each followed by its notice). */
     const remove = (chatId: string, characterId = "c") => deleteChatThroughTrash(store, characterId, chatId);
     return { dir, store, feed, events, notices, log, rev, gen, gens, characterRevision, write, remove, wrongSeq };
 }
@@ -106,26 +105,33 @@ function setup(options: { feed?: boolean } = {}) {
 const ids = (notices: ChatInvalidation[]) => notices.map((n) => n.id);
 
 describe("writes that advance a chat's source generation", () => {
-    it("a permanent deletion advances the chat once and notifies once, after the commit and the feed publication; a refused delete group advances nothing", () => {
+    it("a trash and the permanent deletion after it each advance the chat once and notify once, after their commit and feed publication; a refused delete group advances nothing", () => {
         const { store, events, notices, gen, gens, write, remove } = setup();
         const before = gens();
         expect(() => write("k", [del])).toThrow(ResourceBatchConflictError);
         expect(gens()).toEqual(before);
         expect(notices).toEqual([]);
-        let seen: { gen: number; revision: string | null; events: number } | null = null;
+        const seen: { gen: number; revision: string | null; events: number }[] = [];
         store.onChatInvalidated((notice) => {
             // The listener reads the committed state and the generation the notice carries.
-            seen = {
+            seen.push({
                 gen: store.chatSourceGeneration("c", notice.id),
                 revision: store.chatRevision("c", "k"),
                 events: events.length,
-            };
+            });
         });
-        remove("k");
-        expect(notices).toEqual([{ epoch: store.epoch(), characterId: "c", id: "k", sourceGeneration: gen("k") }]);
-        expect(gen("k")).not.toBe(before[0]);
-        // The trash's publication, then the deletion's, both before the notice.
-        expect(seen).toEqual({ gen: gen("k"), revision: null, events: 2 });
+        const { trashed } = remove("k");
+        expect(notices).toEqual([
+            { epoch: store.epoch(), characterId: "c", id: "k", sourceGeneration: notices[0].sourceGeneration },
+            { epoch: store.epoch(), characterId: "c", id: "k", sourceGeneration: gen("k") },
+        ]);
+        expect(notices[0].sourceGeneration).not.toBe(before[0]);
+        expect(notices[0].sourceGeneration).toBeLessThan(gen("k"));
+        // Each notice follows its own commit's publication: the trash's, then the deletion's.
+        expect(seen).toEqual([
+            { gen: notices[0].sourceGeneration, revision: trashed.revision, events: 1 },
+            { gen: gen("k"), revision: null, events: 2 },
+        ]);
         expect(gens().slice(1)).toEqual(before.slice(1));
         // The deleted chat has no revision but keeps its generation.
         expect(store.chatRevision("c", "k")).toBeNull();
@@ -387,6 +393,7 @@ describe("notice delivery", () => {
             "feed:k",
             "feed-2:k",
             "feed-3:k",
+            "notice:k",
             "feed:k",
             "feed-2:k",
             "feed-3:k",
@@ -399,6 +406,7 @@ describe("notice delivery", () => {
         expect(notices.map((n) => n.sourceGeneration)).toEqual([
             notices[0].sourceGeneration,
             notices[0].sourceGeneration + 1,
+            notices[0].sourceGeneration + 2,
         ]);
     });
 
@@ -421,9 +429,9 @@ describe("notice delivery", () => {
         });
         const off = store.onChatInvalidated((notice) => log.push(`B:${notice.id}`));
         remove("k");
-        // Each deletion publishes its trash commit and then itself; only the deletion notifies.
+        // Each deletion publishes and notifies its trash commit, then itself. A's write on k's trash
+        // notice publishes at once; its two notices wait behind B's, before k's deletion commits.
         expect(log).toEqual([
-            "feed:k",
             "feed:k",
             "notice:k",
             "A:k",
@@ -433,13 +441,20 @@ describe("notice delivery", () => {
             "notice:k2",
             "A:k2",
             "B:k2",
+            "notice:k2",
+            "A:k2",
+            "B:k2",
+            "feed:k",
+            "notice:k",
+            "A:k",
+            "B:k",
         ]);
-        expect(console.error).toHaveBeenCalledTimes(2);
+        expect(console.error).toHaveBeenCalledTimes(4);
         off();
         off();
         log.length = 0;
         remove("k3");
-        expect(log).toEqual(["feed:k3", "feed:k3", "notice:k3", "A:k3"]);
+        expect(log).toEqual(["feed:k3", "notice:k3", "A:k3", "feed:k3", "notice:k3", "A:k3"]);
     });
 
     it("works without a feed, and a chat recreated under its ids reads the advanced value: values never repeat", () => {
@@ -457,10 +472,11 @@ describe("notice delivery", () => {
         store.applyChanges({ chats: [group("k", null, [create()])] });
         write("k", [replace({ name: "R", message: [] })]);
         const issued = notices.map((n) => n.sourceGeneration);
-        expect(ids(notices)).toEqual(["k", "k", "k"]);
-        expect(new Set([base, ...issued]).size).toBe(4);
+        // Two trashes, two deletions, one replace.
+        expect(ids(notices)).toEqual(["k", "k", "k", "k", "k"]);
+        expect(new Set([base, ...issued]).size).toBe(6);
         expect(issued).toEqual([...issued].sort((a, b) => a - b));
-        expect(gen("k")).toBe(issued[2]);
+        expect(gen("k")).toBe(issued[4]);
         expect(gens().slice(1)).toEqual([base, base, base]);
     });
 });
@@ -485,7 +501,7 @@ describe("`replaceAll` and `readChatSource`", () => {
         expect(gens()).toEqual([reset, reset, reset, reset]);
         expect(Math.max(...issued)).toBeLessThan(reset);
         expect(epochSaw).toEqual([[reset, reset, reset, reset]]);
-        expect(ids(notices)).toEqual(["k"]);
+        expect(ids(notices)).toEqual(["k", "k"]);
         expect(store.readChatSource("c", "k").revision).not.toBeNull();
         // A failing restore (its late copy fails) rolls back and leaves the registry as it is. The note
         // is not in the snapshot, so a kept copy shows.
@@ -497,12 +513,12 @@ describe("`replaceAll` and `readChatSource`", () => {
         expect(store.epoch()).toBe(epoch);
         expect(store.readChatSource("c", "k").data!.note).toBe("after the restore");
         expect(gens()).toEqual([reset, reset, reset, reset]);
-        expect(ids(notices)).toEqual(["k"]);
+        expect(ids(notices)).toEqual(["k", "k"]);
         expect(epochSaw).toHaveLength(1);
         // Values keep moving past the reset.
         remove("k2");
         expect(gen("k2")).toBeGreaterThan(reset);
-        expect(notices[1]).toEqual({ epoch: store.epoch(), characterId: "c", id: "k2", sourceGeneration: gen("k2") });
+        expect(notices[3]).toEqual({ epoch: store.epoch(), characterId: "c", id: "k2", sourceGeneration: gen("k2") });
     });
 
     it("a feed listener that restores: the outer notice keeps its captured epoch and generation and arrives after the epoch event", async () => {
@@ -520,12 +536,15 @@ describe("`replaceAll` and `readChatSource`", () => {
             }
         });
         remove("k");
-        expect(log).toEqual(["feed:k", "feed:k", "feed:epoch", "notice:k"]);
+        // The trash notifies before the deletion's publication restores.
+        expect(log).toEqual(["feed:k", "notice:k", "feed:k", "feed:epoch", "notice:k"]);
         expect(notices).toEqual([
             { epoch: oldEpoch, characterId: "c", id: "k", sourceGeneration: notices[0].sourceGeneration },
+            { epoch: oldEpoch, characterId: "c", id: "k", sourceGeneration: notices[1].sourceGeneration },
         ]);
+        expect(notices[1].sourceGeneration).toBeGreaterThan(notices[0].sourceGeneration);
         const reset = gen("k");
-        expect(reset).toBeGreaterThan(notices[0].sourceGeneration);
+        expect(reset).toBeGreaterThan(notices[1].sourceGeneration);
         expect(gens()).toEqual([reset, reset, reset, reset]);
     });
 

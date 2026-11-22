@@ -164,6 +164,38 @@ function setup(hook?: Parameters<typeof createGenerationJobs>[0]["onChatJobDone"
 }
 
 describe("automatic chat checkpoints", () => {
+    it("leaves checkpoints and the automatic policy unchanged for a trashed chat", () => {
+        const s = setup();
+        s.store.applyChanges({
+            chats: [
+                {
+                    ...ref,
+                    chatId: "spare",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { name: "Spare", note: "", localLore: [], message: [] } }],
+                },
+            ],
+        });
+        s.policy();
+        const trashed = s.store.changeChatTrash(
+            "trash",
+            { ...ref, revision: s.revision() },
+            s.store.epoch(),
+            () => false,
+        );
+        expect(trashed).toMatchObject({ trashedAt: expect.any(Number) });
+
+        s.service.autoSave(ref.characterId, ref.chatId);
+
+        expect({
+            checkpoints: s.all(),
+            policy: s.store.checkpoints.readPolicy(ref.characterId, ref.chatId),
+        }).toEqual({
+            checkpoints: [],
+            policy: { autoEvery: 2, autoKeep: 5, lastAutoTurns: null },
+        });
+    });
+
     it("reads no message rows on unchanged or not-due turns and saves at turns 1 and 3", () => {
         const prepare = DatabaseSync.prototype.prepare;
         const reads: string[] = [];

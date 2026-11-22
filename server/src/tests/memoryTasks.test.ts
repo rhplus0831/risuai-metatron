@@ -1103,16 +1103,16 @@ describe("a changed source", () => {
         return { terminal, second, committed: t.revision("k1")! };
     }
 
-    it("a deleted chat cancels the task (`sourceChanged`, revision null) before the pending request settles, which writes nothing", async () => {
+    it("trashing the chat cancels the task (`sourceChanged`, at the trashed revision) before the pending request settles, which writes nothing, also after the chat is deleted", async () => {
         const t = harness();
         const { terminal, second } = await afterFirstSummary(t);
-        deleteChatThroughTrash(t.store, "c", "k1");
+        const { trashed } = deleteChatThroughTrash(t.store, "c", "k1");
         const end = await terminal;
         expect(end.status).toMatchObject({
             state: "cancelled",
             reason: "sourceChanged",
             done: 1,
-            terminalRevision: null,
+            terminalRevision: trashed.revision,
         });
         expect(second.signal.aborted).toBe(true);
         second.answer("Summary 2");
@@ -2257,6 +2257,48 @@ describe("checkpoint loads and memory tasks", () => {
 });
 
 describe("the server wiring", () => {
+    it("refuses a manual memory task for a trashed chat", async () => {
+        const w = await wiring();
+        const body = { characterId: "c", chatId: "k1" };
+        const trash = await w.api("/api/chat-trash/trash", {
+            method: "POST",
+            body: JSON.stringify({ ...body, revision: w.revisions.k1 }),
+        });
+        expect(trash.status, JSON.stringify(trash.body)).toBe(200);
+
+        const start = await w.start(body);
+        expect({ status: start.status, body: start.body }).toEqual({
+            status: 409,
+            body: { error: "chatTrashed" },
+        });
+    });
+
+    it("cancels queued and running memory tasks when their chats are trashed", async () => {
+        const w = await wiring({ limits: { maxRunning: 1 } });
+        const tasks = w.context.memoryTasks!;
+        w.handOff("k1");
+        const held = await w.provider.request(0);
+        try {
+            w.handOff("k2");
+            expect(tasks.status(ref("k1"))).toMatchObject({ state: "running" });
+            expect(tasks.status(ref("k2"))).toMatchObject({ state: "queued" });
+
+            for (const chatId of ["k2", "k1"]) {
+                const trash = await w.api("/api/chat-trash/trash", {
+                    method: "POST",
+                    body: JSON.stringify({ characterId: "c", chatId, revision: w.revisions[chatId] }),
+                });
+                expect(trash.status, JSON.stringify(trash.body)).toBe(200);
+            }
+            expect([tasks.status(ref("k2"))?.state, tasks.status(ref("k1"))?.state]).toEqual([
+                "cancelled",
+                "cancelled",
+            ]);
+        } finally {
+            held.answer("Late summary");
+        }
+    });
+
     it("answers 400, not 500, when the task body stream fails without a declared length", async () => {
         const s = await createResourceTestClient();
         cleanups.push(() => s.close());
@@ -2412,7 +2454,7 @@ describe("the server wiring", () => {
         }
     });
 
-    it("the chat's deletion cancels its running task (`sourceChanged`, revision null) after the deletion's `change` frame; the late result writes nothing", async () => {
+    it("the chat's trash cancels its running task (`sourceChanged`, at the trashed revision) after the trash's `change` frame; after the deletion the late result writes nothing", async () => {
         const w = await wiring();
         const a = await w.socket();
         w.handOff("k1");
@@ -2429,14 +2471,18 @@ describe("the server wiring", () => {
         });
         expect(deleted.status).toBe(200);
         const terminal = await w.terminal(a, "k1");
-        expect(terminal.status).toMatchObject({ state: "cancelled", reason: "sourceChanged", terminalRevision: null });
+        expect(terminal.status).toMatchObject({
+            state: "cancelled",
+            reason: "sourceChanged",
+            terminalRevision: trashed.body.revision,
+        });
         // The trash publishes the chat at its trashed revision first; the deletion's frame is the tombstone.
         const [trashChange, change] = a.frames.filter(isChangeOf("k1"));
         expect(trashChange.changes.chats).toMatchObject([
             { characterId: "c", id: "k1", revision: trashed.body.revision, trashedAt: trashed.body.trashedAt },
         ]);
         expect(change.changes.chats).toEqual([{ characterId: "c", id: "k1", revision: null }]);
-        expect(a.frames.indexOf(change)).toBeLessThan(a.frames.indexOf(terminal));
+        expect(a.frames.indexOf(trashChange)).toBeLessThan(a.frames.indexOf(terminal));
         held.answer("A late summary");
         expect(await w.chat("k1")).toMatchObject({ revision: null, data: null });
         expect((await w.start({ characterId: "c", chatId: "k1" })).status).toBe(404);

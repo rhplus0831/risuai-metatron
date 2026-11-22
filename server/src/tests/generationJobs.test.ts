@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { Duplex } from "node:stream";
 import os from "node:os";
 import path from "node:path";
+import { Hono, type MiddlewareHandler } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { normalizeCharacter } from "../../../shared/characters.ts";
@@ -35,8 +36,12 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { createAuthStore } from "../routes/auth.ts";
+import { registerChatTrashRoutes } from "../routes/chatTrash.ts";
+import { registerGenerationRoutes } from "../routes/generations.ts";
+import type { AppEnv } from "../types.ts";
 import { installSnapshot } from "./stagedRestore.ts";
-import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
+import { allowListenerOrigin, json, sleep, waitFor } from "./testSupport.ts";
 
 /** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
 function withResolvers<T>() {
@@ -1055,6 +1060,49 @@ describe("admission", () => {
         mode: "normal",
         alwaysActive: false,
         selective: false,
+    });
+
+    it("refuses a new generation for a trashed chat and replays a previously admitted request", async () => {
+        const s = setup({ receipts: true });
+        const app = new Hono<AppEnv>();
+        const auth = createAuthStore(s.dir, { bypass: true });
+        const limiter: MiddlewareHandler<AppEnv> = (_, next) => next();
+        registerGenerationRoutes(app, { jobs: s.jobs, auth, limiter });
+        registerChatTrashRoutes(app, {
+            store: s.store,
+            auth,
+            limiter,
+            maintenance: s.snapshots.gate,
+            chatHeld: (characterId, chatId) => s.jobs.chatBusy(characterId, chatId),
+        });
+        const post = (url: string, body: unknown) =>
+            app.request(url, json(body, { "x-resource-epoch": s.store.epoch() }));
+        const request = { kind: "send", context: s.context(), clientId: "tab", requestId: "original-send" };
+        const finished = s.run(async (job) => {
+            job.emit({ type: "done", messageId: "r", revision: s.revision() });
+        });
+        const admitted = await post("/api/generations", request);
+        expect(admitted.status).toBe(200);
+        const { jobId } = (await admitted.json()) as { jobId: string };
+        await finished;
+        await s.jobs.drain();
+
+        const trashed = await post("/api/chat-trash/trash", { ...ref, revision: s.revision() });
+        expect(trashed.status, await trashed.clone().text()).toBe(200);
+        const fresh = await post("/api/generations", {
+            ...request,
+            context: s.context(),
+            requestId: "new-send",
+        });
+        expect(fresh.status).toBe(409);
+        expect(await fresh.json()).toEqual({ error: "chatTrashed" });
+        const replay = await post("/api/generations", request);
+        expect(replay.status).toBe(200);
+        expect(await replay.json()).toMatchObject({
+            jobId,
+            replayed: true,
+            status: { terminal: { type: "done" } },
+        });
     });
 
     it("checks the epoch, the chat, a running job (before staleness), and the revision, in that order", async () => {

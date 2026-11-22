@@ -431,6 +431,43 @@ describe("POST /api/chats/search paging", () => {
         expect(refs(await s.page({ query: "hit" }))).toEqual(["k/k9", "k/k1", "j/j1"]);
     });
 
+    it("omits a trashed chat in every search scope and when continuing from its cursor", async () => {
+        const s = await createSearchServer();
+        await s.batch({ ops: [character("c"), character("d")] });
+        await s.batch({ chats: [createChat("d", "dk", [m("d1", "hit elsewhere")])] });
+        await s.batch({ chats: [createChat("c", "j", [m("j1", "hit in an active sibling")])] });
+        const created = await s.batch({
+            chats: [createChat("c", "k", [m("k1", "hit earlier"), m("k2", "hit latest")])],
+        });
+        const scope = { query: "hit", characterId: "c", chatId: "k" };
+        const first = await s.page({ query: "hit", limit: 1 });
+        expect(refs(first)).toEqual(["k/k2"]);
+        expect(first.next).toEqual(expect.any(String));
+
+        const trash = await s.json(
+            "/api/chat-trash/trash",
+            { characterId: "c", chatId: "k", revision: created.chats![0].revision },
+            { headers: { "x-resource-epoch": s.epoch } },
+        );
+        expect(trash.status, await trash.clone().text()).toBe(200);
+
+        const direct = await s.page(scope);
+        const characterPage = await s.page({ query: "hit", characterId: "c" });
+        const globalPage = await s.page({ query: "hit" });
+        const continuation = await s.page({ query: "hit", cursor: first.next });
+        expect({
+            direct: { hits: direct.hits, next: direct.next },
+            character: refs(characterPage),
+            global: refs(globalPage),
+            continuation: refs(continuation),
+        }).toEqual({
+            direct: { hits: [], next: null },
+            character: ["j/j1"],
+            global: ["j/j1", "dk/d1"],
+            continuation: ["j/j1", "dk/d1"],
+        });
+    });
+
     it("drops the cursor's chat when its character was trashed between pages", async () => {
         const s = await createSearchServer();
         await s.batch({ ops: [character("c"), character("d")] });

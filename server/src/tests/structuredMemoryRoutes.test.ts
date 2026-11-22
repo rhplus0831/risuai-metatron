@@ -73,6 +73,7 @@ afterEach(async () => {
 const characterId = "character/문";
 const chatId = "chat/one";
 const base = `/api/memory/structured/${encodeURIComponent(characterId)}/${encodeURIComponent(chatId)}`;
+const missingChatBase = `/api/memory/structured/${encodeURIComponent(characterId)}/missing`;
 const chat: Chat = { name: "Story", note: "", localLore: [], message: [] };
 const bytes = (record: unknown) => Buffer.byteLength(JSON.stringify(record), "utf8");
 const page = (id: string, body = "문 😀"): MemoryPage => ({
@@ -2933,6 +2934,29 @@ it("clears every record of a chat with no turn to record and refuses one a start
     expect(memorySnapshot(s, chatId)).toEqual(held);
 });
 
+it("fences chapter removal and clearing from a panel opened before the chat was trashed", async () => {
+    const s = await server();
+    const entry = event("e");
+    s.write({ events: [entry], pages: [page("p")] });
+    const savedChapter = chapter(entry);
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, savedChapter);
+    const before = memorySnapshot(s, chatId);
+    const { revision } = await answer(await s.request(base));
+    await answer(
+        await s.chatTrash("trash", { characterId, chatId, revision: s.store.chatRevision(characterId, chatId) }),
+    );
+
+    const remove = await s.json(`${base}/chapters/remove`, { ids: [savedChapter.id] });
+    const clear = await s.json(`${base}/clear`, { revision });
+    expect([remove.status, clear.status]).toEqual([409, 409]);
+    expect(await remove.json()).toMatchObject({ reason: "fenced" });
+    expect(await clear.json()).toMatchObject({ reason: "fenced" });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters: [savedChapter] });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    await answer(await s.json(`${missingChatBase}/chapters/remove`, { ids: [savedChapter.id] }), 404);
+    await answer(await s.json(`${missingChatBase}/clear`, { revision }), 404);
+});
+
 it("declines adoptable summaries when clearing, so the emptied chat does not wait for the adoption choice", async () => {
     const s = await server();
     s.store.applyChanges({
@@ -3135,6 +3159,56 @@ function stageRun(s: Awaited<ReturnType<typeof server>>, id = chatId) {
         },
     );
 }
+
+it("fences abandoning a paused rebuild while its chat is trashed and allows resuming after restore", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const s = await server({ memoryTaskOptions: { now: () => 1 } });
+    const context = bindChat(s);
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: context.chatRevision,
+                ops: [{ op: "meta", set: { memoryMode: "structuredMemory", memoryEnabled: true } }],
+            },
+        ],
+    });
+    stageRun(s);
+    const paused = { mode: "rebuild", done: 1, total: 1, resumable: true };
+    expect((await answer(await s.request(base))).rebuild).toMatchObject(paused);
+
+    const trashed = await answer(
+        await s.chatTrash("trash", { characterId, chatId, revision: s.store.chatRevision(characterId, chatId) }),
+    );
+    expect(await answer(await s.request(`${base}/rebuild/abandon`, { method: "POST" }), 409)).toMatchObject({
+        reason: "fenced",
+    });
+    await answer(await s.request(`${missingChatBase}/rebuild/abandon`, { method: "POST" }), 404);
+    const restored = await answer(await s.chatTrash("restore", { characterId, chatId, revision: trashed.revision }));
+    expect((await answer(await s.request(base))).rebuild).toMatchObject(paused);
+
+    const tasks = s.context.memoryTasks!;
+    const ref = { chaId: characterId, chatId };
+    // Keep the resumed task queued so the test observes admission without calling a model.
+    const lease = await tasks.acquireSummaryWriter(ref, "test");
+    try {
+        const accepted = await answer(
+            await s.json("/api/generations", {
+                kind: "command",
+                clientId: "tab",
+                context: { ...context, chatRevision: restored.revision },
+                command: { type: "memoryRebuild", resume: true },
+            }),
+        );
+        await s.context.generationJobs.drain();
+        expect(s.context.generationJobs.status(accepted.jobId, "tab")?.terminal).toMatchObject({ type: "done" });
+        expect(tasks.status(ref)).toMatchObject({ kind: "structuredMemory", state: "queued" });
+    } finally {
+        tasks.cancel(ref);
+        lease.release();
+    }
+});
 
 it("previews folds by stored status only for backfill with user omission enabled", async () => {
     const s = await server();

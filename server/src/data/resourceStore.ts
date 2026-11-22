@@ -384,7 +384,7 @@ export type ResourceStore = ReturnType<typeof createResourceStore>;
 type RebuildTables = ReturnType<typeof createMemoryTables>["rebuild"];
 
 /**
- * The notice `onChatInvalidated` delivers once a write that deleted a chat, replaced it whole, or
+ * The notice `onChatInvalidated` delivers once a write that trashed a chat, deleted it, replaced it whole, or
  * deleted its character committed: the chat's new source generation in that epoch. Captured at the
  * commit, so a later write never changes it.
  */
@@ -1109,7 +1109,7 @@ export function createResourceStore(options: {
 
     /**
      * Source generations: per chat (`characterId\0id`), an in-memory value that changes once in the
-     * commit of every write that deletes the chat, replaces it whole, or deletes its character, and
+     * commit of every write that trashes the chat, deletes it, replaces it whole, or deletes its character, and
      * in no other write. Values come from one counter and are never issued twice while the store is
      * open, so an entry stays after its chat is deleted (a recreated chat under the same ids must
      * not read an earlier value again); `replaceAll` clears the map and moves `baseSourceGeneration`,
@@ -1119,11 +1119,12 @@ export function createResourceStore(options: {
     let lastSourceGeneration = 0;
     let baseSourceGeneration = 0;
     /**
-     * The chats the open SQL transaction deletes or replaces whole, advanced at its COMMIT and
+     * The chats the open SQL transaction invalidates, advanced at its COMMIT and
      * dropped at its rollback. Null outside a transaction; transactions never nest (a write inside
      * `transaction` or `atomically` joins the open one).
      */
-    let transactionInvalidations: Map<string, { characterId: string; id: string }> | null = null;
+    let transactionInvalidations: Map<string, { characterId: string; id: string; sourceReplaced: boolean }> | null =
+        null;
     /** One final ref per key in the open transaction, independent of the attached feed. */
     let transactionChanges: Map<string, ChangeLogRow> | null = null;
     const invalidationListeners = new Set<(notice: ChatInvalidation) => void>();
@@ -1149,8 +1150,13 @@ export function createResourceStore(options: {
         return sourceGenerations.get(`${characterId}\u0000${id}`) ?? baseSourceGeneration;
     }
 
-    function recordInvalidation(characterId: string, id: string) {
-        transactionInvalidations?.set(`${characterId}\u0000${id}`, { characterId, id });
+    function recordInvalidation(characterId: string, id: string, sourceReplaced = true) {
+        const key = `${characterId}\u0000${id}`;
+        transactionInvalidations?.set(key, {
+            characterId,
+            id,
+            sourceReplaced: sourceReplaced || transactionInvalidations.get(key)?.sourceReplaced === true,
+        });
     }
 
     function beginTransaction() {
@@ -1164,13 +1170,13 @@ export function createResourceStore(options: {
     /**
      * Commits the open transaction and, in the same synchronous step, advances the source
      * generation of every chat it invalidated and queues their notices and its message changes
-     * (`deliverInvalidations`). A rebuild outlives this process and its generations, so a chat's run takes
-     * the same news in the transaction itself. Final refs and retention pruning commit with the
+     * (`deliverInvalidations`). A rebuild outlives this process and its generations, so a source
+     * replacement also marks the run in the transaction itself. Final refs and retention pruning commit with the
      * write; only after COMMIT succeeds may the publication carry their newest cursor.
      */
     function commitTransaction() {
-        for (const { characterId, id } of transactionInvalidations?.values() ?? []) {
-            memoryTables.rebuild.noteSourceReplaced(characterId, id);
+        for (const { characterId, id, sourceReplaced } of transactionInvalidations?.values() ?? []) {
+            if (sourceReplaced) memoryTables.rebuild.noteSourceReplaced(characterId, id);
         }
         let newestCursor: number | undefined;
         for (const { kind, characterId, id, revision } of transactionChanges?.values() ?? []) {
@@ -2874,7 +2880,7 @@ export function createResourceStore(options: {
 
         /**
          * A chat's source generation (no row is read; a missing chat has one too): equal values in
-         * one epoch mean no write deleted the chat, replaced it whole, or deleted its character in
+         * one epoch mean no write trashed the chat, deleted it, replaced it whole, or deleted its character in
          * between. Process memory, compared only for equality; `replaceAll` gives every chat a new
          * one, without a notice (the `epoch` feed event is that signal).
          */
@@ -2884,7 +2890,7 @@ export function createResourceStore(options: {
         },
 
         /**
-         * Calls `listener` with a `ChatInvalidation` for every chat a committed write deleted,
+         * Calls `listener` with a `ChatInvalidation` for every chat a committed write trashed, deleted,
          * replaced whole, or deleted with its character: once per chat and transaction, after the
          * transaction committed and its change was published, never for a rolled-back one (see
          * `deliverInvalidations`). Returns the removal.
@@ -2984,6 +2990,7 @@ export function createResourceStore(options: {
                     chatTables.setTrashedAt(row.seq, row.revision, action === "trash" ? Date.now() : null);
                     answer = readAnswer();
                     recordChat(answer);
+                    if (action === "trash") recordInvalidation(characterId, chatId, false);
                 }
                 countWrite();
                 return answer;
@@ -3028,9 +3035,9 @@ export function createResourceStore(options: {
          * One page of a message search (`shared/messageSearch.ts`): literal matching over each message's text
          * (`$.data`), chats by `seq` descending and messages by position descending, in synchronous
          * batches (`chatTables.searchBatch`) with `yieldTurn` between them, on this store's one
-         * connection. Without ids it scans every character except trashed ones (`trashTime`) and the
-         * playground; a named character or chat is scanned even when trashed (`notFound` when it does
-         * not exist). The page ends after the row that reaches `limit` hits or `budgetBytes` (its
+         * connection. Every scope skips chats with a trash mark. Without ids it also skips trashed
+         * characters (`trashTime`) and the playground. A missing named character or chat returns
+         * `notFound`. The page ends after the row that reaches `limit` hits or `budgetBytes` (its
          * `next` is that row) or at the end (`next` null). Before the first batch and after every
          * yield it checks, in order: `signal` (throws its reason), the store being open
          * (`ResourceStoreClosedError`), the epoch (`MessageSearchEpochError` once a restore replaced
@@ -3092,11 +3099,14 @@ export function createResourceStore(options: {
                 if (request.chatId === undefined) {
                     scope = { kind: "character", characterId: request.characterId };
                 } else {
-                    const seq = chatTables.chatSeq(request.characterId, request.chatId);
-                    if (seq === null) {
+                    const chat = chatTables.chatState(request.characterId, request.chatId);
+                    if (!chat) {
                         return { notFound: "chat" };
                     }
-                    scope = { kind: "chat", seq };
+                    if (chat.trashedAt !== null) {
+                        return { hits: [], next: null, scannedBytes: 0 };
+                    }
+                    scope = { kind: "chat", seq: chat.seq };
                 }
             }
             const hits: MessageSearchHit[] = [];

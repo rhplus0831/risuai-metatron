@@ -1004,12 +1004,14 @@ export function createServerContext(options: {
         // The chat's task, and a job too: a send's gap run writes with no task status, and
         // the writer's retry after a revision conflict reapplies an old answer over a person's edit. A
         // rebuild's run too, stopped or not: the swap would lose what such a write leaves.
+        // A trashed chat is read-only.
         fenced: (characterId, chatId) => {
             const task = memoryTasks?.status({ chaId: characterId, chatId })?.state;
             return (
                 task === "queued" ||
                 task === "running" ||
                 chatHeld(characterId, chatId) ||
+                resources.chatTrashState(characterId, chatId)?.trashedAt != null ||
                 resources.memory.rebuild.status(characterId, chatId) !== null
             );
         },

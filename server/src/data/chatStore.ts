@@ -1677,11 +1677,13 @@ export function createChatTables(
     const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision, trashedAt FROM chats ORDER BY seq");
     const selectOrderRevisions = db.prepare("SELECT seq, characterId, revision FROM chatOrders ORDER BY seq");
     // Message search (`searchBatch`).
-    const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ?");
-    const searchNextChat = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq < ? ORDER BY seq DESC LIMIT 1");
+    const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ? AND trashedAt IS NULL");
+    const searchNextChat = db.prepare(
+        "SELECT seq, characterId, id FROM chats WHERE seq < ? AND trashedAt IS NULL ORDER BY seq DESC LIMIT 1",
+    );
     // Unary + keeps SQLite on the descending rowid scan instead of sorting the character/id index.
     const searchNextCharacterChat = db.prepare(
-        "SELECT seq, characterId, id FROM chats WHERE +characterId = ? AND seq < ? ORDER BY seq DESC LIMIT 1",
+        "SELECT seq, characterId, id FROM chats WHERE +characterId = ? AND seq < ? AND trashedAt IS NULL ORDER BY seq DESC LIMIT 1",
     );
     const searchChatName = db.prepare("SELECT json_extract(meta, '$.name') AS name FROM chats WHERE seq = ?");
     const searchAnchor = db.prepare("SELECT position FROM messages WHERE chatSeq = ? AND id = ?");
@@ -3270,12 +3272,6 @@ export function createChatTables(
             return tokens.token(order.seq, revision);
         },
 
-        /** A chat's incarnation (`chats.seq`), or null when it does not exist. */
-        chatSeq(characterId: string, id: string): number | null {
-            const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq"> | undefined;
-            return row ? row.seq : null;
-        },
-
         /** A chat's metadata `name` for a search hit ("" when it has none or the chat is gone). */
         searchChatName(seq: number): string {
             const row = searchChatName.get(seq) as { name: unknown } | undefined;
@@ -3292,7 +3288,7 @@ export function createChatTables(
          * charged); the limits are checked after each unit, so a batch always advances. `resume` is
          * where the next batch starts: a resumed message's chat continues below that message's
          * current position (found again by id, so inserts before it neither repeat nor skip rows; its
-         * stored position when it is gone), and a chat that is gone or out of scope continues with
+         * stored position when it is gone), and a trashed, missing, or out-of-scope chat continues with
          * the next lower `seq`. Rows are read lazily and the scan statement is reset before
          * returning, so nothing stays open across the caller's yield.
          */

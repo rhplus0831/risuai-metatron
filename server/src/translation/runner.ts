@@ -168,12 +168,18 @@ export function createTranslationRunner(deps: {
     const keyOf = (request: TranslateMessageRequest) =>
         `${request.characterId}\u0000${request.chatId}\u0000${request.messageId}`;
 
-    const admission = (): TranslateMessageResult | null => {
+    const admission = ({
+        characterId,
+        chatId,
+    }: Pick<TranslateMessageRequest, "characterId" | "chatId">): TranslateMessageResult | null => {
         if (closed) {
             return failure(503, "The server is shutting down");
         }
         if (paused) {
             return failure(503, "The server data is being replaced");
+        }
+        if (store.chatTrashState(characterId, chatId)?.trashedAt != null) {
+            return failure(409, "chatTrashed");
         }
         return null;
     };
@@ -453,7 +459,7 @@ export function createTranslationRunner(deps: {
      * ignored.
      */
     function translate(request: TranslateMessageRequest): Promise<TranslateMessageResult> {
-        const refused = admission();
+        const refused = admission(request);
         if (refused) {
             return Promise.resolve(refused);
         }
@@ -588,7 +594,7 @@ export function createTranslationRunner(deps: {
         target: Pick<TranslateMessageRequest, "characterId" | "chatId" | "presetId" | "modelPresetId" | "personaId">,
         messageIds: readonly string[],
     ): string[] {
-        if (messageIds.length === 0 || admission()) {
+        if (messageIds.length === 0 || admission(target)) {
             return [];
         }
         const section = kinds.get(SECTION_KIND.memoryTranslateMedia);

@@ -33,7 +33,8 @@ const REFUSAL_TEXT = {
  *
  * - `POST /api/memory/tasks` `{ characterId, chatId }`: a manual start (`MemoryTasks.start`), answered
  *   `MemoryTaskStartAnswer`: { outcome: "running" | "queued", status } or { outcome: "pendingManual" }.
- *   404 for a chat that is gone, 429 `queueFull`, 503 (Retry-After: 5) during shutdown and maintenance.
+ *   404 for a chat that is gone, 409 `chatTrashed`, 429 `queueFull`, 503 (Retry-After: 5) during
+ *   shutdown and maintenance.
  *   The body is read after authentication and capped at 4 KiB (413).
  * - `DELETE /api/memory/tasks/:characterId/:chatId`: cancels the chat's queued and running task and a
  *   waiting manual start, answered `MemoryTaskCancelAnswer` { cancelled }; 404 for a chat that is gone.
@@ -81,6 +82,9 @@ export function registerMemoryTaskRoutes(
         }
         if (!tasks || !enabled()) {
             return c.json({ error: "Memory tasks are not enabled", reason: "notEnabled" }, 503);
+        }
+        if (store.chatTrashState(body.characterId, body.chatId)?.trashedAt != null) {
+            return c.json({ error: "chatTrashed" }, 409);
         }
         const result = tasks.start({ chaId: body.characterId, chatId: body.chatId });
         switch (result.outcome) {

@@ -330,6 +330,40 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect(runner().workingCount()).toBe(0);
     });
 
+    it("refuses translations requested while trashed and follow-ups waiting for an older translation", async () => {
+        await seed();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const held = holdProvider();
+        try {
+            const first = translate(req("r"));
+            await held.answered;
+            await chatBatch("k", [{ op: "setText", id: "r", text: "continued reply" }]);
+            const joined = admitted((request) => request.messageId === "r" && request.force === true);
+            const followUp = translate(req("r", { force: true }));
+            await joined;
+            const trash = await client.chatTrash("trash", {
+                characterId: "c",
+                chatId: "k",
+                revision: (await readChat()).revision,
+            });
+            expect(trash.status, await trash.clone().text()).toBe(200);
+            const direct = translate(req("u"));
+
+            held.release();
+            const [, directResult, followUpResult] = await Promise.all([first, direct, followUp]);
+            const refused = { status: 409, body: { error: "chatTrashed" } };
+            expect([directResult, followUpResult]).toMatchObject([refused, refused]);
+            expect(held.calls()).toBe(1);
+            expect((await readChat()).data.message.map(({ translation }) => translation)).toEqual([
+                undefined,
+                undefined,
+            ]);
+        } finally {
+            held.release();
+            vi.useRealTimers();
+        }
+    });
+
     it("joins a run in flight (one run, the same result, whatever the joiner's force) after the joiner's ids pass the display binding and exist", async () => {
         await seed();
         const held = holdProvider();

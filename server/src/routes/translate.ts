@@ -44,9 +44,9 @@ function parseTranslateMessage(body: Record<string, unknown>): TranslateMessageR
  * displays with (`chatDisplayIds`). Authenticated before the body is read, rate-limited, the body
  * capped at 16 KiB (413; malformed bodies are 400), the resource epoch checked (412 `EpochMismatch`).
  * The run does not end when the tab goes away. 404 for a chat, message, preset, model preset, or
- * persona that is gone; 409
- * `generating` (a generation owns the message), `chatBindingMismatch` (an id that is not the chat's
- * bound one), or a chat replaced meanwhile; 429 past the running cap; 502 when the translation
+ * persona that is gone; 409 `chatTrashed`, `generating` (a generation owns the message),
+ * `chatBindingMismatch` (an id that is not the chat's bound one), or a chat replaced meanwhile;
+ * 429 past the running cap; 502 when the translation
  * request failed; 503 during maintenance and shutdown (Retry-After: 5); 504 past the deadline.
  */
 export function registerTranslateRoutes(

@@ -131,10 +131,10 @@ export function createCheckpointService({
          * messages_role), so a chat not due for a checkpoint reads no message row. A count below
          * lastAutoTurns resets the
          * baseline; an absent baseline saves immediately. Capture, policy update and pruning commit
-         * together, and a busy chat is skipped.
+         * together. Busy and trashed chats are skipped.
          */
         autoSave(characterId: string, chatId: string): void {
-            if (busy(characterId, chatId)) {
+            if (busy(characterId, chatId) || store.chatTrashState(characterId, chatId)?.trashedAt != null) {
                 return;
             }
             const policy = store.checkpoints.readPolicy(characterId, chatId);

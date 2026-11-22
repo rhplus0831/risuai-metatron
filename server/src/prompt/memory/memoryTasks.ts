@@ -639,8 +639,8 @@ export function createMemoryTasks(deps: {
 
     /**
      * Keeps why a task's end stopped its chat's rebuild on the run, which outlives the terminal, so the
-     * panel can still say. A person's pause needs no word and a `done` is no stop. Maintenance and an epoch
-     * change write nothing. A failure here costs the word alone: an end never fails.
+     * panel can still say. A person's pause needs no word and a `done` is no stop. Maintenance, an epoch
+     * change, and a trashed chat write nothing. A failure here costs the word alone: an end never fails.
      */
     const noteRebuildStop = (input: AnyMemoryTaskInput, state: TerminalState, { reason, error }: TerminalDetails) => {
         if (
@@ -655,6 +655,9 @@ export function createMemoryTasks(deps: {
         }
         try {
             const { chaId, chatId } = input.chatRef;
+            if (store.chatTrashState(chaId, chatId)?.trashedAt != null) {
+                return;
+            }
             store.memory.rebuild.noteStop(chaId, chatId, {
                 epoch: input.epoch,
                 ...(reason !== undefined ? { reason } : {}),
@@ -1999,7 +2002,7 @@ export function createMemoryTasks(deps: {
         },
 
         /**
-         * A chat's source changed (`onChatInvalidated`): its queued and running task, retained input, and
+         * A chat was trashed or its source changed (`onChatInvalidated`): its queued and running task, retained input, and
          * `pendingManual` from an older source generation end or go. State at or past the notice's
          * generation is newer than the notice and stays.
          */

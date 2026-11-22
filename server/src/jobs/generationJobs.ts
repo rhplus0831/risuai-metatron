@@ -2364,7 +2364,7 @@ export function createGenerationJobs(options: {
 
     /**
      * Epoch first, then synchronize identity maps/receipts and look up requestId before shutdown,
-     * maintenance/gate, hooks, chat existence, occupied slot, rebuild lock, revision, binding and
+     * maintenance/gate, hooks, chat existence and trash state, occupied slot, rebuild lock, revision, binding and
      * orphaned overrides. Matching identity replays the original job/status even if those later
      * gates would now refuse; another fingerprint is requestIdReused, a tombstone requestCancelled.
      * No requestId admits normally without deduplication; its epoch still precedes the gates.
@@ -2402,10 +2402,14 @@ export function createGenerationJobs(options: {
             return { ok: false, status: 400, body: { error: hooks } };
         }
         const { characterId, chatId } = body.context;
-        const revision = store.chatRevision(characterId, chatId);
-        if (revision === null) {
+        const chat = store.chatTrashState(characterId, chatId);
+        if (!chat) {
             return { ok: false, status: 404, body: { error: "Chat not found" } };
         }
+        if (chat.trashedAt !== null) {
+            return { ok: false, status: 409, body: { error: "chatTrashed" } };
+        }
+        const { revision } = chat;
         const busy = chatSlots.get(chatKey(characterId, chatId));
         if (busy) {
             return { ok: false, status: 409, body: { error: "chatBusy", jobId: busy } };
