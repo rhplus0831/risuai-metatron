@@ -2336,6 +2336,23 @@ function hasPendingMembership(runnable = false): boolean {
     return false;
 }
 
+let unloadHolds = 0;
+
+/**
+ * Makes `beforeunload` ask until the returned release runs, for work only this page can finish that is not
+ * a queued write (a removal reroll's replies, which only this tab can put back). A halted loop does not ask.
+ */
+export function holdUnloadWarning(): () => void {
+    let held = true;
+    unloadHolds += 1;
+    return () => {
+        if (held) {
+            held = false;
+            unloadHolds -= 1;
+        }
+    };
+}
+
 function hasUnsavedWork(): boolean {
     return (
         inFlight !== null ||
@@ -6091,7 +6108,7 @@ export function startResourceSync() {
     function onBeforeUnload(event: BeforeUnloadEvent) {
         // A halted loop (the data was replaced) can save nothing more: no warning, so the reload after
         // the restore notice goes through.
-        if (!halted && hasUnsavedWork()) {
+        if (!halted && (unloadHolds > 0 || hasUnsavedWork())) {
             event.preventDefault();
             event.returnValue = "";
         }

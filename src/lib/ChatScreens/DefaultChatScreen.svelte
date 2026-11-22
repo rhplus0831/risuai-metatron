@@ -114,12 +114,13 @@
     import { v4 } from "uuid";
     import { neighborCandidateId, rerollCarrier, switchCandidate } from "src/ts/process/rerollCandidates";
     import { rerollTurnStart, restoredScriptstate } from "../../../shared/rerollCandidates.ts";
-    import { serverRerollsInPlace } from "src/ts/network/eventFeed";
+    import { awaitServerRerollsInPlace, serverRerollsInPlace } from "src/ts/network/eventFeed";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
     import { composerSendText, createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
     import { createComposer } from "src/ts/process/composerDrafts.svelte";
     import { pageDraftJournal } from "src/ts/storage/draftJournal";
     import { getResourceEpoch } from "src/ts/storage/resourceClient";
+    import { holdUnloadWarning } from "src/ts/storage/resourceSync.svelte";
     import {
         createInputTranslation,
         handleMainComposerKeydown,
@@ -211,6 +212,8 @@
     });
     let openMenu = $state(false);
     const rerollHistory = createRerollHistory();
+    /** A reroll press is waiting for the feed's hello; further presses do nothing until it is answered. */
+    let rerollAwaitsHello = false;
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
     let btwPicker: { ref: ChatRef; hooks: InputHook[] } | null = $state.raw(null);
     let btwResults: ReadonlyMap<string, string> = $state.raw(new Map());
@@ -941,14 +944,16 @@
     /**
      * Refused while the selected chat is busy. Tries the carrier's next candidate, then bundle history.
      * A new reroll checks lore overrides and regenerates a single reply in place when the connection
-     * supports it. Other tails use removal, a send, and the bundle history's guarded restoration
-     * (`rerollByRemoval`). Both ask to stop over the lore budget; an in-place reroll that stopped always
-     * opens the dialog (`offerLoreStop`) and repeats with the same message id and speaker.
+     * supports it; while the feed is still connecting it waits for the hello first
+     * (`awaitServerRerollsInPlace`), and the press is dropped when the chat changed meanwhile. Other tails
+     * use removal, a send, and the bundle history's guarded restoration (`rerollByRemoval`). Both ask to
+     * stop over the lore budget; an in-place reroll that stopped always opens the dialog (`offerLoreStop`)
+     * and repeats with the same message id and speaker.
      */
     async function reroll() {
         const ref = currentChatRef();
-        // Nothing while the selected chat loads.
-        if (!ref || !currentChat) {
+        // Nothing while the selected chat loads, or while an earlier press waits for the hello.
+        if (!ref || !currentChat || rerollAwaitsHello) {
             return;
         }
         // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
@@ -957,7 +962,7 @@
             alertError(language.chatGenerating);
             return;
         }
-        const carrier = rerollCarrier(currentChat);
+        let carrier = rerollCarrier(currentChat);
         const next = neighborCandidateId(carrier, 1);
         if (next) {
             const follow = followsSwap();
@@ -974,6 +979,30 @@
             rerollHistory.forward(ref);
             void showSwappedReply(ref, follow);
             return;
+        }
+        if (carrier && !serverRerollsInPlace()) {
+            // The socket is replaced whenever the page comes back: a press right then waits for the hello
+            // that is a moment away, so the reply is rerolled in place instead of removed.
+            const pressed = carrier.chatId;
+            openMenu = false;
+            rerollAwaitsHello = true;
+            try {
+                await awaitServerRerollsInPlace();
+            } finally {
+                rerollAwaitsHello = false;
+            }
+            const now = currentChatRef();
+            carrier = currentChat ? rerollCarrier(currentChat) : null;
+            if (
+                now?.chaId !== ref.chaId ||
+                now.chatId !== ref.chatId ||
+                isScreenBusy(ref) ||
+                carrier?.chatId !== pressed ||
+                neighborCandidateId(carrier, 1) ||
+                rerollHistory.canForward(ref)
+            ) {
+                return;
+            }
         }
         if (refuseOrphanedOverrides(ref)) {
             return;
@@ -999,7 +1028,7 @@
             }
             return;
         }
-        if (currentChat.message.length === 0) {
+        if (!currentChat || currentChat.message.length === 0) {
             return;
         }
         openMenu = false;
@@ -1050,18 +1079,22 @@
             });
         }
         const variables = { before, after: safeStructuredClone(findChat(ref)?.scriptstate ?? null) };
-        editChatSync(ref, (draft) => {
-            draft.message = draft.message.filter((message) => kept.has(message.chatId));
-        });
-        // A send that brought no reply (refused, failed, or stopped before one) puts the replies back.
-        const end = await sendChatMain(false, ref, null, undefined, { askLoreStop });
-        const stop = end.loreStop;
-        // From the stop on the chat stays loaded (the dialog's first choice sets a chat flag), and the
-        // choice is checked against the owner the chat has now.
-        const stopOwner = chatOwnerToken(ref.chaId);
-        const release = stop ? pinChat(ref) : null;
+        // Until the send ends only this tab can put the removed replies back: leaving the page meanwhile asks.
+        const releaseUnload = removed.length > 0 ? holdUnloadWarning() : null;
+        let release: (() => void) | null = null;
         try {
+            editChatSync(ref, (draft) => {
+                draft.message = draft.message.filter((message) => kept.has(message.chatId));
+            });
+            // A send that brought no reply (refused, failed, or stopped before one) puts the replies back.
+            const end = await sendChatMain(false, ref, null, undefined, { askLoreStop });
+            const stop = end.loreStop;
+            // From the stop on the chat stays loaded (the dialog's first choice sets a chat flag), and the
+            // choice is checked against the owner the chat has now.
+            const stopOwner = chatOwnerToken(ref.chaId);
+            release = stop ? pinChat(ref) : null;
             const restored = await rerollHistory.restore(ref, owner, anchor, removed, end, undefined, variables);
+            releaseUnload?.();
             if (stop && (restored === "restored" || removed.length === 0)) {
                 await offerLoreStop(ref, stopOwner, stop, false, () => rerollByRemoval(ref, false));
                 return;
@@ -1073,6 +1106,7 @@
                 alertError(language.rerollRepliesNotRestored);
             }
         } finally {
+            releaseUnload?.();
             release?.();
         }
     }

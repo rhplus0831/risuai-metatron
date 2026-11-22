@@ -314,6 +314,59 @@ describe("the live-update socket client", () => {
         expect(feed.serverRerollsInPlace()).toBe(false);
     });
 
+    it("holds a reroll for the hello of a connection being made and answers at once when none is coming", async () => {
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        const answers: boolean[] = [];
+        const wait = () => void feed.awaitServerRerollsInPlace().then((inPlace) => answers.push(inPlace));
+        const settled = async () => {
+            await vi.advanceTimersByTimeAsync(0);
+            return answers.splice(0);
+        };
+        // Before the feed starts no connection is being made.
+        wait();
+        expect(await settled()).toEqual([false]);
+        const first = await started();
+        // The socket is open and its hello is on the way: the reroll waits for it.
+        wait();
+        expect(await settled()).toEqual([]);
+        first.frame({ type: "hello", epoch: "E1", cursor: 10, rerollInPlace: true });
+        expect(await settled()).toEqual([true]);
+        wait();
+        expect(await settled()).toEqual([true]);
+        // The attempt that ends without a hello answers false, and so does the retry's wait.
+        first.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        const second = FakeSocket.instances.at(-1)!;
+        wait();
+        expect(await settled()).toEqual([]);
+        second.close();
+        expect(await settled()).toEqual([false]);
+        wait();
+        expect(await settled()).toEqual([false]);
+        // A hello without the flag answers false without waiting further.
+        await vi.advanceTimersByTimeAsync(2000);
+        const third = FakeSocket.instances.at(-1)!;
+        expect(third).not.toBe(second);
+        wait();
+        third.frame({ type: "hello", epoch: "E1", cursor: 11 });
+        expect(await settled()).toEqual([false]);
+        // A connection that stays silent is given up on after the wait.
+        third.close();
+        await vi.advanceTimersByTimeAsync(4000);
+        const fourth = FakeSocket.instances.at(-1)!;
+        expect(fourth).not.toBe(third);
+        wait();
+        await vi.advanceTimersByTimeAsync(feed.REROLL_HELLO_WAIT_MS - 1);
+        expect(answers).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await settled()).toEqual([false]);
+        // Stopping the feed answers a reroll that still waits.
+        wait();
+        expect(await settled()).toEqual([]);
+        feed.stopEventFeed();
+        expect(await settled()).toEqual([false]);
+    });
+
     it("connects once to the feed path with a signed JWT, reconciles on `hello`, and passes changes of the loaded epoch", async () => {
         const ws = await started();
         feed.startEventFeed();

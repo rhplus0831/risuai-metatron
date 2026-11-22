@@ -231,10 +231,44 @@ function isFrame(value: unknown): value is EventFeedFrame {
 }
 
 let rerollInPlace = false;
+/** True from a connection's start until its same-epoch hello or its end: a hello may still come. */
+let helloPending = false;
+const helloWaiters = new Set<(inPlace: boolean) => void>();
 
 /** Whether this connection's same-epoch hello advertised in-place rerolls. False until hello and after retirement. */
 export function serverRerollsInPlace(): boolean {
     return rerollInPlace;
+}
+
+/** How long a reroll waits for the hello of a connection that is being made. */
+export const REROLL_HELLO_WAIT_MS = 5_000;
+
+/**
+ * `serverRerollsInPlace()` once the connection being made has its hello. The socket is replaced whenever
+ * the page comes back, so a reroll pressed right then would miss a hello that is a moment away. It answers
+ * at once when the hello has come or no connection is being made (the retry's wait, a stopped feed), false
+ * when the attempt ends without a hello, and false after `REROLL_HELLO_WAIT_MS`.
+ */
+export function awaitServerRerollsInPlace(): Promise<boolean> {
+    if (rerollInPlace || !helloPending) {
+        return Promise.resolve(rerollInPlace);
+    }
+    return new Promise((resolve) => {
+        const settle = (inPlace: boolean) => {
+            clearTimeout(timer);
+            helloWaiters.delete(settle);
+            resolve(inPlace);
+        };
+        const timer = setTimeout(() => settle(false), REROLL_HELLO_WAIT_MS);
+        helloWaiters.add(settle);
+    });
+}
+
+/** Answers the rerolls waiting for a hello: with its flag, or false when the attempt ended without one. */
+function settleHelloWaiters() {
+    for (const settle of [...helloWaiters]) {
+        settle(rerollInPlace);
+    }
 }
 
 /**
@@ -244,6 +278,7 @@ export function serverRerollsInPlace(): boolean {
 function retire() {
     connected.set(false);
     rerollInPlace = false;
+    helloPending = false;
     generation += 1;
     listingOverlay = null;
     liveness?.stop();
@@ -259,6 +294,8 @@ function retire() {
  * listing must keep backing off. A pending retry is shared until it fires or a resume replaces it.
  */
 function scheduleReconnect() {
+    // The attempt ended: no hello comes before the retry.
+    settleHelloWaiters();
     if (stopped || retryTimer) {
         return;
     }
@@ -422,6 +459,8 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             }
             recoverHostCommands(frame.epoch);
             rerollInPlace = frame.rerollInPlace === true;
+            helloPending = false;
+            settleHelloWaiters();
             replaceFeedLocks(Array.isArray(frame.streaming) ? frame.streaming : []);
             replaceHandoffOffers(frame.handoffs ?? []);
             replaceConnectedClients(frame.clients ?? []);
@@ -496,6 +535,7 @@ async function connect() {
     }
     const previous = socket;
     retire();
+    helloPending = true;
     const gen = generation;
     if (retryTimer) {
         clearTimeout(retryTimer);
@@ -600,5 +640,6 @@ export function stopEventFeed() {
     }
     const ws = socket;
     retire();
+    settleHelloWaiters();
     ws?.close();
 }

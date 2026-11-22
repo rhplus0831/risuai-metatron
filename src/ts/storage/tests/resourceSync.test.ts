@@ -721,6 +721,26 @@ describe("restore (412) and errors", () => {
         expect(fake.data("ui", "main").theme).toBe(themeBefore);
     });
 
+    it("asks before unload while a hold is taken with nothing to save, until every hold is released or the loop halts", async () => {
+        const { client, sync } = await boot();
+        expect(warnsOnUnload()).toBe(false);
+        const first = sync.holdUnloadWarning();
+        const second = sync.holdUnloadWarning();
+        expect(warnsOnUnload()).toBe(true);
+        // A release counts once.
+        first();
+        first();
+        expect(warnsOnUnload()).toBe(true);
+        second();
+        expect(warnsOnUnload()).toBe(false);
+        // Replaced data reloads the page: a hold does not stand in the way.
+        const held = sync.holdUnloadWarning();
+        expect(warnsOnUnload()).toBe(true);
+        client.epochMismatch("epoch-2");
+        expect(warnsOnUnload()).toBe(false);
+        held();
+    });
+
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
         const { fake, sync, settings } = await boot();
         expect(warnsOnUnload()).toBe(false);

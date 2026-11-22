@@ -84,6 +84,7 @@ export function createBootMock<K extends keyof BootModules>(
             beginMutationScope: vi.fn<BootModules["resourceSync"]["beginMutationScope"]>(),
             generatingNoticeCount: vi.fn<BootModules["resourceSync"]["generatingNoticeCount"]>(),
             flushResources: vi.fn<BootModules["resourceSync"]["flushResources"]>(),
+            holdUnloadWarning: vi.fn<BootModules["resourceSync"]["holdUnloadWarning"]>(() => () => {}),
             resourceSyncIdle: vi.fn<BootModules["resourceSync"]["resourceSyncIdle"]>(() => true),
             startResourceSync: vi.fn<BootModules["resourceSync"]["startResourceSync"]>(),
             saving: { state: false },
@@ -249,6 +250,8 @@ export function createBootMock<K extends keyof BootModules>(
         },
         eventFeed: {
             serverRerollsInPlace: vi.fn(() => false),
+            awaitServerRerollsInPlace: vi.fn(async () => false),
+            REROLL_HELLO_WAIT_MS: 5_000,
             startEventFeed: vi.fn<BootModules["eventFeed"]["startEventFeed"]>(),
             stopEventFeed: vi.fn<BootModules["eventFeed"]["stopEventFeed"]>(),
             liveFeedCurrent: vi.fn<BootModules["eventFeed"]["liveFeedCurrent"]>(() => false),

@@ -1258,6 +1258,11 @@ it("restores a multi-reply turn's variables before reroll creation and restores 
         },
     });
     const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    // Only this tab can put the removed replies back, so leaving the page asks until they are back.
+    const releaseUnload = vi.fn();
+    const holdUnload = vi
+        .spyOn(await import("src/ts/storage/resourceSync.svelte"), "holdUnloadWarning")
+        .mockReturnValue(releaseUnload);
     let fail!: (error: Error) => void;
     io.createJob.mockImplementation(
         () =>
@@ -1270,11 +1275,77 @@ it("restores a multi-reply turn's variables before reroll creation and restores 
     expect(io.createJob.mock.calls[0][0].context.rerollMessageId).toBeUndefined();
     expect(findChat(ref)!.message.map((message) => message.chatId)).toEqual(["a-user"]);
     expect(findChat(ref)!.scriptstate).toEqual({ $counter: "0", $edited: "by hand" });
+    expect(holdUnload).toHaveBeenCalledTimes(1);
+    expect(releaseUnload).not.toHaveBeenCalled();
     const { GenerationCreateError } = await import("src/ts/network/generationJobs");
     fail(new GenerationCreateError(new Error("refused before dispatch"), false));
     await until(() => findChat(ref)!.message.at(-1)?.chatId === "reply-b");
     expect(findChat(ref)!.message.slice(1)).toEqual(replies);
     expect(findChat(ref)!.scriptstate).toEqual({ $counter: "2", $edited: "by hand" });
+    await until(() => releaseUnload.mock.calls.length > 0);
+    expect(holdUnload).toHaveBeenCalledTimes(1);
+});
+
+it("holds a single reply's reroll for the feed's hello, ignores a second press, and then rerolls in place", async () => {
+    const ref = { chaId: "c", chatId: "a" };
+    const ui = await mountComposer();
+    const feed = await import("src/ts/network/eventFeed");
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    const inPlace = vi.spyOn(feed, "serverRerollsInPlace").mockReturnValue(false);
+    let hello!: (inPlace: boolean) => void;
+    const wait = vi.spyOn(feed, "awaitServerRerollsInPlace").mockImplementation(
+        () =>
+            new Promise((resolve) => {
+                hello = resolve;
+            }),
+    );
+    const holdUnload = vi.spyOn(await import("src/ts/storage/resourceSync.svelte"), "holdUnloadWarning");
+    const sends = vi
+        .spyOn(await import("src/ts/process/index.svelte"), "sendChat")
+        .mockImplementation(async (_index, arg) => {
+            arg?.onEnd?.({ settled: true, outcome: "refused", requestUncertain: false, blockedChats: [] });
+            return false;
+        });
+    ui.click(ui.target.querySelector(".button-icon-reroll"));
+    ui.click(ui.target.querySelector(".button-icon-reroll"));
+    await drive(Promise.resolve());
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(sends).not.toHaveBeenCalled();
+    expect(findChat(ref)!.message.map((message) => message.chatId)).toEqual(["a-user", "a-answer"]);
+    inPlace.mockReturnValue(true);
+    hello(true);
+    await until(() => sends.mock.calls.length === 1);
+    await drive(Promise.resolve());
+    expect(sends.mock.calls[0][1]).toMatchObject({ target: ref, rerollMessageId: "a-answer" });
+    expect(holdUnload).not.toHaveBeenCalled();
+    expect(findChat(ref)!.message.map((message) => message.chatId)).toEqual(["a-user", "a-answer"]);
+});
+
+it("drops a reroll held for the hello when the chat got another message meanwhile", async () => {
+    const ref = { chaId: "c", chatId: "a" };
+    const ui = await mountComposer();
+    const feed = await import("src/ts/network/eventFeed");
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    const { editChatSync } = await import("src/ts/storage/chatEdits");
+    const inPlace = vi.spyOn(feed, "serverRerollsInPlace").mockReturnValue(false);
+    let hello!: (inPlace: boolean) => void;
+    vi.spyOn(feed, "awaitServerRerollsInPlace").mockImplementation(
+        () =>
+            new Promise((resolve) => {
+                hello = resolve;
+            }),
+    );
+    const sends = vi.spyOn(await import("src/ts/process/index.svelte"), "sendChat").mockResolvedValue(false);
+    ui.click(ui.target.querySelector(".button-icon-reroll"));
+    await drive(Promise.resolve());
+    editChatSync(ref, (chat) => {
+        chat.message.push({ role: "user", data: "Typed while waiting", chatId: "a-later" });
+    });
+    inPlace.mockReturnValue(true);
+    hello(true);
+    await drive(Promise.resolve());
+    expect(sends).not.toHaveBeenCalled();
+    expect(findChat(ref)!.message.map((message) => message.chatId)).toEqual(["a-user", "a-answer", "a-later"]);
 });
 
 it("repeats a stopped in-place reroll with the same reply and speaker", async () => {
