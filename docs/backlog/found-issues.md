@@ -40,7 +40,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Chat screen](#chat-screen): 1
 - [Draft recovery](#draft-recovery): 1
 - [Rendering](#rendering): 1
-- [Server generation](#server-generation): 1
+- [Server generation](#server-generation): 2
 
 ## Build and CI
 
@@ -120,6 +120,23 @@ most of those; loading and scoping the imported sheet is a larger change.
 **Decision:** owner, 2026-11-15: left as it is; the owner will deal with it separately. Do not fix it in passing.
 
 ## Server generation
+
+### A reply rerolled in place can be lost on restart when its candidates pass the size limit
+
+Read on 2026-11-22 at `bcf9d8e8e` by the Removal Reroll plan's audit and its design review; not reproduced. The
+in-place reroll's begin group clears the carrier's text and keeps the old reply only as a stored candidate
+(`server/src/prompt/runner.ts:1508`), but `trimCandidates` (`shared/rerollCandidates.ts:229`, `:263`) treats
+`previousId` as a preference: past `MAX_CANDIDATES_BYTES_PER_MESSAGE` (192 KiB, `shared/rerollCandidates.ts:7`) it
+drops an unselected slot, and with only the previous reply and the empty replacement that is the previous reply, and
+then clears `candidates`. The rollback copy (`previousCandidate`) is a local variable of the runner, so a crash between
+the begin and the final write leaves the reply empty. The 193 KiB runner case (`server/src/tests/promptRunner.test.ts:4197`)
+covers the notice and a normal completion, not a crash after the begin.
+
+**Why it matters:** a long reply rerolled in place, the path [known issues](known-issues.md) calls unaffected by the
+removal-reroll loss, can lose its text when the server dies mid-reroll.
+
+**Suggested handling:** keep the previous reply when trimming for a reroll (drop it last, or refuse the in-place reroll
+and take the tail path), or keep the rollback copy durable as the Removal Reroll plan's stash does.
 
 ### A token count queued behind a long encode holds shutdown before the tokenizer worker is ended
 

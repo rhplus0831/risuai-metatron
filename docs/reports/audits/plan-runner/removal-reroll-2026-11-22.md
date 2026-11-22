@@ -140,3 +140,129 @@ initiating tab is not guaranteed to hold the removal (A10). `STORE_TABLES_SQL` r
   (`server/src/main.ts:104`, `server/src/jobs/generationJobs.ts:1912`), so it exercises the graceful path. Add an abrupt
   kill after the stash commits and before the first reply completes, and let a surviving job settle before the
   close-tab check reads the chat.
+
+## Second audit, of the revision
+
+- Plan: the revision of `docs/plan/removal-reroll.md` committed with this section, written on `bcf9d8e8e` from A1 to
+  A16, a design review (GPT-6.2-Astra, `xhigh`, read-only, two turns: the stash shape, then settling the capture copy
+  in `backupTo` instead of staging the stash through restore), and the owner's answers Q5 to Q7
+- Mode: `full`, by a fresh GPT-6.2-Astra (`xhigh`, read-only) that had not seen the design review; about 13 minutes and
+  8.0 M tokens; `read_only_violation` was `false`
+
+| Severity   | Count |
+| ---------- | ----- |
+| P1         | 8     |
+| P2         | 7     |
+| P3         | 4     |
+| unverified | 0     |
+
+Of the first audit, A1, A5, A6, A11, A14, A15, and A16 are resolved; A2, A3, A4, A7, A8, A9, A10, A12, and A13 are
+partly resolved, and what is left of each is one of the findings below. All 19 are open; the plan goes back for a
+second revision. B5, B8, B12, and B15 need the owner's answer.
+
+### P1
+
+- **B1. D3, "`rerollTurnStart` over them starts at the first."** For `[user, A, B]` a descriptor anchored at `A`
+  naming `[B]` passes; the turn is `[A, B]` (`shared/rerollCandidates.ts:318`). The admitted baseline is the public
+  read's JSON, without the fence columns (`server/src/jobs/generationJobs.ts:688`, `:2437`,
+  `server/src/data/chatStore.ts:85`, `:1428`), and the runner has no token-fenced write before `loadJobScope`
+  (`server/src/prompt/runner.ts:453`, `:483`). Correction: compute the boundary over the whole stored transcript in the
+  transaction and compare anchor and ids, name the fields of the same-id comparison, keep a private admission image,
+  expose a token-fenced begin usable before scope load, and stash the raw rows.
+- **B2. D6, "right after its already-ended check ... runner writes after that point are fenced."** `job.ended` is set
+  later, publication calls listeners synchronously, an abort reason overrides the terminal, and a throwing settlement
+  skips slot cleanup and `resolveFinished`, which the abort timer and maintenance rely on
+  (`server/src/jobs/generationJobs.ts:1747`, `:1758`, `:1778`, `:1860`, `:1920`, `:1941`, `:3013`,
+  `server/src/data/changeFeed.ts:51`). Correction: claim finalization and close runner writes first, catch the
+  settlement failure, let the persistence error win over the abort, always clean up and resolve `finished`, and treat a
+  failure after commit (`CommittedWriteError`) as a delivery failure.
+- **B3. D6, "block writes and new jobs on that chat until a later settlement succeeds."** Nothing enforces that once
+  the slot is gone: admission checks the in-memory slot and the rebuild lock (`server/src/jobs/generationJobs.ts:2405`,
+  `:1845`), D8's reservation admits metadata and other edits, a retry at start cannot fix a missing anchor or a taken
+  id, and the change log is created after the chat schema opens (`server/src/data/resourceStore.ts:1061`, `:1165`,
+  `:3344`). Correction: define how an ownerless stash blocks admission and writes, how it is retried, and what a failed
+  retry at start leaves; install the guard before serving; slice 1 exposes it for slice 3's admission.
+- **B4. D11, the terminal "carries the tail's disposition (`kept` or `restored`) and the settled revision."** A
+  pre-begin refusal has no stash, a failed settlement leaves one, and a crash between the chat commit and the receipt's
+  end leaves a generic `503 shutdown` with neither field (`server/src/app.ts:359`, `:434`,
+  `server/src/data/generationReceipts.ts:8`, `:208`). Correction: name the three outcomes, commit a job id, outcome, and
+  revision record with the settlement and reconcile it when receipts open; an unavailable outcome leaves history alone;
+  slice 3 gains `server/src/data/generationReceipts.ts` and `server/src/app.ts`.
+- **B5. D5 and D6, keeping the completed replies of a group.** A completed speaker's checkpoint is stripped when the
+  next speaker's placeholder is appended (`server/src/prompt/runner.ts:672`, `:2025`, `server/src/data/chatStore.ts:2613`,
+  `:2637`), so removing the failed placeholder leaves the kept reply without the `after` snapshot Undo needs
+  (`src/ts/process/rerollHistory.ts:115`), and a job-wide first-write undo map cannot separate the kept speaker's
+  variable writes from the failed one's. Trigger `replace` and Lua insertion add companion rows by other paths
+  (`server/src/jobs/chatResult.ts:152`, `server/src/lua/bindings.ts:1544`). Correction: keep the completed checkpoint
+  across later speakers, tag companion rows by round, and decide whether a failed round's variable writes survive a
+  partial keep (a per-round boundary if they roll back). Needs the owner: Q5 does not say what happens to the failed
+  round's variables.
+- **B6. D7, "reusing the in-place reroll's `recordVariable` / `recordMap`."** `recordMap` visits only keys whose value
+  differs, so a foreign whole-map save of the job's own value does not drop the entry and rollback overwrites it;
+  unsetting the whole map can bring back a key the job removed; tracking ends with its one message lock, and the job id
+  and the write token are different ids (`server/src/data/chatStore.ts:1492`, `:1507`, `:1525`, `:2531`, `:2554`,
+  `server/src/jobs/generationJobs.ts:2439`). Correction: track by stash ownership across the job with a trusted token to
+  job mapping, and specify whole-map set and unset, same-value merges, candidate selection, and a later owner write.
+- **B7. D5, "error-only output," and D6, "reports that failure."** With `inlayErrorResponse`, a provider failure appends
+  a `risuerror` row or error text to the last unlocked character row (a kept speaker or the anchor) and the job ends
+  `done` with `stopped: true` (`server/src/prompt/runner.ts:1233`, `:1260`, `:2005`, `:388`,
+  `server/src/tests/promptRunner.test.ts:1683`); settlement can delete the only report or keep or erase the appended
+  text by accident. Correction: carry the provider failure through settlement and report it once, and say whether an
+  existing row may take an error suffix.
+- **B8. D9, "Every running job ends at a restart."** An earlier build opens the same schema version with the extra
+  table, takes no reservation, captures the shortened chat unsettled, and its restore ignores the table
+  (`server/src/data/resourceStore.ts:115`, `:3931`, `:3224`, `:686`), so a crash, a downgrade, and a capture and
+  restore on the old build lose the only copy. Correction: an on-disk fence an already shipped binary enforces, or a
+  guarantee bounded to stash-aware builds with settlement required before a downgrade. Needs the owner.
+
+### P2
+
+- **B9. D3, "the newest non-comment removed row that has `scriptstateCheckpoint.after`."** The screen takes the newest
+  non-comment row first, then tests `after !== undefined` (`null` is a valid snapshot;
+  `src/lib/ChatScreens/DefaultChatScreen.svelte:1044`, `shared/rerollCandidates.ts:24`); the revision searches
+  backward. Correction: copy the screen's predicate and test a newer row without `after` and `after: null`.
+- **B10. D2, "with no stash and no history change."** Today an empty tail calls `begin` with `[]` and the reply is
+  recorded after it, so Back returns to the user message (`src/lib/ChatScreens/DefaultChatScreen.svelte:1036`, `:1235`,
+  `src/ts/process/rerollHistory.ts:65`, `:105`). Correction: keep that history step, and apply the capability gate
+  only to the non-empty path.
+- **B11. D11, the clean pinned copy and `readRecoveringChat`.** Preflight can end on the saved-base revision after two
+  failed refreshes, a pin admits edits, `readRecoveringChat` can load a newer chat, and `holdsRevision` accepts a
+  greater chat sequence (`src/ts/process/serverCommands.ts:1206`, `:1258`, `:556`, `:595`,
+  `src/ts/storage/chatStore.svelte.ts:3387`, `shared/resources.ts:189`); recording everything after the anchor can make
+  Undo remove another tab's later append. Correction: bind the press to owner, incarnation, anchor, and tail, freeze copy,
+  descriptor, and revision together after preflight, and record history only from an exact settled revision or
+  settlement-issued ordered ids that match the current tail.
+- **B12. Q6, "message and variable edits go through."** D8 also refuses edits to provisional rows; an unnamed
+  `generating` conflict re-queues the whole group; an edit to a stashed original id gets `missing` and can become a
+  recovery draft; and an owner-tab plugin callback flushes through the ordinary batch with no job token, so an append
+  there is refused and can fail the reroll (`server/src/data/chatStore.ts:2652`,
+  `src/ts/storage/chatStore.svelte.ts:6165`, `:6725`, `server/src/routes/resources.ts:398`,
+  `src/ts/storage/resourceSync.svelte.ts:5906`, `src/ts/network/jobChannel.ts:1316`, `server/src/prompt/runner.ts:2218`).
+  Correction: specify provisional ids, stashed ids, mixed groups, and callbacks. Needs the owner for callbacks.
+- **B13. D12, "distinguished from an uncertain earlier dispatch."** `exchange` treats any throw from `beforeDispatch` as
+  uncertain and retries (`src/ts/storage/serverAuth.ts:205`, `src/ts/network/generationJobs.ts:519`, `:531`, `:637`).
+  Correction: a veto outcome of its own, checked before dispatch is marked, with no retry.
+- **B14. D11, "a lore-budget stop repeats once."** Today it repeats only after the user picks `warnOffAndSend`, which
+  saves `loreBudgetWarnOff: true` (`src/lib/ChatScreens/DefaultChatScreen.svelte:904`, `:1064`). Correction: keep the
+  dialog and the saved preference, check the restored tail after the choice and at the repeat's preflight, and mint the
+  fresh id only for the chosen repeat.
+- **B15. Q5, "This is today's rule."** Today restoring tests whether the chat ends at the anchor again, so a streamed
+  prefix, an error row, or a trigger's row stops it without any completed speaker; a start trigger can write a row and
+  stop the send (`src/ts/process/rerollHistory.ts:232`, `server/src/prompt/runner.ts:1759`,
+  `server/src/jobs/chatResult.ts:196`, `server/src/prompt/assemble.ts:1795`), and D5 and D6 would discard that row.
+  Correction: describe both tests and say whether trigger-only output counts. Needs the owner.
+
+### P3
+
+- **B16. Slice 3, "`rerollTailStale` in the caller allowlist."** `shared/jobs.ts` holds `GENERATION_ERROR_CODES`;
+  `callerErrorCodes` and the forwarding of terminal fields are the tab's (`src/ts/process/serverCommands.ts:1000`,
+  `:1466`, `src/ts/process/serverGeneration.ts:206`, `src/ts/process/index.svelte.ts:157`). Correction: the wire code in
+  slice 3, the caller handling in slice 4.
+- **B17. D3, slice 3, and the manual checks.** "Admission's receipt is the only write" omits acceptance and the
+  terminal's `receipts.end`; "a tab of an earlier build sees no change" ignores Q6; the graceful stop restores only
+  before the first speaker completes. Correction: narrow the three sentences.
+- **B18. Slices 3 and 5, files.** `server/src/tests/memoryTasks.test.ts` compares the whole `hello` (`:2280`, `:2464`);
+  slice 5 also needs `docs/backlog/found-issues.md` and `docs/structure/live-updates.md`, and names its edits to
+  `docs/backlog/known-issues.md` and the plan file.
+- **B19. Order.** Slice 4 can finish its whole-suite run before slice 2 lands. Correction: the final suite and browser
+  specs run on the combined tree after both 2 and 4.
