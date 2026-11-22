@@ -68,8 +68,15 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Transcript rows and the mount hold
 
-- `src/lib/ChatScreens/Chats.svelte`: hand-mounted keyed rows, the mount hold for rows added above the view, reveal,
-  containment, trimming, and `whenRendered`. Its header owns the structural-effect and hold rules.
+- `src/lib/ChatScreens/Chats.svelte`: hand-mounted keyed rows, the mount hold for rows added above the view, the reader
+  lock, reveal, containment, trimming, and `whenRendered`. Its header owns the structural-effect and hold rules.
+- The reader lock (`lockRowsAboveView`): at a scroll's first wheel, touch move or scroll key, rows whose top is above
+  the view (the straddling row included) keep their last `ResizeObserver` height. `chat-row-locked` (`src/styles.css`)
+  aligns their content to the row's bottom and clips it at the top, so late images, re-renders and far-row estimates
+  grow upward, as at rest in this reversed scroller. The rows are released with the held rows after the scroll.
+- A locked size is never recorded (`rowHeights`, the containment estimate). An anchor, a capture, an editor on the row,
+  or a remount correction unlocks the row first. Measured in headed Chrome with native wheel input (2026-11-22): a late
+  600 px image above the view moved the reader 600 px before, 0 px after.
 
 ### Transcript scrolling
 
@@ -389,12 +396,16 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Limitations
 
-- Growth inside rows shown above the view during a scroll animation moves the reader by the grown height (reversed
-  scroller): images swapped in late by `checkImg` (`.root-loaded-image` reserves no height), lazy images, a row
-  re-rendering (CBS, translation, a reload pointer), and a far row whose `contain-intrinsic-block-size` estimate differs
-  from its rendered height. A fix would restore a reader anchor (the visible row nearest the view's top and its offset)
-  at `scrollend`, not mid-animation, once the hold releases. Decision: owner deferred anchor restoration in commit
-  `0aad24ce5`.
+- The reader lock covers rows above the view at a scroll's first input only: a row that passes above the view later in
+  the same scroll (toward newer messages) can still grow mid-animation and move the reader. A scrollbar drag takes no
+  lock. Growth inside a row already in view moves what is below its growth point, as at rest: an image without a
+  reserved size (`{{raw::...}}` with `height:auto`, `checkImg`'s `.root-loaded-image`) still pushes the text under it.
+- A locked row can stay locked until the next touch when two fingers start on one node that a re-render detaches. A
+  visible locked row whose remount settles in the quiet window after the last scroll event grows from its bottom at
+  release instead of keeping its top. Decision: owner accepted both as edge cases (2026-11-22).
+- Browsers without `align-content` on block boxes clip a locked row at the bottom and shift its content at release.
+  Decision: the reader lock replaced the deferred `scrollend` anchor restoration (`0aad24ce5`); a height-sum correction
+  overcorrected incremental input in Chrome (2026-11-22).
 - A reader's place can still move in these cases: a chat write that returns every message without its id is taken for an
   opening (the reader goes to the newest message's start); a row that changes size in the same window as another row's
   remount gets a partial correction; a scroll written by other code in the task of a remount skips its correction.
