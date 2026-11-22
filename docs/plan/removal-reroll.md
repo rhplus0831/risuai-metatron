@@ -4,7 +4,8 @@ Status: drafted 2026-11-22 at `0337a9b5a` from the owner's answer to the [known 
 entry "A removal reroll (`rerollByRemoval` ...) can lose the replies it removes when the tab closes before the server
 admits the replacement job" (owner, 2026-11-22: "a separate plan", against a client-side durable copy or a
 Limitation). The owner answered Q1 to Q4 with the proposals on 2026-11-22; D1 to D9 are written to those answers.
-Not audited: run the plan-runner audit ([procedure](../reports/audits/plan-runner/README.md)) before any slice.
+Audited 2026-11-22 at `00ffa3dff` ([report](../reports/audits/plan-runner/removal-reroll-2026-11-22.md)): six P1
+findings are open, so the plan needs a revision before any slice runs.
 
 Sources: `src/lib/ChatScreens/DefaultChatScreen.svelte` (`reroll`, `rerollByRemoval`),
 `src/ts/process/rerollHistory.ts`, `src/ts/process/serverGeneration.ts`, `src/ts/network/eventFeed.ts`
