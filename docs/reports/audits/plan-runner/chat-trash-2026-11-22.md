@@ -19,6 +19,9 @@ Structured Memory invalidation, and writes that still reach a trashed member. No
 goes back for revision. A7, A9, and A10 are `fixed in plan`; the fix for A8 was disputed and is dropped, and the
 finding belongs in the revision.
 
+State after the confirmation turn (the last section): no finding of the three audits is open. The sections below are
+snapshots of the plan at the commit each names.
+
 Astra ran no test and no type check; it read the source at the commit above. The audit took two turns, about 12
 minutes and 6.2 M tokens. `read_only_violation` was `false` after both turns.
 
@@ -425,3 +428,82 @@ changes a plan claim, because the publication-wide budget can drop a whole summa
   `sourceReplaced`."** A physical delete cascades the rebuild row first, so nothing is marked; `sourceReplaced` is what
   a whole-chat replace does to a surviving rebuild (`server/src/data/chatStore.ts:257`,
   `server/src/data/resourceStore.ts:1165`, `server/src/data/memoryStore.ts:917`). Correction: restate both.
+
+## Confirmation turn, of the third revision
+
+- Plan: `docs/plan/chat-trash.md`
+- Commit audited: `854da1a15` with the third revision in the working tree (the revision is in this report's commit)
+- Mode: confirmation of the corrections to C1 to C10, over the changed sentences only; not a `full` audit
+- Model: GPT-6.2-Astra (`xhigh`), read-only, a fresh session; report written by the session that drafted the revision
+  (Claude Fable 5.2)
+
+| Verdict   | Count | Findings                       |
+| --------- | ----- | ------------------------------ |
+| confirmed | 7     | C2, C3, C4, C6, C7, C9, C10    |
+| disputed  | 3     | C1, C5, and C8, each in a part |
+| new       | 1     | N1                             |
+
+The owner closed the audits here (2026-11-22): after three full audits whose findings each time were about the
+sentences the revision before had written, the fourth pass was limited to the changed sentences, and its disputed
+items were decided by when each occurs, how often, and what a fix costs. No P1 is open. The four items below were
+settled after the turn and their final wording was not sent back to Astra. The turn took about 8 minutes and 1.7 M
+tokens; Astra ran no test, and `read_only_violation` was `false`.
+
+### Third-audit findings
+
+| ID  | Verdict            | Disposition                                                                             |
+| --- | ------------------ | --------------------------------------------------------------------------------------- |
+| C1  | disputed in a part | D15b **fixed in plan** (confirmed); the plugin setter is a Limitation (owner).          |
+| C2  | confirmed          | **Fixed in plan**: the Limitation names the unsaved edits.                              |
+| C3  | confirmed          | **Fixed in plan**: targets and tokens are captured at the press (D12, D17).             |
+| C4  | confirmed          | **Fixed in plan**: receipts for a surviving chat; a gone chat settles by its read (D5). |
+| C5  | disputed in a part | The entry field **fixed in plan** (confirmed); the replay sentence corrected after.     |
+| C6  | confirmed          | **Fixed in plan**: the check at `translate`'s entry (D7, slice 2).                      |
+| C7  | confirmed          | **Fixed in plan**: one settlement per incarnation and the only-member branch (D12).     |
+| C8  | disputed in a part | The types and the inventory **fixed in plan** (confirmed); one fixture corrected after. |
+| C9  | confirmed          | **Fixed in plan**: the repair is for a nonempty collection (D10, D14).                  |
+| C10 | confirmed          | **Fixed in plan**: Current State restated.                                              |
+
+Evidence for the confirmed ones: C2 `src/ts/storage/chatStore.svelte.ts:3609`, `:6603`, `:4972`; C3
+`src/lib/SideBars/SideChatList.svelte:616`, `src/ts/storage/chatStore.svelte.ts:3388`; C4
+`server/src/data/chatStore.ts:2263`, `:3000`, `:2298`, `src/ts/storage/chatStore.svelte.ts:6554`; C6
+`server/src/translation/runner.ts:455`, `:490`; C7 `src/ts/storage/chatStore.svelte.ts:7174`, `:7199`; C9
+`server/src/data/chatStore.ts:3933`, `src/ts/storage/chatStore.svelte.ts:5112`; C10 `server/src/data/chatStore.ts:257`,
+`server/src/data/memoryStore.ts:917`, `server/src/app.ts:626`.
+
+### Disputed and new
+
+- **C1, the plugin part. D15 (draft), "An incoming chat that has a read baseline and is no longer a member ... is
+  dropped, not created again."** The database setter applies a character without a read baseline
+  (`src/ts/plugins/apiV3/v3.svelte.ts:2187`, `:2402`), the baseline cache keeps 16 chats (`:1930`), and the nonmember
+  branch creates the chat (`src/ts/storage/chatStore.svelte.ts:4910`). When: a plugin keeps a list from
+  `getDatabase`, the user deletes one of its chats forever (or the purge does), and the plugin writes the list back;
+  one tab is enough. How often: rare, and never while the chat is still in the trash; today the same write recreates a
+  chat after an ordinary delete. Consequence: the deleted chat comes back as a new active chat; nothing is lost. Fix:
+  keep the ids each plugin read and consult them in both setters, tens of lines in slice 4, no wire or stored-data
+  change. **Limitation** (owner, 2026-11-22): the draft sentence is removed, D15 says the chat is created as today, and
+  the Limitations section records it. D15b itself is confirmed: the surviving-parent case keeps the stored rows and
+  writes an order the server accepts (`server/src/data/chatStore.ts:3481`).
+- **C5, the replay. D3 (draft), "A notice that names a newer revision without the field (none this server builds)".**
+  A reconnect's cursor replay returns the id and revision from the change log
+  (`server/src/data/resourceStore.ts:2845`), and the tab rebuilds its advertised entry from those fields and skips the
+  full listing (`src/ts/network/eventFeed.ts:175`, `:392`). When: a tab is disconnected while another trashes or
+  restores a chat and reconnects with a usable cursor. How often: every such reconnect; no race. Consequence: none
+  stored; D3's readback costs one read per chat and then shows the right state. Fix: carry the mark in the replay, a
+  few lines in `eventFeed.ts` and a lookup in `resourceStore.ts`. **Fixed in plan** (owner, 2026-11-22): the
+  parenthesis now names the cursor replay as the case the readback serves, and slice 4 tests it; the replay is not
+  changed.
+- **C8, one fixture. Slice 1 (draft), "`src/ts/storage/tests/chatLazyLoading.test.ts` (it drives the server store's
+  delete)".** The test deletes a character's only chat on the server and expects the chat to be unavailable
+  (`src/ts/storage/tests/chatLazyLoading.test.ts:124`, `:540`, `:552`); the route refuses a last active chat and the
+  batch delete answers `useTrash`, so neither produces that state. When: only in slice 1's test work; no product path.
+  **Fixed in plan**: the fixture deletes and recreates the character on the server with an empty order after the tab
+  boots (`server/src/data/resourceStore.ts:1922`, `:1938`).
+- **N1. D15b (draft), "the tab takes them back as members from the character's chat collection."** The known set
+  includes a create this tab never sent, which the server's collection cannot return
+  (`src/ts/storage/chatStore.svelte.ts:5397`, `:5427`, `src/ts/storage/characterStore.svelte.ts:389`). When: a new
+  chat with content, then a same-id recreation that omits it before the save loop collects the create (500 ms by
+  default, `src/ts/storage/resourceSync.svelte.ts:269`). How often: hardly by hand; a scripted recreation can. Today
+  the same chat is dropped. Consequence: that chat's unsaved content is lost. Fix: keep the bodies of omitted,
+  never-sent creates, tens of lines in slice 4. **Limitation** (owner, 2026-11-22): D15b and the Limitations section
+  say so.
