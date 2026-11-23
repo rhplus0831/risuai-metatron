@@ -144,6 +144,8 @@ const pages: SettingsView[] = [
             "storage.ownersPanel",
             "storage.detailsPanel",
         ],
+        // The page's only governed item: a missing or re-kinded retention field must fail the visit.
+        field: ["storage.chatTrashDays"],
     },
     {
         name: "Device link",
@@ -529,6 +531,30 @@ test("settings rows and fields follow their neighbors' spacing", async ({ page, 
             });
         }
         for (const view of pages) await visit(view);
+
+        // The LLM translator's rendered target swaps the history field for three rows of its own.
+        await visit({
+            name: "Translation / LLM on rendered text",
+            menu: 21,
+            ready: "lang.translateBeforeHTML",
+            open: () =>
+                page.evaluate(async () => {
+                    const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                    settings.memoryTranslateMedia.llmTranslationTarget = "rendered";
+                }),
+            sections: ["translation.experimental"],
+            block: ["translation.header", "lang.llmPresets", "lang.exportCache", "lang.importCache", "lang.clearCache"],
+            field: ["lang.translatorLang", "lang.translatorType", "lang.llmTranslationTarget"],
+            row: [
+                "lang.legacyTranslation",
+                "lang.translateBeforeHTML",
+                "lang.autoTranslateCachedOnly",
+                "lang.combineTranslation",
+                "adv.noWaitTrans",
+                "acc.showTranslationLoading",
+                "adv.exp.googleTrans",
+            ],
+        });
 
         // Display reads the legacy flag at mount. Custom HTML and the Waifulike sliders are mutually exclusive.
         await page.evaluate(async () => {
