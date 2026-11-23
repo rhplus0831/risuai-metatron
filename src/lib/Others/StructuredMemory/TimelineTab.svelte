@@ -150,6 +150,9 @@
     let chaptersNumber = 0;
     let readingChapters = $state(false);
     let chapterAction = $state(false);
+    /** Numbers each chapter action; `settledAction` is the latest whose mutation has finished. */
+    let actionNumber = 0;
+    let settledAction = 0;
     let mounted = true;
     onDestroy(() => {
         mounted = false;
@@ -358,6 +361,8 @@
         const result = await readStructuredMemoryChapters(ref);
         if (number !== chaptersNumber || !sameChat(ref)) return;
         readingChapters = false;
+        // The newest read releases a finished action's lock, also when it supersedes the action's own reread.
+        if (chapterAction && settledAction === actionNumber) chapterAction = false;
         chapterAnswer = result.outcome === "ok" ? result.value : null;
         chapterFailure = result.outcome === "ok" ? null : text.chapters.readFailed(memoryReadFailureText(result));
     }
@@ -390,6 +395,7 @@
     async function runChapterAction(press: (ref: ChatRef, beforeSend: () => boolean) => Promise<void>) {
         if (chapterControlsOff) return;
         const ref = chatRef;
+        const mine = ++actionNumber;
         chapterAction = true;
         try {
             await press(ref, () => {
@@ -398,16 +404,18 @@
                 return true;
             });
         } finally {
+            settledAction = mine;
             if (mounted && sameChat(ref)) await readChapters();
-            chapterAction = false;
+            if (actionNumber === mine) chapterAction = false;
         }
     }
 
     function makeChapters(remake?: string) {
-        if (!owner || (remake === undefined && !memoryOn)) return;
+        // Both a batch and a remake go through record admission, which refuses a chat with memory off.
+        if (!owner || !memoryOn) return;
         const character = owner;
         return runChapterAction((ref, beforeSend) =>
-            pressMemoryChapters(character, ref, remake, () => (remake !== undefined || memoryOn) && beforeSend()),
+            pressMemoryChapters(character, ref, remake, () => memoryOn && beforeSend()),
         );
     }
 
@@ -432,11 +440,13 @@
         }
         if (result.outcome === "ok") {
             const event = result.value.data;
-            openEvent = memoryEventView(event);
+            const view = memoryEventView(event);
+            openEvent = view;
             openCorrected = event.userCorrected === true;
             openRetracted = event.status === "retracted";
             openFailure = null;
-            if (editor && (editor.title !== event.title || editor.summary !== event.summary || openRetracted)) {
+            // The editor's base is the view (a missing or non-string text reads as ""), so compare like with like.
+            if (editor && (editor.title !== view.title || editor.summary !== view.summary || openRetracted)) {
                 editor = null;
                 if (!noticed) {
                     alertError(memoryReadFailureText({ outcome: "refused", reason: "changed" }));
@@ -724,7 +734,9 @@
         }
         if (!target.opened && target.source !== "notice") {
             target.opened = true;
-            if (openId !== target.id || target.source === "focus") untrack(() => openRow(target.id));
+            // Open as a press does, with a fresh record read, also when Read already had the row open. A row
+            // that is already open keeps its editor: `readOpen` closes it only when the stored record changed.
+            untrack(() => (openId === target.id ? void readOpen(target.id) : openRow(target.id)));
         }
         const container = timeline;
         if (!container || failure !== null) return;
@@ -1215,7 +1227,7 @@
                                                 <button
                                                     type="button"
                                                     class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    disabled={chapterControlsOff}
+                                                    disabled={chapterControlsOff || !memoryOn}
                                                     onclick={() => makeChapters(chapter.id)}
                                                     data-memory-chapter-remake>{text.chapters.remake}</button
                                                 >

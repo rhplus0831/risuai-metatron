@@ -5518,3 +5518,54 @@ it("shows a page's provenance greeting as a Greeting source and jumps to the cha
     expect(pendingMessageJump()).toMatchObject({ ref, messageId: { greeting: true } });
     expect(get(hypaV3ModalOpen)).toBe(false);
 });
+
+it("keeps Make again disabled on a stale chapter while the chat's memory is off", async () => {
+    const current = { id: "boat", title: "New title" };
+    const revision = serveTimelineEvents([current]);
+    const old = chapter("old", { ...current, title: "Old title" });
+    serveResponseAt(chaptersRoute, () => Response.json({ revision, chapters: [old] }));
+    setChatMeta(ref, { memoryEnabled: false });
+    await open();
+    await chooseTab("timeline");
+    expect((query("[data-memory-chapters-make]") as HTMLButtonElement).disabled).toBe(true);
+    const remake = query("[data-memory-chapter-remake]") as HTMLButtonElement;
+    expect(remake.disabled).toBe(true);
+    remake.click();
+    await settle();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    // Remove needs no writer call and stays available.
+    expect((query(`${chapterBox("old")} [data-memory-chapter-remove]`) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("releases the chapter buttons when a newer refresh installs before a removal's own reread", async () => {
+    const current = { id: "boat", sourceIndex: 1 };
+    const earlier = { id: "dock", sourceIndex: 0 };
+    const revision = serveTimelineEvents([earlier, current]);
+    const stale = chapter("old", current);
+    const fresh = chapter("fresh", earlier);
+    const held = deferred<Response>();
+    let count = 0;
+    serveResponseAt(chaptersRoute, () => {
+        ++count;
+        if (count === 2) return held.promise;
+        return Response.json({ revision, chapters: count === 1 ? [fresh, stale] : [fresh] });
+    });
+    serveResponseAt(chaptersRoute + "/remove", () => Response.json({ removed: 1 }));
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    await open();
+    await chooseTab("timeline");
+    click(chapterBox("old") + " [data-memory-chapter-remove]");
+    await settle();
+    expect(count).toBe(2);
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(count).toBe(3);
+    expect(query(chapterBox("old"))).toBeNull();
+    const make = () => query("[data-memory-chapters-make]") as HTMLButtonElement;
+    expect(make().disabled).toBe(false);
+    // The superseded reread changes nothing when it lands.
+    held.resolve(Response.json({ revision, chapters: [fresh, stale] }));
+    await settle();
+    expect(make().disabled).toBe(false);
+    expect(query(chapterBox("old"))).toBeNull();
+});
