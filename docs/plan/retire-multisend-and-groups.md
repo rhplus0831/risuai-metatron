@@ -1,10 +1,10 @@
 # Retire `/multisend` and Group Chats Plan
 
-Status: drafted 2026-11-23 at `549dd2374` from the owner's answers of 2026-11-23 (Q1 to Q7); D1 to D14 are written to
+Status: drafted 2026-11-23 at `549dd2374` from the owner's answers of 2026-11-23 (Q1 to Q8); D1 to D14 are written to
 those answers. Audited the same day by Astra in two turns
 ([report](../reports/audits/plan-runner/retire-multisend-and-groups-2026-11-23.md)); the corrections after the second
-turn were not read again. The Limitations for findings B2, B3, B4, B6, and B7 were chosen by the drafting session and
-await the owner's confirmation.
+turn were not read again. The owner confirmed the Limitations the audit's findings A3, B2, B3, B4, B6, and B7 led to
+(Q8).
 
 Sources: `src/ts/process/command.ts` (`runMultisend`, `processMultiCommand`, `processPinnedCommands`,
 `processCommand`, the `/?` help), `src/ts/process/index.svelte.ts` (`SendChatArg.localSendReservation`),
@@ -294,6 +294,10 @@ CBS, Lua, MCP, plugins, and the upstream importer; the PO-file and attachment se
   the upgrade.
 - **Q7. Upstream.** Marked, so that later agents working with upstream are not confused (owner, 2026-11-23): the import
   report labels the groups (D11b), and the upstream intake procedure excludes retired features (D14).
+- **Q8. The audit's rare cases.** Kept as Limitations, not guarded in code (owner, 2026-11-23): the unguarded chat
+  routes (A3), the empty `Chat 1` of a chatless group (B2), a group id an older tab puts back in the order (B3), work
+  from before the upgrade (B7), and a same-id type change (B4, B6). Each is rare, loses no data, and would need checks
+  in several places.
 
 ## Rules For Every Slice
 

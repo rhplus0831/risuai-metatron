@@ -62,8 +62,8 @@ enforcement; `limitation` means the case is written in the plan's Limitations se
 | B10 | P2         | "Dormant" covered the archive checks and the trash management                                                                     | fixed in plan (D12)                                                                                                                 |
 | B11 | P3         | Unnamed shared files and a misplaced validator anchor                                                                             | fixed in plan (slice order, D4, slice 2)                                                                                            |
 
-The limitations chosen for B2, B3, B4, B6, and B7 are the drafting session's reading of the owner's goal (less code
-for a feature nobody uses) and are named in the plan's `Status:` line for the owner to confirm.
+The limitations chosen for A3, B2, B3, B4, B6, and B7 followed the owner's goal (less code for a feature nobody uses);
+the owner confirmed all of them the same day, recorded as the plan's Q8.
 
 Re-check list: no planned edit touches the four mechanisms. `patchMessage` closes the fence in the existing-row path
 (`server/src/data/chatStore.ts:2669`); `chatFeedChange` sizes the three forms against `MAX_FEED_PATCH_BYTES` (64 KiB)
