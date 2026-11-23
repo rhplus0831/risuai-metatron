@@ -984,6 +984,28 @@ describe("setter targets across dbWrite consent", () => {
             expect(chatIds("d")).toEqual([]);
         },
     );
+
+    it.each(["setDatabase", "setDatabaseLite"])(
+        "%s selects the chat its unchanged list names when an earlier chat is trashed during consent",
+        async (setter) => {
+            const c = { ...liveCharacters()[0], chats: ["first", "chosen", "last"].map((id) => chat(id, id)) };
+            installDatabase({ characters: [c] });
+            chatStore.selectChat("c", "chosen");
+            const api = await makeApi();
+            const copy = await api.getChar();
+            expect(copy.chats.map(({ id }: { id: string }) => id)).toEqual(["first", "chosen", "last"]);
+            expect(copy.chatPage).toBe(1);
+            const consent = holdConsent();
+            const saving = api[setter]({ characters: [copy] });
+            await consent.shown();
+            // Another tab trashes the first chat, which shifts the active positions by one.
+            chatStore.installChatTrashState({ chaId: "c", chatId: "first" }, REVISION.replace(/:1$/, ":2"), 80);
+            consent.grant();
+            await saving;
+            expect(chatStore.activeChatList("c").map((entry) => entry.id)).toEqual(["chosen", "last"]);
+            expect(chatStore.selectedChatId("c")).toBe("chosen");
+        },
+    );
 });
 
 describe("whole-character plugin writes of chat memory", () => {

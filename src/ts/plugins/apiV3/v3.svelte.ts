@@ -2129,9 +2129,17 @@ function applyPluginCharacter(
                 takeBaseline,
                 chatBindingKeys,
             );
-        } else if (typeof chatPage === "number") {
-            const target = chatMemberPage(current.chaId, chatPage, chatPage + 1)[0];
-            if (Number.isInteger(chatPage) && chatPage >= 0 && target) selectChat(current.chaId, target.id, index);
+        } else if (typeof chatPage === "number" && Number.isInteger(chatPage) && chatPage >= 0) {
+            // An unchanged list names the chat by its own entry: a chat trashed in another tab while the
+            // write waited (a consent prompt) shifts the active positions, not the list the plugin read.
+            // `selectChat` refuses an id that is no longer active. A page with no list is an active position.
+            const named = Array.isArray(chats) ? chats[chatPage] : undefined;
+            const id = Array.isArray(chats)
+                ? named && typeof named === "object" && typeof named.id === "string"
+                    ? named.id
+                    : undefined
+                : chatMemberPage(current.chaId, chatPage, chatPage + 1)[0]?.id;
+            if (id !== undefined) selectChat(current.chaId, id, index);
         }
     });
 }
