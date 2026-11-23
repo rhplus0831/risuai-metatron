@@ -1,4 +1,4 @@
-import { findCharacter, selectedCharacter } from "./storage/characterStore.svelte";
+import { selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
@@ -28,7 +28,7 @@ import {
     selectChat,
     type ChatRef,
 } from "./storage/chatStore.svelte";
-import { selectCharacter, setChatOpen } from "./storage/selection.svelte";
+import { canSelectCharacter, selectCharacter, setChatOpen } from "./storage/selection.svelte";
 import {
     readAsset,
     readAssets,
@@ -1550,10 +1550,10 @@ export function changeChatTo(IdOrIndex: string | number) {
 
 /**
  * Shared home/rail navigation by `{ chaId, chatId }` (per tab). Selects the chat before its character
- * so only the target chat is loaded; a missing character or chat entry leaves selection unchanged.
+ * so only the target chat is loaded. An archived owner or a missing target leaves selection unchanged.
  */
 export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
-    if (!findCharacter(ref.chaId) || !isActiveChat(ref)) {
+    if (!canSelectCharacter(ref.chaId) || !isActiveChat(ref)) {
         return;
     }
     reseter?.();

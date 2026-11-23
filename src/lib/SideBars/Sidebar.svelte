@@ -39,6 +39,7 @@
         User2Icon,
     } from "@lucide/svelte";
     import { addCharacter, changeChar } from "../../ts/characters";
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import CharConfig from "./CharConfig.svelte";
     import { language } from "../../lang";
     import isEqual from "lodash/isEqual";
@@ -179,7 +180,7 @@
                 const index = Object.hasOwn(idObject, id) ? idObject[id] : -1;
                 if (index !== -1) {
                     const cha = characterList()[index];
-                    if (cha.trashTime) continue;
+                    if (cha.trashTime || isArchivedGroup(cha)) continue;
                     newCharImages.push({
                         img: cha.image ?? "",
                         chaId: cha.chaId,
@@ -195,7 +196,7 @@
                     const index = Object.hasOwn(idObject, id) ? idObject[id] : -1;
                     if (index !== -1) {
                         const cha = characterList()[index];
-                        if (cha.trashTime) continue;
+                        if (cha.trashTime || isArchivedGroup(cha)) continue;
                         folderCharImages.push({
                             img: cha.image ?? "",
                             chaId: cha.chaId,

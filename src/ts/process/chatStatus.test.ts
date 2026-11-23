@@ -1179,6 +1179,24 @@ it("shows unavailable health below the open report's gap and the tab's required-
     expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "unavailable"]]));
 });
 
+it("requests structured memory health for a pinned character chat and skips a pinned group chat", async () => {
+    vi.useFakeTimers();
+    await enableMemory();
+    const { patchRawCharacter } = await import("../storage/records.svelte");
+    patchRawCharacter(other.chaId, [["type", "group"]]);
+    chat.setChatMeta(b, { pinned: true });
+    chat.setChatMeta(other, { pinned: true });
+    const requested: { characterId: string; chatId: string }[] = [];
+    stubs.healthFetch.mockImplementation(async (_url, init) => {
+        const { chats } = JSON.parse(String(init?.body));
+        requested.push(...chats);
+        return Response.json({ health: chats.map(() => healthy) });
+    });
+    watch();
+    await settleHealth();
+    expect(requested).toEqual([{ characterId: "c", chatId: "j" }]);
+});
+
 it("reads only pinned and open health on visibility triggers, resumes prefixes and keeps facts on failure", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(100_000);

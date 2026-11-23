@@ -365,6 +365,26 @@ describe("user-pinned chats", () => {
         expect(chat.selectedChat()?.id).toBe("k2");
     });
 
+    it("keeps the current selection when changing to a chatless group or opening a stale group pin", async () => {
+        const { chat, selection } = await boot({ pinned: true });
+        const { changeChar } = await import("../../characters");
+        const { openPinnedChat } =
+            await vi.importActual<typeof import("../../globalApi.svelte")>("../../globalApi.svelte");
+        const { applyRawCharacter, patchRawCharacter } = await import("../records.svelte");
+        applyRawCharacter("empty-group", { chaId: "empty-group", type: "group" });
+        patchRawCharacter("c", [["type", "group"]]);
+        selection.selectCharacter("d");
+        selection.setChatOpen(true);
+        await settleMicrotasks();
+
+        await changeChar("empty-group");
+        expect(chat.chatList("empty-group")).toEqual([]);
+        expect(selection.selection).toMatchObject({ characterId: "d", chatOpen: true });
+        openPinnedChat(kRef(2));
+        expect(chat.selectedChatId("c")).toBe("k0");
+        expect(selection.selection).toMatchObject({ characterId: "d", chatOpen: true });
+    });
+
     it("openPinnedChat ignores an unknown character or a chat outside the character's list", async () => {
         const { chat, selection, reads, server } = await boot();
         const { openPinnedChat } =

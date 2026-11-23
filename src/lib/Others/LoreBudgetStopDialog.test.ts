@@ -122,11 +122,11 @@ it("opens the global token limit as a settings item", async () => {
     expect(settingJump.currentJump()).toMatchObject({ kind: "item", id: "adv.lbToken", sectionId: "memory.lorebook" });
 });
 
-it.each(["character", "group"])("names the %s's own limit and opens its lorebook settings", async (type) => {
-    seed({ type, loreSettings: { tokenBudget: 0 } });
+it("names the character's own limit and opens its lorebook settings", async () => {
+    seed({ loreSettings: { tokenBudget: 0 } });
     const answer = askLoreBudgetStop(ref, loreBudgetStopFixture);
     const { target, button } = renderShown();
-    expect(target.querySelector("[data-lore-budget-stop-limit]")?.textContent).toContain(`the ${type}'s own`);
+    expect(target.querySelector("[data-lore-budget-stop-limit]")?.textContent).toContain("the character's own");
     button("changeLimit")!.click();
     expect(await answer).toBe("changeLimit");
     expect(get(settingsOpen)).toBe(false);

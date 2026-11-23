@@ -341,7 +341,7 @@ export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> 
 }
 
 /**
- * Why a start or cancel was refused: the server's answer (`notEnabled`, `queueFull`, `shuttingDown`,
+ * Why a start or cancel was refused: the server's answer (`notEnabled`, `groupArchived`, `queueFull`, `shuttingDown`,
  * `maintenance`; `chatGone` for a 404; `epoch` for another resource epoch), or, for a start, its save
  * of the tab's pending changes first: `discarded` (a conflict discarded some), `refused` (the server
  * refused this chat's), or `generating` (saving is blocked by a generation).
@@ -349,6 +349,7 @@ export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> 
 export type MemoryTaskRefusal =
     | "notEnabled"
     | "chatGone"
+    | "groupArchived"
     | "queueFull"
     | "shuttingDown"
     | "maintenance"
@@ -388,6 +389,9 @@ function refusalOf(response: Response, body: Record<string, unknown>): MemoryTas
     }
     if (response.status === 404) {
         return { outcome: "refused", reason: "chatGone" };
+    }
+    if (response.status === 409 && body.error === "groupArchived") {
+        return { outcome: "refused", reason: "groupArchived" };
     }
     switch (body.reason) {
         case "notEnabled":

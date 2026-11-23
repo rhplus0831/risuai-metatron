@@ -433,6 +433,24 @@ describe("the fence over frames and the save loop", () => {
 });
 
 describe("Summarize now and Cancel", () => {
+    it("releases only the manual start's fence after a groupArchived refusal", async () => {
+        const { tasks, fenced, awaiting, serverRevision } = await boot();
+        routes.answer = async () => json(409, { error: "groupArchived" });
+        const refusal = { outcome: "refused", reason: "groupArchived" };
+
+        const start = tasks.startMemoryTask(refK);
+        expect(fenced()).toBe(true);
+        expect(await start).toEqual(refusal);
+        expect(fenced()).toBe(false);
+
+        tasks.noteMemoryTaskFrame(entry(live("earlier-task", "running")));
+        expect(await tasks.startMemoryTask(refK)).toEqual(refusal);
+        expect(fenced()).toBe(true);
+        expect(awaiting()).toBe(false);
+        tasks.noteMemoryTaskFrame(entry(terminal("earlier-task", "done", serverRevision())));
+        expect(fenced()).toBe(false);
+    });
+
     it("fences the chat before the flush, sends the start with the epoch header, and releases on a definite refusal", async () => {
         const { tasks, client, fenced, awaiting } = await boot();
         routes.answer = async () => json(503, { error: "Memory tasks are not enabled", reason: "notEnabled" });

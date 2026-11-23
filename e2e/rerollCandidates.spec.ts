@@ -162,7 +162,7 @@ test.afterEach(async () => {
     }
 });
 
-async function seed(s: Session, options: { variables?: boolean; group?: boolean } = {}) {
+async function seed(s: Session, options: { variables?: boolean } = {}) {
     sessions.push(s);
     await s.open();
     await settle(s.page);
@@ -173,36 +173,21 @@ async function seed(s: Session, options: { variables?: boolean; group?: boolean 
     }
     const chaId = randomUUID();
     const chatId = randomUUID();
-    const members = [randomUUID(), randomUUID()];
     const marker = `Candidate fixture ${chatId}`;
-    const characters = options.group
-        ? [
-              blank(members[0], "Speaker Ann"),
-              blank(members[1], "Speaker Bo"),
-              {
-                  ...blank(chaId, "Candidate crew"),
-                  type: "group",
-                  characters: members,
-                  characterTalks: [1, 1],
-                  characterActive: [true, true],
-                  orderByOrder: true,
-                  image: "",
-              },
-          ]
-        : [
-              blank(chaId, "Candidate speaker", {
-                  triggerscript: options.variables
-                      ? [
-                            {
-                                comment: "Remember the reply text",
-                                type: "output",
-                                conditions: [],
-                                effect: [{ type: "v2GetLastCharMessage", outputVar: "replyValue", indent: 0 }],
-                            },
-                        ]
-                      : [],
-              }),
-          ];
+    const characters = [
+        blank(chaId, "Candidate speaker", {
+            triggerscript: options.variables
+                ? [
+                      {
+                          comment: "Remember the reply text",
+                          type: "output",
+                          conditions: [],
+                          effect: [{ type: "v2GetLastCharMessage", outputVar: "replyValue", indent: 0 }],
+                      },
+                  ]
+                : [],
+        }),
+    ];
     const changed = ["ui", "modelPresets", "modelProfiles", "providers"];
     await s.api("/api/resources/batch", {
         method: "POST",
@@ -258,7 +243,6 @@ async function seed(s: Session, options: { variables?: boolean; group?: boolean 
                                         role: "char",
                                         data: "Ready for the next turn.",
                                         chatId: `${chatId}-seed-reply`,
-                                        ...(options.group ? { saying: members[0] } : {}),
                                     },
                                 ],
                             },
@@ -283,7 +267,7 @@ async function seed(s: Session, options: { variables?: boolean; group?: boolean 
     await s.open();
     await openCharacterChat(s.page, chaId);
     await expect(row(s.page, `${chatId}-seed-reply`)).toBeVisible();
-    return { chaId, chatId, marker, members };
+    return { chaId, chatId, marker };
 }
 type Seed = Awaited<ReturnType<typeof seed>>;
 
@@ -488,40 +472,4 @@ test("switching back restores the output trigger variable rendered by a CBS comm
     expect(saved.message.at(-1)).toMatchObject({ data: "{{getvar::replyValue}}", isComment: true });
     await s.page.reload();
     await expect(row(s.page, commentId)).toHaveText("First variable value.");
-});
-
-test("rerolling a two-speaker group turn removes both replies and generates a replacement bundle", async ({
-    context,
-    baseURL,
-}) => {
-    const s = await session(context, baseURL!);
-    const ref = await seed(s, { group: true });
-    await send(s, ref, ["Ann original turn.", "Bo original turn."]);
-    const before = await stored(s, ref);
-    const oldReplies = before.message.slice(-2);
-    expect(oldReplies.map((m) => m.saying)).toEqual(ref.members);
-    const held = reply(ref.marker, "Ann replacement turn.", true);
-    queued.push(held, reply(ref.marker, "Bo replacement turn."));
-    await row(s.page, oldReplies[1].chatId!).locator("button.button-icon-reroll").click();
-    await held.received.promise;
-    // The removal path drops the whole turn before the first replacement finishes streaming.
-    for (const old of oldReplies) await expect(row(s.page, old.chatId!)).toHaveCount(0);
-    await expect(s.page.locator(".chattext").filter({ hasText: "Ann replacement turn." })).toBeVisible();
-    held.finish.release();
-    await expect(s.page.locator(".chattext").filter({ hasText: "Bo replacement turn." })).toBeVisible();
-    await expect(stop(s.page)).toHaveCount(0);
-    await settle(s.page);
-    const after = await stored(s, ref);
-    expect(after.message.slice(0, -2)).toEqual(before.message.slice(0, -2));
-    const replacements = after.message.slice(-2);
-    expect(replacements.map((m) => m.data)).toEqual(["Ann replacement turn.", "Bo replacement turn."]);
-    expect(replacements.map((m) => m.saying)).toEqual(ref.members);
-    for (const message of replacements) {
-        expect(oldReplies.map((m) => m.chatId)).not.toContain(message.chatId);
-        expect(message.candidates).toBeUndefined();
-        expect(message.selected).toBeUndefined();
-        await expect(counter(s.page, message.chatId!)).toHaveCount(0);
-    }
-    expect(s.jobs.map((job) => job.kind)).toEqual(["group", "group"]);
-    expect(responses).toHaveLength(4);
 });

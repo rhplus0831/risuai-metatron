@@ -44,9 +44,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Characters
 
-- `src/ts/characters.ts`: character and group CRUD (`createNewCharacter`, `createNewGroup`, `addCharacter`,
-  `changeChar`, `removeChar`, `restoreChar`), the chat file import/export (`importChat`, `exportChat`), and images
-  (`makeGroupImage`, `addCharEmotion`, `changeCharImage`).
+- `src/ts/characters.ts`: character CRUD (`createNewCharacter`, `addCharacter`, `changeChar`, `removeChar`,
+  `restoreChar`), the chat file import/export (`importChat`, `exportChat`), and images (`makeGroupImage`,
+  `addCharEmotion`, `changeCharImage`).
 - Recent ordering on home and mobile reads `characterLastChattedAt` (`src/ts/storage/chatStore.svelte.ts`,
   [State](#state)).
 

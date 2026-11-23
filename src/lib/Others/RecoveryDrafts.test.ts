@@ -296,6 +296,21 @@ describe("recovery drafts", () => {
         },
     );
 
+    it("refuses Apply for a group chat draft and keeps it available to export or discard", async () => {
+        const entry = await put(chatInput([{ op: "setText", id: "a", text: "Archived edit" }]));
+        const { patchRawCharacter } = await import("src/ts/storage/records.svelte");
+        patchRawCharacter("c", [["type", "group"]]);
+        expect(recovery.recoveryDraftDetails(entry).canApply).toBe(false);
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow();
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id }]);
+
+        await render();
+        const actions = [...row().querySelectorAll("button")].map((node) => node.textContent?.trim());
+        expect(actions).not.toContain(language.apply);
+        expect(actions).toContain(language.export);
+        expect(actions).toContain(language.recoveryDrafts.discard);
+    });
+
     it("allows Apply up to the exact trash deadline and retains the draft one millisecond beyond it", async () => {
         const now = Date.now();
         const age = 3 * 24 * 60 * 60 * 1000;

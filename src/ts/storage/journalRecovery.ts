@@ -2,6 +2,7 @@ import { changeLanguage, language } from "src/lang";
 import { v4 as uuidv4 } from "uuid";
 import { chatMemoryAlgorithm, type ChatMemoryInput, type ChatMemorySettings } from "../../../shared/chatMemory.ts";
 import { chatMemorySettings } from "./chatMemory.svelte";
+import { isArchivedGroup } from "./archivedGroup";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { isCharacterTrashExpired } from "../../../shared/characters.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
@@ -787,8 +788,8 @@ function draftOrder(entry: Extract<DraftEntry, { scope: "order" }>) {
 /**
  * Names drafts and reports Apply restrictions; this does not validate every chat operation.
  * Rows that draftRecord/draftChat/draftOrder cannot read, and ineligible records, cannot Apply.
- * Chat/order drafts need a live parent; a missing chat needs a snapshot unless a prior Apply
- * destination exists. Non-delete character-record intent can recreate an absent character.
+ * An archived group cannot receive a draft. Chat/order drafts need a live parent; a missing chat needs a snapshot
+ * unless a prior Apply destination exists. Non-delete character-record intent can recreate an absent character.
  * Generation blocks character-record writes and edits of an existing source chat, not order
  * drafts or the flush-only destination retry. Other epochs and saved-but-not-removed drafts
  * cannot Apply. Reporting these restrictions leaves drafts available for Export and Discard.
@@ -803,7 +804,10 @@ export function recoveryDraftDetails(entry: DraftEntry): {
         const [chaId, chatId] = entry.chatKey.split("\u0000");
         const ref = { chaId, chatId };
         const chat = chatEntry(ref);
-        const name = `${chat?.name || chatId} · ${findCharacter(chaId)?.name || chaId}`;
+        const character = findCharacter(chaId);
+        const name = `${chat?.name || chatId} · ${character?.name || chaId}`;
+        if (isArchivedGroup(character))
+            return { name, canApply: false, blocked: false, reason: language.recoveryDrafts.missingCharacter };
         if (!chat) return { name, canApply: false, blocked: false, reason: language.recoveryDrafts.noSnapshot };
         if (composerDraftLanded(entry))
             return { name, canApply: false, blocked: false, reason: language.recoveryDrafts.unavailable };
@@ -828,21 +832,24 @@ export function recoveryDraftDetails(entry: DraftEntry): {
                     language.unnamedCharacter;
             }
             const { kind, id } = draftRecord(entry);
-            if (kind === "characters" && isCharacterGenerating(id)) reason = language.chatGenerating;
+            if (kind === "characters") {
+                if (isArchivedGroup(findCharacter(id))) reason = language.recoveryDrafts.missingCharacter;
+                else if (isCharacterGenerating(id)) reason = language.chatGenerating;
+            }
         } else if (entry.scope === "chat") {
             const { ref, snapshot } = draftChat(entry);
             const character = findCharacter(ref.chaId);
             const destination = chatEntry({ chaId: ref.chaId, chatId: entry.id });
             const chat = destination ?? chatEntry(ref);
             name = `${chat?.name || snapshot?.name || language.unnamedCharacter} · ${character?.name || language.unnamedCharacter}`;
-            if (!character) reason = language.recoveryDrafts.missingCharacter;
+            if (!character || isArchivedGroup(character)) reason = language.recoveryDrafts.missingCharacter;
             else if (!destination && chat && isChatGenerating(ref)) reason = language.chatGenerating;
             else if (!chat && !snapshot) reason = language.recoveryDrafts.noSnapshot;
         } else {
             const character = findCharacter(entry.target);
             name = `${character?.name || language.unnamedCharacter} · ${language.recoveryDrafts.chatOrder}`;
             draftOrder(entry);
-            if (!character) reason = language.recoveryDrafts.missingCharacter;
+            if (!character || isArchivedGroup(character)) reason = language.recoveryDrafts.missingCharacter;
         }
     } catch {
         reason = language.recoveryDrafts.invalid;
@@ -1110,6 +1117,7 @@ async function loadChatForApply(ref: ChatRef, flush: () => Promise<unknown>) {
 }
 
 function assertCurrentChatForApply(ref: ChatRef, owner: string, epoch: string) {
+    if (isArchivedGroup(findCharacter(ref.chaId))) throw new Error(language.recoveryDrafts.missingCharacter);
     if (chatOwnerToken(ref.chaId) !== owner || !findChat(ref) || isChatKnownAbsent(ref)) {
         throw new Error(language.recoveryDrafts.unavailable);
     }

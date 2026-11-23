@@ -837,23 +837,6 @@ describe("the chat list modal's new chat button", () => {
         flushSync();
         expect(strip(first("c"))).toEqual({ memoryEnabled: false });
     });
-
-    it("a group inherits too, with the members' first messages", () => {
-        selectCharacter("g");
-        const modal = renderModal();
-        modal.newChat().click();
-        flushSync();
-        expect(ids("g")).toHaveLength(2);
-        expect(strip(first("g"))).toEqual({
-            memoryEnabled: false,
-            modelPresetId: "m1",
-            promptPresetId: "p1",
-            bindedPersona: "u1",
-        });
-        expect(findChat({ chaId: "g", chatId: ids("g")[0] })?.message).toEqual([
-            { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
-        ]);
-    });
 });
 
 // The filter field matches a chat's name and its folder's name through the Korean-aware matcher; a

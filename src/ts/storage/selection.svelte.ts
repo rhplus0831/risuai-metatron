@@ -1,5 +1,6 @@
 import { untrack } from "svelte";
 import { writable } from "svelte/store";
+import { isArchivedGroup } from "./archivedGroup";
 import { characterData, characterIndex, setCharacterMembershipHook } from "./records.svelte";
 
 /**
@@ -8,7 +9,7 @@ import { characterData, characterIndex, setCharacterMembershipHook } from "./rec
  * storage failures are ignored. `src/ts/storage/settingsViews.svelte.ts` resolves ids against the
  * current records, and `src/ts/router/router.svelte.ts` handles character/chat URLs. Membership
  * notifications from `src/ts/storage/records.svelte.ts` return to home when the selected character
- * disappears, without dispatching the explicit selection listeners.
+ * disappears or becomes an archived group, without dispatching the explicit selection listeners.
  */
 
 /**
@@ -32,7 +33,7 @@ export interface Selection {
     /**
      * The selected character's `chaId`, `null` for home. Per tab and never stored here: the URL holds it,
      * so a reload restores it (the router, `router/router.svelte.ts`). It always names a character in
-     * the list (a removed one makes it `null`).
+     * the list that the tab can open.
      */
     characterId: string | null;
     /**
@@ -158,10 +159,16 @@ export function onCharacterSelectionChanged(listener: () => void): () => void {
     };
 }
 
-/** Selects the character with `chaId` (`null`, or an id no character has: home). */
+/** Whether this id names a stored character the tab can open. */
+export function canSelectCharacter(chaId: string): boolean {
+    const index = characterIndex(chaId);
+    return index !== -1 && !isArchivedGroup(characterData()[index]);
+}
+
+/** Selects the character with `chaId`; a missing or archived character selects home. */
 export function selectCharacter(chaId: string | null) {
     untrack(() => {
-        const id = chaId !== null && characterIndex(chaId) !== -1 ? chaId : null;
+        const id = chaId !== null && canSelectCharacter(chaId) ? chaId : null;
         const changed = selection.characterId !== id;
         selection.characterId = id;
         if (changed) {
@@ -180,9 +187,9 @@ export function setChatOpen(open: boolean) {
     selection.chatOpen = open && untrack(() => selection.characterId) !== null;
 }
 
-/** Selects the character at `index` of the list (-1 or no character there: home). */
+/** Selects by index among non-group characters (-1 or no character there: home). */
 export function selectCharacterAt(index: number) {
-    const list = characterData();
+    const list = characterData().filter((character) => !isArchivedGroup(character));
     const chaId = Number.isInteger(index) && index >= 0 && index < list.length ? list[index]?.chaId : undefined;
     selectCharacter(typeof chaId === "string" ? chaId : null);
 }
@@ -197,9 +204,9 @@ class SelectedIndexState {
 }
 const selectedIndexState = new SelectedIndexState();
 
-// After every completed membership change: a selected character that left the list selects home.
+// Reconciliation goes home without notifying the explicit selection listeners.
 setCharacterMembershipHook(() => {
-    if (selection.characterId !== null && untrack(() => characterIndex(selection.characterId)) === -1) {
+    if (selection.characterId !== null && !canSelectCharacter(selection.characterId)) {
         selection.characterId = null;
         selection.chatOpen = false;
     }

@@ -1,3 +1,4 @@
+import { isArchivedGroup } from "src/ts/storage/archivedGroup";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 import type { ChatListEntry } from "src/ts/storage/chatStore.svelte";
 
@@ -20,8 +21,8 @@ export interface PinnedChatItem {
 }
 
 /**
- * Collects pins from list metadata only, expanding folders in place before unordered characters. A trashed
- * character's pins are left out.
+ * Collects pins from list metadata only, expanding folders in place before unordered characters.
+ * Skips trashed characters and archived groups.
  */
 export function collectPinnedChats(
     characters: readonly AnyClientCharacter[],
@@ -47,7 +48,7 @@ export function collectPinnedChats(
     const pinned: PinnedChatItem[] = [];
     for (const chaId of orderedIds) {
         const character = charactersById.get(chaId);
-        if (!character || !chaId || character.trashTime) {
+        if (!character || !chaId || character.trashTime || isArchivedGroup(character)) {
             continue;
         }
         for (const chat of chatListOf(chaId)) {

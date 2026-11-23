@@ -14,8 +14,6 @@
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import Help from "src/lib/Others/Help.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
-    import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
-    import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import OocToggleEditor from "../OocToggleEditor.svelte";
     import { oocToggleMap } from "src/ts/ooc/oocToggleSettings.svelte";
@@ -339,12 +337,6 @@
     {/if}
     <span class="text-textcolor mt-4">{language.maxThoughtTagDepth}</span>
     <NumberInput bind:value={editedPreset.promptSettings.maxThoughtTagDepth} />
-    <span class="text-textcolor mt-4">{language.groupOtherBotRole} <Help key="groupOtherBotRole" /></span>
-    <SelectInput bind:value={editedPreset.groupOtherBotRole}>
-        <OptionInput value="user">User</OptionInput>
-        <OptionInput value="system">System</OptionInput>
-        <OptionInput value="assistant">assistant</OptionInput>
-    </SelectInput>
     <span class="text-textcolor mt-4"
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
@@ -374,12 +366,6 @@
         bind:value={editedPreset.autoSuggestPrompt}
         popupEditorContext={editedPreset.id}
         placeholder={defaultAutoSuggestPrompt}
-    />
-    <span class="text-textcolor mt-4">{language.groupInnerFormat} <Help key="groupInnerFormat" /></span>
-    <TextAreaInput
-        placeholder={`<{{char}}\'s Message>\n{{slot}}\n</{{char}}\'s Message>`}
-        bind:value={editedPreset.groupTemplate}
-        popupEditorContext={editedPreset.id}
     />
     {#if editedPreset.jsonSchemaEnabled}
         <span class="text-textcolor mt-4">{language.jsonSchema} <Help key="jsonSchema" /></span>

@@ -36,7 +36,7 @@ import {
 import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { characterList, removeCharacters } from "../storage/characterStore.svelte";
 import * as chat from "../storage/chatStore.svelte";
-import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
+import { applyRawCharacter, initializeRecords, patchRawCharacter, takeRecordFields } from "../storage/records.svelte";
 import { selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
 import { SETTINGS_PAGES } from "./routes";
 import {
@@ -315,6 +315,32 @@ describe("boot", () => {
         expect(screen()).toBe("character=a chat=a2 playground=0 realm=false");
         expect(selection.chatOpen).toBe(true);
         expect(history.log).toEqual(["replace /chat/a/a2"]);
+    });
+
+    it("sends group routes home without creating a chat or saving a chat preference", () => {
+        // Install the chatless owner after boot, so any new chat would come from the route itself.
+        applyRawCharacter("empty-group", { chaId: "empty-group", type: "group" });
+        patchRawCharacter("a", [["type", "group"]]);
+        try {
+            localStorage.removeItem("risu-selected-chats");
+            const history = start(
+                new FakeHistory([
+                    { path: "/chat/a/a2", state: STATE },
+                    { path: "/chat/empty-group", state: STATE },
+                ]),
+            );
+            expect.soft(chat.chatList("empty-group")).toEqual([]);
+            expect(screen()).toBe(HOME);
+            expect(history.path).toBe("/");
+
+            history.go(-1);
+            flushSync();
+            expect(localStorage.getItem("risu-selected-chats")).toBeNull();
+            expect(screen()).toBe(HOME);
+            expect(history.path).toBe("/");
+        } finally {
+            restoreCharacters();
+        }
     });
 
     it("an unknown character, an unknown path, and an unknown settings slug go home", () => {
@@ -718,6 +744,24 @@ describe("a removed character", () => {
         expect(history.log).toEqual(["replace /chat/b/b1", "replace /"]);
         expect(history.paths()).toEqual(["/", "[/]"]);
         restoreCharacters();
+    });
+
+    it("replaces the current chat entry with home when its owner becomes a group", () => {
+        const history = start(
+            new FakeHistory([
+                { path: "/", state: STATE },
+                { path: "/chat/b/b1", state: STATE },
+            ]),
+        );
+        try {
+            patchRawCharacter("b", [["type", "group"]]);
+            flushSync();
+            expect(screen()).toBe(HOME);
+            expect(selection.chatOpen).toBe(false);
+            expect(history.paths()).toEqual(["/", "[/]"]);
+        } finally {
+            restoreCharacters();
+        }
     });
 
     it("replaces the entry with the next selection when the removal came with one", () => {

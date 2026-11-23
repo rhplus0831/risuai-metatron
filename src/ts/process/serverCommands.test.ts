@@ -120,6 +120,7 @@ vi.mock("src/lang", () => ({
             },
             lost: "job lost",
             memoryRebuilding: "memory rebuilding",
+            groupArchived: "This group chat is archived.",
             endedAway: "ended away",
             hooksSkipped: "hooks skipped: {hooks}",
             handoff: {
@@ -1689,6 +1690,13 @@ describe("runServerJob", () => {
         stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
         expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError).toHaveBeenCalledTimes(3);
+    });
+
+    it("ends a send refused with the localized group archive message", async () => {
+        const { language } = await import("src/lang");
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(409, "groupArchived"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
+        expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(language.serverJob.groupArchived);
     });
 
     it("reports refused for orphaned lore overrides and alerts once with localized text naming every entry", async () => {

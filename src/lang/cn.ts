@@ -160,9 +160,6 @@ export const languageChinese = {
             '此字段不为空时，将从回应中提取特定的 JSON 数据。例如：想从回应 `{"response": {"text": ["hello"]}}` 中提取 `response.text[0]`，可以填写 `response.text.0`。',
         translatorNote:
             "可在此处为每个角色添加独特的翻译提示，但仅适用于使用 Ax. 模型进行翻译。要激活此功能，请在语言设置中包含 `{{slot::tnote}}`。此功能不适用群组聊天。",
-        groupInnerFormat:
-            "用于定义群组聊天中非发言者角色的格式。此字段不为空时，将使用此格式替代默认格式。若 `Group Other Bot Role` 设置为 `assistant`，该格式也将应用于发言者。",
-        groupOtherBotRole: "用于定义群组聊天中非发言者的角色。",
         chatHTML:
             "每个聊天插入的 HTML。\n\n可以使用CBS和特殊标签。\n- `<risutextbox>`：用于呈现文字的文本框\n- `<risuicon>`：用于显示用户或助理的头像\n- `<risubuttons>`：用于聊天编辑、翻译等图标按钮\n- `<risugeninfo>`：生成消息按钮。",
         systemContentReplacement: "若模型不支持系统提示词，将使用此格式替换系统提示词。",
@@ -611,7 +608,6 @@ export const languageChinese = {
     autoTranslation: "自动翻译",
     playMessage: "播放消息音效",
     iconSize: "头像大小",
-    createGroup: "创建群组",
     groupIcon: "群组头像",
     single: "单个",
     multiple: "多个",
@@ -1007,8 +1003,6 @@ export const languageChinese = {
     trailingDoubleQuote: "下双引号",
     translatorNote: "翻译器备注",
     formatGroupInSingle: "单一群组格式",
-    groupInnerFormat: "非发言者内部格式",
-    groupOtherBotRole: "群组内非发言者的身份",
     chatHTML: "聊天介面 HTML",
     logShare: "显示分享记录按钮",
     preview: "预览",

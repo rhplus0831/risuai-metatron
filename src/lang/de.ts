@@ -202,10 +202,6 @@ export const languageGerman = {
             'Wenn es nicht leer ist, werden bestimmte JSON-Daten aus der Antwort extrahiert. Wenn Sie beispielsweise `response.text[0]` in der Antwort `{"response": {"text": ["hallo"]}}` extrahieren möchten, können Sie `response.text.0` eingeben.',
         translatorNote:
             "Hier können Sie für jeden Charakter eine eindeutige Übersetzungsanweisung hinzufügen. Diese Option gilt nur bei Verwendung des Ax.-Modells für die Übersetzung. Fügen Sie dazu `{{slot::tnote}}` in die Spracheinstellungen ein. Es funktioniert nicht in Gruppenchats.",
-        groupInnerFormat:
-            "Dies definiert ein Format, das im Gruppenchat für Charaktere verwendet wird, die nicht Sprecher sind. Wenn es nicht leer ist, wird dieses Format anstelle des Standardformats verwendet. Wenn `Rolle des anderen Gruppen-Bots` `assistant` ist, wird es auch auf den Sprecher angewendet.",
-        groupOtherBotRole:
-            "Dies definiert eine Rolle, die im Gruppenchat für Charaktere verwendet wird, die nicht Sprecher sind.",
         chatHTML:
             "Ein HTML, das als jeder Chat eingefügt wird.\n\nSie können CBS und spezielle Tags verwenden.\n- `<risutextbox>`: ein Textfeld, das zum Rendern von Text verwendet wird\n- `<risuicon>`: ein Symbol für Benutzer oder Assistent\n- `<risubuttons>`: Symbolschaltflächen für Chat-Bearbeitung, Übersetzungen usw.\n- `<risugeninfo>`: Schaltfläche für Generierungsinformationen.",
         systemContentReplacement:
@@ -666,7 +662,6 @@ export const languageGerman = {
     autoTranslation: "Automatische Übersetzung",
     playMessage: "Nachrichten-Ton abspielen",
     iconSize: "Icon-Größe",
-    createGroup: "Gruppenchat erstellen",
     groupIcon: "Gruppenicon",
     single: "Einzel",
     multiple: "Mehrere",
@@ -1079,8 +1074,6 @@ export const languageGerman = {
     trailingDoubleQuote: "Nachfolgendes doppeltes Anführungszeichen",
     translatorNote: "Anmerkung des Übersetzers",
     formatGroupInSingle: "Gruppenformat im Einzelmodus formatieren",
-    groupInnerFormat: "Inneres Format für Nicht-Sprecher",
-    groupOtherBotRole: "Nicht-Sprecher-Rolle in Gruppe",
     chatHTML: "Chat-HTML",
     logShare: "Teilen-Log-Button anzeigen",
     preview: "Vorschau",

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { changeChar, removeChar, restoreChar } from "../../ts/characters";
     import BarIcon from "../SideBars/BarIcon.svelte";
@@ -40,7 +41,7 @@
         const characters = characterList();
         for (let i = 0; i < characters.length; i++) {
             const c = characters[i];
-            if (c.trashTime && !trash) {
+            if (!trash && (c.trashTime || isArchivedGroup(c))) {
                 continue;
             }
             if (!c.trashTime && trash) {

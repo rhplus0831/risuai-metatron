@@ -1,4 +1,5 @@
 import { selectCharacter } from "./storage/selection.svelte";
+import { isArchivedGroup } from "./storage/archivedGroup";
 import { settings } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import { saveImage, type character, type Chat, defaultSdDataFunc } from "./storage/database.svelte";
@@ -54,6 +55,7 @@ import {
     isCharacterGenerating,
     pinChat,
     validateChatInput,
+    type ChatRef,
 } from "./storage/chatStore.svelte";
 import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { importedChatTranslation } from "./translator/chatTranslation.svelte";
@@ -67,7 +69,7 @@ import { savePickedFiles } from "./storage/assetQueue";
 import { PngChunk } from "./pngChunk";
 
 /**
- * Characters and groups in the tab: creation (`createNewCharacter`, `createNewGroup`, and the add dialog
+ * Characters in the tab: creation (`createNewCharacter` and the add dialog
  * `addCharacter`), selection (`changeChar`), deletion (`removeChar`, `restoreChar`), a character's chats as files
  * (`importChat`, `exportChat`, `exportAllChats`), its images (`selectCharImg`, `changeCharImage`, `makeGroupImage`),
  * and its emotion images (`addCharEmotion`, `rmCharEmotion`).
@@ -78,43 +80,10 @@ import { PngChunk } from "./pngChunk";
  * meanwhile.
  */
 
+export { isArchivedGroup };
+
 export function createNewCharacter() {
     return addCharacterRecord(createBlankChar());
-}
-
-/**
- * Adds an empty group chat and returns its id. The add dialog (`alertAddCharacter`) does not offer it; `addCharacter`
- * still handles its `createGroup` answer, and groups already in the list keep working.
- */
-export function createNewGroup() {
-    const chaId = addCharacterRecord({
-        type: "group",
-        name: "",
-        firstMessage: "",
-        chats: [
-            {
-                id: uuidv4(),
-                message: [],
-                note: "",
-                name: "Chat 1",
-                localLore: [],
-            },
-        ],
-        chatFolders: [],
-        chatPage: 0,
-        viewScreen: "none",
-        globalLore: [],
-        characters: [],
-        autoMode: false,
-        useCharacterLore: true,
-        emotionImages: [],
-        customscript: [],
-        chaId: uuidv4(),
-        firstMsgIndex: -1,
-        characterTalks: [],
-        characterActive: [],
-    });
-    return chaId;
 }
 
 export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss", thumb?: 256 | 512) {
@@ -278,10 +247,11 @@ export function rmCharEmotion(chaId: string, emotionId: number) {
     }
 }
 
-/** Exports one chat of the selected character (by id), whatever the selection is after the dialogs. */
-export async function exportChat(chatId: string) {
+/** Exports the named chat. A bare chat id uses the character selected before the dialogs. */
+export async function exportChat(target: string | ChatRef) {
     try {
-        const chaId = selectedCharacter()?.chaId;
+        const { chaId, chatId } =
+            typeof target === "string" ? { chaId: selectedCharacter()?.chaId, chatId: target } : target;
         const mode = await alertSelect([
             "Export as JSON",
             "Export as TXT",
@@ -958,11 +928,7 @@ export async function importCharacterAndSelect() {
     }
 }
 
-/**
- * The add dialog: Realm opens the hub; `createfromScratch`, `importCharacter`, and `createGroup` (which the dialog
- * does not offer) add a character, which is then selected. The record is added by `createNewCharacter`,
- * `createNewGroup`, or the card import, not here.
- */
+/** Opens Realm or selects the character created from scratch or imported from a card. */
 export async function addCharacter(
     arg: {
         reseter?: () => any;
@@ -977,28 +943,20 @@ export async function addCharacter(
     }
     reseter();
     // The character this call created or imported is selected (not whichever is last in the list).
-    let created: string | null;
     switch (r) {
         case "createfromScratch":
-            created = createNewCharacter();
-            break;
-        case "createGroup":
-            created = createNewGroup();
-            break;
+            changeChar(createNewCharacter());
+            return;
         case "importCharacter":
             await importCharacterAndSelect();
             return;
         default:
             return;
     }
-    if (created) {
-        changeChar(created);
-    }
 }
 
 /**
- * Selects `chaId`, first making sure it has a chat (`ensureChat`). It applies no defaults and writes no activity
- * field.
+ * Selects `chaId`, first making sure it has a chat (`ensureChat`). An archived group cannot be opened.
  */
 export async function changeChar(
     chaId: string,
@@ -1006,11 +964,12 @@ export async function changeChar(
         reseter?: () => any;
     } = {},
 ) {
-    const reseter = arg.reseter ?? (() => {});
-    reseter();
+    const character = characterRecord(chaId);
+    if (isArchivedGroup(character)) return;
+    arg.reseter?.();
     // A selection only makes sure the character has a chat and shows it. Last-chatted time comes
     // from the chats; defaults come from creation and the server.
-    if (characterRecord(chaId)) {
+    if (character) {
         ensureChat(chaId);
     }
     selectCharacter(chaId);

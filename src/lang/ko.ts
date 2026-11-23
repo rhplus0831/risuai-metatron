@@ -285,9 +285,6 @@ export const languageKorean = {
             '값을 입력하면 모델의 JSON 응답에서 해당 경로의 데이터만 추출합니다. 예를 들어 응답이 `{"response": {"text": ["hello"]}}`일 때 `response.text[0]`의 값만 꺼내려면 `response.text.0`을 입력하세요.',
         translatorNote:
             "캐릭터마다 고유한 번역 지침을 추가할 수 있습니다. 보조 모델(Ax. Model) 번역을 사용할 때만 작동하며, 번역 프롬프트에 `{{slot::tnote}}` 슬롯이 포함되어 있어야 반영됩니다. 그룹 채팅에서는 작동하지 않습니다.",
-        groupInnerFormat:
-            "그룹 채팅에서 현재 발언 차례가 아닌 다른 캐릭터의 메시지를 포맷할 때 사용하는 형식입니다. 비워 두지 않으면 기본 포맷 대신 이 포맷을 사용합니다. `그룹 내 비화자 역할`이 `assistant`로 설정되어 있으면 현재 발언 캐릭터에게도 함께 적용됩니다.",
-        groupOtherBotRole: "그룹 채팅에서 현재 발언 차례가 아닌 다른 캐릭터들의 메시지에 부여할 역할을 지정합니다.",
         showMemoryLimit:
             "마지막 요청에서 모델에게 실제로 전달된 가장 오래된 메시지 위치를 선으로 표시합니다. 이 선보다 위에 있는 대화는 컨텍스트에서 제외되었습니다. 선의 위치가 계산된 뒤 최종 토큰 한도 검사에서 메시지 몇 개가 추가로 제외될 수 있으므로 대략적인 경계선으로 참고해 주세요.",
         chatHTML:
@@ -1105,7 +1102,6 @@ export const languageKorean = {
     autoTranslation: "자동 번역",
     playMessage: "메시지 소리 출력",
     iconSize: "아이콘 크기",
-    createGroup: "그룹 채팅 만들기",
     groupIcon: "그룹 아이콘",
     single: "싱글",
     multiple: "멀티플",
@@ -1354,6 +1350,8 @@ export const languageKorean = {
             },
         },
         requestIdReused: "이 요청 ID는 이미 다른 작업에 사용되었습니다. 다시 전송하면 새 요청으로 시작됩니다.",
+        groupArchived:
+            "그룹 채팅이 보관되었습니다. 이 채팅에서는 더 이상 응답을 생성하거나 메모리 작업을 시작할 수 없습니다.",
         memoryRebuilding:
             "이 채팅에서 기억 작업(전체 재생성, 초기화, 빈 곳 채우기)이 진행 중입니다. 채팅을 다시 사용하려면 기억 패널에서 작업을 재개하거나 포기해 주세요.",
         lost: "서버 작업과의 연결이 끊어졌습니다. 반영된 변경 사항을 확인하려면 채팅을 다시 불러와 주세요.",
@@ -2122,7 +2120,7 @@ export const languageKorean = {
         intro: "RisuAI(또는 서버 저장소 도입 이전 버전)에서 생성된 백업 파일입니다. 데이터를 읽어들여 변환을 마쳤으며, 복원을 누르기 전까지 현재 데이터는 변경되지 않습니다.",
         counts: {
             characters: "캐릭터",
-            groups: "그룹 채팅",
+            groups: "그룹 채팅 (보관됨, 숨김)",
             chats: "채팅",
             messages: "메시지",
             promptPresets: "프롬프트 프리셋",
@@ -2451,8 +2449,6 @@ export const languageKorean = {
     trailingDoubleQuote: "닫는 큰따옴표",
     translatorNote: "번역가의 노트",
     formatGroupInSingle: "그룹 대화를 단일 블록으로 포맷",
-    groupInnerFormat: "그룹 내 비화자 포맷",
-    groupOtherBotRole: "그룹 내 비화자 역할",
     chatHTML: "채팅 HTML",
     logShare: "로그 공유 버튼 표시",
     preview: "미리보기",

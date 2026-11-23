@@ -15,6 +15,7 @@ import {
     type StructuredMemoryHealthEntry,
     type StructuredMemoryHealthFacts,
 } from "../../../shared/structuredMemory.ts";
+import { isArchivedGroup } from "src/ts/storage/archivedGroup";
 import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     chatEntry,
@@ -245,7 +246,7 @@ const healthChatKeys = $derived.by((): string[] => {
         keys.push(chatStatusKey(open));
     }
     for (const character of characterList()) {
-        if (!character || character.trashTime) {
+        if (!character || character.trashTime || isArchivedGroup(character)) {
             continue;
         }
         for (const chat of activeChatList(character.chaId)) {

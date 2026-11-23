@@ -26,6 +26,7 @@ import {
     selectCharacterAt,
     selectedIndex,
     selection,
+    setChatOpen,
 } from "../selection.svelte";
 import { evaluateInDerived } from "./derivedProbe.svelte";
 import { assembleChats, findChat } from "../chatStore.svelte";
@@ -551,6 +552,22 @@ describe("the selection", () => {
         insertCharacterRecord({ chaId: "a", name: "A again" });
         expect(selection.characterId).toBeNull();
         expect(selectedIndex()).toBe(-1);
+    });
+
+    it("skips groups by index and selects home for a group id or a selected record edited into a group", () => {
+        initializeRecords({
+            characters: [character("group", { type: "group" }), character("a", { type: "character" })],
+        });
+        selectCharacterAt(0);
+        expect(selection.characterId).toBe("a");
+        selectCharacter("group");
+        expect(selection.characterId).toBeNull();
+
+        selectCharacter("a");
+        setChatOpen(true);
+        byId("a").type = "group";
+        expect(selection).toMatchObject({ characterId: null, chatOpen: false });
+        expect(raw("a").type).toBe("group");
     });
 
     it("keeps the selection across a same-id replacement and a raw same-id copy", () => {

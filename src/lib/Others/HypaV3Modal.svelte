@@ -229,6 +229,9 @@
                     case "chatGone":
                         alertError(language.memoryTasks.chatGone);
                         return;
+                    case "groupArchived":
+                        alertError(language.serverJob.groupArchived);
+                        return;
                     case "queueFull":
                         alertError(language.memoryTasks.queueFull);
                         return;

@@ -1,7 +1,7 @@
 <script lang="ts">
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import { characterList, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
     import { characterLastChattedAt, activeChatCount } from "src/ts/storage/chatStore.svelte";
-    import { type character, type groupChat } from "src/ts/storage/database.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import { addCharacter, changeChar } from "src/ts/characters";
@@ -31,11 +31,8 @@
 
     function sortChar(char: AnyClientCharacter[]) {
         return char
-            .map((c, i) => ({ c, i }))
-            .filter(({ c }) => {
-                return !hideTrash || !c.trashTime;
-            })
-            .map(({ c }) => {
+            .filter((c) => !isArchivedGroup(c) && (!hideTrash || !c.trashTime))
+            .map((c) => {
                 const interaction = characterLastChattedAt(c.chaId, c.lastInteraction);
                 return {
                     name: c.name || "Unnamed",

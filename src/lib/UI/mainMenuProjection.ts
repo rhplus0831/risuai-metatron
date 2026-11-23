@@ -1,3 +1,4 @@
+import { isArchivedGroup } from "src/ts/storage/archivedGroup";
 import { characterLastChattedAt } from "src/ts/storage/chatStore.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 
@@ -52,7 +53,7 @@ export function makeCharacterAgoText(
 
 /**
  * The home screen's recent characters: those with a positive last-chatted time, newest first,
- * without the trash and the playground character.
+ * excluding the trash, archived groups and the playground character.
  */
 export function collectHomeRecentCharacters(
     characters: readonly AnyClientCharacter[],
@@ -64,7 +65,7 @@ export function collectHomeRecentCharacters(
     const limit = Math.max(0, options.limit ?? HOME_RECENT_CHARACTER_LIMIT);
     const lastChattedAt = options.lastChattedAt ?? characterLastChattedAt;
     return characters
-        .filter((c) => c?.chaId && c.chaId !== "§playground" && !c.trashTime)
+        .filter((c) => c?.chaId && c.chaId !== "§playground" && !c.trashTime && !isArchivedGroup(c))
         .map((c) => ({ c, name: c.name || "Unnamed", interaction: lastChattedAt(c.chaId, c.lastInteraction) }))
         .filter(({ interaction }) => interaction > 0)
         .sort((a, b) =>

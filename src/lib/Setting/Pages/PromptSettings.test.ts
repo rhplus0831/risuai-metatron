@@ -97,6 +97,24 @@ it("recounts both displayed totals after changing the main model with the prompt
     expect(activePreset.promptTemplate).toEqual(template);
 });
 
+it("hides the stored group role and group template in prompt settings", () => {
+    vi.useFakeTimers();
+    installFlatDatabase({
+        groupOtherBotRole: "assistant",
+        groupTemplate: "Archived speaker: {{slot}}",
+        characters: [],
+    });
+    const page = render({ subMenu: 1 });
+    expect(page.querySelector("[data-preset-ooc-toggles]")).not.toBeNull();
+    const rolePickers = [...page.querySelectorAll("select")].filter((field) => field.value === "assistant");
+    editedPreset.groupOtherBotRole = "system";
+    flushSync();
+    expect.soft(rolePickers.filter((field) => field.value === "system")).toHaveLength(0);
+    expect([...page.querySelectorAll("textarea")].map((field) => field.value)).not.toContain(
+        "Archived speaker: {{slot}}",
+    );
+});
+
 it("keeps the OOC toggle editor collapsed behind a count of the preset's forced keys", () => {
     mocks.authFetch.mockImplementation(async () => Response.json({ counts: [] }));
     installFlatDatabase({

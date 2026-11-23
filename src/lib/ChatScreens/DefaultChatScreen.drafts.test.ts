@@ -1285,13 +1285,6 @@ it("restores a multi-reply turn's variables before reroll creation and restores 
         },
     ];
     const ui = await mountComposer({
-        configureCharacter: (character) =>
-            Object.assign(character, {
-                type: "group",
-                characters: ["speaker-a", "speaker-b"],
-                characterTalks: [1, 1],
-                characterActive: [true, true],
-            }),
         configureChat: (chat) => {
             chat.message = [chat.message[0], ...replies];
             chat.scriptstate = { $counter: "2", $edited: "by hand" };
@@ -1452,24 +1445,6 @@ it.each(["user", "reply"])(
         await jobs.finish(1, { stop: false });
     },
 );
-
-it("never requests a lore budget stop in auto mode", async () => {
-    const { menu, menuItem, click } = await mountComposer({
-        configureCharacter: (character) => {
-            Object.assign(character, { type: "group", characters: [], characterTalks: [], characterActive: [] });
-        },
-    });
-    const jobs = await loreJobs();
-    menu();
-    click(menuItem(language.autoMode));
-    await until(() => createPosts().length === 1);
-    expect(jobs.post(0).context).not.toHaveProperty("stopOverLoreBudget");
-    selectChat("c", "b");
-    flushSync();
-    await jobs.finish(0, { stop: false });
-    expect(jobs.shown()).toBeNull();
-    expect(createPosts()).toHaveLength(1);
-});
 
 it.each(["setting off", "chat opted out"])("omits the lore budget request field (%s)", async (reason) => {
     const { target, click } = await mountComposer({
@@ -1757,13 +1732,8 @@ it("gives each in-place Reroll a fresh request with its reply and speaker, but g
     expect(sends.mock.calls[2][1]!.rerollMessageId).toBeUndefined();
 });
 
-it("sends empty Send and auto mode locally without request ids", async () => {
-    const ui = await mountComposer({
-        configureCharacter: (character) => {
-            // The Auto mode menu item is available only for group characters.
-            Object.assign(character, { type: "group", characters: [], characterTalks: [], characterActive: [] });
-        },
-    });
+it("sends an empty Send locally without request ids", async () => {
+    const ui = await mountComposer();
     const sends = vi
         .spyOn(await import("src/ts/process/index.svelte"), "sendChat")
         .mockImplementation(async (_index, arg) => {
@@ -1773,16 +1743,11 @@ it("sends empty Send and auto mode locally without request ids", async () => {
     ui.click(ui.target.querySelector(".button-icon-send"));
     await until(() => sends.mock.calls.length === 1);
     await drive(Promise.resolve());
-    ui.menu();
-    ui.click(ui.menuItem(language.autoMode));
-    await until(() => sends.mock.calls.length === 2);
-    await drive(Promise.resolve());
-    for (const [, arg] of sends.mock.calls) {
-        expect(arg!.continue).toBe(false);
-        expect(arg!.requestId).toBeUndefined();
-        expect(arg!.userMessageId).toBeUndefined();
-        expect(arg!.continueMessageId).toBeUndefined();
-    }
+    const [, arg] = sends.mock.calls[0];
+    expect(arg!.continue).toBe(false);
+    expect(arg!.requestId).toBeUndefined();
+    expect(arg!.userMessageId).toBeUndefined();
+    expect(arg!.continueMessageId).toBeUndefined();
 });
 
 it("journals Continue's text and message id without a request id, including after an uncertain outcome", async () => {
@@ -2421,13 +2386,10 @@ it("accepts a hook result after only the translation box changes", async () => {
     expect(io.createJob).not.toHaveBeenCalled();
 });
 
-it("refuses another Send, auto mode, reroll and Send Draft while a hook runs", async () => {
+it("refuses another Send, reroll and Send Draft while a hook runs", async () => {
     const ui = await mountHookComposer({
         configureChat: (chat) => {
             chat.draftHookId = "draft-hook";
-        },
-        configureCharacter: (character) => {
-            Object.assign(character, { type: "group", characters: [], characterTalks: [], characterActive: [] });
         },
     });
     ui.type("original main");
@@ -2440,8 +2402,6 @@ it("refuses another Send, auto mode, reroll and Send Draft while a hook runs", a
     ui.input().dispatchEvent(
         new KeyboardEvent("keydown", { key: "m", ctrlKey: true, bubbles: true, cancelable: true }),
     );
-    ui.menu();
-    ui.click(ui.menuItem(language.autoMode));
     await drive(Promise.resolve());
     expect(io.runInputHook).toHaveBeenCalledTimes(1);
     expect(io.createJob).not.toHaveBeenCalled();

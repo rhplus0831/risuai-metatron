@@ -16,7 +16,6 @@ const { server, alerts } = vi.hoisted(() => ({
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         select: vi.fn(),
-        selectChar: vi.fn(),
         confirm: vi.fn(),
         moduleSelect: vi.fn(),
         addCharacter: vi.fn(),
@@ -34,7 +33,6 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertSelect: alerts.select,
-        alertSelectChar: alerts.selectChar,
         alertConfirm: alerts.confirm,
         alertModuleSelect: alerts.moduleSelect,
         alertAddCharacter: alerts.addCharacter,
@@ -91,12 +89,11 @@ async function boot() {
         downloads.push({ name, data: typeof data === "string" ? data : Buffer.from(data).toString("utf-8") });
     }) as any);
     const characters = await import("./characters");
-    const group = await import("./process/group");
     const modules = await import("./process/modules");
     const cards = await import("./characterCards");
     const d = booted.characterStore.addCharacter({ chaId: "d", name: "D" });
     await booted.sync.flushResources();
-    return { ...booted, util, database, assetQueue, characters, group, modules, cards, downloads, d };
+    return { ...booted, util, database, assetQueue, characters, modules, cards, downloads, d };
 }
 
 beforeAll(async () => {
@@ -165,10 +162,6 @@ describe("selection by id", () => {
         const created = selection.characterId!;
         expect(characterStore.characterList().map((entry) => entry.chaId)).toEqual(["c", "d", created]);
 
-        alerts.addCharacter.mockResolvedValueOnce("createGroup");
-        await characters.addCharacter();
-        expect(characterStore.selectedCharacter()!.type).toBe("group");
-
         // A failed import: the selection stays where it was (it used to select the last in the list).
         characterStore.selectCharacter(null);
         vi.spyOn(cards, "importCharacter").mockResolvedValueOnce(null);
@@ -184,55 +177,6 @@ describe("selection by id", () => {
 });
 
 describe("handlers that await keep their target", () => {
-    it("skips a failed member image, saves the loaded members as the group image, and clears the wait", async () => {
-        const { characters, characterStore, character, database } = await boot();
-        const globalApi = await import("./globalApi.svelte");
-        const { alertStore } = await import("./alert");
-        characterStore.addCharacter({ chaId: "e", name: "E", image: "e.png" });
-        character("c").image = "c.png";
-        character("d").image = "d.png";
-        const groupId = characters.createNewGroup();
-        character(groupId).characters = ["c", "d", "e"];
-        characterStore.selectCharacter(groupId);
-        vi.spyOn(globalApi, "getFileSrc").mockImplementation(async (loc) => `data:image/png;base64,${loc}`);
-        const save = vi.spyOn(database, "saveImage").mockResolvedValue("group.png");
-        const drawImage = vi.fn();
-        vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage } as any);
-        vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,AQID");
-        const images: ControlledImage[] = [];
-        const loading = gate<void>();
-        class ControlledImage {
-            onload: (() => void) | null = null;
-            onerror: (() => void) | null = null;
-            src = "";
-            crossOrigin = "";
-            constructor() {
-                images.push(this);
-                if (images.length === 3) loading.resolve();
-            }
-        }
-        vi.stubGlobal("Image", ControlledImage);
-        let finished = false;
-        const work = characters.makeGroupImage().then(() => {
-            finished = true;
-        });
-        await loading.promise;
-        expect(alertStore.set).toHaveBeenCalledWith(expect.objectContaining({ type: "wait" }));
-        images[0].onload?.();
-        images[1].onerror?.();
-        images[2].onload?.();
-        await vi.advanceTimersByTimeAsync(0);
-
-        expect(finished).toBe(true);
-        await work;
-        expect(drawImage).toHaveBeenCalledTimes(2);
-        expect(drawImage.mock.calls.map(([image]) => image)).toEqual(expect.arrayContaining([images[0], images[2]]));
-        expect(save).toHaveBeenCalledWith(Buffer.from([1, 2, 3]));
-        expect(character(groupId).image).toBe("group.png");
-        expect(alerts.clear).toHaveBeenCalledOnce();
-        expect(alerts.error).not.toHaveBeenCalled();
-    });
-
     it("addCharEmotion writes the character it was opened for, though another is selected after the dialog", async () => {
         const { characters, characterStore, util, assetQueue, character, sync, record } = await boot();
         characterStore.selectCharacter("c");
@@ -417,121 +361,6 @@ describe("handlers that await keep their target", () => {
                 ),
             );
         }
-    });
-
-    it("addGroupChar adds the member to the group it was opened for, and stops when the group is deleted meanwhile", async () => {
-        const { characters, characterStore, group, character, sync, record } = await boot();
-        const g = characters.createNewGroup();
-        characterStore.selectCharacter(g);
-        const pick = gate<string>();
-        alerts.selectChar.mockReturnValueOnce(pick.promise);
-        alerts.confirm.mockResolvedValueOnce(false);
-        const running = group.addGroupChar();
-        await settleMicrotasks();
-        characterStore.selectCharacter("c");
-        pick.resolve("d");
-        await running;
-        expect(plain(character(g).characters)).toEqual(["d"]);
-        expect(character(g).characterActive).toHaveLength(1);
-        await sync.flushResources();
-        expect(record("characters", g).characters).toEqual(["d"]);
-
-        // Deleted during the member dialog, then during the first-message confirmation.
-        for (const during of ["pick", "confirm"] as const) {
-            const h = characters.createNewGroup();
-            characterStore.selectCharacter(h);
-            const pickH = gate<string>();
-            const confirmH = gate<boolean>();
-            alerts.selectChar.mockReturnValueOnce(pickH.promise);
-            alerts.confirm.mockReturnValueOnce(confirmH.promise);
-            const runningH = group.addGroupChar();
-            await settleMicrotasks();
-            if (during === "pick") {
-                characterStore.removeCharacter(h);
-            }
-            pickH.resolve("c");
-            await settleMicrotasks();
-            if (during === "confirm") {
-                characterStore.removeCharacter(h);
-            }
-            confirmH.resolve(true);
-            await expect(runningH).resolves.toBeUndefined();
-            expect(character(h)).toBeUndefined();
-        }
-        expect(plain(character(g).characters)).toEqual(["d"]);
-        expect(alerts.error).not.toHaveBeenCalled();
-    });
-
-    it.each(
-        (["pick", "confirm"] as const).flatMap((wait) =>
-            (["switch", "delete", "replace"] as const).map((change) => ({ wait, change })),
-        ),
-    )("addGroupChar uses only its captured greeting destination across $wait ($change)", async ({ wait, change }) => {
-        alerts.selectChar.mockReset();
-        alerts.confirm.mockReset();
-        const { characters, characterStore, chat, group, character, sync } = await boot();
-        characterStore.updateCharacter("d", { firstMessage: "Welcome from D" });
-        const groupId = characters.createNewGroup();
-        characterStore.selectCharacter(groupId);
-        const ref = { chaId: groupId, chatId: chat.selectedChatId(groupId)! };
-        const other = chat.createChat(groupId, { name: "Other", note: "", localLore: [], message: [] });
-        // A permanent deletion needs the chat's acknowledged revision.
-        if (change === "delete") await sync.flushResources();
-        const originalPin = chat.pinChat;
-        const releases: ReturnType<typeof vi.fn>[] = [];
-        vi.spyOn(chat, "pinChat").mockImplementation((target) => {
-            const release = vi.fn(originalPin(target));
-            releases.push(release);
-            return release;
-        });
-        const pick = gate<string>();
-        const confirm = gate<boolean>();
-        const confirming = gate<void>();
-        alerts.selectChar.mockReturnValueOnce(pick.promise);
-        alerts.confirm.mockImplementationOnce(() => {
-            confirming.resolve();
-            return confirm.promise;
-        });
-        const running = group.addGroupChar();
-        expect(alerts.selectChar).toHaveBeenCalledOnce();
-        if (wait === "confirm") {
-            pick.resolve("d");
-            await confirming.promise;
-        }
-        chat.selectChat(groupId, other.id!);
-        if (change === "delete") await deleteForever(ref);
-        if (change === "replace") {
-            chat.installCharacterChats(
-                groupId,
-                [
-                    { id: ref.chatId, name: "Replacement", note: "", localLore: [], message: [] },
-                    { id: other.id, name: "Other", note: "", localLore: [], message: [] },
-                ],
-                {},
-            );
-        }
-        pick.resolve("d");
-        confirm.resolve(true);
-        await expect(running).resolves.toBeUndefined();
-
-        expect(chat.findChat({ chaId: groupId, chatId: other.id! })!.message).toEqual([]);
-        if (change === "switch") {
-            expect(chat.findChat(ref)!.message).toEqual([
-                expect.objectContaining({ role: "char", data: "Welcome from D", saying: "d" }),
-            ]);
-            expect(plain(character(groupId).characters)).toEqual(["d"]);
-            expect(plain(character(groupId).characterTalks)).toEqual([(1 / 6) * 4]);
-            expect(plain(character(groupId).characterActive)).toEqual([true]);
-        } else {
-            if (change === "delete") expect(chat.findChat(ref)).toBeUndefined();
-            else expect(chat.findChat(ref)!.message).toEqual([]);
-            expect(plain(character(groupId).characters)).toEqual([]);
-            expect(plain(character(groupId).characterTalks)).toEqual([]);
-            expect(plain(character(groupId).characterActive)).toEqual([]);
-        }
-        expect(alerts.error).not.toHaveBeenCalled();
-        expect(releases).toHaveLength(wait === "pick" && change === "replace" ? 0 : 1);
-        for (const release of releases) expect(release).toHaveBeenCalledExactlyOnceWith();
     });
 
     it("applyModule applies to the character selected when its dialog opened, and to none once that one is deleted", async () => {

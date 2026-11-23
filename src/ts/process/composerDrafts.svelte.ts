@@ -1,4 +1,5 @@
 import { findChat, onChatRemoved, type ChatRef, type ChatRemoval } from "../storage/chatStore.svelte";
+import { canSelectCharacter } from "../storage/selection.svelte";
 import {
     pageDraftJournal,
     type ComposerRecovery,
@@ -509,6 +510,7 @@ export function createComposer({
             (value) => {
                 if (!current()) return false;
                 const [chaId, chatId] = key.split("\u0000");
+                if (!canSelectCharacter(chaId)) return false;
                 const ref = { chaId, chatId };
                 const chat = findChat(ref);
                 if (!chat || chat.message.some((m) => m.role === "user" && m.chatId === entry.value.userMessageId))

@@ -5,7 +5,7 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // refuses any structural write (a push, a splice, an index assignment of another object, a list
 // assignment) with a `TypeError`. A UI writer that still did so would throw only when its flow
 // runs, so the flows run here in the browser, against the isolated stack of `playwright.config.ts`:
-// create a character and a group, every character-settings page and accordion mounting through the
+// create two characters, every character-settings page and accordion mounting through the
 // records without an error (and, visited again, without a write), an edit through a bound input,
 // the view-screen select's `updateInlayScreen` handler, the chat screen's creator-quote removal,
 // trash, restore, a permanent delete, the playground character (created, then reopened), and a
@@ -97,34 +97,34 @@ test("the character flows run through the records without an error, save, and su
     });
     await settle(page);
 
-    // Create a character and a group the way the sidebar's add dialog does, and open the character.
+    // Create two characters the way the sidebar's add dialog does, and open the first.
     const created = await page.evaluate(async () => {
         const { characterList } = await import("/src/ts/storage/characterStore.svelte.ts");
-        const { createNewCharacter, createNewGroup, changeChar } = await import("/src/ts/characters.ts");
-        // The creations return the new character's id, and `changeChar` takes one.
+        const { createNewCharacter, changeChar } = await import("/src/ts/characters.ts");
+        // The creation returns the new character's id, and `changeChar` takes one.
         const byId = (chaId: string) => characterList().find((entry) => entry.chaId === chaId)!;
         const character = createNewCharacter();
         byId(character).name = "Alpha";
         byId(character).creatorNotes = "A creator quote";
-        const group = createNewGroup();
-        byId(group).name = "The group";
+        const beta = createNewCharacter();
+        byId(beta).name = "Beta";
         await changeChar(character);
         // The creator quote is on the chat screen: open the selected chat.
         const { setChatOpen } = await import("/src/ts/storage/selection.svelte.ts");
         setChatOpen(true);
-        return { alpha: character, group };
+        return { alpha: character, beta };
     });
     await settle(page);
     expect(await selectedId(page)).toBe(created.alpha);
     let list = await characters(page);
     expect(
-        [created.alpha, created.group].map((chaId) => {
+        [created.alpha, created.beta].map((chaId) => {
             const entry = list.find((candidate) => candidate.chaId === chaId)!;
             return [entry.name, entry.type, entry.chats];
         }),
     ).toEqual([
         ["Alpha", "character", 1],
-        ["The group", "group", 1],
+        ["Beta", "character", 1],
     ]);
 
     // The chat screen's creator quote: its remove button writes the selected character.
@@ -201,16 +201,7 @@ test("the character flows run through the records without an error, save, and su
     expect((await characterById(page, created.alpha))!.viewScreen).toBe("emotion");
     expect(errors).toEqual([]);
 
-    // The group's settings pages mount too.
-    await page.evaluate(async (group) => {
-        const { changeChar } = await import("/src/ts/characters.ts");
-        await changeChar(group);
-    }, created.group);
-    await settle(page);
-    expect(await selectedId(page)).toBe(created.group);
-    await visitAll("group");
-
-    // Trash and restore (the character's own field), then a permanent delete of the group.
+    // Trash and restore (the character's own field), then a permanent delete of the second character.
     await confirmAll(
         page,
         page.evaluate(async (chaId) => {
@@ -229,11 +220,11 @@ test("the character flows run through the records without an error, save, and su
     expect((await characterById(page, created.alpha))!.trashTime).toBeUndefined();
     await page.evaluate(async (chaId) => {
         const { removeChar } = await import("/src/ts/characters.ts");
-        await removeChar(chaId, "The group", "permanentForce");
-    }, created.group);
+        await removeChar(chaId, "Beta", "permanentForce");
+    }, created.beta);
     await settle(page);
     list = await characters(page);
-    expect(list.some((entry) => entry.chaId === created.group)).toBe(false);
+    expect(list.some((entry) => entry.chaId === created.beta)).toBe(false);
     expect(list.some((entry) => entry.chaId === created.alpha)).toBe(true);
 
     // The playground's chat: its character is created the first time and reopened the second.
@@ -321,7 +312,7 @@ test("the character flows run through the records without an error, save, and su
         removedQuotes: true,
         viewScreen: "emotion",
     });
-    expect(after.some((entry) => entry.chaId === created.group)).toBe(false);
+    expect(after.some((entry) => entry.chaId === created.beta)).toBe(false);
     expect(await selectedId(page)).toBeNull();
     expect(errors).toEqual([]);
     expect(blocked.filter((href) => !/fonts\.g|cdn\.jsdelivr/.test(href))).toEqual([]);

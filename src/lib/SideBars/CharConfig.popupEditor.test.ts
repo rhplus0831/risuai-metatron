@@ -124,13 +124,13 @@ const generatedSummary = "latest-message\nGenerated summary";
 const initialRevision = "11111111-2222-4333-8444-555555555555:1:1";
 const jobRevision = "11111111-2222-4333-8444-555555555555:1:2";
 
-function mountMemorySettings(chaId: string, type: "character" | "group", algorithm: "supaMemory" | "hypaV2") {
+function mountMemorySettings(chaId: string, algorithm: "supaMemory" | "hypaV2") {
     const chat = { chaId, chatId: "memory-chat" };
     installFlatDatabaseWithChats({
         characters: [
             normalizeCharacter({
                 chaId,
-                type,
+                type: "character",
                 name: chaId,
                 chats: [
                     {
@@ -158,8 +158,8 @@ function mountMemorySettings(chaId: string, type: "character" | "group", algorit
     return { chat, target, workQueued: () => hasUnsavedChatWork((id) => id === chaId) };
 }
 
-function mountSupaMemory(chaId: string, type: "character" | "group") {
-    const editor = mountMemorySettings(chaId, type, "supaMemory");
+function mountSupaMemory(chaId: string) {
+    const editor = mountMemorySettings(chaId, "supaMemory");
     const input = [...editor.target.querySelectorAll("textarea")].find((field) => field.value === originalSummary)!;
     expect(input.value).toBe(originalSummary);
     const edit = (text: string) => {
@@ -170,82 +170,76 @@ function mountSupaMemory(chaId: string, type: "character" | "group") {
     return { ...editor, input, edit };
 }
 
-it.each(["character", "group"] as const)(
-    "shows the job's summary in the open %s SupaMemory editor after an unseen memory write",
-    async (type) => {
-        const { chat, input, edit } = mountSupaMemory(`stale-supa-${type}`, type);
-        const notice = vi.mocked(alertReloadNotice).mockClear();
-        const { stored, reread } = await saveOverUnseenMemory(chat, { supaMemoryData: generatedSummary }, () => {
-            expect(input.readOnly).toBe(false);
-            edit("old-message\nCorrection from the old copy");
-        });
-        expect(stored.supaMemoryData).toBe(generatedSummary);
-        expect(reread).toBe(true);
-        flushSync();
-        expect(input.value).toBe(generatedSummary);
-        expect(notice).toHaveBeenCalledExactlyOnceWith(language.memoryEditRefused);
-    },
-);
-
-it.each(["character", "group"] as const)(
-    "fences the %s SupaMemory editor until the generated summary and its cursor arrive",
-    (type) => {
-        const { chat, target, input, edit, workQueued } = mountSupaMemory(`supa-${type}`, type);
-        const expectReadOnly = (notice: string) => {
-            expect(input.readOnly).toBe(true);
-            expect(input.disabled).toBe(false);
-            expect(target.textContent).toContain(notice);
-            edit("refused edit");
-            expect(findChat(chat)?.supaMemoryData).toBe(originalSummary);
-            expect(workQueued()).toBe(false);
-        };
+it("shows the job's summary in the open SupaMemory editor after an unseen memory write", async () => {
+    const { chat, input, edit } = mountSupaMemory("stale-supa");
+    const notice = vi.mocked(alertReloadNotice).mockClear();
+    const { stored, reread } = await saveOverUnseenMemory(chat, { supaMemoryData: generatedSummary }, () => {
         expect(input.readOnly).toBe(false);
-        const release = beginLocalSend(chat)!;
-        try {
-            flushSync();
-            expectReadOnly(language.chatGenerating);
-        } finally {
-            release();
-        }
-        flushSync();
-        expect(input.readOnly).toBe(false);
+        edit("old-message\nCorrection from the old copy");
+    });
+    expect(stored.supaMemoryData).toBe(generatedSummary);
+    expect(reread).toBe(true);
+    flushSync();
+    expect(input.value).toBe(generatedSummary);
+    expect(notice).toHaveBeenCalledExactlyOnceWith(language.memoryEditRefused);
+});
 
-        const job = { jobId: "summary-job", characterId: chat.chaId, chatId: chat.chatId };
-        noteGenerationFrame({
-            ...job,
-            state: "running",
-            kind: type === "group" ? "group" : "send",
-            clientId: "other-tab",
-            startedAt: 1,
-            at: 1,
-        });
+it("fences the SupaMemory editor until the generated summary and its cursor arrive", () => {
+    const { chat, target, input, edit, workQueued } = mountSupaMemory("supa");
+    const expectReadOnly = (notice: string) => {
+        expect(input.readOnly).toBe(true);
+        expect(input.disabled).toBe(false);
+        expect(target.textContent).toContain(notice);
+        edit("refused edit");
+        expect(findChat(chat)?.supaMemoryData).toBe(originalSummary);
+        expect(workQueued()).toBe(false);
+    };
+    expect(input.readOnly).toBe(false);
+    const release = beginLocalSend(chat)!;
+    try {
         flushSync();
         expectReadOnly(language.chatGenerating);
-        expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
-        noteGenerationFrame({ ...job, state: "ended" });
-        flushSync();
-        expectReadOnly(language.memoryTasks.awaitingSync);
+    } finally {
+        release();
+    }
+    flushSync();
+    expect(input.readOnly).toBe(false);
 
-        const data = { ...captureChatBaseline(chat).chat, supaMemoryData: generatedSummary };
-        expect(
-            finishIdleChatRefresh(
-                { characterId: chat.chaId, id: chat.chatId, revision: jobRevision, data },
-                chatNoticeSeq(chat),
-                initialRevision,
-            ),
-        ).toBe(true);
-        flushSync();
-        expect(input.readOnly).toBe(false);
-        expect(input.value).toBe(generatedSummary);
-        expect(workQueued()).toBe(false);
-        edit(input.value + "\nManual correction");
-        expect(findChat(chat)?.supaMemoryData).toBe("latest-message\nGenerated summary\nManual correction");
-        expect(workQueued()).toBe(true);
-    },
-);
+    const job = { jobId: "summary-job", characterId: chat.chaId, chatId: chat.chatId };
+    noteGenerationFrame({
+        ...job,
+        state: "running",
+        kind: "send",
+        clientId: "other-tab",
+        startedAt: 1,
+        at: 1,
+    });
+    flushSync();
+    expectReadOnly(language.chatGenerating);
+    expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
+    noteGenerationFrame({ ...job, state: "ended" });
+    flushSync();
+    expectReadOnly(language.memoryTasks.awaitingSync);
+
+    const data = { ...captureChatBaseline(chat).chat, supaMemoryData: generatedSummary };
+    expect(
+        finishIdleChatRefresh(
+            { characterId: chat.chaId, id: chat.chatId, revision: jobRevision, data },
+            chatNoticeSeq(chat),
+            initialRevision,
+        ),
+    ).toBe(true);
+    flushSync();
+    expect(input.readOnly).toBe(false);
+    expect(input.value).toBe(generatedSummary);
+    expect(workQueued()).toBe(false);
+    edit(input.value + "\nManual correction");
+    expect(findChat(chat)?.supaMemoryData).toBe("latest-message\nGenerated summary\nManual correction");
+    expect(workQueued()).toBe(true);
+});
 
 it("opens the sidebar HypaV2 dialog during generation and initializes absent memory when idle", () => {
-    const { chat, target, workQueued } = mountMemorySettings("hypa-sidebar", "character", "hypaV2");
+    const { chat, target, workQueued } = mountMemorySettings("hypa-sidebar", "hypaV2");
     const open = [...target.querySelectorAll("button")].find(
         (button) => button.textContent?.trim() === language.hypaMemoryV2Modal,
     )!;
@@ -270,7 +264,7 @@ it("opens the sidebar HypaV2 dialog during generation and initializes absent mem
 it.each(["a revision notice", "a stale mark"] as const)(
     "pauses the open SupaMemory editor when %s arrives after the generation fence falls",
     (reason) => {
-        const { chat, target, input, edit, workQueued } = mountSupaMemory(reason, "character");
+        const { chat, target, input, edit, workQueued } = mountSupaMemory(reason);
         const job = { jobId: "summary-job", characterId: chat.chaId, chatId: chat.chatId };
         noteGenerationFrame({ ...job, state: "running", kind: "send", clientId: "other-tab", startedAt: 1, at: 1 });
         flushSync();

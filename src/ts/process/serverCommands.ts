@@ -1369,6 +1369,10 @@ async function runPinnedServerJob(
             errorReport(language.serverJob.memoryRebuilding);
             return refusal;
         }
+        if (error instanceof ResourceRequestError && error.status === 409 && error.message === "groupArchived") {
+            errorReport(language.serverJob.groupArchived);
+            return refused;
+        }
         if (error instanceof GenerationBusyError) {
             if (requestUncertain) {
                 // Identity replay precedes busy lookup, so this job belongs to another action.

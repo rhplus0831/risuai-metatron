@@ -11,6 +11,7 @@
     import { ChevronDownIcon } from "@lucide/svelte";
     import { alertConfirm, alertError } from "src/ts/alert";
     import { exportChat } from "src/ts/characters";
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import { downloadFile, openPinnedChat } from "src/ts/globalApi.svelte";
     import { DynamicGUI, gridOpenStore, settingsOpen, sideBarStore } from "src/ts/stores.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
@@ -92,7 +93,7 @@
     async function exportItem(item: RefusedItem) {
         try {
             if (item.kind === "chat") {
-                if (chatEntry(item)) await exportChat(item.chatId);
+                if (chatEntry(item)) await exportChat({ chaId: item.chaId, chatId: item.chatId });
             } else if (item.kind === "record") {
                 const text = refusedRecordExportText(item, localRecord(item));
                 if (text !== undefined) {
@@ -156,7 +157,7 @@
                     <p class="whitespace-pre-wrap text-textcolor2" data-risu-refused-reason>{item.reason}</p>
                 </div>
                 <div class="flex flex-wrap gap-1">
-                    {#if hasLocal && item.kind === "chat" && props.form === "app"}
+                    {#if hasLocal && item.kind === "chat" && props.form === "app" && !isArchivedGroup(findCharacter(item.chaId))}
                         <button
                             type="button"
                             disabled={busy}

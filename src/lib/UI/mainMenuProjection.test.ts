@@ -24,7 +24,7 @@ describe("makeCharacterAgoText", () => {
 });
 
 describe("collectHomeRecentCharacters", () => {
-    it("lists the characters sent to, newest first, without the trash, the playground, or a missing stamp", () => {
+    it("lists the characters sent to, newest first, without the trash, archived groups, the playground, or a missing stamp", () => {
         const rows = collectHomeRecentCharacters(
             [
                 char("old", { lastInteraction: now - 86_400_000 }),
@@ -42,7 +42,6 @@ describe("collectHomeRecentCharacters", () => {
         );
         expect(rows).toEqual([
             { chaId: "new", name: "new", image: "", agoText: "-1 minute" },
-            { chaId: "group", name: "Unnamed", image: "group.png", agoText: "-1 hour" },
             { chaId: "old", name: "old", image: "old.png", agoText: "-1 day" },
         ]);
     });
@@ -86,7 +85,7 @@ describe("recent characters from chat activity", () => {
         ...(time === undefined ? {} : { lastMessageAt: time }),
     });
 
-    it("orders home by loaded messages and unloaded summaries, moves back on deletion, and uses a group's own chats", () => {
+    it("orders home by loaded messages and unloaded summaries, moves back on deletion, and leaves an archived group out", () => {
         const characters = [
             char("active", { lastInteraction: now + 60_000 }),
             char("group", {
@@ -118,19 +117,18 @@ describe("recent characters from chat activity", () => {
         const rows = () => collectHomeRecentCharacters(characters, options);
         expect(chats.findChat({ chaId: "active", chatId: "unloaded" })).toBeUndefined();
         expect(chats.characterLastChattedAt("active", now + 60_000)).toBe(now - 4 * 60_000);
-        expect(rows().map(({ chaId }) => chaId)).toEqual(["group", "legacy", "active"]);
+        expect(rows().map(({ chaId }) => chaId)).toEqual(["legacy", "active"]);
 
         // No summary refresh accompanies this local reply.
         chats.appendMessage(ref, { role: "char", data: "new reply", chatId: "reply", time: now - 60_000 });
         expect(chats.characterLastChattedAt("active", now + 60_000)).toBe(now - 60_000);
         expect(rows().map(({ chaId, agoText }) => [chaId, agoText])).toEqual([
             ["active", "-1 minute"],
-            ["group", "-2 minute"],
             ["legacy", "-3 minute"],
         ]);
         chats.removeMessages(ref, ["reply"]);
         expect(chats.characterLastChattedAt("active", now + 60_000)).toBe(now - 4 * 60_000);
-        expect(rows().map(({ chaId }) => chaId)).toEqual(["group", "legacy", "active"]);
+        expect(rows().map(({ chaId }) => chaId)).toEqual(["legacy", "active"]);
     });
 
     it("uses the finite legacy fallback only when every chat lacks a dated final message, including an empty or undated loaded chat", () => {

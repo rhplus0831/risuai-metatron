@@ -137,7 +137,7 @@ folder; the original captures and the reviewed deltas remain separate.
   Per-family token ids for fixed strings are in `../tokens/browser-ids.json` and are not repeated
   here.
 - `DefaultChatScreen.svelte` logs `Cannot read properties of undefined (reading 'length')` while a
-  group is selected (groups have no `alternateGreetings`; `createNewGroup` makes them that way).
+  group is selected (groups have no `alternateGreetings`).
   It does not affect the captures.
 
 ## Not captured

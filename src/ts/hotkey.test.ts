@@ -374,6 +374,21 @@ describe("the previous/next character hotkeys", () => {
         expect(selection.characterId).toBeNull();
     });
 
+    it("steps over a group in both directions", () => {
+        installFlatDatabase({
+            characters: [
+                character("a", "Alice"),
+                { ...character("group", "Bob's group"), type: "group" },
+                character("c", "Carol"),
+            ],
+        });
+        selectCharacter("a");
+        pressChar("]");
+        expect(selection.characterId).toBe("c");
+        pressChar("[");
+        expect(selection.characterId).toBe("a");
+    });
+
     it("previous works from the last character by name (it used to refuse it)", () => {
         selectCharacter("c");
         expect(selectedIndex()).toBe(0);

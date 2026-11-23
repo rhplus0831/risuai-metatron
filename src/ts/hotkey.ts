@@ -1,3 +1,4 @@
+import { isArchivedGroup } from "./storage/archivedGroup";
 import { selectCharacter } from "./storage/selection.svelte";
 import { characterList, selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
@@ -483,6 +484,7 @@ async function quickMenu() {
 /** The characters (a copy of the list's rows) sorted by name, for the previous/next hotkeys. */
 function sortedByName(): { name: string; chaId: string }[] {
     return characterList()
+        .filter((character) => !isArchivedGroup(character))
         .map((v) => ({ name: v.name, chaId: v.chaId }))
         .sort((a, b) => a.name.localeCompare(b.name));
 }

@@ -585,7 +585,7 @@ export function setCharacterWriteListener(listener: CharacterWriteListener | nul
 
 /**
  * Registers the selection's hook (`selection.svelte.ts`): called synchronously after every completed
- * change of the character list's membership, local or raw, and after an installation or reset.
+ * change of the character list's membership or a character's type, and after an installation or reset.
  */
 export function setCharacterMembershipHook(hook: (() => void) | null) {
     membershipHook = hook;
@@ -662,6 +662,7 @@ function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
             stampField(node.meta, field);
         }
         queueCharacterWrite(node.meta.chaId);
+        if (field === "type") runMembershipHook();
     }
 }
 
@@ -3463,6 +3464,7 @@ export function patchRawCharacter(chaId: string, changes: readonly (readonly [st
                 target[field] = value;
             }
         }
+        if (changes.some(([field]) => field === "type")) runMembershipHook();
         return true;
     });
 }

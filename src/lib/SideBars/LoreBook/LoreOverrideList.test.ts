@@ -64,12 +64,10 @@ function install({
     globalLore,
     overrides,
     localLore = [],
-    ownerType = "character",
 }: {
     globalLore: loreBook[];
     overrides?: ChatLoreOverride[];
     localLore?: loreBook[];
-    ownerType?: "character" | "group";
 }) {
     installFlatDatabaseWithChats({
         localActivationInGlobalLorebook: true,
@@ -77,9 +75,8 @@ function install({
             {
                 chaId: ref.chaId,
                 name: "Owner",
-                type: ownerType,
+                type: "character",
                 globalLore,
-                ...(ownerType === "group" ? { characters: ["member"], characterActive: [true] } : {}),
                 chats: [ref, other].map(({ chatId }) => ({
                     id: chatId,
                     name: chatId,
@@ -237,13 +234,9 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
-it.each([
-    { ownerType: "character", idState: "missing" },
-    { ownerType: "character", idState: "duplicate" },
-    { ownerType: "group", idState: "duplicate" },
-] as const)(
-    "Override pins an independent full copy of $ownerType lore with a $idState id; Off keeps its edits",
-    ({ ownerType, idState }) => {
+it.each(["missing", "duplicate"] as const)(
+    "Override pins an independent full copy of character lore with a %s id; Off keeps its edits",
+    (idState) => {
         const source = entry("Dragon", {
             ...(idState === "duplicate" ? { id: "shared-id" } : {}),
             mode: "multiple",
@@ -257,7 +250,7 @@ it.each([
             loreCache: { key: "cached", data: ["nested value"] },
         });
         const sibling = entry("Sibling", { id: "shared-id" });
-        install({ globalLore: [source, sibling], ownerType });
+        install({ globalLore: [source, sibling] });
         render();
         expect(target.textContent).not.toContain("Member lore");
         expect(target.textContent).toContain(strings.hint);

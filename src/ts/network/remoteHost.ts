@@ -448,10 +448,10 @@ async function runHostCommand(run: HostRun) {
     let releasePlugins: (() => void) | undefined;
     let releaseChat: (() => void) | undefined;
     try {
-        const [{ safeBootOff }, chats, characters, { isLocalSend }] = await Promise.all([
+        const [{ safeBootOff }, chats, selection, { isLocalSend }] = await Promise.all([
             import("../safeBoot"),
             import("../storage/chatStore.svelte"),
-            import("../storage/characterStore.svelte"),
+            import("../storage/selection.svelte"),
             import("../process/localSends"),
         ]);
         const { command } = read;
@@ -459,13 +459,9 @@ async function runHostCommand(run: HostRun) {
         if (run.controller.signal.aborted) return refuse("stopped");
         if (safeBootOff("plugins")) return refuse("pluginsOff");
         const canOpenTarget = () => {
+            if (!selection.canSelectCharacter(target.chaId)) return false;
             const entry = chats.chatEntry(target);
-            return (
-                entry &&
-                entry.trashedAt === undefined &&
-                !chats.isChatKnownAbsent(target) &&
-                characters.characterList().some((char) => char?.chaId === target.chaId)
-            );
+            return entry && entry.trashedAt === undefined && !chats.isChatKnownAbsent(target);
         };
         if (!canOpenTarget()) return refuse("chatMissing");
         if (!read.attempted && isLocalSend(target)) return refuse("busy");
@@ -473,8 +469,7 @@ async function runHostCommand(run: HostRun) {
         const { pluginsStarted } = await import("../plugins/plugins.svelte");
         await pluginsReady(pluginsStarted, run.controller.signal);
         if (run.controller.signal.aborted) return refuse("stopped");
-        const [selection, stores, { sendChat }, { settings }, plugins, quiet, resources] = await Promise.all([
-            import("../storage/selection.svelte"),
+        const [stores, { sendChat }, { settings }, plugins, quiet, resources] = await Promise.all([
             import("../stores.svelte"),
             import("../process/index.svelte"),
             import("../storage/settingsViews.svelte"),

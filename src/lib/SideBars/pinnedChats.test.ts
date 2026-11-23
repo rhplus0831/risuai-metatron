@@ -3,19 +3,25 @@ import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 import type { ChatListEntry } from "src/ts/storage/chatStore.svelte";
 import { collectPinnedChats, HOME_PINNED_CHAT_COLLAPSED_LIMIT } from "./pinnedChats";
 
-const character = (chaId: string): AnyClientCharacter =>
-    ({ chaId, name: `Character ${chaId}`, image: `${chaId}.png`, type: "character" }) as AnyClientCharacter;
+const character = (chaId: string, type: "character" | "group" = "character"): AnyClientCharacter =>
+    ({ chaId, name: `Character ${chaId}`, image: `${chaId}.png`, type }) as AnyClientCharacter;
 
 describe("collectPinnedChats", () => {
-    it("excludes a trashed character's pins even when character order includes it, keeping other pins", () => {
+    it("excludes group and trashed character pins while keeping other pins", () => {
         const trashed = { ...character("trashed"), trashTime: 1234 };
         const lists: Record<string, ChatListEntry[]> = {
+            group: [{ id: "group-pin", name: "Archived pin", pinned: true, fmIndex: -1 }],
             trashed: [{ id: "trashed-pin", name: "Trashed pin", pinned: true, fmIndex: -1 }],
             kept: [{ id: "kept-pin", name: "Kept pin", pinned: true, fmIndex: -1 }],
         };
 
-        for (const order of [[], ["trashed", "kept"]]) {
-            const result = collectPinnedChats([trashed, character("kept")], order, (id) => lists[id], "Unnamed");
+        for (const order of [[], ["group", "trashed", "kept"]]) {
+            const result = collectPinnedChats(
+                [character("group", "group"), trashed, character("kept")],
+                order,
+                (id) => lists[id],
+                "Unnamed",
+            );
             expect(result.map(({ chaId, chatId }) => ({ chaId, chatId }))).toEqual([
                 { chaId: "kept", chatId: "kept-pin" },
             ]);
@@ -38,7 +44,7 @@ describe("collectPinnedChats", () => {
         };
         const chatListOf = (chaId: string) => lists[chaId];
         const result = collectPinnedChats(
-            ["a", "b", "c", "d", "e"].map(character),
+            ["a", "b", "c", "d", "e"].map((id) => character(id)),
             ["c", "missing", { data: ["b", "also-missing", "a"] }, "b"],
             chatListOf,
             "Unnamed chat",

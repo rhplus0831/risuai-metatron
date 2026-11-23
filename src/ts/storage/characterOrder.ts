@@ -1,5 +1,6 @@
 import type { Database } from "../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
+import { isArchivedGroup } from "./archivedGroup";
 import { characterList } from "./characterStore.svelte";
 import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
@@ -8,9 +9,9 @@ import { settings } from "./settingsViews.svelte";
 /**
  * The character order repairs (the `characterOrder` collection, written through its settings view,
  * one write per repair). The tab remembers every character id a repair walk observed
- * (`knownCharacters`, trashed ones included) and forgets one absent from both the list and the
- * resulting order; an id never observed keeps its place, since another tab's order can arrive before
- * its characters. The entrypoints:
+ * (`knownCharacters`, including trashed characters and archived groups) and forgets one absent from
+ * both the list and the resulting order; an id never observed keeps its place, since another tab's
+ * order can arrive before its characters. The entrypoints:
  * - `checkCharOrder`: the local repair, after every add, remove, restore, and import here;
  * - `checkCharOrderAtBoot`: the boot's complete inventory, the only repair that drops never-observed
  *   ids;
@@ -19,15 +20,15 @@ import { settings } from "./settingsViews.svelte";
  *   candidate decides.
  */
 
-/** Character ids a repair has observed in this tab, including trashed characters. */
+/** Character ids a repair has observed in this tab, including trashed characters and archived groups. */
 const knownCharacters = new Set<string>();
 
 /**
  * Checks and updates the character order in the database (the `characterOrder` mutation: every
  * character add, remove, restore, and import ends here). Live unordered characters except
- * `§playground` are appended. Entries are removed only for characters trashed here or previously
- * observed by a repair and now absent. Unknown ids keep their place and folder: another tab's order
- * can arrive before its characters. Each walk remembers all current ids, including trashed ones,
+ * `§playground` are appended. Trashed characters and archived groups leave the order, as do
+ * previously observed characters now absent. Unknown ids keep their place and folder: another tab's order
+ * can arrive before its characters. Each walk remembers all current ids,
  * then forgets ids absent from both the list and the resulting order. A folder is dropped when it is
  * empty before its members are filtered, so a folder emptied by the filtering goes on the next call;
  * a folder without a member list counts as empty. The order is assigned once, only when changed.
@@ -75,13 +76,12 @@ function repairCharOrder(completeInventory: boolean) {
         const charId = char.chaId;
         currentIds.add(charId);
         knownCharacters.add(charId);
-        if (!char.trashTime) {
-            charIdSet.add(charId);
+        if (char.trashTime || isArchivedGroup(char)) {
+            continue;
         }
-        if (!ordered.has(charId)) {
-            if (charId !== "§playground" && !char.trashTime) {
-                order.push(charId);
-            }
+        charIdSet.add(charId);
+        if (!ordered.has(charId) && charId !== "§playground") {
+            order.push(charId);
         }
     }
 
@@ -157,11 +157,11 @@ const remoteRepair = { running: false, seq: 0 };
  * `checkCharOrder` would. The repair only adds: it never removes or moves an entry, so an entry
  * naming a character this tab has not read yet (a capped read applies the order first) keeps its
  * folder, also through a later local repair. Each candidate walk remembers all held character ids
- * (trashed ones included) for local repair and forgets ids absent from both the list and order;
- * only `checkCharOrderAtBoot` removes never-observed dangling ids. This tab's copy of a character may
- * be older than the order (another tab's trash or delete not applied here yet, a create whose answer
+ * (including trashed characters and archived groups) for local repair and forgets ids absent from both
+ * the list and order; only `checkCharOrderAtBoot` removes never-observed dangling ids. This tab's copy
+ * of a character may be older than the order (another tab's trash or delete not applied here yet, a create whose answer
  * was lost), so every candidate (a live character the order lists nowhere) is read from the server,
- * in chunks, and appended only when the server holds a copy that is not trashed, or none while this
+ * in chunks, and appended only when the server holds a non-group, non-trashed copy, or none while this
  * tab holds no saved revision of it (`heldRevision`, taken before the read: its own unsaved
  * create). A read is dropped when another remote order arrived or the order changed here during it,
  * and the repair starts over from the newest order until an attempt ends with the order unchanged;
@@ -198,7 +198,7 @@ export function queueRemoteCharOrderRepair(heldRevision: (chaId: string) => stri
     });
 }
 
-/** The live characters this tab holds that the order lists nowhere (`checkCharOrder`'s appends). */
+/** Unordered local characters eligible for appending. Trashed characters and archived groups are only observed. */
 function unorderedCharacters(): string[] {
     const order = settings.characterOrder;
     const ordered = new Set<string>();
@@ -216,7 +216,7 @@ function unorderedCharacters(): string[] {
     for (const char of characterList()) {
         currentIds.add(char.chaId);
         knownCharacters.add(char.chaId);
-        if (char.chaId !== "§playground" && !char.trashTime && !ordered.has(char.chaId)) {
+        if (char.chaId !== "§playground" && !char.trashTime && !isArchivedGroup(char) && !ordered.has(char.chaId)) {
             unordered.push(char.chaId);
         }
     }
@@ -248,10 +248,9 @@ async function appendMissingCharacters(
             return "stale";
         }
         for (const item of read.items) {
+            const character = item.data as { trashTime?: unknown; type?: unknown } | null;
             const live =
-                item.revision === null
-                    ? unsaved.has(item.id)
-                    : !(item.data as { trashTime?: unknown } | null)?.trashTime;
+                item.revision === null ? unsaved.has(item.id) : !character?.trashTime && !isArchivedGroup(character);
             if (live) {
                 appendable.add(item.id);
             }

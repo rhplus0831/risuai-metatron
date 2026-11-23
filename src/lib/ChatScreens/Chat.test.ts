@@ -476,7 +476,7 @@ describe("chat row form submissions", () => {
         expect(runServerJob).toHaveBeenCalledTimes(1);
     });
 
-    it("prevents navigation without sending unmarked forms, stale rows, or group forms", async () => {
+    it("prevents navigation without sending unmarked forms or stale rows", async () => {
         boot("form-refusals");
         const unmarked = await renderForm('<form><input name="answer" value="typed"></form>');
         submit(unmarked.form);
@@ -484,12 +484,6 @@ describe("chat row form submissions", () => {
 
         const stale = await renderForm(markup, "message-in-another-chat");
         submit(stale.form);
-        expect(runServerJob).not.toHaveBeenCalled();
-
-        characterList().find((entry) => entry.chaId === "c")!.type = "group";
-        flushSync();
-        const group = await renderForm();
-        submit(group.form);
         await tick();
         expect(runServerJob).not.toHaveBeenCalled();
         expect(get(ReloadChatPointer)).toEqual({});

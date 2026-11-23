@@ -341,9 +341,6 @@ export const languageEnglish = {
             'If it is not blank, it will extract specific JSON data from the response. For example, if you want to extract `response.text[0]` in response `{"response": {"text": ["hello"]}}`, you can put `response.text.0`.',
         translatorNote:
             "Here, you can add a unique translation prompt for each character. This option only applies when using the Ax. model for translation. To apply it, include `{{slot::tnote}}` in the translation settings. It doesn't work in group chats.",
-        groupInnerFormat:
-            "This defines a format that is used in group chat for characters that isn't speaker. If it is not blank, it will use this format instead of the default format. If `Group Other Bot Role` is `assistant`, it will also be applied to the speaker.",
-        groupOtherBotRole: "This defines a role that is used in group chat for characters that isn't speaker.",
         showMemoryLimit:
             "The line marks the first message the model still saw in the last prompt; older, omitted history is above it. It is approximate because a final token check can drop a few more messages after the line is placed.",
         chatHTML:
@@ -1161,7 +1158,6 @@ export const languageEnglish = {
     autoTranslation: "Auto Translation",
     playMessage: "Play Message Audio",
     iconSize: "Icon Size",
-    createGroup: "Create Group Chat",
     groupIcon: "Group Icon",
     single: "Single",
     multiple: "Multiple",
@@ -1699,7 +1695,7 @@ export const languageEnglish = {
         intro: "This is a backup from RisuAI (or from this app before its server storage). It was read and converted; nothing has been replaced yet.",
         counts: {
             characters: "Characters",
-            groups: "Group chats",
+            groups: "Group chats (kept, hidden)",
             chats: "Chats",
             messages: "Messages",
             promptPresets: "Prompt presets",
@@ -1992,6 +1988,8 @@ export const languageEnglish = {
             },
         },
         requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
+        groupArchived:
+            "Group chats are archived. You can no longer generate replies or start memory tasks in this chat.",
         memoryRebuilding:
             "A rebuild, start over, or fill gaps holds this chat's memory. Resume or abandon it in the memory panel to use the chat again.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
@@ -2558,8 +2556,6 @@ export const languageEnglish = {
     trailingDoubleQuote: "Trailing Double Quote",
     translatorNote: "Translator's Note",
     formatGroupInSingle: "Format Group in Single",
-    groupInnerFormat: "Non-Speaker Inner Format",
-    groupOtherBotRole: "Non-Speaker Role in Group",
     chatHTML: "Chat HTML",
     logShare: "Show Share Log Button",
     preview: "Preview",

@@ -9,10 +9,8 @@ import {
     ShowLatestMessageStore,
 } from "../stores.svelte";
 import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
-import { findCharacter } from "../storage/characterStore.svelte";
 import { chatEntry, ensureChat, selectChat, selectedChatId } from "../storage/chatStore.svelte";
-import { characterIndex } from "../storage/records.svelte";
-import { selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
+import { canSelectCharacter, selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
 import {
     formatRoute,
     parseRoute,
@@ -273,8 +271,7 @@ function applyBase(route: Route) {
         case "chat":
         case "playgroundChat": {
             const chaId = route.kind === "chat" ? route.chaId : PLAYGROUND_CHA_ID;
-            if (!findCharacter(chaId)) {
-                // A character that does not exist goes home.
+            if (!canSelectCharacter(chaId)) {
                 applyBase({ kind: "home" });
                 return;
             }
@@ -354,12 +351,12 @@ function applyEntry(boot: boolean) {
     applyLayer(route);
 }
 
-/** Whether the base route `route` shows a character that is gone (deleted here or by another client). */
+/** Whether the base route names a missing or archived character. */
 function namesMissingCharacter(route: Route | null): boolean {
     if (route?.kind !== "chat" && route?.kind !== "playgroundChat") {
         return false;
     }
-    return characterIndex(route.kind === "chat" ? route.chaId : PLAYGROUND_CHA_ID) === -1;
+    return !canSelectCharacter(route.kind === "chat" ? route.chaId : PLAYGROUND_CHA_ID);
 }
 
 /** Whether moving between base routes from `from` (the current entry's route) to `to` replaces the entry instead of adding one. */

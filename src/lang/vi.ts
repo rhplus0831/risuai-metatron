@@ -190,10 +190,6 @@ export const languageVietnamese = {
             'Nếu không trống, nó sẽ trích xuất dữ liệu JSON cụ thể từ phản hồi. Ví dụ, nếu bạn muốn trích xuất `response.text[0]` trong phản hồi `{"response": {"text": ["hello"]}}`, bạn có thể đặt `response.text.0`.',
         translatorNote:
             "Tại đây, bạn có thể thêm lời nhắc dịch duy nhất cho mỗi nhân vật. Tùy chọn này chỉ áp dụng khi sử dụng mô hình Ax. để dịch. Để áp dụng, bao gồm `{{slot::tnote}}` trong cài đặt ngôn ngữ. Nó không hoạt động trong các cuộc trò chuyện nhóm.",
-        groupInnerFormat:
-            "Điều này xác định định dạng được sử dụng trong trò chuyện nhóm cho các nhân vật không phải là người nói. Nếu không trống, nó sẽ sử dụng định dạng này thay vì định dạng mặc định. Nếu `Vai trò Bot Khác trong Nhóm` là `assistant`, nó cũng sẽ được áp dụng cho người nói.",
-        groupOtherBotRole:
-            "Điều này xác định vai trò được sử dụng trong trò chuyện nhóm cho các nhân vật không phải là người nói.",
         chatHTML:
             "HTML sẽ được chèn vào mỗi cuộc trò chuyện.\n\nBạn có thể sử dụng CBS và các thẻ đặc biệt.\n- `<risutextbox>`: hộp văn bản sẽ được sử dụng để hiển thị văn bản\n- `<risuicon>`: biểu tượng cho người dùng hoặc trợ lý\n- `<risubuttons>`: các nút biểu tượng để chỉnh sửa trò chuyện, dịch thuật, v.v.\n- `<risugeninfo>`: nút thông tin tạo.",
         systemContentReplacement:
@@ -653,7 +649,6 @@ export const languageVietnamese = {
     autoTranslation: "Dịch tự động",
     playMessage: "Phát âm thanh tin nhắn",
     iconSize: "Kích cỡ biểu tượng",
-    createGroup: "Tạo trò chuyện nhóm",
     groupIcon: "Biểu tượng nhóm",
     single: "Đơn",
     multiple: "Nhiều",
@@ -1058,8 +1053,6 @@ export const languageVietnamese = {
     trailingDoubleQuote: "Dấu ngoặc kép kết thúc",
     translatorNote: "Ghi chú của người dịch",
     formatGroupInSingle: "Định dạng nhóm trong đơn",
-    groupInnerFormat: "Định dạng nội bộ không phải người nói",
-    groupOtherBotRole: "Vai trò không phải người nói trong nhóm",
     chatHTML: "HTML trò chuyện",
     logShare: "Hiển thị nút chia sẻ nhật ký",
     preview: "Xem trước",

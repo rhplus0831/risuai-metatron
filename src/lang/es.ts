@@ -195,9 +195,6 @@ export const languageSpanish = {
             'Si no está en blanco, extraerá datos JSON específicos de la respuesta. Por ejemplo, si deseas extraer `response.text[0]` en la respuesta `{"response": {"text": ["hello"]}}`, puedes poner `response.text.0`.',
         translatorNote:
             "Aquí puedes agregar un prompt de traducción único para cada personaje. Esta opción solo se aplica al usar el modelo Ax. para traducción. Para aplicarlo, incluye `{{slot::tnote}}` en la configuración de idioma. No funciona en chats grupales.",
-        groupInnerFormat:
-            "Esto define un formato que se usa en el chat grupal para personajes que no son el hablante. Si no está en blanco, usará este formato en lugar del formato predeterminado. Si `Rol de Otro Bot en Grupo` es `assistant`, también se aplicará al hablante.",
-        groupOtherBotRole: "Esto define un rol que se usa en el chat grupal para personajes que no son el hablante.",
         chatHTML:
             "Un HTML que se insertará como cada chat.\n\nPuedes usar CBS y etiquetas especiales.\n- `<risutextbox>`: un cuadro de texto que se usaría para renderizar texto\n- `<risuicon>`: un icono para usuario o asistente\n- `<risubuttons>`: botones de icono para editar chat, traducciones, etc.\n- `<risugeninfo>`: botón de información de generación.",
         systemContentReplacement:
@@ -659,7 +656,6 @@ export const languageSpanish = {
     autoTranslation: "Traducción Automática",
     playMessage: "Reproducir Audio del Mensaje",
     iconSize: "Tamaño del Icono",
-    createGroup: "Crear Chat de Grupo",
     groupIcon: "Icono del Grupo",
     single: "Único",
     multiple: "Múltiple",
@@ -1067,8 +1063,6 @@ export const languageSpanish = {
     trailingDoubleQuote: "Cita Doble Final",
     translatorNote: "Nota del Traductor",
     formatGroupInSingle: "Formatear Grupo en Único",
-    groupInnerFormat: "Formato Interno de No Hablante",
-    groupOtherBotRole: "Rol de No Hablante en Grupo",
     chatHTML: "HTML del Chat",
     logShare: "Mostrar Botón de Compartir Registro",
     preview: "Vista Previa",

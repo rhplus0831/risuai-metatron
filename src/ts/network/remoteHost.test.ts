@@ -235,6 +235,15 @@ describe("remote host sends", () => {
         }
     });
 
+    it("refuses a command for an existing group chat before selecting or sending", async () => {
+        const { patchRawCharacter } = await import("../storage/records.svelte");
+        patchRawCharacter(target.chaId, [["type", "group"]]);
+        await deliver();
+        expect(reports()).toEqual([{ clientId: "host-client", attempt: 7, state: "refused", code: "chatMissing" }]);
+        expect(stubs.selectChat).not.toHaveBeenCalled();
+        expect(stubs.send).not.toHaveBeenCalled();
+    });
+
     it("waits for plugins under a hold, selects the chat and runs the sender's local-only request once", async () => {
         const startup = deferred();
         const sending = deferred<boolean>();
