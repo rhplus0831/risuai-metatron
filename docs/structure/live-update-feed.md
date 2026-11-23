@@ -121,9 +121,8 @@ revision. Follow [client patch handling](live-updates.md#chat-live-updates) when
 - Resource, chat, and order refs in `change` frames describe only committed store writes
   ([Invariants](server-resources.md#invariants)); `publishStreaming` can publish locks without a write, and
   `memoryTask`, `handoff`, and `generation` frames describe process-local transitions (`shared/events.ts`). A
-  `generation` frame and `hello.generations` carry ids, times, the kind, optional stage, retry/sequence progress and
-  approximate output-token counts. Follow `GenerationProgressEntry` in `shared/events.ts` to keep these frames
-  content-free.
+  `generation` frame and `hello.generations` carry ids, times, the kind, optional stage, retry count and approximate
+  output-token counts. Follow `GenerationProgressEntry` in `shared/events.ts` to keep these frames content-free.
 - A frame is never split ([Publication budget](#publication-budget)); a frame a socket cannot take closes that socket
   ([Frame admission](#frame-admission)).
 - Addressed remote-command notices use `sendToClient`, never `feed.publish`; reconnect registration repeats open

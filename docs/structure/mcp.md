@@ -56,6 +56,8 @@
   through `writeConfirmed`: consent (`promptAccess`), then the [re-resolve](#invariants) and a type recheck.
 - `src/ts/process/mcp/risuaccess/`: the tab's side. `tabRisuAccessHostFor(chatRef)` (which character and history a
   request's call names), `tabRisuAccessHost` (no request: the Playground), `RisuAccessClient`.
+- Both hosts' `risu-list-characters` filter [archived groups](characters-modules.md#archived-groups) before pagination.
+  By-id character and chat tools refuse group ids.
 
 ### Server job tools
 

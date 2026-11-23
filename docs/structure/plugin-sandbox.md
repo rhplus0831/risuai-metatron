@@ -62,6 +62,9 @@ entrypoints.
   (`getChatFromIndex` and hooks), full and summary `getDatabase`, character copies, and job callbacks.
   `chatMembershipVersion` refreshes a page if membership changes across an await, and detached reads check the mark
   before returning or caching a chat.
+- `src/ts/storage/snapshots.svelte.ts`: `pluginCharacterList` skips groups for indexes, hook contexts and DB reads.
+  `chatOutput` uses that order and skips archived owners and speakers. By-id reads like `getChats` treat groups as
+  missing. `pluginCharacterOrder` filters known group ids on read and write.
 
 ## Flows
 
@@ -263,9 +266,12 @@ instance's ambient context.
 - Index writes recheck the captured chat's active status. `reconcileCharacterChats` skips trashed members, keeps them
   and omitted chats in their slots, and resolves `chatPage` against the supplied list. New ids create active chats. The
   plugin chat APIs cannot delete chats.
+- Index setters capture and revalidate the visible `chaId`. `applyPluginCharacters` preserves archived groups. A group
+  payload or id refuses only the `characters` key of either database setter. Single-character setters refuse group
+  targets and payloads.
 - The v3 `sendChat` captures the hook's chat, else the selection at API entry, and its owner before consent; it pins
-  through loading and dispatch and refuses a deleted or replaced target. It returns whether the send ran, refusing ("A
-  chat is already in progress") before appending, checked again after loading:
+  through loading and dispatch and refuses an archived, deleted or replaced target. It returns whether the send ran,
+  refusing ("A chat is already in progress") before appending, checked again after loading:
   - while that chat is busy (`isChatBusy`: a send of this tab, a followed job, or a lock; a generation hook's chat in a
     job channel callback always is);
   - while a job channel callback runs in this tab (`channelCallbacksRunning`: a hook or provider that waited for a new
@@ -331,6 +337,8 @@ instance's ambient context.
 
 ### Limitations
 
+- A character index saved before archiving groups can now name a different character. Re-resolve it by `chaId`.
+  Decision: owner, 2026-11-23 ([archived groups](characters-modules.md#archived-groups)).
 - A plugin that writes back an earlier chat list can recreate a permanently deleted or purged chat as active. A chat
   still in the trash stays there. Decision: owner, 2026-11-22 (tracking every id a plugin read costs extra bookkeeping
   for a rare write).

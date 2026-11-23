@@ -142,6 +142,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   ([UI](ui-theming.md)).
 - `selectedChatId` falls back to the first active chat and `selectChat` refuses a trashed target. A trash update that
   affects the open chat closes it with a notice and runs `syncSelection`.
+- Opening a chat also requires a selectable owner. See [archived groups](characters-modules.md#archived-groups).
 
 ### Summaries and refresh
 
@@ -277,8 +278,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   ([Server memory writes](#server-memory-writes)).
 - A message being generated is changed only by its generation; other writers get an error from the module. `Chat.svelte`
   disables its controls from `isMessageLocked` and checks every affected id again at the write, which also covers a
-  finished reply whose final write is unacknowledged and a previous group speaker's reply. The screen's reroll checks
-  `isScreenBusy`, and `confirmTrashChat` checks `isChatGenerating`. Both alert `chatGenerating` when blocked.
+  finished reply whose final write is unacknowledged. The screen's reroll checks `isScreenBusy`, and `confirmTrashChat`
+  checks `isChatGenerating`. Both alert `chatGenerating` when blocked.
 
 ## Recipes
 
@@ -305,6 +306,12 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Limitations
 
+- At boot and during collection reconciliation, `ensureChat` still creates an empty `Chat 1` for any chatless owner,
+  including an archived group. The tab cannot open it. Decision: owner, 2026-11-23
+  ([archive boundary](../../STRUCTURE.md#data-and-persistence)).
+- A group-owned chat trashed before the upgrade is hidden even from the chat trash view. The server still purges it
+  after `chatTrashDays`, and a trashed group owner still expires from the character trash on its usual schedule.
+  Decision: owner, 2026-11-23 ([archive boundary](../../STRUCTURE.md#data-and-persistence)).
 - A drag or plugin reorder built before another tab trashes a chat can still be a valid permutation. It can move the
   trashed chat's slot and change where it reappears on restore. Decision: owner, 2026-11-22 (fencing order writes on
   active membership is a server change for a cosmetic effect).
@@ -343,10 +350,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   (owner, 2026-11-08).
 - A followed job's generation that never got a `serverGenerations` entry keeps its feed lock past the job's terminal
   until the feed catches up: its early job copy was refused for local work (an edit, a background plugin's
-  `setChatToIndex`), or the job socket attached after the reply ended. A send made right at that end (auto mode,
-  multisend, a command, a plugin) is refused with `chatGenerating`. A fix would have the terminal name the job's
-  generations. Decision: owner, 2026-11-13 (rare, no data lost; reproduced in
-  `/home/codex/review-reports/feed-lock-retire-2026-11-13`).
+  `setChatToIndex`), or the job socket attached after the reply ended. A send or command attempted at that end is
+  refused with `chatGenerating`. A fix would have the terminal name the job's generations. Decision: owner, 2026-11-13
+  (rare, no data lost; reproduced in `/home/codex/review-reports/feed-lock-retire-2026-11-13`).
 - The chat settings panels that patch chat metadata through `setChatMeta`, `setCurrentChatMeta` or `mergeChatMeta` stay
   editable while a reply generates, unlike the chat lorebook and the messages: the author's note, the draft hook, the
   binding pickers, memory and translation preferences, prompt toggles, chat modules, chat variables, the OOC own-toggles

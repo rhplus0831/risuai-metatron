@@ -209,7 +209,8 @@ repeated row by row:
 - PocketRisu and RisuBard
   [§4](../reports/surveys/pocketrisu-risubard-picks.md#4-what-not-to-bring-over-architectural-conflicts):
   file-native storage, single-writer session locks, the JSON-Patch save protocol, client-side model adapters,
-  plain HTTP support, removing group chats, the update-check worker.
+  plain HTTP support, removing group chats, the update-check worker. Metatron archives group chats
+  ([STRUCTURE.md D6](../../STRUCTURE.md#data-and-persistence)).
 
 ## Updating this ledger
 

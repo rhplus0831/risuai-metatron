@@ -2,9 +2,9 @@
 
 ## Scope
 
-This guide owns the tab’s send and retry lifecycle, composer hooks and drafts, OOC questions, slash commands, groups,
-message search and inlays. It also owns the shared lore engine, context report, and helpers for editing or previewing
-prompts. Start at a topic in **Files**.
+This guide owns the tab’s send and retry lifecycle, composer hooks and drafts, OOC questions, slash commands, message
+search and inlays. It also owns the shared lore engine, context report, and helpers for editing or previewing prompts.
+Start at a topic in **Files**.
 
 Follow [server generation](server-generation.md#prompt-job-execution) for assembly, trimming, scripts and the reply,
 [LLM requests](llm-requests.md) for provider requests, [tokenizers](tokenizers.md) for token counts, and
@@ -30,8 +30,8 @@ MCP tools see [MCP](mcp.md).
 - `src/ts/network/generationJobs.ts`: job transport (`createGenerationJob`, `stopChatGeneration`,
   `followGenerationJob`); protocol details are in [network jobs](network-jobs.md).
 - `src/ts/process/localSends.ts`: the tab's send registry (`localSends`, `beginLocalSend`, `isLocalSend`,
-  `anyLocalSend`). A composer slash command takes the chat's entry before its first await and lends it to its
-  `/multisend` parts; it clears the composer only while that still holds the submitted line.
+  `anyLocalSend`). The composer holds the chat's entry for the slash command and clears the composer only while it still
+  holds the submitted line.
 - `src/ts/process/jobStages.ts`: job presentation stages and retry counts (`setJobStage`, `setJobRetry`, `jobRetries`,
   `dropJobStage`, `chatStageOf`).
 - `src/ts/process/chatStatus.svelte.ts`: the per-tab status sources ([State](#state)), `chatStatusKey`, `isChatBusy`,
@@ -100,21 +100,20 @@ MCP tools see [MCP](mcp.md).
 ### Slash commands, groups, and search
 
 - `src/ts/process/command.ts` handles typed slash commands. See `processMultiCommand` for pipes, quoting and the literal
-  text consumed by `/send`, `/sendas` and `/comment`. `processCommand` dispatches and `runMultisend` sends sequentially
-  under the composer's reservation. Stored trigger commands use `server/src/prompt/commands.ts` with different pipe
-  rules. A server command job keeps all its queued parts under one chat slot
-  ([scripts and triggers](scripts-triggers.md#flows)).
+  text consumed by `/send`, `/sendas` and `/comment`. At a segment's start, `isRetiredMultisend` recognizes the retired
+  `/multisend` token. It consumes the rest of the line before argument evaluation and shows one removal notice.
+  `server/src/prompt/commands.ts` handles the [stored trigger path](scripts-triggers.md#flows).
 - `src/ts/process/files/multisend.ts` converts attachments. `postChatFile` pins the captured chat across the picker and
   every PO translation in the batch. `sendPofile` checks that owner before further writes or downloads.
-- Each multisend part, PO entry and DevTool autopilot step checks the chat binding (`checkServerJobBinding`) before it
-  clears or appends. `sendPofile` ends an entry at a blank line (CRLF too) and at the end of the file, and downloads
-  once after the last entry, in the catalog's newline style.
-- `src/ts/process/group.ts` owns `addGroupChar` and `rmCharFromGroup`. A greeting goes to the captured group's pinned
-  chat, with the owner rechecked after the dialogs.
+- Each PO entry and DevTool autopilot step calls `checkServerJobBinding` before appending to the captured chat.
+  `sendPofile` ends an entry at a blank line (CRLF too) and at the end of the file, and downloads once after the last
+  entry, in the catalog's newline style.
 - `src/ts/process/infunctions.ts` binds the shared CBS calculator (`calcString`) to tab variables.
+- The member edits in `src/ts/process/group.ts` are dormant. See
+  [archived groups](characters-modules.md#archived-groups).
 
 - `shared/messageSearch.ts`: message-search wire contract (`MESSAGE_SEARCH_PATH`, `MessageSearchQuery`,
-  `MessageSearchPage`).
+  `MessageSearchPage`). Every server search scope skips [archived group](characters-modules.md#archived-groups) chats.
 - `src/ts/messageSearch.svelte.ts`: search requests, panel state, and message jumps (`searchMessages`,
   `messageSearchPanel`, `requestMessageJump`, `claimMessageJump`). The screen consumes a jump by stable message id or
   `{ greeting: true }`. `src/lib/ChatScreens/messageJump.ts` (`runMessageJump`) grows the rendered window and rechecks
@@ -258,8 +257,7 @@ and a valid segment anchor. Only `refreshOoc` moves a missing anchor to the newe
 ### Not in `sendChat`
 
 - Input auto-translation (`createInputTranslation`) and suggestions call the tab request layer; the `previewRequest`
-  hotkey calls `previewChat("previewPrompt")` for a server preview job. Display translation is a UI concern. Group
-  continues use the server speaker loop.
+  hotkey calls `previewChat("previewPrompt")` for a server preview job. Display translation is a UI concern.
 - An OOC question's prompt and answer: [OOC question](#ooc-question).
 - An input hook run ([Input hooks](#input-hooks)): a tab request on the auxiliary model, not a job.
 - Chat paging renders loaded messages only (`chatLoadInitialPages`, `chatLoadAdditionalPages`); it does not fetch
@@ -283,8 +281,8 @@ and a valid segment anchor. Only `refreshOoc` moves a missing anchor to the newe
 ## Coupling
 
 - `sendChat` imports `serverGeneration.ts` (and through it `serverCommands.ts`, the job channel) and the chat module.
-- Callers: `DefaultChatScreen.svelte`, `command.ts` (`/multisend`), `files/multisend.ts`, `hotkey.ts`, `DevTool.svelte`
-  (preview, autopilot), `plugins/apiV3` (`sendChat` permission).
+- Callers: `DefaultChatScreen.svelte`, `files/multisend.ts`, `hotkey.ts`, `DevTool.svelte` (preview, autopilot),
+  `plugins/apiV3` (`sendChat` permission).
 
 ## Invariants
 
@@ -300,8 +298,8 @@ and a valid segment anchor. Only `refreshOoc` moves a missing anchor to the newe
 - The server refuses every generation job for a chat with orphaned lore overrides at admission with 409
   `chatLoreOverrideOrphaned` and `entries: [{ id, name }]`.
 - The tab refuses first, with the same alert, wherever a send would write the chat before that admission: Send,
-  Continue, Reroll, `/multisend` (its clear too), the PO file run, DevTool autopilot, and plugin `sendChat`. The DevTool
-  lore preview and token counting do not refuse.
+  Continue, Reroll, the PO file run, DevTool autopilot, and plugin `sendChat`. The DevTool lore preview and token
+  counting do not refuse.
 - Requests that are not generation jobs run for such a chat: `/api/llm/request` with a `chatRef` (suggestions, MCP
   AIAccess), the detached memory and translation tasks, and the tab's plugin-provider and WebLLM requests. Most of them
   do not activate lore. Decision: Chat Lore Overrides, [archive](../archived-plan/README.md).
@@ -331,7 +329,7 @@ lore.
   `tokenizePreset`, `templateCheck`, `PromptDataItem.svelte`, `normalizePromptTemplate` (`shared/presets.ts`). Verify
   the prompt preview (DevTool), token counts, and a preset reload.
 - Change input processing: `DefaultChatScreen.sendMain` and the job's input stage (`server/src/prompt/runner.ts`).
-  Verify character and group chats and slash-command fallthrough.
+  Verify sends and slash-command fallthrough.
 - Add a response command or inlay: the job's tail (`server/src/prompt/postProcess.ts` `runInlayScreen`) and
   `files/inlays.ts` or the parser.
 - Change lore activation: `shared/lore/activation.ts` (search, decorators, budget) and the position mapping in
@@ -376,15 +374,12 @@ lore.
 - `src/ts/process/chatStatus.svelte.ts` keeps `unseenChatKeys` and `recoveryChatKeys` only in this tab's memory, so
   reloading clears both marks; they are not durable unread or recovery records. Decision: Sidebar Chat Status 4,
   [archive](../archived-plan/README.md).
-- Sequence events are live-only: parts completed without an attached socket do not count statistics in that tab. Server
-  chat writes and receipt counts are authoritative. Decision: [generation](server-generation.md) command sequences.
 - Accepted limits of sends in different chats at once (each chat has one local send and one server job; different chats
   of a tab run together). Decision: Per-Chat Send D1 and D6, [archive](../archived-plan/README.md).
-  - Ordinary send, continue, reroll, and group jobs leave the character revision unchanged: last-chatted activity is
-    derived from the chats' final-message times (`ChatSummary.lastMessageAt` for unloaded chats).
+  - Ordinary send, continue and reroll jobs leave the character revision unchanged: last-chatted activity is derived
+    from the chats' final-message times (`ChatSummary.lastMessageAt` for unloaded chats).
   - Explicit character effects (memory enable, triggers, Lua setters) patch the character without a character lock:
-    simultaneous writes of the same field are last writer wins, and a group job and a member's own chat can patch that
-    member the same way.
+    simultaneous writes of the same field are last writer wins.
   - `CharEmotion` (`stores.svelte.ts`) is keyed by character, so two chats of one character share its emotion history;
     `stopTTS()` (`tts.ts`) stops every chat's speech; `alertWait`'s single status slot and the legacy `progress` overlay
     (`jobChannel.ts` `progressJobId`) show the newest job.
@@ -441,9 +436,3 @@ lore.
   they keep another writer's change to a field the edit left alone; where both changed one field, the edit's value wins.
   A plugin's whole-chat setter diffs against the baseline its instance's last read of that chat retained, else against
   the chat at the call ([plugins](plugin-sandbox.md)).
-- `DevTool.svelte`'s autopilot sends each line as a job in the chat selected when it started; a group's speakers are
-  chosen by the server.
-- Group prompt assembly names a speaker it cannot resolve (`host.findCharacter`) `Unknown Character` in the group
-  wrapper.
-- Group lore activation takes the group as the character: its own `globalLore`, the chat's, and the modules'; the
-  members' `globalLore` is not included, even with the group's `useCharacterLore`.

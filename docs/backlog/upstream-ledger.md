@@ -332,10 +332,14 @@ while writing this ledger.
    the new merge base.
 3. Read the diffs, group commits by behavior, route each group through `STRUCTURE.md`
    (Choose By Task), and compare with Metatron and its tests before assigning a disposition.
-4. Advance the inventoried sha only when every commit in the range has a row, and the
+4. Mark commits that change only group chats or `/multisend` as `excluded` with the reason
+   "retired in this fork" and a link to [STRUCTURE.md D6](../../STRUCTURE.md#data-and-persistence).
+   For a mixed commit, port only the other work. Read changes to upstream group storage
+   because the `.bin` import and export still carry group records.
+5. Advance the inventoried sha only when every commit in the range has a row, and the
    triaged sha only when every row has a disposition. Re-check merges with `--remerge-diff`.
-5. Turn new gaps into a plan with slices under `docs/plan/`.
-6. When the triaged sha moves, set the compatibility version (`version.json` and `appVer`,
+6. Turn new gaps into a plan with slices under `docs/plan/`.
+7. When the triaged sha moves, set the compatibility version (`version.json` and `appVer`,
    `STRUCTURE.md` R1) to the upstream release at that sha. The upstream version-bump commits
    themselves stay `excluded`: Metatron does not copy their files.
 

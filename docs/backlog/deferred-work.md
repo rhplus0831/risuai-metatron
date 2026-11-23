@@ -242,3 +242,7 @@ Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versi
 - `typescript` 7 (now `^5.9.3`): `svelte-check` 4.7 refused it and asked for `typescript@~6` plus `@typescript/native@npm:typescript@7` and `--tsgo`; the server's `tsc` alone passed on 7.
 - `@types/node` stays on the major that `engines`, the Dockerfile, and CI run.
 - Not looked at: `@smithy/*` 3 to 5; `deepmerge` (through `vite-plugin-svelte`), which had no fixed release; `@types/libsodium-wrappers-sumo`, a deprecated stub nothing imports.
+
+## Retire /multisend and Group Chats
+
+- Delete dormant group branches while preserving stored group data and the active archive checks. Before the plan, at `549dd2374`, production code had about 138 direct `type === / !== "group"` checks in 58 files (`src` 74, `server` 45, `shared` 19), plus the runner's speaker selection and the `groupTemplate` and `groupOtherBotRole` settings. Roughly fifty test files exercised groups.

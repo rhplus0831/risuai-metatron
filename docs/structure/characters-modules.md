@@ -2,8 +2,8 @@
 
 ## Scope
 
-- Owns character and group CRUD, card import and export (PNG, JSON, CharX, V2/V3, off-spec Tavern), PNG tEXt chunks,
-  CharX zip read and write, modules (the `.risum` codec, activation, the effective-set getters),
+- Owns character CRUD, the group archive boundary, card import and export (PNG, JSON, CharX, V2/V3, off-spec Tavern),
+  PNG tEXt chunks, CharX zip read and write, modules (the `.risum` codec, activation, the effective-set getters),
   module/character/persona conversion, personas, and the character and lorebook editor UI.
 - Paths:
   - `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList,lowLevelAccessImport}.ts`
@@ -45,8 +45,8 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 ### Characters
 
 - `src/ts/characters.ts`: character CRUD (`createNewCharacter`, `addCharacter`, `changeChar`, `removeChar`,
-  `restoreChar`), the chat file import/export (`importChat`, `exportChat`), and images (`makeGroupImage`,
-  `addCharEmotion`, `changeCharImage`).
+  `restoreChar`), the chat file import/export (`importChat`, `exportChat`), and images (`addCharEmotion`,
+  `changeCharImage`).
 - Recent ordering on home and mobile reads `characterLastChattedAt` (`src/ts/storage/chatStore.svelte.ts`,
   [State](#state)).
 
@@ -83,9 +83,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Character editor
 
-- `src/lib/SideBars/CharConfig.svelte`: the character and group editor (emotion and asset tables, group image).
-  `customNotificationMessage` (a completion text, [Web Push](network-jobs.md)) is local: the card-license guard does not
-  hide it, and `createBaseV2`/`createBaseV3` and the card import never carry it.
+- `src/lib/SideBars/CharConfig.svelte`: the character editor (emotion and asset tables). `customNotificationMessage` (a
+  completion text, [Web Push](network-jobs.md)) is local: the card-license guard does not hide it, and
+  `createBaseV2`/`createBaseV3` and the card import never carry it.
 - `src/lib/Others/GridCatalog.svelte`: the character catalog.
 
 ### Lorebook editor
@@ -200,6 +200,25 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - `@risuai/ccardlib` is imported for types only. There is no runtime validation.
 
 ## Invariants
+
+### Archived groups
+
+- `groupChat` in `shared/database.ts` stays a character resource with parallel `characters`, `characterTalks` and
+  `characterActive` arrays. `normalizeCharacter` in `shared/characters.ts` keeps group records on the shared data path.
+  Sync, [backups and upstream conversion](backup-sync-hub.md#upstream-library-import) carry them.
+- `isArchivedGroup` in `src/ts/storage/archivedGroup.ts` filters the rail and folders, pinned chats and their health
+  scan, home recents, catalog grid and list, and mobile list. Character trash still offers Restore and Delete forever.
+  Restoring a group keeps it archived. History and recovery labels can still name it.
+- The router checks `canSelectCharacter` before `ensureChat` or `selectChat` and sends group routes home.
+  `selectCharacter` and selection reconciliation in `selection.svelte.ts` also send groups home. `selectCharacterAt` and
+  previous/next hotkeys skip them. `changeChar`, `openPinnedChat`, [remote sends](network-jobs.md#remote-host-commands)
+  and recovery draft Apply refuse them.
+- `repairCharOrder` removes group ids at boot and on local repair, including inside folders.
+  `queueRemoteCharOrderRepair` skips groups when appending and preserves the incoming order entries.
+- Under [STRUCTURE.md D6](../../STRUCTURE.md#data-and-persistence), branches that need a selected or admitted group are
+  dormant. This includes `CharConfig.svelte`'s group editor, `makeGroupImage`, `addGroupChar` and `rmCharFromGroup`.
+  `groupTemplate` and `groupOtherBotRole` stay stored with no Prompt settings controls. New work can assume groups are
+  unavailable. Leave dormant branches unextended or remove them when the data is preserved.
 
 ### Card formats
 
@@ -325,7 +344,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - Change module or persona folders: update the shared folder reader for membership rules and the collection store for
   writes. For display or ordering, change `moduleCatalog` (catalog and chat menu) or `PersonaSettings` and
   `reorderShown` (grid). Verify deletion, a filtered or folder-only view, and a stale member id.
-- Change character CRUD: `characters.ts`, `GridCatalog.svelte`, `CharConfig.svelte`. Verify trash restore and groups.
+- Change character CRUD: `characters.ts`, `GridCatalog.svelte`, `CharConfig.svelte`. Verify trash restore and the
+  [archive boundary](#archived-groups).
 
 ## Tests
 
@@ -352,6 +372,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 ### Limitations
 
+- A tab still open from an earlier build can add a group id to the stored order. The upgraded tab hides the entry. An
+  order can also arrive before the group record. The next boot or local repair that knows the owner is a group removes
+  its id. Decision: owner, 2026-11-23 ([archive boundary](#archived-groups)).
 - Folders are one level deep, and the chat's persona picker, the binding panel, and a persona's module links are flat.
   Folder reads ignore member ids whose items are gone, even if a remote deletion leaves the ids stored. See the
   [decision in the archive](../archived-plan/README.md) at `50c75d147`.

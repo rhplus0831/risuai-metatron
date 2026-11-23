@@ -118,6 +118,10 @@ One tab:
 - [ ] **Chat Trash**: Open a pinned chat in an existing folder. Move it to Trash from the chat list dialog and check that it closes and disappears from the active list and pinned rail. In sidebar Trash, check its folder and days left. Restore and reopen it, then check that its messages, folder, pin, and memory panel are as before.
 - [ ] **Chat Trash**: Set Storage › Chat trash retention to 1 day and trash two chats. Restore one before expiry and verify it stays while the other disappears on the next purge after expiry. This requires a real wait through retention and the next hourly purge. The clock override in `createChatTrashPurge` is available through test options only, with no development setting.
 - [ ] **Chat Trash**: Restore a compatible snapshot made before the trash column, then one containing a trashed chat. Verify that the old snapshot's chats are active and that the second restore keeps the chat in Trash with its days left reset to the restored retention setting.
+- [ ] **Retire /multisend and Group Chats**: Import an upstream `.bin` with a group. Check that the report labels the group count "Group chats (kept, hidden)" and the group is absent from the rail and folders, catalog, home, pinned rail and search results. Open its URL and check that it lands home without creating a chat. Check that previous/next character hotkeys skip it. Make and restore a backup, then confirm through an upstream export that the group record survived.
+- [ ] **Retire /multisend and Group Chats**: On the same data set, check that a plugin listing characters by index sees no group and that a `setDatabase` round trip leaves the group stored.
+- [ ] **Retire /multisend and Group Chats**: Type `/multisend clear|||hello` in a chat and submit it. Check that one removal notice appears, the composer clears, and the transcript stays unchanged.
+- [ ] **Retire /multisend and Group Chats**: Press a bot card's button whose trigger runs `/multisend` through `v2Command`. Check that the other trigger effects run and the command sends nothing.
 
 Two tabs, two browsers, or a dropped connection:
 

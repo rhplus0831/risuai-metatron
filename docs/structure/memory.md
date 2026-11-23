@@ -168,6 +168,9 @@ and [live-update feed](live-update-feed.md); the other task kind is the
 [Structured Memory writer](structured-memory/writer.md#the-writer-task), which also runs
 [chat rebuilds](structured-memory/rebuild.md#a-run).
 
+A manual start on an archived group's chat returns 409 `groupArchived`. The tab releases that attempt's fence and shows
+the refusal. See [server route limits](server-generation.md#limitations) for work queued before the upgrade.
+
 A task's kind must match the chat's algorithm at its start (`notHypaV3`, `notStructuredMemory`), and again before each
 further window and each commit, read from the chat and the settings as stored rather than the task's scope. A mismatch
 ends the task skipped with the same reasons and accepts no further result; a HypaV3 task first lets its in-flight
@@ -232,10 +235,11 @@ formatting still applies.
   follow that scope. Editing another preset does not stale this chat's queued task. The fingerprint already hashes the
   resolved memory profile, so changing the chat's connection stales queued work without a separate id field in the
   digest.
-- Per-owner fields (character or group): `supaMemory` (the default for a chat that never chose), `supaMemoryOnCount`
-  (legacy off→on count, still incremented by plugin character writes; read through `supaMemoryOnCount` in
-  `shared/characters.ts`). The upstream exporter derives `supaMemory` from whether any stored chat resolves on. Without
-  exported chat rows, it resolves an empty chat against the owner and settings for the synthetic first chat.
+- Per-owner fields (character or archived group): `supaMemory` (the default for a chat that never chose),
+  `supaMemoryOnCount` (legacy off→on count, still incremented by plugin character writes; read through
+  `supaMemoryOnCount` in `shared/characters.ts`). The upstream exporter derives `supaMemory` from whether any stored
+  chat resolves on. Without exported chat rows, it resolves an empty chat against the owner and settings for the
+  synthetic first chat.
 - New chats inherit their source chat's resolved switch and valid stored mode, preset, and connection, regardless of
   `newChatBinding`; they never inherit `memoryTrimAck`. A first chat stores no memory preferences. Copy, branch, import,
   plugin creation, and recovery carry supplied metadata. Chat-file import drops memory preset and connection ids that
@@ -385,6 +389,10 @@ lookahead starts at stored coverage and does not defer summaries.
 
 ### Limitations
 
+- A raw resource write can change an owner to `type: "group"` under the same id. A send admitted earlier can still hand
+  off writer or vector warming work. Its request id keeps the normal
+  [replay rules](server-generation.md#generation-admission). Decision: owner, 2026-11-23
+  ([archive boundary](../../STRUCTURE.md#data-and-persistence)).
 - A tab loaded before chat memory preferences were introduced keeps showing the character's switch and writes
   `supaMemory`, now only the default of a chat that never chose; a tab loaded before chat modes reached the tab shows
   the global algorithm for a chat with a stored mode. A plugin whole-chat write from such a tab can still remove a field

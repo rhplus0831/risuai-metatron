@@ -55,14 +55,13 @@ Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md
 
 Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-pipeline.md#known-hazards).
 
-- A multisend part can still change the transcript before the server refuses its job. Each part of `runMultisend`,
-  the PO translator, and the DevTool autopilot checks the chat binding as the tab sees it (`checkServerJobBinding`)
-  before it clears or appends, so a binding the tab knows to be incomplete refuses the part with the transcript
-  unchanged. A refusal that only the server's admission finds (a binding mismatch the tab cannot see yet) still comes
-  after that part's clear or append, so a clear-mode part can leave the chat with only its new message. Read in the
-  second fix round of 2026-11-22, not run. A fix moves the clear and append into the job's admission, or restores them when
-  the job is refused. [Slash command](../../src/ts/process/command.ts#L52) ·
-  [Binding check](../../src/ts/process/serverCommands.ts#L1181)
+- The PO translator and DevTool autopilot check the tab's chat binding with `checkServerJobBinding` before appending
+  a user message. A refusal only the server's admission finds, such as a binding mismatch, can leave the appended
+  message in the transcript. The append leaves existing messages in place. Source read in the second fix round
+  of 2026-11-22.
+  A fix moves the append into admission or removes the appended message on refusal.
+  [PO translator](../../src/ts/process/files/multisend.ts#L70) · [DevTool autopilot](../../src/lib/SideBars/DevTool.svelte#L290) ·
+  [Binding check](../../src/ts/process/serverCommands.ts#L1143)
 
 ## network-jobs
 

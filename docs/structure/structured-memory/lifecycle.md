@@ -95,8 +95,8 @@ thread and section effects the retraction settled. Their messages and greeting t
 fill gaps, and a rebuild take what is still in the chat. Live pages lose the removed ids from their sections'
 `provenance` and keep text, history, and `unsupported`. Removed events that carried the chat's whole adoption lineage
 pass `adoptedSummaries` to the newest event left, as [a swap](rebuild.md#what-a-rebuild-keeps) does. `/cut`, `/del`,
-`runMultisend`, rerolls, scripts, server triggers and recovered drafts can remove messages without that mark, leaving
-`missing` for panel repair.
+rerolls, scripts, server triggers and recovered drafts can remove messages without that mark, leaving `missing` for
+panel repair.
 
 ### A checkpoint
 
@@ -210,9 +210,9 @@ and refusal rules. It permits existing runs but fences a live one and writes onl
 runs untouched; `ADOPTED_WRITER_RUN` names no run.
 
 The first nonblank summary in stored order whose `chatMemos` includes `null` cites the current greeting, read from the
-stored owner; groups and reset histories supply none. An event is active when it has an anchored message or a greeting
-and no unanchored message. Thus a greeting-only summary is active, while one also citing a gone message stays stale
-`missing`. Later summaries receive no greeting citation.
+stored owner; archived groups and reset histories supply none. An event is active when it has an anchored message or a
+greeting and no unanchored message. Thus a greeting-only summary is active, while one also citing a gone message stays
+stale `missing`. Later summaries receive no greeting citation.
 
 Adopted sources count as recorded to the writer, while send coverage still requires an active, unsuppressed event. A
 later send can therefore process them through the normal read path; adoption alone makes no model call. Stored summaries

@@ -151,6 +151,9 @@ and keeps what spans files.
 
 ### Upstream library import
 
+- Upstream `.bin` import keeps and normalizes archived groups and retains their chat records. `convertUpstreamDatabase`
+  passes only non-group ids to `convertCharacterOrder`. The report labels the count "Group chats (kept, hidden)". See
+  [archived groups](characters-modules.md#archived-groups).
 - The staged-import writer (`server/src/data/upstream/importStage.ts`) puts the converter's singleton `resources`, then
   its characters, then its chats in batches in array order, so each chat order is upstream's (the hand-off is in
   `importDatabase.ts`'s header).
@@ -173,7 +176,8 @@ and keeps what spans files.
   `memory-unreadable`). The report counts excluded pages and threads (`memory-pages`, `memory-threads`) and the
   confirmation points to the native backup.
 - `exportDatabase.ts` holds boot compatibility (`upstreamCharacters`), credentials (`placeNamedKeys`,
-  `reportOmittedKeys`), presets and HypaV3 ratios (`upstreamPreset`, module header).
+  `reportOmittedKeys`), presets and HypaV3 ratios (`upstreamPreset`, module header). Native backups and restores keep
+  archived group records and their chats. Upstream export carries the records and active chats.
 - Settings upstream's `Database` lacks (`METATRON_ONLY_SETTINGS`, among them `inputHooks`, `requestInterceptions`,
   `moduleFolders`, and `personaFolders`) are deleted from the export, and one that differs from its fresh-boot value is
   reported as excluded `metatron-settings`. An upstream database has neither folder field, so its import leaves both

@@ -926,6 +926,7 @@ export interface loreSettings {
 }
 
 /**
+ * Archived (STRUCTURE.md D6). Keep the shape. Tab and plugin paths cannot open a group.
  * A group character resource keyed by `chaId`. `characters`, `characterTalks`, and `characterActive`
  * are parallel member arrays; `src/ts/process/group.ts` edits them together. Its conversations use
  * the same chat-store views and separate chat storage as an individual character's.

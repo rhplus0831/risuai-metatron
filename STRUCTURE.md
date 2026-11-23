@@ -76,6 +76,11 @@ server.
 - D5. Preserve client/server import parity and shared file formats for cards, modules, presets, translator presets and
   plugins. Persisted discriminators are stable. `LLMFlags`, `LLMFormat`, `LLMProvider` and `LLMTokenizer` are
   append-only. See [format contracts](docs/structure/characters-modules.md#invariants).
+- D6. [Group chats](docs/structure/characters-modules.md#archived-groups) are archived. Keep and normalize records.
+  Ordinary lists and plugins omit them. The tab cannot open them. Character trash manages them. History may name them.
+  The server refuses generation and manual memory starts with `groupArchived`. Other chat routes rely on tab/plugin
+  checks. Group-only prompt, memory, CBS, Lua and editor branches stay dormant and may go if data is preserved. Keep
+  refusals, filters, MCP by-id checks, order repair and preservation active.
 
 ### Platform and network
 
@@ -118,16 +123,16 @@ server.
 
 ### Chat, models and memory
 
-| Task                                                                                                                   | Guide                                                           |
-| ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Send, prompt previews, lore activation/stops, OOC, Draft/BTW hooks, slash commands, groups, rerolls, search and inlays | [chat-pipeline](docs/structure/chat-pipeline.md)                |
-| Models, profiles, slots, credentials, providers, request interception and streaming                                    | [llm-requests](docs/structure/llm-requests.md)                  |
-| Token counts, tokenizer choice and the tokenizer playground                                                            | [tokenizers](docs/structure/tokenizers.md)                      |
-| Per-chat memory, trim confirmation, SupaMemory, HypaV2/V3, Hanurai, embeddings and background jobs                     | [memory](docs/structure/memory.md)                              |
-| Structured Memory records, projection, writer, story dates, prompt lanes, lifecycle, rebuild and page tools            | [structured-memory](docs/structure/structured-memory/README.md) |
-| CBS, Markdown, sanitizing, variables, partial edit, highlighting and display transforms                                | [cbs-rendering](docs/structure/cbs-rendering.md)                |
-| Translation providers, translator presets, stored translations and bilingual display                                   | [translation](docs/structure/translation.md)                    |
-| TTS, image generation, media compression, auxiliary model selector and playgrounds                                     | [media-aux](docs/structure/media-aux.md)                        |
+| Task                                                                                                           | Guide                                                           |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Send, prompt previews, lore activation/stops, OOC, Draft/BTW hooks, slash commands, rerolls, search and inlays | [chat-pipeline](docs/structure/chat-pipeline.md)                |
+| Models, profiles, slots, credentials, providers, request interception and streaming                            | [llm-requests](docs/structure/llm-requests.md)                  |
+| Token counts, tokenizer choice and the tokenizer playground                                                    | [tokenizers](docs/structure/tokenizers.md)                      |
+| Per-chat memory, trim confirmation, SupaMemory, HypaV2/V3, Hanurai, embeddings and background jobs             | [memory](docs/structure/memory.md)                              |
+| Structured Memory records, projection, writer, story dates, prompt lanes, lifecycle, rebuild and page tools    | [structured-memory](docs/structure/structured-memory/README.md) |
+| CBS, Markdown, sanitizing, variables, partial edit, highlighting and display transforms                        | [cbs-rendering](docs/structure/cbs-rendering.md)                |
+| Translation providers, translator presets, stored translations and bilingual display                           | [translation](docs/structure/translation.md)                    |
+| TTS, image generation, media compression, auxiliary model selector and playgrounds                             | [media-aux](docs/structure/media-aux.md)                        |
 
 ### Client, content and extensions
 
@@ -136,7 +141,7 @@ server.
 | Boot, safe boot, navigation, URL/history, screen stores, flags and hotkeys                    | [app-shell](docs/structure/app-shell.md)                   |
 | Chat/sidebar UI, message editors, progress window, GUI primitives, portals and theme          | [ui-theming](docs/structure/ui-theming.md)                 |
 | Settings navigation, preset pickers, prompt editor, input hook and interception editors, i18n | [settings-i18n](docs/structure/settings-i18n.md)           |
-| Character cards and groups, module and persona catalogs, folders and lore editor              | [characters-modules](docs/structure/characters-modules.md) |
+| Character cards, archived groups, module and persona catalogs, folders and lore editor        | [characters-modules](docs/structure/characters-modules.md) |
 | Asset URLs, thumbnails, asset client, queues and batch codec                                  | [assets](docs/structure/assets.md)                         |
 | globalApi facade, file writers, chat fold, utilities, alerts, toasts and Iris                 | [global-api](docs/structure/global-api.md)                 |
 | Regex, trigger v2, Lua editors, script engines and server command effects                     | [scripts-triggers](docs/structure/scripts-triggers.md)     |

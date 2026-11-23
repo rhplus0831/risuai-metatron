@@ -118,7 +118,7 @@
       "match": "src/ts/process/command.{ts,test.ts}",
       "guide": "chat-pipeline",
       "shared": true,
-      "part": "composer slash commands and multisend"
+      "part": "composer slash commands"
     },
     {
       "match": "src/ts/process/command.{ts,test.ts}",

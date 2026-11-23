@@ -56,8 +56,11 @@ the server's script worker. The translator's `edittrans` regex is the client-sid
 | Lua `onButtonClick`                                                | a `command` job (`runServerButton`)                        |
 | Lua `onFormSubmit`                                                 | a `command` job (`Chat.svelte` `handleFormTriggerWithin`)  |
 
-The tab's own LLM requests (translation, suggestions, the HypaV3 modal, plugins) run no `request` trigger, nor does a
-group chat's job (`setRequestTrigger` in `server/src/jobs/runSetup.ts`).
+The tab's own LLM requests (translation, suggestions, the HypaV3 modal, plugins) run no `request` trigger.
+
+`createCommandExecutor` consumes a retired `/multisend` segment and the rest of its line silently. A `v2Command` with
+`valueType: "value"` whose raw text starts with the token is skipped before CBS. The trigger continues with its next
+effect.
 
 A command job of a Lua button or manual trigger on the selected chat shows Stop in
 `src/lib/ChatScreens/DefaultChatScreen.svelte`: `followedJobsOf` makes it stoppable and `abortChat` aborts it
@@ -102,8 +105,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   `checkSupported` reads the same lists (`shared/triggers.ts`).
 - Low-level effects are filtered in the UI and checked at runtime via `trigger.lowLevelAccess`, derived from the owning
   character or module rather than the stored trigger's claim. Lua edit hooks always run with `lowLevelAccess:false`.
-- Without the initiating owner's grant, `v2Command` consumes `/multisend` and `/speak` without provider work while
-  ordinary piped commands still run.
+- Without the initiating owner's grant, `v2Command` consumes `/speak` without provider work while ordinary piped
+  commands still run.
 - `v2SetPersonaDesc` requires that grant to write the effective shared persona and belongs in the editor's Low Level
   palette; `v2GetPersonaDesc` stays in Data.
 - Without the owner's grant, Lua `getTokens`, `v2Tokenize`, `/test_lorebook`, and trigger-added system-prompt slots use
@@ -193,6 +196,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 ### Limitations
 
+- A variable-sourced `v2Command` line or one with `/multisend` after another command runs CBS on the whole line before
+  consuming the retired segment. Decision: owner, 2026-11-23.
 - `triggercode` effects have no runtime case. Only `triggerlua` executes. Decision: `triggercode` is legacy and
   unsupported (`TriggerList.svelte`, Files above).
 - Trigger and command runs are not atomic: character/lore writes and mutating commands can commit before the run ends;

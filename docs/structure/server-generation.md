@@ -2,8 +2,8 @@
 
 ## Scope
 
-For job admission, receipts, owner and viewer sockets, handoff, command sequences, reply streaming or completion Web
-Push holds, start here. The registry also hosts the prompt, Lua, LLM, translation and memory runtimes.
+For job admission, receipts, owner and viewer sockets, handoff, command jobs, reply streaming or completion Web Push
+holds, start here. The registry also hosts the prompt, Lua, LLM, translation and memory runtimes.
 
 - [Chat pipeline](chat-pipeline.md) owns the tab's send lifecycle and prompt semantics. [LLM requests](llm-requests.md)
   owns adapter behavior and request interception. [Memory](memory.md) and [translation](translation.md) own their jobs.
@@ -109,6 +109,10 @@ refusal the memory step recovered from or outlived replaces no later error.
   identity maps and receipts with it, and looks up `requestId` (`GENERATION_ID_PATTERN`) before the admission gates. The
   gate order, the synchronous install and the replay rules are `create`'s comment; identity is `requestFingerprint`, the
   lookup order `lookupRequest`, and cancellation `cancel`.
+- Body validation returns 400 for `kind: "group"`. For any valid kind, `create` checks the stored owner with
+  `readCharacter` after replay, chat existence and trash checks. A group owner gets 409 `groupArchived` before any slot
+  or receipt is installed. `readOrphanedOverrideEntries` reuses the owner read. Older job statuses and receipts can
+  still report the group kind.
 - Another client's replay is a copy without `terminal.result`. The chat-slot `GET /current` and `POST /stop` are open to
   any authenticated tab or device.
 - A retry's auth, limiter or body-reader failure happens before lookup. After an unanswered create, only a decoded
@@ -124,21 +128,22 @@ refusal the memory step recovered from or outlived replaces no later error.
 
 - `createGenerationRunner`'s comment in `server/src/jobs/commandRunner.ts` owns dispatch, including the `memoryRecord`,
   `memoryTest`, [`memoryChapters`](structured-memory/writer.md#the-chapter-call), and `memoryRebuild` exceptions.
-  Button, form, and manual commands use `runCommand`; other kinds use `runPromptJob`. `runPromptJob` delegates one send
-  to `runPromptSend` and emits `done` after it returns; command sequences use `runPromptSend` per part
-  ([Command sequences](#command-sequences)). `runPromptJob`'s comment is the send's order.
-- `assemblePrompt` runs per speaker; its `AssemblyHost` supplies the job's services. Assembly's prompt and lore behavior
-  is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
+  Button, form and manual command jobs use `runCommand` and end when their handlers finish. Other kinds use
+  `runPromptJob`, which delegates one send to `runPromptSend` and emits `done` after it returns. Its comment gives the
+  send's order.
+- `AssemblyHost` supplies the job's services to `assemblePrompt`. See [chat pipeline](chat-pipeline.md) for prompt and
+  lore behavior and [memory](memory.md) for memory algorithms. Group speaker selection and per-speaker assembly are
+  dormant under [STRUCTURE.md D6](../../STRUCTURE.md#data-and-persistence).
 - The send reserves space at the final token recheck for MCP tool schemas and the messages that the reply's request
   layer will insert (the Request Rules page's prompt insertion). `AssemblyHost.toolSchemaTokens` lists tools once for
   this reply. A plain `preview` skips that listing but still counts the interception messages in
   `AssemblyHost.insertedMessages`. The context report keeps `toolSchemas` and `interceptions` separate from assembled
   input. The mode filter, message order and insertion point belong to
   [LLM requests](llm-requests.md#request-interception).
-- With `context.stopOverLoreBudget`, the first assembly of a send, continue, group or reroll can end the admitted job
-  with `loreOverBudget` before history, memory and the reply request. Earlier writes, including the input, stand. The
-  tab owns the [lore stop and retry](chat-pipeline.md#lore). The flag and `inputOriginal` are outside
-  `requestFingerprint`. The input stage preserves the reviewed draft's original text on its appended message
+- With `context.stopOverLoreBudget`, the first assembly of a send, continue or reroll can end the admitted job with
+  `loreOverBudget` before history, memory and the reply request. Earlier writes, including the input, stand. The tab
+  owns the [lore stop and retry](chat-pipeline.md#lore). The flag and `inputOriginal` are outside `requestFingerprint`.
+  The input stage preserves the reviewed draft's original text on its appended message
   ([translation](translation.md#send-hand-off)).
 - For an OOC question the tab starts a `preview` with `context.oocExchangeId`, part of its identity. After
   `presetChain`, `runSend` detaches the chat at the stored exchange's anchor, then adds `oocTail` with fresh message ids
@@ -148,8 +153,8 @@ refusal the memory step recovered from or outlived replaces no later error.
   media uses ordinary storage. `risuAccessHost` in `server/src/mcp/internal.ts` also refuses resource writes on a
   detached scope.
 - A successful OOC result includes `ooc: true` before the tab can request the answer. A missing exchange, missing anchor
-  or legacy memory cursor ahead of the cut yields `oocExchangeGone`, `oocAnchorGone` or `oocMemoryAhead`. Groups are
-  refused. See [OOC question](chat-pipeline.md#ooc-question).
+  or legacy memory cursor ahead of the cut yields `oocExchangeGone`, `oocAnchorGone` or `oocMemoryAhead`. See
+  [OOC question](chat-pipeline.md#ooc-question).
 - After final chat writes, `runPromptSend` hands translations and due memory input to their detached services. For how a
   reply reaches those writes, see [streamed and buffered replies](#streamed-and-buffered-replies).
 
@@ -187,18 +192,6 @@ refusal the memory step recovered from or outlived replaces no later error.
   the attempt's variable writes (`rerollAttempt`). Later rounds run as after a send; `finalize`'s comment is the
   contract.
 
-### Command sequences
-
-- One `command` job runs a Lua button, form, or manual trigger, then its queued `/multisend` parts under one id, chat
-  slot, channel, owner and hooks: `createCommandExecutor` parses, `createRunSetup` queues (`MAX_SEQUENCE_PARTS`,
-  `MAX_SEQUENCE_PART_CHARS`), `finishCommand` runs each part after the registry's synchronous preflight
-  (`RunningJob.sequence.beginPart`) and sends it through `runPromptSend`. Boundary checks, the clear-and-append write,
-  the send view, progress and the terminal are those comments.
-- Each part gets `JOB_MAX_DURATION_MS` (30 minutes) anew. After a part returns, the tab receives the live-only
-  `sequence` event, the [receipt](#job-receipts) keeps `progress`, and the one terminal carries
-  `sequence: { total, sent, stopped? }`. A part needing a browser callback waits under the channel's absence rules;
-  auto-checkpoint runs once after a done sequence, after the slot is released.
-
 ### Chat-slot lookup and stop
 
 `current` reads the chat slot (`chatSlots`) without attaching, 200 `null` when idle (`readChatGeneration` also reads an
@@ -220,9 +213,9 @@ too) is attributed; `stop`'s comment holds the rules and `jobChanged` retry.
 - A job re-sending a failed provider request reports `{ type: "retry" }` (`JobEventInput`); the registry counts the
   reports since the stage last changed and sends the `retry` event with the count, then `retry: null` after a changed
   stage's event. The snapshot replays a count only, as it does the stage.
-- `publishProgress` sends a live-update `generation` frame at admission, each stage/retry/sequence change and job end.
-  It includes previews, identifies the creator across handoff, and fences on the current epoch. The feed's hello
-  snapshots running jobs for observers and reconnects ([live-update hello](live-update-feed.md#live-update-hello)).
+- `publishProgress` sends a live-update `generation` frame at admission, each stage or retry change and job end. It
+  includes previews, identifies the creator across handoff, and fences on the current epoch. The feed's hello snapshots
+  running jobs for observers and reconnects ([live-update hello](live-update-feed.md#live-update-hello)).
 - Only the feed carries the latest reply's `output` estimate. `accepted`, a transition to `preparing`, and the
   registry-only `outputReset` (a Half Streaming reply rejected by the response checks) clear it; a `retry` keeps it.
   `publishOutputProgress` coalesces count-only changes per job at `GENERATION_PROGRESS_INTERVAL_MS`. Other progress
@@ -233,8 +226,7 @@ too) is attributed; `stop`'s comment holds the rules and `jobChanged` retry.
   owner or viewer whose queue plus the next frame exceeds 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
   and holds success for the final `seq`.
-- Owner absence bounds only questions and callbacks; no job-wide absence abort. Callback-free sequence parts and
-  detached memory tasks keep running.
+- Owner absence bounds only questions and callbacks. Detached memory tasks keep running.
 - A streaming provider request with no callback outstanding, local-network streaming included
   ([Proxying](self-host-server.md#proxying)), goes on after the socket closes until it completes, its transport fails,
   the run fails (a failed checkpoint write cancels its reader; a fatal host failure aborts the run), or the job aborts
@@ -290,11 +282,11 @@ after the push service.
 
 - `context.completionHoldMs` (`parseCreateBody`: a finite number above zero, floored, clamped to
   `MAX_COMPLETION_HOLD_MS` in `shared/jobs.ts`; any kind; not in `requestFingerprint`, so a retry replays the first
-  value; a command sequence's part keeps it) makes `notifyCompletion` hand the push to `hold` instead of sending it,
-  unless the job's signal is aborted. The tab's `notification` notice is sent at the tail as without it.
-- A later hold of the same job (a group's next speaker, a sequence's next part) replaces the notification. No timer runs
-  while the job does: the registry's `onJobEnded` option (from `finalize`, once per job, forced ends included) starts
-  the deadline, `completionHoldMs` from then, never restarted.
+  value) makes `notifyCompletion` hand the push to `hold` instead of sending it, unless the job's signal is aborted. The
+  tab's `notification` notice is sent at the tail as without it.
+- A later hold of the same job replaces the notification. No timer runs while the job does: the registry's `onJobEnded`
+  option (from `finalize`, once per job, forced ends included) starts the deadline, `completionHoldMs` from then, never
+  restarted.
 - The release route sends a held push at once. `requestJob` (over `lookupRequest`) answers a live job or kept outcome
   with its `everHandedOff`, null for an unknown request, a tombstone, or a receipt alone; the route answers
   `released: false` for null, for a job that ever changed owner (its push waits for the deadline), and when nothing is
@@ -313,9 +305,8 @@ after the push service.
 mode); like the request history, in no snapshot or archive.
 
 - `createGenerationReceipts` owns the schema, bounded retention and best-effort failure policy. The registry writes a
-  receipt synchronously on admission and terminal, plus sequence progress before the first part and at each completed
-  boundary. The stored outcome omits `result`, caps error text and keeps sequence progress. A request cancelled before
-  admission gets an identity tombstone that cannot be read as a job status.
+  receipt synchronously on admission and terminal. The stored outcome omits `result` and caps error text. A request
+  cancelled before admission gets an identity tombstone that cannot be read as a job status.
 - Reads: a status answers from memory first (the live job, then its kept outcome); the disk answers only an id memory
   does not hold, only to the row's `client_id`, and only in the current epoch. Request lookup is shared across clients
   and returns the identity even when its status payload is gone (`readByRequest`).
@@ -404,6 +395,10 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 
 ### Limitations
 
+- Direct API calls or tabs still open from an earlier build can name an archived group's chat for translation, display
+  transforms, standalone LLM requests, Structured Memory edits, checkpoints, chat trash and resource writes. Background
+  memory work queued before the upgrade can finish. Decision: owner, 2026-11-23
+  ([archive boundary](../../STRUCTURE.md#data-and-persistence)).
 - For plugin-handler requests, `server/src/prompt/transform.ts` `createTransformService` checks the shared scope against
   the 8 MiB snapshot limit before preparing each cache miss; an oversized scope fails every uncached target, while
   cached hits still answer. Decision: Display Evaluation S3, [archive](../archived-plan/README.md).
@@ -444,10 +439,6 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   ([tokenizers](tokenizers.md#flows)), so a read and a short count are answered while a long count runs
   ([measurements](../reports/measurements/server/tokenizer-worker-2026-11-22.md)). Decision: owner, 2026-11-10
   (known-issues review): worker isolation is a separate design.
-- A command's parts each load the job scope again (`server/src/jobs/commandRunner.ts` calls `runPromptSend`, which calls
-  `loadJobScope`), so a request interception rule saved while a `/multisend` command runs reaches its later parts; a
-  group send keeps one list. Decision: owner, 2026-11-21 (found-issues review): it needs a rule edit during a multi-part
-  command.
 
 ### Gotchas
 
