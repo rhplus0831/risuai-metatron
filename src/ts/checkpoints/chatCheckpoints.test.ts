@@ -4,6 +4,7 @@ import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat } from "../../../shared/database.ts";
+import { settleFlush } from "../storage/tests/flushRetry";
 import { KINDS, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
 import { CheckpointServer, deferred } from "./tests/checkpointServer";
 
@@ -210,7 +211,10 @@ describe("chat checkpoints over the server store", () => {
             fmIndex: 1,
         });
         server.resources.dropNextBatchResponse = true;
-        await expect(tab.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        // The create's answer is lost; the flush waits out its backoff while the other tab works.
+        const flushing = tab.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(server.resources.batchCount()).toBe(1);
         const lost = server.resources.batchBodies()[0].chats[0];
         const loadingTab = await bootTab();
         const saved = await loadingTab.checkpoints.saveCheckpoint(created, "First greeting");
@@ -221,6 +225,8 @@ describe("chat checkpoints over the server store", () => {
             status: "loaded",
         });
 
+        // The edits below come after the flush began: their discards are reported within this scope.
+        const scope = tab.sync.beginMutationScope();
         tab.chat.setChatMeta(created, { fmIndex: 3 });
         const sibling = { chaId: ref.chaId, chatId: "second" };
         tab.chat.setChatMeta(sibling, { note: "Edit on a deleted sibling" });
@@ -228,11 +234,12 @@ describe("chat checkpoints over the server store", () => {
         server.resources.requests.length = 0;
         mocks.reloadNotice.mockClear();
 
-        // The sibling's conflict rolls back the replay batch and requires an authoritative
-        // collection read, which runs in the background queue. Whether the replay goes before or
-        // after that read, it goes exactly as lost (its id, ops, and base, with `retry`): seeing the
-        // created id in the list never acknowledges its lost answer.
-        const result = await tab.sync.flushResources();
+        // The flush's retry: the sibling's conflict rolls back the replay batch and requires an
+        // authoritative collection read, which runs in the background queue. Whether the replay goes
+        // before or after that read, it goes exactly as lost (its id, ops, and base, with `retry`):
+        // seeing the created id in the list never acknowledges its lost answer.
+        await settleFlush(flushing);
+        const result = await tab.sync.flushResources({ scope });
         expect(result.discarded.sort()).toEqual(
             [`chats/${created.chaId}/${created.chatId}`, `chats/${sibling.chaId}/${sibling.chatId}`].sort(),
         );

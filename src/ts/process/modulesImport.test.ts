@@ -2,6 +2,7 @@ import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
+import { settleFlush } from "../storage/tests/flushRetry";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
 import { lowLevelAccessAnswer, lowLevelAccessDialog } from "../tests/lowLevelAccessDialog";
 import type { RisuModule } from "./modules";
@@ -728,42 +729,45 @@ describe("the import alert waits for the acknowledgement", () => {
         collectionStore.updateModule(m0, { name: "mine" });
         collectionStore.addPreset({ name: "p3" });
         remote(fake, (modules) => (modules[0].name = "theirs"));
-        // The first batch (modules and presets) conflicts; the presets retry fails.
+        // The first batch (modules and presets) conflicts; the presets retry fails, and the flush's
+        // resend after its backoff stays unanswered: the import stops waiting at its save deadline.
         let batches = 0;
         intercept(async (url, answer) => {
             if (url === "/api/resources/batch" && ++batches === 2) {
+                fake.holdNextBatch = true;
                 return Response.json({ error: "down" }, { status: 503 });
             }
             return answer();
         });
         picker.file = await risum(modules, "Lost");
-        await modules.importModule();
-        expect(batches).toBe(2);
+        await settleFlush(modules.importModule());
+        expect(batches).toBe(3);
+        expect(fake.releaseBatch).not.toBeNull();
         expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportDiscarded);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(names(list())).toEqual(["theirs"]);
         expect(names(record("modules"))).toEqual(["theirs"]);
-        // The preset is saved by the ordinary retry.
-        await vi.advanceTimersByTimeAsync(35_000);
-        await sync.flushResources();
+        // The preset is saved once the server answers the resend.
+        fake.releaseBatch!();
+        await settleFlush(sync.flushResources());
         expect(names(record("presets"))).toContain("p3");
     });
 
-    it("a failed flush with the module still listed reports moduleImportUnconfirmed with the reason and no MCP removal toast; the module is saved later", async () => {
+    it("a save the server does not answer, with the module still listed, reports importSavePending and no MCP removal toast; the module is saved later", async () => {
         const h = await boot();
         const { modules, list, record, fake, sync } = h;
-        fake.failNext = { status: 0, times: 1, match: (path: string) => path === "/api/resources/batch" };
+        // A failed request is retried by the flush; an unanswered one outlasts the import's save deadline.
+        fake.holdNextBatch = true;
         picker.file = await risum(modules, "Unconfirmed", { mcp: { url: "https://module.example/mcp" } });
-        await modules.importModule();
-        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
-            language.moduleImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
-        );
+        await settleFlush(modules.importModule());
+        expect(fake.releaseBatch).not.toBeNull();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.importSavePending);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(alerts.toast).not.toHaveBeenCalled();
         expect(names(list())).toEqual(["Unconfirmed"]);
         expect(record("modules") ?? []).toEqual([]);
-        await vi.advanceTimersByTimeAsync(35_000);
-        await sync.flushResources();
+        fake.releaseBatch!();
+        await settleFlush(sync.flushResources());
         expect(names(record("modules"))).toEqual(["Unconfirmed"]);
         expect(alerts.toast).not.toHaveBeenCalled();
     });

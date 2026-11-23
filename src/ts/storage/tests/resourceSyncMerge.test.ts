@@ -6,6 +6,7 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
 import { createFakeLockManager } from "./fakeLockManager";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { settleFlush } from "./flushRetry";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
@@ -674,17 +675,19 @@ describe("the flush barrier around a merge", () => {
         });
     });
 
-    it("does not acknowledge the merged edit when its write fails: the flush rejects and the edit is saved later", async () => {
+    it("does not acknowledge the merged edit when its write fails: the flush retries after its backoff and saves the edit", async () => {
         const { fake, sync, mirror, remote } = await boot();
         fake.beforeNextBatch = () => {
             remote("characters", "a", (data) => (data.lastInteraction = 200));
             fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/batch" };
         };
         mirror("a").desc = "local";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flushing = sync.flushResources();
+        // The merged write failed: nothing is acknowledged while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
         expect(fake.data("characters", "a").desc).toBe("base");
-        await vi.advanceTimersByTimeAsync(5000);
-        expect((await sync.flushResources()).discarded).toEqual([]);
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         expect(fake.data("characters", "a")).toMatchObject({ desc: "local", lastInteraction: 200 });
     });
 
@@ -698,9 +701,12 @@ describe("the flush barrier around a merge", () => {
             };
         };
         mirror("a").desc = "local";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The merged write landed but its answer is lost; the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(2);
         expect(fake.data("characters", "a").desc).toBe("local");
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(mirror("a").desc).toBe("local");
@@ -769,10 +775,11 @@ describe("statics counts (best effort)", () => {
         // This tab writes 5 → 6 and loses the answer; another tab writes 7; the retry adds again.
         fake.dropNextBatchResponse = true;
         settings.statics.messages = 6;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.dropNextBatchResponse).toBe(false);
         remote("statics", "main", (data) => (data.messages = 7));
-        await vi.advanceTimersByTimeAsync(5000);
-        await sync.flushResources();
+        await settleFlush(flushing);
         expect(counts(fake).messages).toBe(8);
     });
 

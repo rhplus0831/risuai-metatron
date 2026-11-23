@@ -438,7 +438,10 @@ describe("Iris dialogue when the save fails (written through the settings views)
         const dialogue = [{ speaker: "Iris", text: "hi", tip: "t" }];
         table(IRIS).set("current_dialogue", dialogue);
         fake.failNext = { status: 500, times: 50, match: (path) => path === "/api/resources/batch" };
-        await importer.importBrowserLocalData();
+        // The step's flush retries through its backoffs until its ten attempts run out.
+        const run = importer.importBrowserLocalData();
+        await vi.advanceTimersByTimeAsync(200_000);
+        await run;
         expect(fake.data("ui", "main").irisDialogue).toBeUndefined();
         expect(table(IRIS).get("current_dialogue")).toEqual(dialogue);
         // The ui record holds it (queued): only the server's copy lets the local entry go.
@@ -473,6 +476,49 @@ describe("the run as a whole", () => {
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 });
+
+it.each([
+    {
+        kind: "pluginStorage",
+        database: PLUGIN,
+        key: "safe_plugin_legacy",
+        value: { enabled: true },
+        saved: { _safeLocalPluginStorage: { legacy: { enabled: true } } },
+    },
+    {
+        kind: "ui",
+        database: IRIS,
+        key: "current_dialogue",
+        value: [{ speaker: "Iris", text: "hello" }],
+        saved: { irisDialogue: [{ speaker: "Iris", text: "hello" }] },
+    },
+])(
+    "keeps the browser copy after 30 seconds without $kind verification",
+    async ({ kind, database, key, value, saved }) => {
+        table(database).set(key, value);
+        const fetch = fake.fetch;
+        const heldVerification = vi.fn(() => new Promise<Response>(() => {}));
+        vi.spyOn(fake, "fetch").mockImplementation((path, init) =>
+            path === `/api/resources/${kind}/main` && (init?.method ?? "GET") === "GET"
+                ? heldVerification()
+                : fetch(path, init),
+        );
+
+        const finished = vi.fn();
+        const rejected = vi.fn();
+        void importer.importBrowserLocalData().then(finished, rejected);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(heldVerification).toHaveBeenCalledTimes(1);
+        expect(fake.data(kind, "main")).toMatchObject(saved);
+
+        await vi.advanceTimersByTimeAsync(29_999);
+        expect(finished).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(finished).toHaveBeenCalledTimes(1);
+        expect(rejected).not.toHaveBeenCalled();
+        expect(table(database).get(key)).toEqual(value);
+    },
+);
 
 describe("the Bergamot model store", () => {
     type Request = { onerror: ((event: Event) => void) | null; onsuccess: unknown; onblocked: unknown };

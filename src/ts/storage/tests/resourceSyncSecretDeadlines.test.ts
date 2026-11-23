@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import type { SecretPath } from "../../../../shared/llmSecrets.ts";
+import { advanceUntil } from "./flushRetry";
 import { bootMutations, refJ, warmMutationGraph } from "./mutationStoresHarness";
 import type { StoreBackedServer } from "./storeBackedServer";
 
@@ -70,7 +71,8 @@ it("releases the save loop and credential barrier on expiry, then refuses the la
     });
 
     const opId = secrets.setSecret(secretPath, key);
-    const flush = observeRejection(sync.flushResources());
+    const flushing = sync.flushResources();
+    const flush = observeRejection(flushing);
     await vi.advanceTimersByTimeAsync(0);
     expect(deliverOriginal).toBeTypeOf("function");
     const barrier = observeRejection(sync.awaitSecretWrites());
@@ -82,17 +84,19 @@ it("releases the save loop and credential barrier on expiry, then refuses the la
     expect(barrier).not.toHaveBeenCalled();
     // The short key and base revision add a few milliseconds of JSON upload allowance.
     await vi.advanceTimersByTimeAsync(20);
-    expect(flush).toHaveBeenCalledOnce();
+    // The barrier rejects at the expiry; the flush outlasts it and waits out its backoff.
     expect(barrier).toHaveBeenCalledOnce();
+    expect(flush).not.toHaveBeenCalled();
     expect(secrets.llmSecretState.queue.map((op) => op.id)).toEqual([opId]);
 
-    // The automatic retry takes the network backoff before it can send the later edit.
+    // The flush's retry takes the network backoff before it can send the later edit.
     await vi.advanceTimersByTimeAsync(500);
     expect(fake.chat("c", "j")!.data.note).toBe("");
     await vi.advanceTimersByTimeAsync(30_000);
     expect(fake.chat("c", "j")!.data.note).toBe("edited while the PUT was unanswered");
     expect(secrets.llmSecretState.queue).toEqual([]);
     expect(record("llmSecrets").openAIKey).toBe(key);
+    await expect(flushing).resolves.toEqual({ discarded: [], refused: [] });
 
     const committedRevision = fake.record("llmSecrets", "main")!.revision;
     expect((await deliverOriginal!()).status).toBe(409);
@@ -108,31 +112,38 @@ it("doubles the deadline for a requeued PUT and resets it after a stale-revision
     send.mockImplementation((path, init) => (path === secretRoute ? put(path, init) : fake.fetch(path, init)));
     const staleBase = fake.record("llmSecrets", "main")!.revision;
 
+    // Each PUT's deadline aborts its signal; the flush retries every expired PUT after its backoff.
+    const aborted = (call: number) => put.mock.calls[call][1]?.signal?.aborted;
     secrets.setSecret(secretPath, key);
-    const first = observeRejection(sync.flushResources());
-    await vi.advanceTimersByTimeAsync(45_020);
-    expect(first).toHaveBeenCalledOnce();
+    const flush = observeRejection(sync.flushResources());
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(aborted(0)).toBe(false);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(aborted(0)).toBe(true);
+    expect(put).toHaveBeenCalledTimes(1);
 
-    const second = observeRejection(sync.flushResources());
+    // The requeued PUT, sent by the flush's retry, waits twice as long.
+    await advanceUntil(() => put.mock.calls.length === 2);
     await vi.advanceTimersByTimeAsync(90_000);
-    expect(second).not.toHaveBeenCalled();
+    expect(aborted(1)).toBe(false);
     expect(put).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(40);
-    expect(second).toHaveBeenCalledOnce();
+    expect(aborted(1)).toBe(true);
 
     fake.set("llmSecrets", "main", { ...record("llmSecrets"), openAIKey: "other-tab-key" });
     const freshBase = fake.record("llmSecrets", "main")!.revision;
     put.mockImplementationOnce(fake.fetch);
 
-    const afterConflict = observeRejection(sync.flushResources());
-    await vi.advanceTimersByTimeAsync(0);
+    // The next retry meets the stale revision, rereads, and sends a PUT on the fresh base.
+    await advanceUntil(() => put.mock.calls.length === 4);
     expect(fake.secretRequests()).toEqual([
         { method: "PUT", path: secretRoute, body: { value: key, baseRevision: staleBase } },
     ]);
     expect(JSON.parse(String(put.mock.lastCall?.[1]?.body))).toEqual({ value: key, baseRevision: freshBase });
 
     await vi.advanceTimersByTimeAsync(45_000);
-    expect(afterConflict).not.toHaveBeenCalled();
+    expect(aborted(3)).toBe(false);
     await vi.advanceTimersByTimeAsync(20);
-    expect(afterConflict).toHaveBeenCalledOnce();
+    expect(aborted(3)).toBe(true);
+    expect(flush).not.toHaveBeenCalled();
 });

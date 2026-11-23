@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { tick } from "svelte";
+import { settleFlush } from "src/ts/storage/tests/flushRetry";
 import { bootMutations, SAVE_DEBOUNCE_MS, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 import type { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 import type { StorageController } from "./storageController.svelte";
@@ -149,15 +150,22 @@ describe("StorageController", () => {
             io.server = server;
         });
         h.settings.ui.theme = "unsaved theme";
+        // The save fails and the flush's resend stays unanswered: the snapshot stops at the save deadline.
         h.fake.failNext = { status: 0, times: 1, match: (url) => url === "/api/resources/batch" };
+        h.fake.holdNextBatch = true;
         controller.busy = false;
         controller.snapshotLabel = "Keep this label";
-        await controller.take();
+        await settleFlush(Promise.resolve(controller.take()));
+        expect(h.fake.failNext).toBeNull();
+        expect(h.fake.releaseBatch).not.toBeNull();
         expect(io.snapshots).toEqual([]);
-        expect(controller.error).toBe("Could not save your latest changes before the snapshot: Failed to fetch");
+        expect(controller.error).toBe(
+            "Could not save your latest changes before the snapshot: The server has not answered the save request. Please try again shortly.",
+        );
         expect(controller.snapshotLabel).toBe("Keep this label");
         expect(controller.busy).toBe(false);
         expect(deps.alertNormal).not.toHaveBeenCalled();
+        h.fake.releaseBatch!();
     });
 
     it.each(["chat", "order"])(

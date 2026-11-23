@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { settleFlush } from "./flushRetry";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -673,12 +674,14 @@ describe("lost acknowledgements", () => {
         delete element.desc;
         element.desc = desc;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the flush waits out its backoff before the retry.
+        await vi.advanceTimersByTimeAsync(0);
         expect(ops()).toEqual([expect.objectContaining({ patch: { set: { name: "lost" }, remove: [] } })]);
         expect(record("characters", "c").name).toBe("lost");
         expect(Object.keys(record("characters", "c")).at(-1)).not.toBe("desc");
         // The retry: a stale base (409), read back, recognized as this tab's own write.
-        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.heldRecordRevision("characters", "c")).toBe(revision("characters", "c"));
         expect(element.name).toBe("lost");
@@ -694,8 +697,12 @@ describe("lost acknowledgements", () => {
         const element = character("c");
         fake.dropNextBatchResponse = true;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the typing lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         element.personality = "typed while the answer was lost";
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(record("characters", "c")).toMatchObject({
             name: "lost",
@@ -718,13 +725,15 @@ describe("lost acknowledgements", () => {
             { extra: 1, id: "m2", name: "m2" },
             plain(settings.modules[2]),
         ]);
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the flush waits out its backoff before the retry.
+        await vi.advanceTimersByTimeAsync(0);
         expect(ops()).toEqual([
             expect.objectContaining({ patch: { items: [], changes: [{ id: "m2", set: { extra: 1 }, remove: [] }] } }),
         ]);
         expect(Object.keys(record("modules")[1])).toEqual(["id", "name", "extra"]);
         expect(Object.keys(plain(settings.modules[1]))).toEqual(["extra", "id", "name"]);
-        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.heldRecordRevision("modules", "main")).toBe(revision("modules"));
         agree("modules");
@@ -740,11 +749,13 @@ describe("lost acknowledgements", () => {
         fake.dropNextBatchResponse = true;
         element.name = "lost";
         // The echo arrives with the commit, while the batch is in flight: it waits for the cycle.
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         const landed = revision("characters", "c");
         expect(landed).not.toBe(base);
         element.name = "typed after the lost answer";
-        // (The retry backoff runs on the real clock: the flush runs the cycle now.)
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(ops()).toEqual([
             expect.objectContaining({ baseRevision: base, patch: { set: { name: "lost" }, remove: [] } }),
@@ -766,9 +777,13 @@ describe("lost acknowledgements", () => {
         const saved = element.name;
         fake.dropNextBatchResponse = true;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the revert lands after the echo, while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         const landed = revision("characters", "c");
         element.name = saved;
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(ops().at(-1)).toEqual(
@@ -785,12 +800,16 @@ describe("lost acknowledgements", () => {
         live.paused = true;
         fake.dropNextBatchResponse = true;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the revert and then the echo arrive while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         element.name = saved;
         // The echo arrives after the revert (the mirror equals the saved text again).
         live.paused = false;
         flushFeed();
         expect(element.name).toBe(saved);
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(element.name).toBe(saved);
         expect(record("characters", "c").name).toBe(saved);
@@ -1580,13 +1599,16 @@ describe("patches of the other mirrored records", () => {
             // A lost acknowledgement is recognized from an exact copy of what this tab sent.
             h.settings.modules[1].name = "ack lost";
             h.fake.dropNextBatchResponse = true;
-            await expect(h.sync.flushResources()).rejects.toThrow("Failed to fetch");
+            const flushing = h.sync.flushResources();
+            // The copy arrives while the flush waits out its backoff after the lost answer.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(h.fake.dropNextBatchResponse).toBe(false);
             if (delivery === "feed") h.flushFeed();
             else {
                 const row = h.fake.record("modules", "main")!;
                 h.sync.applyHydration({ kind: "modules", id: "main", ...row });
             }
-            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
             expect(h.record("modules")[1].name).toBe("ack lost");
             expect(h.reads()).toBe(0);
             expect(alerts.normal).not.toHaveBeenCalled();

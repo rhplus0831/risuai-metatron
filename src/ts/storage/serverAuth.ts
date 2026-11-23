@@ -1,6 +1,7 @@
 import { language } from "src/lang";
 import { alertError, alertInput, waitAlert } from "../alert";
 import { base64url, getKeypairStore, saveKeypairStore } from "../util";
+import { readWithDeadline } from "./readDeadline";
 
 /**
  * The tab's authentication with the self-host server (split out of the old storage client): one
@@ -12,12 +13,25 @@ import { base64url, getKeypairStore, saveKeypairStore } from "../util";
  * check runs at a time; parallel callers wait for it, and a failed one is tried again next time.
  */
 
+const AUTH_CHECK_STEP_DEADLINE_MS = 20_000;
+
+function authCheckStep<T>(step: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    return readWithDeadline(AUTH_CHECK_STEP_DEADLINE_MS, "The server did not answer the sign-in check in time", step);
+}
+
 function JSONStringlifyAndbase64Url(obj: unknown) {
     return base64url(Buffer.from(JSON.stringify(obj), "utf-8"));
 }
 
-async function getKeyPair(): Promise<CryptoKeyPair> {
+// A replacement check joins an IndexedDB write that already started, so the writes cannot race.
+let savingKeyPair: Promise<CryptoKeyPair> | null = null;
+
+async function getKeyPair(signal?: AbortSignal): Promise<CryptoKeyPair> {
+    if (savingKeyPair) {
+        return savingKeyPair;
+    }
     const storedKey = await getKeypairStore("node");
+    signal?.throwIfAborted();
 
     if (storedKey) {
         return storedKey;
@@ -32,24 +46,32 @@ async function getKeyPair(): Promise<CryptoKeyPair> {
         ["sign", "verify"],
     );
 
-    await saveKeypairStore("node", keyPair);
-
-    return keyPair;
+    // WebCrypto can finish after the check expires. Only an active step can start a write.
+    signal?.throwIfAborted();
+    savingKeyPair ??= saveKeypairStore("node", keyPair)
+        .then(() => keyPair)
+        .finally(() => {
+            savingKeyPair = null;
+        });
+    return savingKeyPair;
 }
 
 /** A fresh `risu-auth` token for this browser's key. */
-async function createAuth() {
-    const keyPair = await getKeyPair();
+async function createAuth(signal?: AbortSignal) {
+    const keyPair = await getKeyPair(signal);
+    signal?.throwIfAborted();
     const date = Math.floor(Date.now() / 1000);
 
     const header = {
         alg: "ES256",
         typ: "JWT",
     };
+    const publicKey = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+    signal?.throwIfAborted();
     const payload = {
         iat: date,
         exp: date + 5 * 60, //5 minutes expiration
-        pub: await crypto.subtle.exportKey("jwk", keyPair.publicKey),
+        pub: publicKey,
     };
     const sig = await crypto.subtle.sign(
         {
@@ -60,7 +82,8 @@ async function createAuth() {
         Buffer.from(JSONStringlifyAndbase64Url(header) + "." + JSONStringlifyAndbase64Url(payload)),
     );
     const sigString = base64url(new Uint8Array(sig));
-    return JSONStringlifyAndbase64Url(header) + "." + JSONStringlifyAndbase64Url(payload) + "." + sigString;
+    const token = JSONStringlifyAndbase64Url(header) + "." + JSONStringlifyAndbase64Url(payload) + "." + sigString;
+    return { token, publicKey };
 }
 
 function failedResponseMessage(text: string, fallback: () => string): string {
@@ -73,11 +96,19 @@ function failedResponseMessage(text: string, fallback: () => string): string {
     return text || fallback();
 }
 
-/** Registers this browser's public key with the password digest; alerts and throws on failure. */
-async function login(passwordDigest: string) {
-    const keypair = await getKeyPair();
-    const publicKey = await crypto.subtle.exportKey("jwk", keypair.publicKey);
-    const s = await fetch("/api/login", {
+/** Bounds both halves of the answer before the check uses it or shows a prompt. */
+function readAuthAnswer(path: string, init?: RequestInit) {
+    return authCheckStep(async (signal) => {
+        const response = await fetch(path, { ...init, signal });
+        signal.throwIfAborted();
+        const text = await response.text();
+        return { response, text };
+    });
+}
+
+/** Registers the public key used in the check; alerts and throws on failure. */
+async function login(passwordDigest: string, publicKey: JsonWebKey) {
+    const { response, text } = await readAuthAnswer("/api/login", {
         method: "POST",
         body: JSON.stringify({
             password: passwordDigest,
@@ -87,8 +118,8 @@ async function login(passwordDigest: string) {
             "content-type": "application/json",
         },
     });
-    if (s.status < 200 || s.status >= 300) {
-        const message = failedResponseMessage(await s.text(), () => language.serverAuth.loginFailed(s.status));
+    if (!response.ok) {
+        const message = failedResponseMessage(text, () => language.serverAuth.loginFailed(response.status));
         alertError(message);
         await waitAlert();
         throw message;
@@ -96,7 +127,7 @@ async function login(passwordDigest: string) {
 }
 
 let authChecked = false;
-let checking: Promise<unknown> | null = null;
+let checking: Promise<void> | null = null;
 
 /** One auth check (and password prompt) at a time; parallel requests wait for it. */
 async function checkAuth() {
@@ -110,58 +141,25 @@ async function checkAuth() {
 }
 
 async function runAuthCheck() {
-    if (!authChecked) {
-        const response = await fetch("/api/test_auth", {
-            headers: {
-                "risu-auth": await createAuth(),
-            },
-        });
-        const text = await response.text();
-        let status: unknown;
-        try {
-            status = JSON.parse(text)?.status;
-        } catch {}
-        if (!response.ok || (status !== "success" && status !== "unset" && status !== "incorrect")) {
-            throw failedResponseMessage(text, () => language.serverAuth.authenticationFailed(response.status));
-        }
-
-        if (status === "unset") {
-            const input = await digestPassword(
-                await alertInput(language.setNodePassword, undefined, undefined, { secret: true }),
-            );
-            const setup = await fetch("/api/set_password", {
-                method: "POST",
-                body: JSON.stringify({
-                    password: input,
-                }),
-                headers: {
-                    "content-type": "application/json",
-                },
-            });
-            if (!setup.ok) {
-                const message = failedResponseMessage(await setup.text(), () =>
-                    language.serverAuth.passwordSetupFailed(setup.status),
-                );
-                alertError(message);
-                await waitAlert();
-                throw message;
-            }
-            // Register this browser's key with the password just set, so the first request after
-            // setup is authorized instead of failing with "Unknown public key".
-            await login(input);
-            authChecked = true;
-            return await createAuth();
-        } else if (status === "incorrect") {
-            const input = await digestPassword(
-                await alertInput(language.inputNodePassword, undefined, undefined, { secret: true }),
-            );
-            await login(input);
-            authChecked = true;
-            return await createAuth();
-        } else if (status === "success") {
-            authChecked = true;
-        }
+    const { token, publicKey } = await authCheckStep(createAuth);
+    const { response, text } = await readAuthAnswer("/api/test_auth", { headers: { "risu-auth": token } });
+    let status: unknown;
+    try {
+        status = JSON.parse(text)?.status;
+    } catch {}
+    if (!response.ok || (status !== "success" && status !== "unset" && status !== "incorrect")) {
+        throw failedResponseMessage(text, () => language.serverAuth.authenticationFailed(response.status));
     }
+
+    if (status === "unset" || status === "incorrect") {
+        const prompt = status === "unset" ? language.setNodePassword : language.inputNodePassword;
+        const input = await digestPassword(await alertInput(prompt, undefined, undefined, { secret: true }));
+        if (status === "unset") {
+            await setPassword(input);
+        }
+        await login(input, publicKey);
+    }
+    authChecked = true;
 }
 
 /** Makes sure this browser's key is registered (prompting for the password once if needed). */
@@ -172,7 +170,7 @@ export async function ensureAuth() {
 /** A fresh `risu-auth` token, after the auth check: for a request `authFetch` does not send (a socket URL, the proxy). */
 export async function getNodeServerProxyAuth() {
     await checkAuth();
-    return await createAuth();
+    return (await createAuth()).token;
 }
 
 /** Races one caller's wait against its signal; shared authentication and signing continue independently. */
@@ -206,14 +204,14 @@ export async function authFetch(
     await abortable(ensureAuth(), init.signal);
     init.signal?.throwIfAborted();
     const headers = new Headers(init.headers);
-    headers.set("risu-auth", await abortable(createAuth(), init.signal));
+    headers.set("risu-auth", (await abortable(createAuth(), init.signal)).token);
     init.signal?.throwIfAborted();
     options.beforeDispatch?.();
     return await fetch(input, { ...init, headers });
 }
 
 async function digestPassword(message: string) {
-    const response = await fetch("/api/crypto", {
+    const { response, text } = await readAuthAnswer("/api/crypto", {
         body: JSON.stringify({
             data: message,
         }),
@@ -223,12 +221,22 @@ async function digestPassword(message: string) {
         method: "POST",
     });
 
-    if (response.status < 200 || response.status >= 300) {
-        throw failedResponseMessage(await response.text(), () =>
-            language.serverAuth.passwordCryptoFailed(response.status),
-        );
+    if (!response.ok) {
+        throw failedResponseMessage(text, () => language.serverAuth.passwordCryptoFailed(response.status));
     }
-    const crypt = await response.text();
+    return text;
+}
 
-    return crypt;
+async function setPassword(password: string) {
+    const { response, text } = await readAuthAnswer("/api/set_password", {
+        method: "POST",
+        body: JSON.stringify({ password }),
+        headers: { "content-type": "application/json" },
+    });
+    if (!response.ok) {
+        const message = failedResponseMessage(text, () => language.serverAuth.passwordSetupFailed(response.status));
+        alertError(message);
+        await waitAlert();
+        throw message;
+    }
 }

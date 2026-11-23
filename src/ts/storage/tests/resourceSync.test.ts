@@ -2,6 +2,7 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { settleFlush } from "./flushRetry";
 import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
@@ -383,9 +384,14 @@ describe("conflicts", () => {
         const { fake, sync, settings } = await boot();
         fake.dropNextBatchResponse = true;
         settings.ui.theme = "committed but unacknowledged";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first answer is lost: the server holds the write while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.data("ui", "main").theme).toBe("committed but unacknowledged");
-        const result = await sync.flushResources();
+        // The resend's 409 settles it as committed.
+        const result = await settleFlush(flushing);
+        expect(fake.batchCount()).toBe(2);
         expect(result.discarded).toEqual([]);
         expect(settings.ui.theme).toBe("committed but unacknowledged");
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -465,9 +471,13 @@ describe("lost acknowledgement", () => {
         const base = fake.get("ui", "main")!.revision;
         fake.dropNextBatchResponse = true;
         settings.ui.theme = "sent";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first answer is lost; the typing lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         const landed = fake.get("ui", "main")!.revision;
         settings.ui.theme = "typed after the lost answer";
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe("typed after the lost answer");
         expect(settings.ui.theme).toBe("typed after the lost answer");
@@ -491,8 +501,13 @@ describe("lost acknowledgement", () => {
         const { fake, sync, settings } = await boot();
         fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
         settings.ui.theme = "never landed";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first request fails; the typing lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.data("ui", "main").theme).not.toBe("never landed");
         settings.ui.theme = "typed after the failure";
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe("typed after the failure");
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -509,9 +524,13 @@ describe("lost acknowledgement", () => {
         const saved = settings.ui.theme;
         fake.dropNextBatchResponse = true;
         settings.ui.theme = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first answer is lost; the revert lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.data("ui", "main").theme).toBe("lost");
         settings.ui.theme = saved;
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe(saved);
         expect(settings.ui.theme).toBe(saved);
@@ -525,9 +544,13 @@ describe("lost acknowledgement", () => {
         const { fake, sync, characterStore } = await boot();
         fake.dropNextBatchResponse = true;
         characterStore.addCharacter(character("c", "Carol"));
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The create's answer is lost; the removal lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.get("characters", "c")).not.toBeNull();
         characterStore.removeCharacter("c");
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.get("characters", "c")).toBeNull();
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -595,10 +618,13 @@ describe("a generating character (the generation deferral is gone)", () => {
         fake.set("characters", "a", character("a", "remote name"));
         characterList()[0].name = "local name";
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flushing = sync.flushResources();
+        // The conflict's reload fails: the local state stays while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
         expect(characterList()[0].name).toBe("local name");
         expect(fake.data("characters", "a").name).toBe("remote name");
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual(["characters/a"]);
         expect(characterList()[0].name).toBe("remote name");
         end();
@@ -879,10 +905,15 @@ describe("restore (412) and errors", () => {
         const { fake, sync, settings } = await boot();
         fake.failNext = { status: 503, times: 1 };
         settings.ui.theme = "retry me";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
+        const flushing = sync.flushResources();
+        // The first request fails: the edit stays dirty while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
+        expect(fake.data("ui", "main").theme).not.toBe("retry me");
         expect(alerts.error).not.toHaveBeenCalled();
-        await sync.flushResources();
+        await settleFlush(flushing);
         expect(fake.data("ui", "main").theme).toBe("retry me");
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 });
 

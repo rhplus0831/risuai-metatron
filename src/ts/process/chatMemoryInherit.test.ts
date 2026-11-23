@@ -192,6 +192,19 @@ it.each([
     },
 );
 
+it("reports failed inheritance after 30 seconds without an answer and keeps the copied chat", async () => {
+    authFetch.mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const created = create();
+    await settle();
+    expectRequest(created.id!);
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(alertError).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(alertError).toHaveBeenCalledExactlyOnceWith(m.language.structuredMemory.inherit.failed(created.name));
+    expect(m.chat.findChat({ chaId: source.chaId, chatId: created.id! })?.message).toEqual(input.message);
+});
+
 it.each(["acknowledged", "still queued"])(
     "restores a generation-blocked import after its create is %s",
     async (end) => {

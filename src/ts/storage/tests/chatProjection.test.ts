@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { isRecordWrapper } from "../records.svelte";
+import { settleFlush } from "./flushRetry";
 import { bootMutations, m, refJ, refK, SAVE_DEBOUNCE_MS } from "./mutationStoresHarness";
 
 // The chats live in the chat module's own store, not in the character records. Against the real
@@ -562,10 +563,17 @@ describe("detached reads", () => {
         const read = await chatEdits.readChatsDetached(["d"]);
         expect(read.get("d")!.map((entry) => entry.id)).toEqual(["kd"]);
 
+        // The save fails and the flush's resend stays unanswered: the read is refused at the save
+        // deadline, and nothing is read.
         chat.appendMessage(refK, m("z", "Z"));
-        fake.failNext = { status: 500, times: 3, match: (path) => path.includes("/api/resources/batch") };
-        await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow();
-        fake.failNext = null;
+        fake.failNext = { status: 500, times: 1, match: (path) => path.includes("/api/resources/batch") };
+        fake.holdNextBatch = true;
+        fake.requests.length = 0;
+        const { ResourceFlushTimeoutError } = await import("../resourceFlushWait");
+        await expect(settleFlush(chatEdits.readChatsDetached(["c"]))).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+        expect(fake.releaseBatch).not.toBeNull();
+        expect(fake.requests.filter((request) => (request.body as any)?.chatCollections)).toEqual([]);
+        fake.releaseBatch!();
     });
 
     it("readChatsDetached refuses while a requested character's chat or chat order stays refused from an earlier save (not another's), and reads again once the draft is discarded", async () => {
@@ -641,12 +649,16 @@ describe("detached reads", () => {
         // The unsent message was saved by the export's read.
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "Z"]);
 
+        // The save fails and the flush's resend stays unanswered: the export stops at the save
+        // deadline and downloads nothing.
         chat.appendMessage(refK, m("y", "Y"));
-        fake.failNext = { status: 500, times: 3, match: (path) => path.includes("/api/resources/batch") };
-        await dataset.exportAsDataset();
-        fake.failNext = null;
+        fake.failNext = { status: 500, times: 1, match: (path) => path.includes("/api/resources/batch") };
+        fake.holdNextBatch = true;
+        await settleFlush(dataset.exportAsDataset());
+        expect(fake.releaseBatch).not.toBeNull();
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(downloads).toHaveLength(1);
-        await sync.flushResources();
+        fake.releaseBatch!();
+        await settleFlush(sync.flushResources());
     });
 });

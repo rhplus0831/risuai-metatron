@@ -4,6 +4,7 @@ import type { ChatOp } from "../../../shared/chats.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import type { DraftEntry, DraftInput, DraftJournal, RecordLayerValues } from "src/ts/storage/draftJournal";
 import { createFakeLockManager } from "src/ts/storage/tests/fakeLockManager";
+import { advanceUntil, settleFlush } from "src/ts/storage/tests/flushRetry";
 import { bootMutations, m, plain, refK, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 import type { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 
@@ -62,6 +63,29 @@ async function settle() {
     await journal.listDrafts();
     await svelte.tick();
     svelte.flushSync();
+}
+
+/**
+ * Holds the flush's resend after the first batch's failure or lost answer: the resend stays
+ * unanswered (`releaseBatch` lets it through), so an Apply waiting on the save stops at its deadline.
+ */
+function holdResend(first: "failed" | "lost") {
+    if (first === "failed") {
+        // A failed request returns before the hold applies: the hold catches the resend.
+        h.fake.holdNextBatch = true;
+        return;
+    }
+    h.fake.dropNextBatchResponse = true;
+    h.fake.beforeNextBatch = () => {
+        h.fake.holdNextBatch = true;
+    };
+}
+
+/** An Apply whose save stays unanswered: it rejects at its save deadline, with the resend in flight. */
+async function expectApplyTimeout(entry: DraftEntry) {
+    const { ResourceFlushTimeoutError } = await import("src/ts/storage/resourceFlushWait");
+    await expect(settleFlush(recovery.applyRecoveryDraft(entry))).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+    expect(h.fake.releaseBatch).not.toBeNull();
 }
 
 async function put(input: DraftInput): Promise<DraftEntry> {
@@ -849,12 +873,15 @@ describe("recovery drafts", () => {
         const entry = await put(chatInput([{ op: "setText", id: "b", text: "Saved B" }, missing]));
         const filing = vi.spyOn(journal, "putDraft");
         h.fake.failNext = { status: 503, times: 1, match: batchPath };
+        holdResend("failed");
 
-        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow("failed 503");
+        await expectApplyTimeout(entry);
         expect(h.fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
         expect(filing).not.toHaveBeenCalled();
         expect(recovery.recoveryDraftDetails(entry).canApply).toBe(true);
+        h.fake.releaseBatch!();
+        await settle();
         expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: ["setText: missing"], kept: true });
         expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
         await remainder(entry, [missing]);
@@ -928,8 +955,8 @@ describe("recovery drafts", () => {
             chatInput([{ op: "append", anchor: { end: true }, messages: [m("stable-append-id", "Only once")] }]),
         );
         const base = h.fake.chat("c", "k")!.revision;
-        h.fake.dropNextBatchResponse = true;
-        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow();
+        holdResend("lost");
+        await expectApplyTimeout(entry);
         expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
         expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
         const first = h.fake.batchBodies().flatMap((body) => body.chats ?? [])[0];
@@ -938,6 +965,9 @@ describe("recovery drafts", () => {
             ops: [{ op: "append", anchor: { end: true }, messages: [m("stable-append-id", "Only once")] }],
         });
         expect(first.groupId).not.toBe("old-page-group");
+        // The held resend lands as the duplicate it is; Apply again then appends nothing more.
+        h.fake.releaseBatch!();
+        await settle();
         await recovery.applyRecoveryDraft(entry);
         const appended = h.fake.chat("c", "k")!.data.message.filter((message) => message.chatId === "stable-append-id");
         expect(appended.map((message) => message.data)).toEqual(["Only once"]);
@@ -950,15 +980,20 @@ describe("recovery drafts", () => {
         input.layers.pending!.createSnapshot = snapshot();
         const entry = await put(input);
         await render();
-        h.fake.dropNextBatchResponse = true;
+        holdResend("lost");
         button(language.apply, row()).click();
+        // The answer is lost and the resend unanswered: the dialog reports the Apply's save deadline.
+        await advanceUntil(() => io.error.mock.calls.length > 0);
         await settle();
         expect(io.error).toHaveBeenCalledTimes(1);
+        expect(h.fake.releaseBatch).not.toBeNull();
         expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
         const recoveredIds = h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id));
         expect(recoveredIds).toHaveLength(1);
         expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
 
+        h.fake.releaseBatch!();
+        await settle();
         button(language.apply, row()).click();
         await settle();
         expect(io.confirm).toHaveBeenCalledTimes(2);

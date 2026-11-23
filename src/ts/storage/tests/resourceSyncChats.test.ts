@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { plain, recoverOldDelete, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
+import { advanceUntil, settleFlush } from "./flushRetry";
 import { createFakeLockManager } from "./fakeLockManager";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import type { ChatOp } from "../../../../shared/chats.ts";
@@ -234,10 +235,12 @@ describe("refused metadata writes", () => {
                 note: "Plugin note",
             });
             fake.dropNextBatchResponse = true;
-            await expect(sync.flushResources()).rejects.toThrow();
+            const flushing = sync.flushResources();
+            // The first reply is lost: nothing is reported while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fake.batchCount()).toBe(1);
             expect(alerts.normal).not.toHaveBeenCalled();
-            await vi.advanceTimersByTimeAsync(5000);
-            await sync.flushResources();
+            await settleFlush(flushing);
 
             const [lost, replay] = fake.batchBodies().flatMap((body) => body.chats ?? []);
             expect(replay).toMatchObject({ groupId: lost.groupId, retry: true });
@@ -553,9 +556,13 @@ describe("the flush barrier", () => {
         const { fake, sync, chat } = await boot();
         fake.dropNextBatchResponse = true;
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "old")] } as any);
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The create's answer is lost; the edit lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.chat("c", "n")).not.toBeNull();
         chat.setMessageText({ chaId: "c", chatId: "n" }, "x", "newer");
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
         expect(fake.texts("c", "n")).toEqual(["newer"]);
@@ -576,7 +583,9 @@ describe("a new character whose create answer was lost", () => {
             chats: [{ id: "d1", name: "First", message: [m("x", "Original")] }],
         });
         h.fake.dropNextBatchResponse = true;
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        // The flush that lost the answer waits out its backoff while the test acts.
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
         expect(h.fake.batchBodies()).toHaveLength(1);
         const [batch] = h.fake.batchBodies();
         const create = batch.ops.find((op: any) => op.kind === "characters" && op.id === "d");
@@ -591,14 +600,15 @@ describe("a new character whose create answer was lost", () => {
         expect(h.fake.record("characters", "d")!.data).toEqual(create.data);
         expect(h.fake.texts("d", "d1")).toEqual(["Original"]);
         h.fake.requests.length = 0;
-        return { ...h, characterStore, create };
+        return { ...h, characterStore, create, flushing };
     }
 
     it("saves later chat edits after adopting a lost character create without a reload", async () => {
-        const { fake, sync, chat, create } = await loseCharacterCreate();
+        const { fake, sync, chat, create, flushing } = await loseCharacterCreate();
         chat.setMessageText(ref, "x", "Edited after the lost answer");
         chat.setChatMeta(ref, { note: "Keep this note too" });
 
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         // Recreating the landed character on a null base conflicts; the summary read must keep
         // both the lost chat create's resend and the newer edits until this flush saves them.
@@ -610,7 +620,7 @@ describe("a new character whose create answer was lost", () => {
     });
 
     it("saves replacement chats after a removed character's lost create is adopted and its deletion fails, and keeps the dropped chat after them without a delete", async () => {
-        const { fake, sync, chat, characterStore, create } = await loseCharacterCreate();
+        const { fake, sync, chat, characterStore, create, flushing } = await loseCharacterCreate();
         expect(characterStore.removeCharacter("d")).toBe(true);
         // Let the lost create's retry conflict first; fail only the delete that follows adoption.
         fake.failNext = {
@@ -623,7 +633,9 @@ describe("a new character whose create answer was lost", () => {
                     .at(-1)
                     .ops.some((op: any) => op.kind === "characters" && op.id === "d" && op.delete),
         };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        // The flush's retry conflicts and adopts the create; the deletion then fails and the flush
+        // waits out its backoff again.
+        await advanceUntil(() => fake.failNext === null);
         expect(fake.batchBodies()[0].ops).toContainEqual(create);
         expect(fake.record("characters", "d")!.data.name).toBe("D");
         expect(fake.texts("d", "d1")).toEqual(["Original"]);
@@ -635,6 +647,7 @@ describe("a new character whose create answer was lost", () => {
         });
         const sentBefore = fake.batchCount();
         // The replacement drops `d1`: the server still holds it, so it stays after the replacement's chats.
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         const collection = fake.store.readRefs([], { chatCollections: ["d"] }).chatCollections[0];
         expect(collection.order?.ids).toEqual(["replacement", "d1"]);
@@ -1299,7 +1312,10 @@ describe("one chat's trouble does not block the rest", () => {
             const { fake, sync, chat, mirrorIds } = await boot();
             chat.reorderChats("c", ["j", "k"]);
             fake.dropNextBatchResponse = true;
-            await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+            const flushing = sync.flushResources();
+            // The answer is lost; another tab may reorder while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fake.batchCount()).toBe(1);
             expect(fake.order("c")!.ids).toEqual(["j", "k"]);
             if (serverOrder === "different") {
                 fake.store.applyChanges({
@@ -1314,7 +1330,7 @@ describe("one chat's trouble does not block the rest", () => {
             }
             // The resend conflicts in both cases. The authoritative read decides whether
             // the sent order survived, rather than treating every refusal as an acknowledgement.
-            expect(await sync.flushResources()).toEqual({
+            expect(await settleFlush(flushing)).toEqual({
                 discarded: serverOrder === "different" ? ["chats/c"] : [],
                 refused: [],
             });
@@ -1347,17 +1363,26 @@ describe("one chat's trouble does not block the rest", () => {
             // request that failed in transit.
             if (membership === "create") fake.dropNextBatchResponse = true;
             else fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
-            await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+            const flushing = sync.flushResources();
+            // The reorder is queued while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fake.batchCount()).toBe(1);
             const lost = fake.batchBodies()[0].chats[0];
             const freshOrderRevision = fake.order("c")!.revision;
             const desired = membership === "create" ? ["n", "j", "k"] : ["j", "k"];
+            // The reorder comes after the flush began: its discard is reported within this scope.
+            const scope = sync.beginMutationScope();
             chat.reorderChats("c", desired);
             fake.requests.length = 0;
 
             if (membership === "delete") {
                 // The replay keeps its id and retry flag; the server refuses it (`useTrash`) and keeps
                 // `n`, which comes back, and the reorder queued without it is discarded.
-                expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/n", "chats/c"], refused: [] });
+                expect((await settleFlush(flushing)).discarded).toContain("chats/c/n");
+                expect(await sync.flushResources({ scope })).toEqual({
+                    discarded: ["chats/c/n", "chats/c"],
+                    refused: [],
+                });
                 expect(fake.batchBodies()).toEqual([
                     expect.objectContaining({ chats: [{ ...lost, retry: true }], chatOrders: [] }),
                 ]);
@@ -1370,6 +1395,7 @@ describe("one chat's trouble does not block the rest", () => {
                 expect(fake.batchCount()).toBe(1);
                 return;
             }
+            expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
             expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
             const [replay, reordered] = fake.batchBodies();
             expect(replay.chats).toEqual([{ ...lost, retry: true }]);
@@ -1593,10 +1619,14 @@ describe("a chat's first save (chatSaveVersion)", () => {
         const { fake, sync, chat } = await boot();
         fake.dropNextBatchResponse = true;
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any);
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost: the create is in doubt while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.chat("c", "n")).not.toBeNull();
         expect(chat.chatSaveVersion(refN)).toBe(0);
         chat.setMessageText(refN, "x", "after the lost answer");
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.texts("c", "n")).toEqual(["after the lost answer"]);
         expect(chat.chatSaveVersion(refN)).toBe(1);
@@ -1940,13 +1970,17 @@ describe("group idempotency ids", () => {
         chat.appendMessage(refK, m("d", "D"));
         chat.setMessageText(refK, "d", "edited");
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the note is typed while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "edited"]);
         const [lost] = groupsOf(fake);
         expect(lost.groupId).toEqual(expect.any(String));
         expect(lost.retry).toBeUndefined();
         const landed = fake.chat("c", "k")!.revision;
         chat.setChatMeta(refK, { note: "typed during the flight" });
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
         const sent = groupsOf(fake);
@@ -1974,9 +2008,12 @@ describe("group idempotency ids", () => {
         const { fake, sync, chat } = await boot();
         chat.setMessageText(refK, "a", "mine");
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; another tab edits while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         elsewhere(fake, [{ op: "setText", id: "a", text: "theirs" }], "other");
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual([]);
         expect(fake.texts("c", "k")[0]).toBe("theirs");
         expect(groupsOf(fake).map((group: any) => [group.ops[0].text, group.retry])).toEqual([
@@ -1990,11 +2027,15 @@ describe("group idempotency ids", () => {
     it("keeps the same id, base, and ops over repeated losses", async () => {
         const { fake, sync, chat } = await boot();
         chat.setMessageText(refK, "a", "mine");
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            fake.dropNextBatchResponse = true;
-            await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
-        }
-        expect((await sync.flushResources()).discarded).toEqual([]);
+        fake.dropNextBatchResponse = true;
+        const flushing = sync.flushResources();
+        // The resend after the first loss loses its answer too; the flush retries again.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        fake.dropNextBatchResponse = true;
+        await advanceUntil(() => fake.batchCount() === 2);
+        expect(fake.dropNextBatchResponse).toBe(false);
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         const sent = groupsOf(fake);
         expect(sent.map((group: any) => group.retry)).toEqual([undefined, true, true]);
         expect(
@@ -2012,14 +2053,17 @@ describe("group idempotency ids", () => {
         const { fake, sync, chat, mirrorIds } = await boot();
         chat.setMessageText(refK, "a", "mine");
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
-        // Another tab deletes `j`; this tab edits it: its group conflicts, and the batch (k's resend
-        // with it) rolls back. The conflict's read fails the first time.
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        // While the flush waits out its backoff, another tab deletes `j`; this tab edits it: its group
+        // conflicts, and the batch (k's resend with it) rolls back. The conflict's read fails the
+        // first time; the flush retries after it.
         fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
+        expect(fake.failNext).toBeNull();
         expect(result.discarded).toEqual(["chats/c/j"]);
         // The list read that removes `j` runs in the background queue.
         await vi.advanceTimersByTimeAsync(1000);
@@ -2099,7 +2143,10 @@ describe("group idempotency ids", () => {
         chat.appendMessage(refK, m("d", "D"), { anchor: { after: "b" } });
         chat.setChatMeta(refK, { note: "old" });
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the other tab writes while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "D", "C"]);
         // Another tab removes the anchor and changes the note, then writes enough identified groups
         // for the chat to forget this tab's id.
@@ -2107,7 +2154,7 @@ describe("group idempotency ids", () => {
         for (let index = 1; index <= 100; index += 1) {
             elsewhere(fake, [{ op: "setText", id: "a", text: `a${index}` }], `other-${index}`);
         }
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual(["chats/c/k"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         const sent = groupsOf(fake);
@@ -2306,17 +2353,18 @@ describe("kept absent chats leave the order", () => {
         // (dropping the old revision), then its create lands; the create's answer is lost.
         deleteElsewhere(fake);
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flight = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.dropNextBatchResponse).toBe(false);
         expect(fake.chat("c", "j")!.data.name).toBe("J again");
         expect(fake.order("c")!.ids).toEqual(["k", "r", "j"]);
         expect(chat.heldChatRevision(refJ)).toBeNull();
         const beforeReplay = fake.order("c")!.revision;
 
-        // The resend is answered as a duplicate while `j` exists (no order result); its answer is
-        // held in transit ...
+        // The flush's resend after its backoff is answered as a duplicate while `j` exists (no order
+        // result); its answer is held in transit ...
         fake.holdNextBatchResponse = true;
-        const flight = sync.flushResources();
-        await vi.waitFor(() => expect(fake.releaseBatchResponse).not.toBeNull());
+        await advanceUntil(() => fake.releaseBatchResponse !== null);
         expect(fake.batchBodies().at(-1).chats).toEqual([expect.objectContaining({ chatId: "j", retry: true })]);
         expect(fake.order("c")!.revision).toBe(beforeReplay);
         // ... while the other tab deletes the recreated `j`, and an on-demand summary read (a load
@@ -2327,6 +2375,7 @@ describe("kept absent chats leave the order", () => {
         expect(await chat.loadChat({ chaId: "c", chatId: "not-a-chat" })).toBeUndefined();
         expect(chat.heldOrderRevision("c")).toBe(afterDelete);
         expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        // The answered resend settles the flush before any background timer runs.
         fake.releaseBatchResponse!();
         expect((await flight).discarded).toEqual([]);
         // The replay's answer holds the create's revision but carries no order listing `j`: the
@@ -2387,31 +2436,47 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         const characterStore: CharacterStoreModule = await import("../characterStore.svelte");
         return { ...h, characterStore };
     }
-    /** Creates `x` and loses the answer of its create (the server applied it); returns the group as sent. */
+    /**
+     * Creates `x` and loses the answer of its create (the server applied it); returns the group as
+     * sent and the flush, which waits out its backoff before the resend.
+     */
     async function loseCreateOfX(h: { fake: StoreBackedServer; sync: Sync; chat: ChatModule }) {
         h.chat.createChat("c", chatOf("x", "Lost create"));
         h.fake.dropNextBatchResponse = true;
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.fake.batchCount()).toBe(1);
         expect(h.fake.texts("c", "x")).toEqual(["Lost create"]);
         const lost = groups(h.fake).find((group: any) => group.chatId === "x");
         expect(lost.ops.map((op: any) => op.op)).toEqual(["create"]);
         h.fake.requests.length = 0;
-        return lost;
+        return { lost, flushing };
     }
-    /** Removes `c`; the server fails its deletion (a 500), so the record and its chats stay. */
-    async function failDeletion(h: { fake: StoreBackedServer; sync: Sync; characterStore: CharacterStoreModule }) {
+    /**
+     * Removes `c`; the server fails its deletion (a 500), so the record and its chats stay. The
+     * deletion goes out with the retry of `flushing` when given (a flush waiting out its backoff),
+     * else with a new flush; returns that flush (`retrying`), unsettled while it waits out its
+     * backoff after the failure.
+     */
+    async function failDeletion(
+        h: { fake: StoreBackedServer; sync: Sync; characterStore: CharacterStoreModule },
+        flushing?: Promise<unknown>,
+    ) {
         h.fake.failNext = { status: 500, times: 1, match: batchPath };
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flush = flushing ?? h.sync.flushResources();
+        await advanceUntil(() => h.fake.failNext === null);
         expect(h.fake.record("characters", "c")).not.toBeNull();
         h.fake.requests.length = 0;
+        return { retrying: flush };
     }
 
     it("replays a lost chat create when the id is re-added without it; the omitted chats the server holds, the landed one too, stay after the replacement's, and nothing is deleted", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
-        await failDeletion(h);
+        const { lost, flushing } = await loseCreateOfX(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
         expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({
             ids: ["r", "k", "j", "x"],
@@ -2434,11 +2499,12 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
 
     it("replays a lost chat create and then replaces the chat when the id is re-added with it, on the revision the duplicate answer reports; the dropped chats stay after it", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
+        const { lost, flushing } = await loseCreateOfX(h);
         const landed = h.fake.chat("c", "x")!.revision;
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
         // The dropped `k` and `j` are not deleted: they stay after the replacement's `x`.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
         expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({ ids: ["x", "k", "j"], texts: { k: "A", x: "Rewritten transcript" } });
         const sentX = groups(h.fake).filter((group: any) => group.chatId === "x");
@@ -2466,15 +2532,18 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.chat.setMessageText(refK, "a", "lost edit");
         h.chat.setChatMeta(refJ, { note: "lost note" });
         h.fake.dropNextBatchResponse = true;
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.fake.batchCount()).toBe(1);
         expect(h.fake.texts("c", "k")[0]).toBe("lost edit");
         const lostK = groups(h.fake).find((group: any) => group.chatId === "k");
         const lostJ = groups(h.fake).find((group: any) => group.chatId === "j");
         const landedK = h.fake.chat("c", "k")!.revision;
         h.fake.requests.length = 0;
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("k", "Rewritten transcript")]));
         // The dropped `j` is kept with its replayed note; `k` is replaced.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
         expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({ ids: ["k", "j"], texts: { k: "Rewritten transcript" } });
         expect(h.fake.chat("c", "j")!.data.note).toBe("lost note");
@@ -2501,14 +2570,17 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         h.chat.createChat("c", chatOf("x", "Rolled back"));
         h.fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.fake.failNext).toBeNull();
         expect(h.fake.chat("c", "x")).toBeNull();
         const rolledBack = groups(h.fake).find((group: any) => group.chatId === "x");
         h.fake.requests.length = 0;
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
         // The create was never in doubt. Nothing is deleted: the dropped `k` stays after `x`, and
         // `j`, gone on the server, leaves with the list.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
         expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({ ids: ["x", "k"], texts: { x: "Rewritten transcript", k: "A" } });
         expect(opsOf(h.fake, "k")).toEqual([]);
@@ -2535,9 +2607,9 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
 
     it("drops the kept group when the deletion is acknowledged: a re-add afterwards sends nothing for the deleted chat", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
+        const { lost, flushing } = await loseCreateOfX(h);
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(h.fake.record("characters", "c")).toBeNull();
         expect(h.fake.chat("c", "x")).toBeNull();
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
@@ -2551,12 +2623,12 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
 
     it("drops the kept group when a conflicting deletion restores the character from the server (its list is authoritative): a later re-add keeps the landed chat without replaying its create", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
+        const { lost, flushing } = await loseCreateOfX(h);
         // Another tab edits the character; this tab's deletion conflicts, and the recovery puts the
         // server's character back with its chats, the landed `x` among them.
         h.fake.set("characters", "c", { chaId: "c", name: "Edited elsewhere" });
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        await h.sync.flushResources().catch(() => undefined);
+        await settleFlush(flushing).catch(() => undefined);
         // The restored character's chats come with the background list read.
         await vi.advanceTimersByTimeAsync(1000);
         expect(h.characters().map((character) => character.name)).toEqual(["Edited elsewhere"]);
@@ -2566,9 +2638,10 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         alerts.normal.mockClear();
         h.fake.requests.length = 0;
 
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
         // Nothing is deleted: the server's chats stay after the replacement's.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
         expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({
             ids: ["r", "k", "j", "x"],

@@ -1262,7 +1262,13 @@ describe("a refused edit of the locked message is dropped", () => {
         chat.setMessageText(refK, "a", "also edited");
         // The read-back of the record conflict fails (a network error) after the 409.
         fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(sync.flushResources()).rejects.toThrow(/Failed to fetch/);
+        // The flush would retry the failed read after its backoff, but the chat edit it must save is
+        // held for the job: it rejects at once as generation-blocked.
+        await expect(sync.flushResources()).rejects.toMatchObject({
+            name: "GenerationBlockedError",
+            chats: [refK],
+        });
+        expect(fake.failNext).toBeNull();
         expect(fake.batchCount()).toBe(1);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(settings.ui.theme).toBe("mine");

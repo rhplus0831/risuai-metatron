@@ -400,6 +400,7 @@ const reportedRefreshErrors = new WeakSet<object>();
 let refreshBackoffUntil = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshDeadline = 0;
+/** Adapter reads and flush retry waits are aborted on halt or stop. */
 const readControllers = new Set<AbortController>();
 const READ_DEADLINE_MS = 20_000;
 const characterRefreshes = new Map<string, Promise<boolean>>();
@@ -5892,6 +5893,22 @@ async function waitForWriteDependency(write: Promise<void>): Promise<void> {
     }
 }
 
+/** Waits for a retry while allowing the adapter to halt or stop. */
+function waitForRetryBackoff(delay: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        signal.throwIfAborted();
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort);
+            resolve();
+        }, delay);
+        signal.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
 /**
  * Whether the adapter has nothing left to do: no record, membership change, chat write, or
  * credential write waiting that it could save now, no cycle scheduled or in flight, and no refresh
@@ -5919,10 +5936,13 @@ export function resourceSyncIdle(): boolean {
 /**
  * Settles changes queued before this call. Reports keys discarded since the call (with `scope`,
  * since the scope began), and every key still refused locally when the flush resolves;
- * rejects when saving fails or when a character that must be saved is still being generated.
- * A restore halt rejects even when no changes are pending.
- * Writes and dependency reads that leave their dependency pending share a ten-attempt limit;
- * outstanding unload answers and split journal dependencies each have a twenty-second wait bound;
+ * rejects immediately on a permanent error or when a character that must be saved is still being
+ * generated. A restore halt rejects even when no changes are pending.
+ * Writes, retryable cycle failures (including lost answers), and reads that leave their dependency
+ * pending share a ten-attempt limit. The flush runs its first cycle immediately. When a cycle it
+ * ran or joined fails, it waits out that cycle's backoff before retrying and rejects with the
+ * failure if it exhausts the budget.
+ * Outstanding unload answers and split journal dependencies each have a twenty-second wait bound;
  * a split timeout rejects without releasing its prefix. Captures record generations, membership,
  * chat/order sequences and credential ids; unrelated background reads and later edits do not add
  * obligations. Relevant dependency reads alone are joined and propagate errors.
@@ -5961,10 +5981,9 @@ export async function flushResources(
         membershipAcked < membershipTarget ||
         unsettledChatObligations(chatObligations).length > 0;
     let attempts = 0;
+    let retryAt = 0;
     while (pending() && attempts < 10) {
-        if (halted) {
-            throw new Error("Saving stopped: the server data was restored");
-        }
+        assertSaveAdmission();
         const waiting = unsettledChatObligations(chatObligations).filter(isChatDeferred);
         if (waiting.length > 0 || [...jobBlockedRecords.keys()].some(isRecordJobBlocked)) {
             // A chat obligation's key is `chaId\u0000chatId`; a chat order's is the character id.
@@ -5981,8 +6000,33 @@ export async function flushResources(
             clearTimeout(timer);
             timer = null;
         }
+        const retryDelay = retryAt - Date.now();
+        retryAt = 0;
+        if (retryDelay > 0) {
+            // Own the retry so the scheduled cycle cannot run ahead of the flush's attempt count.
+            const controller = new AbortController();
+            readControllers.add(controller);
+            try {
+                await waitForRetryBackoff(retryDelay, controller.signal);
+            } finally {
+                readControllers.delete(controller);
+                assertSaveAdmission();
+            }
+            // Restore background scheduling in case the captured changes no longer need a cycle.
+            if (!permanentError && (hasPendingWork() || lastError)) {
+                schedule();
+            }
+            const refused = quarantineReason();
+            if (refused) {
+                throw refused;
+            }
+            if (permanentError) {
+                throw permanentError;
+            }
+            continue;
+        }
         const wrote = await runCycle();
-        if (wrote) {
+        if (wrote || lastError) {
             attempts += 1;
         }
         assertSaveAdmission();
@@ -5990,8 +6034,15 @@ export async function flushResources(
         if (refused) {
             throw refused;
         }
-        if (lastError || permanentError) {
-            throw lastError ?? permanentError;
+        if (permanentError) {
+            throw permanentError;
+        }
+        if (lastError) {
+            if (attempts >= 10) {
+                throw lastError;
+            }
+            retryAt = backoffUntil;
+            continue;
         }
         if (!pending()) {
             break;

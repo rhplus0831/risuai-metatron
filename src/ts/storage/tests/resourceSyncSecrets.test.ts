@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { SecretPath } from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { settleFlush } from "./flushRetry";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize, serverNormalizer } from "./serverKinds";
 
@@ -271,12 +272,16 @@ describe("a queued credential write", () => {
         fake.requests.length = 0;
         conflict(3);
         secrets.setSecret(flat("mistralKey"), "m2");
-        await expect(sync.flushResources()).rejects.toBeInstanceOf(client.ResourceConflictError);
+        const flushing = sync.flushResources();
+        // The first cycle gives up after its bounded rereads; the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
         expect(requestLog(fake).filter((entry) => entry.startsWith("PUT"))).toHaveLength(3);
         expect(requestLog(fake).filter((entry) => entry.startsWith("GET"))).toHaveLength(2);
         expect(secrets.secretStatus(flat("mistralKey"))).toEqual({ set: true, hint: "", pending: true });
         expect(fake.data("llmSecrets", "main").mistralKey).toBe("m1");
-        await sync.flushResources();
+        // The next cycle, the flush's retry, writes it.
+        await settleFlush(flushing);
+        expect(requestLog(fake).filter((entry) => entry.startsWith("PUT"))).toHaveLength(4);
         expect(fake.data("llmSecrets", "main").mistralKey).toBe("m2");
         expect(secrets.llmSecretState.queue).toEqual([]);
         expect(alerts.error).not.toHaveBeenCalled();
@@ -312,10 +317,13 @@ describe("a queued credential write", () => {
         const { fake, sync, secrets } = await boot();
         fake.failNext = { status: 503, times: 1, match: onSecretRoutes };
         secrets.setSecret(flat("nanogptKey"), "n1");
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
+        const flushing = sync.flushResources();
+        // The write stays queued while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
         expect(secrets.secretStatus(flat("nanogptKey"))).toEqual({ set: true, hint: "", pending: true });
         expect(fake.data("llmSecrets", "main").nanogptKey ?? "").toBe("");
-        await sync.flushResources();
+        await settleFlush(flushing);
         expect(fake.data("llmSecrets", "main").nanogptKey).toBe("n1");
         expect(secrets.secretStatus(flat("nanogptKey"))).toEqual({ set: true, hint: "", pending: false });
 
@@ -439,9 +447,12 @@ describe("adopting the server's record after a write or a reread", () => {
         const { fake, sync, secrets, settings } = await boot();
         fake.dropNextBatchResponse = true;
         settings.llmSecrets.vertexClientEmail = "lost-ack";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the flush waits out its backoff before the conflict reread.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.data("llmSecrets", "main")).toMatchObject({ vertexClientEmail: "lost-ack", openAIKey: STORED_KEY });
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(settings.llmSecrets.vertexClientEmail).toBe("lost-ack");

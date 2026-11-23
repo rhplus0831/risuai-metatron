@@ -6,6 +6,7 @@ import type { ChatOp } from "../../shared/chats.ts";
 import type { OocExchange } from "../../shared/ooc.ts";
 import type { DraftJournal, LayerWrites } from "./storage/draftJournal";
 import { createFakeLockManager } from "./storage/tests/fakeLockManager";
+import { settleFlush } from "./storage/tests/flushRetry";
 import { StoreBackedServer } from "./storage/tests/storeBackedServer";
 import { recoveryBootServer } from "./storage/tests/recoveryBootServer";
 import { plain, warmModules } from "./storage/tests/mutationStoresHarness";
@@ -195,6 +196,25 @@ async function flush() {
     await page!.sync.flushResources();
     await vi.advanceTimersByTimeAsync(500);
     await drain();
+}
+/**
+ * Loses the answer of the next batch (the server applies it) and fails every later batch in transit
+ * until the test clears `server.failNext`: the flush that sent it keeps resending after each backoff,
+ * so an Apply waiting on it gives up at its save deadline.
+ */
+function loseAnswerAndResends() {
+    server.dropNextBatchResponse = true;
+    server.beforeNextBatch = () => {
+        server.failNext = { status: 0, times: 100, match: batchPath };
+    };
+}
+/** Runs an Apply whose flush resends after `loseAnswerAndResends`: it times out. */
+async function expectApplyTimeout(apply: () => Promise<unknown>) {
+    const { ResourceFlushTimeoutError } = await import("./storage/resourceFlushWait");
+    const batches = server.batchCount();
+    await expect(settleFlush(apply())).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+    // The first batch landed; the flush resent it after its backoff, and failed again.
+    expect(server.batchCount() - batches).toBeGreaterThan(1);
 }
 const ops = (kind?: string) =>
     server
@@ -1012,9 +1032,9 @@ describe("Apply preserves refused recovery memory", () => {
                           mixedOp,
                       ];
             const { current, draft, applyRecoveryDraft } = await setupDraft(ops, kind === "existing" ? "chat" : "gone");
-            server.dropNextBatchResponse = true;
+            loseAnswerAndResends();
 
-            await expect(applyRecoveryDraft(draft)).rejects.toThrow();
+            await expectApplyTimeout(() => applyRecoveryDraft(draft));
             await drain();
             const drafts = await current.journal.listDrafts();
             expect(drafts).toHaveLength(2);
@@ -1031,6 +1051,10 @@ describe("Apply preserves refused recovery memory", () => {
             expect(server.chat("c", chatId)!.data.note).toBe("Recovered note");
             expect(server.chat("c", chatId)!.data).not.toHaveProperty("hypaV3Data");
 
+            // The old page's save loop kept failing in the background, and reports repeated failures;
+            // the reloaded page, with the server answering again, boots without an alert of its own.
+            io.alertError.mockClear();
+            server.failNext = null;
             const second = await reload();
             const retained = second.recoveryDrafts.entries.find((entry) => entry.id === draft.id)!;
             expect(retained).toBeDefined();
@@ -1222,13 +1246,14 @@ describe("recovery of conditional OOC answers", () => {
         await flush();
         const draft = await stageChatDraft(current, [savedAnswer]);
         const { applyRecoveryDraft } = await import("./storage/journalRecovery");
-        server.dropNextBatchResponse = true;
-        await expect(applyRecoveryDraft(draft)).rejects.toThrow();
+        loseAnswerAndResends();
+        await expectApplyTimeout(() => applyRecoveryDraft(draft));
         const saved = server.chat("c", "chat")!;
         expect(saved.data.oocLog?.q).toEqual(answer);
         expect(await current.journal.listDrafts()).toEqual([draft]);
 
-        await vi.advanceTimersByTimeAsync(5000);
+        // The server answers again: the resend lands as the duplicate it is.
+        server.failNext = null;
         await flush();
         await expect(applyRecoveryDraft(draft)).resolves.toEqual({ skipped: [] });
         expect(server.chat("c", "chat")).toEqual(saved);
@@ -1274,8 +1299,8 @@ describe("recovery of conditional OOC answers", () => {
         server.beforeNextBatch = () => {
             remoteChat([write(winner)]);
         };
-        await expect(second.sync.flushResources()).rejects.toThrow();
-        await vi.advanceTimersByTimeAsync(5000);
+        // The flush resends the lost group after its backoff.
+        await settleFlush(second.sync.flushResources());
         await flush();
         const [sent, replay] = chatGroups();
         expect(sent.ops).toEqual([
@@ -1713,14 +1738,15 @@ describe("boot recovery of chat work", () => {
         await first.recoveryDrafts.refresh();
         const draft = first.recoveryDrafts.entries.find((entry) => entry.id === id)!;
         const recovery = await import("./storage/journalRecovery");
-        server.dropNextBatchResponse = true;
-        await expect(recovery.applyRecoveryDraft(draft)).rejects.toThrow();
+        loseAnswerAndResends();
+        await expectApplyTimeout(() => recovery.applyRecoveryDraft(draft));
         await drain();
         const recoveredIds = server.order("c")!.ids.filter((chatId) => !["chat", "untouched"].includes(chatId));
         expect(recoveredIds).toHaveLength(1);
         expect(server.texts("c", recoveredIds[0])).toEqual(["Saved history"]);
         expect((await first.journal.listDrafts()).map((entry) => entry.id)).toEqual([id]);
 
+        server.failNext = null;
         const second = await reload();
         const retained = second.recoveryDrafts.entries.find((entry) => entry.id === id)!;
         expect(retained).toBeDefined();

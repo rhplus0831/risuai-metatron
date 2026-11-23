@@ -2,6 +2,7 @@ import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV2, cardV3, characterBook, charx, nested, pngWithText } from "./storage/tests/importFixtures";
+import { settleFlush } from "./storage/tests/flushRetry";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 import { createFakeLockManager } from "./storage/tests/fakeLockManager";
 import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
@@ -476,14 +477,17 @@ describe("character import save confirmation", () => {
         const journal = (await import("./storage/draftJournal")).pageDraftJournal();
         expect(await journal.start()).toBe(true);
         try {
-            h.fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
+            // The server never answers the save (a failed request is retried by the flush): the import
+            // stops waiting at its save deadline.
+            h.fake.holdNextBatch = true;
             expect(
-                await h.cards.importCharacterProcess({ name: "card.json", data: encode(cardV2("Pending")) }),
+                await settleFlush(
+                    h.cards.importCharacterProcess({ name: "card.json", data: encode(cardV2("Pending")) }),
+                ),
             ).toBeNull();
+            expect(h.fake.releaseBatch).not.toBeNull();
             expect(alerts.normal).not.toHaveBeenCalled();
-            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
-                language.characterImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
-            );
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.importSavePending);
             const character = h.characterList().find((entry) => entry.name === "Pending")!;
             expect(character.chats).toHaveLength(1);
             const chatId = character.chats[0].id;
@@ -507,6 +511,7 @@ describe("character import save confirmation", () => {
             expect(h.fake.batchCount()).toBe(1);
         } finally {
             h.sync.stopResourceSync();
+            h.fake.releaseBatch?.();
             await journal.close();
         }
     });

@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { settleFlush } from "../storage/tests/flushRetry";
 import { bootMutations, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
 import type { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
@@ -423,7 +424,7 @@ describe("plugin import save confirmation", () => {
         expect(mocks.alertError).not.toHaveBeenCalled();
     });
 
-    it("a failed update save returns false, reports the reason, and retains the pending plugin without starting it", async () => {
+    it("an update save the server does not answer returns false, reports the pending save, and retains the pending plugin without starting it", async () => {
         const h = await boot();
         await h.plugins.importPlugin(script("//@api 3.0\n//@version 1.0.0"));
         await h.plugins.pluginsStarted();
@@ -435,20 +436,23 @@ describe("plugin import save confirmation", () => {
             headers: {},
             data: new TextEncoder().encode(replacement),
         });
-        h.fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
+        // The save stays unanswered (a failed request is retried by the flush): the update stops
+        // waiting at its save deadline.
+        h.fake.holdNextBatch = true;
 
         expect(
-            await h.plugins.updatePlugin({
-                ...h.settings.plugins.find((p) => p.name === "test_plugin")!,
-                updateURL: "https://plugins.test/test_plugin.js",
-            }),
+            await settleFlush(
+                h.plugins.updatePlugin({
+                    ...h.settings.plugins.find((p) => p.name === "test_plugin")!,
+                    updateURL: "https://plugins.test/test_plugin.js",
+                }),
+            ),
         ).toBe(false);
+        expect(h.fake.releaseBatch).not.toBeNull();
         await h.plugins.pluginsStarted();
 
         expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
-        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(
-            language.pluginImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
-        );
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(language.pluginImportSavePending);
         expect(h.settings.plugins).toContainEqual(
             expect.objectContaining({ name: "test_plugin", script: replacement, versionOfPlugin: "2.0.0" }),
         );

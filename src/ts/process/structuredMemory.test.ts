@@ -55,6 +55,7 @@ import {
     renderMemoryThreads,
     structuredMemoryPageTool,
     importStructuredMemoryPackage,
+    restoreStructuredMemory,
 } from "./structuredMemory.svelte";
 
 const { authFetch } = vi.hoisted(() => ({ authFetch: vi.fn<typeof import("../storage/serverAuth").authFetch>() }));
@@ -71,6 +72,30 @@ beforeEach(() => {
 afterEach(() => {
     setEpochMismatchListener(null);
     setResourceEpoch("");
+});
+
+it("returns a failed restore after 30 seconds without the response body", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+        const response = Response.json({ revision: "restored", restored: true });
+        const readBody = vi.spyOn(response, "json").mockImplementation(() => new Promise(() => {}));
+        authFetch.mockResolvedValueOnce(response);
+        const result = vi.fn();
+        const rejected = vi.fn();
+        void restoreStructuredMemory(ref, { pages: [], events: [], threads: [] }).then(result, rejected);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(authFetch).toHaveBeenCalledExactlyOnceWith(`${base}/restore`, expect.anything());
+        expect(readBody).toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(29_999);
+        expect(result).not.toHaveBeenCalled();
+        expect(rejected).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(result).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "failed" }));
+        expect(rejected).not.toHaveBeenCalled();
+    } finally {
+        vi.useRealTimers();
+    }
 });
 
 const page = (id: string, body = "Current body"): MemoryPage => ({

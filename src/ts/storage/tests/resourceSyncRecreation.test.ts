@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { settleFlush } from "./flushRetry";
 import { recoverOldDelete, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
@@ -360,7 +361,10 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
             const h = await boot();
             h.fake.failNext = { status, times: 1, match: batchPath };
             expect(h.characterStore.removeCharacter("c")).toBe(true);
-            await expect(h.sync.flushResources()).rejects.toThrow();
+            const flushing = h.sync.flushResources();
+            // The deletion failed; the re-add comes while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(h.fake.failNext).toBeNull();
             expect(h.fake.batchBodies().at(-1)?.ops).toEqual([
                 expect.objectContaining({ kind: "characters", id: "c", delete: true }),
             ]);
@@ -371,6 +375,7 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
                 replacement([chatOf("k", "Rewritten transcript"), chatOf("new-chat", "Replacement transcript")]),
             );
             // The dropped `j` is not deleted: the server still holds it, so it comes back after the replacement's chats.
+            expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
             expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             expect(h.stored()).toEqual({
                 ids: ["k", "new-chat", "j"],
@@ -381,7 +386,8 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
             expect(
                 h.fake.batchBodies().flatMap((body) => body.ops.filter((op: any) => op.kind === "characters")),
             ).toEqual([expect.objectContaining({ id: "c", baseRevision: expect.any(String) })]);
-            // The reconciled chats, then the order the list refresh merged: the replacement's chats, then `j`.
+            // The list refresh the re-add starts runs while the flush waits out its backoff, so the retry
+            // sends the reconciled chats with the order it merged: the replacement's chats, then `j`.
             expect(
                 h.fake
                     .batchBodies()
@@ -397,9 +403,8 @@ describe("a same-id re-add after a deletion the server did not acknowledge", () 
                         ["k", ["replace"]],
                         ["new-chat", ["create"]],
                     ],
-                    [],
+                    [["k", "new-chat", "j"]],
                 ],
-                [[], [["k", "new-chat", "j"]]],
             ]);
             expect(h.chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "new-chat", "j"]);
             expect(h.chat.heldChatRevision(refK)).toBe(h.fake.chat("c", "k")!.revision);

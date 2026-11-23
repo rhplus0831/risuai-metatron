@@ -214,6 +214,9 @@ const WHOLE_READ_ATTEMPTS = 3;
  */
 const FILE_READ_DEADLINE_MS = 60_000;
 
+/** New-chat flows wait for these writes to settle before moving on. */
+const CHAT_MEMORY_WRITE_DEADLINE_MS = 30_000;
+
 const LOG_VERSION = 1;
 
 /** The most code points of a title in a page's file name. */
@@ -284,15 +287,24 @@ async function readAnswer<T>(
     path: string,
     parse: (body: AnswerBody) => T | null,
     refuse: (response: Response, body: AnswerBody) => Unanswered = refusalOf,
-    init: Omit<RequestInit, "headers"> & { headers?: Record<string, string> } = {},
+    init: Omit<RequestInit, "headers"> & { headers?: Record<string, string>; deadlineMs?: number } = {},
 ): Promise<StructuredMemoryResult<T>> {
+    const { deadlineMs, ...requestInit } = init;
     try {
-        const response = await authFetch(path, {
-            ...init,
-            cache: "no-store",
-            headers: { ...init.headers, [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        });
-        const body = await readBody(response);
+        const read = async (signal?: AbortSignal) => {
+            const response = await authFetch(path, {
+                ...requestInit,
+                ...(signal ? { signal } : {}),
+                cache: "no-store",
+                headers: { ...requestInit.headers, [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+            });
+            signal?.throwIfAborted();
+            return { response, body: await readBody(response) };
+        };
+        const { response, body } =
+            deadlineMs === undefined
+                ? await read()
+                : await readWithDeadline(deadlineMs, "The memory write timed out", read);
         if (!response.ok) {
             return refuse(response, body);
         }
@@ -1179,6 +1191,7 @@ export function inheritStructuredMemory(
 ): Promise<StructuredMemoryResult<StructuredMemoryInheritAnswer>> {
     return readAnswer(`${chatPath(ref)}/inherit`, parseInheritAnswer, editRefusalOf, {
         method: "POST",
+        deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sourceChatId }),
     });
@@ -1195,6 +1208,7 @@ export function restoreStructuredMemory(
 ): Promise<StructuredMemoryResult<StructuredMemoryRestoreAnswer>> {
     return readAnswer(`${chatPath(ref)}/restore`, parseRestoreAnswer, restoreRefusalOf, {
         method: "POST",
+        deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ pages, events, threads }),
     });

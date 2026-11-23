@@ -21,6 +21,7 @@ import {
     verifyInlay,
     type InlayAsset,
 } from "../process/files/inlays";
+import { readWithDeadline } from "./readDeadline";
 import { getResource, ResourceEpochMismatchError } from "./resourceClient";
 import { flushResources } from "./resourceSync.svelte";
 
@@ -30,13 +31,15 @@ import { flushResources } from "./resourceSync.svelte";
  * Google search credentials. Per entry: when the server already holds it, the server copy wins;
  * otherwise the entry is written, read back from the server and compared, and only then deleted
  * locally. A local entry is deleted only when it still holds the value that was imported (another
- * tab may have changed it meanwhile). Failed entries stay for the next boot. Permission grants
- * merge only once per browser; later boots only clean up leftovers so revoked grants stay revoked.
+ * tab may have changed it meanwhile). Plugin storage and settings verification reads each have a
+ * 30-second deadline, so a silent server leaves the local entries for the next boot. Permission
+ * grants merge only once per browser; later boots only clean up leftovers so revoked grants stay revoked.
  * A restore meanwhile (412) stops the import.
  */
 
 const LOCAL_PREFIX = "safe_plugin_";
 const PERMISSIONS_IMPORTED_KEY = "risu_legacy_plugin_permissions_imported";
+const VERIFICATION_READ_DEADLINE_MS = 30_000;
 
 function store(name: string, storeName: string) {
     return localforage.createInstance({ name, storeName });
@@ -109,7 +112,9 @@ const importedFieldSection = {
 } as const;
 
 async function readServerField<K extends keyof typeof importedFieldSection>(field: K): Promise<unknown> {
-    const record = await getResource<Partial<Database>>(importedFieldSection[field], SINGLETON_RESOURCE_ID);
+    const record = await readWithDeadline(VERIFICATION_READ_DEADLINE_MS, "Import verification timed out", (signal) =>
+        getResource<Partial<Database>>(importedFieldSection[field], SINGLETON_RESOURCE_ID, { signal }),
+    );
     return record?.data?.[field];
 }
 
@@ -162,7 +167,9 @@ async function importSafeLocalPluginStorage() {
         return;
     }
     await flushResources();
-    const server = await getResource<Record<string, unknown>>(RESOURCE_KIND.pluginStorage, SINGLETON_RESOURCE_ID);
+    const server = await readWithDeadline(VERIFICATION_READ_DEADLINE_MS, "Import verification timed out", (signal) =>
+        getResource<Record<string, unknown>>(RESOURCE_KIND.pluginStorage, SINGLETON_RESOURCE_ID, { signal }),
+    );
     const saved = (server?.data?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY] ?? {}) as Record<string, unknown>;
     for (const [localKey, key, value] of moved) {
         // Present on the server (ours, or the server's own value that won) → the local copy can go.

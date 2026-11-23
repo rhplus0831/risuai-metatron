@@ -124,6 +124,21 @@ afterEach(() => {
 });
 
 const paths = () => auth.calls.map((call) => call.path);
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((finish) => {
+        resolve = finish;
+    });
+    return { promise, resolve };
+}
+
+function observeAuthWaiters() {
+    const settled = vi.fn();
+    void Promise.allSettled([auth$.ensureAuth(), auth$.authFetch("/api/ping")]).then(settled);
+    return settled;
+}
+
 /** Whether the module holds the check as done: a checked module sends no `/api/test_auth` for the next call. */
 async function checkedState(): Promise<boolean> {
     const before = paths().filter((path) => path === "/api/test_auth").length;
@@ -234,6 +249,132 @@ describe("existing server", () => {
         expect(prompts.asked).toEqual([lang$.language.inputNodePassword]);
         expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(1);
         expect(paths().filter((path) => path === "/api/login")).toHaveLength(1);
+    });
+});
+
+describe("shared-check deadlines", () => {
+    it.each(["response", "body"])(
+        "times out a held /api/test_auth %s and keeps the replacement check",
+        async (heldStep) => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+            const entered = deferred<void>();
+            const firstResponse = deferred<Response>();
+            const firstBody = deferred<string>();
+            const success = { status: "success" };
+            const replacementEntered = deferred<void>();
+            const replacementResponse = deferred<Response>();
+            const serverFetch = vi.mocked(fetch).getMockImplementation()!;
+            let checks = 0;
+            vi.mocked(fetch).mockImplementation(async (path, init) => {
+                if (path !== "/api/test_auth") return serverFetch(path, init);
+                checks++;
+                if (checks === 1) {
+                    if (heldStep === "response") {
+                        entered.resolve();
+                        return firstResponse.promise;
+                    }
+                    const response = Response.json(success);
+                    vi.spyOn(response, "text").mockImplementation(() => {
+                        entered.resolve();
+                        return firstBody.promise;
+                    });
+                    return response;
+                }
+                replacementEntered.resolve();
+                return replacementResponse.promise;
+            });
+
+            const original = observeAuthWaiters();
+            await entered.promise;
+            await vi.advanceTimersByTimeAsync(19_999);
+            expect(original).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(original).toHaveBeenCalledExactlyOnceWith([
+                { status: "rejected", reason: expect.any(Error) },
+                { status: "rejected", reason: expect.any(Error) },
+            ]);
+            expect(checks).toBe(1);
+            expect(paths()).not.toContain("/api/ping");
+
+            const replacement = auth$.ensureAuth();
+            const completed = vi.fn();
+            void replacement.then(completed, completed);
+            // Fail promptly if callers keep joining the expired check.
+            await Promise.race([replacementEntered.promise, replacement.catch(() => {})]);
+            expect(checks).toBe(2);
+            firstResponse.resolve(Response.json(success));
+            firstBody.resolve(JSON.stringify(success));
+            await vi.advanceTimersByTimeAsync(0);
+            const joined = auth$.ensureAuth();
+            void joined.then(completed, completed);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(completed).not.toHaveBeenCalled();
+
+            replacementResponse.resolve(Response.json(success));
+            await Promise.all([replacement, joined]);
+            await auth$.ensureAuth();
+            expect(checks).toBe(2);
+        },
+    );
+
+    it("times out shared signing and authenticates the next request", async ({ onTestFinished }) => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const entered = deferred<void>();
+        const sign = vi.spyOn(crypto.subtle, "sign").mockImplementationOnce(() => {
+            entered.resolve();
+            return new Promise<ArrayBuffer>(() => {});
+        });
+        onTestFinished(() => {
+            sign.mockRestore();
+        });
+        prompts.answers = ["pw"];
+
+        const original = observeAuthWaiters();
+        await entered.promise;
+        await vi.advanceTimersByTimeAsync(19_999);
+        expect(original).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(original).toHaveBeenCalledExactlyOnceWith([
+            { status: "rejected", reason: expect.any(Error) },
+            { status: "rejected", reason: expect.any(Error) },
+        ]);
+        expect(paths()).toEqual([]);
+
+        const response = await auth$.authFetch("/api/ping");
+        expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(1);
+        expect(await response.json()).toEqual({ ok: true });
+    });
+
+    it("keeps the replacement signing key when the expired generation finishes", async ({ onTestFinished }) => {
+        keypairs.delete("node");
+        const expiredKey = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+            "sign",
+            "verify",
+        ]);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const entered = deferred<void>();
+        const generated = deferred<CryptoKeyPair>();
+        const generateKey = vi.spyOn(crypto.subtle, "generateKey").mockImplementationOnce(() => {
+            entered.resolve();
+            return generated.promise;
+        });
+        onTestFinished(() => {
+            generateKey.mockRestore();
+        });
+        prompts.answers = ["pw"];
+
+        const settled = vi.fn();
+        void auth$.ensureAuth().then(settled, settled);
+        await entered.promise;
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(settled).toHaveBeenCalledExactlyOnceWith(expect.any(Error));
+        expect(await (await auth$.authFetch("/api/ping")).json()).toEqual({ ok: true });
+
+        generated.resolve(expiredKey);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(await (await auth$.authFetch("/api/ping")).json()).toEqual({ ok: true });
+        expect(paths().filter((path) => path === "/api/test_auth")).toHaveLength(1);
+        expect(prompts.asked).toHaveLength(1);
     });
 });
 
