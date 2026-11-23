@@ -269,8 +269,8 @@ The Metatron column names port commits or later coverage; a dash means no port i
   Tauri's `cancel_streamed_fetch` command and stream loop have no target.
 - `2b678465d` from upstream `bd02ca878`: an inlay name is limited to 200 characters
   (`MAX_LUA_INLAY_NAME_LENGTH` in `shared/jobs.ts`, counted as `string.length`). A longer
-  name makes `generateImage` return an error string before any image is generated, and the
-  tab ignores one; upstream accepts any non-empty name.
+  name makes `generateImage` return an error string before any image is generated (after the
+  low-level grant, host argument cap and orientation checks), and the tab ignores one; upstream accepts any non-empty name.
 - `4f563fa1e` from upstream `9067f47a6`: Metatron keeps its own matching rule from
   `b3e0022a6` (a copy instead of upstream's in-place mutation, and a positional fallback)
   and adds `chatId` as a second name. The getters give both `id` and `chatId`, and an item

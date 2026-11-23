@@ -73,8 +73,9 @@ MCP tools see [MCP](mcp.md).
 
 - `shared/contextReport.ts`: generation context accounting (`ContextReport`, `parseContextReport`, `historyDigest`).
   `input` is the assembled messages alone; `toolSchemas` and `interceptions` (the reply's request interception messages,
-  "Inserted prompts" in the meter) are the final recheck's reservations, kept apart and added to `fixedShare`.
-  Structured Memory's coverage: [its report](structured-memory/read.md#the-read-path).
+  the meter's "Inserted prompts (estimated)" row, in tokens; request history counts the prompts) are the final recheck's
+  reservations, kept apart and added to `fixedShare`. Structured Memory's coverage:
+  [its report](structured-memory/read.md#the-read-path).
 - `shared/eligibleHistory.ts`: stored-history selection (`eligibleHistory`).
 
 ### Composer and drafts

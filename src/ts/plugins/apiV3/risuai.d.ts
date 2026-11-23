@@ -1558,7 +1558,8 @@ interface RisuaiPluginAPI {
      * customCSS, guiHTML, colorSchemeName, characterOrder, selectedPersona
      *
      * Prefer explicit keys with chats: "summaries", getChats() for a page, or getCharacter()
-     * for the current character. The default copies every chat of every character.
+     * for the current character. The default copies every active chat of every character; a chat
+     * in the Trash is left out.
      * 
      * @example
      * ```typescript

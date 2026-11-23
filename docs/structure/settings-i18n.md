@@ -119,7 +119,7 @@ entry point.
   `ChatFormatSettings`, and `LanguageSettings` (the UI language only).
 - Display's Notifications section holds `display.notification` (`NotificationToggle`) and then
   `display.completionWaitMaxSeconds`, the remote host's longest wait for plugins before a completion notification
-  ([plugin sandbox](plugin-sandbox.md#state)). The time limit clamps finite entries to 10–600 seconds on commit.
+  ([plugin sandbox](plugin-sandbox.md#state)). The time limit clamps finite entries to 10–600 whole seconds on commit.
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
   model whether or not streaming is on, and `halfStreaming`, shown under Response Streaming only while that is off, as
@@ -143,8 +143,9 @@ entry point.
   `Storage/storageContext.ts`), so polling ends with the page.
 - Storage › Chat trash renders `storage.chatTrashDays` from `src/ts/setting/storageSettingsData.ts`. `chatTrashDays`
   belongs to `SECTION_FIELDS.ui`. The control uses `CHAT_TRASH_DAYS` in `shared/database.ts`, and `normalizeUi` calls
-  `normalizeChatTrashDays` for whole days from 1 to 3,650, default 30. English and Korean help warns that lowering it
-  can delete chats at the [next purge](server-resources.md#chat-trash-retention).
+  `normalizeChatTrashDays` for whole days from 1 to 3,650, default 30; the field floors a fraction on commit
+  (`clampOnCommit.wholeNumber`), so it shows what the server keeps. English and Korean help warns that lowering it can
+  delete chats at the [next purge](server-resources.md#chat-trash-retention).
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
 - `src/lib/Setting/Pages/InputHookSettings.svelte` edits the global `settings.inputHooks` list. A card addresses its
   hook by id, including for popup text edits. Only Draft hooks carry the optional `translation` flag. The chat's hook
@@ -385,9 +386,10 @@ entry point.
 
 - Conditions read `ctx.preset` for prompt fields, `ctx.modelPreset` for slot configuration, and `ctx.modelProfile` for
   connection and capacity fields; model capability gates read `ctx.modelInfo`.
-- A margin utility in a row's or field's `classes` has no effect: the spacing rule
-  ([Renderers](#renderers-and-credential-links)) is unlayered and wins over it; only a `!` utility overrides the rule. A
-  handwritten neighbour keeps its own margin, which adds to the item's 0.5rem.
+- A top margin utility in a row's or field's `classes` has no effect, nor a bottom one on a field's last child: the
+  spacing rule ([Renderers](#renderers-and-credential-links)) is unlayered and wins over it; only a `!` utility
+  overrides the rule. Other margins (a row's or a field label's bottom margin, a side margin) still apply and add to the
+  gap, so leave per-item margins out. A handwritten neighbour keeps its own margin, which adds to the item's 0.5rem.
 - The rule does not reach inside a custom component: one that sits beside a row or a field sets its own margins so its
   edges read as that neighbour's kind would (Display's `ColorSchemeSelect`, `CustomColorSchemeEditor`,
   `CustomTextThemeEditor`, and `CustomBackgroundToggle` say which side they supply).

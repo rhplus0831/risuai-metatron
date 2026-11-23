@@ -191,7 +191,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   escaping and the after-request replacers. A rejection becomes an ordinary failure with the rejection as its text, so
   it uses one retry of `requestRetrys` and is the request's failure once they run out. A `previewBody` request skips
   both checks (its success is a request body or a diagnostic); a continue request skips the minimum, since its answer is
-  only the added text. The outer loops return a stream as it is, unchecked, and never check a `multiline` answer.
+  only the added text.
+- The outer loops return a stream as it is, unchecked (a stream a provider returns despite output escaping is buffered
+  first and checked like any buffered answer), and never check a `multiline` answer.
 - The chat reply's stream: `runSpeaker` checks a reply stream after a read that ended without an error or an abort, on
   the last snapshot's first value as it arrived (before `removeIncompleteResponse` trimming, without a continue's
   prefix). A full stream (its text was shown) that is rejected fails like a read failure: its text is stored, an
@@ -412,6 +414,10 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   valid writer JSON: when the retries of an analysis or a required page patch run out, that recording attempt fails and
   its window stays unrecorded until a later recording; a rejected compaction adds a warning. Decision: Response Checks
   plan, owner, 2026-11-20.
+- A rejected answer's provider call stays a `success` row in request history (the provider did answer). When the
+  rejection ends the job with an error, its request id names the last attempt's row; with Inlay Error Response on, a
+  buffered rejection is stored in the chat and the job ends without one. Decision: Response Checks plan, owner,
+  2026-11-20.
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
   different accounts share subscription state and endpoint selection. A model-profile follow-up
   ([deferred work](../backlog/deferred-work.md#model-profiles)). Decision: owner, 2026-11-10 (known-issues review).

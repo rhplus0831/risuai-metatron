@@ -197,7 +197,7 @@ date in chat order and cut at the chat preset's `eventsPerGroup`; Manage holds t
 an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText` for date, text
 and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
-Manage is also where a retracted event is deleted, the one control such a row has
+Manage is also where a retracted event is deleted, its one control beside a correction's release badge
 ([the remove route](records.md#the-remove-route)). `removeRetracted` asks first, with the words for an event whose cited
 messages or greeting are still in the held chat (`citesHeld`), because those read as unrecorded afterwards. Above the
 list a count of retracted events offers one sweep of the ones nothing in the chat stands behind (`orphanedRetracted`),
@@ -205,12 +205,12 @@ sent `MEMORY_REMOVE_EVENTS_MAX` ids a request, each naming the revision the last
 be ruled out, so the sweep is not offered and every question warns.
 
 Read also joins the [chapters](records.md#the-read-routes) with the groups: it reads them beside the story once per
-`refresh`, and again after its own removal or chapter command, and only the newest read installs. `memoryChapterLayout`
-(`structuredMemory.svelte.ts`) places each chapter and groups the loose runs around it; the component contract owns the
-layout and the reveal's wait for the chapters read. `memoryChapterOutOfDate` there owns the out-of-date rule, applied
-only when the coverage, story, and chapters reads name one memory revision. "Make synopses" and "Make again" run the
-`memoryChapters` command through `pressMemoryChapters` (`memoryRecordPress.ts`), which reads `/chapters/cost` first and
-asks before two or more requests. Manage shows no chapters.
+`refresh`, and again after its own removal, chapter command, or edit, and only the newest read installs.
+`memoryChapterLayout` (`structuredMemory.svelte.ts`) places each chapter and groups the loose runs around it; the
+component contract owns the layout and the reveal's wait for the chapters read. `memoryChapterOutOfDate` there owns the
+out-of-date rule, applied only when the coverage, story, and chapters reads name one memory revision. "Make synopses"
+and "Make again" run the `memoryChapters` command through `pressMemoryChapters` (`memoryRecordPress.ts`): a batch reads
+`/chapters/cost` first and asks before two or more requests, a remake sends at once. Manage shows no chapters.
 
 ### The Evidence missing tab
 
@@ -416,9 +416,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   ([cost preview](rebuild.md#the-cost-preview)). Decision: Structured Memory D3, archive.
 - Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
   refresh with unchanged texts does not recount after a tokenizer change.
-- Timeline rereads chapters only on `refresh` and after its own chapter actions: a chapter change from another tab, or
-  one that lands while another fence keeps the panel read-only, shows on the next `refresh`. Decision: Timeline Chapter
-  Synopses C16, 2026-11-18.
+- Timeline rereads chapters only on `refresh` and after its own chapter actions and edits: a chapter change from another
+  tab, or one that lands while another fence keeps the panel read-only, shows on the next `refresh`. Decision: Timeline
+  Chapter Synopses C16, 2026-11-18.
 - A Timeline search hit opened while a coverage reread is out settles in Read from the held coverage. If that reread
   marks the event retracted, Read keeps no row and shows no notice; the Manage segment lists the event. Decision: owner,
   2026-11-21 (found-issues review): the window is narrow and nothing is lost.

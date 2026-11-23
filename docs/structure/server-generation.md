@@ -169,9 +169,10 @@ refusal the memory step recovered from or outlived replaces no later error.
   `requestChatDataOuter` and `runSpeaker` for output processing and candidate storage.
 - A stream returned by the request layer skips the buffered after-request replacers and the outer loop's retries, but
   not the response checks: `runSpeaker` runs them after the read ([LLM requests](llm-requests.md#response-checks)). A
-  rejected full stream keeps its text and fails the job without a retry. A rejected Half Streaming read writes nothing;
-  the reply is requested again into the same row (no second `accepted`, a new meter, the estimate cleared) until its
-  rejections pass `requestRetrys`. The successful tail runs once, on the accepted answer.
+  rejected full stream keeps its text (a reroll in place restores its previous candidate) and fails the job, unretried.
+  A rejected Half Streaming read writes nothing; the reply is requested again into the same row (no second `accepted`, a
+  new meter, the estimate cleared) until its rejections pass `requestRetrys`. The successful tail runs once, on the
+  accepted answer.
 
 ### Reroll in place
 

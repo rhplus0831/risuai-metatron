@@ -754,8 +754,8 @@ export type ImageOrientation = "landscape" | "portrait";
 
 /**
  * The longest inlay name Lua `generateImage` forwards (`CallbackPayloads.generateImage.name`), in
- * characters (JS `string.length`). The server answers a longer name with an error string; the tab
- * ignores one.
+ * characters (JS `string.length`). The server answers a longer name with an error string once the
+ * grant, host argument cap and orientation checks pass; the tab ignores one.
  */
 export const MAX_LUA_INLAY_NAME_LENGTH = 200;
 

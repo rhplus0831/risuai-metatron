@@ -37,8 +37,9 @@ and the server's resident set. The last section repeats the in-process figures t
 
 - **One run.** One `POST /api/tokens/count` with the long text; a run is void unless it answers 200 with `counts`
   holding one non-negative integer (none was). About 1 s after it was sent, two short counts of one 48-character
-  sentence: one for the same scope and one for `claude`. Each family was counted once with a short text first, so no
-  timed run includes a first load. Three runs per case and commit, alternating `novellist` and `gemma`, 3 s apart.
+  sentence: one for the same scope and one for `claude`. Each family was counted once with a short text first, which
+  loads it in the ordinary worker only: the long worker has a registry of its own, so the first AFTER run of each
+  family includes its load there (and the first `novellist` run the long worker's start). Three runs per case and commit, alternating `novellist` and `gemma`, 3 s apart.
   Times are from the client's `fetch` to the whole answer.
 
 A throwaway script; nothing in the repository runs it.

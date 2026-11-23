@@ -1838,7 +1838,7 @@ it("returns the saved scene without a token budget when another listed page disa
 });
 
 it("refuses edits and inheritance while the real memory task is queued or running and accepts them after cancellation", async () => {
-    // Hold tokenizer file I/O, not a task implementation; fake deadlines cannot race the test.
+    // Hold the tokenizer worker's message, not a task implementation; fake deadlines cannot race the test.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const s = await server({ memoryTaskOptions: { now: () => 0 } });
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);

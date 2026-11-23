@@ -192,6 +192,14 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Not planned (the plan's Not In This Plan list): an embedding model per chat; a character-level default for new chats, or "apply to every chat of this character"; converting records to summaries or summaries to records on a mode change, beyond the existing adoption; removing `supaMemory` or `supaMemoryOnCount` from stored records; Hanurai, HypaV2, or SupaMemory as per-chat modes of their own; preset fields that only some chats override.
 - Left by the run: writers inside a job check the chat's algorithm only when admitted (memory.md Limitations); a send's in-job HypaV3 checkpoint was a found-issues entry, fixed in `dc8f1e150`.
 
+## Timeline Reading View
+
+- Not planned (the plan's Not In This Plan list, `git show 821772f17^:docs/plan/timeline-reading.md`): searching the original messages from the memory panel (proposed as its own session on 2026-11-18); a filter by participant or by grade, and sorting options.
+
+## Timeline Chapter Synopses
+
+- Not planned (the plan's Not In This Plan list, `git show b217b9738^:docs/plan/timeline-chapters.md`): editing a chapter's title or synopsis by hand, and merging or splitting chapters (a chapter is remade or removed); a second level over chapters, and one "story so far" text (C6: one level until chapters have been used).
+
 ## Structured Memory Reply-Only Recording
 
 - Not planned (the plan's Not In This Plan list): a source that records that its text was not read, so that an edit of an unread user message marks nothing for a re-record; filtering the chat that CBS reads in the writer's instructions and custom frames; citing the leftover user messages at adoption time; showing user messages to the writer as context only, or a per-chat override of the switch; leaving user messages out of the evidence lane or the projection; any change to HypaV3's `doNotSummarizeUserMessage`.

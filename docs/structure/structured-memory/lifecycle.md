@@ -351,8 +351,9 @@ takes over.
 - A checkpoint, a chat file, the Markdown package, and a restored or imported database carry no chapters
   ([records](records.md#limitations)). A checkpoint load leaves the chapter rows as they are, and the Timeline decides
   each from its events as they now are: one made after the capture stays current when its events, their text and dates,
-  and their order were the same then, and reads out of date or is hidden otherwise. The next chapter command removes one
-  none of whose events exists unretracted. Decision: Timeline Chapter Synopses C9 (2026-11-18).
+  and their order were the same then, and reads out of date or is hidden otherwise. The next batch chapter command
+  removes one none of whose events exists unretracted; a remake clears only its own chapter. Decision: Timeline Chapter
+  Synopses C9 (2026-11-18).
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
   nothing retries it. Decision: Structured Memory slice 5c, archive.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:
