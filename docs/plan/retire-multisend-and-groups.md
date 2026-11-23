@@ -4,7 +4,7 @@ Status: drafted 2026-11-23 at `549dd2374` from the owner's answers of 2026-11-23
 those answers. Audited the same day by Astra in two turns
 ([report](../reports/audits/plan-runner/retire-multisend-and-groups-2026-11-23.md)); the corrections after the second
 turn were not read again. The owner confirmed the Limitations the audit's findings A3, B2, B3, B4, B6, and B7 led to
-(Q8). Landed: 1 (`d781319f6`).
+(Q8). Landed: 1 (`d781319f6`), 2 (`81b8ba4fd`).
 
 Sources: `src/ts/process/command.ts` (`runMultisend`, `processMultiCommand`, `processPinnedCommands`,
 `processCommand`, the `/?` help), `src/ts/process/index.svelte.ts` (`SendChatArg.localSendReservation`),
