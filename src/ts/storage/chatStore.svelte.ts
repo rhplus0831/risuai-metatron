@@ -5290,6 +5290,27 @@ function orderMembershipReady(chaId: string): boolean {
     });
 }
 
+/** Whether any chat group or reorder outside quarantine still has an unanswered earlier attempt. */
+export function hasChatWorkInDoubt(): boolean {
+    for (const [key, entry] of pending) {
+        if (entry.resend?.inDoubt && !quarantined.has(key)) return true;
+    }
+    for (const [key, group] of inflight) {
+        if (group.inDoubt && !quarantined.has(key)) return true;
+    }
+    for (const groups of parkedResends.values()) {
+        for (const [key, { resend }] of groups) {
+            if (resend.inDoubt && !quarantined.has(key)) return true;
+        }
+    }
+    for (const [chaId, attempts] of lostOrderAttempts) {
+        const refused = quarantinedOrders.get(chaId);
+        // Match the current refusal without pruning it or the lost vectors used by conflict reads.
+        if (attempts.length > 0 && (!refused || refused.ids !== sendableOrderText(chaId))) return true;
+    }
+    return false;
+}
+
 /** Unsaved user work, including requests in flight. */
 export function hasUnsavedChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
     for (const key of new Set([...pending.keys(), ...inflight.keys()])) {

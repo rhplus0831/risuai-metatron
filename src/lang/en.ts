@@ -1929,6 +1929,7 @@ export const languageEnglish = {
     chatCreateRefused:
         "This chat could not be created on the server. Its local messages have been kept. Edit or delete the chat, or choose Retry, to try again. Use the refusal banner to export or discard the local data.",
     resourceSaveTimedOut: "The server has not answered the save request. Please try again shortly.",
+    resourceSaveUnconfirmed: "A save has not been confirmed yet. It is being retried. Keep this tab open.",
     resourceRecordRefused:
         "This record could not be saved. Other records will continue saving. Edit the refused record to try again.",
     chatSaveRefused:

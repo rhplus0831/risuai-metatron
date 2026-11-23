@@ -17,7 +17,11 @@ const io = vi.hoisted(() => ({
 }));
 vi.mock("./storage/serverAuth", async () =>
     (await import("./tests/bootMocks")).createBootMock("serverAuth", {
-        authFetch: (path, init) => io.fetch!(path, init),
+        // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
+        authFetch: (path, init, options) => {
+            options?.beforeDispatch?.();
+            return io.fetch!(path, init);
+        },
     }),
 );
 vi.mock("./alert", async () => (await import("./tests/alertMock")).createAlertMock({ alertError: io.alertError }));

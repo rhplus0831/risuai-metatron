@@ -68,6 +68,112 @@ async function transfer(ms: number, signal?: AbortSignal | null) {
     }
 }
 
+it("shows an unconfirmed save at 15 seconds after dispatch until the batch answers", async () => {
+    const { fake, settings, sync } = await boot();
+    fake.holdNextBatchResponse = true;
+    settings.ui.theme = "waiting for acknowledgement";
+    const flushing = sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const release = fake.releaseBatchResponse;
+    expect(release).toBeTypeOf("function");
+    try {
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(sync.unconfirmedSave.state).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(sync.unconfirmedSave.state).toBe(true);
+    } finally {
+        release?.();
+        await flushing;
+    }
+    expect(sync.unconfirmedSave.state).toBe(false);
+});
+
+it("keeps the unconfirmed save warning off while signing takes more than 15 seconds", async () => {
+    const { batch, settings, sync } = await boot();
+    const dispatch = authFetch.getMockImplementation()!;
+    let finishSigning!: () => void;
+    const signing = new Promise<void>((resolve) => (finishSigning = resolve));
+    authFetch.mockImplementationOnce(async (...args) => {
+        await signing;
+        return dispatch(...args);
+    });
+    settings.ui.theme = "waiting for signing";
+    const flushing = sync.flushResources();
+
+    try {
+        await vi.advanceTimersByTimeAsync(16_000);
+        expect(batch).not.toHaveBeenCalled();
+        expect(sync.unconfirmedSave.state).toBe(false);
+    } finally {
+        finishSigning();
+        await flushing;
+    }
+    expect(batch).toHaveBeenCalledOnce();
+});
+
+it("keeps a lost reorder unconfirmed through empty cycles and unrelated saves until its resend is acknowledged", async () => {
+    const { fake, chat, settings, sync } = await boot();
+    fake.failNext = { status: 503, times: 1, match: (path) => path === batchPath };
+    chat.reorderChats("c", ["j", "k"]);
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(fake.batchCount()).toBe(1);
+    expect(sync.unconfirmedSave.state, "after the 503 answer").toBe(true);
+
+    const dispatch = authFetch.getMockImplementation()!;
+    const listRead = vi.fn(dispatch);
+    let releaseList!: () => void;
+    const heldList = new Promise<void>((resolve) => (releaseList = resolve));
+    authFetch.mockImplementation(async (...args) => {
+        const [path, init] = args;
+        if (path === "/api/resources/read" && JSON.parse(String(init?.body)).chatSummaryCollections?.includes("c")) {
+            const response = await listRead(...args);
+            await heldList;
+            return response;
+        }
+        return dispatch(...args);
+    });
+    chat.requestChatListRefresh("c");
+    try {
+        // The reorder waits on the list read while the normal cycle runs as the tab is hidden.
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        visibility.mockRestore();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(listRead).toHaveBeenCalledOnce();
+        expect(fake.batchCount()).toBe(1);
+        expect(sync.unconfirmedSave.state, "after the empty cycle").toBe(true);
+
+        settings.ui.theme = "independent save";
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(fake.batchCount()).toBe(2);
+        expect(fake.record("ui", "main")!.data.theme).toBe("independent save");
+        expect(fake.order("c")!.ids).toEqual(["k", "j"]);
+        expect(sync.unconfirmedSave.state, "after the unrelated save").toBe(true);
+    } finally {
+        releaseList();
+        await vi.advanceTimersByTimeAsync(0);
+    }
+
+    await expect(settleFlush(sync.flushResources())).resolves.toEqual({ discarded: [], refused: [] });
+    expect(fake.order("c")!.ids).toEqual(["j", "k"]);
+    expect(fake.batchCount()).toBe(3);
+    expect(sync.unconfirmedSave.state).toBe(false);
+});
+
+it("clears a lost reorder warning once the resend is quarantined", async () => {
+    const { fake, chat, sync } = await boot();
+    fake.failNext = { status: 503, times: 1, match: (path) => path === batchPath };
+    chat.reorderChats("c", ["j", "k"]);
+    await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+    expect(sync.unconfirmedSave.state).toBe(true);
+
+    fake.failNext = { status: 400, times: 1, match: (path) => path === batchPath };
+    await expect(settleFlush(sync.flushResources())).resolves.toEqual({ discarded: [], refused: ["chats/c"] });
+    expect(fake.batchCount()).toBe(2);
+    expect(sync.unconfirmedSave.state, "after the reorder was quarantined").toBe(false);
+});
+
 it.each(["before", "after"] as const)(
     "saves a later chat edit when the held batch reaches the store %s the resend",
     async (order) => {

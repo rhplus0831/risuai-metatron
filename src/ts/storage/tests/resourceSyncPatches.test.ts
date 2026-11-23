@@ -246,7 +246,7 @@ beforeAll(() => warmMutationGraph(), 60_000);
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", { reload: vi.fn(), protocol: "http:", host: "test" });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -664,6 +664,23 @@ describe("what a save sends", () => {
 });
 
 describe("lost acknowledgements", () => {
+    it("clears the unconfirmed save as soon as a matching feed patch arrives without a later edit", async () => {
+        const { fake, sync, live, flushFeed, character, reads } = await boot();
+        live.paused = true;
+        fake.dropNextBatchResponse = true;
+        character("c").name = "saved with a lost answer";
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        expect(sync.unconfirmedSave.state).toBe(true);
+
+        flushFeed();
+        expect(sync.unconfirmedSave.state).toBe(false);
+        await expect(settleFlush(flushing)).resolves.toEqual({ discarded: [], refused: [] });
+        expect(fake.batchCount()).toBe(1);
+        expect(reads()).toBe(0);
+    });
+
     it("recognizes a lost acknowledgement of a character patch on the retry's 409 by JSON value (the server keeps its key order): no reload, no notice", async () => {
         const { fake, sync, live, character, record, revision, ops, agree, noNotice } = await boot();
         const element = character("c");

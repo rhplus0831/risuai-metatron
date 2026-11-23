@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import type { SecretPath } from "../../../../shared/llmSecrets.ts";
-import { advanceUntil } from "./flushRetry";
+import { advanceUntil, settleFlush } from "./flushRetry";
 import { bootMutations, refJ, warmMutationGraph } from "./mutationStoresHarness";
 import type { StoreBackedServer } from "./storeBackedServer";
 
@@ -57,6 +57,28 @@ function observeRejection(work: Promise<unknown>) {
     void work.catch(rejected);
     return rejected;
 }
+
+it("keeps a credential write unconfirmed after its deadline until the resend is acknowledged", async () => {
+    const { fake, record, secrets, sync } = await boot();
+    const lostPut = vi.fn<StoreBackedServer["fetch"]>((_path, init) => unanswered(init?.signal));
+    send.mockImplementationOnce(lostPut);
+    secrets.setSecret(secretPath, key);
+    const flushing = sync.flushResources();
+    try {
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(sync.unconfirmedSave.state, "while the dispatched PUT is unanswered").toBe(true);
+
+        await vi.advanceTimersByTimeAsync(30_020);
+        expect(lostPut.mock.lastCall?.[0]).toBe(secretRoute);
+        expect(lostPut.mock.lastCall?.[1]?.signal?.aborted).toBe(true);
+        expect(fake.secretRequests()).toEqual([]);
+        expect(sync.unconfirmedSave.state, "after the dispatched PUT expired").toBe(true);
+    } finally {
+        await expect(settleFlush(flushing)).resolves.toEqual({ discarded: [], refused: [] });
+    }
+    expect(record("llmSecrets").openAIKey).toBe(key);
+    expect(sync.unconfirmedSave.state).toBe(false);
+});
 
 it("releases the save loop and credential barrier on expiry, then refuses the late PUT", async () => {
     const { chat, fake, record, secrets, sync } = await boot();

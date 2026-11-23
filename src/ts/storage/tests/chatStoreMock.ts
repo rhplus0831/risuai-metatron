@@ -142,6 +142,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         initializeChats: vi.fn(),
         hasChatWork: vi.fn(() => false),
         hasUnsavedChatWork: vi.fn(() => false),
+        hasChatWorkInDoubt: vi.fn(() => false),
         quarantineChatOrder: vi.fn(),
         refusedChatItems: vi.fn(() => []),
         hasRefusedChatWork: vi.fn(() => false),

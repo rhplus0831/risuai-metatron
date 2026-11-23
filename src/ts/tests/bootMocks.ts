@@ -88,6 +88,7 @@ export function createBootMock<K extends keyof BootModules>(
             resourceSyncIdle: vi.fn<BootModules["resourceSync"]["resourceSyncIdle"]>(() => true),
             startResourceSync: vi.fn<BootModules["resourceSync"]["startResourceSync"]>(),
             saving: { state: false },
+            unconfirmedSave: { state: false },
             GenerationBlockedError: class extends Error {
                 constructor(readonly chats: readonly ChatRef[] = []) {
                     super();

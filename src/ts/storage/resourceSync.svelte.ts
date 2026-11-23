@@ -131,6 +131,7 @@ import {
     isChatBehind,
     type JobChatPatch,
     JOB_RETRY_MS,
+    hasChatWorkInDoubt,
     hasUnsavedChatWork,
     hasRefusedChatWork,
     refusedChatItems,
@@ -140,6 +141,7 @@ import {
     isCharacterStreamedHere,
     isChatDeferred,
     noteMirrorReplaced,
+    onChatRemoved,
     quarantineChat,
     quarantineChatOrder,
     rebaseChatOrders,
@@ -313,6 +315,65 @@ const CHARACTER_TEXTS_MAX_UNITS = 64 * 1024 * 1024;
  */
 export const saving = $state({ state: false });
 
+/**
+ * True after 15 seconds without an answer to a dispatched save, or while work from a lost
+ * answer remains in doubt. Clears when the overdue attempt and any retained doubt settle.
+ */
+export const unconfirmedSave = $state({ state: false });
+
+const UNCONFIRMED_SAVE_DELAY_MS = 15_000;
+type SaveAttempt = {
+    dispatched: boolean;
+    /** Once answered, only an already overdue attempt remains marked through outcome handling. */
+    answered: boolean;
+    overdue: boolean;
+    timer?: ReturnType<typeof setTimeout>;
+};
+let activeSaveAttempt: SaveAttempt | null = null;
+const secretOpsInDoubt = new Set<number>();
+let stopSecretQueueWatch: (() => void) | null = null;
+
+function refreshUnconfirmed() {
+    untrack(() => {
+        if (secretOpsInDoubt.size > 0) {
+            const queued = new Set(llmSecretState.queue.map((op) => op.id));
+            for (const id of secretOpsInDoubt) {
+                if (!queued.has(id)) secretOpsInDoubt.delete(id);
+            }
+        }
+        const next =
+            activeSaveAttempt?.overdue === true ||
+            inDoubt.size > 0 ||
+            hasChatWorkInDoubt() ||
+            secretOpsInDoubt.size > 0;
+        if (unconfirmedSave.state !== next) unconfirmedSave.state = next;
+    });
+}
+
+function trackSaveAttempt(): SaveAttempt {
+    const attempt = { dispatched: false, answered: false, overdue: false };
+    activeSaveAttempt = attempt;
+    return attempt;
+}
+
+function dispatchSaveAttempt(attempt: SaveAttempt) {
+    if (activeSaveAttempt !== attempt || halted) return;
+    attempt.dispatched = true;
+    attempt.timer = setTimeout(() => {
+        if (activeSaveAttempt !== attempt || attempt.answered) return;
+        attempt.overdue = true;
+        refreshUnconfirmed();
+    }, UNCONFIRMED_SAVE_DELAY_MS);
+}
+
+function settleSaveAttempt(attempt = activeSaveAttempt) {
+    if (attempt && activeSaveAttempt === attempt) {
+        clearTimeout(attempt.timer);
+        activeSaveAttempt = null;
+    }
+    refreshUnconfirmed();
+}
+
 const recordKey = recordTarget;
 const collectionKey = (collection: Collection) => recordKey(collection, SINGLETON_RESOURCE_ID);
 const characterPrefix = recordKey(RESOURCE_KIND.characters, "");
@@ -326,6 +387,28 @@ const persisted = new Map<string, Persisted>();
  * keys release old texts and records when their persisted entry is replaced.
  */
 const pluginStorageBaselines = new WeakMap<Persisted, { revision: number; record: unknown }>();
+
+type InDoubtRecord = { baseRevision: string | null; text: string; parts: RecordParts | null };
+
+class InDoubtRecords extends Map<string, InDoubtRecord> {
+    override set(key: string, value: InDoubtRecord): this {
+        super.set(key, value);
+        refreshUnconfirmed();
+        return this;
+    }
+
+    override delete(key: string): boolean {
+        const deleted = super.delete(key);
+        if (deleted) refreshUnconfirmed();
+        return deleted;
+    }
+
+    override clear(): void {
+        super.clear();
+        refreshUnconfirmed();
+    }
+}
+
 /**
  * The text this client sent for a record whose answer was lost (a network failure or a 5xx, not a
  * refusal), on the saved base revision it was sent on: the server holds it or still the saved copy.
@@ -340,7 +423,7 @@ const pluginStorageBaselines = new WeakMap<Persisted, { revision: number; record
  * acknowledgement of a write of the key, when the server refuses that text (400, 413), and when a
  * conflict replaces the record.
  */
-const inDoubt = new Map<string, { baseRevision: string | null; text: string; parts: RecordParts | null }>();
+const inDoubt = new InDoubtRecords();
 /** Dirty record keys → the generation of their latest mark. */
 const dirty = new Map<string, number>();
 /** Refused content, keyed by the same kind + NUL + id as dirty/persisted; edits release it. */
@@ -1219,6 +1302,7 @@ export function seedResources(result: ResourceReadKindsResult) {
     setResourceEpoch(result.epoch);
     persisted.clear();
     inDoubt.clear();
+    settleSaveAttempt();
     parkedListRefresh.clear();
     characterTexts.clear();
     moduleTexts = null;
@@ -1286,6 +1370,7 @@ export function adoptRecoveredChat(
     const scoped = `${key.scope}\u0000${key.target}`;
     journalChatViews.set(scoped, { key, epoch: entry.epoch, written: structuredClone(layers) });
     journalChatPending.add(scoped);
+    refreshUnconfirmed();
 }
 
 /**
@@ -2387,6 +2472,7 @@ function hasUnsavedWork(): boolean {
  */
 function quarantineRecord(op: PendingOp, error: ResourceRequestError, indexed = true) {
     quarantinedRecords.set(op.key, { text: op.text, error });
+    inDoubt.delete(op.key);
     const view = journalView(op.key);
     if (view) {
         view.desired.refused = {
@@ -3042,6 +3128,7 @@ function runCycle(): Promise<boolean> {
             }
         } finally {
             inFlight = null;
+            refreshUnconfirmed();
             if (!stopped) {
                 sendingKeys.clear();
                 // Early returns also release conservative marks of batches that never dispatched.
@@ -3112,6 +3199,7 @@ async function cycle() {
         const reason = `The chat ${group.chatId} is too large to save`;
         quarantineChat(group, reason, reason, true);
     }
+    refreshUnconfirmed();
     // Later batches are conservatively marked sent too: recovery treats an unanswered create
     // as dispatched even if an earlier batch prevented its request from going out.
     journalDispatched(ops);
@@ -3146,6 +3234,7 @@ async function cycle() {
             // A remote replacement may have settled a conservative mark while an earlier batch
             // waited; this request still carries its collected op.
             journalDispatched(batch.ops);
+            const attempt = trackSaveAttempt();
             try {
                 fenceCharacterWrites(batch.ops, batch.work, true);
                 recordSaveWait(batch, captured, membership);
@@ -3153,9 +3242,14 @@ async function cycle() {
                 const consecutiveAborts = attempts.reduce((max, attempt) => Math.max(max, attempt.count), 0);
                 const resetDeadlineAborts = () => attempts.forEach(({ target }) => batchDeadlineAborts.delete(target));
                 try {
-                    result = await applyBatchText(batchBody(batch), { consecutiveAborts });
+                    result = await applyBatchText(batchBody(batch), {
+                        consecutiveAborts,
+                        onDispatch: () => dispatchSaveAttempt(attempt),
+                    });
+                    attempt.answered = true;
                     resetDeadlineAborts();
                 } catch (error) {
+                    attempt.answered = true;
                     if (error instanceof ResourceRequestDeadlineError) {
                         for (const { target, identity, count } of attempts) {
                             batchDeadlineAborts.set(target, { identity, count: count + 1 });
@@ -3216,8 +3310,6 @@ async function cycle() {
                         const match = /^ops\[(\d+)\]/.exec(error.message);
                         const op = match ? batch.ops[Number(match[1])] : undefined;
                         if (op) {
-                            // The server refuses that text: it never held it.
-                            inDoubt.delete(op.key);
                             quarantineRecord(op, error);
                             isolateBatches = false;
                         } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
@@ -3225,7 +3317,6 @@ async function cycle() {
                             // unit separately next cycle so unrelated records and chats can still save.
                             isolateBatches = true;
                         } else if (batch.ops[0]) {
-                            inDoubt.delete(batch.ops[0].key);
                             quarantineRecord(batch.ops[0], error, false);
                             isolateBatches = false;
                         }
@@ -3258,6 +3349,7 @@ async function cycle() {
                 }
             } finally {
                 fenceCharacterWrites(batch.ops, batch.work, false);
+                settleSaveAttempt(attempt);
             }
         }
     }
@@ -3331,6 +3423,11 @@ function awaitsOwnerDeletion(op: QueuedSecretOp): boolean {
 /** What a credential write is called in a discard report (never its value). */
 function secretOpLabel(op: QueuedSecretOp): string {
     return encodeSecretPath(secretOpTarget(op.request));
+}
+
+function settleSecretOp(id: number) {
+    removeSecretOp(id);
+    if (secretOpsInDoubt.delete(id)) refreshUnconfirmed();
 }
 
 /**
@@ -3409,7 +3506,7 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
             if (owner === "live") {
                 // The deletion was discarded (a conflict restored the owner): its key stays.
                 secretDeadlineAborts.delete(op.id);
-                removeSecretOp(op.id);
+                settleSecretOp(op.id);
                 continue;
             }
             if (owner === "unsaved") {
@@ -3429,6 +3526,7 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
             cycleWrote = true;
             recordSecretWait(op.id);
             const consecutiveAborts = secretDeadlineAborts.get(op.id) ?? 0;
+            const saveAttempt = trackSaveAttempt();
             try {
                 const reply = await sendSecretRequest(
                     {
@@ -3437,16 +3535,18 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                         value: op.request.kind === "put" ? op.request.value : "",
                     },
                     base,
-                    { consecutiveAborts },
+                    { consecutiveAborts, onDispatch: () => dispatchSaveAttempt(saveAttempt) },
                 );
+                saveAttempt.answered = true;
                 secretDeadlineAborts.delete(op.id);
                 if (halted) {
                     return;
                 }
-                removeSecretOp(op.id);
+                settleSecretOp(op.id);
                 adoptSecretRecord(reply.revision, reply.data as MaskedLlmSecrets, [secretOpTarget(op.request)]);
                 break;
             } catch (error) {
+                saveAttempt.answered = true;
                 if (error instanceof ResourceRequestDeadlineError) {
                     secretDeadlineAborts.set(op.id, consecutiveAborts + 1);
                 } else if (!(error instanceof ResourceRequestError) || error.status !== 0) {
@@ -3460,14 +3560,21 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                     continue;
                 }
                 if (error instanceof ResourceRequestError && (error.status === 400 || error.status === 404)) {
-                    removeSecretOp(op.id);
+                    settleSecretOp(op.id);
                     failedSecretOps.add(op.id);
                     discardSequence += 1;
                     discarded.set(recordKey(SECTION_KIND.llmSecrets, secretOpLabel(op)), discardSequence);
                     alertError(`${language.resourceRecordRefused}\nllmSecrets/${secretOpLabel(op)}: ${error.message}`);
                     break;
                 }
+                const lost =
+                    error instanceof ResourceRequestError
+                        ? !error.notSent && (error.status === 0 || error.status >= 500)
+                        : saveAttempt.dispatched && !(error instanceof ResourceConflictError);
+                if (lost) secretOpsInDoubt.add(op.id);
                 throw error;
+            } finally {
+                settleSaveAttempt(saveAttempt);
             }
         }
     }
@@ -4635,6 +4742,7 @@ async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Pr
         listRefresh.delete(id);
         parkedListRefresh.delete(id);
     }
+    refreshUnconfirmed();
     return discardedWork;
 }
 
@@ -4697,6 +4805,7 @@ async function readDeferredChat(ref: ChatRef): Promise<boolean> {
             queueCharacterRefresh(refresh, "hydrate");
         }
     }
+    refreshUnconfirmed();
     return chatDiscardSequence() > discardsBefore;
 }
 
@@ -4821,6 +4930,7 @@ async function refreshIdleSummaries() {
             settleSummaryRefresh(collection, notices);
         }
     }
+    refreshUnconfirmed();
 }
 
 /** Puts a section or settings collection record into its record (and `llmSecretState`). */
@@ -5064,6 +5174,7 @@ export function noteRemoteChanges(changes: ChangeSet) {
     if (woke) {
         schedule(REMOTE_DELAY_MS);
     }
+    refreshUnconfirmed();
 }
 
 /**
@@ -5729,6 +5840,7 @@ async function applyRemoteUpdates(): Promise<boolean> {
             remoteCollections.delete(id);
         }
     }
+    refreshUnconfirmed();
     return discardedWork;
 }
 
@@ -6183,6 +6295,13 @@ export function startResourceSync() {
         void haltForRestore();
     });
     setMutationAdmission(() => !halted);
+    // The queue is append-only between settlements. Also drop doubt if the queue itself is reset.
+    stopSecretQueueWatch = $effect.root(() => {
+        $effect(() => {
+            llmSecretState.queue.length;
+            refreshUnconfirmed();
+        });
+    });
     setSecretScheduler(() => {
         for (const op of llmSecretState.queue) {
             noteWait(`secret:${op.id}`, op.id);
@@ -6193,11 +6312,14 @@ export function startResourceSync() {
     chatJournal.setListener(queueJournalChat);
     chatJournal.setConflictListener(captureJournalChat);
     setChatWorkListener((refreshCharacter) => {
+        refreshUnconfirmed();
         if (refreshCharacter !== undefined) queueCharacterRefresh(refreshCharacter, "listRefresh");
         pruneWaits();
         noteChatWaits();
         schedule();
     });
+    const stopChatRemovalWatch = onChatRemoved(refreshUnconfirmed);
+    refreshUnconfirmed();
     // The settings records mark themselves: every local write of one (`records.svelte.ts`).
     setRecordWriteListener((kind) => {
         markKey(collectionKey(kind));
@@ -6292,6 +6414,7 @@ export function startResourceSync() {
         document.removeEventListener("visibilitychange", onVisibilityChange);
         window.removeEventListener("beforeunload", onBeforeUnload);
         window.removeEventListener("pagehide", onPageHide);
+        stopChatRemovalWatch();
     };
     unloadAuthInterval = setInterval(() => {
         if (!halted && hasUnsavedWork()) {
@@ -6321,6 +6444,9 @@ export function startResourceSync() {
 export function stopResourceSync() {
     stopped = true;
     halted = true;
+    stopSecretQueueWatch?.();
+    stopSecretQueueWatch = null;
+    settleSaveAttempt();
     setMutationAdmission(() => false);
     removeLifecycleListeners?.();
     removeLifecycleListeners = null;
