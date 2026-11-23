@@ -41,7 +41,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Docs](#docs): 1
 - [Draft recovery](#draft-recovery): 2
 - [Rendering](#rendering): 1
-- [Server generation](#server-generation): 2
+- [Server generation](#server-generation): 3
 
 ## Build and CI
 
@@ -181,6 +181,20 @@ covers the notice and a normal completion, not a crash after the begin.
 **Suggested handling:** keep the previous reply when trimming for a reroll (drop it last, or refuse the in-place reroll
 and take the tail path), or keep the rollback copy durable, as the retired Removal Reroll plan
 ([archive](../archived-plan/README.md)) proposed for a removed tail.
+
+### The create route's validation errors still list `group` jobs
+
+Read on 2026-11-23 at `de3b7b080`. `parseCreateBody` refuses `kind: "group"` with 400 before its context checks, yet
+two of those checks still answer "context.inputOriginal is only for send, continue, reroll, and group jobs" and
+"context.userMessageId is only for send, continue, reroll, and group jobs" (`server/src/routes/generations.ts:209`,
+`:220`), because `INPUT_KINDS` (`:145`) still lists `group`. The route test at
+`server/src/tests/promptRunner.test.ts:2370` repeats that wording in its title and in its regex (`:2375`).
+
+**Why it matters:** low. The error text names a kind the route no longer accepts, and the test describes the old
+behavior.
+
+**Suggested handling:** drop `group` from `INPUT_KINDS` and from both messages, and update the test's title and regex
+in the same commit.
 
 ### A token count queued behind a long encode holds shutdown before the tokenizer worker is ended
 
