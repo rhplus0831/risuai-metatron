@@ -2929,8 +2929,18 @@ describe("Half Streaming", () => {
         vi.useRealTimers();
     });
 
-    /** Hold provider completion independently of the job's clock and watch its public reply acceptance. */
-    async function heldStream(chaId: string, kind = "send", extra = {}, options: JobOptions = {}) {
+    /**
+     * Hold provider completion independently of the job's clock. `jobId` comes from the job's own `accepted`;
+     * `acceptance` is the reply's, awaited only when the reply has a row while it streams (`rowWhileStreaming`:
+     * a continue's or a reroll's, or a reply that is not quiet). A quiet new reply has none.
+     */
+    async function heldStream(
+        chaId: string,
+        kind = "send",
+        extra = {},
+        options: JobOptions = {},
+        rowWhileStreaming = kind !== "send",
+    ) {
         let controller!: ReadableStreamDefaultController<Record<string, string>>;
         const stream = new ReadableStream<Record<string, string>>({
             start(value) {
@@ -2943,12 +2953,14 @@ describe("Half Streaming", () => {
             requested.resolve();
             return { type: "streaming", result: stream };
         });
+        const started = deferred<string>();
         const accepted = deferred<Extract<GenerationEvent, { type: "accepted" }>>();
         const pending = job(kind, chaId, extra, {
             ...options,
             streamedRows: true,
             onEvent(event) {
                 options.onEvent?.(event);
+                if (event.type === "accepted") started.resolve(event.jobId);
                 if (event.type === "accepted" && event.messageId) accepted.resolve(event);
             },
         });
@@ -2964,8 +2976,12 @@ describe("Half Streaming", () => {
             await pending;
             upstream.mockRestore();
         });
-        const [acceptance] = await Promise.all([accepted.promise, requested.promise]);
-        return { controller, upstream, pending, acceptance, close };
+        const [jobId, acceptance] = await Promise.all([
+            started.promise,
+            rowWhileStreaming ? accepted.promise : undefined,
+            requested.promise,
+        ]);
+        return { controller, upstream, pending, jobId, acceptance, close };
     }
 
     it.each([
@@ -2991,13 +3007,15 @@ describe("Half Streaming", () => {
                         return { outcome: "answered", value: "Processed whole reply." };
                     },
                 },
+                !quiet,
             );
             const request = h.upstream.mock.calls[0][0].arg;
             if (quiet) expect(request.forceStreaming).toBe(true);
             else expect(request).not.toHaveProperty("forceStreaming");
-            expect(h.acceptance).toMatchObject({ text: "", seq: 0 });
+            if (!quiet) expect(h.acceptance).toMatchObject({ text: "", seq: 0 });
             const initial = await readChat(chaId);
-            expect(initial.data.message.at(-1).data).toBe("");
+            // A quiet new reply has no row while it streams: no client shows an empty reply.
+            expect(initial.data.message.at(-1)).toMatchObject(quiet ? { chatId: "u" } : { role: "char", data: "" });
             const since = Date.now();
             const count = vi.spyOn(runnerTokens, "countLocal");
             onTestFinished(() => count.mockRestore());
@@ -3013,7 +3031,7 @@ describe("Half Streaming", () => {
             const during = await readChat(chaId);
             if (quiet) {
                 expect(during.revision).toBe(initial.revision);
-                expect(during.data.message.at(-1).data).toBe("");
+                expect(during.data.message.at(-1)).toMatchObject({ chatId: "u" });
             } else {
                 expect(during.revision).not.toBe(initial.revision);
                 expect(during.data.message.at(-1).data).toBe("hello world");
@@ -3021,8 +3039,9 @@ describe("Half Streaming", () => {
             h.controller.enqueue({ primary: "hello world. Completed." });
             h.close();
             const result = await h.pending;
-            expect(result.terminal).toMatchObject({ type: "done", messageId: h.acceptance.messageId });
-            expect((await readChat(chaId)).data.message.at(-1).data).toBe("Processed whole reply.");
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply).toMatchObject({ role: "char", data: "Processed whole reply." });
+            expect(result.terminal).toMatchObject({ type: "done", messageId: h.acceptance?.messageId ?? reply.chatId });
             expect(callbacks).toHaveLength(1);
             expect(callbacks[0].payload).toEqual({ text: "hello world. Completed." });
             const chunks = streamedTexts(result.events);
@@ -3033,6 +3052,12 @@ describe("Half Streaming", () => {
             if (quiet) {
                 expect(sequences.every((seq) => seq === 0)).toBe(true);
                 expect(patches.flatMap((event) => event.messages ?? []).some((entry) => entry.streamed)).toBe(false);
+                // The row first reaches the client with the whole raw reply, and no reply acceptance precedes it.
+                const replyRows = patches
+                    .flatMap((event) => event.messages ?? [])
+                    .filter((entry) => entry.message?.chatId === reply.chatId);
+                expect(replyRows[0].message.data).toBe("hello world. Completed.");
+                expect(result.events.some((event) => event.type === "accepted" && event.messageId)).toBe(false);
             } else {
                 expect(sequences).toContain(1);
                 expect(
@@ -3062,19 +3087,35 @@ describe("Half Streaming", () => {
         });
         const h = await heldStream(chaId, kind, kind === "reroll" ? { rerollMessageId: "r" } : {});
         expect(h.upstream.mock.calls[0][0].arg.forceStreaming).toBe(true);
-        expect(h.acceptance).toMatchObject({ text: kind === "continue" ? "Previous reply. " : "", seq: 0 });
+        if (kind === "send") expect(h.acceptance).toBeUndefined();
+        else expect(h.acceptance).toMatchObject({ text: kind === "continue" ? "Previous reply. " : "", seq: 0 });
         h.controller.enqueue({ primary: "Partial reply." });
         await vi.advanceTimersByTimeAsync(0);
-        const stopped = await api(`/api/generations/${h.acceptance.jobId}?clientId=tab`, { method: "DELETE" });
+        const stopped = await api(`/api/generations/${h.jobId}?clientId=tab`, { method: "DELETE" });
         expect(stopped.status).toBe(200);
         const result = await h.pending;
         expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
         expect(streamedTexts(result.events)).toEqual([]);
+        // A quiet new reply is never accepted; a continue or a reroll is, once, when its row is locked.
+        const replyAcceptances = result.events.filter((event) => event.type === "accepted" && event.messageId);
+        expect(replyAcceptances).toHaveLength(kind === "send" ? 0 : 1);
         const reply = (await readChat(chaId)).data.message.at(-1);
         expect(reply.data).toBe(expected);
         if (kind !== "send") expect(reply.chatId).toBe("r");
         if (kind === "reroll") expect(reply).toMatchObject({ candidates, selected: 1 });
         expect(await clientSetText(chaId, reply.chatId, expected)).toBe(200);
+    });
+
+    it("writes no reply row when a quiet send is stopped before any text arrives", async () => {
+        const question = { role: "user", chatId: "u", data: "q" };
+        const chaId = await seedCharacter({ name: "Ann", messages: [question] });
+        const h = await heldStream(chaId);
+        const stopped = await api(`/api/generations/${h.jobId}?clientId=tab`, { method: "DELETE" });
+        expect(stopped.status).toBe(200);
+        const result = await h.pending;
+        expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
+        expect((await readChat(chaId)).data.message).toMatchObject([question]);
+        expect((await readChat(chaId)).data.message).toHaveLength(1);
     });
 
     it("trims an incomplete quiet reply before processing the completed stream", async () => {
@@ -3125,7 +3166,7 @@ describe("Half Streaming", () => {
         it.each([
             { rejected: "No.", cause: "is too short" },
             { rejected: "Привет", cause: "contains a banned script" },
-        ])("retries a quiet reply that $cause and accepts one row for the second answer", async ({ rejected }) => {
+        ])("retries a quiet reply that $cause and stores one row for the second answer", async ({ rejected }) => {
             const chaId = await seedCharacter({ name: "Ann" });
             const upstream = scriptReplies(stream(rejected), stream("Second answer."));
             const { terminal, events } = await job("send", chaId);
@@ -3133,7 +3174,7 @@ describe("Half Streaming", () => {
             const rows = (await readChat(chaId)).data.message;
             expect(rows).toMatchObject([{ role: "char", data: "Second answer." }]);
             expect(terminal).toMatchObject({ type: "done", messageId: rows[0].chatId });
-            expect(acceptances(events)).toMatchObject([{ messageId: rows[0].chatId, text: "" }]);
+            expect(acceptances(events)).toEqual([]);
             expect(events.filter((e) => e.type === "retry" && e.retry !== null)).toMatchObject([{ retry: 1 }]);
             expect(streamedTexts(events)).toEqual([]);
         });
@@ -3154,7 +3195,7 @@ describe("Half Streaming", () => {
             expect(upstream).toHaveBeenCalledTimes(4);
         });
 
-        it("keeps the quiet reply row empty when stopped after the rejected output estimate clears", async () => {
+        it("writes no quiet reply row when stopped after the rejected output estimate clears", async () => {
             const chaId = await seedCharacter({ name: "Ann" });
             const h = await heldStream(chaId);
             h.upstream.mockResolvedValue({ type: "fail", result: "Unexpected second request", noRetry: true });
@@ -3163,8 +3204,7 @@ describe("Half Streaming", () => {
             await vi.advanceTimersByTimeAsync(1000);
             let metered = false;
             const unsubscribe = runnerFeed.subscribe((event) => {
-                if (event.type !== "generation" || event.jobId !== h.acceptance.jobId || event.state !== "running")
-                    return;
+                if (event.type !== "generation" || event.jobId !== h.jobId || event.state !== "running") return;
                 if (event.output) {
                     metered = true;
                     h.close();
@@ -3178,10 +3218,10 @@ describe("Half Streaming", () => {
             expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
             expect(h.upstream).toHaveBeenCalledTimes(1);
             expect(streamedTexts(events)).toEqual([]);
-            expect((await readChat(chaId)).data.message).toMatchObject([{ chatId: h.acceptance.messageId, data: "" }]);
+            expect((await readChat(chaId)).data.message).toEqual([]);
         });
 
-        it("runs editoutput at the existing reply row's index when the retry answers buffered", async () => {
+        it("appends the reply and runs editoutput at its row's index when a quiet retry answers buffered", async () => {
             const chaId = await seedCharacter({
                 name: "Ann",
                 messages: [question],
@@ -3198,7 +3238,7 @@ describe("Half Streaming", () => {
             const { terminal, events } = await job("send", chaId);
             const rows = (await readChat(chaId)).data.message;
             expect(rows).toMatchObject([question, { role: "char", data: "Buffered answer at row 1." }]);
-            expect(acceptances(events)).toMatchObject([{ messageId: rows[1].chatId }]);
+            expect(acceptances(events)).toEqual([]);
             expect(terminal).toMatchObject({ type: "done", messageId: rows[1].chatId });
             expect(upstream).toHaveBeenCalledTimes(2);
         });
@@ -3206,27 +3246,35 @@ describe("Half Streaming", () => {
         it.each([
             {
                 inlay: false,
-                outcome: "fails the send and leaves the row empty",
-                text: "",
+                outcome: "fails the send and writes no row",
+                rows: [],
                 expected: { type: "error", stage: "request", requestId: "request-2", message: "upstream failed" },
             },
             {
                 inlay: true,
-                outcome: "writes the error into the reply row and stops",
-                text: "\n```risuerror\nupstream failed\n```",
+                outcome: "appends the error as the reply and stops",
+                rows: [{ role: "char", data: "```risuerror\nupstream failed\n```" }],
                 expected: { type: "done", stopped: true },
             },
-        ])("a failed quiet retry $outcome with inlayErrorResponse=$inlay", async ({ inlay, expected, text }) => {
-            await patchProviders({ inlayErrorResponse: inlay });
-            const chaId = await seedCharacter({ name: "Ann" });
-            const upstream = scriptReplies(stream("No."), { type: "fail", result: "upstream failed", noRetry: true });
-            const { terminal, events } = await job("send", chaId);
-            expect(terminal).toMatchObject(expected);
-            const rows = (await readChat(chaId)).data.message;
-            expect(rows).toMatchObject([{ role: "char", data: text }]);
-            expect(acceptances(events)).toMatchObject([{ messageId: rows[0].chatId }]);
-            expect(upstream).toHaveBeenCalledTimes(2);
-        });
+        ])(
+            "a failed quiet retry $outcome with inlayErrorResponse=$inlay",
+            async ({ inlay, expected, rows: stored }) => {
+                await patchProviders({ inlayErrorResponse: inlay });
+                const chaId = await seedCharacter({ name: "Ann" });
+                const upstream = scriptReplies(stream("No."), {
+                    type: "fail",
+                    result: "upstream failed",
+                    noRetry: true,
+                });
+                const { terminal, events } = await job("send", chaId);
+                expect(terminal).toMatchObject(expected);
+                const rows = (await readChat(chaId)).data.message;
+                expect(rows).toHaveLength(stored.length);
+                expect(rows).toMatchObject(stored);
+                expect(acceptances(events)).toEqual([]);
+                expect(upstream).toHaveBeenCalledTimes(2);
+            },
+        );
 
         it("keeps the shown text of a short full stream and fails without a retry or an inlaid error", async () => {
             await patchProviders({ useStreaming: true, inlayErrorResponse: true });

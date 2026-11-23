@@ -203,9 +203,10 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   most `requestRetrys`; each request runs a new outer loop with its own budget. The re-sent call carries the binding's
   `resent` mark, so the outer loop reports a retry at its first dispatch, and the job's output estimate is cleared
   (`outputReset`). Nothing of a rejected read is written.
-- The next answer is read quietly when it streams, or takes the buffered path, written into the same row with output
-  scripts given that row's index. When the count runs out, the last rejected text is stored and the job fails as for a
-  full stream. See [server generation](server-generation.md#streamed-and-buffered-replies).
+- The next answer is read quietly when it streams, or takes the buffered path. A new reply's row is appended only for
+  the answer that ends the read; a continue's or a reroll's is written in place, with output scripts given that row's
+  index. When the count runs out, the last rejected text is stored and the job fails as for a full stream. See
+  [server generation](server-generation.md#streamed-and-buffered-replies).
 
 ### Provider responses and tools
 

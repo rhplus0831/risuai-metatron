@@ -160,9 +160,13 @@ refusal the memory step recovered from or outlived replaces no later error.
   failed count stops only the meter. The registry publishes the estimate on the feed
   ([generation channels](#generation-channels)).
 - With Response Streaming off and Half Streaming on, only the actual reply requests `forceStreaming`. The
-  `previewPrompt` and OobaLegacy paths omit the flag. If a stream arrives in Half Streaming mode, it still has a reply
-  row, `accepted`, a meter, and final text on stop or failure. It publishes no partial text or raw checkpoints and keeps
-  chunk sequence zero. A buffered answer uses the buffered path.
+  `previewPrompt` and OobaLegacy paths omit the flag. If a stream arrives in Half Streaming mode, it has a meter and
+  final text on stop or failure. It publishes no partial text or raw checkpoints and keeps chunk sequence zero. A
+  buffered answer uses the buffered path.
+- A quiet new reply has no row while it streams, so no client shows an empty reply. Its row and `begin` lock are
+  appended with the read's text when the read ends, without `accepted`, as on the buffered path. A kept answer always
+  gets its row, even an empty one; a stop, failure, or final rejection with no text appends none. A continue or an
+  in-place reroll keeps its locked row and `accepted`.
 - Both paths store the raw answer under its generation before output processing. A failed output hook leaves that
   answer, except a failed in-place reroll restores the previous candidate. With `escape`, the request layer consumes a
   provider that streams anyway and processes its last snapshot as buffered. See `server/src/llm/outer.ts`
@@ -170,7 +174,7 @@ refusal the memory step recovered from or outlived replaces no later error.
 - A stream returned by the request layer skips the buffered after-request replacers and the outer loop's retries, but
   not the response checks: `runSpeaker` runs them after the read ([LLM requests](llm-requests.md#response-checks)). A
   rejected full stream keeps its text (a reroll in place restores its previous candidate) and fails the job, unretried.
-  A rejected Half Streaming read writes nothing; the reply is requested again into the same row (no second `accepted`, a
+- A rejected Half Streaming read that is retried writes nothing. The reply is requested again (no second `accepted`, a
   new meter, the estimate cleared) until its rejections pass `requestRetrys`. The successful tail runs once, on the
   accepted answer.
 
@@ -414,7 +418,7 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 - Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
   is lost, and its message fence stays open until an ordinary write. Decision: Job Protocol D1, D8, and Q3, archive.
 - A quiet (Half Streaming) stream writes no checkpoint: a graceful shutdown finalizes the text so far inside its grace,
-  but a process lost without it (a crash, a kill) leaves the reply as last stored, empty for a new reply and the prefix
+  but a process lost without it (a crash, a kill) leaves the reply as last stored: no row for a new reply, the prefix
   for a continue. A checkpoint would show the hidden text on every client. Decision: Generation Progress Window D23.
 - If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request
   deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab

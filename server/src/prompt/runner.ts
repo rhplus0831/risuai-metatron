@@ -347,6 +347,8 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    (inside the grace), or after a read failure. With Response Streaming off, Half Streaming asks
  *    only this reply request to stream (except OobaLegacy). A stream received this way keeps the same
  *    counts, final writes, and tail, but emits no chunks or checkpoints and claims chunk sequence 0.
+ *    A new reply streamed this way gets its row (and `begin` lock) only when the read ends, without `accepted`,
+ *    as a buffered reply does: no client shows an empty reply while it streams.
  *    A buffered answer keeps the buffered path.
  *    A stream read to its end passes the response checks the request layer applies to a buffered answer
  *    (`responseRejection`: a banned script, the reply kind's minimum length). A rejected stream that was
@@ -1972,9 +1974,46 @@ async function runSpeaker(arg: {
         const assembledModel = generationInfo.model;
         /**
          * The row the reply's streams are read into and the text it held before them (a continue's), both fixed
-         * when the first stream arrives: a later stream of the same reply finds a row whatever the send's kind.
+         * when the first stream arrives, so a later stream of the same reply uses the same id and prefix. A
+         * continue's or a reroll's row exists already; a quiet new reply's row exists only once a read ends
+         * (`openDeferredRow`).
          */
         let streamTarget: { messageId: string; prefix: string } | undefined;
+        /**
+         * A quiet new reply has no row while it streams, so no client shows an empty bubble: the row, its `begin`
+         * lock, and its text are written in one append when the read ends, as the buffered path appends its reply.
+         * No `accepted` follows, as on that path (it would also clear the output estimate the window shows).
+         */
+        let deferredRow = false;
+        /**
+         * Appends a quiet new reply's row with the read's text. A kept answer always has one; a stop, failure, or
+         * rejection with no text writes none, as a buffered request that ends that way writes no reply. A chat
+         * deleted during the read gets none.
+         */
+        const openDeferredRow = (text: string, kept = false) => {
+            if (!deferredRow || generation || (!text && !kept) || !chatNow()) {
+                return;
+            }
+            writeOwn([
+                {
+                    op: "append",
+                    messages: [
+                        {
+                            role: "char",
+                            data: text,
+                            saying: currentChar.chaId,
+                            time: Date.now(),
+                            generationInfo,
+                            promptInfo,
+                            chatId: generationId,
+                        },
+                    ],
+                    anchor: { end: true },
+                },
+                { op: "begin", id: generationId, generationId },
+            ]);
+            generation = { messageId: generationId, generationId, seq: 0, final: false };
+        };
         /** The streams of this reply the response checks rejected; only a quiet one is followed by a request. */
         let rejections = 0;
         /** The read of the stream that is kept as the reply; none while the answer is buffered. */
@@ -1984,8 +2023,9 @@ async function runSpeaker(arg: {
         // The request and, for a stream, its read. A stream that ends whole goes through the response checks the
         // request layer applies to a buffered answer only (`responseRejection`). A stream the user saw fails
         // there with its text kept. A quiet stream showed nothing, so its text is dropped and the reply is
-        // requested again, up to `requestRetrys` times; the row is not written until an answer is kept, so a stop
-        // in between closes it as stored. Every result, the first as a later one, passes the same checks.
+        // requested again, up to `requestRetrys` times. A quiet new reply has no row until a read ends; a continue's
+        // or reroll's row is not written until an answer is kept, so a stop in between closes it as stored. Every
+        // result, the first as a later one, passes the same checks.
         while (true) {
             setup.check();
             if (req.model) {
@@ -2021,6 +2061,9 @@ async function runSpeaker(arg: {
                     // Continue keeps the message's id and text; the final write refreshes its time once.
                     continuingStream = true;
                     streamTarget = { messageId: generation.messageId, prefix: prefixOf(generation.messageId) };
+                } else if (quiet) {
+                    deferredRow = true;
+                    streamTarget = { messageId: generationId, prefix: "" };
                 } else {
                     writeOwn([
                         {
@@ -2088,8 +2131,9 @@ async function runSpeaker(arg: {
             if (read.error !== undefined || job.signal.aborted) {
                 // An abort or a read failure: the final write carries the text so far; nothing after
                 // the stream runs.
-                // A failure of that write is the job's error instead.
+                // A failure of that write is the job's error instead. A quiet new reply's row is appended first.
                 failed = true;
+                openDeferredRow(read.text);
                 finalize(read.text, read.seq);
                 if (read.error !== undefined && !job.signal.aborted) {
                     const failure = read.failure ?? {};
@@ -2118,12 +2162,18 @@ async function runSpeaker(arg: {
                     // A check that cannot run (a banned-script entry that names no script) fails the send, with
                     // the read's text stored first.
                     failed = true;
+                    openDeferredRow(read.text);
                     finalize(read.text, read.seq);
                     throw error;
                 }
             }
             if (rejection === null) {
+                if (deferredRow && !chatNow()) {
+                    // The chat was deleted while the quiet reply streamed: the send is cancelled.
+                    return { type: "stop" };
+                }
                 stream = read;
+                openDeferredRow(read.text, true);
                 break;
             }
             rejections += 1;
@@ -2132,6 +2182,7 @@ async function runSpeaker(arg: {
                 // candidate back), and the send fails without the `risuerror` text of a buffered failure. A
                 // failure of that write is the job's error instead. A quiet read's sequence is 0.
                 failed = true;
+                openDeferredRow(read.text);
                 finalize(read.text, read.seq);
                 throw new GenerationRunnerError(500, rejection, {
                     stage: "request",
@@ -2332,8 +2383,8 @@ async function runSpeaker(arg: {
                 const [role, mess] = msgs[i];
                 // The message a continue extends (locked since the send started).
                 const lastMessage = generation ? storedReply() : chatNow()?.message.at(-1);
-                // The reply's index for its output scripts: where it is appended, or, once a rejected quiet
-                // stream left this reply its row, that row's own place (other rows may follow it by now).
+                // The reply's index for its output scripts: where it is appended, or, after a rejected quiet
+                // stream of a continue or a reroll, that row's own place (other rows may follow it by now).
                 const outputIndex =
                     i === 0 && rejections > 0 && generation
                         ? indexOfMessage(generation.messageId)
