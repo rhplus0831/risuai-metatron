@@ -426,6 +426,8 @@ const pendingOrders = new JournalMap<number>((id) => dirtyOrderJournal(id, "late
 const inflightOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
 /** Conflicting sent orders whose outcome waits for an authoritative collection read. */
 const recoveringOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
+/** Sent vectors whose answers were lost, kept in memory for the next conflict read. */
+const lostOrderAttempts = new Map<string, Pick<SentChatOrder, "seq" | "ids">[]>();
 /** Chat keys → highest local sequence settled (acknowledged or discarded). */
 const settled = new Map<string, number>();
 const ordersSettled = new Map<string, number>();
@@ -5101,6 +5103,7 @@ export function seedChats(
     absentChats.clear();
     parkedResends.clear();
     orderRevisions.clear();
+    lostOrderAttempts.clear();
     staleChats.clear();
     noticedChats.clear();
     idleReadStamps.clear();
@@ -5224,6 +5227,13 @@ export function initializeChats() {
 // ---------------------------------------------------------------------------------------------
 // Save loop
 
+/** Membership writes wait while a conflict read can still recognize a lost order's vector. */
+function waitsForLostOrderRead(entry: Pending): boolean {
+    if (!recoveringOrders.has(entry.characterId) || !lostOrderAttempts.has(entry.characterId)) return false;
+    const ops = entry.resend?.ops ?? entry.ops;
+    return (!entry.resend && entry.create) || ops.some((op) => op.op === "create" || op.op === "delete");
+}
+
 /** Whether any chat work waits to be sent or a deferred reload can run. */
 export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
     // Empty entries still need takeChatWork to settle them once earlier in-flight work resolves.
@@ -5233,6 +5243,7 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
             !deferred.has(key) &&
             !inflight.has(key) &&
             !isJobBlocked(key) &&
+            !waitsForLostOrderRead(entry) &&
             canSaveCharacter(entry.characterId)
         ) {
             return true;
@@ -5623,6 +5634,7 @@ function retireCharacterGroups(chaId: string) {
  * revisions it holds of them when the server acknowledges it (`ackCharacterDelete`).
  */
 export function forgetCharacterChats(chaId: string) {
+    lostOrderAttempts.delete(chaId);
     dropHeld(chaId);
     delete chosen[slot(chaId)];
     dropLoadState(chaId);
@@ -5771,6 +5783,7 @@ function dropCharacterWork(chaId: string, discard: boolean): boolean {
         }
     }
     pendingOrders.delete(chaId);
+    lostOrderAttempts.delete(chaId);
     const recoveringOrder = recoveringOrders.get(chaId);
     if (recoveringOrder) {
         if (discard) {
@@ -5798,6 +5811,7 @@ function forgetCharacterRevisions(chaId: string) {
         }
     }
     orderRevisions.delete(chaId);
+    lostOrderAttempts.delete(chaId);
     clearOrderRefusal(chaId);
     for (const key of quarantined.keys()) {
         if (key.startsWith(prefix)) clearChatRefusal(key);
@@ -5894,8 +5908,11 @@ function memberIndex(entry: Pending): number {
  * same batch creates; chat work of characters not yet on the server waits. A chat with more unsent
  * ops than `maxOps` (the server's cap on one request) holds the first part as a resend until the
  * journal confirms the split. The rest follows its acknowledgement, on the revision it produces;
- * its work counts as saved only when the last part is. Reorders wait behind in-doubt membership resends and `holdOrders` (characters whose
- * chat list still needs a read after an acknowledgement): their base may be stale.
+ * its work counts as saved only when the last part is. Reorders wait behind in-doubt membership
+ * resends and `holdOrders` (characters whose chat list still needs a read after an acknowledgement):
+ * their base may be stale.
+ * Creates and deletes wait for a conflicting reorder's read if a lost vector could match it:
+ * saving either first would change the vector the read sees.
  */
 export function takeChatWork(
     creating: ReadonlySet<string>,
@@ -5915,7 +5932,12 @@ export function takeChatWork(
     const createdHere = new Set<string>();
     const deletedHere = new Set<string>();
     const eligible = [...pending.entries()].filter(
-        ([key]) => !quarantined.has(key) && !deferred.has(key) && !inflight.has(key) && !isJobBlocked(key),
+        ([key, entry]) =>
+            !quarantined.has(key) &&
+            !deferred.has(key) &&
+            !inflight.has(key) &&
+            !isJobBlocked(key) &&
+            !waitsForLostOrderRead(entry),
     );
     const creates = eligible
         .filter(([, entry]) => entry.create || entry.resend)
@@ -6375,6 +6397,12 @@ export function ackChatWork(
     }
     for (const order of work.orders) {
         inflightOrders.delete(order.characterId);
+        const remaining = lostOrderAttempts.get(order.characterId)?.filter((attempt) => attempt.seq > order.seq);
+        if (remaining?.length) {
+            lostOrderAttempts.set(order.characterId, remaining);
+        } else {
+            lostOrderAttempts.delete(order.characterId);
+        }
         settleOrder(order.characterId, order.seq);
     }
     return [...refresh];
@@ -6447,12 +6475,17 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     }
 }
 
+function sameOrderIds(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
 /**
  * Puts chat work that was not saved (a failed or rolled-back request) back in front of newer work.
  * With `lost` (no answer came: the request may have landed) every group becomes a resend of exactly
  * what was sent, with its id (`Resend.inDoubt`); so does a create, a group that was itself a resend
  * (it keeps its doubt), and a group with a newer create behind it. Any other group is merged in front
- * of the newer ops.
+ * of the newer ops. A lost reorder's sent vectors and sequences stay in memory for conflict readback.
+ * The queued order keeps the latest sequence and builds its vector from membership when sent.
  */
 export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}) {
     for (const group of work.groups) {
@@ -6488,10 +6521,17 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
             seq: Math.max(group.seq, newer?.seq ?? 0),
         });
     }
-    for (const order of work.orders) {
-        inflightOrders.delete(order.characterId);
-        if (!pendingOrders.has(order.characterId)) {
-            pendingOrders.set(order.characterId, order.seq);
+    for (const { characterId, seq, ids } of work.orders) {
+        inflightOrders.delete(characterId);
+        if (options.lost) {
+            const attempts = lostOrderAttempts.get(characterId) ?? [];
+            if (!attempts.some((attempt) => attempt.seq === seq && sameOrderIds(attempt.ids, ids))) {
+                attempts.push({ seq, ids: [...ids] });
+                lostOrderAttempts.set(characterId, attempts);
+            }
+        }
+        if (!pendingOrders.has(characterId)) {
+            pendingOrders.set(characterId, seq);
         }
     }
 }
@@ -6719,7 +6759,7 @@ export function recoverChatConflicts(
     requeueChatWork({ groups: [], orders });
     for (const order of work.orders) {
         if (conflictedOrders.has(order.characterId)) {
-            // The sent snapshot, not the current mirror, decides whether its answer was lost.
+            // Keep the sent vector for comparison with the collection read.
             inflightOrders.delete(order.characterId);
             recoveringOrders.set(order.characterId, order);
             refresh.add(order.characterId);
@@ -7708,6 +7748,7 @@ export function applyRemoteCollection(
             captureQueuedOrder(chaId);
             markOrderDiscarded(chaId, pendingOrders.get(chaId)!);
             pendingOrders.delete(chaId);
+            lostOrderAttempts.delete(chaId);
         } else {
             const localIndex = new Map(localIds.map((id, index) => [id, index]));
             entries = [
@@ -7769,8 +7810,10 @@ export function applyRemoteCollection(
  * only a newer summary of keeps its copy and held revision and is marked stale (read whole next).
  * A kept chat with a held revision the list lacks (quarantined, a create, streamed here), and a held
  * chat deleted here whose delete is not acknowledged, are marked as gone from the server's order
- * (`absentChats`): reorders leave them out. A conflicting reorder is settled quietly only when its
- * sent vector equals the server's; a newer queued reorder keeps its own sequence and local order.
+ * (`absentChats`): reorders leave them out. A conflicting reorder settles quietly when its sent
+ * vector equals the server's. If the server instead holds a kept vector from a lost answer, matching
+ * older sequences settle quietly and the latest reorder stays queued on the learned revision, in
+ * local order. A newer reorder already queued behind a conflict keeps its own sequence and local order.
  * Other queued reorders and a dropped chat's work count as discarded (`markOrderDiscarded`,
  * `markDiscarded`: the flush and `MutationScope` reports); returns whether there was any.
  * A dropped idle chat discards nothing.
@@ -7788,7 +7831,9 @@ export function acceptRemoteCollection(
     installCollectionMarks(chaId, collection.chats);
     const character = findCharacter(chaId);
     const recoveringOrder = recoveringOrders.get(chaId);
-    const orderSeq = pendingOrders.get(chaId);
+    let orderSeq = pendingOrders.get(chaId);
+    const lostAttempts = lostOrderAttempts.get(chaId);
+    lostOrderAttempts.delete(chaId);
     if (!collection.order || !character) {
         if (orderSeq === undefined && !recoveringOrder) {
             return false;
@@ -7804,11 +7849,18 @@ export function acceptRemoteCollection(
     }
     let discardedWork = false;
     if (recoveringOrder) {
-        if (
-            recoveringOrder.ids.length === collection.order.ids.length &&
-            recoveringOrder.ids.every((id, index) => id === collection.order!.ids[index])
-        ) {
+        const serverIds = collection.order.ids;
+        const matchingLost = lostAttempts?.filter((attempt) => sameOrderIds(attempt.ids, serverIds));
+        if (sameOrderIds(recoveringOrder.ids, serverIds)) {
             settleOrder(chaId, recoveringOrder.seq);
+        } else if (matchingLost?.length) {
+            for (const attempt of matchingLost) {
+                if (attempt.seq < recoveringOrder.seq) settleOrder(chaId, attempt.seq);
+            }
+            if (orderSeq === undefined || orderSeq < recoveringOrder.seq) {
+                orderSeq = recoveringOrder.seq;
+                pendingOrders.set(chaId, orderSeq);
+            }
         } else {
             if (options.captureOrder !== false) captureSentOrder(recoveringOrder);
             markOrderDiscarded(chaId, recoveringOrder.seq);
@@ -7942,7 +7994,7 @@ export function acceptRemoteCollection(
         }
     }
     if (recoveringOrder && orderSeq !== undefined) {
-        // A reorder queued after the conflicting request has its own obligation and local order.
+        // The queued reorder keeps the local order of the chats that remain.
         const localIndex = new Map(localIds.map((id, index) => [id, index]));
         next.sort((a, b) => (localIndex.get(a.id) ?? Infinity) - (localIndex.get(b.id) ?? Infinity));
     }

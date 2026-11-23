@@ -19,10 +19,14 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
-    getNodeServerProxyAuth: async () => "signed-token",
-}));
+vi.mock("../serverAuth", async () =>
+    (await import("./serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init, options) => {
+            options?.beforeDispatch?.();
+            return server.current.fetch(path, init);
+        },
+    }),
+);
 vi.mock("../../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
@@ -1227,8 +1231,70 @@ describe("one chat's trouble does not block the rest", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
+    async function loseReorderAnswer(
+        { fake, sync, chat }: Awaited<ReturnType<typeof boot>>,
+        stage: "before commit" | "after commit",
+    ) {
+        if (stage === "before commit") fake.holdNextBatch = true;
+        else fake.holdNextBatchResponse = true;
+
+        // The client loses the answer even though the original request still runs on the server.
+        let rejectAnswer!: (error: Error) => void;
+        const lostAnswer = new Promise<never>((_, reject) => {
+            rejectAnswer = reject;
+        });
+        const fetch = fake.fetch.bind(fake);
+        let original: Promise<Response> | undefined;
+        const transport = vi.spyOn(fake, "fetch").mockImplementation((path, init) => {
+            const response = fetch(path, init);
+            if (path !== "/api/resources/batch" || original) return response;
+            original = response;
+            return Promise.race([response, lostAnswer]);
+        });
+        chat.reorderChats("c", ["j", "k"]);
+        const firstFlush = sync.flushResources().catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(0);
+        const release = stage === "before commit" ? fake.releaseBatch : fake.releaseBatchResponse;
+        expect(release).toBeTypeOf("function");
+        rejectAnswer(new TypeError("reorder answer lost"));
+        expect(await firstFlush).toMatchObject({ status: 0, notSent: false });
+        transport.mockRestore();
+        return async () => {
+            release!();
+            await original;
+        };
+    }
+
+    it.each([
+        { stage: "after commit", membership: "unchanged membership" },
+        { stage: "before commit", membership: "unchanged membership" },
+        { stage: "after commit", membership: "sibling create" },
+        { stage: "before commit", membership: "sibling create" },
+    ] as const)("keeps the newer reorder after a lost answer ($stage, $membership)", async ({ stage, membership }) => {
+        const h = await boot();
+        const { fake, sync, chat } = h;
+        const deliver = await loseReorderAnswer(h, stage);
+        expect(fake.order("c")!.ids).toEqual(stage === "after commit" ? ["j", "k"] : ["k", "j"]);
+
+        chat.reorderChats("c", ["k", "j"]);
+        if (membership === "sibling create") {
+            chat.createChat("c", { id: "n", name: "New", message: [], note: "", localLore: [] });
+        }
+        const result = await sync.flushResources().finally(deliver);
+        const stored = fake.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0];
+        const order = stored.order!.ids;
+        expect({ ...result, relativeOrder: order.filter((id) => id !== "n") }).toEqual({
+            discarded: [],
+            refused: [],
+            relativeOrder: ["k", "j"],
+        });
+        const members = stored.chats.map((entry) => entry.id).sort();
+        expect(members).toEqual(membership === "sibling create" ? ["j", "k", "n"] : ["j", "k"]);
+        expect([...order].sort()).toEqual(members);
+    });
+
     it.each(["different", "equal"])(
-        "reports a refused reorder only when the server order differs from the sent order (%s)",
+        "reports a lost reorder with no newer reorder only when the server order differs (%s)",
         async (serverOrder) => {
             const { fake, sync, chat, mirrorIds } = await boot();
             chat.reorderChats("c", ["j", "k"]);
