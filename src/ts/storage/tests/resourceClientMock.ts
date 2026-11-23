@@ -6,7 +6,7 @@ type ResourceClientModule = typeof import("../resourceClient");
 
 /**
  * Every export of `src/ts/storage/resourceClient.ts` as a mock, for `vi.mock`. The error classes,
- * `UNLOAD_BODY_LIMIT` and `isGatewayFailureStatus` are the real ones, so a test imports the classes it throws from the module
+ * `UNLOAD_BODY_LIMIT`, `isGatewayFailureStatus` and the request deadline arithmetic are the real ones, so a test imports the classes it throws from the module
  * and `instanceof` holds. The callable exports are `vi.fn()`s that answer as an empty server does: a
  * read finds nothing, a write succeeds, and no epoch is loaded. `epochMismatch` builds the real
  * error. The defaults `satisfies` the module's type, so a new or reshaped export of `resourceClient.ts`
@@ -31,15 +31,25 @@ export async function createResourceClientMock(
         ResourceConflictError,
         ResourceEpochMismatchError,
         ResourceRequestError,
+        ResourceRequestDeadlineError,
         UNLOAD_BODY_LIMIT,
+        REQUEST_BASE_ALLOWANCE_MS,
+        REQUEST_BODY_BYTES_PER_SECOND,
+        REQUEST_MAX_ALLOWANCE_MULTIPLIER,
         isGatewayFailureStatus,
+        requestAllowanceMs,
     } = await vi.importActual<ResourceClientModule>("src/ts/storage/resourceClient");
     const defaults = {
         ResourceConflictError,
         ResourceEpochMismatchError,
         ResourceRequestError,
+        ResourceRequestDeadlineError,
         UNLOAD_BODY_LIMIT,
+        REQUEST_BASE_ALLOWANCE_MS,
+        REQUEST_BODY_BYTES_PER_SECOND,
+        REQUEST_MAX_ALLOWANCE_MULTIPLIER,
         isGatewayFailureStatus,
+        requestAllowanceMs,
         setMutationAdmission: vi.fn<ResourceClientModule["setMutationAdmission"]>(),
         setResourceEpoch: vi.fn<ResourceClientModule["setResourceEpoch"]>(),
         getResourceEpoch: vi.fn(() => ""),

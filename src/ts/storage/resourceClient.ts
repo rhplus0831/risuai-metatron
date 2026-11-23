@@ -66,6 +66,24 @@ export class ResourceRequestError extends Error {
     }
 }
 
+/** The request deadline expired before a complete answer arrived. */
+export class ResourceRequestDeadlineError extends ResourceRequestError {
+    constructor(notSent: boolean) {
+        super(0, "The request was not answered in time", null, notSent);
+        this.name = "ResourceRequestDeadlineError";
+    }
+}
+
+export const REQUEST_BASE_ALLOWANCE_MS = 45_000;
+export const REQUEST_BODY_BYTES_PER_SECOND = 32 * 1024;
+export const REQUEST_MAX_ALLOWANCE_MULTIPLIER = 8;
+
+/** Allows time for the encoded body, doubling the total after each consecutive deadline abort up to 8×. */
+export function requestAllowanceMs(bodyBytes: number, consecutiveAborts: number): number {
+    const baseAllowance = REQUEST_BASE_ALLOWANCE_MS + (bodyBytes * 1000) / REQUEST_BODY_BYTES_PER_SECOND;
+    return baseAllowance * Math.min(2 ** consecutiveAborts, REQUEST_MAX_ALLOWANCE_MULTIPLIER);
+}
+
 /**
  * The statuses a reverse proxy or tunnel answers when the server did not answer it in time or at all
  * (502, 503, 504, and Cloudflare's 520-530). The server's own 503 carries JSON `error` text; check
@@ -451,18 +469,35 @@ function singleConflict(error: unknown, kind: string, id: string): unknown {
 export async function sendSecretRequest(
     request: { kind: "put"; path: string; value: string },
     baseRevision: string,
+    { consecutiveAborts = 0 }: { consecutiveAborts?: number } = {},
 ): Promise<{ revision: string; data: unknown }> {
-    const init = {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ value: request.value, baseRevision }),
-        mutation: true,
-    };
+    const body = JSON.stringify({ value: request.value, baseRevision });
+    const allowance = requestAllowanceMs(new TextEncoder().encode(body).byteLength, consecutiveAborts);
+    const controller = new AbortController();
+    const { signal } = controller;
     const path = `/api/llm-secrets/${request.path}`;
+    const timer = setTimeout(() => controller.abort(), allowance);
     try {
-        return checkedEpoch(await sendJson<{ epoch?: string; revision: string; data: unknown }>(path, init));
+        const reply = await sendJson<{ epoch?: string; revision: string; data: unknown }>(path, {
+            method: "PUT",
+            headers: jsonHeaders,
+            body,
+            mutation: true,
+            signal,
+        });
+        return checkedEpoch(reply);
     } catch (error) {
+        if (signal.aborted) {
+            if (error instanceof ResourceRequestError && error.status === 0) {
+                throw new ResourceRequestDeadlineError(error.notSent);
+            }
+            if (error === signal.reason || (error instanceof Error && error.name === "AbortError")) {
+                throw new ResourceRequestDeadlineError(false);
+            }
+        }
         throw singleConflict(error, "llmSecrets", "main");
+    } finally {
+        clearTimeout(timer);
     }
 }
 

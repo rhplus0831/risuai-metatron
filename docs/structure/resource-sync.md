@@ -15,7 +15,8 @@
   `runRefresh`, `collectOperations`, `planBatches`, `recoverFromConflict`, `mergeConcurrentChange`, `inDoubt`, `saving`,
   `heldRecordRevision`, `flushResources`, `stopResourceSync`.
 - `src/ts/storage/resourceClient.ts`: resource and backup transport; `readBoot`, `readKinds`, `readRefs`,
-  `setResourceEpoch`, `applyBatchText`, `sendSecretRequest`, `prepareUnloadAuth`, `sendBatchOnUnload`.
+  `setResourceEpoch`, `applyBatchText`, `sendSecretRequest`, `requestAllowanceMs`, `ResourceRequestDeadlineError`,
+  `prepareUnloadAuth`, `sendBatchOnUnload`.
 - `src/ts/storage/bootCache.ts`: boot cache and answer validation; `loadBootSnapshot`, `prepareBootRequest`,
   `expandBootAnswer`, `BootCacheStore`, `indexedDbBootCacheStore`, `scheduleBootCacheCommit`, `clearBootCache`.
 - `src/ts/storage/recordMerge.ts`: pure record merge policy; `mergeSectionFields`, `mergeCharacterFields`,
@@ -235,6 +236,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   `resourceClient.ts`'s `/api/llm-secrets/*` transport on the held revision. A later credential waits for the next cycle
   after its owner record. Cleanup waits until owner deletion is acknowledged; comment contracts on `sendSecretOps`,
   `entryOwnerState`, `adoptSecretRecord` and `adoptSecretSiblings` define retries, refusals and sibling adoption.
+- Each attempt gets 45 seconds plus time for its encoded body at 32 KiB/s, doubled after each consecutive deadline abort
+  of the same op up to 8×. Expiry is a lost answer and leaves the op queued for the next cycle.
 - `auxFetch` calls `awaitSecretWrites` before using a stored key; refused ops, cleanups behind unsaved owner deletion,
   saving failure or halt reject that barrier.
 

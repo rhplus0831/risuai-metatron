@@ -179,6 +179,7 @@ import {
     readRefs,
     ResourceConflictError,
     ResourceEpochMismatchError,
+    ResourceRequestDeadlineError,
     ResourceRequestError,
     sendBatchOnUnload,
     sendSecretRequest,
@@ -3273,6 +3274,8 @@ async function cycle() {
 
 /** Queued credential writes the server refused (400, 404): dropped and reported, by op id. */
 const failedSecretOps = new Set<number>();
+/** Consecutive deadline aborts of each queued credential write, by op id. */
+const secretDeadlineAborts = new Map<number, number>();
 /** How many times one credential write is retried on a stale revision within one cycle. */
 const SECRET_CONFLICT_RETRIES = 2;
 
@@ -3372,6 +3375,7 @@ async function rereadSecrets() {
  * revision. A stale revision rereads the record and retries (a set is a blind write of one path),
  * a few times per cycle; a refused write (400, 404) is dropped and reported as a discard; any
  * other failure keeps the queue for the next cycle (the save backoff; 412 halts for a restore).
+ * Each attempt has a size-based deadline. Expiry is a lost answer and leaves the op queued.
  * `SECRET_CONFLICT_RETRIES` permits two reread/retries per op/cycle. Refusals report `llmSecrets/<path>`
  * without exposing values. Cleanup sends only after the owner leaves both mirror and saved copy;
  * a restored live owner drops it, an unsaved deletion holds it without scheduling another cycle.
@@ -3383,6 +3387,7 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
             const owner = entryOwnerState(op.request.path.field, op.request.path.id);
             if (owner === "live") {
                 // The deletion was discarded (a conflict restored the owner): its key stays.
+                secretDeadlineAborts.delete(op.id);
                 removeSecretOp(op.id);
                 continue;
             }
@@ -3402,6 +3407,7 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
             saving.state = true;
             cycleWrote = true;
             recordSecretWait(op.id);
+            const consecutiveAborts = secretDeadlineAborts.get(op.id) ?? 0;
             try {
                 const reply = await sendSecretRequest(
                     {
@@ -3410,7 +3416,9 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                         value: op.request.kind === "put" ? op.request.value : "",
                     },
                     base,
+                    { consecutiveAborts },
                 );
+                secretDeadlineAborts.delete(op.id);
                 if (halted) {
                     return;
                 }
@@ -3418,6 +3426,11 @@ async function sendSecretOps(captured: ReadonlySet<number>) {
                 adoptSecretRecord(reply.revision, reply.data as MaskedLlmSecrets, [secretOpTarget(op.request)]);
                 break;
             } catch (error) {
+                if (error instanceof ResourceRequestDeadlineError) {
+                    secretDeadlineAborts.set(op.id, consecutiveAborts + 1);
+                } else if (!(error instanceof ResourceRequestError) || error.status !== 0) {
+                    secretDeadlineAborts.delete(op.id);
+                }
                 if (halted) {
                     return;
                 }

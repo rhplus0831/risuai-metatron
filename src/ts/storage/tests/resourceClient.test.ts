@@ -6,16 +6,22 @@ import { FakeResourceServer } from "./fakeResourceServer";
 // epoch-mismatch listener that every consumer (adapter, inlays, permissions) shares.
 
 const { server, calls } = vi.hoisted(() => ({
-    server: { current: null as any },
+    server: { current: null as any, waitForAuth: undefined as ((init: RequestInit) => Promise<void>) | undefined },
     calls: [] as { path: string; init: RequestInit }[],
 }));
 
-vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init: RequestInit = {}) => {
-        calls.push({ path, init });
-        return server.current.fetch(path, init);
-    },
-}));
+vi.mock("../serverAuth", async () =>
+    (await import("./serverAuthMock")).createServerAuthMock({
+        authFetch: async (path, init = {}, options) => {
+            if (server.waitForAuth) {
+                await server.waitForAuth(init);
+            }
+            options?.beforeDispatch?.();
+            calls.push({ path, init });
+            return server.current.fetch(path, init);
+        },
+    }),
+);
 
 import * as client from "../resourceClient";
 
@@ -24,12 +30,14 @@ let fake: FakeResourceServer;
 beforeEach(() => {
     fake = new FakeResourceServer();
     server.current = fake;
+    server.waitForAuth = undefined;
     calls.length = 0;
     client.setResourceEpoch("");
     client.setEpochMismatchListener(null);
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
 });
 
@@ -189,6 +197,79 @@ describe("conflicts", () => {
         await expect(client.putResource("inlays", "x", { name: "y" }, null)).rejects.toMatchObject({
             conflicts: [{ kind: "inlays", id: "x", revision }],
         });
+    });
+});
+
+describe("credential PUT deadlines", () => {
+    const request = { kind: "put", path: "openAIKey", value: "test-key" } as const;
+
+    function unanswered(signal?: AbortSignal | null): Promise<never> {
+        return new Promise((_, reject) => {
+            signal?.throwIfAborted();
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+    }
+
+    function expectDeadline(error: unknown, notSent: boolean) {
+        expect(error).toBeInstanceOf(client.ResourceRequestDeadlineError);
+        expect(error).toMatchObject({ status: 0, notSent });
+    }
+
+    it("allows 45 seconds plus upload time at 32 KiB/s and doubles up to eight times", () => {
+        expect(client.requestAllowanceMs(0, 0)).toBe(45_000);
+        expect(client.requestAllowanceMs(32 * 1024, 0)).toBe(46_000);
+        expect(client.requestAllowanceMs(64 * 1024, 0)).toBe(47_000);
+        expect([0, 1, 2, 3, 4, 10].map((aborts) => client.requestAllowanceMs(32 * 1024, aborts))).toEqual([
+            46_000, 92_000, 184_000, 368_000, 368_000, 368_000,
+        ]);
+    });
+
+    it("counts the UTF-8 JSON bytes while authenticating and reports expiry before dispatch", async () => {
+        vi.useFakeTimers();
+        const baseRevision = "base";
+        const overhead = JSON.stringify({ value: "", baseRevision }).length;
+        const value = "é".repeat((32 * 1024 - overhead) / 2);
+        server.waitForAuth = (init) => unanswered(init.signal);
+        const settled = vi.fn();
+        void client.sendSecretRequest({ ...request, value }, baseRevision).then(settled, settled);
+
+        // The two-byte characters plus the ASCII JSON fields make exactly 32 KiB.
+        await vi.advanceTimersByTimeAsync(45_999);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expectDeadline(settled.mock.lastCall?.[0], true);
+        expect(calls).toEqual([]);
+    });
+
+    it("reports expiry during the body read as a dispatched PUT", async () => {
+        vi.useFakeTimers();
+        const response = Response.json({ revision: "next", data: {} });
+        const readBody = vi.spyOn(response, "json");
+        server.current = {
+            fetch: async (_path: string, init: RequestInit) => {
+                await new Promise<void>((resolve) => setTimeout(resolve, 44_000));
+                readBody.mockImplementation(() => unanswered(init.signal));
+                return response;
+            },
+        };
+        const settled = vi.fn();
+        void client.sendSecretRequest(request, "base").then(settled, settled);
+
+        await vi.advanceTimersByTimeAsync(44_000);
+        expect(readBody).toHaveBeenCalled();
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_020);
+        expectDeadline(settled.mock.lastCall?.[0], false);
+    });
+
+    it("preserves a credential PUT conflict answered before the deadline", async () => {
+        vi.useFakeTimers();
+        server.current = {
+            fetch: async () => Response.json({ error: "Revision conflict", revision: "fresh" }, { status: 409 }),
+        };
+        const error: unknown = await client.sendSecretRequest(request, "stale").catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(client.ResourceConflictError);
+        expect(error).toMatchObject({ conflicts: [{ kind: "llmSecrets", id: "main", revision: "fresh" }] });
     });
 });
 
