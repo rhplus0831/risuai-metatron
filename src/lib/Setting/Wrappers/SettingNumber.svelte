@@ -17,7 +17,8 @@
         if (!Number.isFinite(value)) {
             updateSettingValue(item, clampOnCommit.defaultValue, ctx);
         } else if (min !== undefined && max !== undefined) {
-            updateSettingValue(item, Math.min(max, Math.max(min, value)), ctx);
+            const whole = clampOnCommit.wholeNumber ? Math.floor(value) : value;
+            updateSettingValue(item, Math.min(max, Math.max(min, whole)), ctx);
         }
     }
 </script>

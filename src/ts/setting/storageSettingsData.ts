@@ -41,7 +41,8 @@ export const storageSettingsItems: SettingItem[] = [
         options: {
             min: CHAT_TRASH_DAYS.min,
             max: CHAT_TRASH_DAYS.max,
-            clampOnCommit: { defaultValue: CHAT_TRASH_DAYS.default },
+            // The server keeps whole days (`normalizeChatTrashDays`); the field shows what it keeps.
+            clampOnCommit: { defaultValue: CHAT_TRASH_DAYS.default, wholeNumber: true },
         },
         keywords: ["chat", "trash", "retention", "purge", "채팅", "휴지통", "보관 기간", "삭제"],
     },

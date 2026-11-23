@@ -52,6 +52,7 @@ import SettingRenderer from "src/lib/Setting/SettingRenderer.svelte";
 import { activeMainProfile, activeModelPreset, activePersona, activePreset, settings } from "../settingsViews.svelte";
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
 import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
+import { storageSettingsItems } from "../../setting/storageSettingsData";
 import { interactionSettingsItems } from "../../setting/interactionSettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 import { modelSpecificParameterItems } from "../../setting/botSettingsParamsData";
@@ -243,6 +244,7 @@ describe("SettingNumber", () => {
         ["900", 600],
         ["5", 10],
         ["90", 90],
+        ["90.7", 90],
     ] as const)("commits %s as a displayed and stored plugin wait limit of %i", (typed, expected) => {
         const item = displaySettingsItems.find(({ id }) => id === "display.completionWaitMaxSeconds")!;
         const { query } = render(SettingNumber, { item, ctx: ctx() });
@@ -259,6 +261,26 @@ describe("SettingNumber", () => {
             shown: expected,
             stored: expected,
         });
+    });
+
+    it.each([
+        ["7.5", 7],
+        ["0.5", 1],
+        ["14", 14],
+    ] as const)("commits %s as a displayed and stored chat trash retention of %i whole days", (typed, expected) => {
+        // The server keeps whole days, so the field must not show a fraction it will not honor.
+        const item = storageSettingsItems.find(({ id }) => id === "storage.chatTrashDays")!;
+        const { query } = render(SettingNumber, { item, ctx: ctx() });
+        const input = query<HTMLInputElement>("input");
+
+        input.focus();
+        typeInto(input, typed);
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+
+        const stored = recordData<Pick<Database, "chatTrashDays">>("ui")?.chatTrashDays;
+        expect({ shown: input.valueAsNumber, stored }).toEqual({ shown: expected, stored: expected });
     });
 
     it("keeps the plugin wait limit while the input is empty and commits the default on change", () => {
