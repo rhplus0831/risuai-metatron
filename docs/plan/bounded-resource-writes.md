@@ -8,7 +8,7 @@ their `README.md`, and the Luna inventory of similar waits under `inventory/`). 
 final judgment of Claude Fable at the owner's request
 ([report](../reports/audits/plan-runner/bounded-resource-writes-2026-11-24.md)): the writer fence the first two
 revisions added was withdrawn as resting on an untested delivery model, and late delivery of an abandoned request is a
-Limitation. Landed: 3 (`86d4bab95`), 1 (`b229e675a`), 6 (`e16f27b11`, test fix `0e10b001d`).
+Limitation. Landed: 3 (`86d4bab95`), 1 (`b229e675a`), 6 (`e16f27b11`, test fix `0e10b001d`), 4 (`fedc38ff7`).
 
 Sources: `src/ts/storage/resourceSync.svelte.ts` (`runCycle`, `cycle`, `planBatches`, `noteInDoubt`,
 `requeueChatWork` call, `sendSecretOps`, `awaitSecretWrites`, `flushResources`, `saving`), `src/ts/storage/resourceClient.ts`
