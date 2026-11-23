@@ -1522,6 +1522,46 @@ describe("callbacks", () => {
 });
 
 describe("the reply tail's callbacks", () => {
+    it("chatOutput reports the visible owner's index and treats an archived owner or speaker as gone", async () => {
+        records.insertCharacterRecords([
+            { chaId: "g", type: "group" },
+            { chaId: "b", type: "character" },
+        ]);
+        for (const chaId of ["g", "b"]) {
+            deps.chats[chaId] = { chats: [{ id: `chat-${chaId}`, message: [{ chatId: "reply" }] }] };
+        }
+        const listener = vi.fn();
+        hooks.chatOutput.add(listener);
+        for (const [id, chaId, speakerId] of [
+            ["visible", "b", "c"],
+            ["archived-owner", "g", "c"],
+            ["archived-speaker", "b", "g"],
+        ]) {
+            send(
+                callback(
+                    id,
+                    "chatOutput",
+                    { messageId: "reply", speakerId },
+                    {
+                        targets: { ...targets, chatRef: { chaId, chatId: `chat-${chaId}` } },
+                    },
+                ),
+            );
+            await pump();
+        }
+        const gone = failed("hook", "The chat the output listeners run for is gone");
+        expect
+            .soft(tx.answers)
+            .toEqual([{ type: "answer", id: "visible", outcome: "answered", value: true }, gone, gone]);
+        expect(listener).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                char: expect.objectContaining({ chaId: "c" }),
+                chat: expect.objectContaining({ id: "chat-b" }),
+                characterIndex: 1,
+            }),
+        );
+    });
+
     it("runs an owner's chatOutput under the job targets while another chat is selected", async () => {
         const selection = await import("../storage/selection.svelte");
         await withCharacter(

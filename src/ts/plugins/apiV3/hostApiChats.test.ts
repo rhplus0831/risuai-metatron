@@ -531,6 +531,53 @@ describe("retained plugin chat reads", () => {
 });
 
 describe("the setters", () => {
+    it.each([
+        ["setDatabase", "an archived id", "g", "character"],
+        ["setDatabaseLite", "a new group", "new-group", "group"],
+    ])(
+        "%s refuses the character list before loading chats when its last entry names %s",
+        async (setter, _reason, chaId, type) => {
+            const [c, d] = liveCharacters();
+            const group = { chaId: "g", type: "group", name: "Group", chats: [chat("kg", "KG")] };
+            installDatabase({ characters: [c, group, d] }, ["g", "d"]);
+            const api = await makeApi();
+            await api[setter]({
+                characters: [
+                    { ...d, name: "Edited D", chats: [chat("kd", "Edited chat")] },
+                    { chaId: "new", name: "New character" },
+                    { chaId, type, name: "Last entry", chats: [chat("kg", "Supplied chat")] },
+                ],
+                theme: "accepted",
+            });
+            expect.soft(reads.count).toBe(0);
+            expect.soft(characterList().map(({ chaId, type, name }) => [chaId, type, name])).toEqual([
+                ["c", "character", "C"],
+                ["g", "group", "Group"],
+                ["d", "character", "D"],
+            ]);
+            expect(settings.ui.theme).toBe("accepted");
+        },
+    );
+
+    it.each(["setCharacter", "setChar", "setCharacterToIndex"])(
+        "%s refuses a group payload before loading its target's chats",
+        async (setter) => {
+            // Select the loaded chat first so the tab's own selection does not fetch the cold fixture.
+            selectCharacter("d");
+            installDatabase({ characters: liveCharacters() }, ["d"]);
+            expect(chatStore.currentChatRef()).toEqual({ chaId: "d", chatId: "kd" });
+            expect(chatStore.findChat({ chaId: "d", chatId: "kd" })).toBeUndefined();
+            const api = await makeApi();
+            const payload = { chaId: "new-group", type: "group", name: "Group", chats: [chat("kd", "Supplied chat")] };
+            if (setter === "setCharacterToIndex") await api.setCharacterToIndex(1, payload);
+            else await api[setter](payload);
+            expect.soft(reads.count).toBe(0);
+            expect(ids()).toEqual(["c", "d"]);
+            expect(characterList()[1]).toMatchObject({ type: "character", name: "D" });
+            expect(chatIds("d")).toEqual(["kd"]);
+        },
+    );
+
     it("setChar outside a hook applies the fields, keeps an omitted chat in its slot, and a chatPage selects in the plugin's list", async () => {
         const api = await makeApi();
         const got = await api.getChar();

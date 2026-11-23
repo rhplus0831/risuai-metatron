@@ -305,24 +305,21 @@ describe("rootSnapshot", () => {
 });
 
 describe("buildDatabaseSubset (the plugin getDatabase)", () => {
-    it("answers every allowed key: the characters with their chats, the persona index, the selected preset's fields, and the rest by root name", () => {
+    it("answers every allowed key: the characters with their chats (archived groups left out, also from the order), the persona index, the selected preset's fields, and the rest by root name", () => {
         boot();
         selectPersona("p2");
         const subset = buildDatabaseSubset(ALLOWED_DB_KEYS, null) as AnyRecord;
         expect(Object.keys(subset).sort()).toEqual([...ALLOWED_DB_KEYS].sort());
-        expect(subset.characters.map((entry: AnyRecord) => entry.chaId)).toEqual(["c1", "g1"]);
-        expect(subset.characters.map((entry: AnyRecord) => entry.chats.map((c: AnyRecord) => c.id))).toEqual([
-            ["k"],
-            ["kg"],
-        ]);
-        expect(subset.characters.map((entry: AnyRecord) => entry.chatPage)).toEqual([0, 0]);
+        expect(subset.characters.map((entry: AnyRecord) => entry.chaId)).toEqual(["c1"]);
+        expect(subset.characters.map((entry: AnyRecord) => entry.chats.map((c: AnyRecord) => c.id))).toEqual([["k"]]);
+        expect(subset.characters.map((entry: AnyRecord) => entry.chatPage)).toEqual([0]);
         expect(subset.selectedPersona).toBe(1);
         expect(subset.temperature).toBe(40);
         expect(subset.maxContext).toBe(1234);
         expect(subset.moduleIntergration).toBe("mod-a");
         expect(subset.theme).toBe("dark");
         expect(subset.textTheme).toBe("standard");
-        expect(subset.characterOrder).toEqual(fixture().characterOrder);
+        expect(subset.characterOrder).toEqual(["c1", { name: "folder", data: [], color: "", id: "f1" }]);
         expect(subset.personas.map((entry: AnyRecord) => entry.name)).toEqual(["Ann", "Bob"]);
         expect(subset.modules).toEqual([]);
         expect(subset.plugins).toEqual([]);

@@ -1,4 +1,5 @@
 import { characterList } from "../storage/characterStore.svelte";
+import { isArchivedGroup } from "../storage/archivedGroup";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { generationClientId, noteChannelCallbacks, reportCallbackDrained } from "./generationJobs";
@@ -1207,23 +1208,29 @@ async function runChatOutputListeners(
     const messageId = String(payload.messageId);
     const speakerId = String(payload.speakerId);
     const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-    // The speaker's chats (another character in a group) are pinned and loaded before each
-    // listener: its copy carries them all, and an earlier listener may have changed them.
+    const participants = () => {
+        const visible = characterList().filter((entry) => !isArchivedGroup(entry));
+        const characterIndex = visible.findIndex((entry) => entry?.chaId === chaId);
+        const speaker = visible.find((entry) => entry?.chaId === speakerId);
+        if (characterIndex === -1 || !speaker) {
+            throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+        }
+        return { characterIndex, speaker };
+    };
+    // Each listener gets a fresh copy of the speaker and all its chats.
     const releaseSpeaker = pinChats(speakerId);
     try {
         // The live set, as the tab's own send walks it: a listener an earlier one removed does not
         // run, one it added does.
         for (const listener of pluginHooks.chatOutput) {
             stillWanted();
+            participants();
             await loadChats(speakerId, true);
             stillWanted();
-            // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
-            const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
-            const owner = characterList()[characterIndex];
-            const chatIndex = owner ? activeChatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
+            const { characterIndex, speaker } = participants();
+            const chatIndex = activeChatList(chaId).findIndex((entry) => entry.id === chatId);
             const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
-            const speaker = characterList().find((entry) => entry?.chaId === speakerId);
-            if (!owner || !chat || !speaker) {
+            if (!chat) {
                 throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
             }
             try {

@@ -238,6 +238,54 @@ afterEach(() => {
     for (const fake of servers.splice(0)) fake.close();
 });
 
+async function fixtureWithGroup() {
+    const fake = await fixture({ c: [chatData("held")], g: [chatData("archived")] });
+    fake.set("characters", "g", { chaId: "g", type: "group", name: "Group" });
+    return fake;
+}
+
+it("omits an archived group's loaded and cold chats from database reads and direct chat access", async () => {
+    const b = await boot(await fixtureWithGroup());
+    const archived = ref("g", "archived");
+    const read = async () => {
+        const visible = [["c", ["held"]]];
+        const full: { characters: ReturnedCharacter[] } = await b.api.getDatabase();
+        expect.soft(full.characters.map(({ chaId, chats }) => [chaId, chats.map(({ id }) => id)])).toEqual(visible);
+        const summaries: { characters: SummaryCharacter[] } = await b.api.getDatabase(["characters"], {
+            chats: "summaries",
+        });
+        expect
+            .soft(summaries.characters.map(({ chaId, chatSummaries }) => [chaId, chatSummaries.map(({ id }) => id)]))
+            .toEqual(visible);
+        expect.soft(await b.api.getChats("g")).toBeNull();
+    };
+    for (const loaded of [false, true]) {
+        if (loaded) await b.chat.ensureChatLoaded(archived);
+        expect(!!b.chat.findChat(archived)).toBe(loaded);
+        b.fake.requests.length = 0;
+        await read();
+        await b.runHook(read);
+        expect(requestedChats(b.fake)).not.toContainEqual({ characterId: "g", id: "archived" });
+    }
+});
+
+it.each(["setDatabase", "setDatabaseLite"])(
+    "%s preserves an archived group across a visible character round trip",
+    async (setter) => {
+        const b = await boot(await fixtureWithGroup());
+        const group = b.fake.record("characters", "g")!.data;
+        const chat = b.fake.chat("g", "archived")!.data;
+        const incoming = await b.api.getDatabase(["characters"]);
+        expect(incoming.characters.map(({ chaId }: ReturnedCharacter) => chaId)).toEqual(["c"]);
+        incoming.characters[0].name = "Plugin edit";
+        await b.api[setter](incoming);
+        await b.sync.flushResources();
+        expect(b.fake.record("characters", "c")?.data.name).toBe("Plugin edit");
+        expect(b.fake.record("characters", "g")?.data).toEqual(group);
+        expect(b.fake.chat("g", "archived")?.data).toEqual(chat);
+    },
+);
+
 it.each(["outside a hook", "inside a hook"])(
     "returns held chat summaries without reading, flushing, pinning or loading chats %s",
     async (where) => {

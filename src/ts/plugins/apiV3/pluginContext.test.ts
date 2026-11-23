@@ -189,6 +189,7 @@ vi.mock("src/ts/storage/serverAuth", () => {
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
 import {
+    selectCharacter,
     selectCharacterAt,
     selectedIndex,
     selection,
@@ -249,7 +250,7 @@ const chat = (id: string, fields: Record<string, unknown> = {}) => ({
  * record fields into the records, the characters' chats into the chat module, the selection
  * resolved.
  */
-function liveDatabase() {
+function liveDatabase(includeGroup = false) {
     selectPreset("a");
     selectModelPreset("a");
     selectPersona("p");
@@ -282,6 +283,7 @@ function liveDatabase() {
                 triggerscript: [],
                 globalLore: [],
             },
+            ...(includeGroup ? [{ chaId: "g", type: "group", name: "Group", chats: [chat("g0")] }] : []),
             {
                 chaId: "b",
                 type: "character",
@@ -294,7 +296,7 @@ function liveDatabase() {
                 globalLore: [],
             },
         ],
-        characterOrder: ["a", "b"],
+        characterOrder: includeGroup ? ["a", "g", "b"] : ["a", "b"],
         plugins: [],
         modules: [],
         enabledModules: [],
@@ -467,6 +469,50 @@ describe("capturePluginContext", () => {
         const context = capturePluginContext(ref)!;
         ref.chatId = "changed";
         expect(context.chatRef).toEqual(refB1);
+    });
+});
+
+describe("plugin access to a library with an archived group", () => {
+    beforeEach(() => liveDatabase(true));
+
+    it("uses the same visible character index for chat edits, the selection and a hook on another chat", async () => {
+        const api = await makeApi();
+        selectCharacter("b");
+        expect.soft(api.getCurrentCharacterIndex()).toBe(1);
+        expect.soft((await api.getCharacterFromIndex(1)).chaId).toBe("b");
+        const copy = await api.getChatFromIndex(1, 0);
+        expect.soft(copy.id).toBe("b0");
+        await api.setChatToIndex(1, 0, { ...copy, note: "B's note" });
+        expect.soft(chatStore.findChat({ chaId: "b", chatId: "b0" })?.note).toBe("B's note");
+        expect.soft(chatStore.findChat({ chaId: "g", chatId: "g0" })?.note).toBe("");
+
+        selectCharacter("a");
+        const seen: number[] = [];
+        const listener = await listenerOf(api, () => seen.push(api.getCurrentCharacterIndex()));
+        await invokeHook(listener, capturePluginContext(refB1), listenerArg);
+        expect(seen).toEqual([1]);
+    });
+
+    it("replaces the indexed character while preserving the archived record, chat and order entry", async () => {
+        const api = await makeApi();
+        const group = plain(characterOf("g"));
+        const ref = { chaId: "g", chatId: "g0" };
+        const groupChat = plain(chatStore.findChat(ref));
+        await api.setCharacterToIndex(1, { chaId: "replacement", name: "Replacement", chats: [chat("new")] });
+        expect(characterList().map(({ chaId }) => chaId)).toEqual(["a", "g", "replacement"]);
+        expect(plain(characterOf("g"))).toEqual(group);
+        expect(chatStore.chatList("g").map(({ id }) => id)).toEqual(["g0"]);
+        expect(plain(chatStore.findChat(ref))).toEqual(groupChat);
+        expect(plain(settings.characterOrder)).toEqual(["a", "g", "replacement"]);
+    });
+
+    it("filters group ids from stored and incoming character orders, including folder members", async () => {
+        const api = await makeApi();
+        const folder = (data: string[]) => ({ id: "f", name: "F", color: "red", data });
+        settings.characterOrder = ["a", "g", folder(["g", "b"])];
+        expect.soft(await api.getDatabase(["characterOrder"])).toEqual({ characterOrder: ["a", folder(["b"])] });
+        await api.setDatabase({ characterOrder: [folder(["a", "g"]), "g", "b"] });
+        expect(plain(settings.characterOrder)).toEqual([folder(["a"]), "b"]);
     });
 });
 
@@ -1170,6 +1216,38 @@ describe("sendChat inside a hook", () => {
 });
 
 describe("sendChat across consent", () => {
+    function allowGone(error: unknown) {
+        if (!(error instanceof PluginTargetGoneError)) throw error;
+    }
+
+    it("appends nothing when a hook starts a send on a group that becomes visible during consent", async () => {
+        const api = await makeApi();
+        const context = capturePluginContext(refB1);
+        const listener = await listenerOf(api, () => api.sendChat("plugin message").catch(allowGone));
+        const owner = characterOf("b");
+        owner.type = "group";
+        grants.value = false;
+        alerts.confirm.mockImplementationOnce(async () => {
+            owner.type = "character";
+            return true;
+        });
+        await invokeHook(listener, context, listenerArg);
+        expect(texts(refB1)).toEqual(["hello from b1"]);
+        expect(sends).toEqual([]);
+    });
+
+    it("appends nothing when the selected chat's owner becomes a group during send consent", async () => {
+        const api = await makeApi();
+        grants.value = false;
+        alerts.confirm.mockImplementationOnce(async () => {
+            characterOf("a").type = "group";
+            return true;
+        });
+        await api.sendChat("plugin message").catch(allowGone);
+        expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0"]);
+        expect(sends).toEqual([]);
+    });
+
     it.each(["switch", "delete", "replace"] as const)(
         "uses only its captured destination when consent waits (%s)",
         async (change) => {

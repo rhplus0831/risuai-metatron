@@ -5,7 +5,8 @@ import {
     type ChatMemorySettings,
 } from "../../../../shared/chatMemory.ts";
 import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
-import { selectedCharacter, characterList, characterSnapshot } from "../../storage/characterStore.svelte";
+import { selectedCharacter, characterList } from "../../storage/characterStore.svelte";
+import { isArchivedGroup } from "../../storage/archivedGroup";
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
@@ -66,10 +67,15 @@ import {
 } from "src/ts/storage/pluginStorageStore.svelte";
 import { waitForResourceFlush } from "src/ts/storage/resourceFlushWait";
 import { assertSaveAdmission, flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
-import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
+import { selection, selectPersona } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
 import { isForwardedPresetRoot, missingPresetTarget, type PresetScope } from "src/ts/storage/settingsViews.svelte";
-import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
+import {
+    archivedGroupIds,
+    buildDatabaseSubset,
+    pluginCharacterList,
+    pluginCharacterOrder,
+} from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
     enterContext,
@@ -1212,6 +1218,17 @@ const assertPluginUrlAllowed = (url: string) => {
 
 const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization"];
 
+function pluginCharacter(chaId: string | undefined | null) {
+    if (chaId == null) return undefined;
+    return characterList().find((entry) => entry?.chaId === chaId && !isArchivedGroup(entry));
+}
+
+/** Check in the caller's turn before loading and again before using the loaded chat. */
+function checkPluginChat(ref: ChatRef, owner: string, loaded = true) {
+    if (!pluginCharacter(ref.chaId)) throw new PluginTargetGoneError("character");
+    if (!loaded || chatOwnerToken(ref.chaId) !== owner || !isActiveChat(ref)) throw new PluginTargetGoneError("chat");
+}
+
 /**
  * The character and chat a hook's context names, found by id as they are now. Throws
  * `PluginTargetGoneError` when either was deleted: the call is refused, never redirected.
@@ -1231,7 +1248,7 @@ function contextTarget(context: PluginCallContext) {
  * `PluginTargetGoneError` when either is gone. For checks before a load and for index reads.
  */
 function contextMember(context: PluginCallContext) {
-    const characters = characterList();
+    const characters = pluginCharacterList();
     const characterIndex = characters.findIndex((entry) => entry?.chaId === context.chatRef.chaId);
     const character = characters[characterIndex];
     if (!character) {
@@ -1285,9 +1302,11 @@ function chatsOfRead(
     context: PluginCallContext | undefined,
     members: ChatMemberSelector = activeChatList,
 ): ChatRef[] {
+    if (chaIds.length === 0) return [];
     const about = context?.chatRef ?? currentChatRef();
+    const visible = new Set(pluginCharacterList().map(({ chaId }) => chaId));
     const refs = chaIds.flatMap((chaId) =>
-        chaId === undefined ? [] : members(chaId).map(({ id }) => ({ chaId, chatId: id })),
+        chaId === undefined || !visible.has(chaId) ? [] : members(chaId).map(({ id }) => ({ chaId, chatId: id })),
     );
     const first = refs.findIndex(({ chaId, chatId }) => chaId === about?.chaId && chatId === about.chatId);
     return first > 0 ? [refs[first], ...refs.slice(0, first), ...refs.slice(first + 1)] : refs;
@@ -1347,7 +1366,7 @@ async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
                 }
                 const { revisions } = read.value;
                 asked.forEach(({ ref, state }, index) => {
-                    if (revisions[index] === null) {
+                    if (revisions[index] === null && pluginCharacter(ref.chaId)) {
                         installChatProjection(ref, state, null);
                     }
                 });
@@ -1358,8 +1377,9 @@ async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
                     if (signal.aborted) {
                         return;
                     }
+                    if (!pluginCharacter(ref.chaId)) continue;
                     const answer = await readStructuredMemoryProjection(ref, signal);
-                    if (answer.outcome === "ok" && !signal.aborted) {
+                    if (answer.outcome === "ok" && !signal.aborted && pluginCharacter(ref.chaId)) {
                         installChatProjection(ref, state, answer.value.hypaV3Data);
                     }
                 }
@@ -1386,6 +1406,15 @@ async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
     }
 }
 
+/** Re-importing chats under a stored id replaces their owner. Deletions are left to the caller. */
+function checkPluginOwners(owners: ReadonlyMap<string, string>) {
+    for (const [chaId, owner] of owners) {
+        if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
+            throw new PluginTargetGoneError("character");
+        }
+    }
+}
+
 /**
  * Runs `run` (synchronous) once the chats of `chaIds` are loaded, with them pinned from before the
  * load until it returns. A character can gain a chat (not loaded) while another one loads, so every
@@ -1402,37 +1431,45 @@ async function withChatsLoaded<T>(
     run: () => T,
     refreshed?: () => readonly ChatRef[],
     capturedOwners?: ReadonlyMap<string, string>,
+    checkTargets?: () => void,
 ): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
     const owners = capturedOwners ?? new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const checkOwners = () => {
+        checkTargets?.();
+        checkPluginOwners(owners);
+    };
+    checkOwners();
     const releases = ids.map((chaId) => pinChats(chaId));
     try {
         let round = 0;
         let refresh = refreshed;
         for (;;) {
-            const missing = ids.filter((chaId) => !chatsLoaded(chaId, true));
+            const visible = ids.length ? new Set(pluginCharacterList().map(({ chaId }) => chaId)) : undefined;
+            const missing = ids.filter((chaId) => visible?.has(chaId) && !chatsLoaded(chaId, true));
             if (missing.length > 0) {
                 if (round === 3) {
                     throw new Error("The chats could not be loaded");
                 }
                 round += 1;
                 for (const chaId of missing) {
-                    await loadChats(chaId, true);
+                    if (pluginCharacter(chaId)) {
+                        try {
+                            await loadChats(chaId, true);
+                        } finally {
+                            checkOwners();
+                        }
+                    }
                 }
             } else if (refresh) {
                 await refreshChatProjections(refresh());
+                checkOwners();
                 refresh = undefined;
             } else {
                 break;
             }
         }
-        // A character whose chats were replaced meanwhile (a re-import under the same id) is another
-        // owner: nothing is read or applied for it. A deleted one is left to `run` (it is gone).
-        for (const [chaId, owner] of owners) {
-            if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
-                throw new PluginTargetGoneError("character");
-            }
-        }
+        checkOwners();
         return run();
     } finally {
         for (const release of releases) {
@@ -1486,6 +1523,7 @@ async function withHeldChatPage<T>(
     load: boolean,
 ): Promise<{ value: T } | undefined> {
     const owner = chatOwnerToken(chaId);
+    const page = () => (pluginCharacter(chaId) ? members(chaId) : []);
     const checkOwner = () => {
         if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
             throw new PluginTargetGoneError("character");
@@ -1493,7 +1531,7 @@ async function withHeldChatPage<T>(
     };
     for (let attempt = 0; attempt < PAGE_ASSEMBLY_ATTEMPTS; attempt++) {
         checkOwner();
-        const selected = members(chaId);
+        const selected = page();
         const refs = selected.map(({ id }) => ({ chaId, chatId: id }));
         if (!load && refs.some((ref) => !findChat(ref) || isChatBehind(ref))) return undefined;
         const releases = refs.map(pinChat);
@@ -1510,14 +1548,14 @@ async function withHeldChatPage<T>(
                     checkOwner();
                     const failure = results.find((result) => result.status === "rejected");
                     if (failure?.status === "rejected") throw failure.reason;
-                    if (!sameChatMembers(selected, members(chaId))) break;
+                    if (!sameChatMembers(selected, page())) break;
                 }
             }
             checkOwner();
-            if (!sameChatMembers(selected, members(chaId)) || refs.some((ref) => !findChat(ref))) continue;
+            if (!sameChatMembers(selected, page()) || refs.some((ref) => !findChat(ref))) continue;
             await refreshChatProjections(chatsOfRead([chaId], undefined, () => selected));
             checkOwner();
-            if (!sameChatMembers(selected, members(chaId)) || refs.some((ref) => !findChat(ref))) continue;
+            if (!sameChatMembers(selected, page()) || refs.some((ref) => !findChat(ref))) continue;
             if (!load && refs.some(isChatBehind)) return undefined;
             return { value: run() };
         } finally {
@@ -1591,10 +1629,12 @@ async function readSharedDetachedChats(
         void (async () => {
             try {
                 const reads = await readChatRefsDetached(claimed.map(({ ref }) => ref));
+                const visible = new Set(pluginCharacterList().map(({ chaId }) => chaId));
                 for (const { ref, owner, capturedStructured, resolve } of claimed) {
                     const read = reads.get(ref.chaId)?.get(ref.chatId) ?? "absent";
                     if (
                         typeof read !== "string" &&
+                        visible.has(ref.chaId) &&
                         epoch === getResourceEpoch() &&
                         owner === chatOwnerToken(ref.chaId)
                     ) {
@@ -1608,6 +1648,7 @@ async function readSharedDetachedChats(
                     if (
                         typeof read !== "string" &&
                         !needsSnapshot &&
+                        visible.has(ref.chaId) &&
                         epoch === getResourceEpoch() &&
                         owner === chatOwnerToken(ref.chaId)
                     ) {
@@ -1649,7 +1690,8 @@ async function withDetachedDatabaseChats<T>(
 ): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
     const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
-    const members = selectMembers ?? activeChatList;
+    const visible = new Set<string>();
+    const members: ChatMemberSelector = (chaId) => (visible.has(chaId) ? (selectMembers ?? activeChatList)(chaId) : []);
     const releases: (() => void)[] = [];
     const pinned = new Set<string>();
     const pinLoadedMembers = () => {
@@ -1664,16 +1706,19 @@ async function withDetachedDatabaseChats<T>(
             }
         }
     };
-    pinLoadedMembers();
     const checkOwners = () => {
         assertSaveAdmission();
+        visible.clear();
         for (const character of characterList()) {
             const owner = owners.get(character.chaId);
             if (owner !== undefined && chatOwnerToken(character.chaId) !== owner) {
                 throw new PluginTargetGoneError("character");
             }
+            if (owner !== undefined && !isArchivedGroup(character)) visible.add(character.chaId);
         }
     };
+    checkOwners();
+    pinLoadedMembers();
     const refreshed = () => chatsOfRead(ids, undefined, members);
     const loaded = async () => {
         checkOwners();
@@ -1777,6 +1822,7 @@ async function withDetachedDatabaseChats<T>(
             });
         let refreshedAlgorithm = false;
         for (let round = 0; round < 3; round++) {
+            checkOwners();
             const prepared = selectMembers ? new Map(ids.map((chaId) => [chaId, members(chaId)])) : undefined;
             pinLoadedMembers();
             discardInvalidHits();
@@ -1792,8 +1838,10 @@ async function withDetachedDatabaseChats<T>(
                       ),
             );
             const hits = await cachedDetachedChatsForRead(wanted, MEMORY_REFRESH_DEADLINE_MS);
+            checkOwners();
             const missing: ChatRef[] = [];
             for (const ref of wanted) {
+                if (!visible.has(ref.chaId)) continue;
                 const hit = hits.get(ref);
                 if (!hit || !detachedChatReadHitCurrent(ref, hit)) {
                     missing.push(ref);
@@ -1824,6 +1872,7 @@ async function withDetachedDatabaseChats<T>(
                     return await loaded();
                 }
             }
+            checkOwners();
             discardInvalidHits();
             for (const chaId of ids) {
                 if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
@@ -1897,6 +1946,7 @@ async function withDetachedDatabaseChats<T>(
                 },
                 prepared ? () => chatsOfRead(ids, undefined, (chaId) => prepared.get(chaId) ?? []) : refreshed,
             );
+            checkOwners();
             if (assembled && "changedAlgorithms" in assembled) {
                 const changed = assembled.globalChanged
                     ? [...reads].flatMap(([chaId, chats]) => [...chats.keys()].map((chatId) => ({ chaId, chatId })))
@@ -1908,6 +1958,7 @@ async function withDetachedDatabaseChats<T>(
                     cacheHits.delete(key);
                 }
                 for (const ref of assembled.loadRefs) {
+                    if (!visible.has(ref.chaId)) continue;
                     const key = `${ref.chaId}\u0000${ref.chatId}`;
                     if (!pinned.has(key)) {
                         releases.push(pinChat(ref));
@@ -1984,10 +2035,9 @@ function captureCharacterChatReads(owner: object, chaId: string | undefined) {
  * `chats[chatPage]` is the chat the hook runs for. Retains bounded read baselines for its setters.
  */
 const getChar = async (context: PluginCallContext | undefined, owner: object) => {
-    const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
-    if (chaId === undefined) {
-        return undefined;
-    }
+    const character = context ? contextMember(context).character : pluginCharacter(selection.characterId);
+    if (!character) return undefined;
+    const chaId = character.chaId;
     return withChatsLoaded(
         [chaId],
         () => {
@@ -1995,8 +2045,8 @@ const getChar = async (context: PluginCallContext | undefined, owner: object) =>
                 const { character } = contextTarget(context);
                 return rememberCharacterReads(owner, withChatsCopy($state.snapshot(character), context.chatRef.chatId));
             }
-            const snapshot = characterSnapshot(chaId);
-            return snapshot === undefined ? undefined : rememberCharacterReads(owner, withChatsCopy(snapshot));
+            const character = pluginCharacter(chaId);
+            return character && rememberCharacterReads(owner, withChatsCopy($state.snapshot(character)));
         },
         () => chatsOfRead([chaId], context),
     );
@@ -2014,29 +2064,38 @@ const setChar = async (
     chaId: string | undefined,
     owners: ReadonlyMap<string, string>,
     reportedHookChatPage: boolean,
+    archivedAtEntry: "target" | "payload" | undefined,
 ) => {
-    if (context) contextMember(context);
+    const checkTarget = () => {
+        const archived = archivedCharacterWrite(char, chaId);
+        if (archivedAtEntry || archived) {
+            throw new ArchivedPluginCharacterError("character", archivedAtEntry === "target" || archived === "target");
+        }
+        if (context) contextMember(context);
+    };
     if (reportedHookChatPage) {
         const { chatPage: _reported, ...rest } = char;
         char = rest;
     }
-    await withChatsLoaded(
-        [chaId],
-        () => {
-            if (!context) {
-                applyPluginCharacter(
-                    chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
-                    char,
-                    undefined,
-                    takeBaseline,
-                );
-                return;
-            }
-            applyPluginCharacter(contextTarget(context).characterIndex, char, undefined, takeBaseline);
-        },
-        undefined,
-        owners,
-    );
+    try {
+        await withChatsLoaded(
+            [chaId],
+            () => {
+                if (context) contextTarget(context);
+                if (chaId === undefined) return;
+                const at = characterList().findIndex((entry) => entry?.chaId === chaId);
+                if (at !== -1) applyPluginCharacter(at, char, undefined, takeBaseline);
+            },
+            undefined,
+            owners,
+            checkTarget,
+        );
+    } catch (error) {
+        if (!(error instanceof ArchivedPluginCharacterError)) throw error;
+        warnMutationRefused("a character", error);
+        if (context && error.hiddenTarget) throw new PluginTargetGoneError("character");
+        if (context) contextMember(context);
+    }
 };
 
 /**
@@ -2047,11 +2106,39 @@ function warnRefused(what: string, write: () => void) {
     try {
         write();
     } catch (error) {
-        if (!(error instanceof MutationValidationError)) {
-            throw error;
-        }
-        console.warn(`[Plugin] Refused ${what}; the previous value was kept: ${error.message}`);
+        warnMutationRefused(what, error);
     }
+}
+
+function warnMutationRefused(what: string, error: unknown) {
+    if (!(error instanceof MutationValidationError)) throw error;
+    console.warn(`[Plugin] Refused ${what}; the previous value was kept: ${error.message}`);
+}
+
+function archivedPluginEntry(char: any, groups: ReadonlySet<string>) {
+    return isArchivedGroup(char) || groups.has(char?.chaId);
+}
+
+/** Capture the offending position without validating or matching any of the supplied chats. */
+function archivedEntryIndex(incoming: unknown, groups?: ReadonlySet<string>): number {
+    if (!Array.isArray(incoming)) return -1;
+    const hidden = groups ?? archivedGroupIds();
+    return incoming.findIndex((char) => archivedPluginEntry(char, hidden));
+}
+
+class ArchivedPluginCharacterError extends MutationValidationError {
+    readonly hiddenTarget: boolean;
+
+    constructor(key: string, hiddenTarget = false) {
+        super(key, "group chats are archived");
+        this.hiddenTarget = hiddenTarget;
+    }
+}
+
+function archivedCharacterWrite(char: unknown, chaId: string | undefined): "target" | "payload" | undefined {
+    const groups = archivedGroupIds();
+    if (chaId !== undefined && groups.has(chaId)) return "target";
+    if (archivedPluginEntry(char, groups)) return "payload";
 }
 
 const chatBindingKeys = ["promptPresetId", "modelPresetId", "bindedPersona", "bindingReview"] as const;
@@ -2162,6 +2249,9 @@ function applyPluginCharacters(
     unchangedChats: ReadonlySet<string> = new Set(),
 ) {
     requireArray("characters", incoming);
+    const groups = archivedGroupIds();
+    const archived = archivedEntryIndex(incoming, groups);
+    if (archived !== -1) throw new ArchivedPluginCharacterError(`characters[${archived}]`);
     const checked = Array.from(incoming, (char, i) => {
         checkCharacterInput(char, `characters[${i}]`);
         return char;
@@ -2207,7 +2297,7 @@ function applyPluginCharacters(
     }
     addPreparedCharacters([...prepared.values()]);
     for (const chaId of existing) {
-        if (typeof chaId !== "string" || kept.has(chaId)) {
+        if (typeof chaId !== "string" || groups.has(chaId) || kept.has(chaId)) {
             continue;
         }
         if (isCharacterGenerating(chaId)) {
@@ -2332,7 +2422,7 @@ function applyPluginKey(
         case "enabledModules":
             return setEnabledModules(value);
         case "characterOrder":
-            return setCharacterOrder(value);
+            return setCharacterOrder(pluginCharacterOrder(value));
         case "plugins":
             for (const plugin of value as RisuPlugin[]) {
                 upsertPlugin(plugin);
@@ -2394,7 +2484,7 @@ function charactersReconciled(newDb: Record<string, unknown>): string[] {
     if (!Array.isArray(incoming)) {
         return [];
     }
-    const existing = new Set(characterList().map((character) => character?.chaId));
+    const existing = new Set(pluginCharacterList().map((character) => character?.chaId));
     return incoming
         .map((char) => (char && typeof char === "object" ? (char as { chaId?: unknown }).chaId : undefined))
         .filter((chaId): chaId is string => typeof chaId === "string" && existing.has(chaId));
@@ -2402,7 +2492,7 @@ function charactersReconciled(newDb: Record<string, unknown>): string[] {
 
 /** Which existing targets left the list after capture, including during consent or chat loading. */
 function vanishedOf(targets: readonly string[]): Set<string> {
-    const present = new Set(characterList().map((character) => character?.chaId));
+    const present = new Set(pluginCharacterList().map((character) => character?.chaId));
     return new Set(targets.filter((chaId) => !present.has(chaId)));
 }
 
@@ -2474,55 +2564,74 @@ async function applyPluginDatabaseWithChats(
     owners: ReadonlyMap<string, string>,
     unchangedChats: ReadonlySet<string>,
 ) {
-    const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
-    const omitted = new Set(unchangedChats);
-    for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
-        if (!char || !owners.has(char.chaId)) continue;
-        if (unchangedChats.has(char.chaId)) continue;
-        if (char.chats === undefined) {
-            omitted.add(char.chaId);
-            matches.delete(char.chaId);
-            continue;
-        }
-        omitted.delete(char.chaId);
-        const hits = new Map<string, DetachedChatCacheHit>();
-        if (pluginChatsMatch(char.chaId, char.chats, hits)) {
-            matches.set(char.chaId, { chats: char.chats, hits });
-        } else {
-            matches.delete(char.chaId);
-        }
+    if (!Object.hasOwn(newDb, "characters")) {
+        applyPluginDatabase(newDb, context, scope);
+        return;
     }
-    const chatTargets = targets.filter((chaId) => !omitted.has(chaId));
-    const loading = chatTargets.filter((chaId) => !matches.has(chaId));
-    const releases = [...matches.keys()].flatMap((chaId) =>
-        activeChatList(chaId).flatMap(({ id }) => {
-            const ref = { chaId, chatId: id };
-            return findChat(ref) ? [pinChat(ref)] : [];
-        }),
-    );
-    const checkOwners = () => {
-        for (const character of characterList()) {
-            if (owners.has(character.chaId) && chatOwnerToken(character.chaId) !== owners.get(character.chaId)) {
-                throw new PluginTargetGoneError("character");
-            }
-        }
+    const releases: (() => void)[] = [];
+    const checkTargets = () => {
+        const archived = archivedEntryIndex(newDb.characters);
+        if (archived !== -1) throw new ArchivedPluginCharacterError(`characters[${archived}]`);
     };
     try {
-        const applied = await withChatsLoaded(loading, () => {
-            checkOwners();
-            const vanished = vanishedOf(targets);
-            for (const [chaId, { chats, hits }] of matches) {
-                if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
+        checkTargets();
+        checkPluginOwners(owners);
+        const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
+        const omitted = new Set(unchangedChats);
+        for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
+            if (!char || !owners.has(char.chaId)) continue;
+            if (unchangedChats.has(char.chaId)) continue;
+            if (char.chats === undefined) {
+                omitted.add(char.chaId);
+                matches.delete(char.chaId);
+                continue;
             }
-            applyPluginDatabase(newDb, context, scope, vanished, new Set([...omitted, ...matches.keys()]));
-            return true;
-        });
-        if (!applied) {
-            await withChatsLoaded(chatTargets, () => {
-                checkOwners();
-                applyPluginDatabase(newDb, context, scope, vanishedOf(targets), omitted);
-            });
+            omitted.delete(char.chaId);
+            const hits = new Map<string, DetachedChatCacheHit>();
+            if (pluginChatsMatch(char.chaId, char.chats, hits)) {
+                matches.set(char.chaId, { chats: char.chats, hits });
+            } else {
+                matches.delete(char.chaId);
+            }
         }
+        const chatTargets = targets.filter((chaId) => !omitted.has(chaId));
+        const loading = chatTargets.filter((chaId) => !matches.has(chaId));
+        for (const chaId of matches.keys()) {
+            for (const { id } of activeChatList(chaId)) {
+                const ref = { chaId, chatId: id };
+                if (findChat(ref)) releases.push(pinChat(ref));
+            }
+        }
+        const applied = await withChatsLoaded(
+            loading,
+            () => {
+                const vanished = vanishedOf(targets);
+                for (const [chaId, { chats, hits }] of matches) {
+                    if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
+                }
+                applyPluginDatabase(newDb, context, scope, vanished, new Set([...omitted, ...matches.keys()]));
+                return true;
+            },
+            undefined,
+            owners,
+            checkTargets,
+        );
+        if (!applied) {
+            await withChatsLoaded(
+                chatTargets,
+                () => {
+                    applyPluginDatabase(newDb, context, scope, vanishedOf(targets), omitted);
+                },
+                undefined,
+                owners,
+                checkTargets,
+            );
+        }
+    } catch (error) {
+        if (!(error instanceof ArchivedPluginCharacterError)) throw error;
+        warnMutationRefused("the database key characters", error);
+        const { characters: _refused, ...otherKeys } = newDb;
+        applyPluginDatabase(otherKeys, context, scope);
     } finally {
         for (const release of releases) release();
     }
@@ -2634,21 +2743,49 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api}: the dbWrite permission was not granted`);
         return true;
     };
-    /** Both character aliases capture their target and hook chatPage interpretation before consent. */
-    const setCharacterWithPermission = async (api: string, char: any) => {
+    /** Capture the visible index or hook/selection target, and the hook chatPage match, before consent. */
+    const setCharacterWithPermission = async (api: string, char: any, index?: number) => {
         if (refuseTransformWrite(api)) return;
-        const context = currentContext(contextOwner);
-        const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
+        const indexed = api === "setCharacterToIndex";
+        const context = indexed ? undefined : currentContext(contextOwner);
+        const chaId = indexed
+            ? pluginCharacterList()[index!]?.chaId
+            : (context?.chatRef.chaId ?? selectedCharacter()?.chaId);
+        const archivedAtEntry = archivedCharacterWrite(char, chaId);
         const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
         const takeBaseline = captureCharacterChatReads(contextOwner, chaId);
         // Membership lookup cannot throw for a gone hook target; validation follows consent.
-        const hookChatIndex = context
-            ? activeChatList(context.chatRef.chaId).findIndex((entry) => entry.id === context.chatRef.chatId)
-            : -1;
+        const hookChatIndex =
+            context && !archivedAtEntry
+                ? activeChatList(context.chatRef.chaId).findIndex((entry) => entry.id === context.chatRef.chatId)
+                : -1;
         const reportedHookChatPage =
             hookChatIndex >= 0 && char && typeof char === "object" && char.chatPage === hookChatIndex;
         if (await refuseDbWrite(api)) return;
-        return setChar(context, char, takeBaseline, chaId, owners, !!reportedHookChatPage);
+        return setChar(context, char, takeBaseline, chaId, owners, !!reportedHookChatPage, archivedAtEntry);
+    };
+    const setDatabaseWithPermission = async (api: "setDatabase" | "setDatabaseLite", newDb: any) => {
+        if (refuseTransformWrite(api)) return;
+        const context = currentContext(contextOwner);
+        const scope = context ?? settingsWriteScope();
+        const archivedAtEntry = archivedEntryIndex(newDb?.characters);
+        const targets = archivedAtEntry === -1 ? charactersReconciled(newDb) : [];
+        const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+        const unchangedChats = archivedAtEntry === -1 ? captureUnchangedPluginChats(newDb, owners) : new Set<string>();
+        if (await refuseDbWrite(api)) return;
+        const archived = archivedAtEntry === -1 ? archivedEntryIndex(newDb?.characters) : archivedAtEntry;
+        if (archived !== -1) {
+            warnMutationRefused(
+                "the database key characters",
+                new ArchivedPluginCharacterError(`characters[${archived}]`),
+            );
+            const { characters: _refused, ...otherKeys } = newDb;
+            newDb = otherKeys;
+        } else {
+            checkPluginOwners(owners);
+        }
+        const write = api === "setDatabase" ? setPluginDatabase : setPluginDatabaseLite;
+        return write(newDb, context, scope, targets, owners, unchangedChats);
     };
     const withContext = <F extends Function>(hook: F): F => {
         const cached = hookWrappers.get(hook);
@@ -2869,28 +3006,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         removeRisuChatListener: (mode: string, func: ChatOutputListener) =>
             removeRisuChatListener(mode, registered(func)),
-        /** Captures all targets before dbWrite consent; then follows `setPluginDatabaseLite`. */
-        setDatabaseLite: async (newDb: any) => {
-            if (refuseTransformWrite("setDatabaseLite")) return;
-            const context = currentContext(contextOwner);
-            const scope = context ?? settingsWriteScope();
-            const targets = charactersReconciled(newDb);
-            const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
-            const unchangedChats = captureUnchangedPluginChats(newDb, owners);
-            if (await refuseDbWrite("setDatabaseLite")) return;
-            return setPluginDatabaseLite(newDb, context, scope, targets, owners, unchangedChats);
-        },
-        /** Captures all targets before dbWrite consent and the install prompts in `setPluginDatabase`. */
-        setDatabase: async (newDb: any) => {
-            if (refuseTransformWrite("setDatabase")) return;
-            const context = currentContext(contextOwner);
-            const scope = context ?? settingsWriteScope();
-            const targets = charactersReconciled(newDb);
-            const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
-            const unchangedChats = captureUnchangedPluginChats(newDb, owners);
-            if (await refuseDbWrite("setDatabase")) return;
-            return setPluginDatabase(newDb, context, scope, targets, owners, unchangedChats);
-        },
+        setDatabaseLite: (newDb: any) => setDatabaseWithPermission("setDatabaseLite", newDb),
+        setDatabase: (newDb: any) => setDatabaseWithPermission("setDatabase", newDb),
         loadPlugins: loadPlugins,
         readImage: readAssetImage,
         readInlay: async (id: string) => {
@@ -2920,7 +3037,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             const included = (key: string) => includeOnly === "all" || includeOnly.includes(key);
             // Outside a hook: the chats this tab has loaded as it holds them, and the others as the
             // server holds them after this tab's queued changes were saved. Keys are assembled synchronously.
-            const characterIds = included("characters") ? characterList().map((character) => character?.chaId) : [];
+            const characterIds = included("characters")
+                ? pluginCharacterList().map((character) => character?.chaId)
+                : [];
             const keys = allowedDbKeys.filter(included);
             const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
                 // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
@@ -2973,8 +3092,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
                 throw new Error(`Invalid getChats limit: ${String(limit)}; expected a non-negative safe integer`);
             }
+            const visibleAtEntry = !!pluginCharacter(chaId);
             const conf = await getPluginPermission(identity, "db", "periodically");
-            if (!conf) return null;
+            if (!conf || !visibleAtEntry || !pluginCharacter(chaId)) return null;
             const pages = new Map<string, { version: number; entries: readonly { id: string }[] }>();
             const members: ChatMemberSelector = (id) => {
                 const version = chatMembershipVersion(id);
@@ -2990,7 +3110,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             };
             const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
                 // Owner checks deliberately ignore deletions, so resolve the character again here.
-                if (!characterList().some((character) => character.chaId === chaId)) return null;
+                if (!pluginCharacter(chaId)) return null;
                 const chats = members(chaId).map(({ id }) => {
                     const held = findChat({ chaId, chatId: id });
                     if (held) return plainClone($state.snapshot(held)) as Chat;
@@ -3002,11 +3122,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             };
             touchDetachedChatCache();
             try {
-                if (!characterList().some((character) => character.chaId === chaId)) return null;
                 if (members(chaId).length === 0) return read();
-                return await (context
+                const result = await (context
                     ? withChatsLoaded([chaId], read, () => chatsOfRead([chaId], context, members))
                     : withDetachedDatabaseChats([chaId], read, members));
+                return pluginCharacter(chaId) ? result : null;
+            } catch (error) {
+                if (!pluginCharacter(chaId)) return null;
+                throw error;
             } finally {
                 touchDetachedChatCache();
             }
@@ -3115,47 +3238,28 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         // The plugin index APIs address the character list by position (creation order).
         getCharacterFromIndex: async (index: number) => {
             const context = currentContext(contextOwner);
-            const chaId = characterList()[index]?.chaId;
+            const chaId = pluginCharacterList()[index]?.chaId;
             if (chaId === undefined) {
                 return null;
             }
             return withChatsLoaded(
                 [chaId],
                 () => {
-                    const snapshot = characterSnapshot(chaId);
-                    return snapshot === undefined
+                    const character = pluginCharacter(chaId);
+                    return character === undefined
                         ? null
-                        : rememberCharacterReads(contextOwner, withChatsCopy(snapshot));
+                        : rememberCharacterReads(contextOwner, withChatsCopy($state.snapshot(character)));
                 },
                 () => chatsOfRead([chaId], context),
             );
         },
         /** Captures the indexed character and owner before dbWrite consent, then loads and writes it. */
-        setCharacterToIndex: async (index: number, char: any) => {
-            if (refuseTransformWrite("setCharacterToIndex")) return;
-            const chaId = characterList()[index]?.chaId;
-            const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
-            const takeBaseline = captureCharacterChatReads(contextOwner, chaId);
-            if (await refuseDbWrite("setCharacterToIndex")) return;
-            if (chaId === undefined) {
-                return;
-            }
-            await withChatsLoaded(
-                [chaId],
-                () => {
-                    const at = characterList().findIndex((entry) => entry?.chaId === chaId);
-                    if (at !== -1) {
-                        applyPluginCharacter(at, char, undefined, takeBaseline);
-                    }
-                },
-                undefined,
-                owners,
-            );
-        },
+        setCharacterToIndex: (index: number, char: any) =>
+            setCharacterWithPermission("setCharacterToIndex", char, index),
         /** Captures one member's id before loading; a non-integer or negative chat index returns null. */
         getChatFromIndex: async (characterIndex: number, chatIndex: number) => {
             if (!Number.isInteger(chatIndex) || chatIndex < 0) return null;
-            const chaId = characterList()[characterIndex]?.chaId;
+            const chaId = pluginCharacterList()[characterIndex]?.chaId;
             const chatId = chaId === undefined ? undefined : chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id;
             if (chaId === undefined || chatId === undefined) {
                 return null;
@@ -3164,10 +3268,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             const release = pinChat(ref);
             try {
                 await ensureChatLoaded(ref);
+                if (!pluginCharacter(chaId)) return null;
                 await refreshChatProjections([ref]);
                 // Found again after both: the chat as it is now (none when it was deleted meanwhile).
                 const chat = findChat(ref);
-                if (!chat || !isActiveChat(ref)) return null;
+                if (!pluginCharacter(chaId) || !chat || !isActiveChat(ref)) return null;
                 const copy = $state.snapshot(chat) as Chat;
                 rememberChatRead(contextOwner, ref, copy);
                 return copy;
@@ -3204,16 +3309,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 // The same chat after the load: deleted or replaced meanwhile (even under the same
                 // ids) refuses the call.
                 const owner = chatOwnerToken(ref.chaId);
-                if (!(await ensureChatLoaded(ref)) || !isActiveChat(ref) || chatOwnerToken(ref.chaId) !== owner) {
-                    throw new PluginTargetGoneError("chat");
-                }
+                checkPluginChat(ref, owner);
+                const loaded = await ensureChatLoaded(ref);
+                checkPluginChat(ref, owner, !!loaded);
             }
             const target = context ? contextTarget(context) : undefined;
-            const char = target
-                ? target.character
-                : ref
-                  ? characterList().find((entry) => entry?.chaId === ref.chaId)
-                  : selectedCharacter();
+            const char = target?.character ?? pluginCharacter(ref?.chaId ?? selection.characterId);
             if (!char) {
                 throw new Error("No character selected");
             }
@@ -3274,7 +3375,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
          */
         setChatToIndex: async (characterIndex: number, chatIndex: number, chat: any) => {
             if (refuseTransformWrite("setChatToIndex")) return;
-            const chaId = characterList()[characterIndex]?.chaId;
+            const chaId = pluginCharacterList()[characterIndex]?.chaId;
             const chatId =
                 chaId !== undefined && Number.isInteger(chatIndex) && chatIndex >= 0
                     ? chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id
@@ -3286,13 +3387,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             if (chaId === undefined || chatId === undefined || !chat || typeof chat !== "object") {
                 return;
             }
-            if (chatOwnerToken(chaId) !== owner) return;
+            if (!pluginCharacter(chaId) || chatOwnerToken(chaId) !== owner) return;
             const ref = { chaId, chatId };
             const release = pinChat(ref);
             try {
                 if (
                     !isActiveChat(ref) ||
                     !(await ensureChatLoaded(ref)) ||
+                    !pluginCharacter(chaId) ||
                     !isActiveChat(ref) ||
                     chatOwnerToken(chaId) !== owner
                 )
@@ -3316,14 +3418,17 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         },
         getCurrentCharacterIndex: () => {
             const context = currentContext(contextOwner);
-            return context ? contextMember(context).characterIndex : selectedIndex();
+            if (context) return contextMember(context).characterIndex;
+            return pluginCharacterList().findIndex((entry) => entry?.chaId === selection.characterId);
         },
         getCurrentChatIndex: () => {
             const context = currentContext(contextOwner);
             if (context) {
                 return contextMember(context).chatIndex;
             }
-            return selectedChatIndex(selectedCharacter().chaId);
+            const char = pluginCharacter(selection.characterId);
+            if (!char) throw new TypeError("No character selected");
+            return selectedChatIndex(char.chaId);
         },
         getCurrentLorebookEntries: async () => {
             // The hook's chat, else the one selected when the call came, loaded first (its local lore
@@ -3334,19 +3439,19 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
             const ref = context ? context.chatRef : currentChatRef();
             if (!ref) {
-                const char = selectedCharacter();
+                const char = pluginCharacter(selection.characterId);
                 return char ? $state.snapshot([...(char.globalLore ?? []), ...getModuleLorebooks()]) : [];
             }
             const owner = chatOwnerToken(ref.chaId);
             const release = pinChat(ref);
             try {
-                if (!(await ensureChatLoaded(ref)) || !isActiveChat(ref) || chatOwnerToken(ref.chaId) !== owner) {
-                    throw new PluginTargetGoneError("chat");
-                }
+                checkPluginChat(ref, owner);
+                const loaded = await ensureChatLoaded(ref);
+                checkPluginChat(ref, owner, !!loaded);
                 const { character, chat } = context
                     ? contextTarget(context)
                     : {
-                          character: characterList().find((entry) => entry?.chaId === ref.chaId),
+                          character: pluginCharacter(ref.chaId),
                           chat: findChat(ref),
                       };
                 if (!character || !chat) {
@@ -3789,8 +3894,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             const chatOwner = context ? chatOwnerToken(context.chatRef.chaId) : undefined;
             return withRequestChat(
                 context?.chatRef ?? null,
-                () =>
-                    requestChatDataMain(
+                () => {
+                    if (context) contextMember(context);
+                    return requestChatDataMain(
                         {
                             formated: options.messages,
                             bias: {},
@@ -3807,7 +3913,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                             blockPlugins: !options.allowPlugins,
                         },
                         options.mode,
-                    ),
+                    );
+                },
                 chatOwner,
             );
         },
@@ -3817,6 +3924,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             // Consent must not move a context-free send to a chat opened while the dialog waits.
             const ref = context ? context.chatRef : currentChatRef();
             const owner = ref ? chatOwnerToken(ref.chaId) : undefined;
+            const missingCharacter = ref && !pluginCharacter(ref.chaId);
             const conf = await getPluginPermission(identity, "sendChat");
             if (!conf) {
                 return false;
@@ -3827,6 +3935,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
 
             // A hook's chat that is gone refuses the call at once.
+            if (missingCharacter || (ref && !pluginCharacter(ref.chaId))) throw new PluginTargetGoneError("character");
             if (context) {
                 contextMember(context);
             }
@@ -3853,20 +3962,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 if (ref) {
                     // The same chat after the load: deleted or replaced meanwhile (even under the same
                     // ids) refuses the call.
-                    if (
-                        chatOwnerToken(ref.chaId) !== owner ||
-                        !(await ensureChatLoaded(ref)) ||
-                        chatOwnerToken(ref.chaId) !== owner
-                    ) {
-                        throw new PluginTargetGoneError("chat");
-                    }
+                    checkPluginChat(ref, owner!);
+                    const loaded = await ensureChatLoaded(ref);
+                    checkPluginChat(ref, owner!, !!loaded);
                 }
                 const target = context ? contextTarget(context) : undefined;
-                const char = target
-                    ? target.character
-                    : ref
-                      ? characterList().find((entry) => entry?.chaId === ref.chaId)
-                      : selectedCharacter();
+                const char = target?.character ?? pluginCharacter(ref?.chaId ?? selection.characterId);
                 if (!char) {
                     throw new Error("No character selected");
                 }
@@ -3887,12 +3988,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                     return false;
                 }
 
-                if (!isActiveChat(sendTarget)) throw new PluginTargetGoneError("chat");
+                checkPluginChat(sendTarget, owner!);
                 if (message && chat.id) {
-                    appendMessage(
-                        { chaId: char.chaId, chatId: chat.id },
-                        { role: "user", data: message, time: Date.now() },
-                    );
+                    appendMessage(sendTarget, { role: "user", data: message, time: Date.now() });
+                    checkPluginChat(sendTarget, owner!);
                 }
 
                 return await processSendChat(

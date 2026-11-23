@@ -276,7 +276,7 @@ type ChatOutputListenerArg = {
     char: any;
     /** Current chat */
     chat: any;
-    /** Index of the character in the database. Use with `setCharacterToIndex`. */
+    /** Index of the chat owner among visible characters. Use with `setCharacterToIndex`. */
     characterIndex: number;
     /** Index of the chat within the character. Use with `setChatToIndex`. */
     chatIndex: number;
@@ -377,7 +377,8 @@ interface Persona {
  */
 interface DatabaseSubset {
     /**
-     * Array of characters and group chats. With getDatabase's chats: "summaries" option,
+     * Characters in storage order. Archived group chats stay stored and are hidden from plugins.
+     * A group chaId is treated as missing. With getDatabase's chats: "summaries" option,
      * each has chatSummaries: { id: string; name: string; lastMessageAt?: number }[] in chat
      * order instead of chats and chatPage. Unknown times are omitted; there are no message counts.
      */
@@ -444,7 +445,7 @@ interface DatabaseSubset {
     colorSchemeName?: string;
     /** The index of this client's selected persona in `personas` (setting it selects on this client only) */
     selectedPersona?: number;
-    /** The character list's order: character ids and folders of character ids */
+    /** The character list's order: character ids and folders of character ids, excluding archived groups */
     characterOrder?: (string | CharacterFolder)[];
 }
 
@@ -1381,8 +1382,10 @@ interface RisuaiPluginAPI {
      */
     setChar(character: any): Promise<void>;
 
-        /**
+    /**
      * Gets a character by index, retaining read baselines for its chats (up to 16 per plugin instance).
+     * Character indexes skip archived group chats. An index saved before groups were archived may
+     * now name another character. Re-resolve it by chaId before use.
      * @param index - Character index
      * @returns Character object or null if not found
      */
@@ -1478,7 +1481,7 @@ interface RisuaiPluginAPI {
     getCurrentChatIndex: () => Promise<number>;
 
     /**
-     * Gets raw lorebook entries for the current character or group, the
+     * Gets raw lorebook entries for the current character, the
      * current chat, and currently active modules.
      *
      * This does not apply lorebook activation or token budget filtering.
@@ -1558,7 +1561,7 @@ interface RisuaiPluginAPI {
      * customCSS, guiHTML, colorSchemeName, characterOrder, selectedPersona
      *
      * Prefer explicit keys with chats: "summaries", getChats() for a page, or getCharacter()
-     * for the current character. The default copies every active chat of every character; a chat
+     * for the current character. The default copies every active chat of every visible character; a chat
      * in the Trash is left out.
      * 
      * @example
@@ -1574,7 +1577,7 @@ interface RisuaiPluginAPI {
     /**
      * Gets a character's active chats in member order, in the same shape as getDatabase's full chats.
      * Requires the same database access consent; returns null without it or when chaId is unknown
-     * (including a character deleted during the call).
+     * (including an archived group or a character deleted during the call).
      * @param chaId - Stable character id.
      * @param options - offset defaults to 0, limit to all remaining chats. Both must be non-negative
      * safe integers when supplied. An empty page does not read chats.
@@ -1593,6 +1596,7 @@ interface RisuaiPluginAPI {
      * Model roots follow the slot/profile rules in DatabaseSubset. Inside a hook they use its
      * captured model preset. A refused key warns and keeps its old value; other keys still apply.
      * The `plugins` property is ignored.
+     * Both database setters preserve archived groups. A group entry or a group chaId refuses the characters key.
      * Existing characters with chats omitted or undefined keep their chats without loading them.
      * chatSummaries is ignored by character setters and never saved in a character record.
      * @param db - DatabaseSubset object to save
@@ -2046,6 +2050,7 @@ interface RisuaiPluginAPI {
      * changes saved by another listener, read the latest chat with `getChatFromIndex`
      * before saving.
      *
+     * Archived owners and speakers are skipped. Character indexes count only visible characters.
      * The `characterIndex` and `chatIndex` are the generated chat's positions right
      * before this listener is called (resolved from its ids, again for each
      * listener), so background work can locate
