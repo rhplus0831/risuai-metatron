@@ -1,26 +1,30 @@
 # Bounded Resource Writes Plan audit, 2026-11-24
 
 - Plan: `docs/plan/bounded-resource-writes.md`
-- Commit audited: `9cdbb289c`, with the plan read from the working tree before its first commit. The corrected plan is
-  committed with this report
+- Commit audited: `9cdbb289c`, with the plan read from the working tree before its first commit (turns 1 and 2), and
+  `036c8689a` (turn 3 and the final judgment). The final plan is committed with this report
 - Mode: `full`
 - Model: GPT-6.2-Astra (`xhigh`), read-only, in place of the procedure's Sol because slice 2 changes `server/` routes and
-  the resource store; report written by the session that drafted the plan (Claude Opus 5.5), before any plan-runner run
+  the resource store; final judgment by Claude Fable, read-only; report written by the session that drafted the plan
+  (Claude Opus 5.5), before any plan-runner run
 
 | Severity   | Count |
 | ---------- | ----- |
-| P1         | 13    |
-| P2         | 10    |
-| P3         | 6     |
+| P1         | 19    |
+| P2         | 11    |
+| P3         | 8     |
 | unverified | 0     |
 
 The first turn filed A1 to A17 against the draft (9 P1, 5 P2, 3 P3). The second turn read the corrections, confirmed
 twelve, disputed A1, A4, A8, A9, and A15, and filed A18 to A29 against the corrections themselves (4 P1, 5 P2, 3 P3).
-Every finding is `fixed in plan` or `limitation`; the corrections made after the second turn were not read again, and
-the plan's `Status:` line says so. Astra ran no test suite; it ran in-memory probes against the real resource store
-(a duplicate mixed-batch delivery, a duplicate create after a permanent delete, a reorder replay after a sibling
-create, a same-value credential retry, sibling create order). The two turns took about 24 minutes and 10.5 M tokens.
-`read_only_violation` was `false` after both turns.
+At the owner's request a third, narrow turn read only the corrections after the second: it confirmed seven, disputed
+A18, A21, and A24, and filed A30 to A38 (6 P1, 1 P2, 2 P3), four of the P1 again about the writer fence. The owner then
+asked Claude Fable to judge the whole history and to close the audit unless the final result, not only the
+implementation method, had to change; its judgment is in "Final judgment" below, and the plan was revised to it. The
+fence-related findings (A1 to A4, A10, A14, A18, A24, A28, A30, A31, A33, A36) are moot since the fence is withdrawn;
+the entries below keep their first disposition for the record. Astra ran no test suite; it ran in-memory probes against
+the real resource store. The three turns took about 40 minutes and 17 M tokens. `read_only_violation` was `false` after
+every turn.
 
 The plan rests on a contract pre-audit by Astra earlier the same day (every batch unit against seven delivery
 timelines, findings F1 to F6 with failing probes), kept outside the repository with the review reports on this machine;
@@ -118,3 +122,42 @@ the plan's `Status:` line names its folder.
 - A clock step back together with a lost request (first turn): moot with a per-page counter.
 - A request past authentication held across the 30-day pruning interval and a server restart.
 - A hand-edited journal tab id, and two pages minting the same random writer id.
+
+## Turn 3
+
+- **A30** (P1, moot). A withdrawn parent delete (a same-id re-add stops its resend) is never named, so F6 stays open
+  under the fence (`resourceSync.svelte.ts:2896`, `resourceStore.ts:1931`).
+- **A31** (P1, moot; slice 4 note). The collector holds a reorder behind its in-doubt create
+  (`chatStore.svelte.ts:6039`), so a whole retry cannot carry both.
+- **A32** (P1, `fixed in plan`). D6's "place of the earliest" sent a rebuilt reorder before its new sibling create;
+  the store rejects the vector (`chatStore.ts:3526`). D6 no longer regroups units.
+- **A33** (P1, moot). The 16-name limit had no correct overflow rule.
+- **A34** (P1, `fixed in plan`). `createSettled`'s wait was bound to a request allowance, not to the target create.
+  D11 now lets `flushResources` continue through lost answers within its 10-attempt budget instead.
+- **A35** (P1, `fixed in plan`). A refresh after a rejected flush reads nothing while the target has pending work, and
+  the removed reroll replies were released. Resolved the same way as A34.
+- **A36** (P2, moot). The legacy and malformed-header branches overlapped.
+- **A37** (P3, `fixed in plan`). Current State said no request carries an abandoned batch's units together; the
+  sentence is gone.
+- **A38** (P3, `fixed in plan`). Slice 4's packing assertion contradicted the 8 MiB singleton; reworded.
+- Noted, not recommended: the 13-byte `retry` flag can push a singleton at the hard cap over it on replay; carrying all
+  units does not guarantee they commit.
+
+## Final judgment
+
+Claude Fable (read-only, with probes against the real `@hono/node-server` 2.1.5 adapter on Node 24, kept outside the
+repository) judged the pre-audit's delivery model over-protective. A request whose body is incomplete when its client
+leaves is refused by the body read; a complete one is applied within milliseconds of arrival, since the only awaits
+before the synchronous apply are the auth check's WebCrypto calls and the body read; a stalled server handles an
+original and its resends together on resume, in the order receipts and base revisions already cover. F1, F3, and F6
+therefore need a transport or intermediary that holds a complete request after its client left, which the probes
+produced by hand. F2, F4, and F5 are real.
+
+Of the open findings it classed one as changing the shipped result (A32, created by the fence's whole-retry rule),
+the header and naming points as implementation method, and the rest as edge cases. It rejected a server-side check of
+the client connection at admission: the adapter aborts the request signal only when the response closes, a graceful
+client close leaves it unaborted with the body readable, and where it fired the body read had already failed. It
+recommended withdrawing the fence (D1 to D4, D6's whole retry, slice 2), stating late delivery as one Limitation,
+letting `flushResources` continue through lost answers within its budget, and closing with slice notes. The plan
+follows that recommendation; the owner can restore a narrower fence (naming only when the existing planner's batch
+already carries every still-wanted unit) if the Goal's late-delivery guarantee is wanted back.
