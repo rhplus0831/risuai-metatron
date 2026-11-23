@@ -274,8 +274,9 @@ Depends on 1, 3, 4, 5, and 6.
   the indicator, and carry the Limitations into their Known Hazards.
 - `docs/backlog/known-issues.md`: the `network-jobs` entry on the unanswered batch is removed or narrowed to what is
   left. `docs/backlog/found-issues.md`: the waits in "Outside this plan", grouped by area (Q3).
-- The plan is retired through `docs/plan/README.md` and `docs/archived-plan/README.md`; unrun manual checks go to
-  `docs/backlog/manual-checks.md`.
+- Unrun manual checks go to `docs/backlog/manual-checks.md`. The plan runner retires the plan through
+  `docs/plan/README.md` and `docs/archived-plan/README.md` after the run, with the owner's yes; this slice leaves both
+  files alone.
 
 ## Outside this plan
 
