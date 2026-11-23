@@ -33,15 +33,18 @@ Sources the entries name (drop a line when no entry names it any more):
 - Fix round of 2026-11-22: no report; the fixes of eight known issues, and what their implementers read beside them.
 - Second fix round of 2026-11-22: no report; eleven known-issue fixes and their reviews (reports and probes kept with
   the review material outside the repository).
+- Read-only wait inventory of 2026-11-24: source inspection without reproduction.
 
 ## Contents
 
 - [Build and CI](#build-and-ci): 3
 - [Chat screen](#chat-screen): 1
+- [Client features](#client-features): 3
 - [Docs](#docs): 1
 - [Draft recovery](#draft-recovery): 2
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 3
+- [Server storage and workers](#server-storage-and-workers): 3
 
 ## Build and CI
 
@@ -94,6 +97,56 @@ the same tab-side messages.
 
 **Suggested handling:** reproduce by copying a chat while its reply streams; if the copy is partial, disable Copy
 while the chat is busy.
+
+## Client features
+
+### Checkpoint and memory controls stay busy on a silent answer
+
+The checkpoint dialog waits for list and policy results and keeps actions pending (`src/lib/Others/ChatCheckpointsDialog.svelte:112`,
+`:142`). The load request holds the tab-wide busy flag (`src/ts/checkpoints/chatCheckpoints.svelte.ts:224`) through
+the request and refresh. Its fetch and body read have no request deadline (`src/ts/checkpoints/chatRequest.ts:29`,
+`:54`). Structured Memory pane edits similarly hold their controls (`src/lib/Others/StructuredMemory/TimelineTab.svelte:508`,
+`:543`). Memory task start and cancel hold a per-chat `exclusive` entry until the request settles
+(`src/ts/process/memoryTasks.svelte.ts:411`, `:481`, `:543`). Evidence is the read-only inventory of 2026-11-24,
+without reproduction.
+
+**Why it matters:** a silent checkpoint load can block checkpoint actions in other chats. A silent memory reply can
+block further edits in the pane or task controls for the same chat.
+
+**Suggested handling:** hold headers and bodies in each path to confirm the scope, then bound the waits and reconcile
+possibly committed writes before allowing another attempt.
+
+### Plugin permissions, imports, and asset work hold queues or controls
+
+Plugin permission reads and writes share a promise queue (`src/ts/plugins/apiV3/permissionStore.ts:166`, `:223`, `:327`).
+Module and CharX uploads (`src/ts/storage/moduleImportClient.ts:28`, `src/ts/storage/charxImportClient.ts:20`), Realm
+prepare and commit (`src/ts/storage/realmImportClient.ts:59`, `:73`) and upstream backup prepare
+(`src/ts/drive/upstreamBackupClient.ts:83`) await the same streaming transport without a deadline
+(`src/ts/storage/serverImportClient.ts:80`, `:160`). The asset save queue holds a slot through file writes
+(`src/ts/storage/assetQueue.ts:202`), and the four-slot asset preview queue holds slots through body reads until completion
+or release (`src/ts/storage/assetLifecycleClient.ts:66`, `:110`). Evidence is the read-only inventory of 2026-11-24,
+without reproduction.
+
+**Why it matters:** one silent response can leave an import pending or delay permissions and assets behind occupied
+slots.
+
+**Suggested handling:** reproduce with a stalled response and check how cancellation releases each queue. Bound idle
+time for imports and asset transfers so a slow, progressing file keeps moving, and check the result before retrying a
+write that may have landed.
+
+### Rendered translation, MCP, and Web Push can wait on silent network work
+
+Rendered translation takes a permit until the producer settles (`src/ts/translator/translator.ts:123`, `:262`, `:283`).
+Concurrent MCP callers share a tab handshake (`src/ts/process/mcp/mcp.ts:56`), and OAuth discovery, registration and
+token requests omit a request deadline (`src/ts/process/mcp/mcplib.ts:889`, `:910`, `:976`). Push reconciliation and
+enable/disable share a queue whose work includes server requests (`src/ts/network/pushNotifications.ts:208`, `:243`,
+`:276`, `:418`). Evidence is the read-only inventory of 2026-11-24, without reproduction.
+
+**Why it matters:** occupied render slots reduce translation capacity, a shared handshake can hold later uses of the
+same MCP client, and an unanswered push request can hold later subscription actions.
+
+**Suggested handling:** reproduce a silent response for each feature, then bound the network stages and release their
+slots when work settles. Keep interactive OAuth prompts outside network timers.
 
 ## Docs
 
@@ -212,3 +265,50 @@ the same encode held the thread.
 
 **Suggested handling:** end or abort the tokenizer calls earlier in shutdown (before `snapshots.stop()`), or pass the
 request's signal to the scene-budget count; otherwise qualify the manual check.
+
+## Server storage and workers
+
+### Snapshot and restore queues and shared import slots depend on settlement
+
+Snapshot `exclusive` chains behind the preceding operation (`server/src/data/snapshots.ts:163`). A restore holding
+maintenance keeps mutations closed until the drain and install settle (`server/src/data/snapshots.ts:504`,
+`server/src/routes/resources.ts:99`). The restore queue spans snapshot validation and install, and also admits archive
+validation (`server/src/routes/backups.ts:57`, `:201`, `:541`). A shared file-import slot stays busy through cleanup
+(`server/src/app.ts:1190`, `server/src/http/fileImport.ts:291`, `:309`). Backup archive and upstream imports share
+a separate slot (`server/src/app.ts:1124`, `:1147`, `:1167`). Evidence is the read-only inventory of 2026-11-24,
+without reproduction.
+
+**Why it matters:** a stalled holder delays later snapshot or restore work, can cause imports to be refused as busy,
+and can keep resource writes refused while maintenance stays closed.
+
+**Suggested handling:** hold validation, installation, and import cleanup separately to identify which waits can be
+cancelled safely. Bound those steps and keep the maintenance gate closed until an in-progress install is safe to leave.
+
+### A stalled ordered write holds a key and a server-wide slot
+
+`orderedWriter` releases the key and its share of writer concurrency only when the operation settles
+(`server/src/data/orderedWriter.ts:38`, `:58`). The login route awaits a durable registration in that writer
+(`server/src/routes/auth.ts:255`). While registration is stalled, callers of the tab's shared auth check can wait
+until its login deadline (`src/ts/storage/serverAuth.ts:100`, `:133`). Evidence is the read-only inventory of
+2026-11-24, without reproduction.
+
+**Why it matters:** a stalled write blocks later work for its key, including browser registration when that key is
+affected. Enough stalled keys can occupy every slot.
+
+**Suggested handling:** reproduce with a held write and distinguish queue admission from filesystem settlement. Give
+waiting callers a bounded outcome and preserve same-key ordering until an underlying write can no longer land.
+
+### Stalled assets, memory calls, token counts, and translations retain capacity
+
+Asset path locks stay held through their operation (`server/src/http/assetLeases.ts:68`), and thumbnail slots stay
+held through encoding (`server/src/http/assetThumbnails.ts:360`). Memory tasks keep abandoned host calls counted
+until settlement (`server/src/prompt/memory/memoryTasks.ts:891`). A posted ordinary tokenizer call holds its worker
+slot until reply or worker exit (`server/src/prompt/tokenizers/workerHost.ts:11`, `:181`). Translation counts the
+underlying work against capacity after its caller's deadline (`server/src/translation/runner.ts:503`, `:561`).
+Evidence is the read-only inventory of 2026-11-24, without reproduction.
+
+**Why it matters:** a caller can leave while the underlying work still blocks same-path work or reduces capacity for
+other requests. Exhausted lanes can leave later requests queued or refused.
+
+**Suggested handling:** hold one operation per lane to check cancellation and release. Bound or supervise the
+underlying work where it can be safely stopped, and fence late completions before freeing a slot.

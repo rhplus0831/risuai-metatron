@@ -118,8 +118,9 @@ invalidating retained task input ([summary writers](../memory.md#summary-writers
 
 Copying from a chat row or branching from a message calls `createInheritingChat`; plugin-made and recovered chats do not
 inherit. The tab posts `{ sourceChatId }` to `POST .../inherit` after `createChat` answers, using its returned id. Its
-module header owns the save-loop wait and failure notice; this is one attempt, so closing the tab before the request can
-leave a created chat without memory. An inherited section still marked `unsupported` can reach the prompt:
+module header owns the [save-loop wait](../resource-sync.md#flushresources) and failure notice. `readAnswer` gives the
+one request 30 s through the response body and returns a failure result on timeout. Closing the tab before the request
+can leave a created chat without memory. An inherited section still marked `unsupported` can reach the prompt:
 `retrieve.ts`'s `shownSections` does not hide it.
 
 The route checks the epoch and target fence, reads both chats and source records, builds via `inheritedRecords`, then
@@ -162,8 +163,7 @@ Export crosses `src/ts/characters.ts`, the memory client and the routes:
    uncovered rather than records putting pages ahead of their messages; `exportAllChats` takes detached chats first,
    then reads records serially, so its records can be newer than its chats.
 2. The client collects `/package` and `/threads` at the contents' revision. `readStructuredMemoryFile` owns retries, the
-   60 s whole-read bound (`readWithDeadline`, since `authFetch` has none), and initial `chatGone` handling for
-   `RefusedDataBanner`.
+   60 s whole-read bound (`readWithDeadline`), and initial `chatGone` handling for `RefusedDataBanner`.
 3. `exportChatMemory` changes only the exported copy. Its comment defines receipt removal and the seal-only rule that
    keeps [projections](projection.md#the-hypav3-projection) out of files under any algorithm or read outcome, while real
    summaries stay.
@@ -181,7 +181,8 @@ Import crosses the file adapter, chat creation, save loop and restore route:
    malformed-list and duplicate-id handling. Lookup uses the file id before `chat.id = v4()`. No entry means no request.
 2. `addChats` starts a mutation scope before the first `createChat` and calls `restoreChatMemory` in `finally`, so
    already-created chats get their restore even if a later create throws. Behind the action, each independently passes
-   `createSettled`'s wait, then `restoreStructuredMemory` uses the answered create id.
+   `createSettled`'s wait, then `restoreStructuredMemory` uses the answered create id. Its 30 s request bound covers the
+   response body, and timeout returns a failure result for that chat.
 3. `POST .../restore` takes `{ pages, events, threads }` through `parseRestoredRecords`, whose header owns nested-shape
    checks, field preservation and exclusions. After admission, epoch/fence checks, the empty-target check and
    `store.memory.write` share one synchronous step at the read revision. Any target row, runs included, or an empty

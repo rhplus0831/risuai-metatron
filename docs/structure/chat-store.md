@@ -96,6 +96,14 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   removed answers `missing`, a recovery draft via the conflict listener ([resource sync](resource-sync.md#conflicts));
   an `append` whose anchor is gone is re-anchored and resent alone; the rest take the ordinary
   [recovery](resource-sync.md#chat-and-order-conflicts).
+- `requeueChatWork` keeps a lost reorder's sent vector and sequence in memory for conflict readback. A read matching the
+  conflicting vector settles it quietly. If the read matches an older lost vector, the newer reorder stays queued
+  without a discard notice and resends on the learned revision with a vector rebuilt from current membership. With no
+  newer reorder, a read matching neither the sent nor a kept vector takes the `markOrderDiscarded` path.
+- While a conflicting reorder waits for the read and a lost vector could match, `waitsForLostOrderRead` holds that
+  character's chat creates and deletes. Saving either first could change the server vector the read compares.
+  `hasChatWorkInDoubt` feeds the [unconfirmed save warning](resource-sync.md#state) for unresolved groups and reorders
+  outside quarantine.
 - A result's `candidateRows` (counters, cleaned snapshots) reach the mirror and unsent ops (`adoptCandidateRows`). A
   refused `selectCandidate` (stale counter, gone candidate, not the newest reply) marks the chat stale.
 - An idle re-base can refresh a send still building its prompt without a lock: its baseline protects changes made

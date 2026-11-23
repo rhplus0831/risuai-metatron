@@ -9,6 +9,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 
 ## Phones: Android Chrome and the installed PWA
 
+- [ ] **Bounded Resource Writes**: on a phone over the Cloudflare tunnel, edit a chat and switch to airplane mode within a second. Wait a minute, then switch it off. The unconfirmed save icon appears and then clears, and the message appears once.
 - [ ] **URL Routes**: the route checks on Android Chrome and the PWA (also desktop Chrome and iOS Safari), including H1 and its fallback if those checks fail.
 - [ ] **Web Push**: on an Android PWA over HTTPS (also Firefox and the iOS Home Screen app where available): permission, subscription and reload behavior; a completion with the tab hidden, closed, and visible, without duplicates; notification click routing; the insecure-LAN fallback; a service-worker update. No dedicated session has run this browser matrix (Audit Findings Phase 5).
 - [ ] **Audit Findings and Performance Leftovers (4f)**: the share target and deep links on a physical device.
@@ -67,6 +68,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 
 One tab:
 
+- [ ] **Bounded Resource Writes**: in desktop Chromium, set a custom 64 KiB/s upload rate in DevTools throttling, import a chat of about 8 MiB, then edit another chat. The import saves without a manual retry, and the other edit saves after it.
 - [ ] **Translation**: the bilingual display.
 - [ ] **Cross-check fix round, 2026-11-17 (F5)**: open a message's editor, type, open Settings and come back: the editor is open with the typed text; long-press cancel, then edit again: the text is offered. With a second device or tab, change that message while the editor is open: the typed text stays and the line "changed elsewhere" shows; the same for the stored-translation editor.
 - [ ] **Cross-check fix round, 2026-11-17 (F12)**: Memory panel › Pages › the scene page: a field over 600 characters shows its count and the badge, in the editor and outside it; after a recording run the field is not cut to 600, and a clipped answer shows as a warning on the run.
@@ -170,6 +172,7 @@ Two tabs, two browsers, or a dropped connection:
 
 ## The server process, Docker, and a production deployment
 
+- [ ] **Bounded Resource Writes**: pause the server with `kill -STOP` right after editing a chat's author note. Wait two minutes, edit the note again, and resume the server with `kill -CONT`. Reload and check that the note keeps the second edit.
 - [ ] **Request History and Diagnostics**: production Docker + sftp isolation: the restricted account can read `state.json`, `events/`, `reports/`, and `shared/` but cannot read `save/data/`; pull a job share, withdraw it, and save and pull a phone browser report. The application does not configure the sftp account or chroot. Found Issues Clearance's owner checklist repeats the chroot check.
 - [ ] **Upstream `.bin` Compatibility (S1, S5)**: the Docker image was not rebuilt after the msgpackr pin, so the native `msgpackr-extract` in the image is unverified. The Combined Run's later `docker build` and container smoke may cover this.
 - [ ] **Asset Lifecycle**: a Docker volume on a nearly full disk: the 507 answers of the restore, the backup import, the upstream commit, the upstream export prepare, and the manual snapshot; the snapshot tick logging once and skipping.

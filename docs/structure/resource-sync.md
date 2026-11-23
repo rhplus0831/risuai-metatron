@@ -69,6 +69,10 @@ handlers that reapply UI settings and repair incoming orders.
 - `runCycle`, `cycle` and `schedule` define debounce, single-flight writes and backoff. A cycle collects records and
   `takeChatWork`, sends through `applyBatchText`, then acknowledges the resource baseline and `ackChatWork`. A mark made
   in flight stays dirty. Ready feed patches apply before collection.
+- Each normal batch or credential request gets 45 s plus time for its UTF-8 body at 32 KiB/s. The total doubles after
+  each consecutive deadline abort of the same unit, up to 8×. A batch uses its units' highest abort count. A complete
+  answer, including a refusal or a 5xx, resets the count for the units it carried. The growing allowance lets slower
+  uploads finish on retry. An expired request ends the cycle and the save loop backs off before retrying.
 - `runRefresh` owns reads beside writes: it reloads deferred chats and lists through `resourceClient.ts`, applies feed
   records, and refreshes idle summaries/chats through the chat module. Stages start independently; a completed stage
   wakes pending writes. Only conflict and credential dependency reads remain inside a write cycle.
@@ -81,6 +85,8 @@ handlers that reapply UI settings and repair incoming orders.
   chat read (`jobChannel.ts`), 60 s for an export chunk (`chatEdits.ts`), 120 s per boot read. Chat loads have
   [their own](chat-store.md#limitations) bound. Only a complete read installs; owner replacement leaves its read running
   until its deadline, with adoption fenced separately.
+- Plugin storage and settings verification reads in the [browser-local import](persistence.md#browser-local-import) get
+  30 s each. Failure leaves the browser copy for the next boot.
 
 ### Serialization
 
@@ -94,8 +100,9 @@ handlers that reapply UI settings and repair incoming orders.
 ### Batch composition
 
 - `planBatches` sends records, whole `takeChatWork` groups, then reorders through `POST /api/resources/batch`; each
-  request is one server transaction. It splits at 5,000 operations or the client's 100 MiB cap less 64 KiB, or isolates
-  an unindexed refusal. A new character travels with or before its chats.
+  request is one server transaction. New multi-unit batches pack in that order up to a 4 MiB UTF-8 target including
+  framing. A larger unit travels alone, up to `MAX_BATCH_BYTES` (100 MiB less 64 KiB). The 5,000-operation cap and
+  isolation after an unindexed refusal also split requests. A new character travels with or before its chats.
 - Membership diffs by `chaId`: remove/re-add before collection is an update, with
   [chat reconciliation](chat-store.md#character-lifecycle). The server refuses two resource ops for one id, or a parent
   delete beside its chat changes. A collection with character creates builds one id-to-index map for `adoptCharacter`.
@@ -123,9 +130,12 @@ handlers that reapply UI settings and repair incoming orders.
 
 ### Lost answers
 
-- The adapter hands network/5xx uncertainty to `requeueChatWork({ lost: true })`: `Pending.resend` replays exactly the
-  sent group, alone with `retry`, before newer work. Newer work, even an empty newer sequence, uses another id, so the
-  replay's answer cannot settle it. Failed pagehide requests take the same path through `settleUnloadWork`.
+- After dispatch, a deadline, network failure, 5xx, or unreadable success body can leave the write in doubt. A failure
+  marked `notSent` creates no new doubt and preserves doubt from earlier attempts. The adapter still clears conservative
+  journal dispatch marks for work it knows was unsent.
+- `requeueChatWork({ lost: true })` replays exactly the sent chat group, alone with `retry`, before newer work. Newer
+  work, even an empty newer sequence, uses another id, so the replay's answer cannot settle it. Failed pagehide requests
+  take the same path through `settleUnloadWork`.
 - A definitely unapplied group merged in front of newer work keeps that group's id. A rolled-back unanswered resend
   remains a resend; a named 409 clears doubt. Expired live groups discard with the notice and no fresh identity; expired
   recovered groups quarantine for explicit Retry/Discard.
@@ -136,6 +146,8 @@ handlers that reapply UI settings and repair incoming orders.
   echo handling live on `inDoubt` and `adoptInDoubt`: exact sent text/base precedes newer local text, including a
   revert, while whole live/job adoptions wait. A matching feed patch or conflict read advances the saved base without
   replacing the mirror.
+- A record delete is collected again while the record is still persisted, locally absent and eligible. A same-id re-add
+  stops that retry.
 
 ### Refusals and quarantine
 
@@ -145,7 +157,7 @@ handlers that reapply UI settings and repair incoming orders.
   next quarantine after a 400/413 answer, whichever unit it names; a pre-dispatch size quarantine leaves isolation as it
   is, and a refusal no single unit reproduces (an aggregate body a proxy refuses) keeps it on until such a quarantine.
 - A quarantined character create is excluded from `creating`: its chats wait and membership stays unacknowledged, while
-  other work saves. Quarantine alone schedules no idle cycle.
+  other work saves. `quarantineRecord` clears that record's `inDoubt` entry. Quarantine alone schedules no idle cycle.
 - A refused order keeps its intent until sendable ids change or Retry. While `isOrderQuarantined` holds it, it is
   outside flush obligations, in `refused`, and still protects page close.
 - Chat refusal retention and release: `quarantineChat`, `releaseChatRefusal`, and `retryRefusedChat` in
@@ -197,14 +209,15 @@ handlers that reapply UI settings and repair incoming orders.
 - `useTrash` and `chatTrashed` take the standard conflict path through readback, recovery of eligible work, and a reload
   notice. They skip missing-anchor repair and the shortcut for a create whose answer was lost. User trash actions use
   the [direct client](chat-store.md#chat-trash).
-- A conflicted reorder keeps its sent vector until the `hydrate` list read: equal server order settles quietly;
-  otherwise `markOrderDiscarded` reports `chats/<chaId>` with the notice. A failed/deferred read settles nothing, and a
-  newer queued reorder keeps its sequence.
-- `readCharacter` fences list reads against dispatch, settlement, and owner changes while writes proceed. A list reports
-  work of missing chats as `chats/<chaId>/<chatId>`; idle ones go silently. A gone parent is removed only if its held
-  revision and `chatOwnerToken` stayed unchanged during the read, otherwise `hydrate` keeps it pending. Reorders wait
-  for a list read, while chat groups can proceed. A locally absent `listRefresh` waits without reads until re-add or
-  confirmed deletion (`hydrateCharacters`).
+- A conflicted reorder keeps its sent vector until the `hydrate` list read. A failed or deferred read settles nothing.
+  The chat store [reconciles that order and any older lost attempts](chat-store.md#by-id-ops), reporting discards as
+  `chats/<chaId>` with the reload notice.
+- `readCharacter` fences list reads against dispatch, settlement, and owner changes. A list reports work of missing
+  chats as `chats/<chaId>/<chatId>`; idle ones go silently. A gone parent is removed only if its held revision and
+  `chatOwnerToken` stayed unchanged during the read, otherwise `hydrate` keeps it pending. Reorders wait for a list
+  read, while eligible chat groups can proceed subject to the [membership write hold](chat-store.md#by-id-ops) during
+  lost-order recovery. A locally absent `listRefresh` waits without reads until re-add or confirmed deletion
+  (`hydrateCharacters`).
 - A refused create that reads back null stays quarantined in the mirror unless its parent is gone.
 - A chat streamed into by this tab defers reload until its locks release (`isChatDeferred`); the deferred reload follows
   chat-store's discard rules.
@@ -236,17 +249,21 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   `resourceClient.ts`'s `/api/llm-secrets/*` transport on the held revision. A later credential waits for the next cycle
   after its owner record. Cleanup waits until owner deletion is acknowledged; comment contracts on `sendSecretOps`,
   `entryOwnerState`, `adoptSecretRecord` and `adoptSecretSiblings` define retries, refusals and sibling adoption.
-- Each attempt gets 45 seconds plus time for its encoded body at 32 KiB/s, doubled after each consecutive deadline abort
-  of the same op up to 8×. Expiry is a lost answer and leaves the op queued for the next cycle.
+- Each op uses the [save deadline](#save-cycle) with its own abort count. Expiry leaves the op queued for the next
+  cycle, ahead of newer keys. The server refuses an original that arrives on a stale base. A 409 makes the tab reread
+  and retry on the fresh base, so writes to the same key from different devices still follow the last writer.
 - `auxFetch` calls `awaitSecretWrites` before using a stored key; refused ops, cleanups behind unsaved owner deletion,
-  saving failure or halt reject that barrier.
+  saving failure (including a deadline) or halt reject that barrier. The save loop can retry a queued op after the
+  auxiliary call has failed.
 
 ### flushResources
 
-- `flushResources` captures queued record generations, membership, chat/order sequences and credential ops. Its comment
-  defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads. After a
-  [restore halt](live-updates.md#restore-halt) it rejects (`assertSaveAdmission`) even with nothing pending. An
-  individual batch write can still wait indefinitely for its HTTP answer.
+- `flushResources` captures queued record generations, membership, chat/order sequences and credential ops. It joins
+  only relevant dependency reads. It counts retryable failures, including lost answers, toward its ten-attempt budget
+  even when the cycle writes nothing, waits out backoff, and retries. Permanent errors, record quarantine,
+  `GenerationBlockedError` and a [restore halt](live-updates.md#restore-halt) still reject immediately. A halt rejects
+  even with nothing pending (`assertSaveAdmission`).
+- Reroll reply restoration waits on this retry budget before refreshing its chat (`syncRerolledChat`).
 - Unanswered pagehide and stalled split-journal dependencies each wait at most 20 s. Timeout rejects without releasing
   the split prefix.
 - The result is `{ discarded, refused }` with `<kind>/<id>`, `chats/<chaId>/<chatId>` or order `chats/<chaId>` keys. Its
@@ -267,13 +284,21 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   the shared 60 KiB budget including outstanding keepalives. Only a successful `sendBatchOnUnload` dispatch calls
   `trackUnloadWork`; answers enter `settleUnloadWork`, failures requeue ahead of newer edits. Answers for retired work
   change no revision or queue. Records, credentials, creates/deletes, replacements and reorders use normal cycles only;
-  keepalive is best effort.
+  keepalive is best effort and has no request deadline. See [Limitations](#limitations) for restored pages.
 
 ### Transport
 
 - `src/ts/storage/resourceClient.ts` owns loaded-epoch checks, `readRefs` continuation and pre-signed unload transport.
   Mutations carry the loaded epoch; a read of another epoch reaches the adapter's restore halt through the registered
   listener. Normal requests pass through `authFetch` (`serverAuth.ts`).
+- The save timer starts when the transport is called and covers authentication, signing, upload, response headers, and
+  reading either the success or the error body. `beforeDispatch` records dispatch and notifies the save loop after auth,
+  signing and mutation admission. A deadline returns a status-0 `ResourceRequestError` whose `notSent` reports whether
+  dispatch was reached.
+- The shared `checkAuth` gives key acquisition and signing one 20 s bound, and each of `/api/test_auth`, `/api/crypto`,
+  `/api/set_password` and `/api/login` its own 20 s for fetch and body read. User prompts stay outside those timers.
+  Timeout releases the shared check so the next caller can start a fresh one. A late expired step cannot install an auth
+  result or start a signing-key write. A replacement joins any key write already started.
 - `readRefs` returns a complete result in request order or throws; a `moved` row read is an answer. Its rounds share an
   epoch, not a moment: only a character record and its collection entries are guaranteed the same round's read
   ([server contract](server-resources.md)).
@@ -281,7 +306,14 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 ## State
 
 - The adapter keeps plain maps, not runes: `persisted`, dirty keys with a generation counter, discarded keys, refused
-  content and reasons, `inDoubt`. Reactive: `saving` and a refusal counter, read without changing state.
+  content and reasons, `inDoubt`. Reactive: `saving`, `unconfirmedSave` and a refusal counter.
+- `unconfirmedSave` becomes true 15 s after a normal save dispatch without an answer, or while an earlier attempt's
+  record, chat, order or credential work remains in doubt. It clears when the overdue attempt finishes and doubt is
+  settled by acknowledgement, matching feed echo, conflict reconciliation or quarantine. An empty cycle or unrelated
+  success leaves it on while doubt remains.
+- `SavePopupIcon.svelte` shows the warning regardless of `showSavingIcon`. Its tooltip is available by pointer or
+  keyboard focus and asks the user to keep the tab open while saving retries (`resourceSaveUnconfirmed`). The
+  [page-close warning](#unload) follows unsaved or refused work and explicit holds.
 - `journalRecords`, `journalPending`, `journalChatViews`, and `journalChatPending` share one serialized queue and 500 ms
   timer. `Pending.groupId`, set at a batch's first queued op, is independent of a resend's id; an unconfirmed split
   stays a resend until the adapter releases it.
@@ -317,6 +349,7 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 - Boot-cache suites: see [app-shell](app-shell.md#tests).
 - Transport and pure merge:
   `pnpm --silent test:agent src/ts/storage/tests/resourceClient.test.ts src/ts/storage/tests/recordMerge.test.ts`.
+- Auth and save warning coverage: `src/ts/storage/tests/serverAuth.test.ts` and `src/lib/Others/SavePopupIcon.test.ts`.
 - `src/ts/storage/tests/resourceSyncScheduling.test.ts` spies on the chat refresh readers. Repeated remote notices
   should reuse an already scheduled refresh without walking the idle chat lists again.
 - `src/ts/storage/tests/fakeResourceServer.ts`: an in-memory `authFetch` resource-route fake with batch, lost-answer,
@@ -362,8 +395,20 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   saves the whole list, and a create carries its whole record. Measure before changing (the asset-scale slice 3c numbers
   are the baseline). Decision: Audit Findings and Performance Leftovers, archive; Found Issues Clearance (owner,
   2026-11-09).
-- A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
-  Decision: owner, 2026-11-10 (known-issues review).
+- A page restored from the back-forward cache may leave chat work in flight indefinitely if its keepalive answer never
+  arrives. `flushResources` waits at most 20 s for it. Requeuing in the tab would let the original arrive after newer
+  work. (Bounded Resource Writes D8, 2026-11-24)
+- The server refuses an incomplete request body. A transport or intermediary that holds a complete abandoned request can
+  deliver it after a resend and newer writes are acknowledged. A late create or chat group can recreate deleted content
+  or overwrite newer content, and a late permanent character delete can remove a re-added transcript. (Bounded Resource
+  Writes D1, 2026-11-24)
+- Each attempt is bounded, but work planned after a unit that never answers or exceeds every allowance, even at 8×,
+  still waits behind it. Work planned before it can save. The indicator stays on while the unanswered work remains in
+  doubt. (Bounded Resource Writes D5–D7, D10, 2026-11-24)
+- A credential set whose first answer is lost after commit can advance the `llmSecrets` revision again with the same
+  value when retried on a refreshed base. (Bounded Resource Writes D7, 2026-11-24)
+- A lost record-delete answer adds no `inDoubt` entry for that delete. Its own warning is limited to the overdue portion
+  of the attempt, starting 15 s after dispatch. (Bounded Resource Writes D10, 2026-11-24)
 - A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
   typing can save more often than the debounce.
   [Measurements](../reports/measurements/client/projection-bindings-2026-10-04.md) no longer show extra saves. Decision:

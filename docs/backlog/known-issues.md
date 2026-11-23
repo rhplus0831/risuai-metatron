@@ -17,8 +17,6 @@ when the owner keeps the behavior. When a fix closes part of an entry, rewrite t
 Sources the entries name (drop a line when no entry names it any more):
 
 - Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
-- Reproduction round of 2026-11-21: no report; each entry was run in a probe at `ddb0c225b` (Vitest, and headless
-  Chrome for the transcript scroll entry), and the probes are kept with the review material outside the repository.
 - Second fix round of 2026-11-22: no report; the implementers' and reviewers' reports and probes are kept with the review
   material outside the repository.
 
@@ -26,7 +24,6 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (1)
-- [network-jobs](#network-jobs) (1)
 - [structured-memory](#structured-memory) (1)
 
 ## characters-modules
@@ -62,27 +59,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   A fix moves the append into admission or removes the appended message on refusal.
   [PO translator](../../src/ts/process/files/multisend.ts#L70) · [DevTool autopilot](../../src/lib/SideBars/DevTool.svelte#L290) ·
   [Binding check](../../src/ts/process/serverCommands.ts#L1143)
-
-## network-jobs
-
-Guide:
-[Network and Jobs: Fetch Routing, Aux Fetch, Generation Job Client, Job Channel, Web Push](../structure/network-jobs.md#known-hazards).
-
-- One unanswered resource batch still holds every later batch until it settles or the page reloads, and keeps the
-  before-unload warning on: the resource client gives the batch request no deadline. The send, command jobs, and the
-  callers a user waits on (backup and snapshot, checkpoint save and load, character, module and plugin import, recovery
-  draft Apply, the reroll candidate switch, stored translation, chat export, memory task start, standalone and
-  auxiliary requests, the job channel's callback barriers) end their own wait on Stop or after 30 seconds
-  (`waitForResourceFlush`) and leave the shared write running. Reroll reply restoration, new-chat memory inheritance
-  or restore, the two browser-local boot migrations, and background generation resync still wait without a bound.
-  - How far it was checked: reproduced on 2026-11-21 at `ddb0c225b` (the batch committed on the server, its answer
-    withheld for two simulated hours); the bounded callers were run against a held answer in the second fix round of
-    2026-11-22. A real browser or proxy may fail the request sooner; no browser timeout was measured.
-  - Not fixed: the shared batch. A deadline on the batch request needs a retry that cannot replay a batch the server
-    already committed.
-  - [Bounded wait](../../src/ts/storage/resourceFlushWait.ts#L10) ·
-    [Batch cycle](../../src/ts/storage/resourceSync.svelte.ts#L2996) ·
-    [Batch request](../../src/ts/storage/resourceClient.ts#L450)
 
 ## structured-memory
 

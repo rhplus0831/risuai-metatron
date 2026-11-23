@@ -88,6 +88,10 @@ The transport below retains this tab's in-memory log.
 
 ### Auxiliary credentials
 
+- `auxFetch` waits for queued credential ops through `awaitSecretWrites`. A failed or expired save rejects that wait
+  while the save loop can retry the queued op. Calls through a stored profile first wait for its resource flush. See
+  [Credential writes](resource-sync.md#credential-writes) and the shared [auth check](resource-sync.md#transport), which
+  bounds noninteractive steps and can start fresh after timeout.
 - Model discovery (`src/ts/model/modellist.ts` `registerModelDynamic`, `src/ts/model/openrouter.ts`,
   `src/ts/model/ollama.ts` cloud tags) and NanoGPT (`src/ts/model/nanogpt.ts`) use `auxFetch` to reach the server's
   credentialed operations in `server/src/llm/auxOps.ts`. The tab makes no `openai-completions` call; that server
@@ -102,6 +106,9 @@ The transport below retains this tab's in-memory log.
 - Boot resumes saved jobs through `resumeServerJobs` / `followJobToEnd` (`src/ts/process/serverCommands.ts`). Their
   contracts cover recovery, roles, warnings and late listeners. Control-response 412s reach the resource client's
   `epochMismatch` and resource sync's restore halt.
+- A job follow's `resyncAfterLocalWork` retries a rejected [resource flush](resource-sync.md#flushresources) while
+  following the job. New-chat memory [inheritance](structured-memory/lifecycle.md#copies-and-branches) and
+  [restore](structured-memory/lifecycle.md#chat-files) wait for the create to settle, then bound their own requests.
 - `handoff.ts` holds plugin work through `pluginsStarted` and takeover; the follow holds it through attach and, when
   needed, terminal application and late listeners.
 - `remoteHost.ts` saves `{ commandId, epoch, attempt, kind?, clientId }` in `sessionStorage` `risu-remote-host-commands`
@@ -150,7 +157,8 @@ The transport below retains this tab's in-memory log.
   pre-dispatch refusal with any earlier request uncertainty and leaves the shared write running.
 - Command jobs and the callers a user waits on end their wait the same way (`waitForResourceFlush` in
   `src/ts/storage/resourceFlushWait.ts`), each through its own failure path; an import that timed out says its entry is
-  already listed. One unanswered batch still holds later ones ([known issues](../backlog/known-issues.md#network-jobs)).
+  already listed. When the server stays silent, the caller reaches its save-pending timeout while the shared
+  [flush](resource-sync.md#flushresources) continues through backoff after bounded save attempts.
 - A Continue without input names the message it continues (`continueMessageId`, the chat's last message when pressed),
   so a message that lands before the host runs is not continued instead. A Continue with input names nothing: its job
   appends the user message and continues it. A Continue or reroll is never retried under its request id (each press is a
