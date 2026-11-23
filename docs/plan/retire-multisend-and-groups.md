@@ -199,8 +199,8 @@ CBS, Lua, MCP, plugins, and the upstream importer; the PO-file and attachment se
 - **D9a. Group ids leave the character order** (Q5). The order repair treats a group as it treats a trashed
   character while still recording it as observed: `repairCharOrder` never appends one and removes its id from the
   order and from folders (at the boot repair, and once a repair has observed it), and `unorderedCharacters` and
-  `appendMissingCharacters` do not count one as live. The remote repair (`queueRemoteCharOrderRepair`) also removes
-  The remote repair (`queueRemoteCharOrderRepair`) only stops appending groups; it does not remove ids from an
+  `appendMissingCharacters` do not count one as live. The remote repair (`queueRemoteCharOrderRepair`) only stops
+  appending groups; it does not remove ids from an
   incoming order, so an upgraded tab never rewrites another tab's order and two tab versions cannot keep undoing each
   other. A group id that stays in the stored order is still never drawn (D9) and goes at the next boot or local
   repair. A plugin's `characterOrder` write drops known group ids before it is assigned, and its `characterOrder`
