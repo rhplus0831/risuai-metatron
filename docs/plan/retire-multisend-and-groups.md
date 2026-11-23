@@ -133,7 +133,11 @@ CBS, Lua, MCP, plugins, and the upstream importer; the PO-file and attachment se
   effect; its legacy `|||` argument never becomes pipeline segments. The pipe grammar of every other command is
   unchanged. In the tab the retired segment shows one notice that `/multisend` was removed (Q4); the line is
   consumed, so the composer clears as for any handled command. On the server it logs nothing, and the trigger
-  continues with its next effect. `multisend` leaves the `lowLevelAccess` refusal list, which keeps `speak`.
+  continues with its next effect. Because a trigger's `v2Command` effect evaluates its whole line as CBS before the
+  command executor sees it (`server/src/prompt/triggers.ts`, the `v2Command` case's `operand`), a `value`-type effect
+  whose raw text starts with the retired token is skipped there, before any CBS evaluation and without
+  `runCommand` (owner, 2026-11-23); a retired segment later on such a line is consumed by the executor after the
+  line's CBS ran (see Limitations). `multisend` leaves the `lowLevelAccess` refusal list, which keeps `speak`.
 - **D2. The typed path is removed.** `runMultisend`, its `/?` help line, the `reservation` parameter of
   `processMultiCommand`, `processPinnedCommands`, and `processCommand`, `SendChatArg.localSendReservation`, and
   `beginLocalSend`'s borrow branch go. `LocalSendReservation` stays as the release handle `beginLocalSend` returns. The
@@ -274,6 +278,9 @@ CBS, Lua, MCP, plugins, and the upstream importer; the PO-file and attachment se
 - A tab of an earlier build open across the upgrade can append a group id to the stored order; it is not drawn, and
   the next boot or local repair of an upgraded tab removes it. An order that names a group before its record arrives
   keeps the id until such a repair.
+- A stored trigger whose `v2Command` line has `/multisend` after another command (`/echo a|/multisend ...`), or
+  whose line comes from a variable, still has its CBS evaluated before the executor consumes the retired segment, as
+  every `v2Command` line is today; only a line that starts with the token skips CBS (D1).
 - A plugin that stored a numeric character index before the upgrade can read a different character after it (Q6);
   plugins should re-resolve by `chaId`.
 
@@ -322,7 +329,8 @@ and 5 both edit `docs/structure/ownership.json`; slice 3 also edits `e2e/`. The 
 
 - `src/ts/process/command.ts`, `src/ts/process/index.svelte.ts`, `src/ts/process/localSends.ts`,
   `src/lib/ChatScreens/DefaultChatScreen.svelte`: D1 and D2 for the tab.
-- `server/src/prompt/commands.ts`, `server/src/jobs/runSetup.ts`, `server/src/jobs/commandRunner.ts`,
+- `server/src/prompt/triggers.ts` (the `v2Command` skip of D1), `server/src/prompt/commands.ts`,
+  `server/src/jobs/runSetup.ts`, `server/src/jobs/commandRunner.ts`,
   `server/src/jobs/generationJobs.ts`, `server/src/data/generationReceipts.ts`, `shared/jobs.ts`, `shared/events.ts`:
   D1 and D3.
 - `src/ts/process/serverCommands.ts`, `src/ts/process/generationProgress.svelte.ts`,
