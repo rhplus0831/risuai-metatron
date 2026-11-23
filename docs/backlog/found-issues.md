@@ -37,9 +37,9 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Build and CI](#build-and-ci): 3
+- [Build and CI](#build-and-ci): 4
 - [Chat screen](#chat-screen): 1
-- [Client features](#client-features): 3
+- [Client features](#client-features): 5
 - [Docs](#docs): 1
 - [Draft recovery](#draft-recovery): 2
 - [Rendering](#rendering): 1
@@ -84,6 +84,23 @@ ends in "and chat settings." The option came in at `4a44b704a`.
 Chat Settings path, and every e2e run that selects it reports a failure.
 
 **Suggested handling:** pass `exact: true` to that `getByRole`, then run the spec again.
+
+### The multi-client create, delete, and reorder e2e spec fails about one whole-file run in three
+
+`e2e/multiClient.spec.ts:379` ("concurrent chat creation deletion and reordering preserve every surviving chat") fails
+in about one of three whole-file runs and passes when run alone with `-g`, at `820ff970c` and later. The first error is
+always `route.continue: Route is already handled!` from the context-wide route of `isolateContext`
+(`util/playwright/stack.mjs:76`); the later "page closed" errors in `settle` (`e2e/fixtures.ts:40`) and `mirrorState`
+(`e2e/multiClient.ts:596`) follow from Playwright ending the test, and the "did not go idle" code frame the report
+prints is misleading. Reproduced in repeated runs; the cause is a hypothesis: `holdBatch` (`e2e/multiClient.ts:666`)
+calls `page.unroute` in `dispose()` with the default behavior while A's retried batch, which also carries `x1`, is
+falling back from the page handler to the context handler, so one request is handled twice.
+
+**Why it matters:** the run-wide e2e gate fails intermittently, and the failure reads like a save loop that never goes
+idle.
+
+**Suggested handling:** unroute with `{ behavior: "ignoreErrors" }` or `"wait"`, or let `holdBatch` hold only the first
+matching request, then run the file several times.
 
 ## Chat screen
 
@@ -147,6 +164,35 @@ same MCP client, and an unanswered push request can hold later subscription acti
 
 **Suggested handling:** reproduce a silent response for each feature, then bound the network stages and release their
 slots when work settles. Keep interactive OAuth prompts outside network timers.
+
+### Boot's browser-local import can wait minutes on save retries before plugins load
+
+`importSafeLocalPluginStorage` and `importSectionField` (`src/ts/storage/browserLocalImport.ts:169`, `:235`) await
+`flushResources()` without a bound of their own, and boot awaits `importBrowserLocalData` before plugins load
+(`src/ts/bootstrap.ts:160`). `flushResources` retries a lost answer through its ten-attempt budget with the cycle
+backoff (up to 30 s between attempts), so a server that keeps failing batches can hold plugin loading for about three
+minutes on a boot that still has legacy browser-local data to move. Only the 30 s verification reads are bounded. Read,
+not reproduced.
+
+**Why it matters:** a boot that stalls on a flaky server is visible to the user; the other callers a user waits on go
+through `waitForResourceFlush` (30 s).
+
+**Suggested handling:** race these flushes with `waitForResourceFlush` and keep the browser-local source on timeout.
+
+### Import "save could not be confirmed" alerts no longer report network failures
+
+The character, plugin, and module import confirmations (`characterImportUnconfirmed`, `pluginImportUnconfirmed`,
+`moduleImportUnconfirmed` in `src/lang/en.ts:1003`, `:1060`, `:1660`) show the save error only for an immediate refusal
+(400 or 413, a restore halt, a blocked generation): `flushResources` retries lost answers, so a network outage ends in
+the `waitForResourceFlush` 30 s timeout and the save-pending alerts (`importSavePending`, `pluginImportSavePending`).
+The tests (`src/ts/plugins/plugins.test.ts`, `src/ts/process/modulesImport.test.ts`,
+`src/ts/characterCardsImport.test.ts`) were updated to that. Read from the code and its tests.
+
+**Why it matters:** the `{{error}}` variants lost their network-failure cases; a guide or alert text that promises the
+error reason for a network failure would now be wrong.
+
+**Suggested handling:** check the import alert descriptions in the characters and modules guides against this, and
+keep or reword the `{{error}}` alerts for refusals only.
 
 ## Docs
 
