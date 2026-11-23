@@ -1265,16 +1265,24 @@ describe("one chat's trouble does not block the rest", () => {
             return Promise.race([response, lostAnswer]);
         });
         chat.reorderChats("c", ["j", "k"]);
-        const firstFlush = sync.flushResources().catch((error: unknown) => error);
+        const flushing = sync.flushResources();
+        const settled = vi.fn();
+        flushing.then(settled, settled);
         await vi.advanceTimersByTimeAsync(0);
         const release = stage === "before commit" ? fake.releaseBatch : fake.releaseBatchResponse;
         expect(release).toBeTypeOf("function");
         rejectAnswer(new TypeError("reorder answer lost"));
-        expect(await firstFlush).toMatchObject({ status: 0, notSent: false });
+        // The flush does not settle at the lost answer: it waits out its backoff before the resend.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).not.toHaveBeenCalled();
+        expect(fake.batchCount()).toBe(1);
         transport.mockRestore();
-        return async () => {
-            release!();
-            await original;
+        return {
+            flushing,
+            deliver: async () => {
+                release!();
+                await original;
+            },
         };
     }
 
@@ -1286,14 +1294,24 @@ describe("one chat's trouble does not block the rest", () => {
     ] as const)("keeps the newer reorder after a lost answer ($stage, $membership)", async ({ stage, membership }) => {
         const h = await boot();
         const { fake, sync, chat } = h;
-        const deliver = await loseReorderAnswer(h, stage);
+        const { flushing, deliver } = await loseReorderAnswer(h, stage);
         expect(fake.order("c")!.ids).toEqual(stage === "after commit" ? ["j", "k"] : ["k", "j"]);
 
+        // The newer reorder comes while the flush waits out its backoff, before the resend.
         chat.reorderChats("c", ["k", "j"]);
         if (membership === "sibling create") {
             chat.createChat("c", { id: "n", name: "New", message: [], note: "", localLore: [] });
         }
-        const result = await sync.flushResources().finally(deliver);
+        const { discarded, refused } = await (async () => {
+            try {
+                const retried = await settleFlush(flushing);
+                const later = await sync.flushResources();
+                return { discarded: [...retried.discarded, ...later.discarded], refused: later.refused };
+            } finally {
+                await deliver();
+            }
+        })();
+        const result = { discarded, refused };
         const stored = fake.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0];
         const order = stored.order!.ids;
         expect({ ...result, relativeOrder: order.filter((id) => id !== "n") }).toEqual({
