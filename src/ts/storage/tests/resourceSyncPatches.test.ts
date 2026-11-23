@@ -26,7 +26,9 @@ const { server, alerts, bodies } = vi.hoisted(() => ({
 }));
 
 vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => {
+    // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
+    authFetch: (path: string, init?: RequestInit, options: { beforeDispatch?: () => void } = {}) => {
+        options.beforeDispatch?.();
         if (typeof init?.body === "string") {
             bodies.push(init.body);
         }

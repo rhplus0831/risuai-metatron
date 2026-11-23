@@ -22,7 +22,11 @@ const { server, alerts } = vi.hoisted(() => ({
 }));
 
 vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
+    // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
+    authFetch: (path: string, init?: RequestInit, options: { beforeDispatch?: () => void } = {}) => {
+        options.beforeDispatch?.();
+        return server.current.fetch(path, init);
+    },
 }));
 
 vi.mock("../../alert", async () =>
@@ -727,10 +731,11 @@ describe("restore (412) and errors", () => {
         const reload = (location as any).reload;
         fake.restore("epoch-2");
         settings.ui.theme = "after restore";
-        await expect(sync.flushResources()).rejects.toThrow();
+        // The direct write goes first: after the halt, the save admission refuses mutations before they are sent.
         await expect(
             client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
         ).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+        await expect(sync.flushResources()).rejects.toThrow();
         client.epochMismatch("epoch-2");
         await expect(sync.watchForRestore()).resolves.toBe(true);
         await vi.advanceTimersByTimeAsync(120_000);
@@ -1047,9 +1052,21 @@ describe("batch sizing", () => {
         const big = { bytes: 62_914_657 };
         expect(sync.splitBatches([big, big]).map((batch) => batch.length)).toEqual([1, 1]);
         const small = { bytes: 10 };
-        expect(sync.splitBatches([small, big, big, small])).toEqual([
-            [small, big],
-            [big, small],
+        expect(sync.splitBatches([small, big, big, small])).toEqual([[small], [big], [big], [small]]);
+    });
+
+    it("stops multi-unit batches at 4 MiB and sends a larger unit alone", async () => {
+        const { sync } = await boot();
+        const mib = 1024 * 1024;
+        const nearHalf = { bytes: 2 * mib - 1024 };
+        const half = { bytes: 2 * mib };
+        const extra = { bytes: 2048 };
+        const large = { bytes: 5 * mib };
+        expect(sync.splitBatches([nearHalf, half, extra, large, extra])).toEqual([
+            [nearHalf, half],
+            [extra],
+            [large],
+            [extra],
         ]);
     });
 

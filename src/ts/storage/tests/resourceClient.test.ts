@@ -24,6 +24,7 @@ vi.mock("../serverAuth", async () =>
 );
 
 import * as client from "../resourceClient";
+import * as serverAuth from "../serverAuth";
 
 let fake: FakeResourceServer;
 
@@ -200,15 +201,115 @@ describe("conflicts", () => {
     });
 });
 
+function unanswered(signal?: AbortSignal | null): Promise<never> {
+    return new Promise((_, reject) => {
+        signal?.throwIfAborted();
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+}
+
+describe("write dispatch", () => {
+    afterEach(() => client.setMutationAdmission(null));
+
+    it.each(["batch", "credential"] as const)(
+        "notifies just before sending the signed and admitted %s",
+        async (kind) => {
+            vi.useFakeTimers();
+            const events: string[] = [];
+            let admit = false;
+            server.waitForAuth = async () => {
+                await Promise.resolve();
+                events.push("signed");
+            };
+            client.setMutationAdmission(() => {
+                events.push("checked");
+                return admit;
+            });
+            server.current = {
+                fetch: async () => {
+                    events.push("sent");
+                    return Response.json({ results: [], revision: "saved", data: {} });
+                },
+            };
+            const onDispatch = () => {
+                events.push("notified");
+                throw new Error("observer failed");
+            };
+            const write = () =>
+                kind === "batch"
+                    ? client.applyBatchText('{"ops":[]}', { onDispatch })
+                    : client.sendSecretRequest({ kind: "put", path: "openAIKey", value: "test-key" }, "base", {
+                          onDispatch,
+                      });
+            await expect(write()).rejects.toMatchObject({ notSent: true });
+            expect(events).toEqual(["signed", "checked"]);
+            events.length = 0;
+            admit = true;
+            await write();
+            expect(events).toEqual(["signed", "checked", "notified", "sent"]);
+        },
+    );
+});
+
+describe("batch deadlines", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    // Pad valid JSON to exactly 32 KiB on the wire. Its UTF-16 length is shorter.
+    const json = JSON.stringify({ ops: [{ kind: "ui", id: "main", data: { theme: "é".repeat(8192) } }] });
+    const body = json + " ".repeat(32 * 1024 - new TextEncoder().encode(json).byteLength);
+
+    it("expires an unsigned batch on its encoded retry allowance", async () => {
+        vi.useFakeTimers();
+        server.waitForAuth = (init) => unanswered(init.signal);
+        const settled = vi.fn();
+        const onDispatch = vi.fn();
+        void client.applyBatchText(body, { consecutiveAborts: 1, onDispatch }).then(settled, settled);
+
+        await vi.advanceTimersByTimeAsync(91_999);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        const error = settled.mock.lastCall?.[0];
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect(error).toMatchObject({ status: 0, notSent: true });
+        expect(onDispatch).not.toHaveBeenCalled();
+        expect(calls).toEqual([]);
+    });
+
+    it.each([
+        { status: 200, dispatched: true },
+        { status: 503, dispatched: true },
+        { status: 200, dispatched: false },
+        { status: 503, dispatched: false },
+    ])("classifies expiry reading an HTTP $status body with dispatched=$dispatched", async ({ status, dispatched }) => {
+        vi.useFakeTimers();
+        let response: Response;
+        // A response supplied by the auth transport itself has no dispatch notification.
+        vi.spyOn(serverAuth, "authFetch").mockImplementationOnce(async (_path, init, options) => {
+            await new Promise((resolve) => setTimeout(resolve, 20_000));
+            if (dispatched) options?.beforeDispatch?.();
+            await new Promise((resolve) => setTimeout(resolve, 24_000));
+            const stream = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    init.signal?.addEventListener("abort", () => controller.error(init.signal.reason), { once: true });
+                },
+            });
+            response = new Response(stream, { status });
+            return response;
+        });
+        const settled = vi.fn();
+        void client.applyBatchText(body).then(settled, settled);
+        await vi.advanceTimersByTimeAsync(45_999);
+        expect(response.bodyUsed).toBe(true);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        const error = settled.mock.lastCall?.[0];
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect(error).toMatchObject({ status: 0, notSent: !dispatched });
+    });
+});
+
 describe("credential PUT deadlines", () => {
     const request = { kind: "put", path: "openAIKey", value: "test-key" } as const;
-
-    function unanswered(signal?: AbortSignal | null): Promise<never> {
-        return new Promise((_, reject) => {
-            signal?.throwIfAborted();
-            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-        });
-    }
 
     function expectDeadline(error: unknown, notSent: boolean) {
         expect(error).toBeInstanceOf(client.ResourceRequestDeadlineError);

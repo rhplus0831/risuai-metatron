@@ -15,6 +15,7 @@ import {
     type ResourceRevisionListing,
 } from "../../../shared/resources.ts";
 import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
+import { utf8ByteLength } from "./utf8ByteLength";
 import { clearTransformResults } from "../parser/transformResults";
 
 /**
@@ -148,14 +149,19 @@ function checkedEpoch<T extends { epoch?: string }>(result: T): T {
 }
 
 type ResourceRequestInit = RequestInit & { mutation?: boolean; conflictAsRequestError?: boolean };
+type DispatchState = { sent: boolean; onDispatch?: () => void };
 
-async function send(path: string, init: ResourceRequestInit = {}): Promise<Response> {
+/** Records dispatch after auth, signing and admission. An observer cannot interrupt the request. */
+async function send(
+    path: string,
+    init: ResourceRequestInit = {},
+    dispatch: DispatchState = { sent: false },
+): Promise<Response> {
     const headers = new Headers(init.headers);
     if (init.mutation) {
         headers.set(RESOURCE_EPOCH_HEADER, currentEpoch);
     }
     let response: Response;
-    let dispatched = false;
     try {
         response = await authFetch(
             path,
@@ -165,12 +171,17 @@ async function send(path: string, init: ResourceRequestInit = {}): Promise<Respo
                     if (init.mutation && mutationAdmission && !mutationAdmission()) {
                         throw new Error("Saving stopped: the server data was restored");
                     }
-                    dispatched = true;
+                    dispatch.sent = true;
+                    try {
+                        dispatch.onDispatch?.();
+                    } catch (error) {
+                        console.error("[Resources]", error);
+                    }
                 },
             },
         );
     } catch (error) {
-        throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error), null, !dispatched);
+        throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error), null, !dispatch.sent);
     }
     if (response.ok) {
         return response;
@@ -210,8 +221,9 @@ async function send(path: string, init: ResourceRequestInit = {}): Promise<Respo
     throw new ResourceRequestError(response.status, serverError ?? `Request failed (${response.status})`, serverError);
 }
 
-async function sendJson<T>(path: string, init: ResourceRequestInit = {}): Promise<T> {
-    return (await (await send(path, init)).json()) as T;
+/** Resolves after reading the success body, under the same signal as dispatch and the error body. */
+async function sendJson<T>(path: string, init: ResourceRequestInit = {}, dispatch?: DispatchState): Promise<T> {
+    return (await (await send(path, init, dispatch)).json()) as T;
 }
 
 const jsonHeaders = { "content-type": "application/json" };
@@ -461,49 +473,65 @@ function singleConflict(error: unknown, kind: string, id: string): unknown {
     return error;
 }
 
+type WriteOptions = { consecutiveAborts?: number; onDispatch?: () => void };
+
 /**
- * One credential write of the write-only `llmSecrets` record: a set (`value`;
- * empty clears), on the record's `baseRevision`. Answers the new revision and the
- * masked record; a stale revision throws `ResourceConflictError`.
+ * Bounds a save from authentication through the complete JSON answer, using the encoded size of
+ * the body being sent. A deadline before dispatch is known unsent; one after dispatch leaves doubt.
  */
-export async function sendSecretRequest(
-    request: { kind: "put"; path: string; value: string },
-    baseRevision: string,
-    { consecutiveAborts = 0 }: { consecutiveAborts?: number } = {},
-): Promise<{ revision: string; data: unknown }> {
-    const body = JSON.stringify({ value: request.value, baseRevision });
-    const allowance = requestAllowanceMs(new TextEncoder().encode(body).byteLength, consecutiveAborts);
+async function sendWriteJson<T>(
+    path: string,
+    method: "POST" | "PUT",
+    body: string,
+    { consecutiveAborts = 0, onDispatch }: WriteOptions,
+): Promise<T> {
+    const allowance = requestAllowanceMs(utf8ByteLength(body), consecutiveAborts);
     const controller = new AbortController();
     const { signal } = controller;
-    const path = `/api/llm-secrets/${request.path}`;
+    const dispatch = { sent: false, onDispatch };
     const timer = setTimeout(() => controller.abort(), allowance);
     try {
-        const reply = await sendJson<{ epoch?: string; revision: string; data: unknown }>(path, {
-            method: "PUT",
-            headers: jsonHeaders,
-            body,
-            mutation: true,
-            signal,
-        });
-        return checkedEpoch(reply);
+        return await sendJson<T>(path, { method, headers: jsonHeaders, body, mutation: true, signal }, dispatch);
     } catch (error) {
         if (signal.aborted) {
-            if (error instanceof ResourceRequestError && error.status === 0) {
-                throw new ResourceRequestDeadlineError(error.notSent);
-            }
-            if (error === signal.reason || (error instanceof Error && error.name === "AbortError")) {
-                throw new ResourceRequestDeadlineError(false);
-            }
+            throw new ResourceRequestDeadlineError(!dispatch.sent);
         }
-        throw singleConflict(error, "llmSecrets", "main");
+        throw error;
     } finally {
         clearTimeout(timer);
     }
 }
 
-/** Sends a batch whose JSON body the caller already built (`{"ops":[...],"chats":[...],"chatOrders":[...]}`). */
-export function applyBatchText(body: string): Promise<ResourceBatchResult> {
-    return sendJson("/api/resources/batch", { method: "POST", headers: jsonHeaders, body, mutation: true });
+/**
+ * Sets a credential on its base revision (an empty value clears it). Returns the new revision and
+ * masked record, or names the record in a conflict. Consecutive deadline aborts extend this op's
+ * allowance. onDispatch runs after signing and admission, immediately before fetch.
+ */
+export async function sendSecretRequest(
+    request: { kind: "put"; path: string; value: string },
+    baseRevision: string,
+    options: WriteOptions = {},
+): Promise<{ revision: string; data: unknown }> {
+    const body = JSON.stringify({ value: request.value, baseRevision });
+    try {
+        const reply = await sendWriteJson<{ epoch?: string; revision: string; data: unknown }>(
+            `/api/llm-secrets/${request.path}`,
+            "PUT",
+            body,
+            options,
+        );
+        return checkedEpoch(reply);
+    } catch (error) {
+        throw singleConflict(error, "llmSecrets", "main");
+    }
+}
+
+/**
+ * Sends the caller's serialized batch under its size-based deadline using the largest consecutive
+ * abort count among its units. onDispatch runs after signing and admission, immediately before fetch.
+ */
+export function applyBatchText(body: string, options: WriteOptions = {}): Promise<ResourceBatchResult> {
+    return sendWriteJson("/api/resources/batch", "POST", body, options);
 }
 
 /** The body budget of a `keepalive` request (browsers refuse larger bodies; 64 KiB less headroom). */

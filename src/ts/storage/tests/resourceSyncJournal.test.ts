@@ -31,7 +31,11 @@ const { server, diagnostics } = vi.hoisted(() => ({
 
 vi.mock("../serverAuth", async () =>
     (await import("./serverAuthMock")).createServerAuthMock({
-        authFetch: (path, init) => server.current!.fetch(path, init),
+        // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
+        authFetch: (path, init, options) => {
+            options?.beforeDispatch?.();
+            return server.current!.fetch(path, init);
+        },
     }),
 );
 vi.mock("../../alert", async () => (await import("../../tests/alertMock")).createAlertMock());

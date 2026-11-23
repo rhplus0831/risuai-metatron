@@ -188,6 +188,9 @@ import {
     setResourceEpoch,
     UNLOAD_BODY_LIMIT,
 } from "./resourceClient";
+import { utf8ByteLength } from "./utf8ByteLength";
+
+export { utf8ByteLength };
 
 /**
  * The write adapter: the records (`records.svelte.ts`) and the chat module are the live model, and
@@ -274,6 +277,8 @@ const DEBOUNCE_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 /** Largest batch body the server accepts (its global body limit is 100 MiB), in UTF-8 bytes. */
 const MAX_BATCH_BYTES = 100 * 1024 * 1024 - 64 * 1024;
+/** Target for a batch carrying several units. A larger unit travels alone. */
+const TARGET_BATCH_BYTES = 4 * 1024 * 1024;
 export const MAX_BATCH_OPERATIONS = 5000;
 /** Bytes of the batch envelope around its parts: `{"ops":[],"chats":[],"chatOrders":[]}`. */
 const BATCH_FRAME_BYTES = 38;
@@ -2515,25 +2520,6 @@ type PendingOp = {
     bytes: number;
 };
 
-/** UTF-8 size of a string (JSON text is well-formed, so surrogates come in pairs). */
-export function utf8ByteLength(text: string): number {
-    let bytes = 0;
-    for (let index = 0; index < text.length; index += 1) {
-        const code = text.charCodeAt(index);
-        if (code < 0x80) {
-            bytes += 1;
-        } else if (code < 0x800) {
-            bytes += 2;
-        } else if (code >= 0xd800 && code <= 0xdbff) {
-            bytes += 4;
-            index += 1;
-        } else {
-            bytes += 3;
-        }
-    }
-    return bytes;
-}
-
 /** An op sending the whole record (or, with `patch`, the JSON of a record patch of it). */
 function pendingOp(op: Omit<PendingOp, "part" | "bytes">, patch?: string): PendingOp {
     const head = `{"kind":${JSON.stringify(op.kind)},"id":${JSON.stringify(op.id)},"baseRevision":${JSON.stringify(op.baseRevision)}`;
@@ -2926,17 +2912,33 @@ function batchBody(batch: Batch): string {
     return `{"ops":[${batch.ops.map((op) => op.part).join(",")}],"chats":[${chats.join(",")}],"chatOrders":[${chatOrders.join(",")}]}`;
 }
 
+/** Only the last attempt identity for each target can extend its allowance. */
+type DeadlineHistory = { identity: string | number | null; count: number };
+const batchDeadlineAborts = new Map<string, DeadlineHistory>();
+
+/** Each record base, chat group id and order sequence survives a resend, in its own target namespace. */
+function batchAttempts(batch: Batch) {
+    function attempt(target: string, identity: DeadlineHistory["identity"]) {
+        const previous = batchDeadlineAborts.get(target);
+        return { target, identity, count: previous?.identity === identity ? previous.count : 0 };
+    }
+    return [
+        ...batch.ops.map((op) => attempt(`record:${op.key}`, op.baseRevision)),
+        ...batch.work.groups.map((group) => attempt(`chat:${group.key}`, group.groupId)),
+        ...batch.work.orders.map((order) => attempt(`order:${order.characterId}`, order.seq)),
+    ];
+}
+
 type BatchUnit =
     | { type: "op"; op: PendingOp; bytes: number; count: number }
     | { type: "group"; group: SentChatGroup; bytes: number; count: number }
     | { type: "order"; order: SentChatOrder; bytes: number; count: number };
 
 /**
- * Splits a cycle into requests under the operation and byte caps: resource ops first (a character
- * is created before its chats), then chat groups (each whole), then reorders. A chat group that is
- * larger than one request on its own (its bytes, or its nested ops: the module already splits an
- * ordinary chat's work, so only a create or a resent group can reach that) is returned in
- * `oversized` and not sent.
+ * Packs several units up to the 4 MiB target, sending larger units alone under the request caps.
+ * Resource ops come first (a character is created before its chats), followed by whole chat groups
+ * and then reorders. A group exceeding the hard byte or nested-op cap is returned in `oversized`.
+ * Only a create or a resent group can reach that cap because ordinary chat work is already split.
  */
 function planBatches(ops: readonly PendingOp[], work: ChatWork): { batches: Batch[]; oversized: SentChatGroup[] } {
     const body = chatWorkBody(work);
@@ -2987,8 +2989,8 @@ function planBatches(ops: readonly PendingOp[], work: ChatWork): { batches: Batc
 }
 
 /**
- * Splits operations into batches under the operation and byte caps, measured in UTF-8 bytes as the
- * server counts them. Later cycles can split too; one chat group remains indivisible.
+ * Packs units in order up to 5,000 operations and an estimated 4 MiB including framing.
+ * A single unit may exceed the byte target. Callers enforce the hard per-unit limits.
  */
 export function splitBatches<T extends { bytes: number; weight?: number }>(ops: readonly T[]): T[][] {
     const batches: T[][] = [];
@@ -2998,7 +3000,7 @@ export function splitBatches<T extends { bytes: number; weight?: number }>(ops: 
     for (const op of ops) {
         const size = op.bytes + 1;
         const weight = op.weight ?? 1;
-        if (current.length > 0 && (count + weight > MAX_BATCH_OPERATIONS || bytes + size > MAX_BATCH_BYTES)) {
+        if (current.length > 0 && (count + weight > MAX_BATCH_OPERATIONS || bytes + size > TARGET_BATCH_BYTES)) {
             batches.push(current);
             current = [];
             bytes = BATCH_FRAME_BYTES;
@@ -3089,6 +3091,9 @@ function runCycle(): Promise<boolean> {
  * unit is quarantined, so unrelated work can proceed. Every request is its own server transaction.
  * Capture credential op ids at collection: send them after resource batches, so a newly queued
  * owner's credential waits for the next cycle. Batch success holds sent record text as the baseline.
+ * A batch uses its units' greatest consecutive deadline-abort count. Each abort increments each
+ * unit's own count; an answer clears those counts, including a refusal or a 5xx. Only a dispatched
+ * failure can create delivery doubt. An unsent retry preserves any doubt from earlier attempts.
  */
 async function cycle() {
     // Nothing is saved before the boot installed the records.
@@ -3144,13 +3149,27 @@ async function cycle() {
             try {
                 fenceCharacterWrites(batch.ops, batch.work, true);
                 recordSaveWait(batch, captured, membership);
+                const attempts = batchAttempts(batch);
+                const consecutiveAborts = attempts.reduce((max, attempt) => Math.max(max, attempt.count), 0);
+                const resetDeadlineAborts = () => attempts.forEach(({ target }) => batchDeadlineAborts.delete(target));
                 try {
-                    result = await applyBatchText(batchBody(batch));
+                    result = await applyBatchText(batchBody(batch), { consecutiveAborts });
+                    resetDeadlineAborts();
                 } catch (error) {
+                    if (error instanceof ResourceRequestDeadlineError) {
+                        for (const { target, identity, count } of attempts) {
+                            batchDeadlineAborts.set(target, { identity, count: count + 1 });
+                        }
+                    } else if (
+                        error instanceof ResourceConflictError ||
+                        (error instanceof ResourceRequestError && error.status > 0)
+                    ) {
+                        resetDeadlineAborts();
+                    }
                     if (halted) {
                         return;
                     }
-                    // Nothing of this request or the later ones was saved.
+                    // Later batches have not dispatched.
                     requeueChatWork(later);
                     // A known refusal returns records to collected intent before any conflict read.
                     if (
@@ -3184,10 +3203,11 @@ async function cycle() {
                             return;
                         }
                     }
-                    // No answer: the server may have committed the batch (a lost response). Its chat
-                    // groups are resent alone with their ids (`requeueChatWork`), its records' texts kept
-                    // in doubt.
-                    const lost = !(error instanceof ResourceRequestError) || error.status === 0 || error.status >= 500;
+                    // A dispatched batch may have committed without a usable answer. Replay its
+                    // groups with their ids and keep its record texts ahead of newer edits.
+                    const lost =
+                        !(error instanceof ResourceRequestError) ||
+                        (!error.notSent && (error.status === 0 || error.status >= 500));
                     requeueChatWork(batch.work, { lost });
                     if (lost) {
                         noteInDoubt(batch.ops);
