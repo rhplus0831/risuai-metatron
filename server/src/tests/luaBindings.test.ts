@@ -32,7 +32,7 @@ import { seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 // provider. The route's command validation; the host-function contract (shapes, guards, the table
 // bridges, the frozen effective persona, CBS and lore over the scope, the live character reads,
 // the chat writes by id); permission provenance per trigger (the character's `lowLevelAccess`
-// versus a module's) and the trigger order; the group refusal; a load failure versus a handler
+// versus a module's) and the trigger order; the group chat refusal at admission; a load failure versus a handler
 // error; the fatal latch (a barrier failure caught by `pcall` has no later effect); writes built
 // from the current chat after an external edit; and the notices kept before the owner's first
 // attach (an ended job, and the order against a question). The in-process `runInJob` is in
@@ -1772,11 +1772,16 @@ describe("Lua edit hooks", () => {
 });
 
 describe("the command runner", () => {
-    it("refuses a button in a group chat with a 400 terminal", async () => {
+    it("refuses a button in a group chat at admission with groupArchived and leaves the chat unchanged", async () => {
         const chaId = await seedCharacter({ codes: [button(`addChat(id, "char", "ran")`)], type: "group" });
-        const { terminal } = await runButton(chaId);
-        // A command job's failure names its stage: its setup here.
-        expect(terminal).toMatchObject({ type: "error", status: 400, message: /group chat/, stage: "setup" });
+        const created = await createJob({
+            kind: "command",
+            clientId: "tab",
+            context: await context(chaId),
+            command: { type: "button", data: "go" },
+        });
+        expect(created.status).toBe(409);
+        expect(created.body).toEqual({ error: "groupArchived" });
         expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:hi there"]);
     });
 

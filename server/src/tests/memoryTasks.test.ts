@@ -2257,6 +2257,26 @@ describe("checkpoint loads and memory tasks", () => {
 });
 
 describe("the server wiring", () => {
+    it("refuses a manual memory start for a group chat without leaving a task waiting", async () => {
+        const s = await createResourceTestClient();
+        cleanups.push(() => s.close());
+        const ref = { characterId: "g", chatId: "k" };
+        const seeded = await s.json("/api/resources/batch", {
+            ops: [{ kind: "characters", id: "g", baseRevision: null, data: { chaId: "g", type: "group" } }],
+            chats: [{ ...ref, baseRevision: null, ops: [{ op: "create", chat: { name: "Group chat" } }] }],
+        });
+        expect(seeded.status, await seeded.text()).toBe(200);
+
+        const response = await s.json("/api/memory/tasks", ref);
+        expect({ status: response.status, body: await response.json() }).toEqual({
+            status: 409,
+            body: { error: "groupArchived" },
+        });
+        const cancel = await s.request("/api/memory/tasks/g/k", { method: "DELETE" });
+        expect(cancel.status).toBe(200);
+        expect(await cancel.json()).toEqual({ cancelled: false });
+    });
+
     it("refuses a manual memory task for a trashed chat", async () => {
         const w = await wiring();
         const body = { characterId: "c", chatId: "k1" };

@@ -1307,7 +1307,7 @@ describe("admission", () => {
         expect(runner).toHaveBeenCalledTimes(2);
     });
 
-    it("checks group overrides against the group's own lore, refusing a member-only id and admitting a group-only id", async () => {
+    it("refuses a group chat with lore overrides as groupArchived before checking its overrides", async () => {
         vi.useFakeTimers();
         const { jobs, store, context, revision, run } = setup();
         const runner = vi.fn(async (job: RunningJob) => {
@@ -1345,16 +1345,9 @@ describe("admission", () => {
                 ]),
             ],
         });
-        const createGroupJob = () =>
-            jobs.create(
-                { kind: "group", context: { ...context(), speakerChaId: "member" }, clientId: "tab" },
-                store.epoch(),
-            );
-        expect(createGroupJob()).toEqual({
-            ok: false,
-            status: 409,
-            body: { error: "chatLoreOverrideOrphaned", entries: [{ id: "member-only", name: "Member lore" }] },
-        });
+        const createGroupJob = () => jobs.create({ kind: "send", context: context(), clientId: "tab" }, store.epoch());
+        // A member-only id would be orphaned; the archived owner is refused first.
+        expect(createGroupJob()).toEqual({ ok: false, status: 409, body: { error: "groupArchived" } });
         expect(jobs.live()).toBe(0);
         await jobs.drain();
         expect(runner).not.toHaveBeenCalled();
@@ -1369,9 +1362,11 @@ describe("admission", () => {
                 ]),
             ],
         });
-        expect(createGroupJob()).toEqual({ ok: true, jobId: expect.any(String) });
+        // A group-only id would be admitted; the archived owner is still refused.
+        expect(createGroupJob()).toEqual({ ok: false, status: 409, body: { error: "groupArchived" } });
+        expect(jobs.live()).toBe(0);
         await jobs.drain();
-        expect(runner).toHaveBeenCalledTimes(1);
+        expect(runner).not.toHaveBeenCalled();
     });
 });
 

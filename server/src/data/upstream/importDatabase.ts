@@ -251,10 +251,13 @@ export function convertUpstreamDatabase(db: unknown, options: UpstreamConversion
         selection,
         personaIds: new Set(personas.list.map((persona) => persona.id)),
     });
+    const characterOrderIds = new Set(
+        library.characters.filter(({ data }) => data.type !== "group").map(({ id }) => id),
+    );
     for (const kind of Object.values(COLLECTION_KIND)) {
         switch (kind) {
             case COLLECTION_KIND.characterOrder:
-                push(kind, convertCharacterOrder(root.characterOrder, library.ids, library.renamed, report));
+                push(kind, convertCharacterOrder(root.characterOrder, characterOrderIds, library.renamed, report));
                 break;
             case COLLECTION_KIND.enabledModules:
                 push(kind, convertEnabledModules(root.enabledModules, modules, report));

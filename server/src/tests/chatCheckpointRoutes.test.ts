@@ -464,7 +464,6 @@ describe("chat checkpoint routes", () => {
             "send",
             "continue",
             "reroll",
-            "group",
             "preview",
             "previewPrompt",
             "command",

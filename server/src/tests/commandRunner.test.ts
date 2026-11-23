@@ -260,19 +260,31 @@ describe("Lua form command jobs", () => {
         ]);
     });
 
-    it("refuses a form in a group chat with a 400 terminal and leaves the chat unchanged", async () => {
+    it("refuses a form in a group chat at admission with groupArchived and leaves the chat unchanged", async () => {
         const characterId = await seedCharacter({
             type: "group",
             codes: [formHandler('addChat(id, "char", "must not run")')],
         });
         const before = await readChat(characterId);
-        const { terminal } = await runCommand(characterId, { type: "form", key: "survey", values: {} });
-        expect(terminal).toMatchObject({
-            type: "error",
-            status: 400,
-            message: "Forms do not run in a group chat",
-            stage: "setup",
-        });
+        const command: GenerationCommand = { type: "form", key: "survey", values: {} };
+        const created = await api(
+            "/api/generations",
+            json({
+                kind: "command",
+                clientId: "tab",
+                context: {
+                    characterId,
+                    chatId: "k",
+                    ...bound,
+                    mode: command.type,
+                    input: "",
+                    chatRevision: before.revision,
+                },
+                command,
+            }),
+        );
+        expect(created.status).toBe(409);
+        expect(created.body).toEqual({ error: "groupArchived" });
         expect(await readChat(characterId)).toEqual(before);
     });
 

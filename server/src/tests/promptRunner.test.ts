@@ -21,7 +21,6 @@ import type { Chat } from "../../../shared/database.ts";
 import type { RequestInterception } from "../../../shared/llm/interception.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
-import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { parseContextReport } from "../../../shared/contextReport.ts";
@@ -50,8 +49,7 @@ import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 // id, the retry that skips it, the id of another role refused); the streamed reply (chunks,
 // `accepted`, `done`, the stored raw text and its generation info, the lock
 // released); a continue extending its message while a Lua `editRequest` write to it is refused; the
-// checkpoint timer during a stalled stream and the text kept on abort; a group send under the job's
-// frozen configuration with one terminal; a non-streaming reply; a failing provider as the job's
+// checkpoint timer during a stalled stream and the text kept on abort; a non-streaming reply; a failing provider as the job's
 // error or, with `inlayErrorResponse`, a stopped send; a start trigger's stop; the request trigger's
 // effect limit ending the job before any provider call; `previewPrompt` and `preview`; `presetChain`
 // (the input stage on the admitted preset, the pick for the prompt, the `preset` event, a missing
@@ -250,7 +248,7 @@ const editinputScript = (comment: string) => ({
     flag: "g",
     ableFlag: true,
 });
-/** An `editprocess` script that never matches, so previews and groups reach the script worker. */
+/** An `editprocess` script that never matches, so previews reach the script worker. */
 const editprocessScript = {
     comment: "preset-process",
     in: "never-matches-a-message",
@@ -426,7 +424,7 @@ async function job(
     const workers = server.context.scriptWorkers;
     const runScripts = workers.runScripts.bind(workers);
     // This preset's regex scripts reach the worker before memory or the request: editinput (sends
-    // with input), or editprocess on the greeting/history (previews and groups).
+    // with input), or editprocess on the greeting/history (previews).
     const workerHold = options.observeStages
         ? vi.spyOn(workers, "runScripts").mockImplementationOnce(async (...args) => {
               await ownerAttached;
@@ -1681,128 +1679,6 @@ describe("a send", () => {
     );
 
     it(
-        "a group send answers with each member in order on the job's frozen configuration, with one terminal",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-            });
-            mode = { chunks: ["Reply."], delayMs: 0 };
-            const before = bodies.length;
-            // While the first speaker's request runs, the stored profile changes its model.
-            onRequest = async () => {
-                onRequest = null;
-                await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "changed-during-job" });
-            };
-            try {
-                const { events, terminal } = await job("group", grp, {}, { observeStages: true });
-                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-                expect(events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
-                    "preparing",
-                    "generating",
-                    "finishing",
-                    "preparing",
-                    "generating",
-                    "finishing",
-                ]);
-                expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
-                const chat = await readChat(grp);
-                expect(texts(chat)).toEqual(["user:hello all", "char:Reply.", "char:Reply."]);
-                expect(chat.data.message.slice(1).map((m: any) => m.saying)).toEqual([bob, cid]);
-                expect(terminal).toMatchObject({ messageId: chat.data.message[2].chatId });
-                expect(bodies.slice(before).map((body) => body.model)).toEqual(["m", "m"]);
-                expect(JSON.stringify(bodies.at(-1).messages)).toContain("[Write the next reply only as Cid]");
-            } finally {
-                onRequest = null;
-                await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "m" });
-            }
-        },
-        SLOW,
-    );
-
-    it("lets the later group speaker reply when only its lore activation exceeds the budget", async () => {
-        await prepareLoreBudgetJob();
-        const bob = await seedCharacter({ name: "Bob" });
-        const cid = await seedCharacter({ name: "Cid" });
-        const grp = await seedCharacter({
-            name: "Grp",
-            type: "group",
-            members: [bob, cid],
-            messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-            extra: overBudgetLore("Reply."),
-        });
-        const before = bodies.length;
-        const result = await job("group", grp, { stopOverLoreBudget: true });
-        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
-        expect(bodies).toHaveLength(before + 2);
-        const chat = await readChat(grp);
-        expect(texts(chat)).toEqual(["user:hello all", "char:Reply.", "char:Reply."]);
-        expect(chat.data.message.slice(1).map((message: any) => message.saying)).toEqual([bob, cid]);
-        expect(chat.data.message[1].generationInfo.context.lore.rejectedCount).toBe(0);
-        expect(chat.data.message[2].generationInfo.context.lore).toEqual({ ...rejectedLore, active: 0 });
-    });
-
-    it(
-        "a group send's completion notifications name the group's chat and use the group's name and custom message, not the speaking member's",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob", extra: { customNotificationMessage: "Bob's own" } });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "The Crew",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-                extra: { customNotificationMessage: "  Crew is done  " },
-            });
-            mode = { chunks: ["Reply."], delayMs: 0 };
-            const ui = await single("ui");
-            await patchSection("ui", { notification: true, language: "ko" });
-            try {
-                const first = await job("group", grp);
-                expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
-                const custom = {
-                    chaId: grp,
-                    chatId: "k",
-                    title: "Risuai",
-                    body: "Crew is done",
-                    url: `/chat/${grp}/k`,
-                    tag: completionNotificationTag(grp, "k"),
-                };
-                // One per member's reply; neither names the member nor carries the reply.
-                expect(notices(first.events, "notification").map((event) => event.payload)).toEqual([custom, custom]);
-
-                // Without a custom message: the default sentence of the language setting, naming the group.
-                const current = (await api(`/api/resources/characters/${grp}`)).body;
-                const cleared = await batch({
-                    ops: [
-                        {
-                            kind: "characters",
-                            id: grp,
-                            baseRevision: current.revision,
-                            data: { ...current.data, customNotificationMessage: "" },
-                        },
-                    ],
-                });
-                expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
-                const second = await job("group", grp);
-                expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
-                const sentence = { ...custom, body: "The Crew의 메시지 처리가 완료되었습니다" };
-                expect(notices(second.events, "notification").map((event) => event.payload)).toEqual([
-                    sentence,
-                    sentence,
-                ]);
-            } finally {
-                await patchSection("ui", { notification: false, language: ui.data.language });
-            }
-        },
-        SLOW,
-    );
-
-    it(
         "stores a non-streaming reply in one write",
         async () => {
             const chaId = await seedCharacter({ name: "Ann" });
@@ -2376,51 +2252,6 @@ describe("a send", () => {
         },
         SLOW,
     );
-
-    it(
-        "a group send whose second member's request fails names that request (a later speaker's own stage), after the first member's reply was stored",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-            });
-            mode = { chunks: ["Reply."], delayMs: 0 };
-            let requests = 0;
-            onRequest = async () => {
-                if (++requests === 2) {
-                    mode = { chunks: [], delayMs: 0, status: 500 };
-                }
-            };
-            try {
-                const { body, events, terminal } = await job("group", grp);
-                expect(terminal).toMatchObject({
-                    type: "error",
-                    status: 500,
-                    stage: "request",
-                    requestId: expect.stringMatching(UUID),
-                    providerCode: "upstream_broke",
-                });
-                expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
-                const rows = await historyOf(body.jobId);
-                expect(rows.filter((row) => row.status === "success")).toHaveLength(1);
-                const errored = rows.filter((row) => row.status === "error");
-                expect(errored.length).toBeGreaterThanOrEqual(1);
-                expect((terminal as any).requestId).toBe(errored[0].id);
-                const chat = await readChat(grp);
-                expect(texts(chat)).toEqual(["user:hello all", "char:Reply."]);
-                expect(chat.data.message[1].saying).toBe(bob);
-                expect(await clientSetText(grp, chat.data.message[1].chatId, "tab edit")).toBe(200);
-            } finally {
-                onRequest = null;
-                mode = { chunks: ["x"], delayMs: 0 };
-            }
-        },
-        SLOW,
-    );
 });
 
 describe("the final token recheck with a prompt template", () => {
@@ -2706,30 +2537,9 @@ describe("automatic translation of a send's messages", () => {
     );
 
     it(
-        "a group send hands every member's reply, then the user message it found in the chat; bot-only skips the user message; a chat that does not auto-translate hands nothing",
+        "a bot-only send hands only the reply; a chat that does not auto-translate hands nothing",
         async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-                chat: { autoTranslate: true },
-            });
             mode = { chunks: ["Reply."], delayMs: 0 };
-            const { events, terminal } = await job("group", grp, { input: "hello all", userMessageId: "u0" });
-            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-            const chat = await readChat(grp);
-            const [, first, second] = chat.data.message.map((m: any) => m.chatId);
-            expect(translating(events)).toEqual([{ chaId: grp, chatId: "k", messageIds: [first, second, "u0"] }]);
-            await chatUntil(grp, (data) => data.message.every((m: any) => m.translation));
-            expect(translations(await readChat(grp))).toEqual([
-                ["u0", "번역: hello all"],
-                [first, "번역: Reply."],
-                [second, "번역: Reply."],
-            ]);
-
             const botOnly = await seedCharacter({ name: "Ann", chat: { autoTranslate: true, translateBotOnly: true } });
             const only = await job("send", botOnly, { input: "hi", userMessageId: "u1" });
             expect(only.terminal?.type).toBe("done");
@@ -2855,7 +2665,6 @@ describe("chat activity without character writes", () => {
         { label: "streamed continue", kind: "continue", streaming: true },
         { label: "non-streamed continue", kind: "continue", streaming: false },
         { label: "reroll", kind: "reroll", streaming: true },
-        { label: "group", kind: "group", streaming: true },
         { label: "preview", kind: "preview", streaming: true },
         { label: "previewPrompt", kind: "previewPrompt", streaming: true },
     ])(
@@ -2874,11 +2683,8 @@ describe("chat activity without character writes", () => {
             try {
                 await patchProviders({ useStreaming: streaming });
                 mode = { chunks: ["Reply."], delayMs: 0 };
-                const member = kind === "group" ? await seedCharacter({ name: "Member" }) : undefined;
                 const owner = await seedCharacter({
                     name: "Owner",
-                    type: member ? "group" : "character",
-                    members: member ? [member] : undefined,
                     extra: { lastInteraction: replyTime + 86_400_000 },
                     messages: [
                         { role: "user", data: "earlier", chatId: "u0", time: 900 },
@@ -2886,14 +2692,12 @@ describe("chat activity without character writes", () => {
                     ],
                 });
                 const before = await readOwner(owner);
-                const memberBefore = member ? await readOwner(member) : undefined;
                 const chatBefore = await readChat(owner);
                 expect((await readSummary(owner)).lastMessageAt).toBe(100);
                 feed = await activityFeed();
                 const result = await job(kind, owner, kind === "send" ? { input: "hello", userMessageId: "u1" } : {});
                 expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
                 expect(await readOwner(owner)).toEqual(before);
-                if (member) expect(await readOwner(member)).toEqual(memberBefore);
                 const after = await readChat(owner);
                 if (kind === "preview" || kind === "previewPrompt") {
                     expect(after.data.message).toEqual(chatBefore.data.message);
@@ -2908,7 +2712,7 @@ describe("chat activity without character writes", () => {
                 expect(
                     feed.frames
                         .flatMap((frame) => (frame.type === "change" ? frame.changes.resources : []))
-                        .filter((entry) => entry.kind === "characters" && (entry.id === owner || entry.id === member)),
+                        .filter((entry) => entry.kind === "characters" && entry.id === owner),
                 ).toEqual([]);
             } finally {
                 feed?.close();
@@ -3925,68 +3729,6 @@ describe("in-place reply candidates", () => {
         }
     });
 
-    it("keeps the two-speaker turn's baseline on its last reply and stops it at the previous same speaker", async () => {
-        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementation(async () => {
-            await socketOpen;
-            return {
-                type: "streaming",
-                result: new ReadableStream<Record<string, string>>({
-                    start(controller) {
-                        controller.enqueue({ "0": "Reply." });
-                        controller.close();
-                    },
-                }),
-            };
-        });
-        onTestFinished(() => upstream.mockRestore());
-        for (const repeat of [false, true]) {
-            const count = ef("v2SetVar", { var: "counter", operator: "+=", ...v("1") });
-            const first = await seedCharacter({ name: "First speaker", triggerscript: [trig("output", [count])] });
-            const second = await seedCharacter({
-                name: "Second speaker",
-                triggerscript: [
-                    {
-                        ...trig("output", [
-                            count,
-                            ...(repeat
-                                ? [
-                                      ef("v2If", {
-                                          source: "counter",
-                                          condition: "=",
-                                          targetType: "value",
-                                          target: "2",
-                                      }),
-                                      ef("v2SendAIprompt", {}, 1),
-                                      ef("v2EndIndent", {}, 1),
-                                  ]
-                                : []),
-                        ]),
-                        lowLevelAccess: true,
-                    },
-                ],
-            });
-            const owner = await seedCharacter({
-                name: "Group",
-                type: "group",
-                members: [first, second],
-                messages: [{ role: "user", data: "Hello both", chatId: "u" }],
-                chat: { scriptstate: { $counter: "0" } },
-            });
-            const result = await job("group", owner);
-            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
-            const stored = await readChat(owner);
-            expect(stored.data.message.slice(1).map((message: any) => message.saying)).toEqual(
-                repeat ? [first, second, second] : [first, second],
-            );
-            expect(stored.data.message.slice(1, -1).every((message: any) => !message.scriptstateCheckpoint)).toBe(true);
-            expect(stored.data.message.at(-1).scriptstateCheckpoint).toEqual({
-                before: { $counter: repeat ? "2" : "0" },
-                after: { $counter: repeat ? "3" : "2" },
-            });
-            expect(stored.data.scriptstate.$counter).toBe(repeat ? "3" : "2");
-        }
-    });
-
     it("preserves non-streaming carrier fields and excludes older candidates from ordinary CBS history", async () => {
         await patchProviders({ useStreaming: false });
         const chaId = await seed();
@@ -4453,9 +4195,9 @@ describe("in-place reply candidates", () => {
         }
     });
 
-    it("validates reroll addressing, rejects a superseded carrier, and uses only the carrier's speaker in a group", async () => {
+    it("validates reroll addressing and rejects a superseded carrier", async () => {
         const chaId = await seed();
-        for (const kind of ["send", "continue", "group", "preview", "previewPrompt"]) {
+        for (const kind of ["send", "continue", "preview", "previewPrompt"]) {
             const result = await job(kind, chaId, { rerollMessageId: "r" });
             expect(result.status, kind).toBe(400);
             expect(result.body.error).toContain("rerollMessageId");
@@ -4478,20 +4220,6 @@ describe("in-place reply candidates", () => {
             "user:Newer question",
             "char:New reply.",
         ]);
-        const first = await seedCharacter({ name: "First speaker" });
-        const second = await seedCharacter({ name: "Carrier speaker" });
-        const owner = await seed({
-            type: "group",
-            members: [first, second],
-            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier({ saying: second })],
-        });
-        const beforeRequests = bodies.length;
-        const result = await job("reroll", owner, { rerollMessageId: "r", speakerChaId: second });
-        expect(result.terminal).toMatchObject({ type: "done", messageId: "r" });
-        expect(bodies.slice(beforeRequests)).toHaveLength(1);
-        expect(JSON.stringify(bodies.at(-1))).toContain("Carrier speaker");
-        expect((await storedCarrier(owner)).saying).toBe(second);
-        expect((await readChat(owner)).data.message).toHaveLength(2);
     });
 
     it("auto-continues the new candidate once and keeps it selected when the later request fails", async () => {
@@ -4973,24 +4701,20 @@ describe("OOC previews", () => {
             code: "oocExchangeGone",
             chat: { oocLog: {} },
             memoryAhead: false,
-            group: false,
         },
         {
             label: "a missing anchor",
             code: "oocAnchorGone",
             chat: { oocLog: log("gone") },
             memoryAhead: false,
-            group: false,
         },
         {
             label: "memory beyond the anchor",
             code: "oocMemoryAhead",
             chat: { oocLog: log(), supaMemoryData: "after\nSummary beyond the anchor" },
             memoryAhead: true,
-            group: false,
         },
-        { label: "a group chat", code: undefined, chat: { oocLog: log() }, memoryAhead: false, group: true },
-    ])("refuses an OOC preview with $label without changing the chat", async ({ code, chat, memoryAhead, group }) => {
+    ])("refuses an OOC preview with $label without changing the chat", async ({ code, chat, memoryAhead }) => {
         if (memoryAhead) {
             await patchPreset("modelProfiles", profileId, { maxContext: 600 });
             await patchSection("memoryTranslateMedia", {
@@ -5003,7 +4727,6 @@ describe("OOC previews", () => {
         }
         const chaId = await seedCharacter({
             name: "Ann",
-            ...(group ? ({ type: "group", members: [] } as const) : {}),
             extra: { firstMessage: "", supaMemory: memoryAhead },
             chat,
             messages: [
@@ -5013,11 +4736,24 @@ describe("OOC previews", () => {
         });
         const before = JSON.stringify(await readChat(chaId));
         const result = await job("preview", chaId, { oocExchangeId: "target" });
-        expect(result.terminal).toMatchObject({
-            type: "error",
-            ...(code ? { code } : { message: expect.stringMatching(/group/i) }),
+        expect(result.terminal).toMatchObject({ type: "error", code });
+        expect(JSON.stringify(await readChat(chaId))).toBe(before);
+    });
+
+    it("refuses an OOC preview on a group chat at admission with groupArchived without changing the chat", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            type: "group",
+            members: [],
+            extra: { firstMessage: "" },
+            chat: { oocLog: log() },
+            messages,
         });
-        if (group) expect(result.terminal).not.toHaveProperty("code");
+        const before = JSON.stringify(await readChat(chaId));
+        const result = await job("preview", chaId, { oocExchangeId: "target" });
+        expect(result.status).toBe(409);
+        expect(result.body).toEqual({ error: "groupArchived" });
+        expect(result.terminal).toBeUndefined();
         expect(JSON.stringify(await readChat(chaId))).toBe(before);
     });
 });

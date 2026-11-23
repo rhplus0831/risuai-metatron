@@ -418,6 +418,19 @@ it("reuses a prepared tool set, including an empty set, and lists only when none
 });
 
 describe("internal:risuai on the server: reads", () => {
+    it("excludes groups before counting and skipping characters in the tool's pages", async () => {
+        const s = setup();
+        s.put(RESOURCE_KIND.characters, "o", { ...s.stored("o"), type: "group", characters: ["c"] });
+        const list = async (count: number, offset: number) =>
+            JSON.parse(s.text(await s.tool("risu-list-characters", { count, offset })));
+
+        expect(await list(2, 0)).toEqual([
+            { id: "c", name: "Owner", type: "character" },
+            { id: "tz", name: "Twin", type: "character" },
+        ]);
+        expect(await list(1, 2)).toEqual([{ id: "ta", name: "Twin", type: "character" }]);
+    });
+
     it("is call-only when no module names it, reads the job's character for an empty id, the first stored match of a name, and the store's order", async () => {
         const s = setup();
         let offered: string[] = [];

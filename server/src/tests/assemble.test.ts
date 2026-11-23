@@ -352,7 +352,7 @@ describe("the prompt golden (the browser capture)", () => {
     const fixtureOf = (name: string) => scenario.prompts.find((fixture) => fixture.name === name)!;
     const expectedOf = (name: string) => (name === "lore" ? loreDelta.fixtures.lore.formated : prompts[name].formated);
 
-    for (const name of ["plain", "group", "jinja", "lore"]) {
+    for (const name of ["plain", "jinja", "lore"]) {
         it(
             `assembles the ${name} fixture's prompt as the browser did`,
             async () => {

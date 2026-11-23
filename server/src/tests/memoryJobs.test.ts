@@ -1464,9 +1464,9 @@ describe("per-chat memory sends", () => {
 // method is set, the owner's toggle is off, and the trim would drop chat history. The three answers
 // through the owner socket; the per-chat "don't ask again" against the owner's `supaMemoryOnCount`
 // and its invalidation by a later turn-on; the owner read when the answer is applied (a toggle
-// another tab made while the question waited); a group's one question for both speakers; a
-// preview and an overflow the example dialogue absorbs ask nothing; an invalid answer and an abort
-// while waiting end the job without a trim or a preference written.
+// another tab made while the question waited); a preview and an overflow the example dialogue absorbs
+// ask nothing; an invalid answer and an abort while waiting end the job without a trim or a preference
+// written.
 describe("the no-memory trim question", () => {
     it(
         "'memory' turns this chat's memory on without touching the owner, runs memory in the same send, and is not asked again",
@@ -1603,68 +1603,6 @@ describe("the no-memory trim question", () => {
             expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
             expect(questions(next.events)).toHaveLength(0);
             expect(summaries()).toHaveLength(0);
-        },
-        SLOW,
-    );
-
-    it(
-        "a group send asks once for both speakers, and 'memory' turns the group chat's memory on",
-        async () => {
-            await patchSettings({ hypaV3: true });
-            const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
-            const cid = await seedCharacter({ count: 0, extra: { name: "Cid" } });
-            const groupOf = (name: string) =>
-                seedCharacter({
-                    messages: Array.from({ length: 24 }, (_, i) => ({
-                        role: i % 2 === 0 ? "user" : "char",
-                        data: longText(i),
-                        chatId: `m${i}`,
-                        ...(i % 2 === 1 ? { saying: i % 4 === 1 ? bob : cid } : {}),
-                    })),
-                    extra: {
-                        name,
-                        type: "group",
-                        supaMemory: false,
-                        characters: [bob, cid],
-                        characterTalks: [1, 1],
-                        characterActive: [true, true],
-                        orderByOrder: true,
-                        firstMessage: "",
-                        desc: "",
-                    },
-                });
-            const once = await groupOf("Once");
-            const trimmed = await job(
-                "group",
-                once,
-                { input: "hello all", userMessageId: "u1" },
-                { answer: () => "once" },
-            );
-            expect(trimmed.terminal?.type, JSON.stringify(trimmed.terminal)).toBe("done");
-            expect(questions(trimmed.events)).toHaveLength(1);
-            expect(mains()).toHaveLength(2);
-            expect(summaries()).toHaveLength(0);
-            expect((await readChat(once)).data.message.slice(-2).map((m: any) => m.saying)).toEqual([bob, cid]);
-            expect((await readCharacter(once)).data.supaMemory).toBe(false);
-            upstream.length = 0;
-            const memory = await groupOf("Memory");
-            const enabled = await job(
-                "group",
-                memory,
-                { input: "hello all", userMessageId: "u1" },
-                { answer: () => "memory" },
-            );
-            expect(enabled.terminal?.type, JSON.stringify(enabled.terminal)).toBe("done");
-            expect(questions(enabled.events)).toHaveLength(1);
-            const group = (await readCharacter(memory)).data;
-            expect([group.type, group.supaMemory, group.supaMemoryOnCount]).toEqual(["group", false, undefined]);
-            expect(ownerRecords(enabled.events, memory)).toHaveLength(0);
-            expect((await readChat(memory)).data.memoryEnabled).toBe(true);
-            expect(mains()).toHaveLength(2);
-            expect(summaries().length).toBeGreaterThan(0);
-            // Both speakers' requests carried the memory card; neither member's own toggle was touched.
-            expect(mains().every((entry) => memoryCard(entry.body.messages) !== undefined)).toBe(true);
-            expect((await readCharacter(bob)).data.supaMemoryOnCount).toBeUndefined();
         },
         SLOW,
     );
@@ -2409,29 +2347,10 @@ describe("HypaV3 with a memory task service", () => {
     );
 
     it(
-        "memory-stop after two summaries keeps the two, trims the rest, and the group's second speaker selects only",
+        "memory-stop after two summaries keeps the two, trims the rest, and hands the stopped gap to the task service",
         async () => {
             await withHypaV3({ gapConfirmTokens: 0 }, async () => {
-                const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
-                const cid = await seedCharacter({ count: 0, extra: { name: "Cid" } });
-                const group = await seedCharacter({
-                    messages: Array.from({ length: 36 }, (_, i) => ({
-                        role: i % 2 === 0 ? "user" : "char",
-                        data: longText(i),
-                        chatId: `m${i}`,
-                        ...(i % 2 === 1 ? { saying: i % 4 === 1 ? bob : cid } : {}),
-                    })),
-                    extra: {
-                        name: "Band",
-                        type: "group",
-                        characters: [bob, cid],
-                        characterTalks: [1, 1],
-                        characterActive: [true, true],
-                        orderByOrder: true,
-                        firstMessage: "",
-                        desc: "",
-                    },
-                });
+                const chaId = await seedCharacter({ count: 36 });
                 let runId: string | undefined;
                 let stopped: { status: number; body: any } | undefined;
                 state.holdSummary = async () => {
@@ -2441,9 +2360,9 @@ describe("HypaV3 with a memory task service", () => {
                     }
                 };
                 const { events, terminal } = await job(
-                    "group",
-                    group,
-                    { input: "hello all", userMessageId: "u1" },
+                    "send",
+                    chaId,
+                    { input: "Hello", userMessageId: "u1" },
                     {
                         answer: () => "generate",
                         onEvent: (event) => {
@@ -2461,18 +2380,16 @@ describe("HypaV3 with a memory task service", () => {
                 expect(stopped).toMatchObject({ status: 200, body: { stopped: true } });
                 expect(questions(events)).toHaveLength(1);
                 expect(summaries()).toHaveLength(2);
-                expect((await readChat(group)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
                     "Summary 1: events happened.\n\nPart two of 1.",
                     "Summary 2: events happened.\n\nPart two of 2.",
                 ]);
-                // Both speakers replied from the stored summaries with the rest of the history trimmed.
-                expect(mains()).toHaveLength(2);
-                for (const main of mains()) {
-                    const prompt = JSON.stringify(main.body.messages);
-                    expect(memoryCard(main.body.messages)?.content).toContain("Summary 1: events happened.");
-                    expect(prompt).not.toContain("Message number 20:");
-                    expect(prompt).toContain("Message number 35:");
-                }
+                // The reply came from the stored summaries with the rest of the history trimmed.
+                expect(mains()).toHaveLength(1);
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+                expect(prompt).not.toContain("Message number 20:");
+                expect(prompt).toContain("Message number 35:");
                 expect(
                     memoryNotices(events)
                         .filter((n) => n.runId === runId)
@@ -2481,7 +2398,7 @@ describe("HypaV3 with a memory task service", () => {
                 expect(memoryNotices(events).filter((n) => n.phase === "blocking")).toHaveLength(0);
                 expect(fake.leases).toHaveLength(1);
                 expect(fake.handOffs).toHaveLength(1);
-                expect(fake.handOffs[0].speakerId).toBe(cid);
+                expect(fake.handOffs[0].speakerId).toBe(chaId);
             });
         },
         SLOW,

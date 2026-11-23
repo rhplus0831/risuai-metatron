@@ -13,8 +13,8 @@ import { allowListenerOrigin, createSigner, createTestServer, json } from "./tes
 // job channel, against a fake provider that records every request. For each stage that evaluates card
 // text (the description in assembly, a lore entry, the persona prompt, a native `start` trigger's
 // effect, the `request` trigger before the provider call, a Lua `editRequest` listener's `cbs` inside
-// `pcall`, an `editprocess` regex script's `parse` host call, a group member's description, a Lua
-// button and a manual trigger as command jobs): one error terminal with
+// `pcall`, an `editprocess` regex script's `parse` host call, a Lua button and a manual trigger as
+// command jobs): one error terminal with
 // `CBS limit reached … (<chat owner>)`, no provider request, no write after the failure (the writes
 // before it kept: termination, not rollback), the chat left as it was or with the input stage's
 // message, `inlayErrorResponse` not turning the failure into a stopped send, and the same chat and
@@ -121,11 +121,9 @@ const lore = (content: string) => ({
 });
 
 let seeded = 0;
-/** A character (or a group of `members`) with one chat `k` holding `messages`. */
+/** A character with one chat `k` holding `messages`. */
 async function seedCharacter(options: {
     name: string;
-    type?: "character" | "group";
-    members?: string[];
     messages?: Record<string, unknown>[];
     triggerscript?: unknown[];
     customscript?: unknown[];
@@ -143,21 +141,11 @@ async function seedCharacter(options: {
                     ...BLANK_CHARACTER,
                     chaId,
                     name: options.name,
-                    type: options.type ?? "character",
+                    type: "character",
                     triggerscript: options.triggerscript ?? [],
                     customscript: options.customscript ?? [],
                     globalLore: options.globalLore ?? [],
                     ...(options.desc !== undefined ? { desc: options.desc } : {}),
-                    ...(options.type === "group"
-                        ? {
-                              characters: options.members,
-                              characterTalks: options.members!.map(() => 1),
-                              characterActive: options.members!.map(() => true),
-                              orderByOrder: true,
-                              firstMessage: "",
-                              desc: "",
-                          }
-                        : {}),
                 },
             },
         ],
@@ -530,35 +518,6 @@ describe("a send whose card text reaches the CBS limit", () => {
             const ok = await job("send", plain);
             expect(ok.terminal?.type, JSON.stringify(ok.terminal)).toBe("done");
             expect(bodies.length).toBe(before + 1);
-        },
-        SLOW,
-    );
-
-    it(
-        "a group send names the group (the chat owner) and ends with one terminal when a member's card reaches the limit",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid", desc: STUCK });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-            });
-            const before = bodies.length;
-            const result = await job("group", grp);
-            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("error");
-            const message = (result.terminal as { message: string }).message;
-            expect(message).toMatch(LIMIT);
-            expect(LIMIT.exec(message)![1]).toBe("Grp");
-            expect((result.terminal as any).stage).toBe("assembly");
-            expect(terminals(result.events)).toHaveLength(1);
-            // Bob's reply was requested and stored; Cid's card ended the job before its request.
-            expect(bodies.length).toBe(before + 1);
-            const chat = await readChat(grp);
-            expect(texts(chat)).toEqual(["user:hello all", "char:Reply."]);
-            expect(chat.data.message[1].saying).toBe(bob);
-            expect(await clientSetText(grp, chat.data.message[1].chatId, "tab edit")).toBe(200);
         },
         SLOW,
     );

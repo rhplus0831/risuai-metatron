@@ -7,6 +7,7 @@ import type { ChatOp } from "../../../shared/chats.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import {
     type CallbackResult,
+    type GenerationCreateBody,
     type GenerationEvent,
     type GenerationStatus,
     MAX_COMPLETION_HOLD_MS,
@@ -608,10 +609,85 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
     });
 
+    describe("archived group chats", () => {
+        async function archiveOwner() {
+            const url = "/api/resources/characters/c";
+            const { revision: baseRevision, data } = (await (await request(url)).json()) as {
+                revision: string;
+                data: Record<string, unknown>;
+            };
+            const response = await request(url, {
+                ...json({ baseRevision, data: { ...data, type: "group", characters: [] } }),
+                method: "PUT",
+            });
+            expect(response.status, await response.text()).toBe(200);
+        }
+
+        async function expectArchived(
+            attempts: (Pick<GenerationCreateBody, "kind" | "command"> & {
+                context?: Partial<GenerationCreateBody["context"]>;
+            })[],
+        ) {
+            const ctx = await context();
+            const before = await revision();
+            const refusal = { status: 409, body: { error: "groupArchived" } };
+            for (const [index, { kind, command, context: extraContext }] of attempts.entries()) {
+                const label = command?.type ?? (extraContext?.oocExchangeId ? "OOC preview" : kind);
+                const requestId = `archived-${index}`;
+                const body = { kind, command, context: { ...ctx, ...extraContext }, clientId: "tab", requestId };
+                expect(await create(body), label).toEqual(refusal);
+                const current = await request("/api/generations/current?characterId=c&chatId=k&clientId=tab");
+                expect(current.status, label).toBe(200);
+                expect(await current.json(), label).toBeNull();
+                expect(await create(body), `${label} retried with the same request id`).toEqual(refusal);
+                expect(server.context.generationReceipts.readByRequest(requestId), label).toBeNull();
+            }
+            expect(await revision()).toEqual(before);
+        }
+
+        it("refuses every generation kind on a group chat without lore overrides, leaving no job or receipt", async () => {
+            await listen();
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            await archiveOwner();
+            await expectArchived([
+                { kind: "send", context: { input: "A new message", userMessageId: "draft-user" } },
+                { kind: "continue" },
+                { kind: "reroll" },
+                { kind: "preview" },
+                { kind: "preview", context: { oocExchangeId: "exchange-one" } },
+                { kind: "previewPrompt" },
+                { kind: "command", command: { type: "button", data: "button" } },
+            ]);
+        });
+
+        it("refuses Structured Memory record, test, chapter and rebuild commands on a group chat", async () => {
+            await listen();
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            await archiveOwner();
+            await expectArchived([
+                { kind: "command", command: { type: "memoryRecord", messageId: "r" } },
+                { kind: "command", command: { type: "memoryTest" } },
+                { kind: "command", command: { type: "memoryChapters", limit: 1 } },
+                { kind: "command", command: { type: "memoryRebuild", mode: "rebuild", turns: 1 } },
+            ]);
+        });
+
+        it("rejects the retired group generation kind for both character and group owners", async () => {
+            await listen();
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            const before = await revision();
+            const body = { kind: "group", context: await context(), clientId: "tab" };
+            expect((await create(body)).status, "character owner").toBe(400);
+            await archiveOwner();
+            expect((await create(body)).status, "group owner").toBe(400);
+            expect(await revision()).toEqual(before);
+        });
+    });
+
     it("preserves an original string for input jobs and leaves it absent when omitted", async () => {
         await listen();
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-        for (const kind of ["send", "continue", "reroll", "group"]) {
+        for (const kind of ["send", "continue", "reroll"]) {
             for (const original of [{ inputOriginal: "  원문\n 그대로  " }, { inputOriginal: "" }, {}]) {
                 const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user", ...original };
                 const observed = withResolvers<RunningJob["context"]>();
@@ -688,7 +764,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
     it("accepts an OOC exchange only on a preview and preserves it in the runner context", async () => {
         await listen();
         const ctx = { ...(await context()), oocExchangeId: "exchange-one" };
-        for (const kind of ["send", "continue", "reroll", "group", "previewPrompt", "command"]) {
+        for (const kind of ["send", "continue", "reroll", "previewPrompt", "command"]) {
             const refused = await create({
                 kind,
                 context: ctx,

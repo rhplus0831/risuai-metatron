@@ -144,10 +144,13 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
 /** The kinds whose job runs the input stage (`userMessageId`). */
 const INPUT_KINDS: readonly string[] = ["send", "continue", "reroll", "group"];
 
-/** Checks a create body, including preview-only OOC ids; returns a reason when it is malformed. */
+/** Checks a create body, including preview-only OOC ids; returns a reason when it is refused. */
 function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (!isPlainObject(body)) {
         return "Body must be an object";
+    }
+    if (body.kind === "group") {
+        return 'kind "group" is no longer accepted';
     }
     if (typeof body.kind !== "string" || !GENERATION_KINDS.includes(body.kind as GenerationCreateBody["kind"])) {
         return "kind must be one of " + GENERATION_KINDS.join(", ");
@@ -323,10 +326,10 @@ export function registerGenerationRoutes(
      * POST GenerationCreateBody, with optional requestId: { jobId }, or a replay
      * { jobId, replayed: true, owned, status }. `server/src/jobs/generationJobs.ts` create checks
      * x-resource-epoch, so request lookup follows the epoch check, before ordinary admission gates.
-     * 400 for a malformed body; 404 for a missing chat; 412 for another epoch; 503 with Retry-After: 5
-     * during shutdown or maintenance. 409: requestIdReused, requestCancelled, chatBusy { jobId },
-     * stale, chatBindingIncomplete { problems }, chatBindingMismatch, memoryRebuilding, or
-     * chatLoreOverrideOrphaned { entries: [{ id, name }] }.
+     * 400 for a malformed body or `kind: "group"`; 404 for a missing chat; 412 for another epoch;
+     * 503 with Retry-After: 5 during shutdown or maintenance. 409: requestIdReused, requestCancelled,
+     * chatTrashed, groupArchived, chatBusy { jobId }, stale, chatBindingIncomplete { problems },
+     * chatBindingMismatch, memoryRebuilding, or chatLoreOverrideOrphaned { entries: [{ id, name }] }.
      * `context.stopOverLoreBudget: true` is kept for any kind and refuses nothing here: a job that
      * honors it is admitted and ends as an `error` terminal coded `loreOverBudget`.
      * `context.completionHoldMs` is kept for any kind: a finite number above zero, floored and
@@ -334,8 +337,8 @@ export function registerGenerationRoutes(
      * duration after the job ends; the tab's notification notice keeps its timing.
      * `context.oocExchangeId` must be a valid OOC id and is accepted only for `preview`; other
      * kinds carrying it are malformed (400).
-     * `context.inputOriginal` must be a string and is accepted only for send, continue, reroll,
-     * and group jobs with `userMessageId` and nonempty `input`; other uses are malformed (400).
+     * `context.inputOriginal` must be a string and is accepted only for send, continue, and reroll
+     * jobs with `userMessageId` and nonempty `input`; other uses are malformed (400).
      */
     app.post("/api/generations", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

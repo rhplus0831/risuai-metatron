@@ -18,7 +18,7 @@ import type {
     ChatTrashConflict,
     ChatTrashRequest,
 } from "../../../shared/chats.ts";
-import type { Message } from "../../../shared/database.ts";
+import type { character, groupChat, Message } from "../../../shared/database.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
 import type { HypaV3Preset } from "../../../shared/memory.ts";
 import {
@@ -924,10 +924,10 @@ export function createResourceStore(options: {
     const selectRevisions = db.prepare("SELECT kind, id, seq, revision FROM resources ORDER BY seq");
     const selectKindRevisions = db.prepare("SELECT id, seq, revision FROM resources WHERE kind = ? ORDER BY seq");
     const selectRevision = db.prepare("SELECT seq, revision FROM resources WHERE kind = ? AND id = ?");
-    // A character's name and trash state for the message search, without parsing the record in JavaScript.
+    // A character's name and eligibility fields for message search, without parsing the record in JavaScript.
     const selectSearchCharacter = db.prepare(
         "SELECT json_extract(data, '$.name') AS name, json_extract(data, '$.trashTime') AS trashTime, " +
-            "octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?",
+            "json_extract(data, '$.type') AS type, octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?",
     );
     const selectRecordBytes = db.prepare("SELECT octet_length(data) AS bytes FROM resources WHERE kind = ? AND id = ?");
     // One setting, without parsing its whole section in JavaScript.
@@ -2543,6 +2543,18 @@ export function createResourceStore(options: {
             return readOne(kind, id) as { revision: string; data: T } | null;
         },
 
+        /** A character's stored record for chat admission, without its chats. */
+        readCharacter(id: string) {
+            assertOpen();
+            const kind = kinds.get(RESOURCE_KIND.characters);
+            if (!kind) {
+                return null;
+            }
+            assertId(kind, id);
+            return (readOne(kind, id)?.data ?? null) as
+                Omit<character, "chats" | "chatPage"> | Omit<groupChat, "chats" | "chatPage"> | null;
+        },
+
         /**
          * Records of one kind in creation order (`seq`). The client keeps `characters` in this order,
          * which is the order the old save file kept them in.
@@ -3054,10 +3066,11 @@ export function createResourceStore(options: {
          * One page of a message search (`shared/messageSearch.ts`): literal matching over each message's text
          * (`$.data`), chats by `seq` descending and messages by position descending, in synchronous
          * batches (`chatTables.searchBatch`) with `yieldTurn` between them, on this store's one
-         * connection. Every scope skips chats with a trash mark. Without ids it also skips trashed
-         * characters (`trashTime`) and the playground. A missing named character or chat returns
-         * `notFound`. The page ends after the row that reaches `limit` hits or `budgetBytes` (its
-         * `next` is that row) or at the end (`next` null). Before the first batch and after every
+         * connection. Every scope skips trashed and group-owned chats. Naming a group returns an
+         * empty page. Without ids it also skips trashed characters (`trashTime`) and the playground.
+         * A missing named character or chat in an eligible scope returns `notFound`. The page ends
+         * after the row that reaches `limit` hits or `budgetBytes` (`next` is that row), or at the
+         * end (`next` null). Before the first batch and after every
          * yield it checks, in order: `signal` (throws its reason), the store being open
          * (`ResourceStoreClosedError`), the epoch (`MessageSearchEpochError` once a restore replaced
          * the data), and `between` (the route's maintenance gate). A character's eligibility and name
@@ -3084,7 +3097,7 @@ export function createResourceStore(options: {
             check();
             options.between?.();
             const startEpoch = epoch;
-            const characters = new Map<string, { name: string; trashed: boolean } | null>();
+            const characters = new Map<string, { name: string; trashed: boolean; group: boolean } | null>();
             /** The character's search fields and what reading them cost (0 once cached). */
             const character = (id: string) => {
                 const cached = characters.get(id);
@@ -3092,9 +3105,13 @@ export function createResourceStore(options: {
                     return { info: cached, bytes: 0 };
                 }
                 const row = selectSearchCharacter.get(RESOURCE_KIND.characters, id) as
-                    { name: unknown; trashTime: unknown; bytes: number } | undefined;
+                    { name: unknown; trashTime: unknown; type: unknown; bytes: number } | undefined;
                 const info = row
-                    ? { name: typeof row.name === "string" ? row.name : "", trashed: !!row.trashTime }
+                    ? {
+                          name: typeof row.name === "string" ? row.name : "",
+                          trashed: !!row.trashTime,
+                          group: row.type === "group",
+                      }
                     : null;
                 characters.set(id, info);
                 return { info, bytes: row?.bytes ?? 0 };
@@ -3108,12 +3125,16 @@ export function createResourceStore(options: {
                             return { eligible: false, bytes: 0 };
                         }
                         const { info, bytes } = character(id);
-                        return { eligible: !!info && !info.trashed, bytes };
+                        return { eligible: !!info && !info.trashed && !info.group, bytes };
                     },
                 };
             } else {
-                if (!character(request.characterId).info) {
+                const { info } = character(request.characterId);
+                if (!info) {
                     return { notFound: "character" };
+                }
+                if (info.group) {
+                    return { hits: [], next: null, scannedBytes: 0 };
                 }
                 if (request.chatId === undefined) {
                     scope = { kind: "character", characterId: request.characterId };

@@ -1084,12 +1084,35 @@ describe("convertUpstreamDatabase: chats and messages", () => {
 });
 
 describe("convertUpstreamDatabase: collections, modules, plugins", () => {
+    it("keeps an imported group and its chat while omitting the group from character order and folders", () => {
+        const out = convert({
+            formatversion: 5,
+            characters: [
+                { chaId: "a", type: "character", name: "A" },
+                { chaId: "b", type: "character", name: "B" },
+                {
+                    chaId: "g",
+                    type: "group",
+                    name: "Group",
+                    characters: ["a"],
+                    chats: [{ id: "gk", name: "Group chat", message: [msg("user", "group history", { chatId: "m" })] }],
+                },
+            ],
+            characterOrder: ["a", "g", { id: "f", name: "Folder", data: ["g", "b"] }],
+        });
+
+        expect(record(out, COLLECTION_KIND.characterOrder)).toEqual(["a", { id: "f", name: "Folder", data: ["b"] }]);
+        expect(characterNamed(out, "Group")).toMatchObject({ id: "g", data: { type: "group", characters: ["a"] } });
+        expect(chatsOf(out, "g")).toMatchObject([
+            { id: "gk", name: "Group chat", message: [{ role: "user", data: "group history", chatId: "m" }] },
+        ]);
+    });
+
     it("keeps only kept characters' ids in characterOrder, folders included, and reports other entries", () => {
         const out = convert(fixture(), { cold: cold() });
         expect(record<unknown[]>(out, COLLECTION_KIND.characterOrder)).toEqual([
             "a",
             { id: "f", name: "F", data: ["b"], color: "", img: "assets/f.png" },
-            "g",
         ]);
         expect(excluded(out, "invalid-setting")?.examples).toContain("characterOrder[4]");
         expect(

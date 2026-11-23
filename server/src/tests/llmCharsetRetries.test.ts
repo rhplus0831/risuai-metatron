@@ -13,7 +13,7 @@ import { requestChatDataOuter, type OuterRequestDeps } from "../llm/outer.ts";
 // with a failure, and the loop yields a turn of the event loop before every attempt, so a model that
 // answers at once (Echo with no delay) cannot hold the server's main thread. The first part drives
 // `requestChatDataOuter` with finite attempt scripts (an unexpected extra attempt throws, so a lost
-// budget fails instead of spinning). The second part reproduces the hang: a real group send over the
+// budget fails instead of spinning). The second part reproduces the hang: a real send over the
 // default runner with the Echo model and the `Latn` ban, in a child process the test kills after a
 // timeout, since before the fix the job never yielded and no timer, stop, or test timeout could end
 // it.
@@ -321,7 +321,7 @@ describe("requestChatDataOuter", () => {
     });
 });
 
-describe("a group send with the Echo model and a banned script", () => {
+describe("a send with the Echo model and a banned script", () => {
     // Made in a hook, not at collection, so a run that skips these cases leaves nothing behind.
     let dir = "";
     beforeAll(() => {
@@ -337,14 +337,14 @@ describe("a group send with the Echo model and a banned script", () => {
     };
 
     /**
-     * The hang reproduced over the real server, the default runner, the real group and
-     * character records, and `POST /api/generations` with `kind: "group"`: the Echo model answers
+     * The hang reproduced over the real server, the default runner, the real character record,
+     * and `POST /api/generations` with `kind: "send"`: the Echo model answers
      * "blocked Latin text" at once, and the providers ban `Latn`. The child counts the runner's
      * request attempts; in `stop` mode it issues the owner's DELETE from a timer 50 ms after the
      * first attempt. The test kills a child that never ends.
      */
-    function runGroupSend(mode: "budget" | "stop"): Report {
-        const script = path.join(dir, `group-${mode}.mjs`);
+    function runSend(mode: "budget" | "stop"): Report {
+        const script = path.join(dir, `send-${mode}.mjs`);
         const support = pathToFileURL(path.join(REPO_ROOT, "server/src/tests/testSupport.ts")).href;
         writeFileSync(
             script,
@@ -383,11 +383,10 @@ describe("a group send with the Echo model and a banned script", () => {
                 `await required(await client.json("/api/resources/batch", {`,
                 `    ops: [`,
                 `        { kind: "characters", id: "speaker", baseRevision: null, data: { ...blank, chaId: "speaker", type: "character", name: "Speaker" } },`,
-                `        { kind: "characters", id: "group", baseRevision: null, data: { ...blank, chaId: "group", type: "group", name: "Group", characters: ["speaker"], characterTalks: [1], characterActive: [true], orderByOrder: true } },`,
                 `    ],`,
-                `    chats: [{ characterId: "group", chatId: "k", baseRevision: null, ops: [{ op: "create", chat: { id: "k", name: "K", fmIndex: -1, promptPresetId: presetId, modelPresetId, bindedPersona: personaId, message: [{ chatId: "u0", role: "user", data: "Hello group" }], scriptstate: {} } }] }],`,
+                `    chats: [{ characterId: "speaker", chatId: "k", baseRevision: null, ops: [{ op: "create", chat: { id: "k", name: "K", fmIndex: -1, promptPresetId: presetId, modelPresetId, bindedPersona: personaId, message: [{ chatId: "u0", role: "user", data: "Hello" }], scriptstate: {} } }] }],`,
                 `}));`,
-                `const before = (await (await required(await client.json("/api/resources/read", { chats: [{ characterId: "group", id: "k" }] }))).json()).chats[0];`,
+                `const before = (await (await required(await client.json("/api/resources/read", { chats: [{ characterId: "speaker", id: "k" }] }))).json()).chats[0];`,
                 `let attempts = 0;`,
                 `let immediateRanAfter = -1;`,
                 `let attemptsAtStop = null;`,
@@ -406,7 +405,7 @@ describe("a group send with the Echo model and a banned script", () => {
                 `    }`,
                 `    return realRun(spec);`,
                 `};`,
-                `const created = await required(await client.json("/api/generations", { kind: "group", clientId: "charset-test", context: { characterId: "group", chatId: "k", presetId, modelPresetId, personaId, mode: "group", input: "", chatRevision: before.revision } }));`,
+                `const created = await required(await client.json("/api/generations", { kind: "send", clientId: "charset-test", context: { characterId: "speaker", chatId: "k", presetId, modelPresetId, personaId, mode: "send", input: "", chatRevision: before.revision } }));`,
                 `jobId = (await created.json()).jobId;`,
                 `let terminal = null;`,
                 `for (let i = 0; i < 2000 && !terminal; i++) {`,
@@ -431,7 +430,7 @@ describe("a group send with the Echo model and a banned script", () => {
         "ends with the request's failure once the retries are spent, yielding between attempts",
         { tags: ["slow"], timeout: 90_000 },
         () => {
-            expect(runGroupSend("budget")).toEqual({
+            expect(runSend("budget")).toEqual({
                 attempts: 3,
                 immediateRanAfter: 1,
                 attemptsAtStop: null,
@@ -451,7 +450,7 @@ describe("a group send with the Echo model and a banned script", () => {
         "observes a stop scheduled from a timer while the rejections continue",
         { tags: ["slow"], timeout: 90_000 },
         () => {
-            const report = runGroupSend("stop");
+            const report = runSend("stop");
             expect(report.terminal).toEqual({
                 type: "error",
                 reason: "aborted",

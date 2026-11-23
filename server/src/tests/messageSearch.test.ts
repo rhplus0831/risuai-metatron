@@ -333,6 +333,24 @@ describe("POST /api/chats/search hits", () => {
         expect(refs(await s.page({ query: "hit", characterId: "§playground", chatId: "pk" }))).toEqual(["pk/p1"]);
     });
 
+    it("omits group chats from all searches and returns an empty page for either named group scope", async () => {
+        const s = await createSearchServer();
+        await s.batch({
+            ops: [character("c"), character("g", { type: "group", characters: ["c"] })],
+            chats: [
+                createChat("c", "k", [m("a", "hit in a character chat")]),
+                createChat("g", "gk", [m("b", "hit in a group chat")]),
+            ],
+        });
+
+        const all = await s.page({ query: "hit" });
+        expect(refs(all)).toEqual(["k/a"]);
+        expect(all.next).toBeNull();
+        for (const scope of [{ characterId: "g" }, { characterId: "g", chatId: "gk" }]) {
+            expect(await s.page({ query: "hit", ...scope })).toMatchObject({ hits: [], next: null });
+        }
+    });
+
     it("clamps limit to the maximum", async () => {
         const s = await createSearchServer();
         await s.batch({ ops: [character("c")] });

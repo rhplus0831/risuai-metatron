@@ -2262,9 +2262,10 @@ export function createGenerationJobs(options: {
 
     /**
      * Epoch first, then synchronize identity maps/receipts and look up requestId before shutdown,
-     * maintenance/gate, hooks, chat existence and trash state, occupied slot, rebuild lock, revision, binding and
-     * orphaned overrides. Matching identity replays the original job/status even if those later
-     * gates would now refuse; another fingerprint is requestIdReused, a tombstone requestCancelled.
+     * maintenance/gate, hooks, chat existence, chatTrashed, groupArchived, occupied slot, rebuild lock,
+     * revision, binding and orphaned overrides. Matching identity replays the original job/status
+     * even if those later gates would now refuse; another fingerprint is requestIdReused, a
+     * tombstone requestCancelled.
      * No requestId admits normally without deduplication; its epoch still precedes the gates.
      * Lookup through slot and request-index installation is synchronous, with the runner deferred
      * to a later microtask: identical simultaneous requests admit once. Refusals install no identity.
@@ -2307,6 +2308,10 @@ export function createGenerationJobs(options: {
         if (chat.trashedAt !== null) {
             return { ok: false, status: 409, body: { error: "chatTrashed" } };
         }
+        const owner = store.readCharacter(characterId);
+        if (owner?.type === "group") {
+            return { ok: false, status: 409, body: { error: "groupArchived" } };
+        }
         const { revision } = chat;
         const busy = chatSlots.get(chatKey(characterId, chatId));
         if (busy) {
@@ -2325,7 +2330,7 @@ export function createGenerationJobs(options: {
         if (refusal) {
             return { ok: false, status: 409, body: refusal };
         }
-        const entries = readOrphanedOverrideEntries(store, kinds, { characterId, chatId });
+        const entries = readOrphanedOverrideEntries(store, { characterId, chatId }, owner);
         if (entries.length > 0) {
             return { ok: false, status: 409, body: { error: "chatLoreOverrideOrphaned", entries } };
         }

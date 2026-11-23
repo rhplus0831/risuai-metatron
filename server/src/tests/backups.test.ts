@@ -1287,6 +1287,29 @@ describe("chats in snapshots and archives", () => {
         };
     }
 
+    it("restores a live group record and its active chat from a backup", async () => {
+        const s = await defaultServer();
+        const owner = { chaId: "g", name: "Group at backup", type: "group", characters: [], trashTime: 0 };
+        const saved = m("m", "Group history at backup");
+        const ownerRevision = await s.create("characters", "g", owner);
+        const created = await batch(s, {
+            chats: [group("gk", null, [{ op: "create", chat: { name: "Group chat", message: [saved] } }], "g")],
+        });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        await batch(s, {
+            ops: [{ kind: "characters", id: "g", baseRevision: ownerRevision, data: { ...owner, name: "Renamed" } }],
+            chats: [group("gk", created.chats[0].revision!, [{ op: "setText", id: "m", text: "Edited" }], "g")],
+        });
+
+        expect((await restore(s, snapshot.id)).status).toBe(200);
+        const restored = await s.get("characters", "g");
+        expect(restored.status).toBe(200);
+        expect(await restored.json()).toMatchObject({ data: owner });
+        expect((await readAll(s)).chats).toMatchObject([
+            { characterId: "g", id: "gk", trashedAt: null, data: { name: "Group chat", message: [saved] } },
+        ]);
+    });
+
     it("restores chats from a snapshot made before the trash column as active", async () => {
         vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
         const s = await defaultServer();

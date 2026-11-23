@@ -15,7 +15,7 @@ import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 // runner (`server/src/jobs/commandRunner.ts` `runManualTrigger`), the trigger runtime, the command
 // executor, the final applier, the real worker pool (regex tasks and `triggerlua`), the production
 // bindings in working-copy mode, and the job channel over the owner socket. The route's manual
-// command and `triggerId` validation; the group refusal; a trigger's variables, control flow, chat
+// command and `triggerId` validation; the group chat refusal at admission; a trigger's variables, control flow, chat
 // edits, notices, and the stored result (CBS reading the immediate writes and `{{trigger_id}}`);
 // questions answered in order and one not answered ending the job with the immediate writes kept;
 // `v2Command` with a nested `/trigger`; the six regex sites through the worker and an invalid
@@ -358,14 +358,16 @@ describe("the route", () => {
         expect(texts(await readChat(chaId)).at(-1)).toBe("char:id=btn one! (not an id)");
     });
 
-    it("refuses a manual trigger in a group chat with a 400 terminal", async () => {
+    it("refuses a manual trigger in a group chat at admission with groupArchived and leaves the chat unchanged", async () => {
         const chaId = await seedCharacter({ triggers: [trig("go", [say("char", "ran")])], type: "group" });
-        const { terminal } = await runManual(chaId, "go");
-        expect(terminal).toMatchObject({
-            type: "error",
-            status: 400,
-            message: /Manual triggers do not run in a group chat/,
+        const created = await createJob({
+            kind: "command",
+            clientId: "tab",
+            context: await context(chaId),
+            command: { type: "manual", name: "go" },
         });
+        expect(created.status).toBe(409);
+        expect(created.body).toEqual({ error: "groupArchived" });
         expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:second"]);
     });
 });
