@@ -1,13 +1,12 @@
-import { randomUUID } from "node:crypto";
-import type { Chat, character } from "../../../shared/database.ts";
-import type { GenerationCommand, SkippedHook } from "../../../shared/jobs.ts";
+import type { character } from "../../../shared/database.ts";
+import type { GenerationCommand } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
 import { runMemoryChapters } from "../prompt/memory/structured/chapters.ts";
 import { runMemoryRebuild } from "../prompt/memory/structured/rebuild.ts";
 import { runMemoryRecord } from "../prompt/memory/structured/recordJob.ts";
 import { runMemoryTest } from "../prompt/memory/structured/testRun.ts";
-import { runPromptJob, runPromptSend } from "../prompt/runner.ts";
+import { runPromptJob } from "../prompt/runner.ts";
 import { localModelRefusal } from "../prompt/transformers.ts";
 import {
     failureOf,
@@ -25,14 +24,6 @@ import {
     moduleTriggers,
     type RunSetup,
 } from "./runSetup.ts";
-
-/**
- * Dispatches generation jobs and runs command interactions under their one registry lifetime.
- * `/multisend` queued by `server/src/jobs/runSetup.ts` runs on the server after the interaction;
- * its parts keep one job id, chat slot, owner, hook set and channel. Each part delegates to
- * `server/src/prompt/runner.ts` runPromptSend, so parts without browser callbacks continue without
- * the page; a needed callback uses the channel's owner-absence rules.
- */
 
 export type { GenerationRunnerDeps } from "./runSetup.ts";
 
@@ -142,8 +133,7 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
  * ends the job with its error (as the client's former `doString` threw out of the loop), as do a spent budget and a worker
  * failure; a failure inside the handler is logged and the next trigger runs (as the client's former
  * catch did); a fatal host failure (a write conflict, a lost owner, an abort) ends the job.
- * `accepted` carries no message; queued sequence parts run after the handlers and supply the final
- * reply when there is one.
+ * `accepted` carries no message. The job ends after the handlers finish.
  */
 async function runLuaInteractionTrigger(
     job: RunningJob,
@@ -210,7 +200,7 @@ async function runLuaInteractionTrigger(
         }
     }
     flushChatMetadata(job);
-    await finishCommand(job, deps, state);
+    finishCommand(job, deps, state);
 }
 
 /**
@@ -244,129 +234,17 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
     }
     setup.check();
     flushChatMetadata(job);
-    await finishCommand(job, deps, state);
+    finishCommand(job, deps, state);
 }
 
-/**
- * Sends queued parts after a button, form or manual trigger, under the command's one lifetime.
- * `RunningJob.sequence.beginPart` in `server/src/jobs/generationJobs.ts` preflights each part
- * synchronously. With no await between it and the token-owned write, clear removes all messages
- * (omitted for an empty chat) and the user text is appended with a fresh id and no timestamp in
- * that one write; the owner receives the chat afterwards. A refused boundary writes nothing.
- *
- * Pending metadata is flushed before switching views. Each send view keeps registry methods and
- * the signal, drops the command/trigger/speaker/user/continue ids and `stopOverLoreBudget` (a part
- * never stops over the lore budget: no caller waits to answer for it), and uses empty input (no input
- * trigger or editinput), fresh run state and script budget, carrying emotion history forward.
- * Each part has its own generation ids, reply locks, stages and request-history rows. Translations
- * and memory hand off before it returns; removed replies' locks release without ending the job.
- *
- * Progress updates memory and best-effort receipts before the first part (sent: 0) and after each
- * returned part, before the live-only sequence event: zero-based index, total, sent, optional
- * reply messageId. A removed reply counts as sent; a stopped send does not.
- * One done terminal carries sequence { total, sent, stopped? }: boundary refusals use their code,
- * a stopped send uses notSent. Throws and registry aborts retain error terminals with current
- * progress; the first abort wins. No queued parts means no sequence. The registry runs one
- * auto-checkpoint after a done sequence with an attempted part, after releasing the slot, never
- * between parts.
- */
-async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, commandState: JobRunState): Promise<void> {
+/** Ends the command at the chat's current revision and reports its skipped or missed hooks. */
+function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, state: JobRunState): void {
     const { characterId, chatId } = job.context;
-    const parts = commandState.sequence.flatMap(({ clear, parts }) => parts.map((part) => ({ clear, part })));
-    /** The command's own skipped reply hooks (a Lua request's), then each part's (its own state). */
-    const skipped: SkippedHook[] = [...commandState.skippedHooks];
-    const missed = [...commandState.missedHooks];
-    if (parts.length === 0) {
-        job.emit({
-            type: "done",
-            revision: deps.store.chatRevision(characterId, chatId),
-            ...(skipped.length > 0 ? { skipped } : {}),
-            ...(missed.length > 0 ? { missed } : {}),
-        });
-        return;
-    }
-    const sequence = job.sequence;
-    if (!sequence) throw new Error("A command sequence needs a registry job");
-    const total = parts.length;
-    let sent = 0;
-    let messageId: string | undefined;
-    let previous = job;
-    const finish = (stopped?: string) => {
-        const chat = deps.store.readChatSource(characterId, chatId);
-        const present =
-            messageId && (chat.data as Chat | null)?.message.some((message) => message.chatId === messageId);
-        job.emit({
-            type: "done",
-            revision: chat.revision,
-            ...(present ? { messageId } : {}),
-            sequence: { total, sent, ...(stopped ? { stopped } : {}) },
-            ...(skipped.length > 0 ? { skipped } : {}),
-            ...(missed.length > 0 ? { missed } : {}),
-        });
-    };
-    sequence.progress({ total, sent });
-    for (const [index, { clear, part }] of parts.entries()) {
-        // Metadata belongs to the facade that queued it; no batch crosses into the next send's scope.
-        flushChatMetadata(previous);
-        job.setPendingFlush?.(null);
-        const boundary = sequence.beginPart();
-        if (!boundary.ok) {
-            if (boundary.stopped) finish(boundary.stopped);
-            return;
-        }
-        job.write(() => {
-            const chat = deps.store.readChatSource(characterId, chatId);
-            const ids = (chat.data as Chat).message.map((message) => message.chatId!);
-            return {
-                chats: [
-                    {
-                        characterId,
-                        chatId,
-                        baseRevision: chat.revision,
-                        ops: [
-                            ...(clear && ids.length > 0 ? [{ op: "remove" as const, ids }] : []),
-                            {
-                                op: "append",
-                                messages: [{ role: "user", data: part, chatId: randomUUID() }],
-                                anchor: { end: true },
-                            },
-                        ],
-                    },
-                ],
-            };
-        });
-        job.emitRecords({ chats: [{ characterId, id: chatId }] });
-        const { userMessageId, continueMessageId, triggerId, speakerChaId, stopOverLoreBudget, ...context } =
-            job.context;
-        const send: RunningJob = {
-            ...job,
-            kind: "send",
-            command: null,
-            context: { ...context, input: "", mode: "send" },
-        };
-        const state = createJobRunState(send, deps.scriptWorkers.createBudget());
-        state.emotions = commandState.emotions;
-        previous = send;
-        const result = await runPromptSend(send, deps, state);
-        if (result.type !== "reply") throw new Error("A sequence send returned a preview");
-        flushChatMetadata(send);
-        sequence.releaseRemovedReplies();
-        messageId = result.messageId;
-        if (result.skipped) skipped.push(...result.skipped);
-        if (result.missed) missed.push(...result.missed);
-        if (!result.stopped) sent += 1;
-        sequence.progress({ total, sent });
-        job.emit({
-            type: "sequence",
-            index,
-            total,
-            sent,
-            ...(messageId ? { messageId } : {}),
-        });
-        if (result.stopped) {
-            finish("notSent");
-            return;
-        }
-    }
-    finish();
+    const { skippedHooks, missedHooks } = state;
+    job.emit({
+        type: "done",
+        revision: deps.store.chatRevision(characterId, chatId),
+        ...(skippedHooks.length > 0 ? { skipped: skippedHooks } : {}),
+        ...(missedHooks.length > 0 ? { missed: missedHooks } : {}),
+    });
 }

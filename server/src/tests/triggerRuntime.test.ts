@@ -1781,6 +1781,33 @@ describe("chat, character, persona, and UI effects", () => {
         },
     );
 
+    it.each(["{{setvar::x::1}}", "{{return::/echo example}}"])(
+        "continues past a literal /multisend without evaluating %s or dispatching it",
+        async (argument) => {
+            const line = `/multisend ${argument}`;
+            const h = harness({ triggers: [trig([ef("v2Command", v(line)), setVar("next", "=", "ran")])] });
+            const result = await h.run();
+            expect(h.trace).not.toContain(`parse:${line}`);
+            expect(h.commands).toEqual([]);
+            expect(result?.chat.scriptstate).toEqual({ $next: "ran" });
+        },
+    );
+
+    it("resolves a variable command and evaluates a pipeline before dispatching their retired segments", async () => {
+        const h = harness({
+            chat: { scriptstate: { $line: "/multisend from variable" } },
+            cbs: { key: "line", first: "a", last: "b" },
+            triggers: [
+                trig([
+                    ef("v2Command", { valueType: "var", value: "{{key}}" }),
+                    ef("v2Command", v("/echo {{first}}|/multisend {{last}}")),
+                ]),
+            ],
+        });
+        await h.run();
+        expect(h.commands).toEqual(["/multisend from variable", "/echo a|/multisend b"]);
+    });
+
     it("runs v2Command with the CBS'd line through the job's executor and v2Wait as an abortable sleep", async () => {
         const h = harness({
             triggers: [
@@ -1897,7 +1924,6 @@ describe("recursion and the effect limit", () => {
                 runManualTrigger: async (name) => {
                     await h.runtime.runTrigger(h.stored, "manual", { chat: structuredClone(h.live), manualName: name });
                 },
-                multisend: () => {},
             });
             h.state.command = (line) => executor.processMultiCommand(line);
             await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);

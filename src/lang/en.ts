@@ -382,7 +382,7 @@ export const languageEnglish = {
         contextMeterLookahead:
             "With HypaV3 summarizing in the background, the meter's bar marks with a dashed line where the next send asks for a background summary, ahead of the point where it must summarize.",
         loreBudgetStop:
-            "When the lorebook token limit leaves out an activated entry, a send, continue, or reroll from the chat screen stops before the model is called and asks what to do. Sends from plugins, auto mode, multisend, and commands are not stopped; the context meter warns after them. Entries marked `@@ignore_on_max_context` never cause a stop. A chat can turn this off.",
+            "When the lorebook token limit leaves out an activated entry, a send, continue, or reroll from the chat screen stops before the model is called and asks what to do. Sends from plugins, auto mode, and commands are not stopped; the context meter warns after them. Entries marked `@@ignore_on_max_context` never cause a stop. A chat can turn this off.",
         generationProgressWindow:
             "A small window at the top right lists every reply being generated on the server, with its stage, the time elapsed, and, while the model streams, the tokens generated and the speed.",
         halfStreaming:
@@ -1958,6 +1958,7 @@ export const languageEnglish = {
         closed: "This chat was moved to the trash and has been closed.",
         checkpointsClosed: "Checkpoints closed because this chat was moved to the trash.",
     },
+    multisendRemoved: "The /multisend command was removed.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
     rerollRepliesNotRestored:
         "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",
@@ -1967,14 +1968,13 @@ export const languageEnglish = {
         stoppedElsewhere: "This job was stopped from another tab or device.",
         stopOther: {
             label: "Stop this chat's running job",
-            confirm: "Stop {kind} ({stage}){sequence}?",
+            confirm: "Stop {kind} ({stage})?",
             idle: "No job is running in this chat.",
             invalidCurrent: "The server returned an invalid job lookup response.",
             invalidStop: "The server returned an invalid job stop response.",
             lookupTimedOut: "The current job lookup timed out. Try stopping the chat again.",
             stopTimedOut: "The job stop request timed out. Try stopping the chat again.",
             running: "running",
-            sequence: ", part {part} of {total}",
             kinds: {
                 send: "reply generation",
                 continue: "reply continuation",
@@ -1997,17 +1997,6 @@ export const languageEnglish = {
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",
         hooksSkipped: "Plugin processing skipped while this page was away: {hooks}",
-        sequenceStopped: "/multisend stopped after {sent} of {total} parts: {reason}",
-        sequenceReasons: {
-            shutdown: "the server is shutting down",
-            maintenance: "the server is under maintenance",
-            EpochMismatch: "the server data was replaced",
-            chatNotFound: "the chat no longer exists",
-            chatBindingIncomplete: "the chat's settings are incomplete",
-            chatBindingMismatch: "the chat's settings changed",
-            chatLoreOverrideOrphaned: "the chat has orphaned lore overrides",
-            notSent: "the part did not finish sending",
-        },
         discarded: {
             send: "A conflict discarded local changes; the send did not run",
             button: "A conflict discarded local changes; the button did not run",

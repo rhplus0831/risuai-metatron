@@ -1,3 +1,4 @@
+import { isRetiredMultisend } from "../../../shared/slashCommands.ts";
 import type { Chat, character, groupChat, loreBook } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -970,6 +971,8 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2Command": {
+                        // The line's CBS would run before the executor could recognize the retired command.
+                        if (effect.valueType === "value" && isRetiredMultisend(effect.value)) break;
                         const value = operand(effect.valueType, effect.value);
                         // Commands read live storage; settle earlier copy edits, then follow their newer writes.
                         chat = arg.syncChat?.(chat) ?? chat;

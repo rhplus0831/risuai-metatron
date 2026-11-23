@@ -176,7 +176,7 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Regex and the worker boundary run with
   `pnpm --silent test:agent server/src/tests/{regex,regexScriptsTask,scriptWorker,scriptWorkerOptions}.test.ts src/ts/translator/edittransRegex.test.ts`.
 - For triggers, permissions, Lua and command dispatch, use
-  `pnpm --silent test:agent server/src/tests/{triggerRuntime,luaRuntime,luaRuntimeCharge,luaBindings,luaBindingsFences,commandExecutor,manualTriggers,commandRunner,commandSequences}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{triggerRuntime,luaRuntime,luaRuntimeCharge,luaBindings,luaBindingsFences,commandExecutor,manualTriggers,commandRunner}.test.ts`.
   For form admission use `server/src/tests/generations.test.ts`.
 - For trigger writes use `server/src/tests/{manualTriggerMetadata,chatMetadataCoalescing,chatResult}.test.ts`.
   `server/src/tests/promptRunner.test.ts` runs an end-to-end send through real Lua and regex workers with a fake

@@ -1,4 +1,4 @@
-// Browser checks of generation receipts, server command sequences, foreign Stop, owner absence,
+// Browser checks of generation receipts, foreign Stop, owner absence,
 // and crash checkpoints, with a real installed v3 plugin provider in system Chrome.
 // Report unexpected document reloads as harness noise; retry a failed case once after a Vite
 // dependency-optimization reload, retaining the discarded error and client errors as diagnostics.
@@ -44,7 +44,6 @@ const ABORT_GRACE_MS = await constants("server/src/jobs/generationJobs.ts", "JOB
 const CHECKPOINT_MS = await constants("server/src/prompt/runner.ts", "CHECKPOINT_INTERVAL_MS");
 const names = [
     "lost-create-answer",
-    "reload-mid-sequence",
     "stop-from-other-context",
     "sigkill-before-checkpoint",
     "owner-closed-mid-provider",
@@ -438,7 +437,7 @@ globalThis.fetch = async (input, init) => {
         await input(c).press("Enter");
     }
     async function idle(f) {
-        await until("chat slot released", f.current, (response) => response.status === 404);
+        await until("chat slot released", f.current, (response) => response.status === 200 && response.body === null);
         await until(
             "owner send settled",
             () => owner.page.locator('button[aria-labelledby="cancel"]').count(),
@@ -552,119 +551,7 @@ globalThis.fetch = async (input, init) => {
     });
 
     await run(names[1], async () => {
-        // Lua has no slash-command host function: its manual handler supplies the command to a
-        // native v2Command effect, in the same server command job. The typed composer /multisend
-        // is page-owned and would exercise a different path.
-        // A native onStart sleep for part two gives a callback-free reload window: part one's
-        // provider is answered, its reply is stored, and the server is between provider calls.
-        // Wait for the Lua notice that precedes the sleeps, then reload. Assert no outstanding
-        // callback at navigation and no later callback was delivered to the old page. If boot
-        // misses this 6 s window the check fails; it never treats an unknown callback replay as
-        // a successful reload between parts. The provider remains explicitly held for each part.
-        const sep = "{{u::7c}}".repeat(3);
-        const command = `/multisend Sequence user one.${sep}Sequence user two.${sep}Sequence user three.`;
-        const f = await fixture(names[1], {
-            firstMessage: '<button risu-trigger="sequence">Run sequence</button>',
-            triggerscript: [
-                {
-                    comment: "sequence",
-                    type: "manual",
-                    conditions: [],
-                    effect: [
-                        { type: "v2Header", indent: 0 },
-                        {
-                            type: "triggerlua",
-                            code: `sequence = function(id) setChatVar(id, "command", ${JSON.stringify(command)}) end`,
-                        },
-                        { type: "v2Command", indent: 0, value: "{{getvar::command}}", valueType: "value" },
-                    ],
-                },
-                {
-                    comment: "callback-free pause",
-                    type: "manual",
-                    conditions: [],
-                    effect: [
-                        {
-                            type: "triggerlua",
-                            code: `onStart = async(function(id)
-                        if getUserLastMessage(id) == "Sequence user two." then
-                            alertNormal(id, "Browser sequence callback-free pause")
-                            for i = 1, 3 do sleep(id, 2000):await() end
-                        end
-                    end)`,
-                        },
-                    ],
-                },
-            ],
-        });
-        const eventStart = owner.events.length;
-        const postStart = owner.posts.length;
-        const clientId = await owner.page.evaluate(async () =>
-            (await import("/src/ts/network/generationJobs.ts")).generationClientId(),
-        );
-        await owner.page.locator('[risu-trigger="sequence"]').first().click();
-        await waiting(owner);
-        await control(owner, 0, "reply", "Sequence reply one.");
-        await until("native callback-free sequence pause", () =>
-            owner.events
-                .slice(eventStart)
-                .find((e) => e.type === "notice" && e.payload?.message === "Browser sequence callback-free pause"),
-        );
-        assert.deepEqual(
-            (await f.messages()).map((m) => m.data),
-            ["Sequence user one.", "Sequence reply one.", "Sequence user two."],
-        );
-        const outstanding = owner.events
-            .slice(eventStart)
-            .filter(
-                (e) =>
-                    e.type === "callback" &&
-                    !owner.outgoing.some((answer) => answer.id === e.id && answer.type === "answer"),
-            );
-        assert.equal(outstanding.length, 0, JSON.stringify(outstanding));
-        const navigatingAt = Date.now();
-        await openApp(owner.page, stack.baseURL);
-        await sandbox(owner);
-        await openCharacterChat(owner.page, f.chaId);
-        assert.equal(
-            await owner.page.evaluate(async () =>
-                (await import("/src/ts/network/generationJobs.ts")).generationClientId(),
-            ),
-            clientId,
-        );
-        await visible("Sequence user one.");
-        await visible("Sequence reply one.");
-        await waiting(owner);
-        const later = owner.events.slice(eventStart).filter((e) => e.type === "callback" && e.at >= navigatingAt);
-        assert(
-            later.every((e) => !e.replay),
-            JSON.stringify(later),
-        );
-        await control(owner, 0, "reply", "Sequence reply two.");
-        await waiting(owner, 1);
-        await control(owner, 1, "reply", "Sequence reply three.");
-        await idle(f);
-        const expected = [
-            "Sequence user one.",
-            "Sequence reply one.",
-            "Sequence user two.",
-            "Sequence reply two.",
-            "Sequence user three.",
-            "Sequence reply three.",
-        ];
-        assert.deepEqual(
-            (await f.messages()).map((m) => m.data),
-            expected,
-        );
-        for (const text of expected) await visible(text);
-        assert.equal(owner.posts.length - postStart, 1);
-        assert.equal(owner.posts.at(-1).kind, "command");
-        const terminal = owner.events.slice(eventStart).find((e) => e.type === "done");
-        assert.deepEqual(terminal?.sequence, { total: 3, sent: 3 });
-    });
-
-    await run(names[2], async () => {
-        const f = await fixture(names[2]);
+        const f = await fixture(names[1]);
         await send("Hold while the other context stops this job.");
         await waiting(owner);
         // A visible partial reply establishes the server lock that advertises busy state
@@ -697,8 +584,7 @@ globalThis.fetch = async (input, init) => {
             const text = language.serverJob.stopOther;
             const expected = text.confirm
                 .replace("{kind}", text.kinds[uiLookup.kind])
-                .replace("{stage}", text.stages[uiLookup.stage] ?? text.running)
-                .replace("{sequence}", "");
+                .replace("{stage}", text.stages[uiLookup.stage] ?? text.running);
             await visible(expected, foreign);
             // AlertComp's YES/NO controls are literal in the application.
             const [response] = await Promise.all([
@@ -720,8 +606,8 @@ globalThis.fetch = async (input, init) => {
         }
     });
 
-    await run(names[3], async () => {
-        const f = await fixture(names[3]);
+    await run(names[2], async () => {
+        const f = await fixture(names[2]);
         const eventStart = owner.events.length;
         await send("Checkpoint the first chunk, then crash.");
         await waiting(owner);
@@ -775,23 +661,26 @@ globalThis.fetch = async (input, init) => {
         assert(!owner.events.slice(eventStart).some((e) => e.type === "done"), "Crash incorrectly completed the job");
     });
 
-    await run(names[4], async () => {
+    await run(names[3], async () => {
         await writePreload(true);
         await stack.restartServer();
-        const f = await fixture(names[4]);
+        const f = await fixture(names[3]);
         await send("The owner will close during this provider callback.");
         await waiting(owner);
         const current = await f.current();
         assert.equal(current.status, 200);
+        assert(current.body?.jobId, "Expected a running job before the owner closed");
         const closedAt = Date.now();
         await owner.page.close();
         await delay(Math.min(500, ABSENT_MS / 4));
-        assert.equal((await f.current()).status, 200, "Chat freed before the absence wait");
+        const duringAbsence = await f.current();
+        assert.equal(duringAbsence.status, 200);
+        assert.equal(duringAbsence.body?.jobId, current.body.jobId, "Chat freed before the absence wait");
         const bound = ABSENT_MS + ABORT_GRACE_MS;
         await until(
             "closed owner's chat frees within absence plus abort grace",
             f.current,
-            (response) => response.status === 404,
+            (response) => response.status === 200 && response.body === null,
             Math.max(1, closedAt + bound - Date.now()),
         );
         assert(Date.now() - closedAt < bound, `Release exceeded ${bound} ms`);

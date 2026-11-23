@@ -16,7 +16,7 @@ import { type DiagnosticsRecorder, errorFields, recordSafely } from "../diagnost
 export const KEPT_OUTCOME_MS = 24 * 60 * 60_000;
 /** Oldest ended payloads give way first; compact identities survive payload pruning. */
 export const MAX_KEPT_OUTCOMES = 500;
-/** Identity and progress outlive the payload; running rows are exempt from both limits. */
+/** Identities outlive the payload; running rows are exempt from both limits. */
 export const GENERATION_RECEIPT_MS = 72 * 60 * 60_000;
 /** Oldest ended rows give way first; a running row is never pruned to meet this cap. */
 export const MAX_GENERATION_RECEIPTS = 10_000;
@@ -43,7 +43,6 @@ export type GenerationReceipt = Omit<GenerationReceiptAdmission, "clientId" | "r
     requestId: string | null;
     fingerprint: string | null;
     endedAt: number | null;
-    progress: unknown;
     status: GenerationStatus | null;
 };
 
@@ -51,7 +50,6 @@ export type GenerationReceipt = Omit<GenerationReceiptAdmission, "clientId" | "r
 export type GenerationReceipts = {
     admit(input: GenerationReceiptAdmission): void;
     end(jobId: string, endedAt: number, status: GenerationStatus): void;
-    progress(jobId: string, value: unknown): void;
     read(jobId: string): GenerationReceipt | null;
     /** Finds a current-epoch request's receipt or tombstone, even when its outcome payload was pruned. */
     readByRequest(requestId: string): GenerationRequestReceipt | null;
@@ -66,16 +64,15 @@ export type GenerationReceipts = {
 /** Request lookup includes private cancellation rows; job-status reads never expose those rows. */
 export type GenerationRequestReceipt = { cancelled: true } | (GenerationReceipt & { cancelled: false });
 
-type ReceiptRow = Omit<GenerationReceipt, "kind" | "progress" | "status"> & {
+type ReceiptRow = Omit<GenerationReceipt, "kind" | "status"> & {
     kind: GenerationKind | "cancelled";
-    progress: string | null;
     status: string | null;
 };
 
 /**
- * Opens the store and ends leftover running rows as shutdown once, preserving valid sequence
- * progress without resuming parts. WAL with `synchronous = NORMAL` does not promise the last
- * commits survive a power loss. Epoch sync deletes old rows; matching expired request rows are
+ * Opens the store and ends leftover running rows as shutdown. Retained outcomes are read as stored.
+ * The nullable legacy progress column is unused. With WAL and `synchronous = NORMAL`, the last
+ * commits may be lost on power failure. Epoch sync deletes old rows; matching expired request rows are
  * removed synchronously before lookup, admission or cancellation can reuse their unique key.
  */
 export function createGenerationReceipts(options: {
@@ -146,11 +143,10 @@ export function createGenerationReceipts(options: {
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET " +
                     "ended_at = excluded.ended_at, status = excluded.status",
             ),
-            progress: open.prepare("UPDATE receipts SET progress = ? WHERE job_id = ? AND epoch = ?"),
             read: open.prepare(
                 "SELECT job_id AS jobId, request_id AS requestId, fingerprint, client_id AS clientId, epoch, kind, " +
                     "character_id AS characterId, chat_id AS chatId, admitted_at AS admittedAt, ended_at AS endedAt, " +
-                    "progress, status FROM receipts WHERE job_id = ? AND epoch = ?",
+                    "status FROM receipts WHERE job_id = ? AND epoch = ?",
             ),
             requestKey: open.prepare("SELECT job_id AS jobId FROM receipts WHERE request_id = ? AND epoch = ?"),
             expireRequest: open.prepare("DELETE FROM receipts WHERE request_id = ? AND epoch = ? AND ended_at <= ?"),
@@ -208,14 +204,8 @@ export function createGenerationReceipts(options: {
             open.prepare(
                 "UPDATE receipts SET ended_at = ?, status = json_object(" +
                     "'jobId', job_id, 'kind', kind, 'characterId', character_id, 'chatId', chat_id, 'epoch', epoch, " +
-                    "'state', 'ended', 'terminal', json_patch(json_object('type', 'error', 'epoch', epoch, 'status', 503, " +
-                    "'reason', 'shutdown', 'message', 'The server stopped while this job ran'), " +
-                    "CASE WHEN json_valid(progress) THEN CASE WHEN json_type(progress) = 'object' " +
-                    "AND json_type(progress, '$.total') = 'integer' AND json_type(progress, '$.sent') = 'integer' " +
-                    "AND json_extract(progress, '$.total') >= 0 AND json_extract(progress, '$.sent') >= 0 " +
-                    "AND json_extract(progress, '$.sent') <= json_extract(progress, '$.total') " +
-                    "THEN json_object('sequence', json_object('total', json_extract(progress, '$.total'), " +
-                    "'sent', json_extract(progress, '$.sent'))) ELSE '{}' END ELSE '{}' END), 'kept', json('true')) " +
+                    "'state', 'ended', 'terminal', json_object('type', 'error', 'epoch', epoch, 'status', 503, " +
+                    "'reason', 'shutdown', 'message', 'The server stopped while this job ran'), 'kept', json('true')) " +
                     "WHERE ended_at IS NULL",
             ).run(now());
         });
@@ -249,7 +239,6 @@ export function createGenerationReceipts(options: {
             ...row,
             kind: row.kind,
             cancelled: false,
-            progress: row.progress === null ? null : JSON.parse(row.progress),
             status: age !== null && age < KEPT_OUTCOME_MS && row.status !== null ? JSON.parse(row.status) : null,
         };
     }
@@ -293,11 +282,6 @@ export function createGenerationReceipts(options: {
                     endedAt,
                     JSON.stringify(status),
                 );
-            });
-        },
-        progress(jobId, value) {
-            guard(undefined, () => {
-                statements!.progress.run(JSON.stringify(value) ?? null, jobId, epoch);
             });
         },
         read(jobId) {

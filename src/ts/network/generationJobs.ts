@@ -718,14 +718,7 @@ export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurren
             !GENERATION_KINDS.some((kind) => kind === body.kind) ||
             typeof body.owned !== "boolean" ||
             (body.handedOff !== undefined && body.handedOff !== true) ||
-            (body.stage !== undefined && !GENERATION_STAGES.some((stage) => stage === body.stage)) ||
-            (body.sequence !== undefined &&
-                (!object(body.sequence) ||
-                    !Number.isSafeInteger(body.sequence.total) ||
-                    (body.sequence.total as number) < 1 ||
-                    !Number.isSafeInteger(body.sequence.sent) ||
-                    (body.sequence.sent as number) < 0 ||
-                    (body.sequence.sent as number) > (body.sequence.total as number)))
+            (body.stage !== undefined && !GENERATION_STAGES.some((stage) => stage === body.stage))
         ) {
             throw new ResourceRequestError(0, language.serverJob.stopOther.invalidCurrent);
         }

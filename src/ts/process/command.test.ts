@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { get } from "svelte/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { language } from "src/lang";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // Slash commands (`command.ts`) over the real chat module and the real server store: every chat
@@ -12,9 +10,6 @@ import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 const hooks = vi.hoisted(() => ({
     sends: [] as { index: number; arg: any }[],
-    sendResult: [] as boolean[],
-    /** Runs while a send's server work is in flight (before its result). */
-    onSend: null as null | (() => void),
     input: null as null | ((prompt: string) => Promise<string>),
     /** The manual triggers handed to the server (every `/trigger`). */
     serverRuns: [] as { char: any; name: string; ref: any }[],
@@ -33,8 +28,7 @@ vi.mock("../parser/parser.svelte", () => ({
         text.replace(/\{\{chat\}\}/g, arg?.chatRef?.chatId ?? "none"),
     ),
 }));
-// Keep sendChat's real busy guard and cleanup: a caller cannot make sequential sends work by
-// releasing the registry entry itself. Only the server work is stubbed.
+// The real sendChat with only the server work stubbed: a test shows that a line generated nothing.
 vi.mock("./index.svelte", async (importOriginal) => {
     const actual = await importOriginal<typeof import("./index.svelte")>();
     return {
@@ -46,10 +40,7 @@ vi.mock("./index.svelte", async (importOriginal) => {
     };
 });
 vi.mock("./serverGeneration", () => ({
-    sendChatOnServer: vi.fn(async () => {
-        hooks.onSend?.();
-        return { ok: hooks.sendResult.shift() ?? true, outcome: "started" };
-    }),
+    sendChatOnServer: vi.fn(async () => ({ ok: true, outcome: "started" })),
 }));
 vi.mock("./lorebook.svelte", () => ({ loadLoreBookV3Prompt: vi.fn(async () => ({ actives: [] })) }));
 vi.mock("./modules", () => ({
@@ -59,23 +50,17 @@ vi.mock("./modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
-// The followed-job registry is the factory's real writable: a test registers a job in another chat.
-vi.mock("./serverCommands", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("./serverCommands")>();
-    return (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({
-        checkServerJobBinding: actual.checkServerJobBinding,
+vi.mock("./serverCommands", async () =>
+    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({
         runServerManualTrigger: vi.fn(async (char: any, name: string, ref: any) => {
             hooks.serverRuns.push({ char, name, ref });
             return "started" as const;
         }),
-    });
-});
+    }),
+);
 
-import { processMultiCommand, runMultisend } from "./command";
-import { alertConfirm, alertError, alertMd } from "../alert";
-import { sendChat } from "./index.svelte";
-import { beginLocalSend, localSends } from "./localSends";
-import { followedJobs } from "./serverCommands";
+import { processMultiCommand } from "./command";
+import { alertConfirm, alertMd } from "../alert";
 import * as chat from "../storage/chatStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
 import { initializeRecords, takeRecordFields } from "../storage/records.svelte";
@@ -170,10 +155,7 @@ afterAll(() => {
 
 beforeEach(() => {
     hooks.sends.length = 0;
-    hooks.sendResult.length = 0;
-    hooks.onSend = null;
     hooks.input = null;
-    followedJobs.set(new Map());
     chat.releaseFeedLocks();
     hooks.serverRuns.length = 0;
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -184,7 +166,7 @@ afterEach(() => {
 });
 
 describe("/?", () => {
-    it("documents every command handled by processCommand in the help dialog", async () => {
+    it("documents every command handled by processCommand in the help dialog and no longer advertises /multisend", async () => {
         const source = readFileSync(resolve(__dirname, "command.ts"), "utf8");
         const commandSource = source.match(/^async function processCommand\b[\s\S]*?^}/m)?.[0];
         expect(commandSource).toBeDefined();
@@ -197,31 +179,48 @@ describe("/?", () => {
         const markdown = vi.mocked(alertMd).mock.calls[0][0];
         const headings = Array.from(markdown.matchAll(/^\s*# \/(\S+)/gm), ([, name]) => name);
         expect(headings).toEqual(expect.arrayContaining(commands));
+        expect(headings).not.toContain("multisend");
+        expect(markdown).not.toMatch(/multisend/i);
     });
 });
 
+it("recognizes the hidden multisend token after an earlier command and leaves its argument unevaluated", async () => {
+    const ref = freshChat();
+    const { risuChatParser } = await import("../parser/parser.svelte");
+    const { alertNormal } = await import("../alert");
+    vi.mocked(risuChatParser).mockClear();
+    vi.mocked(alertNormal).mockClear();
+    expect(await processMultiCommand("/echo before|  multisend {{setvar::x::1}}|/send after", ref)).toBe("");
+    expect(vi.mocked(alertNormal).mock.calls).toEqual([
+        ["before"],
+        [expect.stringMatching(/\/multisend.*removed|removed.*\/multisend/i)],
+    ]);
+    expect(vi.mocked(risuChatParser).mock.calls.map(([text]) => text)).not.toContainEqual(
+        expect.stringContaining("setvar"),
+    );
+    expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+    expect(await processMultiCommand("/multisendfoo", ref)).toBe(false);
+});
+
 describe("/cut and /del", () => {
-    it("removes immediately without a retraction question or mark for cut, del, and multisend under structured memory", async () => {
+    it("removes immediately without a retraction question or mark for cut and del under structured memory", async () => {
         const previous = settings.ui.memoryAlgorithmType;
         settings.ui.memoryAlgorithmType = "structuredMemory";
         const auth = await import("../storage/serverAuth");
         const fetch = vi.spyOn(auth, "authFetch").mockResolvedValue(new Response("{}", { status: 503 }));
         vi.mocked(alertConfirm).mockClear();
         try {
-            for (const command of ["/cut 1", "/cut 1-3", "/cut c", "/del 2", "multisend"]) {
+            for (const command of ["/cut 1", "/cut 1-3", "/cut c", "/del 2"]) {
                 const ref = freshChat();
-                if (command === "multisend") expect(await runMultisend(ref, true, ["New turn"])).toBe(true);
-                else expect(await processMultiCommand(command, ref)).toBe("");
+                expect(await processMultiCommand(command, ref)).toBe("");
                 const expected =
-                    command === "multisend"
-                        ? ["a", "b", "c", "d"]
-                        : command === "/cut 1"
-                          ? ["b"]
-                          : command === "/cut 1-3"
-                            ? ["a", "d"]
-                            : command === "/cut c"
-                              ? ["c"]
-                              : ["a", "b"];
+                    command === "/cut 1"
+                        ? ["b"]
+                        : command === "/cut 1-3"
+                          ? ["a", "d"]
+                          : command === "/cut c"
+                            ? ["c"]
+                            : ["a", "b"];
                 const { work } = commit();
                 expect(
                     work.groups.flatMap(({ ops }) => ops).filter(({ op }) => op === "remove"),
@@ -490,197 +489,5 @@ describe("/trigger on the server", () => {
         ]);
         expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
         expect(commit().work.groups).toEqual([]);
-    });
-});
-
-describe("/multisend", () => {
-    const keyOf = (ref: chat.ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
-    /** A feed lock on message `a` of `ref` (another tab's job, as the change feed announces it). */
-    const lockFromFeed = (ref: chat.ChatRef) =>
-        chat.noteRemoteStreaming([
-            { characterId: ref.chaId, id: ref.chatId, streaming: [{ messageId: "a", generationId: "g", seq: 0 }] },
-        ]);
-
-    it("refuses a part while the line's chat has a local send, a followed job, or a lock, appending nothing", async () => {
-        const ref = freshChat();
-        const release = beginLocalSend(ref)!;
-        try {
-            expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-            expect(sendChat).not.toHaveBeenCalled();
-            expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
-            // The refusal releases nothing.
-            expect([...get(localSends).keys()]).toEqual([keyOf(ref)]);
-        } finally {
-            release();
-        }
-        followedJobs.set(new Map([["job", keyOf(ref)]]));
-        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-        followedJobs.set(new Map());
-        lockFromFeed(ref);
-        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-        chat.releaseFeedLocks();
-        expect(sendChat).not.toHaveBeenCalled();
-        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
-    });
-
-    it("sends every multisend part under the command's reservation without releasing it or bypassing other work", async () => {
-        const ref = freshChat();
-        const other = freshChat();
-        const reservation = beginLocalSend(ref)!;
-        try {
-            expect(await processMultiCommand('/multisend "one|||two"', ref, reservation)).toBe("");
-            expect(texts(ref).slice(4)).toEqual(["one", "two"]);
-            expect(hooks.sends).toHaveLength(2);
-            expect([...get(localSends).keys()]).toEqual([keyOf(ref)]);
-            // The same token cannot admit a different chat or bypass a server job/message lock.
-            await processMultiCommand('/multisend "foreign"', other, reservation);
-            expect(texts(other)).toEqual(["A", "B", "C", "D"]);
-            followedJobs.set(new Map([["job", keyOf(ref)]]));
-            await processMultiCommand('/multisend "busy"', ref, reservation);
-            followedJobs.set(new Map());
-            lockFromFeed(ref);
-            await processMultiCommand('/multisend "locked"', ref, reservation);
-            chat.releaseFeedLocks();
-            expect(texts(ref).slice(4)).toEqual(["one", "two"]);
-            expect(hooks.sends).toHaveLength(2);
-            expect([...get(localSends).keys()]).toEqual([keyOf(ref)]);
-        } finally {
-            reservation();
-            followedJobs.set(new Map());
-            chat.releaseFeedLocks();
-        }
-        await processMultiCommand('/multisend "expired"', ref, reservation);
-        expect(texts(ref).slice(4)).toEqual(["one", "two"]);
-        expect(get(localSends).size).toBe(0);
-    });
-
-    it("runs in its chat while another chat has a followed job, a lock, or a local send: every part is sent", async () => {
-        const other = freshChat();
-        const ref = freshChat();
-        followedJobs.set(new Map([["job", keyOf(other)]]));
-        lockFromFeed(other);
-        expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-        expect(hooks.sends).toEqual([
-            { index: -1, arg: { target: ref } },
-            { index: -1, arg: { target: ref } },
-        ]);
-        expect(texts(ref).slice(4)).toEqual(["one", "two"]);
-        expect(texts(other)).toEqual(["A", "B", "C", "D"]);
-
-        // A local send in the other chat: `sendChat` admits this chat's parts beside it (the real
-        // `sendChat`, only the server work stubbed), so the run goes on to its last part.
-        hooks.sends.length = 0;
-        followedJobs.set(new Map());
-        chat.releaseFeedLocks();
-        const release = beginLocalSend(other)!;
-        try {
-            expect(await processMultiCommand('/multisend "three|||four"')).toBe("");
-            expect(hooks.sends).toEqual([
-                { index: -1, arg: { target: ref } },
-                { index: -1, arg: { target: ref } },
-            ]);
-            expect(texts(ref).slice(6)).toEqual(["three", "four"]);
-            // The other chat's entry is still held, and nothing of this chat's remains.
-            expect([...get(localSends).keys()]).toEqual([keyOf(other)]);
-            expect(texts(other)).toEqual(["A", "B", "C", "D"]);
-        } finally {
-            release();
-        }
-    });
-
-    it("stops before the next part when its chat becomes busy during a send, appending nothing more", async () => {
-        const ref = freshChat();
-        // Another tab's job locks the chat while the first part's send is in flight.
-        hooks.onSend = () => lockFromFeed(ref);
-        expect(await processMultiCommand('/multisend "one|||two|||three"')).toBe("");
-        expect(hooks.sends).toHaveLength(1);
-        expect(texts(ref).slice(4)).toEqual(["one"]);
-        expect(get(localSends).size).toBe(0);
-    });
-
-    it("sends every segment to the line's chat with sendChat owning its registry entry, and stops at a failed send", async () => {
-        const ref = freshChat();
-        const entry = `${ref.chaId}\u0000${ref.chatId}`;
-        const held: string[][] = [];
-        const unsubscribe = localSends.subscribe((sends) => held.push([...sends.keys()]));
-        try {
-            // Quoted: `|` outside quotes separates commands; the surrounding quotes are not sent.
-            expect(await processMultiCommand('/multisend "one|||two"')).toBe("");
-            expect(hooks.sends).toEqual([
-                { index: -1, arg: { target: ref } },
-                { index: -1, arg: { target: ref } },
-            ]);
-            expect(texts(ref).slice(4)).toEqual(["one", "two"]);
-            // Each send held the chat's entry alone and released it before the next.
-            expect(held).toEqual([[], [entry], [], [entry], []]);
-
-            hooks.sends.length = 0;
-            held.length = 0;
-            hooks.sendResult.push(true, false);
-            expect(await processMultiCommand('/multisend "three|||four|||five"')).toBe("");
-            expect(hooks.sends).toHaveLength(2);
-            expect(texts(ref).slice(6)).toEqual(["three", "four"]);
-            expect(held).toEqual([[entry], [], [entry], []]);
-        } finally {
-            unsubscribe();
-        }
-    });
-
-    it("refuses a part while its chat has orphaned lore overrides, before clearing or appending anything", async () => {
-        vi.mocked(alertError).mockClear();
-        const ref = freshChat();
-        // An override whose owner entry is gone (the character has no lore).
-        chat.setChatMeta(ref, {
-            loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
-        });
-        expect(await runMultisend(ref, true, ["one", "two"])).toBe(false);
-        expect(await runMultisend(ref, false, ["one"])).toBe(false);
-        expect(hooks.sends).toEqual([]);
-        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
-        expect(vi.mocked(alertError)).toHaveBeenCalledTimes(2);
-        expect(vi.mocked(alertError).mock.calls[0][0]).toContain("Gone entry");
-    });
-
-    it("checks again before each part: an orphan made during a part's send refuses the next before its clear", async () => {
-        vi.mocked(alertError).mockClear();
-        const ref = freshChat();
-        hooks.onSend = () =>
-            chat.setChatMeta(ref, {
-                loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
-            });
-        expect(await runMultisend(ref, true, ["one", "two"])).toBe(false);
-        expect(hooks.sends).toHaveLength(1);
-        // The first part cleared and appended; the second neither cleared nor appended.
-        expect(texts(ref)).toEqual(["one"]);
-        expect(vi.mocked(alertError)).toHaveBeenCalledTimes(1);
-    });
-
-    it("preserves the transcript when the first clear part has an incomplete binding", async () => {
-        vi.mocked(alertError).mockClear();
-        const ref = freshChat();
-        chat.setChatMeta(ref, { modelPresetId: "deleted-model" });
-        commit();
-
-        expect(await processMultiCommand('/multisend "clear|||one|||two"', ref)).toBe("");
-
-        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
-        expect(commit().work.groups).toEqual([]);
-        expect(hooks.sends).toEqual([]);
-        const { refused, fields, gone } = language.chatBinding;
-        expect(alertError).toHaveBeenCalledExactlyOnceWith(`${refused}\n${fields.modelPresetId}: ${gone}`);
-    });
-
-    it("keeps the first clear part when its send leaves the binding pending review", async () => {
-        vi.mocked(alertError).mockClear();
-        const ref = freshChat();
-        hooks.onSend = () => chat.setChatMeta(ref, { bindingReview: true });
-
-        expect(await processMultiCommand('/multisend "clear|||one|||two|||three"', ref)).toBe("");
-
-        expect(texts(ref)).toEqual(["one"]);
-        expect(hooks.sends).toHaveLength(1);
-        expect(alertError).toHaveBeenCalledExactlyOnceWith(
-            `${language.chatBinding.refused}\n${language.chatBinding.review}`,
-        );
     });
 });

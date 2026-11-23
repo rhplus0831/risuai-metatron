@@ -412,7 +412,7 @@ export function registerGenerationRoutes(
 
     /**
      * GET ?characterId=&chatId=&clientId=: read-only chat-slot lookup
-     * { jobId, kind, owned, stage?, sequence? }; 200 null idle, 400 invalid ids. Optional clientId only
+     * { jobId, kind, owned, stage?, handedOff? }; 200 null idle, 400 invalid ids. Optional clientId only
      * determines owned: it never attaches or grants channel access. Register before /:id, which
      * would otherwise capture "current" as a job id.
      */
@@ -436,7 +436,7 @@ export function registerGenerationRoutes(
 
     /**
      * POST { characterId, chatId, jobId, clientId } with x-resource-epoch aborts only that chat's
-     * named current job, including its sequence: { aborted } (false if already aborting). clientId
+     * named current job: { aborted } (false if already aborting). clientId
      * is attribution only. 400 invalid ids; 412 another epoch; 404 idle; 409 jobChanged, after which
      * the replacement must be looked up and confirmed again.
      */

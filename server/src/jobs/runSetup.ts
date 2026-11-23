@@ -1,12 +1,5 @@
 import type { CbsUsage } from "../../../shared/cbs/limits.ts";
-import {
-    type GenerationErrorStage,
-    MAX_SEQUENCE_PART_CHARS,
-    MAX_SEQUENCE_PARTS,
-    type MemoryGapChoice,
-    type MemoryTaskService,
-    type SkippedHook,
-} from "../../../shared/jobs.ts";
+import type { GenerationErrorStage, MemoryGapChoice, MemoryTaskService, SkippedHook } from "../../../shared/jobs.ts";
 import type { character, Chat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createScriptCache } from "../../../shared/scripts/regex.ts";
@@ -52,9 +45,8 @@ import type { TranslationRunner } from "../translation/runner.ts";
 
 /**
  * Job-scoped script services shared by `server/src/jobs/commandRunner.ts` and
- * `server/src/prompt/runner.ts`. Runs share the JobRunState budget, fatal latch and effect count;
- * a command sequence creates fresh state for each send. Lua and native triggers reach the same
- * bindings, and pending metadata is flushed before snapshots, writes and callback barriers.
+ * `server/src/prompt/runner.ts`. Lua and native triggers share the job's bindings, budget, fatal latch
+ * and effect count. Pending metadata is flushed before snapshots, writes and callback barriers.
  */
 
 /** Process services injected into each job; credentials stay in the request projection, never the tab's mirror. */
@@ -162,8 +154,6 @@ export type JobRunState = {
      * `context.client.emotions`, plus every emotion the job showed since), oldest first.
      */
     emotions: Map<string, string[]>;
-    /** The `/multisend` commands queued for this command job to send in order. */
-    sequence: { clear: boolean; parts: string[] }[];
     /** The auto-continue and resend rounds the job has run (at most `MAX_SEND_ROUNDS`). */
     rounds: { count: number; noticed?: boolean };
     /** The job's MCP tool sets and the tool calls its models asked for. */
@@ -228,7 +218,6 @@ export function createJobRunState(job: RunningJob, budget: LuaBudget = createLua
         scriptCache: createScriptCache(),
         assetMatches: new Map(),
         emotions: new Map(Object.entries(job.context.client?.emotions ?? {}).map(([id, names]) => [id, [...names]])),
-        sequence: [],
         rounds: { count: 0 },
         tools: createJobToolState(),
         stage: "setup",
@@ -285,14 +274,7 @@ export function moduleTriggers(scope: JobScope): triggerscript[] {
     );
 }
 
-/**
- * Binds Lua, native triggers and commands to the job's chat. `/multisend` parsed by
- * `server/src/prompt/commands.ts` queues clear + copied texts in JobRunState.sequence only for
- * command jobs; inside a send it does nothing. Across queued commands, MAX_SEQUENCE_PARTS (64)
- * parts of at most MAX_SEQUENCE_PART_CHARS (100,000) characters are allowed. An over-limit command
- * emits an alertError notice and queues none of its parts. `server/src/jobs/commandRunner.ts`
- * runs the queue only after the button, form or manual trigger finishes.
- */
+/** Binds Lua, native triggers and commands to the job's chat. */
 export function createRunSetup(
     job: RunningJob,
     deps: GenerationRunnerDeps,
@@ -446,24 +428,6 @@ export function createRunSetup(
         character: storedCharacter,
         historyMessages: (chat) => scopeHistoryMessages(scope, chat),
         runManualTrigger: runManual,
-        multisend: (clear, parts) => {
-            // In the tab `/multisend` does nothing while a send runs; a send job is that send.
-            if (job.kind !== "command") {
-                return;
-            }
-            const queued = state.sequence.reduce((count, entry) => count + entry.parts.length, 0);
-            if (
-                queued + parts.length > MAX_SEQUENCE_PARTS ||
-                parts.some((part) => part.length > MAX_SEQUENCE_PART_CHARS)
-            ) {
-                services.notice({
-                    kind: "alertError",
-                    payload: { message: "/multisend: too many or too long parts for one command" },
-                });
-                return;
-            }
-            state.sequence.push({ clear, parts: [...parts] });
-        },
     });
     const runtime = createTriggerRuntime({
         services,

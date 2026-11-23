@@ -278,6 +278,46 @@ it("keeps newer typing and refuses a second Send while a slash pipeline waits, a
     expect(ui.input().value).toBe("Newer draft typed while speech waits");
 });
 
+it.each([
+    ["/multisend clear|||hello", 1],
+    ['/multisend "clear|||hello"', 1],
+    ["/multisend|||hello", 1],
+    ["/multisend|/send hello", 1],
+    ["/multisend", 2],
+    ["/multisend a|/multisend b", 1],
+    ["/multisend a|||b|/nosuchcommand", 1],
+] as const)("consumes %j with one removal notice per submission (%i total)", async (line, submissions) => {
+    const ui = await mountComposer();
+    const { alertNormal } = await import("src/ts/alert");
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    const { isLocalSend } = await import("src/ts/process/localSends");
+    const ref = { chaId: "c", chatId: "a" };
+    const messages = JSON.parse(JSON.stringify(findChat(ref)!.message));
+    io.createJob.mockImplementation(() => new Promise(() => {}));
+    for (let attempt = 0; attempt < submissions; attempt++) {
+        vi.mocked(alertNormal).mockClear();
+        ui.type(line);
+        ui.click(ui.target.querySelector(".button-icon-send"));
+        await until(() => io.createJob.mock.calls.length > 0 || (!isLocalSend(ref) && ui.input().value === ""));
+        expect(io.createJob.mock.calls.map(([job]) => job.context.input)).toEqual([]);
+        expect(findChat(ref)!.message).toEqual(messages);
+        expect(ui.input().value).toBe("");
+        expect(alertNormal).toHaveBeenCalledExactlyOnceWith(language.multisendRemoved);
+    }
+});
+
+it("appends a literal pipe in /send text", async () => {
+    const ui = await mountComposer();
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    const chat = () => findChat({ chaId: "c", chatId: "a" })!;
+    const before = chat().message.length;
+    ui.type("/send a|b");
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await until(() => chat().message.length > before);
+    expect(chat().message.slice(before)).toMatchObject([{ role: "user", data: "a|b" }]);
+    expect(io.createJob).not.toHaveBeenCalled();
+});
+
 it("releases a failed or cancelled slash command's reservation so another command can run", async () => {
     const ui = await mountComposer();
     const { isLocalSend } = await import("src/ts/process/localSends");

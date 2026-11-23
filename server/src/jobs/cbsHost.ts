@@ -56,10 +56,7 @@ export function serverAppVersion(rootDir: string): string {
 export const SERVER_CBS_MAX_WORK = DEFAULT_CBS_MAX_WORK;
 /** One template's cooperative wall-time bound; serverCbsLimits allows tests to lengthen it. */
 export const SERVER_CBS_MAX_MS = 5_000;
-/**
- * Cumulative evaluation allowance shared by one send's or command run's evaluators and speakers.
- * Each sequence part starts fresh (`server/src/jobs/commandRunner.ts` finishCommand).
- */
+/** Cumulative evaluation allowance shared by one send's or command run's evaluators and speakers. */
 export const SERVER_CBS_JOB_MS = 60_000;
 
 /** The wall times serverCbsLimits allows: one template's and one run's cumulative allowance (tests lengthen them). */
@@ -67,8 +64,7 @@ export type ServerCbsTimeLimits = { templateMs: number; jobMs: number };
 
 /**
  * Limits over the caller's usage, shared across one send's or command run's evaluators and speakers.
- * `server/src/jobs/runSetup.ts` createJobRunState gives each sequence part fresh usage. `time`
- * replaces SERVER_CBS_MAX_MS and SERVER_CBS_JOB_MS; the work limit and the clock stay.
+ * `time` overrides SERVER_CBS_MAX_MS and SERVER_CBS_JOB_MS.
  */
 export function serverCbsLimits(usage: CbsUsage, time?: ServerCbsTimeLimits): CbsLimits {
     return {

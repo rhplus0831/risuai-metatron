@@ -456,12 +456,7 @@ describe("alert helpers over the queue", () => {
         expect(jobErrorText({ ...base, message: "windowChanged", code: "memoryRecordSkipped" })).toBe(
             "Recording stopped: the chat changed during recording",
         );
-        expect(jobErrorText({ ...base, message: "provider failed", sequence: { sent: 1, total: 3 } })).toBe(
-            "/multisend stopped after 1 of 3 parts: provider failed",
-        );
-        expect(jobErrorText({ ...base, message: "aborted", reason: "aborted", sequence: { sent: 1, total: 3 } })).toBe(
-            "aborted",
-        );
+        expect(jobErrorText({ ...base, message: "aborted", reason: "aborted" })).toBe("aborted");
         expect(current()).toEqual(none);
         expect(holder.queue.hasDialogs()).toBe(false);
     });

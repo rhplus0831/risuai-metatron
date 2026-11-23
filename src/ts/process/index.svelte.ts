@@ -4,7 +4,7 @@ import type { GenerationPreviewResult } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { sendChatOnServer, type ServerSendArg, type ServerSendResult } from "./serverGeneration";
-import { beginLocalSend, type LocalSendReservation } from "./localSends";
+import { beginLocalSend } from "./localSends";
 import { remoteSendEligible, sendChatRemotely } from "../network/remoteSend";
 
 /**
@@ -21,8 +21,6 @@ import { remoteSendEligible, sendChatRemotely } from "../network/remoteSend";
 export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
 
 type SendChatArg = ServerSendArg & {
-    /** A slash command's reservation, shared with its sequential sends and released by the command. */
-    localSendReservation?: LocalSendReservation;
     /**
      * Called when the send did not run; `ambiguous` when the create request got no answer (the input
      * may have been appended under `userMessageId`).
@@ -125,7 +123,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
     }
     const target = arg.target ?? currentChatRef();
     // The registry itself refuses a second send of the chat (read synchronously, never a derived view).
-    const release = beginLocalSend(target, arg.localSendReservation);
+    const release = beginLocalSend(target);
     if (!release) {
         arg.onServerRefused?.(arg.requestUncertain === true);
         arg.onEnd?.({
@@ -137,8 +135,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
         return { ok: false };
     }
     try {
-        const { localSendReservation: _reservation, ...request } = arg;
-        const sendArg = target ? { ...request, target } : request;
+        const sendArg = target ? { ...arg, target } : arg;
         const {
             ok,
             result,

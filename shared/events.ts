@@ -1,10 +1,4 @@
-import type {
-    GenerationKind,
-    GenerationSequence,
-    GenerationStage,
-    MemoryTaskStatus,
-    StreamingMessage,
-} from "./jobs.ts";
+import type { GenerationKind, GenerationStage, MemoryTaskStatus, StreamingMessage } from "./jobs.ts";
 import type { ChangeSet } from "./resources.ts";
 import type { RemoteCommandFrameState } from "./remoteCommands.ts";
 
@@ -67,7 +61,6 @@ export type GenerationProgressEntry = {
     at: number;
     stage?: GenerationStage;
     retry?: number;
-    sequence?: Pick<GenerationSequence, "total" | "sent">;
     /**
      * Approximate local token count of the reply being generated now. `since` is when its first
      * counted text was noted and `at` when this count was taken, in server-clock milliseconds.

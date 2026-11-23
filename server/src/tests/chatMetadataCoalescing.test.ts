@@ -341,7 +341,6 @@ describe("chat metadata coalescing", () => {
             ctx: h.run.nativeCtx,
             character: () => h.run.scope.db.characters[0],
             runManualTrigger: async () => {},
-            multisend() {},
         });
         expect(
             await commands.processMultiCommand(

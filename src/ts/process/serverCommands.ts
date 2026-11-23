@@ -105,7 +105,6 @@ import {
     noteForeignJob,
     clearForeignJob,
 } from "src/ts/process/chatStatus.svelte";
-import { incrementStatic } from "../storage/collectionStore.svelte";
 import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
 import { jobLoreStop } from "./jobLoreStop";
@@ -288,24 +287,12 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
             if (current.owned || get(followedJobs).has(current.jobId)) clearForeignJob(ref);
             else noteForeignJob(ref, current.jobId);
             const text = language.serverJob.stopOther;
-            const progress = current.sequence;
-            const sequence = progress
-                ? text.sequence.replace(/\{(part|total)\}/g, (_, field: "part" | "total") =>
-                      String(
-                          {
-                              part: Math.min(progress.sent + 1, progress.total),
-                              total: progress.total,
-                          }[field],
-                      ),
-                  )
-                : "";
             const confirm = text.confirm.replace(
-                /\{(kind|stage|sequence)\}/g,
-                (_, field: "kind" | "stage" | "sequence") =>
+                /\{(kind|stage)\}/g,
+                (_, field: "kind" | "stage") =>
                     ({
                         kind: text.kinds[current.kind],
                         stage: current.stage ? text.stages[current.stage] : text.running,
-                        sequence,
                     })[field],
             );
             if (!(await alertConfirm(confirm))) return;
@@ -873,9 +860,6 @@ async function followOnce(
                     lifecycle.terminal = { terminal: event, applied: true, kept: false };
                 }
                 applyGenerationEvent(jobId, ref, event, follow);
-                if (event.type === "sequence") {
-                    incrementStatic("messages");
-                }
             },
             {
                 ...(ticket ? { ticket } : {}),
@@ -973,28 +957,13 @@ function reportEnd(
     { creator, loreStopCaller, callerErrorCodes, reports }: FollowLifecycle,
 ): boolean {
     let errorShown = false;
-    const error = (text: string) => {
-        const shown = reportError(text, reports);
-        // A done's sequence warning is collected, but is not a failed job shown elsewhere.
-        errorShown = shown && (end === "lost" || end.type === "error");
-    };
     const notice = (text: string) => {
         if (reports) reports.push({ kind: "notice", text });
         else alertToast(text);
     };
     if (end === "lost") {
-        error(language.serverJob.lost);
+        errorShown = reportError(language.serverJob.lost, reports);
         recordClientEvent({ kind: "notice", notice: "serverJobLost" });
-    } else if (end.type === "done" && end.sequence?.stopped) {
-        const { sent, total, stopped } = end.sequence;
-        const reasons = language.serverJob.sequenceReasons;
-        const reason = Object.hasOwn(reasons, stopped) ? reasons[stopped as keyof typeof reasons] : stopped;
-        error(
-            language.serverJob.sequenceStopped.replace(
-                /\{(sent|total|reason)\}/g,
-                (_, key: "sent" | "total" | "reason") => String({ sent, total, reason }[key]),
-            ),
-        );
     } else if (loreStopCaller && jobLoreStop(end)) {
         // Shown by the waiting call, as its dialog or its own alert.
     } else if (end.type === "error" && end.code && callerErrorCodes.has(end.code)) {

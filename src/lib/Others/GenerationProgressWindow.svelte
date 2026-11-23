@@ -20,7 +20,7 @@
     /**
      * Shows while `generationProgressWindow` is on and at least one non-preview job is running.
      * Rows put the selected chat first, then sort by `startedAt` ascending. Each shows locally known
-     * character and chat names (or generic labels), stage, elapsed time, and any retry, sequence,
+     * character and chat names (or generic labels), stage, elapsed time, and any retry,
      * other-device name, output token count, and speed. A row opens its chat through `openPinnedChat`;
      * there is no Stop button here.
      *
@@ -125,9 +125,6 @@
                                             String(entry.retry),
                                         )}</span
                                     >
-                                {/if}
-                                {#if entry.sequence}
-                                    <span class="tabular-nums">{entry.sequence.sent}/{entry.sequence.total}</span>
                                 {/if}
                             </span>
                             {#if entry.clientId !== clientId}

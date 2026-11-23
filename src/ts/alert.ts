@@ -144,8 +144,7 @@ export function alertError(msg: string | Error) {
 
 /**
  * A server job's error: the message as `alertError` shows it, with the job's failure fields for the
- * alert's debug actions. Sequence progress prefixes only the shown message, leaving the failure intact.
- * `at`: when the tab received the job's end.
+ * alert's debug actions. `at` is when the tab received the job's end.
  */
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
     const message = jobErrorText(end);
@@ -165,15 +164,7 @@ export function jobErrorText(end: JobFailureInfo["end"]): string | null {
             Object.hasOwn(reasons, end.message) ? reasons[end.message] : "",
         );
     }
-    const message =
-        end.sequence && end.reason !== "aborted"
-            ? language.serverJob.sequenceStopped.replace(
-                  /\{(sent|total|reason)\}/g,
-                  (_, key: "sent" | "total" | "reason") =>
-                      String({ sent: end.sequence!.sent, total: end.sequence!.total, reason: translated }[key]),
-              )
-            : translated;
-    return errorReportText(message);
+    return errorReportText(translated);
 }
 
 /** The main text an error alert displays, or null when that message is suppressed. */

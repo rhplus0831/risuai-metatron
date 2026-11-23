@@ -474,40 +474,62 @@ describe("request identity over HTTP", () => {
 });
 
 describe("generation receipts on disk", () => {
-    it("ends an interrupted job on reopen, preserving progress and the owning tab's status", () => {
+    it("ends an interrupted job on reopen as a plain shutdown error, ignoring a legacy progress blob and keeping its request identity and the owning tab's status", () => {
         clock();
         const s = registryFixture();
         const epoch = s.store.epoch();
-        const progress = { sent: 2, parts: [null, { text: "kept", flags: [true, 3] }] };
-        s.receipts.admit(admission("interrupted", epoch, START - HOUR));
-        s.receipts.progress("interrupted", progress);
+        const identity = { requestId: "interrupted-request", fingerprint: "interrupted-fingerprint" };
+        s.receipts.admit({ ...admission("interrupted", epoch, START - HOUR), ...identity });
+        s.receipts.admit(admission("malformed", epoch, START - HOUR));
         finish(s.receipts, "finished", START - 1, epoch);
         s.receipts.close();
+        // An older server's sequence progress in the legacy column: a well-formed blob must not
+        // become a terminal `sequence`, and a malformed one must not fail the reopen or a read.
+        sql(s.file, (db) => {
+            const write = db.prepare("UPDATE receipts SET progress = ? WHERE job_id = ?");
+            write.run('{ "total": 3, "sent": 1 }', "interrupted");
+            write.run("{ not JSON", "malformed");
+        });
         vi.setSystemTime(START + 100);
         const reopened = open(s.file, epoch, () => Date.now());
         const jobs = s.registry(reopened);
-        const expected = outcome("interrupted", epoch, {
-            type: "error",
-            epoch,
-            reason: "shutdown",
-            status: 503,
-            message: "The server stopped while this job ran",
-        });
-        expect(reopened.read("interrupted")).toEqual({
+        const shutdown = (jobId: string) =>
+            outcome(jobId, epoch, {
+                type: "error",
+                epoch,
+                reason: "shutdown",
+                status: 503,
+                message: "The server stopped while this job ran",
+            });
+        const expected = shutdown("interrupted");
+        const receipt = {
             ...admission("interrupted", epoch, START - HOUR),
+            ...identity,
+            endedAt: START + 100,
+            status: expected,
+        };
+        expect(reopened.read("interrupted")).toEqual(receipt);
+        expect(reopened.read("interrupted")?.status?.terminal).not.toHaveProperty("sequence");
+        expect(reopened.readByRequest(identity.requestId)).toEqual({ ...receipt, cancelled: false });
+        expect(reopened.read("malformed")).toEqual({
+            ...admission("malformed", epoch, START - HOUR),
             requestId: null,
             fingerprint: null,
             endedAt: START + 100,
-            progress,
-            status: expected,
+            status: shutdown("malformed"),
         });
         expect(jobs.status("interrupted", "owner")).toEqual(expected);
         expect(jobs.status("interrupted", "other")).toBeNull();
         expect(jobs.status("interrupted", undefined)).toBeNull();
+        expect(jobs.status("malformed", "owner")).toEqual(shutdown("malformed"));
         expect(jobs.status("finished", "owner")).toEqual(outcome("finished", epoch));
+        expect(reopened.degraded()).toBe(false);
+        expect(sql(s.file, (db) => db.prepare("PRAGMA user_version").get())).toEqual({ user_version: 1 });
         reopened.close();
         vi.setSystemTime(START + 200);
-        expect(open(s.file, epoch).read("interrupted")?.endedAt).toBe(START + 100);
+        const again = open(s.file, epoch);
+        expect(again.read("interrupted")?.endedAt).toBe(START + 100);
+        expect(again.readByRequest(identity.requestId)).toMatchObject({ jobId: "interrupted", ...identity });
     });
 
     it("deletes other epochs at open and on sync, so switching back cannot revive them", () => {
@@ -529,18 +551,16 @@ describe("generation receipts on disk", () => {
         expect(next.read("current")).toBeNull();
     });
 
-    it("clears the oldest payload above 500 and expires payloads at 24 hours while retaining identity and progress", () => {
+    it("clears the oldest payload above 500 and expires payloads at 24 hours while retaining identity", () => {
         let now = START;
         const file = path.join(directory(), "generation-jobs.sqlite");
         const receipts = open(file, "epoch", () => now);
         // Admission order differs from end order; the earliest end must lose its payload.
         for (let n = 0; n <= 500; n++) finish(receipts, `job-${n}`, START - n);
-        receipts.progress("job-500", ["opaque", { count: 7 }]);
         receipts.prune(now);
         expect(counts(file)).toEqual({ rows: 501, payloads: 500 });
         expect(receipts.read("job-500")).toMatchObject({
             ...admission("job-500"),
-            progress: ["opaque", { count: 7 }],
             status: null,
         });
         expect(receipts.read("job-499")?.status).toEqual(outcome("job-499"));
@@ -551,7 +571,7 @@ describe("generation receipts on disk", () => {
         expect(receipts.read("job-0")).toMatchObject({ jobId: "job-0", status: null });
         receipts.prune(now);
         expect(counts(file)).toEqual({ rows: 501, payloads: 0 });
-        expect(receipts.read("job-500")?.progress).toEqual(["opaque", { count: 7 }]);
+        expect(receipts.read("job-500")).toMatchObject({ ...admission("job-500"), status: null });
         now = START + 72 * HOUR - 1;
         expect(receipts.read("job-0")).not.toBeNull();
         now++;
@@ -565,7 +585,6 @@ describe("generation receipts on disk", () => {
         const file = path.join(directory(), "generation-jobs.sqlite");
         const receipts = open(file, "epoch", () => now);
         receipts.admit(admission("running", "epoch", START - 100 * HOUR));
-        receipts.progress("running", { completed: 1 });
         for (let n = 0; n < 10_001; n++) finish(receipts, `job-${n}`, START + n);
         now += 10_001;
         receipts.prune(now);
@@ -583,7 +602,6 @@ describe("generation receipts on disk", () => {
         expect(receipts.read("running")).toMatchObject({
             ...admission("running", "epoch", START - 100 * HOUR),
             endedAt: null,
-            progress: { completed: 1 },
             status: null,
         });
         expect(receipts.degraded()).toBe(false);
@@ -606,13 +624,21 @@ describe("the registry's disk fallback", () => {
         cleanups.push(() => release.resolve());
         const id = s.create(jobs);
         // A real failed disk read would degrade the store. Neither memory path may attempt it.
-        sql(s.file, (db) => db.prepare("UPDATE receipts SET progress = ? WHERE job_id = ?").run("invalid JSON", id));
+        const breakDiskRead = () =>
+            sql(s.file, (db) =>
+                db
+                    .prepare("UPDATE receipts SET ended_at = ?, status = ? WHERE job_id = ?")
+                    .run(START, "invalid JSON", id),
+            );
+        breakDiskRead();
         vi.setSystemTime(START + 1);
         expect(jobs.status(id, "owner")?.state).toBe("running");
         expect(jobs.status(id, "other")).toBeNull();
         expect(s.receipts.degraded()).toBe(false);
         release.resolve();
         await jobs.drain();
+        // The terminal write replaced the row's status; break it again for the collected read.
+        breakDiskRead();
         expect(jobs.status(id, "owner")?.terminal).toMatchObject({ type: "done", result: "preview" });
         jobs.startGc();
         await vi.advanceTimersByTimeAsync(60_000);
@@ -655,14 +681,12 @@ describe("the registry's disk fallback", () => {
         clock();
         const s = registryFixture();
         const epoch = s.store.epoch();
-        const sequence = { total: 3, sent: 1, stopped: "notSent" };
         const terminals: GenerationTerminalEvent[] = [
             {
                 type: "done",
                 epoch,
                 revision: "r",
                 result: { preview: "private" },
-                sequence,
             },
             {
                 type: "error",
@@ -670,18 +694,16 @@ describe("the registry's disk fallback", () => {
                 reason: "failed",
                 status: 500,
                 message: "x".repeat(4095) + "€tail",
-                sequence: { total: 3, sent: 1 },
             },
         ];
         const expected: GenerationTerminalEvent[] = [
-            { type: "done", epoch, revision: "r", sequence },
+            { type: "done", epoch, revision: "r" },
             {
                 type: "error",
                 epoch,
                 reason: "failed",
                 status: 500,
                 message: "x".repeat(4095),
-                sequence: { total: 3, sent: 1 },
             },
         ];
         let current = 0;
@@ -710,7 +732,7 @@ describe("the registry's disk fallback", () => {
     });
 });
 
-const faults = ["open", "reopen", "admission", "terminal", "read", "progress", "sync", "prune"] as const;
+const faults = ["open", "reopen", "admission", "terminal", "read", "sync", "prune"] as const;
 describe("receipt failures", () => {
     it.each(faults)(
         "falls back to memory for good after a failure (%s), frees the chat, and records one content-free fault",
@@ -744,17 +766,16 @@ describe("receipt failures", () => {
                 inject("INSERT");
             }
             await jobs.drain();
-            if (["read", "progress", "sync", "prune"].includes(fault)) {
+            if (["read", "sync", "prune"].includes(fault)) {
                 expect(s.receipts.degraded()).toBe(false);
                 if (fault !== "read") inject(fault === "sync" ? "DELETE" : "UPDATE");
             }
             if (fault === "read") {
                 sql(s.file, (db) =>
-                    db.exec("UPDATE receipts SET progress = 'private invalid JSON' WHERE job_id = 'disk-only'"),
+                    db.exec("UPDATE receipts SET status = 'private invalid JSON' WHERE job_id = 'disk-only'"),
                 );
                 expect(jobs.status("disk-only", "owner")).toBeNull();
-            } else if (fault === "progress") s.receipts.progress("disk-only", { part: 1 });
-            else if (fault === "sync") s.receipts.sync("replacement");
+            } else if (fault === "sync") s.receipts.sync("replacement");
             else if (fault === "prune") s.receipts.prune(START + 24 * HOUR);
             expect(s.receipts.degraded()).toBe(true);
             expect(jobs.status(id, "owner")?.terminal).toEqual({ type: "done", epoch, revision: "r" });
@@ -766,8 +787,9 @@ describe("receipt failures", () => {
                 repaired.close();
             } else
                 sql(s.file, (db) => {
-                    db.exec(
-                        "DROP TRIGGER IF EXISTS fail_receipt; PRAGMA user_version = 1; UPDATE receipts SET progress = NULL",
+                    db.exec("DROP TRIGGER IF EXISTS fail_receipt; PRAGMA user_version = 1");
+                    db.prepare("UPDATE receipts SET status = ? WHERE job_id = 'disk-only'").run(
+                        JSON.stringify(outcome("disk-only", epoch)),
                     );
                 });
             expect(jobs.status("disk-only", "owner")).toBeNull();
@@ -778,7 +800,6 @@ describe("receipt failures", () => {
             await vi.advanceTimersByTimeAsync(60_000);
             expect(jobs.status(id, "owner")).toEqual(outcome(id, epoch));
             expect(jobs.status(next, "owner")).toEqual(outcome(next, epoch));
-            s.receipts.progress(id, [1]);
             s.receipts.sync(epoch);
             s.receipts.prune(Date.now());
             expect(s.receipts.read("disk-only")).toBeNull();
@@ -803,7 +824,6 @@ describe("server receipt lifetime", () => {
         const { generationReceipts } = first.context;
         finish(generationReceipts, "finished", START, first.epoch);
         generationReceipts.admit(admission("interrupted", first.epoch));
-        generationReceipts.progress("interrupted", { sent: 2 });
         await first.context.dispose();
         // Disposal closes the receipt connection as well as the resource store.
         expect(generationReceipts.read("finished")).toBeNull();
@@ -823,7 +843,10 @@ describe("server receipt lifetime", () => {
                 message: "The server stopped while this job ran",
             }),
         );
-        expect(second.context.generationReceipts.read("interrupted")?.progress).toEqual({ sent: 2 });
+        expect(second.context.generationReceipts.read("interrupted")).toMatchObject({
+            jobId: "interrupted",
+            endedAt: START + 1,
+        });
         expect((await read("finished", "other")).status).toBe(404);
         vi.setSystemTime(START + 24 * HOUR - 1);
         expect((await read("finished", "owner")).status).toBe(200);
@@ -866,7 +889,6 @@ it("measures receipt admission, terminal writes, and event-loop delay", { tags: 
                           epoch: "epoch",
                           revision: "r",
                           messageId: "a".repeat(36),
-                          sequence: { total: 64, sent: 64 },
                       };
             const payload = outcome(id, "epoch", terminal);
             let start = performance.now();

@@ -731,7 +731,7 @@
                 return;
             }
             try {
-                const commandProcessed = await processMultiCommand(submitted, ref, release);
+                const commandProcessed = await processMultiCommand(submitted, ref);
                 if (commandProcessed !== false) {
                     if (draft.input === submitted) {
                         draft.input = "";

@@ -38,7 +38,6 @@ const selected: GenerationProgressEntry = {
     at: 10000,
     stage: "memory",
     retry: 2,
-    sequence: { sent: 1, total: 3 },
 };
 let target: HTMLElement;
 let component: ReturnType<typeof mount>;
@@ -130,7 +129,6 @@ it("shows selected-chat progress first, names and output when known, and a ticki
     expect(currentRow.textContent).toContain("Current chat");
     expect(currentRow.textContent).toContain(language.serverJob.stopOther.stages.memory);
     expect(currentRow.textContent).toContain(language.serverJob.retried.replace("{count}", "2"));
-    expect(currentRow.textContent).toContain("1/3");
     expect(currentRow.textContent).toContain("0:02");
     expect(currentRow.textContent).not.toMatch(/≈|tokens/);
     expect(currentRow.textContent).not.toContain(language.generationProgress.anotherDevice);

@@ -1,3 +1,5 @@
+import { isRetiredMultisend } from "../../../shared/slashCommands.ts";
+import { language } from "src/lang";
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import {
     appendMessage,
@@ -13,62 +15,15 @@ import { setChatVarOf } from "../parser/chatVar.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
-import { sendChat } from "./index.svelte";
-import { chatStatusKey, generatingChatKeys, isChatBusy } from "./chatStatus.svelte";
-import type { LocalSendReservation } from "./localSends";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
-import { checkServerJobBinding, runServerManualTrigger } from "./serverCommands";
-import { refuseOrphanedOverrides } from "./loreOverrides";
+import { runServerManualTrigger } from "./serverCommands";
 
 /**
  * Executes slash-command pipelines typed in the composer against a captured, pinned chat. `processMultiCommand` loads
  * the chat before dispatch and passes its ref to chat operations and CBS parsing. Calculator variable lookup follows
  * `src/ts/process/infunctions.ts`. An unknown command returns false after any earlier effects, allowing the caller to
- * treat the line as text. Manual triggers delegate to `src/ts/process/serverCommands.ts`; page-owned multisend appends
- * and generates sequentially, stopping at the first unsuccessful send.
+ * treat the line as text. Manual triggers delegate to `src/ts/process/serverCommands.ts`.
  */
-
-/**
- * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
- * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
- * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
- * other chats' work does not refuse it. Orphaned lore overrides and an incomplete binding refuse
- * a part before its chat is cleared or appended to. Stops when a part's chat is gone, busy, or refused, or its send returns
- * false (refused, failed, lost, or stopped); false then. This is the typed command's page-owned loop;
- * command jobs run their queued parts on the server (`server/src/jobs/commandRunner.ts`).
- */
-export async function runMultisend(
-    ref: ChatRef,
-    clearMode: boolean,
-    parts: readonly string[],
-    reservation?: LocalSendReservation,
-): Promise<boolean> {
-    for (const e of parts) {
-        const chat = findChat(ref);
-        // A composer's command owns its local slot; followed jobs and message locks still refuse a part.
-        const busy = reservation
-            ? !reservation.owns(ref) || generatingChatKeys().has(chatStatusKey(ref))
-            : isChatBusy(ref);
-        if (!chat || busy || refuseOrphanedOverrides(ref) || !checkServerJobBinding(ref)) {
-            return false;
-        }
-        if (clearMode) {
-            removeMessagesUnasked(
-                ref,
-                chat.message.map((message) => message.chatId),
-            );
-        }
-        appendMessage(ref, { role: "user", data: e });
-        const sent = await sendChat(-1, {
-            target: ref,
-            ...(reservation ? { localSendReservation: reservation } : {}),
-        });
-        if (!sent) {
-            return false;
-        }
-    }
-    return true;
-}
 
 /**
  * Runs a command line typed in the chat input. Every command writes to and reads (CBS arguments,
@@ -77,36 +32,34 @@ export async function runMultisend(
  * whole line, and loaded first.
  *
  * `|` outside double quotes pipes commands until `/send`, `/sendas`, or `/comment` takes the rest of the
- * input as text, trimming only its edges. Other commands remove one surrounding double quote pair from
+ * input as text, trimming only its edges. The retired `/multisend` consumes the rest of the line and shows
+ * one removal notice. Other commands remove one surrounding double quote pair from
  * their argument. Each command's result fills the first `{{pipe}}` and the first `{{slot}}` of the next
  * one's argument, and is that argument when it has none. `false` means the line
  * contains an unknown command, even when an earlier part of it ran: the screen then sends the line as
  * ordinary text. `/send` only appends a user message; it does not generate.
  */
-export async function processMultiCommand(
-    command: string,
-    ref: ChatRef | null = currentChatRef(),
-    reservation?: LocalSendReservation,
-) {
+export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     const release = ref ? pinChat(ref) : null;
     try {
         if (ref && !(await ensureChatLoaded(ref))) {
             return "";
         }
-        return await processPinnedCommands(command, ref, reservation);
+        return await processPinnedCommands(command, ref);
     } finally {
         release?.();
     }
 }
 
-async function processPinnedCommands(command: string, ref: ChatRef | null, reservation?: LocalSendReservation) {
+async function processPinnedCommands(command: string, ref: ChatRef | null) {
     let pipe = "";
     const splited: string[] = [];
     let lastIndex = 0;
     let quoteDepth = false;
     for (let i = 0; i < command.length; i++) {
-        if (i === lastIndex && matchTextCommand(command.slice(lastIndex))) {
-            break;
+        if (i === lastIndex) {
+            const segment = command.slice(lastIndex);
+            if (isRetiredMultisend(segment) || matchTextCommand(segment)) break;
         }
         const char = command[i];
         if (char === '"') {
@@ -123,7 +76,7 @@ async function processPinnedCommands(command: string, ref: ChatRef | null, reser
             // The chat went away while an earlier command waited: the line is consumed, not sent.
             return "";
         }
-        const result = await processCommand(splited[i].trim(), pipe, ref, reservation);
+        const result = await processCommand(splited[i].trim(), pipe, ref);
         console.log(pipe);
         if (result === false) {
             return false;
@@ -138,15 +91,14 @@ async function processPinnedCommands(command: string, ref: ChatRef | null, reser
  * One command of a line. A new command is a case of this switch, with its entry in the hand-written `/?`
  * help text (the `"?"` case), which is all `/?` shows.
  */
-async function processCommand(
-    command: string,
-    pipe: string,
-    ref: ChatRef | null,
-    reservation?: LocalSendReservation,
-): Promise<false | string> {
+async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
     const currentChar = ref ? characterList().find((character) => character?.chaId === ref.chaId) : selectedCharacter();
     if (!currentChar) {
         // Its character went away; `false` would mean "not a command" and send the line as text.
+        return "";
+    }
+    if (isRetiredMultisend(command)) {
+        alertNormal(language.multisendRemoved);
         return "";
     }
     // The chat as it is now; chat writes go through the chat module, addressed by `ref`.
@@ -268,16 +220,6 @@ async function processCommand(
             } catch (error) {}
             return pipe;
         }
-        case "multisend": {
-            const splited = arg.split("|||");
-            let clearMode = false;
-            if (splited[0] && splited[0].trim() === "clear") {
-                clearMode = true;
-                splited.shift();
-            }
-            await runMultisend(ref, clearMode, splited, reservation);
-            return "";
-        }
         case "setvar": {
             // One variable merged (`setChatVarOf`): the chat's other variables stay as stored.
             setChatVarOf(ref, namedArg["key"], arg);
@@ -352,11 +294,6 @@ async function processCommand(
             # /len [array]
             - Return length of array
             - Example: /len Hello§World
-            # /multisend [text]
-            - Split text on ||| and send each part as a user message in turn
-            - If the first part is clear, remove all chat messages before sending each remaining part
-            - Quote the text: | outside quotes pipes commands
-            - Example: /multisend "Hello|||World"
             # /setvar key=[key] [value]
             - Set variable
             - Example: /setvar key=hello world

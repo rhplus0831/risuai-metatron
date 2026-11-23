@@ -74,8 +74,8 @@ export type GenerationContext = {
      * End the job before any model request, as an `error` coded `loreOverBudget`, when the lore
      * budget pass of its first assembly leaves out an activated entry without
      * `@@ignore_on_max_context`. Honored for a `send`, `continue`, `group`, or `reroll` job only;
-     * a later round, a later group speaker, and a command sequence's parts never stop. Absent or
-     * false: the entries are left out and the reply's context report names them.
+     * later rounds and later group speakers never stop. When absent or false, the entries are left
+     * out and the reply's context report names them.
      */
     stopOverLoreBudget?: boolean;
     /** Hold Web Push until released, or this many milliseconds after the registry ends the job; the tab's notice does not wait. */
@@ -202,7 +202,6 @@ export type GenerationCurrent = {
     owned: boolean;
     handedOff?: true;
     stage?: GenerationStage;
-    sequence?: Pick<GenerationSequence, "total" | "sent">;
 };
 
 /** Stops only the named job while it still holds this chat; clientId is attribution, not authority. */
@@ -406,8 +405,6 @@ export type GenerationTerminalEvent =
            * chat, nothing to continue): the tab's `sendChat` returns false.
            */
           stopped?: true;
-          /** Progress of the command job's server-run `/multisend` sequence. */
-          sequence?: GenerationSequence;
           /**
            * The plugin hooks of its replies the job skipped because no owner tab was attached when
            * they came due (`disconnected`); absent when none was. The tab runs the `chatOutput`
@@ -426,7 +423,6 @@ export type GenerationTerminalEvent =
           reason: GenerationErrorReason;
           /** A participant or chat stop from another client; present only for reason `aborted`. */
           abortedBy?: "other";
-          sequence?: GenerationSequence;
           /**
            * A runner's failure only (an abort, a timeout, shutdown, or maintenance has none): where
            * it failed, the LLM request that failed when it was one (the request history's id), and
@@ -445,9 +441,6 @@ export type GenerationTerminalEvent =
           lore?: LoreBudgetStop;
       };
 
-/** A command job's sequence progress, retained with its terminal. */
-export type GenerationSequence = { total: number; sent: number; stopped?: string };
-
 /**
  * A plugin hook of a completed reply that its job skipped because no owner tab was attached before
  * the callback's deadline: the text went on unchanged (`editoutput`, `replacerafterRequest`), or
@@ -460,11 +453,6 @@ export type GenerationSequence = { total: number; sent: number; stopped?: string
 export type SkippedHook =
     | { name: "editoutput" | "replacerafterRequest" }
     | { name: "chatOutput"; payload: { messageId: string; speakerId: string } };
-
-/** The most queued parts of one command job, and the longest part in characters. */
-export const MAX_SEQUENCE_PARTS = 64;
-/** The longest command sequence part, measured by JavaScript string length. */
-export const MAX_SEQUENCE_PART_CHARS = 100_000;
 
 // ---------------------------------------------------------------------------------------------
 // The job channel (`job-channel`): notices one way; questions and plugin callbacks are requests
@@ -961,15 +949,6 @@ export type GenerationEvent =
     | GenerationChatPatchEvent
     | { type: "progress"; epoch: string; payload: unknown }
     | GenerationChannelEvent
-    /** A completed sequence part, sent live only; it does not end the job. */
-    | {
-          type: "sequence";
-          epoch: string;
-          index: number;
-          total: number;
-          sent: number;
-          messageId?: string;
-      }
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
 

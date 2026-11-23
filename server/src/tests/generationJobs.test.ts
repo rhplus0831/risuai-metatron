@@ -591,7 +591,7 @@ describe("generation progress on the live-update feed", () => {
         }
     });
 
-    it("publishes stages, retries and sequence progress immediately with the newest output and cancels its pending publication", async () => {
+    it("publishes stages and retries immediately with the newest output and cancels its pending publication", async () => {
         clock();
         const published: Progress[] = [];
         const s = setup({ publishGeneration: (event) => published.push(event) });
@@ -608,23 +608,16 @@ describe("generation progress on the live-update feed", () => {
         expect(published).toEqual([running, { ...running, at: 300, stage: "finishing", output }]);
         await vi.advanceTimersByTimeAsync(1000);
         expect(published).toHaveLength(2);
-        for (const change of ["retry", "sequence"] as const) {
-            job.emit({ type: "stage", stage: change === "retry" ? "generating" : "finishing" });
-            const before = published.length;
-            await vi.advanceTimersByTimeAsync(100);
-            const next = { tokens: change === "retry" ? 8 : 13, since: 200, at: Date.now() };
-            job.emit({ type: "output", ...next });
-            if (change === "retry") job.emit({ type: "retry" });
-            else job.sequence!.progress({ total: 2, sent: 1 });
-            expect(published).toHaveLength(before + 1);
-            expect(published.at(-1)).toMatchObject({
-                at: Date.now(),
-                output: next,
-                ...(change === "retry" ? { retry: 1 } : { sequence: { total: 2, sent: 1 } }),
-            });
-            await vi.advanceTimersByTimeAsync(1000);
-            expect(published).toHaveLength(before + 1);
-        }
+        job.emit({ type: "stage", stage: "generating" });
+        const before = published.length;
+        await vi.advanceTimersByTimeAsync(100);
+        const next = { tokens: 8, since: 200, at: Date.now() };
+        job.emit({ type: "output", ...next });
+        job.emit({ type: "retry" });
+        expect(published).toHaveLength(before + 1);
+        expect(published.at(-1)).toMatchObject({ at: Date.now(), stage: "generating", output: next, retry: 1 });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toHaveLength(before + 1);
     });
 
     it("keeps the estimate on retry and immediately publishes its removal when the output is discarded", async () => {
@@ -757,7 +750,7 @@ describe("generation progress on the live-update feed", () => {
         }
     });
 
-    it("publishes changed stages, every retry and changed command progress with the creating client", async () => {
+    it("publishes changed stages and every retry with the creating client", async () => {
         clock();
         const published: Progress[] = [];
         const s = setup({ publishGeneration: (event) => published.push(event) });
@@ -784,14 +777,6 @@ describe("generation progress on the live-update feed", () => {
         vi.setSystemTime(140);
         job.emit({ type: "stage", stage: "finishing" });
         job.emit({ type: "stage", stage: "finishing" });
-        vi.setSystemTime(150);
-        job.sequence!.progress({ total: 2, sent: 0 });
-        job.sequence!.progress({ total: 2, sent: 0 });
-        vi.setSystemTime(160);
-        job.sequence!.progress({ total: 2, sent: 1 });
-        job.sequence!.progress({ total: 2, sent: 1 });
-        vi.setSystemTime(170);
-        job.sequence!.progress({ total: 3, sent: 1 });
         vi.setSystemTime(180);
         job.emit({ type: "retry" });
 
@@ -803,15 +788,10 @@ describe("generation progress on the live-update feed", () => {
             { ...running, at: 120, stage: "generating", retry: 1 },
             { ...running, at: 130, stage: "generating", retry: 2 },
             { ...running, at: 140, stage: "finishing" },
-            { ...running, at: 150, stage: "finishing", sequence: { total: 2, sent: 0 } },
-            { ...running, at: 160, stage: "finishing", sequence: { total: 2, sent: 1 } },
-            { ...running, at: 170, stage: "finishing", sequence: { total: 3, sent: 1 } },
-            { ...running, at: 180, stage: "finishing", retry: 1, sequence: { total: 3, sent: 1 } },
+            { ...running, at: 180, stage: "finishing", retry: 1 },
         ]);
         vi.setSystemTime(190);
-        expect(s.jobs.generationSnapshot()).toEqual([
-            { ...entry, at: 190, stage: "finishing", retry: 1, sequence: { total: 3, sent: 1 } },
-        ]);
+        expect(s.jobs.generationSnapshot()).toEqual([{ ...entry, at: 190, stage: "finishing", retry: 1 }]);
     });
 
     it("omits a running job of an earlier epoch from snapshots and publishes neither its progress nor its end", async () => {
@@ -831,7 +811,8 @@ describe("generation progress on the live-update feed", () => {
         published.length = 0;
         job.emit({ type: "stage", stage: "generating" });
         job.emit({ type: "retry" });
-        job.sequence!.progress({ total: 2, sent: 1 });
+        job.emit({ type: "output", tokens: 3, since: 100, at: 100 });
+        await vi.advanceTimersByTimeAsync(1000);
         job.emit({ type: "done", revision: s.revision() });
         expect(s.jobs.status(jobId, "tab")?.state).toBe("ended");
         expect(published).toEqual([]);
@@ -853,7 +834,9 @@ describe("generation progress on the live-update feed", () => {
             const job = await held.started;
             job.emit({ type: "stage", stage: "generating" });
             job.emit({ type: "retry" });
-            job.sequence!.progress({ total: 2, sent: 1 });
+            // The throttled output publication fails on its timer, as the immediate ones do.
+            job.emit({ type: "output", tokens: 3, since: 100, at: 100 });
+            await vi.advanceTimersByTimeAsync(1000);
             expect(s.jobs.status(jobId, "tab")).toEqual({
                 jobId,
                 ...ref,
@@ -865,7 +848,6 @@ describe("generation progress on the live-update feed", () => {
                 type: "done" as const,
                 revision: s.revision(),
                 result: { text: "private result" },
-                sequence: { total: 2, sent: 1 },
             };
             job.emit(terminal);
             held.finish();
@@ -1656,6 +1638,22 @@ describe("the end of a job", () => {
         await expect(Promise.race([snapshots.stop(), sleep(500).then(() => "timeout")])).resolves.toBeUndefined();
     });
 
+    it("times out a running send at thirty minutes from admission", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        let now = 1000;
+        const { jobs, create, run } = setup({ now: () => now });
+        const finished = run(aborted);
+        const jobId = create();
+        jobs.startGc();
+        now += 30 * 60_000 - 1;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(jobs.status(jobId, "tab")?.state).toBe("running");
+        now++;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(jobs.status(jobId, "tab")?.terminal).toMatchObject({ type: "error", reason: "timeout" });
+        await finished;
+    });
+
     it("lets the first abort decide the outcome and fixes one deadline per job, after which a runner that ignores its signal is ended for it", async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const { jobs, create, run, owner, revision } = setup();
@@ -2145,14 +2143,12 @@ describe("the kept outcome of a collected job", () => {
         const s = setup();
         const { jobs, store, revision, follow } = s;
         jobs.startGc();
-        const sequence = { total: 2, sent: 1, stopped: "notSent" };
         const jobId = await endJob(s, (job) =>
             job.emit({
                 type: "done",
                 revision: revision(),
                 messageId: "r",
                 result: { assembled: "x".repeat(10_000) },
-                sequence,
             }),
         );
         // Still live inside the grace: the whole terminal, not kept.
@@ -2176,7 +2172,6 @@ describe("the kept outcome of a collected job", () => {
                 epoch: store.epoch(),
                 revision: revision(),
                 messageId: "r",
-                sequence,
             },
             kept: true,
         });
@@ -2186,28 +2181,15 @@ describe("the kept outcome of a collected job", () => {
         await expect(follow(jobId)).rejects.toThrow();
     });
 
-    it("trims a kept terminal: a sequence summary is kept, and an error message is cut to 4 KiB at a code point boundary", async () => {
+    it("trims a kept terminal's error message to 4 KiB at a code point boundary", async () => {
         fakeClock();
         const s = setup();
-        const { jobs, revision } = s;
+        const { jobs } = s;
         jobs.startGc();
-        const sequenceDone = await endJob(s, (job) =>
-            job.emit({
-                type: "done",
-                revision: revision(),
-                sequence: { total: 2, sent: 2 },
-            }),
-        );
         // 4095 one-byte characters, then a three-byte one that the 4096-byte limit cuts through.
         const message = "x".repeat(MAX_KEPT_MESSAGE_BYTES - 1) + "\u20ac" + "z".repeat(10);
         const longError = await endJob(s, (job) => job.emit({ type: "error", message, status: 500, reason: "failed" }));
         await collect();
-        expect(jobs.status(sequenceDone, "tab")?.terminal).toEqual({
-            type: "done",
-            epoch: expect.any(String),
-            revision: expect.any(String),
-            sequence: { total: 2, sent: 2 },
-        });
         const kept = jobs.status(longError, "tab")?.terminal;
         expect(kept).toMatchObject({ type: "error", status: 500, reason: "failed" });
         const cut = (kept as { message: string }).message;

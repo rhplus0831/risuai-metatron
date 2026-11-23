@@ -326,7 +326,7 @@ export const languageKorean = {
         contextMeterLookahead:
             "하이파 V3 백그라운드 요약 사용 시, 다음 전송에서 백그라운드 사전 요약이 시작되는 지점을 미터 막대에 점선으로 표시합니다. 이 지점은 한계 도달로 인해 반드시 요약해야 하는 시점보다 앞쪽에 위치합니다.",
         loreBudgetStop:
-            "로어북 토큰 한도 때문에 활성화된 항목이 제외되면, 채팅 화면에서 시작한 전송·이어쓰기·리롤을 모델 호출 전에 멈추고 어떻게 할지 묻습니다. 플러그인, 자동 모드, 멀티센드, 명령어로 시작한 전송은 멈추지 않으며, 전송 후 컨텍스트 미터가 경고합니다. `@@ignore_on_max_context`가 지정된 항목은 전송을 멈추지 않습니다. 채팅별로 끌 수 있습니다.",
+            "로어북 토큰 한도 때문에 활성화된 항목이 제외되면, 채팅 화면에서 시작한 전송·이어쓰기·리롤을 모델 호출 전에 멈추고 어떻게 할지 묻습니다. 플러그인, 자동 모드, 명령어로 시작한 전송은 멈추지 않으며, 전송 후 컨텍스트 미터가 경고합니다. `@@ignore_on_max_context`가 지정된 항목은 전송을 멈추지 않습니다. 채팅별로 끌 수 있습니다.",
         generationProgressWindow:
             "오른쪽 위의 작은 창에 서버에서 생성 중인 모든 응답의 진행 단계와 경과 시간이 표시됩니다. 모델이 응답을 스트리밍하는 동안에는 생성한 토큰 수와 속도도 표시됩니다.",
         halfStreaming:
@@ -1320,6 +1320,7 @@ export const languageKorean = {
         closed: "채팅이 휴지통으로 이동하여 닫혔습니다.",
         checkpointsClosed: "채팅이 휴지통으로 이동하여 체크포인트 창을 닫았습니다.",
     },
+    multisendRemoved: "/multisend 명령어가 삭제되었습니다.",
     chatGenerating: "이 채팅에서 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
     rerollRepliesNotRestored:
         "새 답변이 생성되지 않았으며, 다른 곳에서 이 채팅을 생성 중이거나 최신 상태를 불러오지 못해 리롤 전에 지운 답변을 안전하게 되돌리지 못했습니다.",
@@ -1329,14 +1330,13 @@ export const languageKorean = {
         stoppedElsewhere: "다른 탭이나 기기에서 이 작업을 중지했습니다.",
         stopOther: {
             label: "이 채팅에서 실행 중인 작업 중지",
-            confirm: "{kind} 작업을 중지할까요? ({stage}{sequence})",
+            confirm: "{kind} 작업을 중지할까요? ({stage})",
             idle: "이 채팅에서 실행 중인 작업이 없습니다.",
             invalidCurrent: "서버에서 올바르지 않은 작업 조회 응답을 받았습니다.",
             invalidStop: "서버에서 올바르지 않은 작업 중지 응답을 받았습니다.",
             lookupTimedOut: "현재 작업 조회 요청 시간이 초과되었습니다. 중지를 다시 시도해 주세요.",
             stopTimedOut: "작업 중지 요청 시간이 초과되었습니다. 중지를 다시 시도해 주세요.",
             running: "실행 중",
-            sequence: ", 전체 {total}개 중 {part}번째",
             kinds: {
                 send: "응답 생성",
                 continue: "응답 이어쓰기",
@@ -1359,17 +1359,6 @@ export const languageKorean = {
         lost: "서버 작업과의 연결이 끊어졌습니다. 반영된 변경 사항을 확인하려면 채팅을 다시 불러와 주세요.",
         endedAway: "자리를 비운 사이 응답 생성이 완료되어 채팅을 새로 불러왔습니다",
         hooksSkipped: "자리를 비운 사이 다음 플러그인 처리를 건너뛰었습니다: {hooks}",
-        sequenceStopped: "/multisend가 전체 {total}개 중 {sent}개를 보낸 뒤 중단되었습니다: {reason}",
-        sequenceReasons: {
-            shutdown: "서버를 종료하고 있습니다",
-            maintenance: "서버가 점검 중입니다",
-            EpochMismatch: "서버 데이터가 교체되었습니다",
-            chatNotFound: "채팅이 더 이상 존재하지 않습니다",
-            chatBindingIncomplete: "채팅 설정이 완료되지 않았습니다",
-            chatBindingMismatch: "채팅 설정이 변경되었습니다",
-            chatLoreOverrideOrphaned: "원본이 삭제된 로어 덮어쓰기 항목이 있습니다",
-            notSent: "해당 순서의 전송이 완료되지 않았습니다",
-        },
         discarded: {
             send: "데이터 충돌로 로컬 변경 사항이 취소되어 메시지를 보내지 않았습니다.",
             button: "데이터 충돌로 로컬 변경 사항이 취소되어 버튼을 실행하지 않았습니다.",

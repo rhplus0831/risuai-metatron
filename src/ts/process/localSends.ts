@@ -15,8 +15,8 @@ const sends = writable<ReadonlyMap<string, ChatRef | null>>(new Map());
 
 const TAB_SEND_KEY = "";
 
-/** A release that can also prove a nested command send belongs to this still-held reservation. */
-export type LocalSendReservation = (() => void) & { owns(ref: ChatRef | null): boolean };
+/** Releases the entry acquired by `beginLocalSend`. */
+export type LocalSendReservation = () => void;
 
 function localSendKey(ref: ChatRef): string {
     return `${ref.chaId}\u0000${ref.chatId}`;
@@ -38,13 +38,9 @@ export const anyLocalSend: Readable<boolean> = derived(sends, (current) => curre
 /**
  * Takes `ref`'s entry (null: the tab entry) and returns its release, which removes it once (later
  * calls do nothing); null when that entry is already held. A held entry refuses a second take, so a
- * release never removes a newer send's entry. A command's still-current `reservation` may be borrowed
- * by its sequential sends; their release does nothing, leaving the command responsible for its slot.
+ * release never removes a newer send's entry.
  */
-export function beginLocalSend(ref: ChatRef | null, reservation?: LocalSendReservation): LocalSendReservation | null {
-    if (reservation) {
-        return reservation.owns(ref) ? Object.assign(() => {}, { owns: reservation.owns }) : null;
-    }
+export function beginLocalSend(ref: ChatRef | null): LocalSendReservation | null {
     const key = ref ? localSendKey(ref) : TAB_SEND_KEY;
     if (get(sends).has(key)) {
         return null;
@@ -72,10 +68,7 @@ export function beginLocalSend(ref: ChatRef | null, reservation?: LocalSendReser
         release();
         throw error;
     }
-    return Object.assign(release, {
-        owns: (target: ChatRef | null) =>
-            held && (target ? localSendKey(target) : TAB_SEND_KEY) === key && get(sends).get(key) === entry,
-    });
+    return release;
 }
 
 /**

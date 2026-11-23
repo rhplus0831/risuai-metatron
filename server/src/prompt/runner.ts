@@ -121,7 +121,7 @@ import { createScriptProcessor } from "./scripts.ts";
 import { localModelRefusal } from "./transformers.ts";
 import { hasRequestTriggers, parseChatML } from "./triggers.ts";
 
-// Command-sequence facades share their registry job's signal, so they also share this notice limit.
+// Limit repeated candidate and checkpoint notices to one of each code per job.
 const candidateNotices = new WeakMap<RunningJob["signal"], Set<CandidateNoticeCode>>();
 /** Coded notices keep an English fallback for older tabs; current tabs use their locale catalog. */
 function candidateNotice(job: RunningJob, code: CandidateNoticeCode): void {
@@ -370,8 +370,7 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * with stage `assembly`, code `loreOverBudget`, and the pass's result as `lore`. It ends right after
  * lore activation, which then wrote no keep or don't-activate-after-match flag: no history, memory,
  * tool listing, or request ran, and what steps 1 to 3 and assembly before activation stored stays
- * (the user message included). A later round or group speaker, a preview, and a command sequence's
- * part never stop this way.
+ * (the user message included). Later rounds, later group speakers, and previews never stop this way.
  *
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
  * it, and always in a preview, which writes no message, the job ends with the error.
@@ -407,13 +406,10 @@ export type PromptSendResult =
  * Runs one send, including failure metadata, without ending the registry job. After final chat
  * writes and before returning, hands translations and due memory input to their detached services;
  * failures of those services' hand-offs cannot fail the send. `runPromptJob` emits done only after
- * this returns; `server/src/jobs/commandRunner.ts` uses the same boundary for each sequence part.
+ * this returns.
  */
-export async function runPromptSend(
-    job: RunningJob,
-    deps: GenerationRunnerDeps,
-    state: JobRunState = createJobRunState(job, deps.scriptWorkers.createBudget()),
-): Promise<PromptSendResult> {
+export async function runPromptSend(job: RunningJob, deps: GenerationRunnerDeps): Promise<PromptSendResult> {
+    const state = createJobRunState(job, deps.scriptWorkers.createBudget());
     let setup: RunSetup | null = null;
     try {
         return await runSend(job, deps, state, (next) => {

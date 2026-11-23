@@ -49,7 +49,7 @@ it("replaces hello snapshots, upserts running jobs, removes ended jobs, and rese
     expect(runningGenerations()).toEqual([]);
 });
 
-it("drops malformed running frames and hello entries field by field without admitting partial data", () => {
+it("drops malformed running frames and hello entries field by field without admitting partial data, and ignores a legacy sequence field", () => {
     replaceGenerations([entry]);
     const invalidFields = [
         { jobId: null },
@@ -62,8 +62,6 @@ it("drops malformed running frames and hello entries field by field without admi
         { stage: "unknown" },
         { retry: -1 },
         { retry: 0.5 },
-        { sequence: { sent: "1", total: 2 } },
-        { sequence: { sent: 1, total: -2 } },
         { output: { tokens: -1, since: 8000, at: 10000 } },
         { output: { tokens: 1, since: "8000", at: 10000 } },
         { output: { tokens: 1, since: 8000, at: NaN } },
@@ -79,6 +77,13 @@ it("drops malformed running frames and hello entries field by field without admi
         { ...entry, jobId: "valid" },
     ]);
     expect(runningGenerations()).toEqual([{ ...entry, jobId: "valid" }]);
+    // An older server's `sequence`, well formed or not, neither drops its entry nor is kept.
+    replaceGenerations([{ ...entry, sequence: { sent: "1", total: 2 } }]);
+    expect(runningGenerations()).toEqual([entry]);
+    noteGenerationFrame({ ...entry, state: "running", stage: "generating", sequence: { sent: 1, total: -2 } });
+    expect(runningGenerations()).toEqual([{ ...entry, stage: "generating" }]);
+    noteGenerationFrame({ ...entry, state: "running", stage: "memory", sequence: { sent: 1, total: 3 } });
+    expect(runningGenerations()).toEqual([{ ...entry, stage: "memory" }]);
 });
 
 it("uses the latest server clock offset for elapsed time and clears it on reset", () => {

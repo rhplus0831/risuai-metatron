@@ -215,7 +215,7 @@
       "guide": "scripts-triggers"
     },
     {
-      "match": "server/src/tests/{chatBinding,commandSequences,completionHolds,dynamicAssets,generation*,jobChannel,jobMetadataScope,jobModules,jobRequestModelPreflight,jobScope*,outputMeter,promptRunner,thoughts,tokenRoutes,transform,transformService,translate}.test.ts",
+      "match": "server/src/tests/{chatBinding,completionHolds,dynamicAssets,generation*,jobChannel,jobMetadataScope,jobModules,jobRequestModelPreflight,jobScope*,outputMeter,promptRunner,thoughts,tokenRoutes,transform,transformService,translate}.test.ts",
       "guide": "server-generation"
     },
     {

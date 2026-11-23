@@ -1,3 +1,4 @@
+import { isRetiredMultisend } from "../../../shared/slashCommands.ts";
 import type { character, Chat, groupChat, Message } from "../../../shared/database.ts";
 import type { LuaBindingServices } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
@@ -13,12 +14,6 @@ export type CommandHost = {
     historyMessages?(chat: Chat): readonly Message[];
     /** `/trigger`: a manual trigger on the job's chat as stored now, its result applied after. */
     runManualTrigger(name: string): Promise<void>;
-    /**
-     * `/multisend`: the parts to send in turn, with the tab's `clear` mode. A command job queues them
-     * to send on the server after its scripts finish; inside a send nothing happens, as in the tab
-     * while a send runs.
-     */
-    multisend(clear: boolean, parts: string[]): void;
 };
 
 /** The client's `/?` text. */
@@ -79,15 +74,12 @@ const HELP_TEXT = `
             `;
 
 /**
- * `processMultiCommand` of `src/ts/process/command.ts` on the job's chat: the same pipe and quote
- * splitting, argument parsing (removing one pair of surrounding double quotes before pipe/slot
- * substitution), and CBS of the arguments, each command reading and writing the job's chat as stored
- * when it runs. `/comment`, indexed/ranged `/cut`, and `/del` resolve through the job's
- * history view of that stored chat. Alerts and questions go through the job's channel (`/speak` as a
- * `tts` notice, `/?` as `alertMd`). `/multisend` splits parts on `|||` with an optional leading
- * `clear`, then delegates queueing to `server/src/jobs/runSetup.ts` through host.multisend for
- * server execution by `server/src/jobs/commandRunner.ts`; /send and /sendas only append. A question
- * that is not answered ends the line with its error.
+ * Runs a trigger's command line against the job's chat. Every unquoted pipe separates commands
+ * until the retired `/multisend` consumes the rest of the line. Commands remove one pair of
+ * surrounding double quotes before pipe/slot substitution and CBS evaluation of their arguments.
+ * Each command reads and writes the job's chat as stored when it runs. `/comment`, indexed/ranged
+ * `/cut`, and `/del` use its history view. Alerts and questions go through the job's channel
+ * (`/speak` as a `tts` notice, `/?` as `alertMd`). An unanswered question ends the line with its error.
  */
 export function createCommandExecutor(host: CommandHost) {
     const { services, ctx } = host;
@@ -101,6 +93,7 @@ export function createCommandExecutor(host: CommandHost) {
         let lastIndex = 0;
         let quoteDepth = false;
         for (let i = 0; i < command.length; i++) {
+            if (i === lastIndex && isRetiredMultisend(command.slice(lastIndex))) break;
             const char = command[i];
             if (char === '"') {
                 quoteDepth = !quoteDepth;
@@ -137,12 +130,13 @@ export function createCommandExecutor(host: CommandHost) {
             // Its character went away; `false` would mean "not a command" and send the line as text.
             return "";
         }
+        if (isRetiredMultisend(command)) return "";
         const parsed = commandParser(command, pipe);
         const { commandName, namedArg } = parsed;
         let { arg } = parsed;
 
-        // These commands reach providers; refusing them must still consume the command line.
-        if (!lowLevelAccess && (commandName === "multisend" || commandName === "speak")) {
+        // Speaking can reach a provider. Refusing it still consumes the command.
+        if (!lowLevelAccess && commandName === "speak") {
             return pipe;
         }
 
@@ -285,16 +279,6 @@ export function createCommandExecutor(host: CommandHost) {
                     }
                 } catch {}
                 return pipe;
-            }
-            case "multisend": {
-                const splited = arg.split("|||");
-                let clearMode = false;
-                if (splited[0] && splited[0].trim() === "clear") {
-                    clearMode = true;
-                    splited.shift();
-                }
-                host.multisend(clearMode, splited);
-                return "";
             }
             case "setvar": {
                 const value = arg;

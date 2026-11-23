@@ -382,7 +382,7 @@ measurement and streaming timing checks see the [slow-test table](test-harness.m
 - Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
   ([test-harness](test-harness.md)); `e2e`: `e2e/multiClientGeneration.spec.ts`, two-client lock.
 - Jobs:
-  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner,outputMeter,completionHolds}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,generationBarrier,jobChannel,promptRunner,outputMeter,completionHolds}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
 - LLM and tokens: `pnpm --silent test:agent server/src/tests/{llmRoutes,llmRequests,tokenRoutes,tokens}.test.ts`.
 - Job modules and CBS: `pnpm --silent test:agent server/src/tests/{jobModules,dynamicAssets,cbs}.test.ts`.

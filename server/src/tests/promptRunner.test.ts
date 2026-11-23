@@ -802,6 +802,169 @@ describe("trigger stage chat copies", () => {
     });
 });
 
+describe("stored trigger command jobs", () => {
+    it("finishes after the handler following /multisend without a provider request or chat write", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            messages: [{ role: "user", chatId: "u", data: "keep this message" }],
+            triggerscript: [
+                trig("manual", [ef("v2Command", v("/multisend a|||b"))]),
+                trig("manual", [ef("v2Command", v("/echo finished|/multisend c|/echo leaked"))]),
+            ],
+        });
+        const before = await readChat(chaId);
+        const requests = bodies.length;
+        const logs = (["log", "warn", "error"] as const).map((level) => vi.spyOn(console, level).mockClear());
+        const { terminal, events } = await job("command", chaId, {}, { command: { type: "manual", name: "manual" } });
+        expect(events.filter((event) => event.type === "notice").map(({ kind, payload }) => [kind, payload])).toEqual([
+            ["alertNormal", { message: "finished" }],
+        ]);
+        expect(bodies).toHaveLength(requests);
+        expect(terminal).toMatchObject({ type: "done", revision: before.revision });
+        expect(terminal).not.toHaveProperty("sequence");
+        expect(await readChat(chaId)).toEqual(before);
+        for (const log of logs) expect(log.mock.calls.flat().join(" ")).not.toMatch(/multisend/i);
+    });
+
+    it.each([undefined, false, true])("uses the trigger owner's /speak grant (%s)", async (lowLevelAccess) => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { lowLevelAccess },
+            triggerscript: [{ ...trig("manual", [ef("v2Command", v("/speak aloud"))]), lowLevelAccess: true }],
+        });
+        const { events, terminal } = await job("command", chaId, {}, { command: { type: "manual", name: "manual" } });
+        expect(terminal?.type).toBe("done");
+        expect(
+            events.filter((event) => event.type === "notice" && event.kind === "tts").map(({ payload }) => payload),
+        ).toEqual(lowLevelAccess ? [{ chaId, text: "aloud" }] : []);
+    });
+
+    it.each([undefined, false, true])(
+        "uses the trigger owner's grant (%s) for provider token counts",
+        async (lowLevelAccess) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            onTestFinished(() => {
+                vi.useRealTimers();
+            });
+            const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+            const local = vi.spyOn(tokenizers, "encode").mockResolvedValue([1, 2, 3, 4, 5]);
+            const remote = vi.fn<typeof fetch>(async () => Response.json({ totalTokens: 7 }));
+            const counter = tokenCounters.createTokenCounter({ tokenizers, fetchImpl: remote });
+            const count = vi.spyOn(runnerTokens, "count").mockImplementation(counter.count);
+            const providers = (await single("providers")).data;
+            const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+            const secrets = runnerStoreOptions.kinds.get("llmSecrets")!;
+            const original = runnerStore.get(secrets, "main")!;
+            try {
+                runnerStore.put(
+                    secrets,
+                    "main",
+                    { ...(original.data as object), google: { accessToken: "test-key" } },
+                    original.revision,
+                );
+                await patchPreset("modelProfiles", profileId, { modelId: "gemini-2.5-flash" });
+                await patchProviders({ googleClaudeTokenizing: true, useTokenizerCaching: false });
+                const enabled = await single("providers");
+                const chaId = await seedCharacter({
+                    name: "Ann",
+                    extra: {
+                        lowLevelAccess,
+                        globalLore: [
+                            {
+                                key: "",
+                                secondkey: "",
+                                content: "lore count",
+                                comment: "Lore",
+                                insertorder: 100,
+                                mode: "normal",
+                                alwaysActive: true,
+                                selective: false,
+                            },
+                        ],
+                    },
+                    triggerscript: [
+                        {
+                            ...trig("manual", [
+                                ef("v2Tokenize", { ...v("native count"), outputVar: "nativeTokens" }),
+                                ef("v2SystemPrompt", { ...v("system count"), location: "promptend" }),
+                                ef("triggerlua", {
+                                    code: 'manual = async(function(id) local n = getTokens(id, "lua count"):await() setChatVar(id, "luaTokens", n) end)',
+                                }),
+                                ef("v2Command", v("/test_lorebook")),
+                            ]),
+                            lowLevelAccess: true,
+                        },
+                    ],
+                });
+                const { terminal } = await job("command", chaId, {}, { command: { type: "manual", name: "manual" } });
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect((await readChat(chaId)).data.scriptstate).toMatchObject({
+                    $nativeTokens: lowLevelAccess ? "7" : "5",
+                    $luaTokens: lowLevelAccess ? 7 : 5,
+                });
+                const texts = ["native count", "system count\n\n", "lua count", "lore count"].sort();
+                expect(local.mock.calls.map(([, text]) => text).sort()).toEqual(lowLevelAccess ? [] : texts);
+                expect(
+                    remote.mock.calls
+                        .map(([url, init]) => {
+                            expect(String(url)).toBe(
+                                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens?key=test-key",
+                            );
+                            return JSON.parse(String(init?.body)).contents[0].parts[0].text;
+                        })
+                        .sort(),
+                ).toEqual(lowLevelAccess ? texts : []);
+                expect(await single("providers")).toEqual(enabled);
+            } finally {
+                count.mockRestore();
+                await tokenizers.dispose();
+                runnerStore.put(secrets, "main", original.data, runnerStore.get(secrets, "main")!.revision);
+                await patchPreset("modelProfiles", profileId, profile);
+                await patchProviders(providers);
+            }
+        },
+    );
+});
+
+it.each([undefined, false, true])(
+    "uses the input trigger owner's grant (%s) to write the chat's bound persona during a send",
+    async (lowLevelAccess) => {
+        await prepareLoreBudgetJob();
+        const original = await single("personas");
+        const bound = { ...original.data[0], id: "other-persona", personaPrompt: "original prompt" };
+        const put = async (data: unknown, baseRevision: string) => {
+            expect((await batch({ ops: [{ kind: "personas", id: "main", data, baseRevision }] })).status).toBe(200);
+        };
+        await put([...original.data, bound], original.revision);
+        try {
+            const seeded = await single("personas");
+            const chaId = await seedCharacter({
+                name: "Ann",
+                extra: { lowLevelAccess },
+                chat: { bindedPersona: bound.id },
+                triggerscript: [
+                    { ...trig("input", [ef("v2SetPersonaDesc", v("updated prompt"))]), lowLevelAccess: true },
+                ],
+            });
+            const requests = bodies.length;
+            const { terminal } = await job("send", chaId, { input: "hello", personaId: bound.id });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(bodies).toHaveLength(requests + 1);
+            const after = await single("personas");
+            expect(after.data).toEqual(
+                seeded.data.map((persona: { id: string }) =>
+                    lowLevelAccess && persona.id === bound.id
+                        ? { ...persona, personaPrompt: "updated prompt" }
+                        : persona,
+                ),
+            );
+            if (!lowLevelAccess) expect(after.revision).toBe(seeded.revision);
+        } finally {
+            await put(original.data, (await single("personas")).revision);
+        }
+    },
+);
+
 describe("a send", () => {
     it("stores whole legacy string snapshots on send and continue without character candidates", async () => {
         const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
@@ -4172,10 +4335,7 @@ describe("in-place reply candidates", () => {
             messages: [{ role: "user", chatId: "u", data: "Question." }],
             triggerscript: [
                 {
-                    ...trig("manual", [
-                        ef("v2Command", v("/send From command")),
-                        ef("v2Command", v("/multisend Next sample")),
-                    ]),
+                    ...trig("manual", [ef("v2Command", v("/send From command"))]),
                     comment: "commands",
                 },
             ],
@@ -4200,27 +4360,22 @@ describe("in-place reply candidates", () => {
             { id: expect.any(String), data: "Third sample." },
         ]);
         expect(new Set(reply.candidates.map((entry: any) => entry.id)).size).toBe(3);
-        const sequence = await job("command", chaId, {}, { command: { type: "manual", name: "commands" } });
-        expect(sequence.terminal).toMatchObject({
+        const command = await job("command", chaId, {}, { command: { type: "manual", name: "commands" } });
+        expect(command.terminal).toMatchObject({ type: "done", epoch, revision: (await readChat(chaId)).revision });
+        expect(command.terminal).not.toHaveProperty("alternatives");
+        // The next sampled reply, after the command's own message, takes the candidates and the checkpoint.
+        const next = await job("send", chaId);
+        expect(next.terminal).toMatchObject({
             type: "done",
             epoch,
             revision: (await readChat(chaId)).revision,
-            sequence: { total: 1, sent: 1 },
-        });
-        expect(sequence.terminal).not.toHaveProperty("alternatives");
-        const part = sequence.events.filter((event) => event.type === "sequence");
-        expect(part).toHaveLength(1);
-        expect(part[0]).not.toHaveProperty("alternatives");
-        expect(part[0]).toMatchObject({
-            type: "sequence",
-            epoch,
-            index: 0,
-            total: 1,
-            sent: 1,
             messageId: expect.any(String),
         });
+        expect(next.terminal).not.toHaveProperty("alternatives");
         const afterCommand = await readChat(chaId);
         expect(afterCommand.data.message.some((entry: any) => entry.data === "From command")).toBe(true);
+        expect(afterCommand.data.message.at(-1).chatId).toBe((next.terminal as { messageId: string }).messageId);
+        expect(afterCommand.data.message.at(-1).chatId).not.toBe(reply.chatId);
         const older = afterCommand.data.message.find((entry: any) => entry.chatId === reply.chatId);
         expect(older.scriptstateCheckpoint).toBeUndefined();
         expect(older.candidates.every((entry: any) => entry.scriptstateAfter === undefined)).toBe(true);

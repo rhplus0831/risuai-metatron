@@ -10,6 +10,7 @@ import { WebSocket as WsClient } from "ws";
 import { CALLBACK_TIMEOUT_MS } from "../jobs/channel.ts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
 import * as notifications from "../../../shared/notifications.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import * as tokenCounters from "../prompt/tokens.ts";
@@ -1482,16 +1483,7 @@ describe("the emotion modes", () => {
 });
 
 describe("reply hooks during an ownership handoff", () => {
-    async function tail(hooks: typeof NO_GENERATION_HOOKS) {
-        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-        await patchSettings({ ...DEFAULT_SETTINGS, useStreaming: false });
-        const chaId = await seedCharacter({ name: "Handoff" });
-        const creatorId = `creator-${chaId}`;
-        const workerId = `worker-${chaId}`;
-        answers = [{ chunks: ["Original reply"] }];
-        socketOpen = Promise.resolve();
-        const release = withResolvers<void>();
-        providerGate = release.promise;
+    async function admitSend(chaId: string, creatorId: string, hooks: typeof NO_GENERATION_HOOKS) {
         const chat = await readChat(chaId);
         const created = await api(
             "/api/generations",
@@ -1512,7 +1504,19 @@ describe("reply hooks during an ownership handoff", () => {
             }),
         );
         expect(created.status).toBe(200);
-        const id = created.body.jobId as string;
+        return created.body.jobId as string;
+    }
+    async function tail(hooks: typeof NO_GENERATION_HOOKS) {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await patchSettings({ ...DEFAULT_SETTINGS, useStreaming: false });
+        const chaId = await seedCharacter({ name: "Handoff" });
+        const creatorId = `creator-${chaId}`;
+        const workerId = `worker-${chaId}`;
+        answers = [{ chunks: ["Original reply"] }];
+        socketOpen = Promise.resolve();
+        const release = withResolvers<void>();
+        providerGate = release.promise;
+        const id = await admitSend(chaId, creatorId, hooks);
         const sockets: { ws: WsClient; closed: Promise<void>; peerClosed: Promise<void> }[] = [];
         async function follow(clientId = creatorId, ticket?: string) {
             const sends = vi.spyOn(WsClient.prototype, "send");
@@ -1608,6 +1612,116 @@ describe("reply hooks during an ownership handoff", () => {
         }) as typeof setTimeout);
         return { promise: waiting.promise, restore: () => spy.mockRestore() };
     }
+
+    it("finishes a callback-free send after the owner's socket closes", async () => {
+        const before = bodies.length;
+        const h = await tail(NO_GENERATION_HOOKS);
+        try {
+            await h.owner.close();
+            vi.setSystemTime(Date.now() + 2_500);
+            h.release.resolve();
+            await server.context.generationJobs.drain();
+            const chat = await readChat(h.chaId);
+            expect(texts(chat)).toEqual(["user:q", "char:Original reply"]);
+            expect(server.context.generationJobs.status(h.id, h.creatorId)?.terminal).toMatchObject({
+                type: "done",
+                messageId: chat.data.message[1].chatId,
+            });
+            expect(bodies).toHaveLength(before + 1);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("ends before calling the provider when nobody can answer replacerbeforeRequest", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        try {
+            await withSettings({ useStreaming: false }, async () => {
+                const chaId = await seedCharacter({ name: "Ann" });
+                const before = bodies.length;
+                const id = await admitSend(chaId, chaId, {
+                    ...NO_GENERATION_HOOKS,
+                    replacers: { beforeRequest: true, afterRequest: false },
+                });
+                await vi.advanceTimersByTimeAsync(2_500);
+                await server.context.generationJobs.drain();
+                expect(server.context.generationJobs.status(id, chaId)?.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringMatching(/replacerbeforeRequest.*disconnected/),
+                });
+                expect(bodies).toHaveLength(before);
+                expect(texts(await readChat(chaId))).toEqual(["user:q"]);
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("saves a disconnected plugin provider's partial reply and releases its lock and chat slot", async () => {
+        const modelId = "pluginmodel:::prov";
+        const profiles = await single("modelProfiles");
+        const setProfiles = async (data: unknown) => {
+            const current = await single("modelProfiles");
+            expect(
+                (await batch({ ops: [{ kind: "modelProfiles", id: "main", baseRevision: current.revision, data }] }))
+                    .status,
+            ).toBe(200);
+        };
+        await setProfiles([{ ...profiles.data[0], modelId }, ...profiles.data.slice(1)]);
+        try {
+            const h = await tail({
+                ...NO_GENERATION_HOOKS,
+                providers: [
+                    {
+                        name: "prov",
+                        model: {
+                            id: modelId,
+                            internalID: modelId,
+                            name: "prov",
+                            shortName: "prov",
+                            fullName: "prov",
+                            provider: LLMProvider.AsIs,
+                            format: LLMFormat.Plugin,
+                            flags: [LLMFlags.hasStreaming, LLMFlags.hasFullSystemPrompt],
+                            parameters: [],
+                            tokenizer: LLMTokenizer.Unknown,
+                        },
+                    },
+                ],
+            });
+            try {
+                await h.owner.until((events) => callbacks(events, "provider").length > 0 || !!terminal(events));
+                const [callback] = callbacks(h.owner.events, "provider");
+                expect(callback).toBeDefined();
+                h.owner.ws.send(JSON.stringify({ type: "chunk", id: callback.id, text: "Unfinished reply" }));
+                await h.owner.until((events) =>
+                    events.some((event) => event.type === "chunk" && event.text === "Unfinished reply"),
+                );
+                expect(texts(await readChat(h.chaId))).not.toContain("char:Unfinished reply");
+                await h.owner.close();
+                // Reattach after absence expires, without ticking the stream checkpoint timer.
+                vi.setSystemTime(Date.now() + 2_500);
+                const returned = await h.follow();
+                await returned.until((events) => !!terminal(events));
+                expect(terminal(returned.events)).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("provider callback disconnected"),
+                });
+                const chat = await readChat(h.chaId);
+                expect(texts(chat)).toEqual(["user:q", "char:Unfinished reply"]);
+                expect(await clientSetText(h.chaId, chat.data.message[1].chatId, "recovered")).toBe(200);
+                // Admission of another ordinary send exercises the slot independently of the row lock.
+                const next = await admitSend(h.chaId, h.creatorId, NO_GENERATION_HOOKS);
+                expect(next).not.toBe(h.id);
+                server.context.generationJobs.abort(next, h.creatorId);
+                await server.context.generationJobs.drain();
+            } finally {
+                await h.close();
+            }
+        } finally {
+            await setProfiles(profiles.data);
+        }
+    });
 
     it("rescues an undelivered listener on takeover and finishes without skipped hooks", async () => {
         const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });

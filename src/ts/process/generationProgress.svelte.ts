@@ -60,11 +60,6 @@ function parseEntry(value: unknown): GenerationProgressEntry | null {
         if (!count(fields.retry) || !Number.isInteger(fields.retry)) return null;
         entry.retry = fields.retry;
     }
-    if (fields.sequence !== undefined) {
-        const sequence = record(fields.sequence);
-        if (!sequence || !count(sequence.total) || !count(sequence.sent)) return null;
-        entry.sequence = { total: sequence.total, sent: sequence.sent };
-    }
     if (fields.output !== undefined) {
         const output = record(fields.output);
         if (!output || !count(output.tokens) || !count(output.since) || !count(output.at)) return null;

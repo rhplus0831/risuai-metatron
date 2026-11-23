@@ -989,7 +989,6 @@ describe("createEventSockets", () => {
             at: 110,
             stage: "generating",
             retry: 2,
-            sequence: { total: 3, sent: 1 },
         };
         let generations = [entry];
         const { feed, sockets, url } = await host(
@@ -1022,7 +1021,6 @@ describe("createEventSockets", () => {
                 startedAt: 100,
                 at: 120,
                 stage: "finishing",
-                sequence: { total: 3, sent: 2 },
             };
             generations = [next];
             const second = connect(url);
@@ -1539,7 +1537,7 @@ describe("createEventSockets", () => {
                 clientId: "creator",
                 startedAt: 100,
                 at: 120,
-                sequence: { total: 2, sent: 1 },
+                stage: "generating",
             },
             { type: "ping", ts: 15_000 },
         ];
