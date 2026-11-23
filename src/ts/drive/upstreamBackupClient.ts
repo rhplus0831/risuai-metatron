@@ -22,7 +22,12 @@ import {
     type UpstreamExportRequest,
 } from "../../../shared/upstreamExportReport.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { epochMismatch, getResourceEpoch, ResourceEpochMismatchError } from "../storage/resourceClient";
+import {
+    epochMismatch,
+    getResourceEpoch,
+    isGatewayFailureStatus,
+    ResourceEpochMismatchError,
+} from "../storage/resourceClient";
 import { beforeRestoreReload } from "../storage/resourceSync.svelte";
 import { currentChatRef } from "../storage/chatStore.svelte";
 import { tabSelectionIds } from "../storage/settingsViews.svelte";
@@ -170,11 +175,26 @@ function progressText({ phase, done, total }: UpstreamImportProgress): string {
     return total > 1 ? `${label}... (${done}/${total})` : `${label}...`;
 }
 
+/**
+ * A commit answer that may hide a commit: no answer at all, or a gateway status without the server's
+ * JSON text (a proxy's or tunnel's timeout while the server still restores). The server's own
+ * plain-text 500 is its answer.
+ */
+function commitAnswerLost(error: unknown): boolean {
+    return (
+        error instanceof TypeError ||
+        (error instanceof ServerImportRequestError &&
+            error.serverError === null &&
+            isGatewayFailureStatus(error.status))
+    );
+}
+
 /** The alert text for a failed prepare or commit. */
 function failureText(error: unknown): string {
     if (error instanceof ServerImportRequestError) {
         if (error.status === 413) {
-            return language.upstreamImport.tooLarge;
+            // Without the server's text, a proxy or tunnel in front of it refused the upload.
+            return error.serverError === null ? language.uploadRefusedByProxy : language.upstreamImport.tooLarge;
         }
         return error.serverError ?? language.upstreamImport.requestFailed(error.status);
     }
@@ -255,7 +275,8 @@ export async function restoreUpstreamBackup(file: Blob): Promise<void> {
             acceptWrites = outcome.changedWrites;
         }
     } catch (error) {
-        if (error instanceof ServerImportRequestError || error instanceof ServerImportAnswerError) {
+        const uncertain = commitDispatched && commitAnswerLost(error);
+        if (!uncertain && (error instanceof ServerImportRequestError || error instanceof ServerImportAnswerError)) {
             unregister?.();
         }
         if (error instanceof ResourceEpochMismatchError) {
@@ -263,11 +284,7 @@ export async function restoreUpstreamBackup(file: Blob): Promise<void> {
             return;
         }
         console.error(error);
-        alertError(
-            commitDispatched && error instanceof TypeError
-                ? language.upstreamImport.commitInterrupted
-                : failureText(error),
-        );
+        alertError(uncertain ? language.upstreamImport.commitInterrupted : failureText(error));
     } finally {
         if (!consumed) {
             void cancelUpstreamImport(prepared.token);

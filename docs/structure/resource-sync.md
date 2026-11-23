@@ -140,7 +140,9 @@ handlers that reapply UI settings and repair incoming orders.
 
 - The adapter routes an indexed `chats[i]` 400 to `quarantineChat` and requeues the rest; `ops[i]` or the client 413
   pre-check quarantines the record before dependent chat work is taken. `quarantineRecord`, `cycle` and `planBatches`
-  define suppression of automatic retries, alerts and per-unit isolation after unindexed 400/413.
+  define suppression of automatic retries, alerts and per-unit isolation after unindexed 400/413. Isolation ends at the
+  next quarantine after a 400/413 answer, whichever unit it names; a pre-dispatch size quarantine leaves isolation as it
+  is, and a refusal no single unit reproduces (an aggregate body a proxy refuses) keeps it on until such a quarantine.
 - A quarantined character create is excluded from `creating`: its chats wait and membership stays unacknowledged, while
   other work saves. Quarantine alone schedules no idle cycle.
 - A refused order keeps its intent until sendable ids change or Retry. While `isOrderQuarantined` holds it, it is

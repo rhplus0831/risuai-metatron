@@ -154,6 +154,16 @@ describe("postChatFile with inlays", () => {
         expect(server.records.size).toBe(0);
     });
 
+    it("names the size limit when a media write is refused with 413", async () => {
+        const { postChatFile } = await import("../multisend");
+        vi.mocked(util.selectMultipleFile).mockResolvedValueOnce([{ name: "large.mp4", data: new Uint8Array([1, 2]) }]);
+        vi.mocked(assetClient.writeAsset).mockRejectedValueOnce(new assetClient.AssetWriteError(413));
+
+        await expect(postChatFile("attachment query")).resolves.toEqual([]);
+        expect(alertError).toHaveBeenCalledExactlyOnceWith(language.attachmentTooLarge);
+        expect(server.records.size).toBe(0);
+    });
+
     it("reports a picked media write failure and returns attachments before and after it", async () => {
         const { postChatFile } = await import("../multisend");
         const files = [

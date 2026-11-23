@@ -354,7 +354,11 @@ function clearRecordRefusal(key: string) {
         notifyRefusals();
     }
 }
-/** An unindexed refusal is isolated into one resource, chat group, or order per request. */
+/**
+ * After an unindexed refusal of a batch of several units, every unit goes in its own request until a
+ * refusal names or isolates the refused unit and quarantines it; then batches are packed again. A
+ * refusal that no single unit reproduces (an aggregate body a proxy refuses) keeps isolation on.
+ */
 let isolateBatches = false;
 /**
  * Record keys → the highest generation known to be settled: saved, unchanged, or discarded by a
@@ -3158,6 +3162,7 @@ async function cycle() {
                         return;
                     }
                     if (quarantineRejectedChat(error, batch.work)) {
+                        isolateBatches = false;
                         return;
                     }
                     if (
@@ -3168,10 +3173,12 @@ async function cycle() {
                         // Quarantine before requeueing, so retained refused ops occur exactly once.
                         if (batch.work.groups[0]) {
                             quarantineChat(batch.work.groups[0], error.message);
+                            isolateBatches = false;
                             return;
                         }
                         if (batch.work.orders[0]) {
                             quarantineChatOrder(batch.work.orders[0], error.message);
+                            isolateBatches = false;
                             return;
                         }
                     }
@@ -3190,6 +3197,7 @@ async function cycle() {
                             // The server refuses that text: it never held it.
                             inDoubt.delete(op.key);
                             quarantineRecord(op, error);
+                            isolateBatches = false;
                         } else if (batch.ops.length + batch.work.groups.length + batch.work.orders.length > 1) {
                             // The error names no record (including order/envelope errors). Probe each
                             // unit separately next cycle so unrelated records and chats can still save.
@@ -3197,6 +3205,7 @@ async function cycle() {
                         } else if (batch.ops[0]) {
                             inDoubt.delete(batch.ops[0].key);
                             quarantineRecord(batch.ops[0], error, false);
+                            isolateBatches = false;
                         }
                         return;
                     }

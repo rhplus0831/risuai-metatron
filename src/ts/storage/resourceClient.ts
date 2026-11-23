@@ -45,14 +45,34 @@ export class ResourceEpochMismatchError extends Error {
     }
 }
 
-/** Any other failed request; `status` 0 means the request did not reach the server. */
+/**
+ * Any other failed request; `status` 0 means no answer arrived: the request did not reach the server,
+ * or its answer was lost. Set by this module's requests (other constructors leave them at their
+ * defaults): `serverError`, the answer's JSON `error` text, null when it had none (a reverse proxy or
+ * tunnel in front of the server may answer with HTML, a 413 for a body larger than it accepts), and
+ * `notSent`, true when the request failed before it was dispatched (authentication, signing, the
+ * mutation admission), so the server cannot have acted on it.
+ */
 export class ResourceRequestError extends Error {
     readonly status: number;
-    constructor(status: number, message: string) {
+    readonly serverError: string | null;
+    readonly notSent: boolean;
+    constructor(status: number, message: string, serverError: string | null = null, notSent = false) {
         super(message);
         this.name = "ResourceRequestError";
         this.status = status;
+        this.serverError = serverError;
+        this.notSent = notSent;
     }
+}
+
+/**
+ * The statuses a reverse proxy or tunnel answers when the server did not answer it in time or at all
+ * (502, 503, 504, and Cloudflare's 520-530). The server's own 503 carries JSON `error` text; check
+ * that the answer had none before reading one of these as a lost answer.
+ */
+export function isGatewayFailureStatus(status: number): boolean {
+    return status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 530);
 }
 
 let currentEpoch = "";
@@ -117,22 +137,22 @@ async function send(path: string, init: ResourceRequestInit = {}): Promise<Respo
         headers.set(RESOURCE_EPOCH_HEADER, currentEpoch);
     }
     let response: Response;
+    let dispatched = false;
     try {
         response = await authFetch(
             path,
             { ...init, headers, cache: "no-store" },
-            init.mutation
-                ? {
-                      beforeDispatch: () => {
-                          if (mutationAdmission && !mutationAdmission()) {
-                              throw new Error("Saving stopped: the server data was restored");
-                          }
-                      },
-                  }
-                : {},
+            {
+                beforeDispatch: () => {
+                    if (init.mutation && mutationAdmission && !mutationAdmission()) {
+                        throw new Error("Saving stopped: the server data was restored");
+                    }
+                    dispatched = true;
+                },
+            },
         );
     } catch (error) {
-        throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error));
+        throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error), null, !dispatched);
     }
     if (response.ok) {
         return response;
@@ -168,7 +188,8 @@ async function send(path: string, init: ResourceRequestInit = {}): Promise<Respo
                   ],
         );
     }
-    throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
+    const serverError = typeof body.error === "string" ? body.error : null;
+    throw new ResourceRequestError(response.status, serverError ?? `Request failed (${response.status})`, serverError);
 }
 
 async function sendJson<T>(path: string, init: ResourceRequestInit = {}): Promise<T> {

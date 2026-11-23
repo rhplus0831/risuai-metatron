@@ -16,6 +16,8 @@ import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
 import { postInlayAsset } from "./inlays";
 import { alertError } from "src/ts/alert";
+import { language } from "src/lang";
+import { AssetWriteError } from "../../storage/assetClient";
 
 /**
  * Converts picked or supplied files into inlay ids, retrieved text, or PO translation sends.
@@ -344,7 +346,11 @@ export async function postChatFile(
                     try {
                         postData = await postInlayAsset(file);
                     } catch (error) {
-                        alertError(error);
+                        alertError(
+                            error instanceof AssetWriteError && error.status === 413
+                                ? language.attachmentTooLarge
+                                : error,
+                        );
                         continue;
                     }
                     if (!postData) {

@@ -273,8 +273,23 @@ export async function missingAssets(names: readonly string[], options: AssetRequ
 }
 
 /**
- * Writes `value` under `key`, retrying as described above. Throws `"setItem Error"` for a non-2xx
- * answer and the answer's `error` for a refused one.
+ * A non-2xx asset write answer, retaining its HTTP status: a 413 is a file larger than the server
+ * accepts or, for an HTML answer, larger than a proxy in front of it accepts. The message stays the
+ * generic `setItem Error` so the server's error text (which can name filesystem paths) never shows.
+ */
+export class AssetWriteError extends Error {
+    readonly status: number;
+
+    constructor(status: number) {
+        super("setItem Error");
+        this.name = "AssetWriteError";
+        this.status = status;
+    }
+}
+
+/**
+ * Writes `value` under `key`, retrying as described above. Throws an `AssetWriteError` for a
+ * non-2xx answer and the answer's `error` for a refused one.
  */
 export async function writeAsset(key: string, value: Uint8Array, options: AssetRequestOptions = {}): Promise<void> {
     const { signal } = options;
@@ -291,7 +306,7 @@ export async function writeAsset(key: string, value: Uint8Array, options: AssetR
         signal,
     );
     if (da.status < 200 || da.status >= 300) {
-        throw "setItem Error";
+        throw new AssetWriteError(da.status);
     }
     let data: any;
     try {
@@ -405,8 +420,8 @@ function joinRecords(batch: readonly WriteRecord[]): Uint8Array {
  * An item without a matching `sha256` (a custom id or raw overwrite) always uploads and prevents
  * skipping every item for its key in this call. A failed or timed-out check sends everything; an abort
  * rejects with the signal's reason (`AbortError` for a nullish reason), even if every upload could be skipped.
- * A zero-length item is an empty file. Nothing is sent for an empty list. Throws `"setItem Error"`
- * for a non-2xx answer and the answer's `error` for a refused one, as `writeAsset` does; the
+ * A zero-length item is an empty file. Nothing is sent for an empty list. Throws an
+ * `AssetWriteError` for a non-2xx answer and the answer's `error` for a refused one, as `writeAsset` does; the
  * batches before the failing one, and possibly some of its records, stay written.
  */
 export async function writeAssets(items: readonly AssetWriteItem[], options: AssetRequestOptions = {}): Promise<void> {
@@ -453,7 +468,7 @@ export async function writeAssets(items: readonly AssetWriteItem[], options: Ass
             signal,
         );
         if (da.status < 200 || da.status >= 300) {
-            throw "setItem Error";
+            throw new AssetWriteError(da.status);
         }
         let data: any;
         try {

@@ -80,6 +80,8 @@ vi.mock("src/lang", () => ({
         partialBackupSecondConfirm: "second?",
         backupDiscardedChanges: "changes replaced",
         backupRefusedChanges: "Refused local changes were left out of the backup.",
+        uploadRefusedByProxy: "a proxy refused the file's size",
+        backupRestoreUnconfirmed: "connection lost while restoring; reload to check",
         refusedData: {
             chatLabel: (chatName: string, characterName: string) => `${characterName} / ${chatName}`,
             orderLabel: (name: string) => `Chat order: ${name}`,
@@ -147,7 +149,8 @@ vi.mock("../globalApi.svelte", async () =>
     }),
 );
 vi.mock("../storage/serverAuth", () => ({
-    authFetch: async (path: string, init: RequestInit = {}) => {
+    authFetch: async (path: string, init: RequestInit = {}, options: { beforeDispatch?: () => void } = {}) => {
+        options.beforeDispatch?.();
         requests.push({ path, init });
         if (path === "/api/backups/export") {
             return exportResponse.current!();
@@ -157,8 +160,26 @@ vi.mock("../storage/serverAuth", () => ({
             if (header.get("x-resource-epoch") !== "epoch-1") {
                 return Response.json({ error: "EpochMismatch", epoch: "epoch-2" }, { status: 412 });
             }
-            if ((await new Response(init.body as Blob).text()).includes("refuse-me")) {
+            const text = await new Response(init.body as Blob).text();
+            if (text.includes("refuse-me")) {
                 return Response.json({ error: "The archive is from before this version" }, { status: 400 });
+            }
+            // What a proxy or tunnel in front of the server answers: HTML, or no answer.
+            if (text.includes("proxy-413")) {
+                return new Response("<html>Request too large</html>", { status: 413 });
+            }
+            if (text.includes("proxy-524")) {
+                return new Response("<html>A timeout occurred</html>", { status: 524 });
+            }
+            if (text.includes("server-500")) {
+                // The server's own error handler answers a thrown error in plain text.
+                return new Response("Internal Server Error", { status: 500 });
+            }
+            if (text.includes("server-503")) {
+                return Response.json({ error: "The server is shutting down" }, { status: 503 });
+            }
+            if (text.includes("drop-me")) {
+                throw new TypeError("Failed to fetch");
             }
             return Response.json({ epoch: "epoch-1", assetsWritten: 1, assetsSkipped: 0 });
         }
@@ -184,7 +205,7 @@ vi.mock("../storage/serverAuth", () => ({
     },
 }));
 
-import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
+import { setEpochMismatchListener, setMutationAdmission, setResourceEpoch } from "../storage/resourceClient";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "../storage/tests/installFlatDatabase";
 import {
     LoadLocalBackup,
@@ -825,6 +846,34 @@ describe("LoadLocalBackup", () => {
         expect((location as any).reload).not.toHaveBeenCalled();
     });
 
+    it("names a proxy's 413 and says a lost answer may hide a finished restore, keeping the server's own texts", async () => {
+        const cases: [string, string][] = [
+            ["proxy-413", "a proxy refused the file's size"],
+            ["proxy-524", "connection lost while restoring; reload to check"],
+            ["drop-me", "connection lost while restoring; reload to check"],
+            ["server-503", "The server is shutting down"],
+            ["server-500", "Request failed (500)"],
+        ];
+        for (const [marker, message] of cases) {
+            alerts.alertError.mockClear();
+            await load(versionTwoFile(marker));
+            expect(alerts.alertError, marker).toHaveBeenCalledWith(message);
+            expect((location as any).reload, marker).not.toHaveBeenCalled();
+        }
+    });
+
+    it("shows a request refused before it was sent as it is, not as a possible restore", async () => {
+        setMutationAdmission(() => false);
+        try {
+            await load(versionTwoFile());
+        } finally {
+            setMutationAdmission(null);
+        }
+        expect(requests).toEqual([]);
+        expect(alerts.alertError).toHaveBeenCalledWith("Saving stopped: the server data was restored");
+        expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
     it("reloads without an error when the server data changed since this tab loaded (412)", async () => {
         setResourceEpoch("stale");
         await load(versionTwoFile());
@@ -933,6 +982,11 @@ describe("LoadLocalBackup with a RisuAI backup (the upstream import)", () => {
                 "This backup was encrypted with a Risu Account",
             ],
             ["too large", () => Response.json({ error: "File too large" }, { status: 413 }), "too large"],
+            [
+                "a proxy's 413",
+                () => new Response("<html>Request too large</html>", { status: 413 }),
+                "a proxy refused the file's size",
+            ],
             ["a refusal without a body", () => new Response("<html>", { status: 502 }), "failed (502)"],
             [
                 "a failed conversion",
@@ -1011,6 +1065,37 @@ describe("LoadLocalBackup with a RisuAI backup (the upstream import)", () => {
         expect(alerts.alertError).toHaveBeenCalledWith("connection lost while restoring; it may have been restored");
         expect(hooks.current).not.toBeNull();
         expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("says the restore may have happened on a proxy's 5xx during the commit, keeping the hook", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => new Response("<html>A timeout occurred</html>", { status: 524 });
+        await load(upstreamFile());
+        expect(alerts.alertError).toHaveBeenCalledWith("connection lost while restoring; it may have been restored");
+        expect(hooks.current).not.toBeNull();
+        expect(hooks.unregistered).toBe(0);
+        expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("shows the server's own 5xx answers at the commit and unregisters the hook", async () => {
+        const cases: [() => Response, string][] = [
+            [
+                () => Response.json({ error: "The server is shutting down" }, { status: 503 }),
+                "The server is shutting down",
+            ],
+            [() => new Response("Internal Server Error", { status: 500 }), "failed (500)"],
+        ];
+        for (const [answer, message] of cases) {
+            requests.length = 0;
+            alerts.alertError.mockClear();
+            hooks.unregistered = 0;
+            upstream.prepare = () => ndjson([prepared]);
+            upstream.commit = answer;
+            await load(upstreamFile());
+            expect(alerts.alertError, message).toHaveBeenCalledWith(message);
+            expect(hooks.current, message).toBeNull();
+            expect(hooks.unregistered, message).toBe(1);
+        }
     });
 
     it("shows a commit refused by the server and unregisters the hook", async () => {

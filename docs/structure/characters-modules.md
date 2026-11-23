@@ -142,7 +142,8 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `src/ts/storage/serverImportClient.ts` `importFileOverServer` uploads the file and reads the NDJSON answer.
   `src/ts/storage/moduleImportClient.ts` `importModuleOverServer` and the `ModuleImport*` error classes, and
   `src/ts/storage/charxImportClient.ts` `importCharxOverServer` select the routes; their response contracts are in
-  `src/ts/process/modules.ts` and `shared/charxImport.ts`.
+  `src/ts/process/modules.ts` and `shared/charxImport.ts`. `serverImportErrorMessage` (`modules.ts`) shows a 413 without
+  JSON text as a proxy's or tunnel's upload limit.
 
 ## Flows
 

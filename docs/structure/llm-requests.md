@@ -105,8 +105,10 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `server/src/llm/toolSchemas.ts` `serializeToolSchemas`: a job send's MCP descriptors in its resolved adapter's tools
   form (none for a format that sends no tools), counted for assembly's recheck. It mirrors each adapter's tools
   assignment, so a change to that form changes both.
-- `server/src/llm/requests.ts` `createLlmRequests`: admission, `runInJob`, and the `strongBan` cache. Request history
-  and observer details are in [diagnostics](diagnostics.md) and [server](self-host-server.md).
+- `server/src/llm/requests.ts` `createLlmRequests`: admission, `runInJob`, and the `strongBan` cache. A quiet tab stream
+  sends an SSE comment on each `IDLE_COMMENT_MS` tick after a tick that queued nothing (the first 15 to 30 seconds after
+  the last event), so a proxy in front of the server keeps it open; the tab's reader skips frames without `data:`.
+  Request history and observer details are in [diagnostics](diagnostics.md) and [server](self-host-server.md).
 
 ### Settings pages
 

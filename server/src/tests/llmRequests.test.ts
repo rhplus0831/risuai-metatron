@@ -22,6 +22,7 @@ import { failureOf } from "../jobs/generationJobs.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import {
     createLlmRequests,
+    IDLE_COMMENT_MS,
     JobRequestError,
     type JobRequestSpec,
     MAX_REQUESTS_PER_CLIENT,
@@ -247,6 +248,10 @@ async function readAll(
         while ((index = buffer.indexOf("\n\n")) !== -1) {
             const frame = buffer.slice(0, index);
             buffer = buffer.slice(index + 2);
+            if (frame.startsWith(":")) {
+                // An idle comment (`IDLE_COMMENT_MS`), which carries no event.
+                continue;
+            }
             expect(frame.startsWith("data: ")).toBe(true);
             const event = JSON.parse(frame.slice("data: ".length)) as LlmRequestEvent;
             events.push(event);
@@ -411,6 +416,35 @@ describe("a buffered request", () => {
             headers: { Authorization: "Bearer [redacted]" },
         });
         expect(preview.raw).not.toContain(SECRET);
+        await registry.dispose();
+    });
+
+    it("sends an SSE comment every idle interval while a quiet provider answers, and stops once the request ends", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        let answer!: (response: Response) => void;
+        const { registry } = harness(makeRecords(), () => new Promise<Response>((resolve) => (answer = resolve)));
+        const started = registry.start(body(), new AbortController().signal);
+        expect(started.ok).toBe(true);
+        const reader = (started as { stream: ReadableStream<Uint8Array> }).stream.getReader();
+        const decoder = new TextDecoder();
+        let text = "";
+        const reading = (async () => {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) return;
+                text += decoder.decode(value, { stream: true });
+            }
+        })();
+        await waitFor(() => answer !== undefined);
+        // An interval that saw an event sends nothing; each later quiet interval sends one comment.
+        await vi.advanceTimersByTimeAsync(IDLE_COMMENT_MS * 3);
+        expect(text.match(/^: idle$/gm)).toHaveLength(2);
+        answer(chat("late answer"));
+        await reading;
+        expect(text.endsWith("\n\n")).toBe(true);
+        expect(text).toContain('"late answer"');
+        expect(vi.getTimerCount()).toBe(0);
+        vi.useRealTimers();
         await registry.dispose();
     });
 

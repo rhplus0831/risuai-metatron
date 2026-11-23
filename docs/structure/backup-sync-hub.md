@@ -111,6 +111,13 @@ and keeps what spans files.
     notice, which never waits for the commit's answer; a successful answer writes its own selection and reloads.
   - A prepared import not committed is cancelled on the server. Other tabs see the maintenance 503 retries, then the new
     epoch, and reload.
+  - A commit with no answer, or a gateway status (502-504, 520-530) without the server's JSON text (a proxy's or
+    tunnel's timeout), keeps the hook and says the backup may have been restored. A 413 without JSON text names a
+    proxy's or tunnel's upload limit.
+- Native `.bin` restore (`LoadLocalBackup`): the server validates the whole archive before it answers and may install it
+  after the tab stopped waiting, so a sent request with no answer, or a gateway status (502-504, 520-530) without the
+  server's JSON text, says to reload and check (`restoreErrorText`); a 413 without JSON text names a proxy's or tunnel's
+  upload limit.
 - Realm: `MainMenu` (the Realm card) → `RealmMain` → `getRisuHub` → `RealmPopUp` → `downloadRisuHub`. There is no upload
   path. A block written in the popup reaches `settings.ui.blockedRealmCreators`, which `getRisuHub` and `RealmMain`'s
   reactive filter both apply, so a block from either popup host or another tab hides cards at once; cards without

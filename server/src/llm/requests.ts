@@ -42,7 +42,7 @@ import type { VertexTokenCache } from "./vertexToken.ts";
  * settings by stored ids; job requests use the job's captured settings and sinks without a per-client count limit.
  *
  * Tab SSE begins with `accepted`; adapter snapshots become set/append/remove patches, and one result/end/error ends
- * delivery. Finalization fences later events, aborts upstream work, and rejects pending callbacks even if an adapter
+ * delivery. A quiet tab stream sends idle comments (`IDLE_COMMENT_MS`). Finalization fences later events, aborts upstream work, and rejects pending callbacks even if an adapter
  * continues draining. Job streams keep their request live until read completion, cancellation, or abort.
  * `server/src/llm/redact.ts` masks request data that can expose secrets; callback payloads and remembered tool records
  * carrying stored secrets are refused so their protocol values are never rewritten. Tab callback timeouts, malformed
@@ -54,6 +54,14 @@ import type { VertexTokenCache } from "./vertexToken.ts";
 export const MAX_REQUESTS_PER_CLIENT = 32;
 /** Unread event bytes a request may queue before it is ended (a reader that stopped reading). */
 export const MAX_QUEUED_EVENT_BYTES = 64 * 1024 * 1024;
+/**
+ * The tick on which a quiet tab request sends an SSE comment: each tick after one that queued nothing,
+ * so the first comment comes 15 to 30 seconds after the last event. A proxy in front of the server
+ * may close a response that stays silent (Cloudflare after about 100 seconds), and a quiet provider
+ * can leave a long gap between events. The tab's reader skips frames without `data:`.
+ */
+export const IDLE_COMMENT_MS = 15_000;
+const IDLE_COMMENT = new TextEncoder().encode(": idle\n\n");
 /** How long `dispose` waits for the requests it aborted. */
 export const DISPOSE_WAIT_MS = 5000;
 const STRONG_BAN_CACHE_SIZE = 500;
@@ -1223,6 +1231,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         let closed = false;
         let terminalSent = false;
         let finalized = false;
+        /** Nothing was queued since the last idle tick. */
+        let quiet = true;
         const encoder = new TextEncoder();
 
         /** Queues `event`; false when it was not (the stream is closed, or the client stopped reading). */
@@ -1240,6 +1250,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 terminalSent = true;
             }
             streamController.enqueue(bytes);
+            quiet = false;
             return true;
         };
         /**
@@ -1291,6 +1302,15 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         const onClientAbort = () => controller.abort(new Error("The client went away"));
         // Registered before anything can finalize it, so finalizing always removes it.
         requests.set(id, live);
+        // Skipped while unread bytes are queued: a reader that stopped needs no more.
+        const idleTimer = setInterval(() => {
+            if (!quiet || closed || (streamController.desiredSize ?? 0) < 0) {
+                quiet = true;
+                return;
+            }
+            streamController.enqueue(IDLE_COMMENT);
+        }, IDLE_COMMENT_MS);
+        idleTimer.unref?.();
 
         /** Ends the request once: the terminal, the stream, the registry entry, the callbacks. */
         function finalize() {
@@ -1298,6 +1318,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 return;
             }
             finalized = true;
+            clearInterval(idleTimer);
             signal.removeEventListener("abort", onClientAbort);
             parent?.unwatch();
             tracker.finish(

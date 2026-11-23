@@ -215,7 +215,7 @@ describe("importModule adds the module through addModule", () => {
             error: {
                 name: "AssetSaveError",
                 failed: 1,
-                cause: "setItem Error",
+                cause: { name: "AssetWriteError", status: 503 },
             },
         });
         expect(fetch.mock.calls.filter(([url]) => url === "/api/assets/write")).toHaveLength(8);
@@ -1073,6 +1073,7 @@ describe("server module file imports", () => {
             message: () => "Invalid authentication",
         },
         { name: "other 413 text", status: 413, error: "Proxy limit", message: () => "Proxy limit" },
+        { name: "a proxy's HTML 413", status: 413, message: () => language.uploadRefusedByProxy },
         { name: "other HTTP error text", status: 500, error: "Store unavailable", message: () => "Store unavailable" },
         {
             name: "non-JSON HTTP error",

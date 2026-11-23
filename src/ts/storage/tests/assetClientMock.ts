@@ -2,6 +2,16 @@ import { vi } from "vitest";
 
 type AssetClient = typeof import("../assetClient");
 
+/** The same shape as `AssetWriteError`, without loading the client and its transport. */
+class AssetWriteError extends Error {
+    readonly status: number;
+    constructor(status: number) {
+        super("setItem Error");
+        this.name = "AssetWriteError";
+        this.status = status;
+    }
+}
+
 /** Complete I/O double; saves upload by default, preserving callers' existing write assertions. */
 export function createAssetClientMock(overrides: Partial<AssetClient> = {}): AssetClient {
     const defaults = {
@@ -14,6 +24,7 @@ export function createAssetClientMock(overrides: Partial<AssetClient> = {}): Ass
             (key) => /^assets\/(?:inlay_)?([0-9a-f]{64})\.[A-Za-z0-9]+$/.exec(key)?.[1] ?? null,
         ),
         throwIfAborted: vi.fn<AssetClient["throwIfAborted"]>((signal) => signal?.throwIfAborted()),
+        AssetWriteError,
         MAX_ASSET_ATTEMPTS: 8,
         BASE_RETRY_DELAY_MS: 1000,
         MAX_BACKOFF_MS: 30000,

@@ -4,7 +4,13 @@ import { buildBackupInventory, type BackupInventory } from "../storage/snapshots
 import { language } from "src/lang";
 import { type BackupArchiveManifest, RESOURCE_KIND } from "../../../shared/resources.ts";
 import { selectPartialBackupAssets } from "../../../shared/backups.ts";
-import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
+import {
+    exportBackup,
+    importBackup,
+    isGatewayFailureStatus,
+    ResourceEpochMismatchError,
+    ResourceRequestError,
+} from "../storage/resourceClient";
 import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, refusedItems } from "../storage/resourceSync.svelte";
 import { findCharacter } from "../storage/characterStore.svelte";
@@ -467,6 +473,26 @@ export async function SaveUpstreamLocalBackup() {
 }
 
 /**
+ * The alert for a failed restore upload. A 413 without the server's JSON text came from a proxy or
+ * tunnel in front of the server. A lost answer (a dispatched request without an answer, or a
+ * gateway status without the server's text, such as a proxy's timeout) is not a failure: the server
+ * validates the whole archive before it answers and may finish the restore after the tab stopped
+ * waiting, so the tab says to reload and check. The server's own answers, a plain-text 500 included,
+ * and a request that failed before it was sent show as they are.
+ */
+function restoreErrorText(error: unknown): string {
+    if (error instanceof ResourceRequestError && error.serverError === null) {
+        if (error.status === 413) {
+            return language.uploadRefusedByProxy;
+        }
+        if ((error.status === 0 && !error.notSent) || isGatewayFailureStatus(error.status)) {
+            return language.backupRestoreUnconfirmed;
+        }
+    }
+    return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * Restores a local backup archive through the server: it replaces every resource, adds the archive's
  * assets that are missing (existing files are kept), then the app reloads. An archive whose first
  * record is not `manifest.json` goes to the upstream RisuAI import, which shows its report first.
@@ -500,7 +526,7 @@ export function LoadLocalBackup() {
                     return;
                 }
                 console.error(error);
-                alertError(error instanceof Error ? error.message : String(error));
+                alertError(restoreErrorText(error));
                 return;
             }
             alertStore.set({

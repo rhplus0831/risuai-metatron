@@ -55,7 +55,8 @@ afterEach(() => {
 const operations = [
     {
         run: (signal?: AbortSignal) => writeAsset(KEY, BYTES, { signal }),
-        expectError: (error: unknown, _status: number) => expect(error).toBe("setItem Error"),
+        expectError: (error: unknown, status: number) =>
+            expect(error).toMatchObject({ name: "AssetWriteError", message: "setItem Error", status }),
     },
     { run: (signal?: AbortSignal) => readAsset(KEY, { signal }), expectError: expectReadError },
 ];
@@ -202,11 +203,13 @@ describe("writeAsset", () => {
         expect(init.body).toBe(BYTES);
     });
 
-    it('throws "setItem Error" for a non-2xx answer, before reading its body', async () => {
+    it("throws an AssetWriteError with the status for a non-2xx answer, before reading its body", async () => {
         answer.current = () => new Response("nope", { status: 500 });
-        await expect(writeAsset(KEY, BYTES)).rejects.toBe("setItem Error");
+        await expect(writeAsset(KEY, BYTES)).rejects.toMatchObject({ message: "setItem Error", status: 500 });
         answer.current = () => Response.json({ error: "ignored" }, { status: 403 });
-        await expect(writeAsset(KEY, BYTES)).rejects.toBe("setItem Error");
+        await expect(writeAsset(KEY, BYTES)).rejects.toMatchObject({ message: "setItem Error", status: 403 });
+        answer.current = () => new Response("<html>Request too large</html>", { status: 413 });
+        await expect(writeAsset(KEY, BYTES)).rejects.toMatchObject({ name: "AssetWriteError", status: 413 });
     });
 
     it("throws the answer's `error` for a refused 2xx write", async () => {
@@ -400,7 +403,10 @@ describe("batch assets", () => {
         ]) {
             calls.length = 0;
             answer.current = response;
-            await expect(writeAssets(items)).rejects.toBe(response().ok ? "write refused" : "setItem Error");
+            const rejected = expect(writeAssets(items)).rejects;
+            await (response().ok
+                ? rejected.toBe("write refused")
+                : rejected.toMatchObject({ name: "AssetWriteError", status: 500 }));
             expect(calls).toHaveLength(1);
         }
         calls.length = 0;

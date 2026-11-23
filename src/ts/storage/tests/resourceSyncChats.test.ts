@@ -793,6 +793,37 @@ describe("one chat's trouble does not block the rest", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it("packs a settings edit and a chat edit together again once an isolated HTML 413 quarantined the refused unit", async () => {
+        const { fake, sync, chat, settings } = await boot();
+        // A proxy in front of the server refuses large bodies with HTML: the refusal names no unit.
+        const pass = fake.fetch.bind(fake);
+        const sent: { ops: unknown[]; chats: unknown[] }[] = [];
+        vi.spyOn(fake, "fetch").mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === "/api/resources/batch") {
+                const body = String(init!.body);
+                sent.push(JSON.parse(body));
+                if (new TextEncoder().encode(body).byteLength > 1024) {
+                    return new Response("<html>Request too large</html>", { status: 413 });
+                }
+            }
+            return pass(path, init);
+        });
+        settings.ui.theme = "z".repeat(4096);
+        chat.setChatMeta(refJ, { note: "fits" });
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ resourceKind: "ui" })]);
+        expect(fake.chat("c", "j")!.data.note).toBe("fits");
+
+        settings.ui.theme = "small again";
+        chat.setChatMeta(refJ, { note: "small again" });
+        const before = sent.length;
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(sent.slice(before)).toMatchObject([{ ops: [{ kind: "ui" }], chats: [{ chatId: "j" }] }]);
+        expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "small again" });
+        expect(fake.chat("c", "j")!.data.note).toBe("small again");
+    });
+
     it("resolves later flushes with a refused order and keeps its intent for retry or changed ids", async () => {
         const { fake, sync, chat, mirrorIds } = await boot();
         chat.createChat("c", { id: "n", name: "N", message: [] } as any);

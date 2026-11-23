@@ -1662,6 +1662,10 @@ export const languageEnglish = {
         "This module carried an MCP tool server, which was not imported. Add MCP servers through the MCP import.",
     moduleImportInterrupted:
         "The upload was interrupted. The server may have refused the file (another import running, a file too large, or maintenance), or the connection was lost. Try again.",
+    uploadRefusedByProxy:
+        "The file is larger than the connection to the server accepts: a proxy or tunnel in front of the server refused it. Use a direct connection to the server for a file this large.",
+    backupRestoreUnconfirmed:
+        "The connection was lost while the backup was being restored. It may have been restored; reload to check before restoring again.",
     charxImportUploading: "Uploading the character file... A large file can take several minutes.",
     charxImportFileTooLarge: "The character file is larger than the server accepts.",
     charxImportRequestFailed: "The character file import failed (HTTP {{status}}).",
@@ -1861,6 +1865,7 @@ export const languageEnglish = {
         "Your browser supports persistent storage. This is recommended for better performance and user experience.",
     enable: "Enable",
     postFile: "Post File",
+    attachmentTooLarge: "The file is larger than the server, or a proxy or tunnel in front of it, accepts.",
     requestInfoInsideChat: "Show Request Info Inside Chat",
     inputTokens: "Input Tokens",
     outputTokens: "Output Tokens",

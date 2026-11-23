@@ -23,7 +23,9 @@ contents of an import, see [cards and modules](characters-modules.md) or [inlays
 - `src/ts/storage/assetClient.ts` owns authenticated reads and writes (`readAsset`, `writeAsset`, `readAssets`,
   `writeAssets`). In `src/ts/globalApi.svelte.ts`, `saveAsset` derives its key with `assetKey`. For a canonical key
   without a custom id it first asks `missingAssets`. Verified presence establishes a one-hour lease. `AssetReadError`
-  preserves HTTP status for callers that retry rendering.
+  preserves HTTP status for callers that retry rendering. `AssetWriteError` preserves a failed write's status (its
+  message stays `setItem Error`, never the server's text); the chat attachment alert names a 413
+  (`src/ts/process/files/multisend.ts`).
 - For batch transfers, follow globalApi's `saveAssetBatch`/`loadAssets` into `writeAssets`/`readAssets`.
   `AssetWriteItem.sha256` controls when a verified upload may be skipped. Batch limits and `MISSING_CHECK_DEADLINE_MS`
   live beside these calls.

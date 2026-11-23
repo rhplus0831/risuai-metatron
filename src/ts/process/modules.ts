@@ -493,7 +493,8 @@ export type ServerImportTexts = {
  * the module import's texts. A network failure may be a refusal the browser did not see (see
  * `serverImportClient.ts`).
  * The route's invalid-file text maps to `noData`, an unrecognized refusal shows the server's text,
- * and a `TypeError` is an interrupted upload (possibly a refusal the browser never saw).
+ * a 413 without JSON text is a proxy's or tunnel's refusal of the upload's size, and a `TypeError`
+ * is an interrupted upload (possibly a refusal the browser never saw).
  */
 export function serverImportErrorMessage(error: unknown, texts: ServerImportTexts): string {
     if (error instanceof ServerImportRequestError) {
@@ -504,6 +505,10 @@ export function serverImportErrorMessage(error: unknown, texts: ServerImportText
                 }
                 break;
             case 413:
+                if (error.serverError === null) {
+                    // No JSON text: a proxy or tunnel in front of the server refused the upload.
+                    return language.uploadRefusedByProxy;
+                }
                 if (error.serverError === "File too large") {
                     return texts.fileTooLarge;
                 }
