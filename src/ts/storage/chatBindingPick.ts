@@ -1,6 +1,6 @@
 import type { ChatBindingField } from "../../../shared/chatBinding.ts";
 import { chatBindingPatch, chatBindingTargetExists } from "./chatBinding.svelte";
-import { chatEntry, type ChatRef } from "./chatStore.svelte";
+import { isActiveChat, type ChatRef } from "./chatStore.svelte";
 import { selectModelPreset, selectPersona, selectPreset } from "./selection.svelte";
 
 /*
@@ -14,14 +14,15 @@ import { selectModelPreset, selectPersona, selectPreset } from "./selection.svel
  * captured before an await), or `null` for the tab's selection, also with a chat open. The target is
  * required, so a picker cannot bind the open chat by leaving it out. A chat's pick
  * binds that field only: the tab's selection and `bindingReview` are left as they are. Returns false
- * (nothing changes) when the record does not exist or the chat is not a member any more.
+ * (nothing changes) when the record does not exist or the chat is not an active member any more: a chat
+ * in the Trash is read-only, and the server would refuse the binding write.
  */
 export function pickBinding(field: ChatBindingField, id: string, target: ChatRef | null): boolean {
     if (!chatBindingTargetExists(field, id)) {
         return false;
     }
     if (target) {
-        if (!chatEntry(target)) {
+        if (!isActiveChat(target)) {
             return false;
         }
         chatBindingPatch(target, { [field]: id });

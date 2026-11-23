@@ -3,7 +3,7 @@
     import { XIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { changeUserPersona } from "src/ts/persona";
-    import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, isActiveChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { pickedId } from "src/ts/storage/chatBinding.svelte";
     import { personaNoteFirstLine } from "../../../shared/personas.ts";
 
@@ -24,9 +24,9 @@
     // Read once per render, not once per row.
     const selectedPersonaId = $derived(pickedId("personaId", chatRef ?? null, editedPersona.id));
 
-    // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
+    // A list opened for a chat closes when that chat is gone or in the Trash; it never falls back to the open chat.
     $effect(() => {
-        if (chatRef && !chatEntry(chatRef)) {
+        if (chatRef && !isActiveChat(chatRef)) {
             close();
         }
     });

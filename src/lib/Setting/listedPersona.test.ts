@@ -27,9 +27,17 @@ vi.mock("src/ts/persona", async () => {
     };
 });
 
+import type { Chat } from "../../../shared/database.ts";
 import { language } from "src/lang";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { acceptRemoteChat, chatEntry, selectChat } from "src/ts/storage/chatStore.svelte";
+import {
+    acceptRemoteChat,
+    assembleChats,
+    chatEntry,
+    installChatTrashState,
+    isActiveChat,
+    selectChat,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selection, selectPersona } from "src/ts/storage/selection.svelte";
 import { activePersona, editedPersona } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
@@ -176,6 +184,27 @@ describe("the persona list with a chat open", () => {
         expect(chatEntry(refJ)).toBeUndefined();
         flushSync();
         expect(another.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("a list opened for a chat closes when another tab moves that chat to the Trash", () => {
+        // Token revisions, so the mark can be ordered against the chats.
+        const revision = "00000000-0000-4000-8000-000000000000:1:1";
+        const rows = [chat("k", { bindedPersona: "u2" }), chat("j")].map((data) => ({
+            characterId: "c",
+            id: data.id,
+            revision,
+            trashedAt: null,
+            data: data as Chat,
+        }));
+        assembleChats([{ chaId: "c" }], rows, [{ characterId: "c", revision, ids: ["k", "j"] }]);
+        const list = render(refJ);
+        expect(list.close).not.toHaveBeenCalled();
+        installChatTrashState(refJ, revision, 5);
+        expect(isActiveChat(refJ)).toBe(false);
+        // The chat stays a member, read-only, so the raw entry is still there.
+        expect(chatEntry(refJ)).toBeDefined();
+        flushSync();
+        expect(list.close).toHaveBeenCalledTimes(1);
     });
 
     it("at home the list marks and picks the tab's selection and names no chat", () => {

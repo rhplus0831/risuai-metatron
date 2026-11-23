@@ -311,6 +311,18 @@ describe("pickBinding's target", () => {
         expect(selected()).toEqual(TAB);
     });
 
+    it("a chat in the Trash stays a member but changes nothing and returns false", async () => {
+        const { server, chat, pick, entryIds } = await boot();
+        const target = ref("unbound");
+        // Another tab moves the chat to the Trash; the mark arrives with the chat's revision.
+        chat.installChatTrashState(target, server.chat(target.chaId, target.chatId)!.revision, 5);
+        expect(chat.chatEntry(target)).toBeDefined();
+        expect(chat.isActiveChat(target)).toBe(false);
+        expect(pick.pickBinding("promptPresetId", "p1", target)).toBe(false);
+        expect(entryIds(target)!.promptPresetId).toBeUndefined();
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
     it("a target captured before an await keeps its chat, or home, after the selection moved on", async () => {
         const { chat, pick, selected, entryIds, open } = await boot();
         // Captured for `bound`, picked after the screen moved to `unbound`.

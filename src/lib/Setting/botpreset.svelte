@@ -28,7 +28,7 @@
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
     import { moveRecordListItem } from "src/ts/storage/records.svelte";
-    import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, isActiveChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
     import { pickBinding } from "src/ts/storage/chatBindingPick";
     import { selectPreset, selection } from "src/ts/storage/selection.svelte";
@@ -85,9 +85,9 @@
         pickedId(field, chatRef ?? null, isPrompt ? editedPreset.id : editedModelPreset.id),
     );
 
-    // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
+    // A list opened for a chat closes when that chat is gone or in the Trash; it never falls back to the open chat.
     $effect(() => {
-        if (chatRef && !chatEntry(chatRef)) {
+        if (chatRef && !isActiveChat(chatRef)) {
             close();
         }
     });
