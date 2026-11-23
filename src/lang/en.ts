@@ -386,7 +386,7 @@ export const languageEnglish = {
         generationProgressWindow:
             "A small window at the top right lists every reply being generated on the server, with its stage, the time elapsed, and, while the model streams, the tokens generated and the speed.",
         halfStreaming:
-            "With Response Streaming off, still ask models that support it to stream, so the progress window can show the tokens generated and the speed. A streamed reply appears when it is complete and is handled like one with Response Streaming on: plugins' after-request replacers and the banned-script retry do not run for it. A model that answers without streaming is handled as usual.",
+            "With Response Streaming off, still ask models that support it to stream, so the progress window can show the tokens generated and the speed. A streamed reply appears when it is complete. Plugins' after-request replacers do not run for it, as with Response Streaming on, but it is still checked before it is shown: a reply that contains a banned script or is shorter than its minimum is requested again within the retry count. A model that answers without streaming is handled as usual.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -2643,8 +2643,8 @@ export const languageEnglish = {
             "Characters are counted after trimming, without thought blocks, tool call records, and image markers, so a reply that is only an image fails any minimum.",
             "Only the length is checked: a long refusal passes.",
             "A buffered request of the same kind that a script or trigger sends is measured too.",
-            "A Memory minimum can reject the Structured Memory writer's valid JSON, whose shortest valid answers are a few characters, and fail that recording. It is tried again in a later recording.",
-            "A continue request is not measured.",
+            "A Memory minimum can reject the Structured Memory writer's valid JSON, whose shortest valid answers are a few characters, and fail that recording, which is tried again in a later recording. A rejected compaction does not fail the recording: the event is kept and the recording shows a warning.",
+            "A continue request is not measured for length; the banned-script check still applies to it.",
             'An answer rejected before it was shown is requested again, within the "Request Retrys when Fail" count. A fully streamed reply fails without a retry and keeps its text; a reroll goes back to its previous answer.',
             'The banned-script list ("Auto Regenerate On Characterset") is on the Prompt page, in the Others tab\'s "Advanced prompt behavior" section.',
         ],
