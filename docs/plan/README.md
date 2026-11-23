@@ -6,7 +6,7 @@ their last commit and path, and the [backlog](../README.md) holds what they left
 
 - [Retire `/multisend` and Group Chats](retire-multisend-and-groups.md): `/multisend` removed, the trigger path and
   the server's command sequences included; group chats archived (kept, hidden from the tab and plugins, refused by the
-  server) and their leftover code declared dormant. Audited 2026-11-23; slices 1 to 3 landed.
+  server) and their leftover code declared dormant. Audited 2026-11-23; slices 1 to 4 landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
