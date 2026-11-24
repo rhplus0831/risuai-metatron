@@ -1,8 +1,14 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { normalizeCharacter } from "../../../shared/characters.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import type { TokenizerWorkerCall } from "../prompt/tokenizers/worker.ts";
+import * as workerHost from "../prompt/tokenizers/workerHost.ts";
+import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import {
     createResourceTestClient,
     createTestServer,
@@ -66,6 +72,146 @@ describe("shutdown admission for resource requests", () => {
         expect(((await saved.json()) as { data: unknown }).data).toEqual(normalizeCharacter({ chaId: "draining" }));
         await disposing;
         expect(disposed).toBe(true);
+    });
+
+    it("returns the saved scene without a queued token budget while shutdown drains an admitted write", async () => {
+        const reply = deferred();
+        const port = Object.assign(new EventEmitter(), {
+            ref() {},
+            unref() {},
+            async terminate() {},
+            postMessage: vi.fn((call: TokenizerWorkerCall) => {
+                void reply.promise.then(() => port.emit("message", { id: call.id, value: Uint32Array.of(1) }));
+            }),
+        });
+        const tokenizers = workerHost.createWorkerTokenizers({
+            rootDir: process.cwd(),
+            startWorker: (_, lane) => {
+                expect(lane).toBe("ordinary");
+                return port;
+            },
+        });
+        const factory = vi.spyOn(workerHost, "createWorkerTokenizers").mockReturnValue(tokenizers);
+        const s = await createResourceTestClient().finally(() => factory.mockRestore());
+        servers.push(s);
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: path.join(s.savePath, "data/resources.sqlite"), kinds });
+        try {
+            const firstId = (name: string) => (store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+            store.applyChanges({
+                ops: [{ kind: kinds.get("characters")!, id: "c", baseRevision: null, data: { chaId: "c" } }],
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    name: "K",
+                                    note: "",
+                                    localLore: [],
+                                    message: [],
+                                    promptPresetId: firstId("presets"),
+                                    modelPresetId: firstId("modelPresets"),
+                                    bindedPersona: firstId("personas"),
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+            const [page] = memoryRecords(["scene"], "Bridge").pages;
+            const scene = { ...page, type: "scene" as const, contextMode: "always" as const };
+            writeMemory(store, "c", "k", { pages: [scene] });
+            const url = "/api/memory/structured/c/k/records/pages/scene";
+            const saved = await (await s.request(url)).json();
+            expect(saved).toEqual({ revision: expect.any(String), data: scene });
+
+            const headers = await s.headers({ "content-type": "application/json" });
+            const writeEntered = deferred();
+            const releaseWrite = deferred();
+            const body = new ReadableStream<Uint8Array>(
+                {
+                    async pull(controller) {
+                        writeEntered.resolve();
+                        await releaseWrite.promise;
+                        controller.enqueue(new TextEncoder().encode('{"baseRevision":null,"data":{"chaId":"write"}}'));
+                        controller.close();
+                    },
+                },
+                { highWaterMark: 0 },
+            );
+            const writing = Promise.resolve(
+                s.app.request("/api/resources/characters/write", {
+                    method: "PUT",
+                    headers,
+                    body,
+                    duplex: "half",
+                } as RequestInit),
+            );
+            const encode = tokenizers.encode;
+            const occupying = encode("cl100k_base", "held encode").catch(() => {});
+            const queued = deferred();
+            vi.spyOn(tokenizers, "encode").mockImplementation((...args) => {
+                const result = encode(...args);
+                queued.resolve();
+                return result;
+            });
+            const reading = s.request(`${url}?sceneBudget=1`);
+            let disposing: Promise<void> | undefined;
+            try {
+                await Promise.race([
+                    queued.promise,
+                    reading.then(async (r) => {
+                        throw new Error(`The scene did not request a budget: ${await r.clone().text()}`);
+                    }),
+                ]);
+                expect(port.postMessage).toHaveBeenCalledOnce();
+                await Promise.race([
+                    writeEntered.promise,
+                    writing.then((r) => {
+                        throw new Error(`The write did not read its body: HTTP ${r.status}`);
+                    }),
+                ]);
+
+                s.context.beginShutdown();
+                const joining = deferred();
+                const stop = s.context.snapshots.stop;
+                vi.spyOn(s.context.snapshots, "stop").mockImplementation(() => {
+                    joining.resolve();
+                    return stop();
+                });
+                let disposed = false;
+                disposing = s.context.dispose().then(() => {
+                    disposed = true;
+                });
+                await joining.promise;
+                // Let the scene's promise continuations run while the worker and write body are still held.
+                const response = await Promise.race([
+                    reading,
+                    new Promise<undefined>((resolve) => setImmediate(() => resolve(undefined))),
+                ]);
+                expect(response?.status, "scene read at the snapshot drain").toBe(200);
+                expect(await response!.json()).toEqual(saved);
+                expect(disposed).toBe(false);
+
+                releaseWrite.resolve();
+                const written = await writing;
+                const character = normalizeCharacter({ chaId: "write" });
+                expect(written.status).toBe(200);
+                expect(await written.json()).toMatchObject({ data: character });
+                await disposing;
+                expect(store.get(kinds.get("characters")!, "write")?.data).toEqual(character);
+            } finally {
+                reply.resolve();
+                releaseWrite.resolve();
+                await Promise.all([reading, occupying, writing, disposing]);
+            }
+        } finally {
+            store.close();
+        }
     });
 });
 

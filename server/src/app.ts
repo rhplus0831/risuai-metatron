@@ -1309,6 +1309,8 @@ export function createServerContext(options: {
                 thumbnailSweep,
             ])
                 .then(() => generationJobs.dispose())
+                // An admitted scene-budget read can return its saved page once its queued count rejects.
+                .then(() => tokenizers.dispose())
                 // Admitted resource handlers and backup operations end here (a restore or an import
                 // too), while every store is open: the diagnostics' final state follows them.
                 .then(() => snapshots.stop())
@@ -1317,7 +1319,6 @@ export function createServerContext(options: {
                 .then(() => upstreamExportStaging.close())
                 .then(() => push.drain())
                 .then(() => diagnostics.finish())
-                .then(() => tokenizers.dispose())
                 .then(() => scriptWorkers.dispose())
                 .then(() => transformers.dispose())
                 .then(() => mcpRegistry.dispose())
