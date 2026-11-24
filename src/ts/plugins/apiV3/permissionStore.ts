@@ -5,7 +5,9 @@ import {
     type ResourceRecord,
     SINGLETON_RESOURCE_ID,
 } from "../../../../shared/resources.ts";
+import { readWithDeadline } from "../../storage/readDeadline";
 import { getResource, putResource, ResourceConflictError } from "../../storage/resourceClient";
+import { ensureAuth } from "../../storage/serverAuth";
 
 /**
  * v3 plugin permission grants, kept in the server-owned `pluginPermissions` resource. The record is
@@ -22,6 +24,7 @@ import { getResource, putResource, ResourceConflictError } from "../../storage/r
 type Loaded = { revision: string | null; data: PluginPermissionGrants };
 
 const MAX_ATTEMPTS = 5;
+const PERMISSION_REFRESH_DEADLINE_MS = 30_000;
 
 let current: Loaded = { revision: null, data: emptyGrants() };
 let queue: Promise<unknown> = Promise.resolve();
@@ -87,8 +90,10 @@ function copyGrants(source: PluginPermissionGrants | null | undefined): PluginPe
     return copy;
 }
 
-async function fetchGrants(): Promise<Loaded> {
-    const record = await getResource<PluginPermissionGrants>(RESOURCE_KIND.pluginPermissions, SINGLETON_RESOURCE_ID);
+async function fetchGrants(signal?: AbortSignal): Promise<Loaded> {
+    const record = await getResource<PluginPermissionGrants>(RESOURCE_KIND.pluginPermissions, SINGLETON_RESOURCE_ID, {
+        signal,
+    });
     return record
         ? { revision: record.revision, data: copyGrants(record.data) }
         : { revision: null, data: emptyGrants() };
@@ -328,7 +333,12 @@ export function refreshPluginPermissions(revision: string | null): Promise<void>
         if (revision !== null && current.revision !== null && (compareRevision(revision, current.revision) ?? 0) <= 0) {
             return;
         }
-        const fetched = await fetchGrants();
+        await ensureAuth();
+        const fetched = await readWithDeadline(
+            PERMISSION_REFRESH_DEADLINE_MS,
+            "The plugin permission refresh timed out",
+            fetchGrants,
+        );
         if (
             fetched.revision === null ||
             current.revision === null ||

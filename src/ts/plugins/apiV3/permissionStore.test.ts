@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureAuth } from "../../storage/serverAuth";
 import { FakeResourceServer } from "../../storage/tests/fakeResourceServer";
 
 // The server-owned `pluginPermissions` record: append-only merges, conflict re-read and retry,
@@ -6,9 +7,11 @@ import { FakeResourceServer } from "../../storage/tests/fakeResourceServer";
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
-vi.mock("../../storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
-}));
+vi.mock("../../storage/serverAuth", async () =>
+    (await import("../../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init) => server.current.fetch(path, init),
+    }),
+);
 
 import * as client from "../../storage/resourceClient";
 import {
@@ -569,6 +572,72 @@ describe("refreshPluginPermissions", () => {
         await refreshing;
         expect(hasPermissionGrant("two")).toBe(true);
         server.current = fake;
+    });
+
+    it("releases queued grants and revocations 30 seconds after sign-in and ignores a late refresh", async () => {
+        vi.useFakeTimers();
+        fake.set("pluginPermissions", "main", { grants: { older: true }, lastGrantTime: {} });
+        await loadPluginPermissions();
+        fake.requests.length = 0;
+        let finishSignIn!: () => void;
+        const signedIn = new Promise<void>((resolve) => (finishSignIn = resolve));
+        vi.mocked(ensureAuth).mockReturnValueOnce(signedIn);
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => (release = resolve));
+        let held = false;
+        let signal: AbortSignal | null | undefined;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                if (!held && path === "/api/resources/pluginPermissions/main" && (init?.method ?? "GET") === "GET") {
+                    held = true;
+                    await signedIn;
+                    signal = init?.signal;
+                    const older = await fake.fetch(path, init);
+                    await released;
+                    return older;
+                }
+                return fake.fetch(path, init);
+            },
+        };
+        let failure: unknown;
+        const refresh = refreshPluginPermissions(null).catch((error: unknown) => {
+            failure = error;
+        });
+        const grant = recordPermissionGrants({ grants: ["newer"] });
+        const revoke = revokePermissionGrants(
+            (key) => key === "older",
+            () => false,
+        );
+        const queued = Promise.allSettled([refresh, grant, revoke]);
+        try {
+            await vi.advanceTimersByTimeAsync(30_001);
+            expect(fake.requests).toHaveLength(0);
+            expect(failure).toBeUndefined();
+            finishSignIn();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(reads()).toBe(1);
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(failure).toBeUndefined();
+            expect(fake.data("pluginPermissions", "main").grants).toEqual({ older: true });
+            expect(signal?.aborted).not.toBe(true);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(failure).toMatchObject({ message: "The plugin permission refresh timed out" });
+            expect(signal?.aborted).toBe(true);
+            await Promise.all([grant, revoke]);
+            expect(fake.data("pluginPermissions", "main").grants).toEqual({ newer: true });
+
+            release();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(hasPermissionGrant("newer")).toBe(true);
+            expect(hasPermissionGrant("older")).toBe(false);
+        } finally {
+            finishSignIn();
+            release();
+            await queued;
+            vi.mocked(ensureAuth).mockReset();
+            vi.useRealTimers();
+        }
     });
 
     it("forgets the grants when the record is gone", async () => {
