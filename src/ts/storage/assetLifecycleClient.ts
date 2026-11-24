@@ -16,7 +16,7 @@ import {
     type AssetSweepResult,
 } from "../../../shared/assetLifecycle.ts";
 import { ResourceRequestError } from "./resourceClient";
-import { authFetch } from "./serverAuth";
+import { authFetch, ensureAuth } from "./serverAuth";
 
 async function request<T>(path: string, init: RequestInit): Promise<T> {
     let response: Response;
@@ -59,6 +59,7 @@ export function sweepAssets(selection: { keys: string[]; inlays: string[] }): Pr
     });
 }
 
+const PREVIEW_DEADLINE_MS = 60_000;
 const previewQueue: (() => void)[] = [];
 let activePreviews = 0;
 
@@ -70,13 +71,15 @@ function drainPreviews() {
 
 /**
  * Loads a candidate image without leasing it. The FIFO slot covers authentication, fetch and the
- * entire body read. Release is idempotent and rejects unfinished work with AbortError; callers
- * must observe `src`'s rejection even when releasing before the request starts.
+ * entire body read. After sign-in, a 60 s deadline releases the preview with an Error even if the
+ * body read is still pending. Explicit release is idempotent and rejects unfinished work with
+ * AbortError. Callers must observe `src`'s rejection even when releasing before the request starts.
  */
 export function loadAssetPreview(key: string): { src: Promise<string>; release(): void } {
     const abort = new AbortController();
     let released = false;
     let holdsSlot = false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     let url: string | undefined;
     let resolve!: (src: string) => void;
     let reject!: (reason: unknown) => void;
@@ -87,6 +90,7 @@ export function loadAssetPreview(key: string): { src: Promise<string>; release()
 
     function freeSlot() {
         if (!holdsSlot) return;
+        clearTimeout(deadline);
         holdsSlot = false;
         activePreviews--;
         drainPreviews();
@@ -98,6 +102,12 @@ export function loadAssetPreview(key: string): { src: Promise<string>; release()
         void (async () => {
             try {
                 const hex = Buffer.from(key, "utf-8").toString("hex");
+                await ensureAuth();
+                if (released) return;
+                deadline = setTimeout(
+                    () => releasePreview(new Error("Preview request timed out")),
+                    PREVIEW_DEADLINE_MS,
+                );
                 const response = await authFetch(`${ASSET_PREVIEW_PATH}/${hex}`, {
                     method: "GET",
                     cache: "no-store",
@@ -120,22 +130,26 @@ export function loadAssetPreview(key: string): { src: Promise<string>; release()
         })();
     }
 
+    function releasePreview(reason?: Error) {
+        if (released) return;
+        released = true;
+        const queued = previewQueue.indexOf(start);
+        if (queued !== -1) previewQueue.splice(queued, 1);
+        abort.abort(reason);
+        reject(abort.signal.reason);
+        if (url !== undefined) {
+            URL.revokeObjectURL(url);
+            url = undefined;
+        }
+        freeSlot();
+    }
+
     previewQueue.push(start);
     drainPreviews();
     return {
         src,
         release() {
-            if (released) return;
-            released = true;
-            const queued = previewQueue.indexOf(start);
-            if (queued !== -1) previewQueue.splice(queued, 1);
-            abort.abort();
-            reject(abort.signal.reason);
-            if (url !== undefined) {
-                URL.revokeObjectURL(url);
-                url = undefined;
-            }
-            freeSlot();
+            releasePreview();
         },
     };
 }

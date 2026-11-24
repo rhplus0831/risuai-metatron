@@ -28,10 +28,10 @@ const translated = (texts: string[]) => html(texts.map((text) => `Translated ${t
 const requestedTexts = () => provider.mock.calls.map(([input]) => new URL(String(input)).searchParams.get("q"));
 const quotaError = () => Response.json({ error: { code: 429, message: "Quota exceeded" } }, { status: 429 });
 
-function render(texts: string[], signal?: AbortSignal) {
+function observe(work: Promise<string>) {
     const view: { value?: string; error?: unknown } = {};
     renders.push(
-        translateHTML(html(texts), false, "", -1, false, null, signal).then(
+        work.then(
             (value) => {
                 view.value = value;
             },
@@ -41,6 +41,26 @@ function render(texts: string[], signal?: AbortSignal) {
         ),
     );
     return view;
+}
+
+function render(texts: string[], signal?: AbortSignal) {
+    return observe(translateHTML(html(texts), false, "", -1, false, null, signal));
+}
+
+function installTranslationSettings(overrides: object = {}) {
+    installFlatDatabase({
+        characters: [],
+        enabledModules: [],
+        modules: [],
+        translatorType: "google",
+        translator: "ko",
+        translatorInputLanguage: "en",
+        useExperimentalGoogleTranslator: false,
+        combineTranslation: false,
+        translatorPresets: [createTranslatorPreset("Translate", { id: "translate", prompt: "{{slot::content}}" })],
+        translatorPresetId: "translate",
+        ...overrides,
+    });
 }
 
 beforeEach(() => {
@@ -64,19 +84,10 @@ beforeEach(() => {
         });
     });
     // The direct Google adapter goes through `globalFetch`; `provider` stands in for its transport.
-    vi.mocked(globalFetch).mockImplementation((url, arg) => globalFetchFromResponse(provider, url, arg));
-    installFlatDatabase({
-        characters: [],
-        enabledModules: [],
-        modules: [],
-        translatorType: "google",
-        translator: "ko",
-        translatorInputLanguage: "en",
-        useExperimentalGoogleTranslator: false,
-        combineTranslation: false,
-        translatorPresets: [createTranslatorPreset("Translate", { id: "translate", prompt: "{{slot::content}}" })],
-        translatorPresetId: "translate",
-    });
+    vi.mocked(globalFetch)
+        .mockReset()
+        .mockImplementation((url, arg) => globalFetchFromResponse(provider, url, arg));
+    installTranslationSettings();
 });
 
 afterEach(async () => {
@@ -90,6 +101,119 @@ afterEach(async () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("provider request deadlines", () => {
+    it("admits the eleventh render at 60 s, fails joined renders, and lets the timed-out text be retried", async () => {
+        const source = "Silent rendered translation";
+        const first = render([source]);
+        await vi.advanceTimersByTimeAsync(1_000);
+        const [held] = open;
+        expect(requestedTexts()).toEqual([source]);
+
+        const blockers = paragraphs("Deadline blockers", 9);
+        render(blockers);
+        const joined = render([source]);
+        const controller = new AbortController();
+        const cancelled = render([source], controller.signal);
+        const eleventhText = "Waiting eleventh render";
+        const eleventh = render([eleventhText]);
+        await vi.advanceTimersByTimeAsync(0);
+        const reason = new Error("Render cancelled");
+        controller.abort(reason);
+        await vi.advanceTimersByTimeAsync(58_999);
+        expect(requestedTexts()).toEqual([source, ...blockers]);
+        expect(first).toEqual({});
+        expect(joined).toEqual({});
+        expect(eleventh).toEqual({});
+        expect(cancelled.error).toBe(reason);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(requestedTexts()).toEqual([source, ...blockers, eleventhText]);
+        expect(provider.mock.calls[0][1]?.signal?.aborted).toBe(true);
+        expect(first.error).toSatisfy(isTransient);
+        expect(joined.error).toBe(first.error);
+
+        // A late reply from the expired fetch must not warm the pair cache.
+        held.answer();
+        [...open].find((request) => request.text === eleventhText)!.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(eleventh).toEqual({ value: translated([eleventhText]) });
+
+        const retried = render([source]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requestedTexts()).toEqual([source, ...blockers, eleventhText, source]);
+        [...open].find((request) => request.text === source)!.answer();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(retried).toEqual({ value: translated([source]) });
+    });
+
+    it("ends a composer-first DeepL flight and its joined render at 60 s", async () => {
+        installTranslationSettings({ translatorType: "deepl", deeplOptions: { key: "fixture-key", freeApi: true } });
+        const source = "Silent composer translation";
+        const composer = observe(translate(source, false));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(globalFetch).toHaveBeenCalledExactlyOnceWith(
+            "https://api-free.deepl.com/v2/translate",
+            expect.anything(),
+        );
+        const joined = render([source]);
+
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(globalFetch).toHaveBeenCalledOnce();
+        expect(composer).toEqual({});
+        expect(joined).toEqual({});
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(composer.error).toSatisfy(isTransient);
+        expect(joined.error).toBe(composer.error);
+        expect(provider.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    });
+
+    it("aborts a silent experimental Google fetch at 60 s", async () => {
+        installTranslationSettings({ useExperimentalGoogleTranslator: true });
+        render(["Silent experimental Google translation"]);
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(provider).toHaveBeenCalledOnce();
+        const [[url, init]] = provider.mock.calls;
+        expect(String(url)).toMatch(/^https:\/\/translate\.google\.com\/m\?/);
+        expect(init?.signal?.aborted).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(init?.signal?.aborted).toBe(true);
+    });
+
+    it("starts the DeepLX deadline after its three-second slot wait", async () => {
+        installTranslationSettings({
+            translatorType: "deeplX",
+            noWaitForTranslate: false,
+            deeplXOptions: { url: "https://deeplx.test", token: "" },
+        });
+        const first = render(["First DeepLX slot"]);
+        const held = render(["Second DeepLX slot"]);
+        try {
+            await vi.advanceTimersByTimeAsync(2_999);
+            expect(provider.mock.calls.map(([url]) => url)).toEqual(["https://deeplx.test/translate"]);
+            const [firstRequest] = open;
+            firstRequest.answer(Response.json({ data: "Translated first DeepLX slot" }));
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(provider.mock.calls.map(([url]) => url)).toEqual(Array(2).fill("https://deeplx.test/translate"));
+            expect(first).toEqual({ value: "<p>Translated first DeepLX slot</p>" });
+            const signal = provider.mock.calls[1][1]?.signal;
+
+            await vi.advanceTimersByTimeAsync(59_999);
+            expect(held).toEqual({});
+            expect(signal?.aborted).toBe(false);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(held.error).toSatisfy(isTransient);
+            expect(signal?.aborted).toBe(true);
+        } finally {
+            // Let a reserved slot reach the mock even if an earlier assertion failed.
+            await vi.advanceTimersByTimeAsync(3_000);
+        }
+    });
 });
 
 describe("rendered provider worker limit", () => {
