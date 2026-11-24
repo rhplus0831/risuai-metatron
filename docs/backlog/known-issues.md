@@ -33,7 +33,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
 - [plugin-sandbox](#plugin-sandbox) (1)
-- [server-generation](#server-generation) (1)
 - [structured-memory](#structured-memory) (1)
 - [translation](#translation) (2)
 
@@ -182,20 +181,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
   or signal. Synchronous lookups still read the mirror, and other tabs have their own queues. Reproduced on 2026-11-24
   at `4c84cd229` by the reproduction round's probe `src/ts/storage/tests/pluginImportAssets.probe.test.ts` (neither the
   grant nor the revoke written after ten minutes). [Queue](../../src/ts/plugins/apiV3/permissionStore.ts#L166)
-
-## server-generation
-
-Guide: [Server generation: jobs, channels, transforms, LLM and token routes](../structure/server-generation.md#known-hazards).
-
-- A reply over the candidate limit rerolled in place is lost when the server dies before the reroll's final write. The
-  begin group clears the message's text, and `trimCandidates` drops the previous reply past
-  `MAX_CANDIDATES_BYTES_PER_MESSAGE` (192 KiB) and clears `candidates`, while the rollback copy (`previousCandidate`)
-  lives only in the runner: a 200 KiB reply reopened with empty text and no candidates after the process was killed
-  mid-reroll, where a 1 KiB reply kept its text as candidate 0. An ordinary finish replaces it, a provider error
-  restores it; only Request History keeps the old text. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction
-  round's probe `server/src/tests/rerollRestart.probe.test.ts`. A fix keeps the previous reply when trimming for a
-  reroll or keeps the rollback copy durable. [Begin](../../server/src/prompt/runner.ts#L1508) ·
-  [Trim](../../shared/rerollCandidates.ts#L229)
 
 ## structured-memory
 
