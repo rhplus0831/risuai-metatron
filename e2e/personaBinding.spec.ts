@@ -197,7 +197,7 @@ test("the binding panel's persona row binds the open chat's persona while the ta
     const chatRow = page.locator("button[data-risu-chat-idx]").filter({ hasText: "Chat 1" });
     await expect(chatRow).toBeVisible();
     await chatRow.locator("[role='button']").first().click();
-    await page.getByRole("button", { name: "Chat Settings" }).click();
+    await page.getByRole("button", { name: "Chat Settings", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toContainText("Chat 1");
     const dialogRow = dialog.locator("[data-chat-binding-field='personaId']");

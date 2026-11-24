@@ -37,7 +37,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Build and CI](#build-and-ci): 4
+- [Build and CI](#build-and-ci): 3
 - [Chat screen](#chat-screen): 1
 - [Client features](#client-features): 5
 - [Docs](#docs): 1
@@ -72,18 +72,6 @@ had the same gap and now compares its complete input key before saving.
 
 **Suggested handling:** reproduce with an ignored fixture a test reads; if it replays, key the result the way
 `util/typeCheckCache.mjs` keys a program.
-
-### The persona binding e2e spec's "Chat Settings" button name matches two buttons
-
-Run on 2026-11-23 at `a3cb3d014` and again at `667444a93`: `e2e/personaBinding.spec.ts:200` fails in Playwright strict
-mode. After it opens a chat row's options, `page.getByRole("button", { name: "Chat Settings" })` matches the "Chat
-Settings" option and the "Copy Settings Only" option, whose description `createSettingsCopyDesc` (`src/lang/en.ts`)
-ends in "and chat settings." The option came in at `4a44b704a`.
-
-**Why it matters:** the spec fails for a reason unrelated to what it tests, so it no longer guards the binding dialog's
-Chat Settings path, and every e2e run that selects it reports a failure.
-
-**Suggested handling:** pass `exact: true` to that `getByRole`, then run the spec again.
 
 ### The multi-client create, delete, and reorder e2e spec fails about one whole-file run in three
 
