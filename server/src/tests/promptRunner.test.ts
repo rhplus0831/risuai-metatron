@@ -2367,12 +2367,12 @@ describe("the final token recheck with a prompt template", () => {
 });
 
 describe("the route", () => {
-    it("accepts userMessageId only for send, continue, reroll, and group jobs", async () => {
+    it("accepts userMessageId only for send, continue, and reroll jobs", async () => {
         const chaId = await seedCharacter({ name: "Ann" });
         for (const kind of ["preview", "previewPrompt"]) {
             const res = await job(kind, chaId, { userMessageId: "u-x" });
             expect(res.status, kind).toBe(400);
-            expect(res.body.error).toMatch(/userMessageId is only for send, continue, reroll, and group/);
+            expect(res.body.error).toMatch(/userMessageId is only for send, continue, and reroll jobs/);
         }
         for (const userMessageId of ["", "x".repeat(600)]) {
             const bad = await job("send", chaId, { userMessageId });

@@ -142,7 +142,7 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
 }
 
 /** The kinds whose job runs the input stage (`userMessageId`). */
-const INPUT_KINDS: readonly string[] = ["send", "continue", "reroll", "group"];
+const INPUT_KINDS: readonly string[] = ["send", "continue", "reroll"];
 
 /** Checks a create body, including preview-only OOC ids; returns a reason when it is refused. */
 function parseCreateBody(body: unknown): GenerationCreateBody | string {
@@ -206,7 +206,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
             return "context.inputOriginal must be a string when present";
         }
         if (!INPUT_KINDS.includes(body.kind)) {
-            return "context.inputOriginal is only for send, continue, reroll, and group jobs";
+            return "context.inputOriginal is only for send, continue, and reroll jobs";
         }
         if (context.userMessageId === undefined) {
             return "context.inputOriginal requires context.userMessageId";
@@ -217,7 +217,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     }
     // Only a send runs the input stage that appends the user message.
     if (context.userMessageId !== undefined && !INPUT_KINDS.includes(body.kind)) {
-        return "context.userMessageId is only for send, continue, reroll, and group jobs";
+        return "context.userMessageId is only for send, continue, and reroll jobs";
     }
     // A `risu-id` attribute: any nonempty text (not a resource id), bounded.
     if (
