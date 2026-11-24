@@ -1,6 +1,6 @@
 # Lore Popup Through a Fence Plan
 
-Status: slice 1 landed (`81319abcb`, guide budget fix `7561c0965`). Reshaped 2026-11-24 from the Conditional Chat Writes plan, not yet audited. That draft (at `5fced8637`)
+Status: every slice landed: 1 (`81319abcb`, guide budget fix `7561c0965`), 2 (`d28a020c7`). Reshaped 2026-11-24 from the Conditional Chat Writes plan, not yet audited. That draft (at `5fced8637`)
 proposed field conditions on chat ops so the server would refuse stale writes for three known issues; its full audit
 ([report](../reports/audits/plan-runner/conditional-chat-writes-2026-11-24.md)) found 11 P1 and 10 P2. A Claude Fable
 review then judged each item and finding by how an ordinary user reaches it and what a fix costs, and the owner's rule
