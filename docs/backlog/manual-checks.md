@@ -143,6 +143,8 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Response Checks (1)**: two devices that each set a different request kind's minimum on the Request Rules page while apart both keep their value after syncing.
 - [ ] **Tokenizer Worker**: start a very long count in the tokenizer playground and close the browser tab (a real disconnect: editing the text or leaving the page does not end the request). A second very long count from another tab then finishes in about the time of one such count, not two. A short count answers at once in either case.
 - [ ] **Bounded Client Waits**: Cancel during a module upload returns the tab with the cancelled message, and a second import can start once the server's import slot is free.
+- [ ] **Lore Popup Through a Fence**: two tabs on one chat: type in a lore entry's expanded prompt popup in one while the other sends. The popup turns read-only with the text in place; after the reply, close it and the text is saved.
+- [ ] **Lore Popup Through a Fence**: the same, but close the popup while the reply is still generating: the text is shown for copying and the stored prompt is unchanged.
 
 ## Real providers and external services
 
