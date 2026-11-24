@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onDestroy, type Snippet } from "svelte";
     import { language } from "src/lang";
+    import { alertNormal } from "src/ts/alert";
     import type { loreBook } from "src/ts/storage/database.svelte";
     import { countTokens, tokenCountInput, type TokenCountInput } from "src/ts/tokenizer";
     import { createTokenCountField } from "src/ts/tokenCountField";
@@ -92,19 +93,14 @@
         />
     {/if}
     <span class="text-textcolor mt-4 mb-2">{language.prompt}</span>
-    {#if disabled}
-        <textarea
-            readonly
-            aria-label={language.prompt}
-            value={value.content}
-            class="w-full min-h-32 rounded-md border border-darkborderc bg-darkbg text-textcolor2 p-2"></textarea>
-    {:else}
-        <TextAreaInput
-            highlight
-            autocomplete="off"
-            bind:value={() => value.content, (next) => setField("content", next)}
-        />
-    {/if}
+    <TextAreaInput
+        highlight
+        autocomplete="off"
+        readonly={disabled}
+        ariaLabel={language.prompt}
+        bind:value={() => value.content, (next) => setField("content", next)}
+        onPopupUnsaved={(text) => alertNormal(`${language.lorePopupUnsaved}\n\n${text}`)}
+    />
     <span class="text-textcolor2 mt-2 mb-2 text-sm">{tokens} {language.tokens}</span>
     <div class="flex items-center mt-4">
         <Check

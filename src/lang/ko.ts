@@ -907,6 +907,7 @@ export const languageKorean = {
     groupLoreInfo: "그룹 로어북은 이 그룹의 모든 채팅에 적용됩니다.",
     localLoreInfo: "채팅 로어북은 현재 채팅에만 적용됩니다.",
     localLoreExportNotLoaded: "채팅을 아직 불러오는 중입니다. 로딩이 끝난 뒤에 로어북을 내보내 주세요.",
+    lorePopupUnsaved: "로어 프롬프트를 저장하지 못했습니다. 아래 텍스트를 복사해 프롬프트에 다시 붙여넣어 주세요.",
     removeConfirm: "정말로 삭제하시겠습니까: ",
     removeConfirm2: "정말로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다: ",
     exportConfirm: "내보내시겠습니까?",

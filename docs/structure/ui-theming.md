@@ -215,7 +215,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   (`popupEditor`, `popupEditorContext`). A field tied to a selected record passes its id as `popupEditorContext`;
   wrappers that forward it include `RegexList`, `TriggerList`, `PromptDataItem`, `MultiLangInput`, and
   `SettingTextarea`. A row of an index-bound list (`PromptDataItem`, `RegexData`) adds `recordValueIdentity` of its row,
-  in an object replaced only when owner or row changes: a remote list replacement then drops the draft.
+  in an object replaced only when owner or row changes: a remote list replacement then drops the draft. A field whose
+  write-back can be refused mid-popup passes `onPopupUnsaved(text)`: a close while `readonly` then writes nothing, and
+  changed text the popup could not write back (read-only close, value or context change, unmount) reaches the callback
+  once per session; `LoreEntryFields` shows it for copying through `alertNormal`.
 - `src/lib/UI/GUI/LazyFileSrc.svelte` (object-URL ownership is in [assets](assets.md)) and
   `src/lib/UI/GUI/LazyCharImage.svelte` (256/512 server thumbnails, `thumb`) defer reads until near the viewport.
 

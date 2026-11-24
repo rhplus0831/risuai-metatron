@@ -969,6 +969,7 @@ export const languageEnglish = {
     groupLoreInfo: "Group Lorebook applys to all chats in the group.",
     localLoreInfo: "Chat Lorebook only applies to the current chat.",
     localLoreExportNotLoaded: "This chat is still loading. Export its lorebook once it has loaded.",
+    lorePopupUnsaved: "This lore prompt could not be saved. Copy the text below and paste it into the prompt again.",
     removeConfirm: "Do you really want to remove: ",
     removeConfirm2: "Do you REALLY want to remove: ",
     exportConfirm: "Do you want to export this?",

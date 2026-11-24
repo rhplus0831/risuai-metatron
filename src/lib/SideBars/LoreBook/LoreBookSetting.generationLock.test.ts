@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { loreBook } from "src/ts/storage/database.svelte";
+import type { Chat, ChatLoreOverride, loreBook } from "../../../../shared/database.ts";
 
 // The lorebook tab while a send of this tab (`localSends`) or a job this tab follows (`followedJobs`) runs in the
 // selected chat, over the real records, chat module, and lore drafts: the chat's lore is read-only (the
@@ -49,17 +49,25 @@ vi.mock("src/ts/storage/serverAuth", async () =>
 );
 
 import { language } from "src/lang";
-import { alertConfirm, alertError } from "src/ts/alert";
+import { alertConfirm, alertError, alertNormal } from "src/ts/alert";
 import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { characterList } from "src/ts/storage/characterStore.svelte";
-import { findChat, selectChat, setChatWorkListener } from "src/ts/storage/chatStore.svelte";
+import {
+    acceptRemoteChat,
+    findChat,
+    noteRemoteStreaming,
+    selectChat,
+    setChatWorkListener,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { closePopupEditorSession, popUpEditorStore } from "src/ts/stores.svelte";
 import LoreBookSetting from "./LoreBookSetting.svelte";
 
 const ref = { chaId: "owner", chatId: "chat" };
+const feedChat = { characterId: ref.chaId, id: ref.chatId };
 const entry = (name: string, extra: Partial<loreBook> = {}): loreBook => ({
     key: name,
     comment: name,
@@ -80,7 +88,7 @@ let target: HTMLDivElement;
 let instance: ReturnType<typeof mount> | undefined;
 const releases: (() => void)[] = [];
 
-function install(lore: { globalLore?: loreBook[]; localLore?: loreBook[] }) {
+function install(lore: { globalLore?: loreBook[]; localLore?: loreBook[]; loreOverrides?: ChatLoreOverride[] }) {
     installFlatDatabaseWithChats({
         bulkEnabling: true,
         localActivationInGlobalLorebook: true,
@@ -90,7 +98,16 @@ function install(lore: { globalLore?: loreBook[]; localLore?: loreBook[] }) {
                 type: "character",
                 name: "Owner",
                 globalLore: lore.globalLore ?? [],
-                chats: [{ id: ref.chatId, name: "Chat", note: "", message: [], localLore: copy(lore.localLore ?? []) }],
+                chats: [
+                    {
+                        id: ref.chatId,
+                        name: "Chat",
+                        note: "",
+                        message: [{ chatId: "reply", role: "char", data: "Reply" }],
+                        localLore: copy(lore.localLore ?? []),
+                        ...(lore.loreOverrides && { loreOverrides: copy(lore.loreOverrides) }),
+                    },
+                ],
             },
         ],
     });
@@ -99,8 +116,8 @@ function install(lore: { globalLore?: loreBook[]; localLore?: loreBook[] }) {
     flushSync();
     setChatWorkListener(chatWrites);
 }
-type Fence = "local send" | "followed job";
-/** Starts a send or a followed job in the chat; returns what ends it. */
+type Fence = "local send" | "message lock" | "followed job";
+/** Raises a chat write fence and returns what releases it. */
 function fence(kind: Fence) {
     if (kind === "local send") {
         const release = beginLocalSend(ref)!;
@@ -110,6 +127,14 @@ function fence(kind: Fence) {
         return () => {
             releases.splice(releases.indexOf(release), 1);
             release();
+            flushSync();
+        };
+    }
+    if (kind === "message lock") {
+        noteRemoteStreaming([{ ...feedChat, streaming: [{ messageId: "reply", generationId: "gen", seq: 0 }] }]);
+        flushSync();
+        return () => {
+            noteRemoteStreaming([{ ...feedChat, streaming: [] }]);
             flushSync();
         };
     }
@@ -159,6 +184,7 @@ beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
     vi.mocked(alertError).mockClear();
+    vi.mocked(alertNormal).mockClear();
     chatWrites.mockClear();
     followedJobs.set(new Map());
     target = document.createElement("div");
@@ -168,10 +194,13 @@ afterEach(async () => {
     setChatWorkListener(null);
     for (const release of releases.splice(0)) release();
     followedJobs.set(new Map());
+    noteRemoteStreaming([{ ...feedChat, streaming: [] }]);
     if (instance) await unmount(instance);
     instance = undefined;
+    closePopupEditorSession(popUpEditorStore.sessionId);
     target.remove();
     selectCharacter(null);
+    vi.clearAllTimers();
     vi.useRealTimers();
 });
 
@@ -290,4 +319,125 @@ it("disables the local activation checkbox during a send, writing neither the li
     const id = globalLore()[0].id;
     expect(id).toBeTruthy();
     expect(localLore()).toEqual([expect.objectContaining({ mode: "child", id })]);
+});
+
+const promptSources = ["chat lore", "lore override"] as const;
+type PromptSource = (typeof promptSources)[number];
+const fences = ["local send", "message lock", "followed job"] as const satisfies readonly Fence[];
+const popupCases = promptSources.flatMap((source) => fences.map((kind) => ({ source, kind })));
+const originalPrompt = entry("Popup lore", { id: "popup-lore" });
+const draftText = "Typed in the popup\n  <copy this line as plain text>";
+const copyMessage = () => `${language.lorePopupUnsaved}\n\n${draftText}`;
+
+function promptList(source: PromptSource, book: loreBook) {
+    return source === "chat lore" ? { localLore: [book] } : { loreOverrides: [{ entry: book, off: false }] };
+}
+
+function storedPrompt(source: PromptSource) {
+    return source === "chat lore" ? localLore()[0].content : findChat(ref)!.loreOverrides![0].entry.content;
+}
+
+function expandPrompt() {
+    const expand = target.querySelector<HTMLButtonElement>(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`);
+    expect(expand, "prompt expand button").not.toBeNull();
+    click(expand!);
+    expect(popUpEditorStore).toMatchObject({ open: true, value: originalPrompt.content });
+    return expand!;
+}
+
+function typeInPopup(source: PromptSource) {
+    install({ globalLore: [originalPrompt], ...promptList(source, originalPrompt) });
+    instance = mount(LoreBookSetting, { target });
+    flushSync();
+    click(button(language.Chat));
+    if (source === "lore override") click(button(language.chatLoreOverrides.title));
+    click(button(originalPrompt.comment));
+    const expand = expandPrompt();
+    expect(popUpEditorStore.isReadOnly?.()).toBe(false);
+    flushSync(() => {
+        popUpEditorStore.value = draftText;
+    });
+    return expand;
+}
+
+function closePopup() {
+    flushSync(() => closePopupEditorSession(popUpEditorStore.sessionId));
+    expect(popUpEditorStore.open).toBe(false);
+}
+
+async function pollPopup() {
+    await vi.advanceTimersByTimeAsync(100);
+    flushSync();
+}
+
+it.each(popupCases)(
+    "keeps the $source popup through a $kind and writes once on close after release",
+    async ({ source, kind }) => {
+        typeInPopup(source);
+
+        const end = fence(kind);
+        await pollPopup();
+        expect(popUpEditorStore).toMatchObject({ open: true, value: draftText });
+        expect(popUpEditorStore.isReadOnly?.()).toBe(true);
+        expect(storedPrompt(source)).toBe(originalPrompt.content);
+        expect(chatWrites).not.toHaveBeenCalled();
+
+        end();
+        await pollPopup();
+        expect(popUpEditorStore).toMatchObject({ open: true, value: draftText });
+        expect(popUpEditorStore.isReadOnly?.()).toBe(false);
+        expect(storedPrompt(source)).toBe(originalPrompt.content);
+        expect(chatWrites).not.toHaveBeenCalled();
+
+        closePopup();
+        await pollPopup();
+        expect(storedPrompt(source)).toBe(draftText);
+        expect(chatWrites).toHaveBeenCalledOnce();
+        expect(alertNormal).not.toHaveBeenCalled();
+    },
+);
+
+it.each(popupCases)(
+    "offers the $source draft once on close and immediate reopen during a $kind",
+    async ({ source, kind }) => {
+        typeInPopup(source);
+        const end = fence(kind);
+        expect(popUpEditorStore).toMatchObject({ open: true, value: draftText });
+        expect(popUpEditorStore.isReadOnly?.()).toBe(true);
+
+        closePopup();
+        // Reopen in the next UI update, before the closed session's first poll.
+        expandPrompt();
+        expect(popUpEditorStore.isReadOnly?.()).toBe(true);
+        await pollPopup();
+        expect(alertNormal).toHaveBeenCalledExactlyOnceWith(copyMessage());
+        expect(storedPrompt(source)).toBe(originalPrompt.content);
+        expect(chatWrites).not.toHaveBeenCalled();
+
+        closePopup();
+        end();
+        await pollPopup();
+        expect(alertNormal).toHaveBeenCalledExactlyOnceWith(copyMessage());
+        expect(storedPrompt(source)).toBe(originalPrompt.content);
+        expect(chatWrites).not.toHaveBeenCalled();
+    },
+);
+
+it.each(promptSources)("offers the %s draft once when the lore list is replaced", async (source) => {
+    const expand = typeInPopup(source);
+    const end = fence("followed job");
+    const replacement = { ...originalPrompt, content: "Prompt from the server" };
+
+    const data = { ...copy(findChat(ref)!), ...promptList(source, replacement) } as Chat;
+    acceptRemoteChat({ ...feedChat, revision: "r2", data });
+    flushSync();
+
+    expect(expand.isConnected).toBe(false);
+    expect(popUpEditorStore.open).toBe(false);
+    await pollPopup();
+    end();
+    await pollPopup();
+    expect(alertNormal).toHaveBeenCalledExactlyOnceWith(copyMessage());
+    expect(storedPrompt(source)).toBe(replacement.content);
+    expect(chatWrites).not.toHaveBeenCalled();
 });

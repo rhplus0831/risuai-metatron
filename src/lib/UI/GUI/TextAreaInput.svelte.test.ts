@@ -33,6 +33,8 @@ type Props = {
     popupEditor?: boolean | "auto";
     popupLanguage?: string;
     popupEditorContext?: unknown;
+    readonly?: boolean;
+    onPopupUnsaved?: (text: string) => void;
     onInput?: () => void;
     onchange?: (e: { currentTarget: HTMLTextAreaElement | HTMLDivElement }) => void;
 };
@@ -44,12 +46,17 @@ function render(initial: Props) {
     const props = $state(initial);
     const target = document.createElement("div");
     document.body.appendChild(target);
-    mounted.push(mount(TextAreaInput, { target, props }));
+    const instance = mount(TextAreaInput, { target, props });
+    mounted.push(instance);
     flushSync();
     const expandButton = () =>
         target.querySelector<HTMLButtonElement>(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`);
     const textarea = () => target.querySelector<HTMLTextAreaElement>("textarea")!;
-    return { props, target, expandButton, textarea };
+    const destroy = () => {
+        mounted.splice(mounted.indexOf(instance), 1);
+        return unmount(instance);
+    };
+    return { props, target, expandButton, textarea, destroy };
 }
 
 /** Closes the current popup with `text` and lets the opener's poll observe the close. */
@@ -224,5 +231,91 @@ describe("TextAreaInput popup editor", () => {
         await closePopupWith("edited by taker");
         expect(taker.props.value).toBe("edited by taker");
         expect(taken.props.value).toBe("taken over");
+    });
+
+    it("reports changed text once on a read-only close without writing to the binding", async () => {
+        const onPopupUnsaved = vi.fn();
+        const onInput = vi.fn();
+        const ui = render({ value: "stored prompt", readonly: false, onPopupUnsaved, onInput });
+        ui.expandButton()!.click();
+        flushSync();
+        popUpEditorStore.value = "edited prompt";
+        flushSync(() => {
+            ui.props.readonly = true;
+        });
+
+        await closePopupWith("edited prompt");
+        expect(ui.props.value).toBe("stored prompt");
+        expect(onInput).not.toHaveBeenCalled();
+        expect(onPopupUnsaved).toHaveBeenCalledExactlyOnceWith("edited prompt");
+    });
+
+    it.each(["value change", "context change", "unmount"] as const)(
+        "reports changed popup text once on %s",
+        async (reason) => {
+            const onPopupUnsaved = vi.fn();
+            const ui = render({ value: "stored prompt", popupEditorContext: "first", onPopupUnsaved });
+            ui.expandButton()!.click();
+            flushSync(() => {
+                popUpEditorStore.value = "edited prompt";
+            });
+
+            if (reason === "value change") ui.props.value = "replacement prompt";
+            else if (reason === "context change") ui.props.popupEditorContext = "second";
+            else await ui.destroy();
+            flushSync();
+            await vi.advanceTimersByTimeAsync(100);
+            flushSync();
+
+            expect(popUpEditorStore.open).toBe(false);
+            expect(ui.props.value).toBe(reason === "value change" ? "replacement prompt" : "stored prompt");
+            expect(onPopupUnsaved).toHaveBeenCalledExactlyOnceWith("edited prompt");
+        },
+    );
+
+    it("keeps an unchanged popup silent even when the bound value changes", async () => {
+        const onPopupUnsaved = vi.fn();
+        const ui = render({ value: "stored prompt", onPopupUnsaved });
+        ui.expandButton()!.click();
+        flushSync();
+
+        ui.props.value = "replacement prompt";
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+
+        expect(popUpEditorStore.open).toBe(false);
+        expect(ui.props.value).toBe("replacement prompt");
+        expect(onPopupUnsaved).not.toHaveBeenCalled();
+    });
+
+    it("keeps a superseded popup silent when its field unmounts", async () => {
+        const onPopupUnsaved = vi.fn();
+        const first = render({ value: "first prompt", onPopupUnsaved });
+        const second = render({ value: "second prompt" });
+        first.expandButton()!.click();
+        flushSync(() => {
+            popUpEditorStore.value = "edited first prompt";
+        });
+        second.expandButton()!.click();
+        flushSync();
+
+        await first.destroy();
+        await vi.advanceTimersByTimeAsync(100);
+        flushSync();
+
+        expect(popUpEditorStore).toMatchObject({ open: true, value: "second prompt" });
+        expect(onPopupUnsaved).not.toHaveBeenCalled();
+    });
+
+    it("writes back on a read-only close when the field has no unsaved callback", async () => {
+        const onInput = vi.fn();
+        const ui = render({ value: "stored prompt", readonly: true, onInput });
+        ui.expandButton()!.click();
+        flushSync();
+
+        await closePopupWith("edited prompt");
+        expect(ui.props.value).toBe("edited prompt");
+        expect(ui.textarea().value).toBe("edited prompt");
+        expect(onInput).toHaveBeenCalledOnce();
     });
 });

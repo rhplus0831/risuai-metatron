@@ -3,7 +3,7 @@
     import { textAreaSize, textAreaTextSize } from "src/ts/gui/guisize";
     import { highlighter, getNewHighlightId, removeHighlight, AllCBS } from "src/ts/gui/highlight";
     import { sleep } from "src/ts/util";
-    import { onDestroy, onMount, tick } from "svelte";
+    import { onDestroy, onMount, tick, untrack } from "svelte";
     import {
         closePopupEditorSession,
         disableHighlight,
@@ -28,6 +28,8 @@
      * Closing the popup writes its text to the binding, then, after the DOM flush, calls `onInput` and `onchange` and
      * refreshes the highlighting. A change of the value, of `popupEditorContext`, of the open run, or of the session,
      * or the field's unmount, drops the write-back; a value or context change while the popup is open also closes it.
+     * With `onPopupUnsaved`, a read-only close skips write-back. The callback receives changed text once on a
+     * read-only close, a value or context change, or an unmount while the session still belongs to this field.
      * A field tied to a selected record passes the record's id as `popupEditorContext`: equal text alone cannot tell
      * which record the popup was opened for. Repeated rows also include a transient row identity in that context.
      */
@@ -52,7 +54,14 @@
         popupMode?: typeof popUpEditorStore.mode;
         popupEditor?: boolean | "auto";
         popupEditorContext?: unknown;
+        onPopupUnsaved?: (text: string) => void;
         ariaLabel?: string;
+    }
+
+    interface PopupSession {
+        id: number;
+        initialValue: string;
+        handled: boolean;
     }
 
     let {
@@ -75,6 +84,7 @@
         popupMode,
         popupEditor = "auto",
         popupEditorContext = undefined,
+        onPopupUnsaved,
         ariaLabel = undefined,
     }: Props = $props();
     let selectingAutoComplete = $state(0);
@@ -93,12 +103,29 @@
     let popupEditorContextRevision = 0;
     // svelte-ignore state_referenced_locally
     let lastPopupEditorContext = popupEditorContext;
-    let activePopupEditorSessionId: number | null = null;
+    let activePopupEditorSession: PopupSession | null = null;
 
     const isPopupEditorButtonVisible = () =>
         popupEditor === true ||
         (popupEditor === "auto" &&
             (["32", "36", "full"].includes(height) || (height === "default" && $textAreaSize >= -2)));
+
+    function reportPopupUnsaved(session: PopupSession) {
+        if (!onPopupUnsaved || session.handled || !isPopupEditorSessionCurrent(session.id)) return;
+        // A teardown can see the previous session's reactive values if this one has yet to render.
+        if (popUpEditorStore.sessionId !== session.id) return;
+        const text = popUpEditorStore.value;
+        session.handled = true;
+        if (text !== session.initialValue) onPopupUnsaved(text);
+    }
+
+    // Observe a read-only close in its own flush, before a fence release or another open can reach the poll.
+    $effect.pre(() => {
+        if (!onPopupUnsaved || popUpEditorStore.open) return;
+        untrack(() => {
+            if (readonly && activePopupEditorSession) reportPopupUnsaved(activePopupEditorSession);
+        });
+    });
 
     async function openPopupEditor() {
         if (popupEditor === false) return;
@@ -108,8 +135,9 @@
         const initialContext = popupEditorContext;
         const initialContextRevision = popupEditorContextRevision;
         hideAutoComplete();
-        const sessionId = openPopupEditorSession(value, popupLanguage, popupMode, () => readonly);
-        activePopupEditorSessionId = sessionId;
+        const sessionId = openPopupEditorSession(initialValue, popupLanguage, popupMode, () => readonly);
+        const session: PopupSession = { id: sessionId, initialValue, handled: false };
+        activePopupEditorSession = session;
 
         const fieldIsCurrent = () =>
             run === popupEditorRun &&
@@ -123,12 +151,18 @@
             }
 
             if (!fieldIsCurrent()) {
+                reportPopupUnsaved(session);
                 closePopupEditorSession(sessionId);
                 return;
             }
-            if (!isPopupEditorSessionCurrent(sessionId)) return;
+            if (!isPopupEditorSessionCurrent(sessionId) || session.handled) return;
+            if (onPopupUnsaved && readonly) {
+                reportPopupUnsaved(session);
+                return;
+            }
 
             const popupValue = popUpEditorStore.value;
+            session.handled = true;
             value = popupValue;
             // Flush the binding before change consumers read currentTarget's text.
             await tick();
@@ -145,7 +179,7 @@
             if (currentTarget) onchange({ currentTarget });
             if (inputDom && highlightId !== null) void highlightChange(value, highlightId);
         } finally {
-            if (activePopupEditorSessionId === sessionId) activePopupEditorSessionId = null;
+            if (activePopupEditorSession === session) activePopupEditorSession = null;
         }
     }
 
@@ -265,9 +299,10 @@
     onDestroy(() => {
         destroyed = true;
         popupEditorRun += 1;
-        if (activePopupEditorSessionId !== null) {
-            closePopupEditorSession(activePopupEditorSessionId);
-            activePopupEditorSessionId = null;
+        if (activePopupEditorSession) {
+            reportPopupUnsaved(activePopupEditorSession);
+            closePopupEditorSession(activePopupEditorSession.id);
+            activePopupEditorSession = null;
         }
         if (highlightId !== null) removeHighlight(highlightId);
     });
