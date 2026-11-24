@@ -134,6 +134,9 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         captureChatBaseline: vi.fn(),
         applyChatResult: vi.fn(),
         reconcileCharacterChats: vi.fn(),
+        captureRecoveryChatWrites: vi.fn<ChatStoreModule["captureRecoveryChatWrites"]>((_ref, _writes, apply) =>
+            apply(),
+        ) as ChatStoreModule["captureRecoveryChatWrites"],
         installRecoveredChat: vi.fn(),
         installRecoveredOrder: vi.fn(),
         seedChats: vi.fn(),

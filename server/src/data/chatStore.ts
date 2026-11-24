@@ -428,6 +428,7 @@ export const MAX_CHAT_GROUP_ID_LENGTH = 128;
 type RememberedResult = {
     memoryRefused?: true;
     oocAnswerRefusals?: ChatGroupResult["oocAnswerRefusals"];
+    refusedMeta?: ChatGroupResult["refusedMeta"];
     stale?: true;
     /** Only when the server gave a message a fresh id; otherwise rebuilt from the replayed group. */
     messageIds?: string[];
@@ -2200,6 +2201,7 @@ export function createChatTables(
         }
         if (remembered.oocAnswerRefusals) result.oocAnswerRefusals = remembered.oocAnswerRefusals;
         if (remembered.memoryRefused) result.memoryRefused = true;
+        if (remembered.refusedMeta) result.refusedMeta = remembered.refusedMeta;
         if (remembered.selections) result.selections = remembered.selections;
         if (remembered.candidateRows) result.candidateRows = remembered.candidateRows;
         if (remembered.targets) {
@@ -2247,6 +2249,7 @@ export function createChatTables(
         }
         if (result.oocAnswerRefusals) remembered.oocAnswerRefusals = result.oocAnswerRefusals;
         if (result.memoryRefused) remembered.memoryRefused = true;
+        if (result.refusedMeta) remembered.refusedMeta = result.refusedMeta;
         if (result.selections) remembered.selections = result.selections;
         if (result.candidateRows) remembered.candidateRows = result.candidateRows;
         if (result.targets) {
@@ -2391,6 +2394,7 @@ export function createChatTables(
         let metaChanged = false;
         let memoryRefused = false;
         const oocAnswerRefusals = new Set<"missing" | "answered">();
+        const refusedMeta: NonNullable<ChatGroupResult["refusedMeta"]> = [];
         let applied = 0;
         let messageIds: string[] | undefined;
         let messageIdsRenamed = false;
@@ -2507,6 +2511,7 @@ export function createChatTables(
                         if (!isPlainObject(exchange) || exchange.answer !== undefined) {
                             if (!op.acceptMatchingOocExchange || !sameJson(exchange, op.merge.oocLog[exchangeId])) {
                                 oocAnswerRefusals.add(exchange === undefined ? "missing" : "answered");
+                                refusedMeta.push({ index: opIndex });
                             }
                             break;
                         }
@@ -2536,6 +2541,7 @@ export function createChatTables(
                         }
                         if (refused.size) {
                             memoryRefused = true;
+                            refusedMeta.push({ index: opIndex, memoryFields: [...refused] });
                             set = Object.fromEntries(Object.entries(set).filter(([key]) => !refused.has(key)));
                             unset = unset.filter((key) => !refused.has(key));
                             if (
@@ -2998,6 +3004,7 @@ export function createChatTables(
         }
         if (oocAnswerRefusals.size) result.oocAnswerRefusals = [...oocAnswerRefusals];
         if (memoryRefused) result.memoryRefused = true;
+        if (refusedMeta.length) result.refusedMeta = refusedMeta;
         if (selections.length) result.selections = selections;
         if (row) {
             const candidateRows: NonNullable<ChatGroupResult["candidateRows"]> = [];

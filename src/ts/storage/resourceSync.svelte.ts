@@ -1322,6 +1322,73 @@ export function heldRecordSnapshot(kind: string, id: string): { revision: string
     return held ? { revision: held.revision, text: held.text } : null;
 }
 
+type RecoveryValue = { key: string; text: string | null; saved: boolean };
+const recoveryValues = new Set<RecoveryValue>();
+
+function acknowledgeRecoveryValue(key: string, text: string | null) {
+    for (const value of recoveryValues) {
+        if (
+            value.key === key &&
+            (text === value.text || (text !== null && value.text !== null && sameJson(text, value.text)))
+        ) {
+            value.saved = true;
+            recoveryValues.delete(value);
+        }
+    }
+}
+
+/** A scoped flush can be settled by a later edit. Keep proof of the projected value even if another save follows it. */
+export function watchRecoverySave(target: { kind: string; id: string } | { characterId: string; ids: string[] }) {
+    let value: RecoveryValue;
+    let verifyOrder = false;
+    if ("ids" in target) {
+        const obligations = captureChatObligations();
+        const hasOrder = obligations.orders.has(target.characterId);
+        verifyOrder =
+            !hasOrder && [...obligations.chats.keys()].some((key) => key.startsWith(target.characterId + "\u0000"));
+        value = {
+            key: recordKey("chats", target.characterId),
+            text: JSON.stringify(target.ids),
+            saved: !hasOrder && !verifyOrder,
+        };
+    } else {
+        const { kind, id } = target;
+        const key = recordKey(kind, id);
+        const projection = projectEntry(kind, id);
+        const text =
+            kind === RESOURCE_KIND.characters && projection && projection.text !== persisted.get(key)?.text
+                ? canonicalCharacter(id, projection).text
+                : (projection?.text ?? null);
+        value = { key, text, saved: false };
+    }
+    if (!value.saved) recoveryValues.add(value);
+    return {
+        async saved() {
+            // An equal mirror vector may include a queued create or delete. Verify the no-op if
+            // the chat writes settled without an authoritative order in their batch answer.
+            if (!value.saved && verifyOrder && "ids" in target) {
+                const read = await deadlineRead((signal) =>
+                    readRefs([], { chatSummaryCollections: [target.characterId], signal }),
+                );
+                return (
+                    value.saved ||
+                    read.chatSummaryCollections?.some(
+                        (collection) =>
+                            collection.characterId === target.characterId &&
+                            JSON.stringify(collection.order?.ids) === value.text,
+                    ) === true
+                );
+            }
+            if (value.saved || "ids" in target) return value.saved;
+            const held = persisted.get(value.key)?.text ?? null;
+            return held === value.text || (held !== null && value.text !== null && sameJson(held, value.text));
+        },
+        release() {
+            recoveryValues.delete(value);
+        },
+    };
+}
+
 /**
  * Takes ownership only after recovery installed the local value (or found it satisfied). The first
  * journal flush replaces/removes captured layers atomically; an intervening reload keeps the row.
@@ -3342,8 +3409,14 @@ async function cycle() {
                     } else {
                         persisted.set(op.key, { revision, text: op.text, parts: op.parts });
                     }
+                    if (revision !== undefined && (revision !== null || op.text === null))
+                        acknowledgeRecoveryValue(op.key, op.text);
                     journalSettled(op.key);
                 });
+                if (recoveryValues.size) {
+                    for (const order of result.chatOrders ?? [])
+                        acknowledgeRecoveryValue(recordKey("chats", order.characterId), JSON.stringify(order.ids));
+                }
                 for (const characterId of ackChatWork(batch.work, result.chats ?? [], result.chatOrders ?? [])) {
                     queueCharacterRefresh(characterId, "listRefresh");
                 }
@@ -4349,6 +4422,7 @@ function adoptInDoubt(key: string, revision: string, text: string): boolean {
     }
     inDoubt.delete(key);
     persisted.set(key, { revision, text: doubt.text, parts: doubt.parts });
+    acknowledgeRecoveryValue(key, doubt.text);
     markKey(key);
     journalSettled(key);
     return true;
@@ -4556,6 +4630,7 @@ async function recoverConflictedWork(
             // the server's key order, so the text may differ in order only).
             inDoubt.delete(key);
             persisted.set(key, { revision: item.revision!, text: op.text, parts: op.parts });
+            acknowledgeRecoveryValue(key, op.text);
             journalSettled(key);
             if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
                 queueCharacterRefresh(item.id, "listRefresh");
@@ -4735,6 +4810,8 @@ async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Pr
         } else if (collection.order) {
             if (!chatCollectionIsCurrent(collection, issued.get(id))) continue;
             discardedWork = acceptRemoteCollection(collection) || discardedWork;
+            if (recoveryValues.size)
+                acknowledgeRecoveryValue(recordKey("chats", id), JSON.stringify(collection.order.ids));
         } else {
             console.error(`[Save] Character ${id} has no chat order on the server`);
         }

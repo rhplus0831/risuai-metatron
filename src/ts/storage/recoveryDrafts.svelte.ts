@@ -4,6 +4,7 @@ import { alertConfirm, alertError } from "../alert";
 import { heldMessageById } from "./chatStore.svelte";
 import { JOURNAL_ENTRY_TTL_MS, pageDraftJournal, type ComposerRecovery, type DraftEntry } from "./draftJournal";
 import { isJournalEligible } from "./journalEligibility";
+import type { RecoveryApplyAttempt } from "./journalRecovery";
 import { getResourceEpoch } from "./resourceClient";
 
 /**
@@ -21,6 +22,12 @@ let isOpen = $state(false);
 let refreshing = $state(false);
 /** Drafts applied and saved whose delete failed; Apply stays off for them while the page lives. */
 let applied = $state.raw(new Set<string>());
+/** Save receipts belong to this page; export always reads the original journal entry. */
+export const recoveryApplyAttempts = new Map<string, RecoveryApplyAttempt>();
+export function forgetRecoveryAttempt(id: string) {
+    recoveryApplyAttempts.get(id)?.content?.release();
+    recoveryApplyAttempts.delete(id);
+}
 let timer: ReturnType<typeof setInterval> | undefined;
 let refreshVersion = 0;
 
@@ -46,9 +53,13 @@ $effect.root(() => {
 
 function expire() {
     now = Date.now();
+    for (const [id, attempt] of recoveryApplyAttempts) {
+        if (attempt.expiresAt <= now) forgetRecoveryAttempt(id);
+    }
     drafts = drafts.filter((entry) => entry.createdAt + JOURNAL_ENTRY_TTL_MS > now);
-    if (drafts.length > 0 && timer === undefined) timer = setInterval(expire, 60_000);
-    if (drafts.length === 0 && timer !== undefined) {
+    const needsExpiry = drafts.length > 0 || recoveryApplyAttempts.size > 0;
+    if (needsExpiry && timer === undefined) timer = setInterval(expire, 60_000);
+    if (!needsExpiry && timer !== undefined) {
         clearInterval(timer);
         timer = undefined;
     }
@@ -124,6 +135,7 @@ export const recoveryDrafts = {
      */
     async remove(id: string) {
         if (!(await pageDraftJournal().removeDraft(id))) throw new Error(language.recoveryDrafts.removeFailed);
+        forgetRecoveryAttempt(id);
         refreshVersion += 1;
         drafts = drafts.filter((entry) => entry.id !== id);
         expire();

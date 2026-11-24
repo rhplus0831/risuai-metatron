@@ -4,6 +4,7 @@ import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../shared/chats.ts";
 import type { OocExchange } from "../../shared/ooc.ts";
+import { translationSourceHash } from "../../shared/translation/hash.ts";
 import type { DraftJournal, LayerWrites } from "./storage/draftJournal";
 import { createFakeLockManager } from "./storage/tests/fakeLockManager";
 import { settleFlush } from "./storage/tests/flushRetry";
@@ -1130,6 +1131,114 @@ describe("Apply after an intervening memory job", () => {
         expect(await current.journal.listDrafts()).toEqual([]);
     });
 
+    it.each(["in the same page", "after reload"])(
+        "retries only the refused memory field %s and preserves the newer note",
+        async (when) => {
+            seedChats();
+            const current = await boot();
+            await flush();
+            const originalOps: ChatOp[] = [
+                { op: "meta", set: { supaMemoryData: recoveredSummary, note: "Recovered note" } },
+            ];
+            const draft = await stageChatDraft(current, originalOps);
+            const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+            const { language } = await import("src/lang");
+            server.beforeNextBatch = () => server.writeJobChatMeta("c", "chat", { supaMemoryData: jobSummary });
+
+            await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+            expect(server.chat("c", "chat")!.data).toMatchObject({
+                supaMemoryData: jobSummary,
+                note: "Recovered note",
+            });
+            await flush();
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "chat",
+                    baseRevision: server.chat("c", "chat")!.revision,
+                    ops: [{ op: "meta", set: { note: "Other tab's newer note" } }],
+                },
+            ]);
+            const retryPage = when === "after reload" ? await reload() : current;
+            if (retryPage === current) expect(current.chat.hydrateChat(server.chat("c", "chat")!)).toBe(true);
+            await retryPage.recoveryDrafts.refresh();
+            expect(retryPage.recoveryDrafts.entries).toMatchObject([{ id: draft.id }]);
+            const [retained] = retryPage.recoveryDrafts.entries;
+            const download = vi.spyOn(await import("./globalApi.svelte"), "downloadFile").mockResolvedValue();
+            await retryPage.recoveryDrafts.export(retained);
+            expect(download).toHaveBeenCalledOnce();
+            expect(JSON.parse(download.mock.calls[0][1] as string).drafts[0].layers).toEqual(draft.layers);
+
+            const before = chatGroups().length;
+            const retry = await import("./storage/journalRecovery");
+            await expect(retry.applyRecoveryDraft(retained)).resolves.toEqual({ skipped: [] });
+            expect(server.chat("c", "chat")!.data).toMatchObject({
+                supaMemoryData: recoveredSummary,
+                note: "Other tab's newer note",
+            });
+            expect(
+                chatGroups()
+                    .slice(before)
+                    .flatMap((group) => group.ops),
+            ).toEqual([expect.objectContaining({ op: "meta", set: { supaMemoryData: recoveredSummary } })]);
+            expect(await retryPage.journal.listDrafts()).toEqual([]);
+        },
+    );
+
+    it("files an ignored translation when retrying a draft with a refused memory field", async () => {
+        seedChats();
+        const current = await boot();
+        await flush();
+        const translation: ChatOp = {
+            op: "setTranslation",
+            id: "m",
+            translation: {
+                text: "Recovered translation",
+                sourceHash: translationSourceHash("before"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+                edited: true,
+            },
+        };
+        const draft = await stageChatDraft(current, [
+            translation,
+            { op: "meta", set: { note: "Recovered note", supaMemoryData: recoveredSummary } },
+        ]);
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        const { language } = await import("src/lang");
+        server.beforeNextBatch = () => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "chat",
+                    baseRevision: server.chat("c", "chat")!.revision,
+                    ops: [{ op: "setText", id: "m", text: "Edited source" }],
+                },
+            ]);
+            server.writeJobChatMeta("c", "chat", { supaMemoryData: jobSummary });
+        };
+
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+        await flush();
+        expect(current.chat.hydrateChat(server.chat("c", "chat")!)).toBe(true);
+        const before = chatGroups().length;
+        await expect(applyRecoveryDraft(draft)).resolves.toEqual({ skipped: ["setTranslation: m"], kept: true });
+        const saved = server.chat("c", "chat")!.data;
+        expect(saved.supaMemoryData).toBe(recoveredSummary);
+        expect(saved.message[0]).toMatchObject({ data: "Edited source" });
+        expect(saved.message[0].translation).toBeUndefined();
+        const kept = await current.journal.listDrafts();
+        expect(kept).toMatchObject([
+            { target: draft.target, layers: { pending: { value: { ops: [{ op: translation }] } } } },
+        ]);
+        expect(kept[0].id).not.toBe(draft.id);
+        expect(
+            chatGroups()
+                .slice(before)
+                .flatMap((group) => group.ops),
+        ).toEqual([expect.objectContaining({ op: "meta", set: { supaMemoryData: recoveredSummary } })]);
+    });
+
     it.each(["supaMemoryData", "hypaV2Data"] as const)(
         "waits for a held refusal reread before retrying a %s draft",
         async (field) => {
@@ -1217,6 +1326,59 @@ describe("recovery of conditional OOC answers", () => {
     const winner = { ...question, answer: "First answer" };
     const write = (exchange: OocExchange): ChatOp => ({ op: "meta", merge: { oocLog: { q: exchange } } });
     const savedAnswer: ChatOp = { op: "meta", merge: { oocLog: { q: answer } }, ifOocUnanswered: "q" };
+
+    it("retries only refused exchanges after another tab edits the saved exchange and note", async () => {
+        seedChats();
+        const questions = { q: question, r: { ...question, id: "r" }, s: { ...question, id: "s" } };
+        const answered = (id: keyof typeof questions, text: string) => ({ ...questions[id], answer: text });
+        const remote = (oocLog: Record<string, OocExchange>, note?: string) =>
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "chat",
+                    baseRevision: server.chat("c", "chat")!.revision,
+                    ops: [{ op: "meta", merge: { oocLog }, ...(note === undefined ? {} : { set: { note } }) }],
+                },
+            ]);
+        remote({ ...questions, q: answered("q", "First Q"), s: answered("s", "First S") });
+        const current = await boot();
+        await flush();
+        const recoveredAnswer = (id: keyof typeof questions): ChatOp => ({
+            op: "meta",
+            ifOocUnanswered: id,
+            merge: { oocLog: { [id]: answered(id, `Recovered ${id}`) } },
+        });
+        const draft = await stageChatDraft(current, [
+            recoveredAnswer("q"),
+            { op: "meta", set: { note: "Recovered note" } },
+            recoveredAnswer("r"),
+            recoveredAnswer("s"),
+        ]);
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        const { language } = await import("src/lang");
+
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+        await flush();
+        expect(server.chat("c", "chat")!.data).toMatchObject({
+            note: "Recovered note",
+            oocLog: { q: answered("q", "First Q"), r: answered("r", "Recovered r"), s: answered("s", "First S") },
+        });
+        remote({ ...questions, r: answered("r", "Newer R") }, "Newer note");
+        expect(current.chat.hydrateChat(server.chat("c", "chat")!)).toBe(true);
+        const before = chatGroups().length;
+
+        await expect(applyRecoveryDraft(draft)).resolves.toEqual({ skipped: [] });
+        expect(server.chat("c", "chat")!.data).toMatchObject({
+            note: "Newer note",
+            oocLog: { q: answered("q", "Recovered q"), r: answered("r", "Newer R"), s: answered("s", "Recovered s") },
+        });
+        expect(
+            chatGroups()
+                .slice(before)
+                .flatMap((group) => group.ops),
+        ).toEqual([expect.objectContaining(recoveredAnswer("q")), expect.objectContaining(recoveredAnswer("s"))]);
+        expect(await current.journal.listDrafts()).toEqual([]);
+    });
 
     function seedQuestion(ids?: string[]) {
         seedChats(ids);

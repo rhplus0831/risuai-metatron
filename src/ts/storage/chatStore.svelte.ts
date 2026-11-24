@@ -1857,6 +1857,27 @@ const beforeValues = new WeakMap<ChatOp, JournalBefore>();
 /** Whole replacements that implicitly unset candidate fields on a retained message. */
 const candidateFieldRemovals = new WeakSet<ChatOp>();
 
+/** The part of this Apply write still owed. Null is saved; undefined is an ambiguous legacy receipt. */
+export type RecoveryChatWrite = {
+    remaining: ChatOp | null | undefined;
+    ignoredTranslation?: Extract<ChatOp, { op: "setTranslation" }>;
+    answered?: true;
+    onAnswer?: () => void;
+};
+const recoveryReceipts = new WeakMap<ChatOp, RecoveryChatWrite>();
+let recoveryCapture: { ref: ChatRef; writes: RecoveryChatWrite[]; last?: ChatOp } | undefined;
+
+/** Capture the actual by-id writes, after writer-side validation and omission of equal fields. */
+export function captureRecoveryChatWrites<T>(ref: ChatRef, writes: RecoveryChatWrite[], apply: () => T): T {
+    const previous = recoveryCapture;
+    recoveryCapture = { ref, writes };
+    try {
+        return apply();
+    } finally {
+        recoveryCapture = previous;
+    }
+}
+
 function fieldsBefore(target: object, fields: Iterable<string>): JournalBefore {
     const values = target as Record<string, unknown>;
     // A projection is left out: what an op overwrites on the server is no field at all.
@@ -1910,6 +1931,8 @@ function coalescedBefore(last: ChatOp, next: ChatOp): JournalBefore | undefined 
 
 function copyOpBefore<T extends ChatOp>(source: ChatOp, copy: T): T {
     if (candidateFieldRemovals.has(source)) candidateFieldRemovals.add(copy);
+    const receipt = recoveryReceipts.get(source);
+    if (receipt) recoveryReceipts.set(copy, receipt);
     const before = beforeValues.get(source);
     if (before) beforeValues.set(copy, clone<JournalBefore>(before));
     return copy;
@@ -1926,13 +1949,21 @@ function enqueueLocalEdit(ref: ChatRef, op: ChatOp, before?: JournalBefore) {
     const entry = pendingFor(ref);
     entry.seq = nextSeq();
     const last = entry.ops[entry.ops.length - 1];
+    const capture = recoveryCapture?.ref === ref ? recoveryCapture : undefined;
     // Capture the touched-field union before coalesce changes the earlier op.
     const mergedBefore = last ? coalescedBefore(last, op) : undefined;
-    if (last && coalesce(last, op)) {
+    if (last && (capture ? capture.last === last : !recoveryReceipts.has(last)) && coalesce(last, op)) {
         if (candidateFieldRemovals.has(op)) candidateFieldRemovals.add(last);
         if (mergedBefore) beforeValues.set(last, mergedBefore);
     } else {
         entry.ops.push(op);
+        if (capture) {
+            // Keep this op identifiable even when other edits share its eventual group.
+            const receipt = { remaining: op };
+            capture.last = op;
+            capture.writes.push(receipt);
+            recoveryReceipts.set(op, receipt);
+        }
     }
     dirtyChatJournal(keyOf(ref.chaId, ref.chatId), "pending");
     notifyWork();
@@ -6267,6 +6298,55 @@ function adoptCandidateRows(group: SentChatGroup, result: ChatGroupResult, previ
     if (queuedChanged) dirtyChatJournal(group.key, "pending");
 }
 
+function settleRecoveryWrites(group: SentChatGroup, result: ChatGroupResult) {
+    const refused = result.refusedMeta && new Map(result.refusedMeta.map((detail) => [detail.index, detail]));
+    const legacyOoc =
+        !refused && result.oocAnswerRefusals?.length
+            ? group.ops.filter((op) => op.op === "meta" && op.ifOocUnanswered !== undefined)
+            : [];
+    const legacyMemory =
+        !refused && result.memoryRefused
+            ? ["supaMemoryData", "hypaV2Data"].filter((key) =>
+                  group.ops.some(
+                      (op) => op.op === "meta" && (Object.hasOwn(op.set ?? {}, key) || op.unset?.includes(key)),
+                  ),
+              )
+            : [];
+    let translationIndex = 0;
+    let listeners: Set<() => void> | undefined;
+    group.ops.forEach((op, index) => {
+        const translation = op.op === "setTranslation" ? result.translations?.[translationIndex++] : undefined;
+        const receipt = recoveryReceipts.get(op);
+        if (!receipt) return;
+        if (receipt.onAnswer) (listeners ??= new Set()).add(receipt.onAnswer);
+        receipt.answered = true;
+        if (op.op === "setTranslation" && translation === "ignored") receipt.ignoredTranslation = op;
+        const detail = refused?.get(index);
+        const fields =
+            detail?.memoryFields ??
+            (op.op === "meta" && legacyMemory.length
+                ? legacyMemory.filter((key) => Object.hasOwn(op.set ?? {}, key) || op.unset?.includes(key))
+                : []);
+        if (op.op === "meta" && fields.length) {
+            if (legacyMemory.length > 1) {
+                receipt.remaining = undefined;
+                return;
+            }
+            receipt.remaining = {
+                op: "meta",
+                set: Object.fromEntries(Object.entries(op.set ?? {}).filter(([key]) => fields.includes(key))),
+                unset: op.unset?.filter((key) => fields.includes(key)),
+            };
+        } else if (op.op === "meta" && op.ifOocUnanswered !== undefined && legacyOoc.length) {
+            // A legacy aggregate identifies a sole candidate, but cannot distinguish several.
+            receipt.remaining = legacyOoc.length === 1 ? op : undefined;
+        } else {
+            receipt.remaining = detail ? op : null;
+        }
+    });
+    listeners?.forEach((listener) => listener());
+}
+
 /**
  * Records the server's answer to chat work that was saved. Returns the characters whose chat list
  * on the server differs from this client's membership, or whose membership replay acknowledgement
@@ -6283,9 +6363,9 @@ export function ackChatWork(
         const previousRevision = chatRevisions.get(group.key);
         const result = results[index];
         // A lost response can make the replay the first receipt this tab actually sees.
-        const refusedMeta =
-            (result?.memoryRefused || result?.oocAnswerRefusals?.length) &&
-            inflight.get(group.key)?.groupId === group.groupId;
+        const current = inflight.get(group.key)?.groupId === group.groupId;
+        if (current && result) settleRecoveryWrites(group, result);
+        const refusedMeta = current && (result?.memoryRefused || result?.oocAnswerRefusals?.length);
         inflight.delete(group.key);
         jobBlocked.delete(group.key);
         if (result) {
@@ -6307,7 +6387,9 @@ export function ackChatWork(
                         op.op !== "setTranslation"
                     )
                         return false;
-                    return result.targets![targetIndex++] === "missing";
+                    return (
+                        result.targets![targetIndex++] === "missing" && !recoveryReceipts.get(op)?.ignoredTranslation
+                    );
                 });
                 if (missingOps.length) {
                     conflictListener({

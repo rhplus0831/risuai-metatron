@@ -175,6 +175,8 @@ export type ChatGroupResult = {
     oocAnswerRefusals?: ("answered" | "missing")[];
     /** A whole HypaV2 or SupaMemory field was skipped because a job wrote it after the group's base. */
     memoryRefused?: true;
+    /** Index in the sent ops. A conditional OOC merge was refused whole; a memory refusal names only skipped fields. */
+    refusedMeta?: { index: number; memoryFields?: string[] }[];
     /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */
     selections?: ("applied" | "refused")[];
     /**

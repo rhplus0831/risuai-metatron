@@ -2089,6 +2089,67 @@ describe("job memory writes", () => {
         }),
     });
 
+    it("identifies refused operations and memory fields in a mixed group and replays the same receipt", () => {
+        const store = openMemoryStore();
+        stores.push(store);
+        const question = (id: string): OocExchange => ({
+            id,
+            segment: "s",
+            anchorMessageId: "a",
+            question: "Why?",
+            time: 1,
+        });
+        const answer = (id: string, text: string) => ({ ...question(id), answer: text });
+        const complete = (id: string): ChatOp => ({
+            op: "meta",
+            ifOocUnanswered: id,
+            merge: { oocLog: { [id]: answer(id, `Recovered ${id}`) } },
+        });
+        const base = store.applyChanges({
+            chats: [
+                group("k", seed(store).chat, [
+                    {
+                        op: "meta",
+                        merge: { oocLog: { q: answer("q", "First Q"), r: question("r"), s: answer("s", "First S") } },
+                    },
+                ]),
+            ],
+        }).chats[0].revision;
+        store.applyChanges(
+            { chats: [group("k", base, [{ op: "meta", set: { supaMemoryData: "Job summary" } }])] },
+            { jobToken: "memory-job" },
+        );
+        const independentMemory = hypaMemory("Recovered chunk");
+        const mixed = {
+            ...group("k", base, [
+                complete("q"),
+                {
+                    op: "meta",
+                    set: { supaMemoryData: "Older summary", hypaV2Data: independentMemory, note: "Recovered note" },
+                },
+                complete("r"),
+                complete("s"),
+            ]),
+            groupId: "mixed-recovery-edit",
+        };
+        const receipt = store.applyChanges({ chats: [mixed] }).chats[0];
+
+        expect(receipt).toMatchObject({
+            refusedMeta: [{ index: 0 }, { index: 1, memoryFields: ["supaMemoryData"] }, { index: 3 }],
+            memoryRefused: true,
+            oocAnswerRefusals: ["answered"],
+        });
+        expect(chat(store, "k")!.data).toMatchObject({
+            supaMemoryData: "Job summary",
+            hypaV2Data: independentMemory,
+            note: "Recovered note",
+            oocLog: { q: answer("q", "First Q"), r: answer("r", "Recovered r"), s: answer("s", "First S") },
+        });
+        store.applyChanges({ chats: [group("k", receipt.revision, [{ op: "meta", set: { note: "Newer note" } }])] });
+        expect(store.applyChanges({ chats: [{ ...mixed, retry: true }] }).chats[0]).toEqual(receipt);
+        expect(chat(store, "k")!.data.note).toBe("Newer note");
+    });
+
     it("refuses only stale fields written by a job and remembers the refusal on replay", () => {
         const store = openMemoryStore();
         stores.push(store);

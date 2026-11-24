@@ -1901,6 +1901,9 @@ export const languageEnglish = {
         unavailable: "The chat changed or is no longer available. The draft has been kept.",
         notSaved: "A conflict discarded or refused recovered changes. The draft has been kept; you can apply it again.",
         applyConfirm: (name: string) => `Apply “${name}” over the current server copy?`,
+        superseded:
+            "A newer edit was saved before this draft could be applied. The draft was kept. Choose Apply again to overwrite the current copy.",
+        progressFailed: "Could not save which changes still need to be applied. The original draft was kept.",
         discardConfirm: (name: string) => `Discard the recovery draft “${name}”? This cannot be undone.`,
         applied: "Recovered changes were processed.",
         memoryFiled:

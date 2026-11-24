@@ -31,6 +31,7 @@ import {
 } from "./characterStore.svelte";
 import {
     appendMessage,
+    captureRecoveryChatWrites,
     chatEntry,
     chatHydrationHold,
     chatList,
@@ -56,12 +57,14 @@ import {
     setMessageText,
     setMessageTranslation,
     type ChatRef,
+    type RecoveryChatWrite,
 } from "./chatStore.svelte";
 import {
     JOURNAL_ENTRY_TTL_MS,
     pageDraftJournal,
     type DraftEntry,
     type DraftJournal,
+    type ChatDraftRetry,
     type DraftMove,
     type MutationEntry,
     type RecordLayerValues,
@@ -71,7 +74,12 @@ import {
 } from "./draftJournal";
 import { isJournalEligible } from "./journalEligibility";
 import { replaceRecord, type RecordKind } from "./records.svelte";
-import { composerDraftLanded, recoveryDrafts } from "./recoveryDrafts.svelte";
+import {
+    composerDraftLanded,
+    forgetRecoveryAttempt,
+    recoveryApplyAttempts,
+    recoveryDrafts,
+} from "./recoveryDrafts.svelte";
 import { getResourceEpoch } from "./resourceClient";
 import { waitForResourceFlush } from "./resourceFlushWait";
 import {
@@ -84,6 +92,7 @@ import {
     heldRecordSnapshot,
     refreshStaleChat,
     sameJson,
+    watchRecoverySave,
 } from "./resourceSync.svelte";
 import { reconcileSelection, settings } from "./settingsViews.svelte";
 
@@ -1127,6 +1136,15 @@ function assertCurrentChatForApply(ref: ChatRef, owner: string, epoch: string) {
     if (isChatBehind(ref)) throw new Error(language.recoveryDrafts.notSaved);
 }
 
+type ApplyResult = { skipped: string[]; memoryKept?: "filed" | "kept"; kept?: true; superseded?: true };
+export type RecoveryApplyAttempt = {
+    expiresAt: number;
+    running?: Promise<ApplyResult>;
+    confirm?: () => Promise<ApplyResult>;
+    retry?: ChatDraftRetry;
+    content?: ReturnType<typeof watchRecoverySave>;
+};
+
 /**
  * Applies confirmed intent through the normal writers, retaining the draft until saving succeeds.
  * Admission and expiry are checked before opening a mutation scope. Record priority is latest,
@@ -1145,11 +1163,7 @@ function assertCurrentChatForApply(ref: ChatRef, owner: string, epoch: string) {
  * src/ts/storage/recoveryDrafts.svelte.ts marks Apply off for this page, reporting appliedNotRemoved;
  * after reload the durable draft is available again.
  */
-export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
-    skipped: string[];
-    memoryKept?: "filed" | "kept";
-    kept?: true;
-}> {
+export async function applyRecoveryDraft(entry: DraftEntry): Promise<ApplyResult> {
     assertSaveAdmission();
     const details = recoveryDraftDetails(entry);
     if (!details.canApply) throw new Error(details.reason);
@@ -1160,14 +1174,41 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
         await recoveryDrafts.refresh();
         return { skipped: [] };
     }
+    const attempt: RecoveryApplyAttempt = recoveryApplyAttempts.get(entry.id) ?? {
+        expiresAt: entry.createdAt + JOURNAL_ENTRY_TTL_MS,
+    };
+    if (attempt.running) return attempt.running;
+    recoveryApplyAttempts.set(entry.id, attempt);
+    try {
+        attempt.running = attempt.confirm ? attempt.confirm() : writeRecoveryDraft(entry, attempt);
+        return await attempt.running;
+    } finally {
+        delete attempt.running;
+        if (!attempt.confirm && !attempt.retry) forgetRecoveryAttempt(entry.id);
+    }
+}
+
+async function writeRecoveryDraft(
+    entry: Exclude<DraftEntry, { scope: "composer" }>,
+    attempt: RecoveryApplyAttempt,
+): Promise<ApplyResult> {
+    const progress = entry.scope === "chat" ? await pageDraftJournal().readChatDraftRetry(entry.id) : null;
+    if (entry.scope === "chat") {
+        if (!progress) throw new Error(language.recoveryDrafts.unavailable);
+        assertSaveAdmission();
+        const details = recoveryDraftDetails(entry);
+        if (!details.canApply) throw new Error(details.reason);
+    }
     const scope = beginMutationScope();
     const flush = () => waitForResourceFlush(flushResources({ scope }));
     const keys = new Set<string>();
     const changedMembership = new Set<string>();
+    const writes: RecoveryChatWrite[] = [];
+    const retry = progress?.retry;
     let skipped: string[] = [];
     let skippedOps: ChatOp[] = [];
     let appliedChatRef: ChatRef | undefined;
-    let memoryKept: "filed" | undefined;
+    let memoryKept = retry?.memoryKept;
     let release: (() => void) | undefined;
     try {
         if (entry.scope === "record") {
@@ -1197,6 +1238,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             reconcileSelection();
             changeLanguage(settings.ui.language);
             if (kind === SECTION_KIND.ui) applyDisplaySettings();
+            attempt.content = watchRecoverySave({ kind, id });
         } else if (entry.scope === "order") {
             const vector = draftOrder(entry);
             const current = chatList(entry.target).map((chat) => chat.id);
@@ -1206,13 +1248,16 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             ids.push(...current.filter((id) => !included.has(id)));
             keys.add(`chats/${entry.target}`);
             if (!ids.every((id, index) => current[index] === id)) reorderChats(entry.target, ids);
+            attempt.content = watchRecoverySave({ characterId: entry.target, ids });
         } else {
-            const { ref, ops, snapshot, tail } = draftChat(entry);
+            const source = draftChat(entry);
+            const { ref, snapshot, tail } = source;
+            const ops = retry?.ops ?? source.ops;
             const destination = { chaId: ref.chaId, chatId: entry.id };
             let appliedRef = ref;
             let refusedHypaV3Data: unknown;
             keys.add(`chats/${ref.chaId}`);
-            if (chatEntry(destination)) {
+            if (!retry && chatEntry(destination)) {
                 // A previous Apply queued the complete create; its lost answer only needs a flush.
                 keys.add(`chats/${destination.chaId}/${destination.chatId}`);
                 const memory = finalHypaV3Data(tail);
@@ -1225,7 +1270,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                     if (checkMemory && (await keepRecoveryMemory(entry, destination, memory, true)))
                         memoryKept = "filed";
                 }
-            } else if (!chatEntry(ref)) {
+            } else if (!retry && !chatEntry(ref)) {
                 if (!snapshot) throw new Error(language.recoveryDrafts.noSnapshot);
                 const chat = createChat(ref.chaId, { ...snapshot, id: entry.id });
                 keys.add(`chats/${ref.chaId}/${chat.id}`);
@@ -1237,7 +1282,13 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                 await loadChatForApply(ref, flush);
                 assertCurrentChatForApply(ref, owner, entry.epoch);
                 keys.add(`chats/${ref.chaId}/${ref.chatId}`);
-                ({ skipped, skippedOps, refusedHypaV3Data } = applyChatOps(ref, ops));
+                ({ skipped, skippedOps, refusedHypaV3Data } = captureRecoveryChatWrites(ref, writes, () =>
+                    applyChatOps(ref, ops),
+                ));
+                if (retry) {
+                    skipped = retry.skipped.concat(skipped);
+                    skippedOps = retry.skippedOps.concat(skippedOps);
+                }
                 if (refusedHypaV3Data !== undefined && !snapshot && onlyHypaV3Data(ops)) {
                     return { skipped, memoryKept: "kept" };
                 }
@@ -1248,8 +1299,9 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             }
             appliedChatRef = appliedRef;
         }
-        const result = await flush();
-        // Flush reports kind/id for records and chats/characterId[/chatId] for chat work.
+        // Keep the answer past the UI deadline. If the first flush is still backing off, another
+        // cycle may already have saved its writes, so Apply can check the same scope again.
+        let receipt: Awaited<ReturnType<typeof flushResources>> | undefined;
         const affected = (key: string) => {
             const normalized = key.replaceAll("\u0000", "/");
             return (
@@ -1259,34 +1311,116 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                 )
             );
         };
-        if (result.discarded.some(affected) || result.refused.some(affected)) {
-            throw new Error(language.recoveryDrafts.notSaved);
-        }
-        try {
-            if (skippedOps.length > 0 && appliedChatRef) {
-                const id = await pageDraftJournal().putDraft({
-                    scope: "chat",
-                    epoch: entry.epoch,
-                    createdAt: entry.createdAt,
-                    target: `${appliedChatRef.chaId}\u0000${appliedChatRef.chatId}`,
-                    layers: {
-                        pending: {
-                            ops: skippedOps.map((op) => ({ op })),
-                            baseRevision: heldChatRevision(appliedChatRef) ?? null,
-                            groupId: uuidv4(),
-                        },
-                    },
-                });
-                if (id === null) throw new Error(language.recoveryDrafts.appliedNotRemoved);
+        let retryVersion = progress?.version ?? 0;
+        let partial: ChatDraftRetry | undefined;
+        let retryWrite: Promise<boolean> | undefined;
+        let contentSaved: Promise<boolean> | undefined;
+        const remainingWork = (): ChatDraftRetry => {
+            const ignored = writes.flatMap(({ ignoredTranslation }) =>
+                ignoredTranslation ? [ignoredTranslation] : [],
+            );
+            return {
+                ops: writes.flatMap(({ remaining }) => (remaining ? [remaining] : [])),
+                skipped: skipped.concat(ignored.map((op) => `setTranslation: ${op.id}`)),
+                skippedOps: skippedOps.concat(ignored),
+                memoryKept,
+            };
+        };
+        const persist = (next: ChatDraftRetry) => {
+            partial = next;
+            const write = async () => {
+                if (!(await pageDraftJournal().saveChatDraftRetry(entry.id, retryVersion, next))) return false;
+                retryVersion++;
+                return true;
+            };
+            retryWrite = retryWrite ? retryWrite.then(write) : write();
+        };
+        // Another key can hold the flush open after this group answered. Store each narrowed
+        // remainder at acknowledgement, including subsequent groups from a split Apply.
+        const onAnswer = () => {
+            if (writes.some((write) => write.remaining === undefined)) return;
+            if (
+                partial ||
+                retry ||
+                writes.some((write) => write.answered && (write.remaining || write.ignoredTranslation))
+            )
+                persist(remainingWork());
+        };
+        for (const write of writes) write.onAnswer = onAnswer;
+        if (writes.some((write) => write.answered)) onAnswer();
+        const recordAnswer = async (answer: Awaited<ReturnType<typeof flushResources>>) => {
+            if (!receipt) {
+                receipt = answer;
+                if (
+                    !partial &&
+                    (answer.discarded.some(affected) || answer.refused.some(affected)) &&
+                    writes.some((write) => write.answered) &&
+                    !writes.some((write) => write.remaining === undefined)
+                )
+                    persist(remainingWork());
             }
-            await recoveryDrafts.remove(entry.id);
-        } catch {
-            // The changes are saved; applying the kept draft again would repeat them.
-            recoveryDrafts.markApplied(entry.id);
-            throw new Error(language.recoveryDrafts.appliedNotRemoved);
-        }
-        if (skippedOps.length > 0) await recoveryDrafts.refresh();
-        return { skipped, ...(memoryKept ? { memoryKept } : {}), ...(skippedOps.length > 0 ? { kept: true } : {}) };
+            if (attempt.content) {
+                contentSaved ??= attempt.content.saved();
+                try {
+                    await contentSaved;
+                } catch (error) {
+                    contentSaved = undefined;
+                    throw error;
+                }
+            }
+            if (partial) {
+                if (!retryWrite) persist(partial);
+                if (!(await retryWrite)) {
+                    retryWrite = undefined;
+                    throw new Error(language.recoveryDrafts.progressFailed);
+                }
+                attempt.retry = partial;
+            }
+            return receipt;
+        };
+        attempt.confirm = async () => {
+            const result = await waitForResourceFlush(
+                (receipt ? Promise.resolve(receipt) : flushResources({ scope })).then(recordAnswer),
+            );
+            if (result.discarded.some(affected) || result.refused.some(affected)) {
+                if (writes.some((write) => write.remaining === undefined))
+                    throw new Error(language.recoveryDrafts.notSaved);
+                delete attempt.confirm;
+                throw new Error(language.recoveryDrafts.notSaved);
+            }
+            if (contentSaved && !(await contentSaved)) {
+                delete attempt.confirm;
+                return { skipped: [], superseded: true };
+            }
+            if (partial) ({ skipped, skippedOps } = partial);
+            try {
+                if (skippedOps.length > 0 && appliedChatRef) {
+                    const id = await pageDraftJournal().putDraft({
+                        scope: "chat",
+                        epoch: entry.epoch,
+                        createdAt: entry.createdAt,
+                        target: `${appliedChatRef.chaId}\u0000${appliedChatRef.chatId}`,
+                        layers: {
+                            pending: {
+                                ops: skippedOps.map((op) => ({ op })),
+                                baseRevision: heldChatRevision(appliedChatRef) ?? null,
+                                groupId: uuidv4(),
+                            },
+                        },
+                    });
+                    if (id === null) throw new Error(language.recoveryDrafts.appliedNotRemoved);
+                }
+                await recoveryDrafts.remove(entry.id);
+            } catch {
+                // The changes are saved; applying the kept draft again would repeat them.
+                recoveryDrafts.markApplied(entry.id);
+                forgetRecoveryAttempt(entry.id);
+                throw new Error(language.recoveryDrafts.appliedNotRemoved);
+            }
+            if (skippedOps.length > 0) await recoveryDrafts.refresh();
+            return { skipped, ...(memoryKept ? { memoryKept } : {}), ...(skippedOps.length > 0 ? { kept: true } : {}) };
+        };
+        return await attempt.confirm();
     } finally {
         release?.();
     }

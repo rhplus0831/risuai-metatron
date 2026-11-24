@@ -7,7 +7,7 @@
     import { alertStore } from "src/ts/stores.svelte";
     import { JOURNAL_ENTRY_TTL_MS, type DraftEntry } from "src/ts/storage/draftJournal";
     import { applyRecoveryDraft, recoveryDraftDetails } from "src/ts/storage/journalRecovery";
-    import { exportDrafts, recoveryDrafts } from "src/ts/storage/recoveryDrafts.svelte";
+    import { exportDrafts, recoveryApplyAttempts, recoveryDrafts } from "src/ts/storage/recoveryDrafts.svelte";
 
     /**
      * The recovery drafts modal over `recoveryDrafts` (`src/ts/storage/recoveryDrafts.svelte.ts`). It sits under the
@@ -87,8 +87,17 @@
                 recoveryDrafts.close();
                 return;
             }
-            if (!(await alertConfirm(language.recoveryDrafts.applyConfirm(name)))) return;
-            const { skipped, memoryKept, kept } = await applyRecoveryDraft(entry);
+            // Checking the earlier save cannot replay its writes. Only fresh writes need confirmation.
+            if (
+                !recoveryApplyAttempts.get(entry.id)?.confirm &&
+                !(await alertConfirm(language.recoveryDrafts.applyConfirm(name)))
+            )
+                return;
+            const { skipped, memoryKept, kept, superseded } = await applyRecoveryDraft(entry);
+            if (superseded) {
+                alertError(language.recoveryDrafts.superseded);
+                return;
+            }
             let notice =
                 skipped.length > 0
                     ? `${language.recoveryDrafts.applied}\n\n${language.recoveryDrafts.skipped}\n${skipped.join("\n")}`

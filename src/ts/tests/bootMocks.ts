@@ -56,6 +56,7 @@ export function createBootMock<K extends keyof BootModules>(
         resourceSync: {
             seedResources: vi.fn<BootModules["resourceSync"]["seedResources"]>(),
             heldRecordSnapshot: vi.fn<BootModules["resourceSync"]["heldRecordSnapshot"]>(),
+            watchRecoverySave: vi.fn<BootModules["resourceSync"]["watchRecoverySave"]>(),
             adoptRecoveredRecord: vi.fn<BootModules["resourceSync"]["adoptRecoveredRecord"]>(),
             adoptRecoveredChat: vi.fn<BootModules["resourceSync"]["adoptRecoveredChat"]>(),
             MAX_BATCH_OPERATIONS: 5000,

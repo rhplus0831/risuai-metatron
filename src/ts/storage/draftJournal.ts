@@ -12,7 +12,8 @@ import { isJournalEligible } from "./journalEligibility";
  * layers, versions, budgets, expiry, and the tab ownership protocol. The composer uses the page's
  * shared journal; its browser-wide rows keep main and draft text, translation, attachments, and a
  * send's retry ids and sent-box marker. Composer rows with draft text or that marker use format 2;
- * other composer rows and all other row types keep format 1. Older readers leave format 2 untouched.
+ * partially applied chat drafts use format 3 so an older reader cannot replay their original layers.
+ * Other rows keep format 1. Older readers leave unfamiliar formats untouched.
  * A chat has two active composer rows: the editable draft, and the hand-off of the send that consumed the
  * composer, so typing during that send never replaces what was sent. Composer writes keep
  * `createdAt` while the row is live; a write after expiry starts a new entry. A landed send deletes
@@ -77,6 +78,7 @@ export const JOURNAL_DB_NAME = "risu-draft-journal";
 /** The ordinary rows' layout; unsupported formats are kept untouched. */
 export const JOURNAL_FORMAT = 1;
 const COMPOSER_DRAFT_FORMAT = 2;
+const PARTIAL_CHAT_DRAFT_FORMAT = 3;
 export const JOURNAL_ENTRY_TTL_MS = 48 * 60 * 60 * 1000;
 export const MAX_JOURNAL_ENTRY_BYTES = 16 * 1024 * 1024;
 export const MAX_JOURNAL_TOTAL_BYTES = 64 * 1024 * 1024;
@@ -181,6 +183,13 @@ export type MutationEntry = RowBase & {
 /** A recovery draft: work that is not replayed on its own, kept for the user (the entry's layers as they were). */
 type ResourceDraft = RowBase & { type: "draft"; id: string; epoch: string; target: string } & ScopedLayers;
 
+export type ChatDraftRetry = { ops: ChatOp[]; skipped: string[]; skippedOps: ChatOp[]; memoryKept?: "filed" };
+type PartialChatDraft = Omit<Extract<ResourceDraft, { scope: "chat" }>, "format"> & {
+    format: typeof PARTIAL_CHAT_DRAFT_FORMAT;
+    retryVersion: number;
+    retry: ChatDraftRetry;
+};
+
 /** What a chat's composer held, with an uncertain send's request identity scoped to its epoch. */
 export type ComposerValue = {
     input: string;
@@ -213,7 +222,7 @@ export type ComposerRecovery = ComposerEntry & {
     layers?: never;
 };
 export type DraftEntry = ResourceDraft | ComposerRecovery;
-export type JournalRow = MutationEntry | ResourceDraft | ComposerEntry;
+export type JournalRow = MutationEntry | ResourceDraft | PartialChatDraft | ComposerEntry;
 
 // --- Keys ---
 
@@ -311,7 +320,9 @@ function checkLayers(scope: unknown, layers: unknown): boolean {
 export function checkJournalRow(value: unknown): JournalRow | null {
     if (
         !isPlainObject(value) ||
-        (value.format !== JOURNAL_FORMAT && !(value.type === "composer" && value.format === COMPOSER_DRAFT_FORMAT)) ||
+        (value.format !== JOURNAL_FORMAT &&
+            !(value.type === "composer" && value.format === COMPOSER_DRAFT_FORMAT) &&
+            !(value.type === "draft" && value.scope === "chat" && value.format === PARTIAL_CHAT_DRAFT_FORMAT)) ||
         !isTime(value.createdAt) ||
         !isSize(value.size)
     ) {
@@ -329,6 +340,20 @@ export function checkJournalRow(value: unknown): JournalRow | null {
                 ? (value as JournalRow)
                 : null;
         case "draft":
+            if (
+                value.format === PARTIAL_CHAT_DRAFT_FORMAT &&
+                (!isVersion(value.retryVersion) ||
+                    value.retryVersion < 1 ||
+                    !isPlainObject(value.retry) ||
+                    !Array.isArray(value.retry.ops) ||
+                    !value.retry.ops.every(isPlainObject) ||
+                    !Array.isArray(value.retry.skippedOps) ||
+                    !value.retry.skippedOps.every(isPlainObject) ||
+                    !Array.isArray(value.retry.skipped) ||
+                    !value.retry.skipped.every(isString) ||
+                    (value.retry.memoryKept !== undefined && value.retry.memoryKept !== "filed"))
+            )
+                return null;
             return isString(value.id) &&
                 isString(value.epoch) &&
                 isString(value.target) &&
@@ -495,6 +520,8 @@ export interface DraftJournal {
     release(items: JournalRelease[]): Promise<(StoredLayers<"chat"> | StoredLayers<"order"> | null)[]>;
     /** Stores a draft (reclaiming only expired drafts and composer rows); its id, or null when not stored. */
     putDraft(input: DraftInput): Promise<string | null>;
+    readChatDraftRetry(id: string): Promise<{ version: number; retry?: ChatDraftRetry } | null>;
+    saveChatDraftRetry(id: string, version: number, retry: ChatDraftRetry): Promise<boolean>;
     listDrafts(): Promise<DraftEntry[]>;
     /** Whether the draft is gone: true once deleted or already absent; false on a failure or while off. */
     removeDraft(id: string): Promise<boolean>;
@@ -901,6 +928,12 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         if (checkJournalRow(cursor.value)?.type === "composer") current++;
                     },
                 );
+                await eachCursor(
+                    store.index(INDEXES.format).openCursor(IDBKeyRange.only(PARTIAL_CHAT_DRAFT_FORMAT)),
+                    (cursor) => {
+                        if (checkJournalRow(cursor.value)?.format === PARTIAL_CHAT_DRAFT_FORMAT) current++;
+                    },
+                );
                 let highest = 0;
                 let malformed = 0;
                 await eachCursor(store.index(INDEXES.tabId).openCursor(IDBKeyRange.only(own)), (cursor) => {
@@ -1221,7 +1254,9 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                             ...draft,
                             key,
                             previous,
-                            blocked: raw !== undefined && previous?.type !== "draft",
+                            blocked:
+                                raw !== undefined &&
+                                (previous?.type !== "draft" || previous.format === PARTIAL_CHAT_DRAFT_FORMAT),
                         });
                     }
                     const removed = await removeRows(store, preparedRemovals);
@@ -1748,6 +1783,74 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         };
     }
 
+    async function readChatDraftRetry(id: string) {
+        return tracked(null, async () => {
+            try {
+                return await withDatabase(
+                    "readonly",
+                    async (store) => {
+                        const row = checkJournalRow(await requestValue(store.get(draftKey(id))));
+                        if (
+                            row?.type !== "draft" ||
+                            row.scope !== "chat" ||
+                            row.id !== id ||
+                            isExpired(row.createdAt, now())
+                        )
+                            return null;
+                        return row.format === PARTIAL_CHAT_DRAFT_FORMAT
+                            ? { version: row.retryVersion, retry: row.retry }
+                            : { version: 0 };
+                    },
+                    openTimeoutMs,
+                );
+            } catch (error) {
+                reportFailure(error, "readFailed");
+                return null;
+            }
+        });
+    }
+
+    /** Replace only the progress we read. A late answer cannot recreate a discarded row or widen a newer retry. */
+    async function saveChatDraftRetry(id: string, version: number, retry: ChatDraftRetry) {
+        return tracked(false, async () => {
+            try {
+                return await withDatabase(
+                    "readwrite",
+                    async (store) => {
+                        const key = draftKey(id);
+                        const row = checkJournalRow(await requestValue(store.get(key)));
+                        if (
+                            row?.type !== "draft" ||
+                            row.scope !== "chat" ||
+                            row.id !== id ||
+                            isExpired(row.createdAt, now())
+                        )
+                            return false;
+                        if ((row.format === PARTIAL_CHAT_DRAFT_FORMAT ? row.retryVersion : 0) !== version) return false;
+                        const next: PartialChatDraft = {
+                            ...row,
+                            format: PARTIAL_CHAT_DRAFT_FORMAT,
+                            retryVersion: version + 1,
+                            retry,
+                        };
+                        next.size = sizeOf(next);
+                        if (
+                            next.size > MAX_JOURNAL_ENTRY_BYTES ||
+                            (next.size > row.size && !(await fitsNewDraft(store, next.size - row.size)))
+                        )
+                            return false;
+                        store.put(next, key);
+                        return true;
+                    },
+                    openTimeoutMs,
+                );
+            } catch (error) {
+                reportFailure(error, "write");
+                return false;
+            }
+        });
+    }
+
     async function listDrafts(): Promise<DraftEntry[]> {
         const rows = await tracked<DraftEntry[]>([], async () => {
             try {
@@ -1759,7 +1862,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         (cursor) => {
                             const row = checkJournalRow(cursor.value);
                             if (!row || isExpired(row.createdAt, time)) return;
-                            if (row.type === "draft") drafts.push(row);
+                            if (row.type === "draft")
+                                drafts.push(row.format === PARTIAL_CHAT_DRAFT_FORMAT ? draftOf(row, row.id) : row);
                             if (row.type === "composer") {
                                 const entry = recoveryOf(row);
                                 if (entry && cursor.primaryKey === draftKey(entry.id)) drafts.push(entry);
@@ -2283,6 +2387,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         moveToDrafts,
         release,
         putDraft,
+        readChatDraftRetry,
+        saveChatDraftRetry,
         listDrafts,
         removeDraft,
         restoreComposerDraft,

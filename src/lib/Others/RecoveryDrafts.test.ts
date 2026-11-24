@@ -10,6 +10,7 @@ import type { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 
 const io = vi.hoisted(() => ({
     server: null as StoreBackedServer | null,
+    signingUnavailable: false,
     confirm: vi.fn<typeof import("src/ts/alert").alertConfirm>(),
     normal: vi.fn<typeof import("src/ts/alert").alertNormal>(),
     error: vi.fn<typeof import("src/ts/alert").alertError>(),
@@ -17,7 +18,11 @@ const io = vi.hoisted(() => ({
 }));
 vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
-        authFetch: (path, init) => io.server!.fetch(path, init),
+        authFetch: async (path, init, options) => {
+            if (io.signingUnavailable && path === "/api/resources/batch") throw new Error("Signing unavailable");
+            options?.beforeDispatch?.();
+            return io.server!.fetch(path, init);
+        },
     }),
 );
 vi.mock("src/ts/alert", async () =>
@@ -47,6 +52,7 @@ let mounted: ReturnType<typeof svelte.mount> | undefined;
 const listeners: [EventTarget, string, EventListenerOrEventListenerObject][] = [];
 const batchPath = (path: string) => path === "/api/resources/batch";
 const epoch = () => h.fake.store.epoch();
+const chatGroups = () => h.fake.batchBodies().flatMap((body) => body.chats ?? []);
 const recordTarget = "ui\0main";
 const originalGlobals = new Map(
     ["indexedDB", "IDBKeyRange"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
@@ -217,6 +223,7 @@ beforeAll(() =>
 beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    io.signingUnavailable = false;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date("2026-10-28T12:00:00Z"));
     localStorage.clear();
@@ -511,6 +518,168 @@ describe("recovery drafts", () => {
         expect(button(language.apply, row()).disabled).toBe(false);
         expect(io.normal).not.toHaveBeenCalled();
     });
+
+    it("checks a late save acknowledgement and keeps the edit made before the next Apply", async () => {
+        const entry = await put(chatInput([{ op: "setText", id: "b", text: "Recovered B" }]));
+        h.fake.holdNextBatchResponse = true;
+        await render();
+        button(language.apply, row()).click();
+        await settle();
+        expect(h.fake.releaseBatchResponse).not.toBeNull();
+        expect(h.fake.texts("c", "k")[1]).toBe("Recovered B");
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        expect(io.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("server has not answered"));
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(button(language.apply, row()).disabled).toBe(false);
+        h.fake.releaseBatchResponse!();
+        await h.sync.flushResources();
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(io.normal).not.toHaveBeenCalled();
+
+        h.chat.setMessageText(refK, "b", "New edit B");
+        await h.sync.flushResources();
+        expect(h.fake.texts("c", "k")[1]).toBe("New edit B");
+        const beforeRetry = chatGroups().length;
+        button(language.apply, row()).click();
+        await settle();
+
+        expect(h.fake.texts("c", "k")[1]).toBe("New edit B");
+        expect(chatGroups()).toHaveLength(beforeRetry);
+        expect(io.confirm).toHaveBeenCalledOnce();
+        expect(io.normal).toHaveBeenCalledExactlyOnceWith(language.recoveryDrafts.applied);
+        expect(await journal.listDrafts()).toEqual([]);
+    });
+
+    it("files a translation ignored by a late save acknowledgement", async () => {
+        const translation = {
+            op: "setTranslation",
+            id: "a",
+            translation: {
+                text: "Recovered translation",
+                sourceHash: translationSourceHash("A"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+                edited: true,
+            },
+        } satisfies ChatOp;
+        const entry = await put(chatInput([translation, { op: "meta", set: { note: "Recovered note" } }]));
+        h.fake.beforeNextBatch = () => {
+            h.fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: h.fake.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "a", text: "Edited source" }],
+                },
+            ]);
+        };
+        h.fake.holdNextBatchResponse = true;
+        await render();
+        button(language.apply, row()).click();
+        await settle();
+        expect(h.fake.releaseBatchResponse).not.toBeNull();
+        expect(h.fake.chat("c", "k")!.data).toMatchObject({ note: "Recovered note" });
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        expect(io.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("server has not answered"));
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        h.fake.releaseBatchResponse!();
+        await h.sync.flushResources();
+        expect(h.chat.hydrateChat(h.fake.chat("c", "k")!)).toBe(true);
+        const beforeRetry = chatGroups().length;
+
+        button(language.apply, row()).click();
+        await advanceUntil(() => io.normal.mock.calls.length > 0 || io.error.mock.calls.length > 1, 12);
+        await settle();
+        expect(io.normal).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(language.recoveryDrafts.skippedKept));
+        expect(h.fake.chat("c", "k")!.data.message[0]).toEqual(m("a", "Edited source", "char"));
+        expect(chatGroups()).toHaveLength(beforeRetry);
+        await remainder(entry, [translation]);
+    });
+
+    it.each(["record", "order"])(
+        "keeps a superseded %s draft and asks before sending it on a fresh Apply",
+        async (kind) => {
+            const character = h.fake.record("characters", "c")!;
+            const order = h.fake.order("c")!;
+            const description = "Recovered description";
+            const intendedOrder = [...order.ids].reverse();
+            const input: DraftInput =
+                kind === "record"
+                    ? {
+                          epoch: epoch(),
+                          scope: "record",
+                          target: "characters\0c",
+                          layers: {
+                              latest: {
+                                  op: "update",
+                                  baseRevision: character.revision,
+                                  text: JSON.stringify({ ...character.data, desc: description }),
+                              },
+                          },
+                      }
+                    : {
+                          epoch: epoch(),
+                          scope: "order",
+                          target: "c",
+                          layers: { latest: { baseRevision: order.revision, ids: intendedOrder } },
+                      };
+            const entry = await put(input);
+            const saved = () => (kind === "record" ? h.record("characters", "c").desc : h.fake.order("c")!.ids);
+            const intended = kind === "record" ? description : intendedOrder;
+            const newer = kind === "record" ? "Newer local description" : order.ids;
+            const baseline = saved();
+            await render();
+            io.signingUnavailable = true;
+            button(language.apply, row()).click();
+            await settle();
+            await vi.advanceTimersByTimeAsync(30_000);
+            await settle();
+            expect(io.error).toHaveBeenCalledWith(expect.stringContaining("server has not answered"));
+            expect(h.fake.batchCount()).toBe(0);
+            expect(saved()).toEqual(baseline);
+
+            if (kind === "record") expect(h.characterStore.updateCharacter("c", { desc: newer })).toBe(true);
+            else h.chat.reorderChats("c", order.ids);
+            io.signingUnavailable = false;
+            await settleFlush(h.sync.flushResources());
+            expect(saved()).toEqual(newer);
+            if (kind === "record") {
+                expect(sentRecords().some((op) => (op.data?.desc ?? op.patch?.set?.desc) === description)).toBe(false);
+            } else {
+                expect(h.fake.batchBodies().flatMap((body) => body.chatOrders ?? [])).not.toContainEqual(
+                    expect.objectContaining({ characterId: "c", ids: intendedOrder }),
+                );
+            }
+            const beforeRetry = h.fake.batchCount();
+            button(language.apply, row()).click();
+            await settle();
+
+            expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+            expect(saved()).toEqual(newer);
+            expect(h.fake.batchCount()).toBe(beforeRetry);
+            expect(io.error).toHaveBeenLastCalledWith(language.recoveryDrafts.superseded);
+            expect(io.confirm).toHaveBeenCalledOnce();
+            expect(io.normal).not.toHaveBeenCalled();
+
+            io.confirm.mockResolvedValueOnce(false);
+            button(language.apply, row()).click();
+            await settle();
+            expect(io.confirm).toHaveBeenCalledTimes(2);
+            expect(h.fake.batchCount()).toBe(beforeRetry);
+            expect(saved()).toEqual(newer);
+
+            button(language.apply, row()).click();
+            await settle();
+            expect(io.confirm).toHaveBeenCalledTimes(3);
+            expect(saved()).toEqual(intended);
+            expect(io.normal).toHaveBeenCalledExactlyOnceWith(language.recoveryDrafts.applied);
+            expect(await journal.listDrafts()).toEqual([]);
+        },
+    );
 
     it("confirms applying chat operations by id on the current chat and keeps missing targets as a draft", async () => {
         const ops: ChatOp[] = [
@@ -996,7 +1165,7 @@ describe("recovery drafts", () => {
         await settle();
         button(language.apply, row()).click();
         await settle();
-        expect(io.confirm).toHaveBeenCalledTimes(2);
+        expect(io.confirm).toHaveBeenCalledTimes(1);
         expect(io.error).toHaveBeenCalledTimes(1);
         expect(h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id))).toEqual(recoveredIds);
         expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
@@ -1153,5 +1322,33 @@ describe("recovery drafts", () => {
         expect(await journal.listDrafts()).toEqual([]);
         await drafts.recoveryDrafts.refresh();
         expect(drafts.recoveryDrafts.entries.some((draft) => draft.id === entry.id)).toBe(false);
+    });
+
+    it("expires an outstanding Apply after another tab discards the last draft", async () => {
+        const { createDraftJournal, JOURNAL_ENTRY_TTL_MS } = await import("src/ts/storage/draftJournal");
+        const entry = await put({ ...recordInput(), createdAt: Date.now() - JOURNAL_ENTRY_TTL_MS + 120_000 });
+        h.fake.holdNextBatchResponse = true;
+        const { ResourceFlushTimeoutError } = await import("src/ts/storage/resourceFlushWait");
+        await expect(settleFlush(recovery.applyRecoveryDraft(entry))).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+        expect(h.fake.releaseBatchResponse).not.toBeNull();
+        h.fake.releaseBatchResponse!();
+        await h.sync.flushResources();
+        expect(drafts.recoveryApplyAttempts.has(entry.id)).toBe(true);
+
+        const otherTab = createDraftJournal({ storage: () => localStorage });
+        try {
+            expect(await otherTab.start()).toBe(true);
+            expect(otherTab.tabId).not.toBe(journal.tabId);
+            expect(await otherTab.removeDraft(entry.id)).toBe(true);
+            await drafts.recoveryDrafts.open();
+            expect(drafts.recoveryDrafts.entries).toEqual([]);
+            expect(drafts.recoveryApplyAttempts.has(entry.id)).toBe(true);
+
+            vi.setSystemTime(entry.createdAt + JOURNAL_ENTRY_TTL_MS);
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(drafts.recoveryApplyAttempts.has(entry.id)).toBe(false);
+        } finally {
+            await otherTab.close();
+        }
     });
 });
