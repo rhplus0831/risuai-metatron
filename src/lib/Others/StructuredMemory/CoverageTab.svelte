@@ -15,6 +15,7 @@
         type MemoryPanelTabProps,
         memoryMessageExcerpt,
         memoryMessageHasher,
+        CHAT_MEMORY_WRITE_DEADLINE_MS,
         readStructuredMemoryCoverage,
         reconcileMemoryCoverage,
         usedMemoryCoverageGroups,
@@ -60,7 +61,7 @@
     async function read() {
         const ref = chatRef;
         const number = ++readNumber;
-        const result = await readStructuredMemoryCoverage(ref);
+        const result = await readStructuredMemoryCoverage(ref, CHAT_MEMORY_WRITE_DEADLINE_MS);
         if (number !== readNumber || ref.chaId !== chatRef.chaId || ref.chatId !== chatRef.chatId) {
             return;
         }

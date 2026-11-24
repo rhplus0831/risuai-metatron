@@ -5,6 +5,7 @@
     import { language } from "src/lang";
     import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import {
+        CHAT_MEMORY_WRITE_DEADLINE_MS,
         editStructuredMemory,
         memoryChapterLayout,
         memoryChapterOutOfDate,
@@ -305,7 +306,7 @@
     async function readCoverage(): Promise<CoverageOutcome> {
         const ref = chatRef;
         const number = ++readNumber;
-        const result = await readStructuredMemoryCoverage(ref);
+        const result = await readStructuredMemoryCoverage(ref, CHAT_MEMORY_WRITE_DEADLINE_MS);
         if (number !== readNumber || !sameChat(ref)) {
             return "ignored";
         }

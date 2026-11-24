@@ -109,7 +109,7 @@ import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
 import { readWithDeadline } from "../storage/readDeadline";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
-import { authFetch } from "../storage/serverAuth";
+import { authFetch, ensureAuth } from "../storage/serverAuth";
 
 /**
  * The tab's reads of a chat's structured memory (`server/src/routes/structuredMemory.ts`), a person's
@@ -214,8 +214,8 @@ const WHOLE_READ_ATTEMPTS = 3;
  */
 const FILE_READ_DEADLINE_MS = 60_000;
 
-/** New-chat flows wait for these writes to settle before moving on. */
-const CHAT_MEMORY_WRITE_DEADLINE_MS = 30_000;
+/** One request in an edit, repair, or new-chat memory write, including its response body. */
+export const CHAT_MEMORY_WRITE_DEADLINE_MS = 30_000;
 
 const LOG_VERSION = 1;
 
@@ -290,8 +290,11 @@ async function readAnswer<T>(
     init: Omit<RequestInit, "headers"> & { headers?: Record<string, string>; deadlineMs?: number } = {},
 ): Promise<StructuredMemoryResult<T>> {
     const { deadlineMs, ...requestInit } = init;
+    const callerSignal = requestInit.signal;
+    const write = init.method !== undefined && init.method.toUpperCase() !== "GET";
+    let removeAbortListeners: (() => void) | undefined;
     try {
-        const read = async (signal?: AbortSignal) => {
+        const read = async (signal = callerSignal) => {
             const response = await authFetch(path, {
                 ...requestInit,
                 ...(signal ? { signal } : {}),
@@ -299,12 +302,36 @@ async function readAnswer<T>(
                 headers: { ...requestInit.headers, [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
             });
             signal?.throwIfAborted();
-            return { response, body: await readBody(response) };
+            const body = await readBody(response);
+            signal?.throwIfAborted();
+            return { response, body };
         };
+        if (deadlineMs !== undefined) {
+            callerSignal?.throwIfAborted();
+            await ensureAuth(); // The password prompt belongs to the user.
+        }
         const { response, body } =
             deadlineMs === undefined
                 ? await read()
-                : await readWithDeadline(deadlineMs, "The memory write timed out", read);
+                : await readWithDeadline(
+                      deadlineMs,
+                      write ? "The memory write timed out" : "The memory read timed out",
+                      (deadlineSignal) => {
+                          if (!callerSignal) return read(deadlineSignal);
+                          callerSignal.throwIfAborted();
+                          // Some supported Safari versions lack AbortSignal.any.
+                          const combined = new AbortController();
+                          const abortFromCaller = () => combined.abort(callerSignal.reason);
+                          const abortFromDeadline = () => combined.abort(deadlineSignal.reason);
+                          callerSignal.addEventListener("abort", abortFromCaller, { once: true });
+                          deadlineSignal.addEventListener("abort", abortFromDeadline, { once: true });
+                          removeAbortListeners = () => {
+                              callerSignal.removeEventListener("abort", abortFromCaller);
+                              deadlineSignal.removeEventListener("abort", abortFromDeadline);
+                          };
+                          return read(combined.signal);
+                      },
+                  );
         if (!response.ok) {
             return refuse(response, body);
         }
@@ -313,7 +340,8 @@ async function readAnswer<T>(
     } catch (error) {
         return { outcome: "failed", error: errorText(error) };
     } finally {
-        if (init.method !== undefined && init.method.toUpperCase() !== "GET") {
+        removeAbortListeners?.();
+        if (write) {
             settledMemoryWrites += 1;
         }
     }
@@ -1015,6 +1043,8 @@ export function readStructuredMemoryRecord<K extends StructuredMemoryRecordKind>
             typeof body.revision === "string" && isPlainObject(body.data)
                 ? (body as StructuredMemoryRecordAnswer<K>)
                 : null,
+        refusalOf,
+        { deadlineMs: kind === "events" ? CHAT_MEMORY_WRITE_DEADLINE_MS : undefined },
     );
 }
 
@@ -1022,14 +1052,21 @@ export function readStructuredMemoryRecord<K extends StructuredMemoryRecordKind>
 export function readStructuredMemoryChapters(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<StructuredMemoryChaptersAnswer>> {
-    return readAnswer(`${chatPath(ref)}/chapters`, parseChaptersAnswer);
+    return readAnswer(`${chatPath(ref)}/chapters`, parseChaptersAnswer, refusalOf, {
+        deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS,
+    });
 }
 
 /** How many chapter requests the chat currently needs. */
 export function readStructuredMemoryChapterCost(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<StructuredMemoryChapterCostAnswer>> {
-    return readAnswer(`${chatPath(ref)}/chapters/cost`, ({ units }) => (isNonnegativeCount(units) ? { units } : null));
+    return readAnswer(
+        `${chatPath(ref)}/chapters/cost`,
+        ({ units }) => (isNonnegativeCount(units) ? { units } : null),
+        refusalOf,
+        { deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS },
+    );
 }
 
 export function removeStructuredMemoryChapters(
@@ -1038,6 +1075,7 @@ export function removeStructuredMemoryChapters(
 ): Promise<StructuredMemoryResult<StructuredMemoryChapterRemoveAnswer>> {
     return readAnswer(`${chatPath(ref)}/chapters/remove`, parseChapterRemoveAnswer, editRefusalOf, {
         method: "POST",
+        deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ids }),
     });
@@ -1061,6 +1099,7 @@ export function removeStructuredMemoryEvents(
         editRefusalOf,
         {
             method: "POST",
+            deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS,
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ revision, ids }),
         },
@@ -1078,6 +1117,7 @@ export function editStructuredMemory(
 ): Promise<StructuredMemoryResult<StructuredMemoryEditAnswer>> {
     return readAnswer(`${chatPath(ref)}/edits`, parseEditAnswer, editRefusalOf, {
         method: "POST",
+        deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ revision, edit }),
     });
@@ -1263,7 +1303,9 @@ export function readStructuredMemoryCost(
     if (through !== undefined) {
         query.set("through", through);
     }
-    return readAnswer(`${chatPath(ref)}/cost?${query}`, parseCostAnswer);
+    return readAnswer(`${chatPath(ref)}/cost?${query}`, parseCostAnswer, refusalOf, {
+        deadlineMs: mode === "record" ? CHAT_MEMORY_WRITE_DEADLINE_MS : undefined,
+    });
 }
 
 /**
@@ -1351,6 +1393,7 @@ type RoundsOptions = {
     /** The revision every round must name, the first one included. */
     revision?: string;
     signal?: AbortSignal;
+    deadlineMs?: number;
 };
 
 /**
@@ -1364,7 +1407,7 @@ async function readRounds<Round extends { revision: string; next: number | null 
     take: (round: Round) => void | boolean,
     options: RoundsOptions = {},
 ): Promise<StructuredMemoryResult<string>> {
-    const { signal } = options;
+    const { signal, deadlineMs } = options;
     let { revision } = options;
     let cursor = 0;
     for (;;) {
@@ -1372,7 +1415,10 @@ async function readRounds<Round extends { revision: string; next: number | null 
         const separator = path.includes("?") ? "&" : "?";
         const query =
             revision === undefined ? "" : `${separator}cursor=${position}&revision=${encodeURIComponent(revision)}`;
-        const round = await readAnswer(`${path}${query}`, (body) => parse(body, position), roundRefusalOf, { signal });
+        const round = await readAnswer(`${path}${query}`, (body) => parse(body, position), roundRefusalOf, {
+            signal,
+            deadlineMs,
+        });
         if (round.outcome !== "ok") {
             return round;
         }
@@ -1447,18 +1493,26 @@ async function readThreads(ref: ChatRef, options: RoundsOptions): Promise<Struct
  * of the chat's memory during the read restarts it with nothing kept, and a chat that keeps changing is
  * refused `changed`.
  */
-export function readStructuredMemoryCoverage(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryCoverage>> {
+export function readStructuredMemoryCoverage(
+    ref: ChatRef,
+    deadlineMs?: number,
+): Promise<StructuredMemoryResult<StructuredMemoryCoverage>> {
     return readAtOneRevision(async () => {
         const events: StructuredMemoryCoverageEvent[] = [];
         const runs: StructuredMemoryCoverageRun[] = [];
-        const read = await readRounds(`${chatPath(ref)}/coverage`, parseCoverageRound, (round) => {
-            for (const event of round.events) {
-                events.push(event);
-            }
-            for (const run of round.runs) {
-                runs.push(run);
-            }
-        });
+        const read = await readRounds(
+            `${chatPath(ref)}/coverage`,
+            parseCoverageRound,
+            (round) => {
+                for (const event of round.events) {
+                    events.push(event);
+                }
+                for (const run of round.runs) {
+                    runs.push(run);
+                }
+            },
+            { deadlineMs },
+        );
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, events, runs } } : read;
     });
 }
@@ -1467,11 +1521,16 @@ export function readStructuredMemoryCoverage(ref: ChatRef): Promise<StructuredMe
 export function readStructuredMemoryStory(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryStory>> {
     return readAtOneRevision(async () => {
         const events: StructuredMemoryStoryEvent[] = [];
-        const read = await readRounds(`${chatPath(ref)}/story`, parseStoryRound, (round) => {
-            for (const event of round.events) {
-                events.push(event);
-            }
-        });
+        const read = await readRounds(
+            `${chatPath(ref)}/story`,
+            parseStoryRound,
+            (round) => {
+                for (const event of round.events) {
+                    events.push(event);
+                }
+            },
+            { deadlineMs: CHAT_MEMORY_WRITE_DEADLINE_MS },
+        );
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, events } } : read;
     });
 }

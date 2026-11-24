@@ -11,6 +11,7 @@
     import { language } from "src/lang";
     import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import {
+        CHAT_MEMORY_WRITE_DEADLINE_MS,
         editStructuredMemory,
         findStructuredMemory,
         importStructuredMemoryPackage,
@@ -449,7 +450,7 @@
         const atRefresh = refresh;
         const number = ++coverageNumber;
         coverageRead = atRefresh;
-        const result = await readStructuredMemoryCoverage(ref);
+        const result = await readStructuredMemoryCoverage(ref, CHAT_MEMORY_WRITE_DEADLINE_MS);
         if (number !== coverageNumber || !sameChat(ref) || refresh !== atRefresh) return;
         if (result.outcome === "ok") {
             coverage = result.value;
