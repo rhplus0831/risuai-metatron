@@ -6696,6 +6696,9 @@ export function recoverChatConflicts(
         const ref = { chaId: group.characterId, chatId: group.chatId };
         const create = group.ops[0]?.op === "create";
         if (server.revision !== null) installChatTrashState(ref, server.revision, server.trashedAt);
+        // A refused hard delete (`useTrash`) keeps the chat at its server position, which a
+        // same-id recreation here moved: the character's list is read again for that order.
+        if (trashConflicts.get(group.key) === "useTrash") refreshOrders.add(group.characterId);
         if (
             !trashConflicts.has(group.key) &&
             !expired.has(group.key) &&

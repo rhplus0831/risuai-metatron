@@ -207,8 +207,9 @@ handlers that reapply UI settings and repair incoming orders.
   replay recognition, missing-anchor repair, generation retry, and discard. See [chat-store](chat-store.md#by-id-ops)
   and [Restore floor](chat-store.md#restore-floor).
 - `useTrash` and `chatTrashed` take the standard conflict path through readback, recovery of eligible work, and a reload
-  notice. They skip missing-anchor repair and the shortcut for a create whose answer was lost. User trash actions use
-  the [direct client](chat-store.md#chat-trash).
+  notice. They skip missing-anchor repair and the shortcut for a create whose answer was lost. A `useTrash` refusal also
+  reads the character's list again, which returns the chat the server kept to its server position. User trash actions
+  use the [direct client](chat-store.md#chat-trash).
 - A conflicted reorder keeps its sent vector until the `hydrate` list read. A failed or deferred read settles nothing.
   The chat store [reconciles that order and any older lost attempts](chat-store.md#by-id-ops), reporting discards as
   `chats/<chaId>` with the reload notice.

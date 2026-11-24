@@ -41,7 +41,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Chat screen](#chat-screen): 1
 - [Client features](#client-features): 5
 - [Docs](#docs): 1
-- [Draft recovery](#draft-recovery): 2
+- [Draft recovery](#draft-recovery): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
 - [Server storage and workers](#server-storage-and-workers): 3
@@ -193,22 +193,6 @@ at its 30-second bound and the save commits later: the draft stays, and a second
 
 **Suggested handling:** record which ops the acknowledgement refused and retry only those; the group result needs a
 field or exchange identity for that.
-
-### A refused replay of an earlier build's journaled delete leaves the tab's chat order unlike the server's
-
-Read on 2026-11-23 at `667444a93`. Boot recovery can still replay a `{ op: "delete" }` that a build before the chat trash
-journaled. When the tab then creates a chat with the same id, the server refuses the delete with `useTrash` and keeps
-the old chat. The tab lists the two chats in one order (`j, k`) while the server holds the other (`k, j`), with no
-pending work, until the next list read: the `useTrash` path of `recoverChatConflicts`
-(`src/ts/storage/chatStore.svelte.ts`) does not request the character's list. The recreation case in
-`src/ts/storage/tests/resourceSyncRecreation.test.ts` ("sends an earlier build's journaled delete…") compares the
-member set sorted, which hides the order.
-
-**Why it matters:** low and legacy-only. It needs a journal written before the upgrade plus a same-id create, and the
-order is only cosmetic.
-
-**Suggested handling:** have the `useTrash` refusal path call `requestChatListRefresh`, then drop the `.sort()` in that
-test.
 
 ## Rendering
 

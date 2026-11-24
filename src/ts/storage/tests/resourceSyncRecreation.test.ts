@@ -176,12 +176,8 @@ it("sends an earlier build's journaled delete of a chat's old incarnation before
         texts: { k: "Original transcript", j: "Second transcript" },
         name: "Original",
     });
-    expect(
-        h.chat
-            .chatList("c")
-            .map((entry) => entry.id)
-            .sort(),
-    ).toEqual(["j", "k"]);
+    // The refusal reads the character's list again, which puts the kept chat back at its server position.
+    await vi.waitFor(() => expect(h.chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]));
     expect(h.chat.findChat(ref)?.message[0].data).toBe("Original transcript");
     expect(h.chat.hasUnsavedChatWork()).toBe(false);
     expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
