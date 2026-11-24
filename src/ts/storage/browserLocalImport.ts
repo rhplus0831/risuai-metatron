@@ -23,6 +23,7 @@ import {
 } from "../process/files/inlays";
 import { readWithDeadline } from "./readDeadline";
 import { getResource, ResourceEpochMismatchError } from "./resourceClient";
+import { waitForResourceFlush } from "./resourceFlushWait";
 import { flushResources } from "./resourceSync.svelte";
 
 /**
@@ -31,8 +32,8 @@ import { flushResources } from "./resourceSync.svelte";
  * Google search credentials. Per entry: when the server already holds it, the server copy wins;
  * otherwise the entry is written, read back from the server and compared, and only then deleted
  * locally. A local entry is deleted only when it still holds the value that was imported (another
- * tab may have changed it meanwhile). Plugin storage and settings verification reads each have a
- * 30-second deadline, so a silent server leaves the local entries for the next boot. Permission
+ * tab may have changed it meanwhile). Plugin storage and settings wait up to 30 seconds each for
+ * saves and verification reads, leaving the local entries for the next boot if either times out. Permission
  * grants merge only once per browser; later boots only clean up leftovers so revoked grants stay revoked.
  * A restore meanwhile (412) stops the import.
  */
@@ -166,7 +167,7 @@ async function importSafeLocalPluginStorage() {
     if (moved.length === 0) {
         return;
     }
-    await flushResources();
+    await waitForResourceFlush(flushResources());
     const server = await readWithDeadline(VERIFICATION_READ_DEADLINE_MS, "Import verification timed out", (signal) =>
         getResource<Record<string, unknown>>(RESOURCE_KIND.pluginStorage, SINGLETON_RESOURCE_ID, { signal }),
     );
@@ -232,7 +233,7 @@ async function importSectionField<K extends keyof typeof importedFieldSection>(
     }
     if (readSettingsRoot(field) === undefined) {
         writeSettingsRoot(field, JSON.parse(JSON.stringify(value)));
-        await flushResources();
+        await waitForResourceFlush(flushResources());
     }
     if ((await readServerField(field)) !== undefined) {
         await removeIfUnchanged(legacy, legacyKey, value);

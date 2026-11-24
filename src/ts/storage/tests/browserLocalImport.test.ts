@@ -479,6 +479,40 @@ describe("the run as a whole", () => {
 
 it.each([
     {
+        step: "plugin storage",
+        database: PLUGIN,
+        key: "safe_plugin_legacy",
+        value: { enabled: true },
+    },
+    {
+        step: "Iris dialogue",
+        database: IRIS,
+        key: "current_dialogue",
+        value: [{ speaker: "Iris", text: "hello" }],
+    },
+])("ends the $step import wait after 30 seconds of failed saves and keeps the browser copy", async (entry) => {
+    const { step, database, key, value } = entry;
+    table(database).set(key, value);
+    fake.failNext = { status: 503, times: 50, match: (path) => path === "/api/resources/batch" };
+
+    const finished = vi.fn();
+    const run = importer.importBrowserLocalData().then(finished);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fake.requests.filter(({ path }) => path === "/api/resources/batch").length).toBeGreaterThan(1);
+    expect(finished).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(finished).toHaveBeenCalledOnce();
+    await run;
+    expect(console.error).toHaveBeenCalledWith(
+        `[Import] Moving ${step} to the server failed; it stays in this browser.`,
+        expect.any(Error),
+    );
+    expect(table(database).get(key)).toEqual(value);
+});
+
+it.each([
+    {
         kind: "pluginStorage",
         database: PLUGIN,
         key: "safe_plugin_legacy",
