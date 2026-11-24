@@ -8,7 +8,7 @@ timeout now falls into the failure path a dropped connection already takes, impo
 and nothing changes on the server or the wire. That removes B01 to B03 by design; the rare remainders are Limitations.
 Not yet audited in this shape. The first draft (at `719b2d877`) failed its audit with 5 P1; the owner then moved the
 Timeline, plugin permission refresh, MCP OAuth, shutdown order, and the server capacity checks to a batch round
-(`/home/codex/review-reports/waits-batch-2026-11-24/`), which landed. Landed: 1 (`5182a889d`), 3 (`a8b701e9a`).
+(`/home/codex/review-reports/waits-batch-2026-11-24/`), which landed. Landed: 1 (`5182a889d`), 3 (`a8b701e9a`), 2 (`7a47aaf05`).
 
 Sources: the [known issues](../backlog/known-issues.md) entries under chat-store (checkpoints), memory (memory tasks),
 characters-modules and backup-sync-hub (imports), assets, translation (rendered), and network-jobs (Web Push), read at
