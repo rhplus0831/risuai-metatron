@@ -416,6 +416,11 @@ lore.
   failed send loses them. Reproduced: finding 6 of the
   [durable data loss audit](../reports/audits/codebase/durable-data-loss-2026-11-18.md). Decision: owner, 2026-11-22: an
   edge case; Removal Reroll retired ([archive](../archived-plan/README.md)).
+- The PO translator and DevTool autopilot save their appended user message before the job is created: a refusal only
+  admission finds, such as a binding mismatch, leaves it in the transcript, visible and deletable, with the refusal
+  shown. A job `input` would run the `input` trigger and `editinput`, which the raw append skips; a remove has no
+  refusal outcome. Decision: Lore Popup Through a Fence D5, [archive](../archived-plan/README.md).
+  [PO translator](../../src/ts/process/files/multisend.ts#L76) · [autopilot](../../src/lib/SideBars/DevTool.svelte#L293)
 - The screen's per-chat reroll history (the bundles of multi-reply tails) is in memory only; a single reply's reroll
   keeps the previous reply as that message's `candidates` on the server. Decision: owner, 2026-11-10 (known-issues
   review).

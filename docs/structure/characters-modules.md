@@ -302,6 +302,10 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   `chatGenerating` notice and disables its rows, folder lists, drag (`locked`), add, folder and import buttons, CHAT
   bulk toggle, override controls and orphan buttons; export and the character tab stay. The local activation checkbox is
   disabled from any tab.
+- A fenced entry's prompt stays one mounted `TextAreaInput` with `readonly={disabled}`: an open popup keeps its text,
+  turns read-only during the fence and editable after it, and a close after the fence saves through the lore writer.
+  Changed text it could not save (a close during the fence, a list replaced under it, an unmount) is shown once for
+  copying (`lorePopupUnsaved`, [`onPopupUnsaved`](ui-theming.md#gui-primitives)); every `LoreEntryFields` use passes it.
 - A character entry whose ids the fenced chat links is not deleted, so its `child` links never outlive it. The
   write-time checks stay for a fence that arrives during a dialog or a file picker.
 - Character identity is `chaId`; imports and core creators add through `characterStore`. Create, copy, or ensure chats
@@ -394,6 +398,14 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - Pinning a duplicate-id original assigns it a fresh id. This can detach another chat's `child` link or make another
   chat's override match a different entry; the previously ambiguous link is not migrated. Decision: Chat Lore Override
   States, duplicate owner ids out of scope, [archive](../archived-plan/README.md).
+- A lore prompt popup closed while the chat's [fence](#lorebook-rows-and-writers) is up does not save: its text is shown
+  for copying and is pasted again after the reply. A job that replaces the lore list under an open popup closes it the
+  same way. Popup text lives only in the popup, so a reload or a closed tab loses it, fenced or not. Decision: Lore
+  Popup Through a Fence, Limitations, [archive](../archived-plan/README.md).
+- The chat lore drafts write the whole `localLore` or `loreOverrides` list, and the server takes it from a stale base: a
+  popup close or inline edit made after the fence falls but before the tab installed a job's lore change, or after a
+  feed retirement hid that job, drops the job's entries. Decision: Lore Popup Through a Fence, Limitations (no
+  conditional chat writes), [archive](../archived-plan/README.md).
 - With two modules of one id (an upstream database import or a plugin's whole-list write can store such a pair), the
   catalog's edit, export and conversion actions and the Apply module picker find the module by id and act on the first;
   the trash button removes the row its dialog named. Decision: owner, 2026-11-21 (found-issues review): a duplicated id
