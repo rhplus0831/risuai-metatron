@@ -378,6 +378,11 @@
                 {#if $alertStore.submsg && $alertStore.type !== "progress"}
                     <span class="text-gray-500 text-sm">{$alertStore.submsg}</span>
                 {/if}
+                {#if $alertStore.type === "wait" && $alertStore.onCancel}
+                    <Button styled="outlined" className="mt-4 self-end" onclick={$alertStore.onCancel}>
+                        {language.cancel}
+                    </Button>
+                {/if}
 
                 {#if $alertStore.type === "error" && $alertStore.stackTrace}
                     <div class="mt-4">

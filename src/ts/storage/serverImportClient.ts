@@ -1,12 +1,13 @@
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { alertClear, alertError, alertWait, type alertData } from "../alert";
 import { authFetch } from "./serverAuth";
 
 /**
- * The client of the server's file imports that answer NDJSON: `POST /api/import/module` (`.risum`,
- * `moduleImportClient.ts`) and `POST /api/import/charx` (CharX, `charxImportClient.ts`), the transport
- * only. The request body is the
- * `File`/`Blob` itself, as `importBackup` (`resourceClient.ts`) sends its archive: the browser
- * streams it from disk with its `Content-Length` (the server checks that length against its cap
+ * The shared NDJSON transport for module and CharX uploads, Realm prepare and commit, and upstream
+ * backup prepare. `withServerImportWait` gives a tab action a Cancel button until its result is handed
+ * to the importer. A signal stops the wait for headers or the body, including a silent server.
+ * File uploads send the `File`/`Blob` itself, as `importBackup` (`resourceClient.ts`) sends its archive.
+ * The browser streams it from disk with its `Content-Length` (the server checks that length against its cap
  * before reading the body), and the tab holds no copy. Never a `ReadableStream` body: Chrome streams
  * one only over HTTP/2, and without a `Content-Length`.
  *
@@ -50,9 +51,52 @@ export class ServerImportAnswerError extends Error {
 }
 
 export type ServerImportOptions = {
+    /** Aborting stops the upload and the wait for a complete answer. */
+    signal?: AbortSignal;
     /** Each progress line: `done` of the file's `total` assets are stored (a file without assets sends none). */
     onProgress?: (done: number, total: number) => void;
 };
+
+export class ServerImportCancelledError extends Error {
+    constructor() {
+        super("Import cancelled");
+        this.name = "ServerImportCancelledError";
+    }
+}
+
+/** Shows the import's failure dialog. User cancellation needs no error log. */
+export function alertServerImportError(error: unknown, message: string) {
+    if (error instanceof ServerImportCancelledError) alertError(message, { log: false });
+    else alertError(message);
+}
+
+/** Owns the cancellable wait through the request and all its progress updates. An omitted message starts quietly. */
+export async function withServerImportWait<T>(
+    message: string | undefined,
+    request: (signal: AbortSignal, showWait: (message: string) => void) => Promise<T>,
+): Promise<T> {
+    const controller = new AbortController();
+    let status: alertData | undefined;
+    let active = true;
+    const cancel = () => {
+        if (active) controller.abort(new ServerImportCancelledError());
+    };
+    const showWait = (msg: string) => {
+        if (active && !controller.signal.aborted) alertWait(msg, (installed) => (status = installed), cancel);
+    };
+    try {
+        if (message !== undefined) showWait(message);
+        const result = await request(controller.signal, showWait);
+        controller.signal.throwIfAborted();
+        return result;
+    } catch (error) {
+        controller.signal.throwIfAborted();
+        throw error;
+    } finally {
+        active = false;
+        if (status) alertClear(status);
+    }
+}
 
 /**
  * Uploads `file` as the body of `POST path` and answers the route's result line. Every line is a
@@ -61,7 +105,7 @@ export type ServerImportOptions = {
  * line), or throws `ServerImportAnswerError` for a malformed result line. Throws
  * `ServerImportRequestError` for a non-2xx answer, `ServerImportFailedError` for a failure line,
  * `ServerImportAnswerError` for a malformed answer, and a network failure of the request or of the
- * body read as it is (a `TypeError`).
+ * body read as it is (a `TypeError`). An aborted signal rejects with `ServerImportCancelledError`.
  */
 export function importFileOverServer<T>(
     path: string,
@@ -83,16 +127,39 @@ export async function importOverServer<T>(
     readResult: (line: Record<string, unknown>) => T | null,
     options: ServerImportOptions = {},
 ): Promise<T> {
-    const res = await authFetch(path, {
-        method: "POST",
-        headers: { ...request.headers, "content-type": request.contentType },
-        body: request.body,
-    });
+    const { signal } = options;
+    if (signal?.aborted) throw new ServerImportCancelledError();
+    try {
+        const res = await waitForAnswer(
+            authFetch(path, {
+                method: "POST",
+                headers: { ...request.headers, "content-type": request.contentType },
+                body: request.body,
+                signal,
+            }),
+            signal,
+        );
+        signal?.throwIfAborted();
+        const result = await waitForAnswer(readAnswer(res, readResult, options), signal);
+        signal?.throwIfAborted();
+        return result;
+    } catch (error) {
+        if (signal?.aborted) throw new ServerImportCancelledError();
+        throw error;
+    }
+}
+
+async function readAnswer<T>(
+    res: Response,
+    readResult: (line: Record<string, unknown>) => T | null,
+    { signal, onProgress }: ServerImportOptions,
+): Promise<T> {
     if (!res.ok) {
-        throw new ServerImportRequestError(res.status, await answerError(res));
+        throw new ServerImportRequestError(res.status, await answerError(res, signal));
     }
     let result = null as { value: T } | null;
-    await forEachLine(res, (text) => {
+    await forEachLine(res, signal, (text) => {
+        signal?.throwIfAborted();
         if (result) {
             throw new ServerImportAnswerError("The answer goes on after its result line");
         }
@@ -106,7 +173,8 @@ export async function importOverServer<T>(
             return;
         }
         if (Number.isFinite(line.done) && Number.isFinite(line.total)) {
-            options.onProgress?.(line.done as number, line.total as number);
+            signal?.throwIfAborted();
+            onProgress?.(line.done as number, line.total as number);
             return;
         }
         throw new ServerImportAnswerError("A line of the answer is not one of the import's lines");
@@ -117,12 +185,33 @@ export async function importOverServer<T>(
     return result.value;
 }
 
+/** Ends a pending header or body wait even when the underlying operation ignores the signal. */
+function waitForAnswer<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return work;
+    return new Promise<T>((resolve, reject) => {
+        const cancel = () => reject(signal.reason);
+        if (signal.aborted) cancel();
+        else signal.addEventListener("abort", cancel, { once: true });
+        work.then(resolve, reject).finally(() => signal.removeEventListener("abort", cancel));
+    });
+}
+
 /** The `error` text of a refusal's JSON body; null when it has none (a reverse proxy may answer HTML). */
-async function answerError(res: Response): Promise<string | null> {
+async function answerError(res: Response, signal?: AbortSignal): Promise<string | null> {
     try {
-        const body: unknown = await res.json();
+        let body: unknown;
+        if (res.body && signal) {
+            // Keep the refusal's reader available to Cancel while the server is sending its JSON.
+            const chunks: string[] = [];
+            await readTextChunks(res, (chunk) => chunks.push(chunk), signal);
+            signal.throwIfAborted();
+            body = JSON.parse(chunks.join(""));
+        } else {
+            body = await res.json();
+        }
         return isPlainObject(body) && typeof body.error === "string" ? body.error : null;
     } catch {
+        signal?.throwIfAborted();
         return null;
     }
 }
@@ -133,8 +222,11 @@ async function answerError(res: Response): Promise<string | null> {
  * when it ends: a result line can be megabytes long. A throw from `take` or from the body read
  * cancels the body; a body that ends inside a line throws `ServerImportAnswerError`.
  */
-async function forEachLine(res: Response, take: (line: string) => void): Promise<void> {
-    const decoder = new TextDecoder();
+async function forEachLine(
+    res: Response,
+    signal: AbortSignal | undefined,
+    take: (line: string) => void,
+): Promise<void> {
     let pieces: string[] = [];
     const push = (text: string) => {
         let start = 0;
@@ -153,26 +245,40 @@ async function forEachLine(res: Response, take: (line: string) => void): Promise
             pieces.push(text.slice(start));
         }
     };
-    const reader = res.body?.getReader();
-    if (reader) {
-        try {
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) {
-                    break;
-                }
-                push(decoder.decode(value, { stream: true }));
-            }
-        } catch (error) {
-            void reader.cancel().catch(() => {});
-            throw error;
-        }
-    } else {
-        push(await res.text());
-    }
-    push(decoder.decode());
+    await readTextChunks(res, push, signal);
     if (pieces.join("").trim() !== "") {
         throw new ServerImportAnswerError("The answer ends inside a line");
+    }
+}
+
+/** Decodes text as it arrives. Cancel wakes a pending read even if the response ignores the fetch signal. */
+async function readTextChunks(res: Response, take: (text: string) => void, signal?: AbortSignal): Promise<void> {
+    const reader = res.body?.getReader();
+    if (!reader) {
+        const text = await res.text();
+        signal?.throwIfAborted();
+        take(text);
+        return;
+    }
+    const decoder = new TextDecoder();
+    const cancel = () => {
+        void reader.cancel().catch(() => {});
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            signal?.throwIfAborted();
+            if (done) break;
+            take(decoder.decode(value, { stream: true }));
+        }
+        take(decoder.decode());
+    } catch (error) {
+        if (!signal?.aborted) cancel();
+        throw error;
+    } finally {
+        signal?.removeEventListener("abort", cancel);
+        reader.releaseLock();
     }
 }
 

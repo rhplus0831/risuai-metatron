@@ -23,7 +23,8 @@ export type ModuleImportOptions = ServerImportOptions;
  * Uploads `file` (a `.risum`) and answers the server's result: the module as the file holds it, each
  * stored asset's key in `assets[i][1]`. Throws `ModuleImportRequestError` for a non-2xx answer,
  * `ModuleImportFailedError` for a failure line, `ModuleImportAnswerError` for a malformed answer, and
- * a network failure of the request or of the body read as it is (a `TypeError`).
+ * a network failure of the request or of the body read as it is (a `TypeError`). Aborting the signal
+ * rejects with `ServerImportCancelledError`.
  */
 export function importModuleOverServer(file: Blob, options: ModuleImportOptions = {}): Promise<ModuleImportResult> {
     return importFileOverServer(MODULE_IMPORT_PATH, file, readModuleResult, options);

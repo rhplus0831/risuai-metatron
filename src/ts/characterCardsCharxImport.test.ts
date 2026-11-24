@@ -243,8 +243,16 @@ describe("CharX files through the server and real records", () => {
         expect(responseRead).not.toHaveBeenCalled();
         expect(fileReader).not.toHaveBeenCalled();
         expect(b.saveAsset).not.toHaveBeenCalled();
-        expect(alerts.wait).toHaveBeenCalledWith(language.charxImportUploading);
-        expect(alerts.wait).toHaveBeenCalledWith("Loading... (Saving Assets 1/1)");
+        expect(alerts.wait).toHaveBeenCalledWith(
+            language.charxImportUploading,
+            expect.any(Function),
+            expect.any(Function),
+        );
+        expect(alerts.wait).toHaveBeenCalledWith(
+            "Loading... (Saving Assets 1/1)",
+            expect.any(Function),
+            expect.any(Function),
+        );
         expect(alerts.error).not.toHaveBeenCalled();
         await b.sync.flushResources();
         const expectedAssets = [["Backdrop", keyOf(payload), "webp"]];
@@ -380,11 +388,19 @@ describe("CharX files through the server and real records", () => {
         const before = b.ids();
         const importing = b.cards.importCharacterProcess({ name: "progress.charx", data: new Blob(["opaque"]) });
         await vi.advanceTimersByTimeAsync(0);
-        expect(alerts.wait).toHaveBeenLastCalledWith(language.charxImportUploading);
+        expect(alerts.wait).toHaveBeenLastCalledWith(
+            language.charxImportUploading,
+            expect.any(Function),
+            expect.any(Function),
+        );
         for (let done = 1; done <= 2; done++) {
             controller.enqueue(new TextEncoder().encode(line({ done, total: 2 })));
             await vi.advanceTimersByTimeAsync(0);
-            expect(alerts.wait).toHaveBeenLastCalledWith(`Loading... (Saving Assets ${done}/2)`);
+            expect(alerts.wait).toHaveBeenLastCalledWith(
+                `Loading... (Saving Assets ${done}/2)`,
+                expect.any(Function),
+                expect.any(Function),
+            );
             expect(b.ids()).toEqual(before);
         }
         controller.enqueue(

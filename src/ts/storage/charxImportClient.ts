@@ -15,7 +15,8 @@ import { importFileOverServer, ServerImportAnswerError, type ServerImportOptions
  * embedded module base64-encoded, each asset entry's stored key by entry name, and the excluded
  * entries. Throws `ServerImportRequestError` for a non-2xx answer, `ServerImportFailedError` for a
  * failure line, `ServerImportAnswerError` for a malformed answer, and a network failure of the
- * request or of the body read as it is (a `TypeError`).
+ * request or of the body read as it is (a `TypeError`). Aborting the signal rejects with
+ * `ServerImportCancelledError`.
  */
 export function importCharxOverServer(file: Blob, options: ServerImportOptions = {}): Promise<CharxImportResult> {
     return importFileOverServer(CHARX_IMPORT_PATH, file, readCharxResult, options);

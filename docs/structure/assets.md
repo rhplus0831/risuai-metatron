@@ -30,8 +30,9 @@ contents of an import, see [cards and modules](characters-modules.md) or [inlays
   `AssetWriteItem.sha256` controls when a verified upload may be skipped. Batch limits and `MISSING_CHECK_DEADLINE_MS`
   live beside these calls.
 - `src/ts/storage/assetLifecycleClient.ts` serves the Storage page. `readStorageStatus` polls without fetching the
-  candidate list. `loadAssetPreview` returns a releasable, lease-free preview. `sweepAssets` sends selected keys and
-  inlay ids to the [cleanup routes](self-host-server.md#storage-routes).
+  candidate list. `loadAssetPreview` returns a releasable, lease-free preview; four run at once, each bounded at 60 s
+  after sign-in. `sweepAssets` sends selected keys and inlay ids to the
+  [cleanup routes](self-host-server.md#storage-routes).
 
 ### Asset queues
 
@@ -128,3 +129,8 @@ fallback, `fileSources` in `src/ts/globalApi.svelte.ts` tracks pinned page reads
 - Without a capable controlling service worker, the fallback's audio and video object URLs (`getInlayObjectUrl`,
   `mediaObjectUrls` in `src/ts/process/files/inlays.ts`) live for the page: they grow with the distinct media played,
   past the 64 MiB `blobCache` budget, until a reload. Decision: Found Issues Decisions (owner, 2026-11-08).
+- The in-tab `CharXImporter`'s save queue (`AssetSaveQueue`, ten slots) still waits on an unanswered write: ten hold its
+  next item. It is built only for a CharX given as bytes or a stream, which no product path passes (a picked CharX takes
+  the server import). Decision: Bounded Client Waits Limitations, [archive](../archived-plan/README.md).
+- A thumbnail the server takes longer than 60 s to prepare shows as failed in the storage report. Decision: Bounded
+  Client Waits D7, [archive](../archived-plan/README.md).

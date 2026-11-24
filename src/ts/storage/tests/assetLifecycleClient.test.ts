@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { authFetch } = vi.hoisted(() => ({
+const { authFetch, ensureAuth } = vi.hoisted(() => ({
     authFetch: vi.fn<(typeof import("../serverAuth"))["authFetch"]>(),
+    ensureAuth: vi.fn<(typeof import("../serverAuth"))["ensureAuth"]>(),
 }));
-vi.mock("../serverAuth", async () => (await import("./serverAuthMock")).createServerAuthMock({ authFetch }));
+vi.mock("../serverAuth", async () =>
+    (await import("./serverAuthMock")).createServerAuthMock({ authFetch, ensureAuth }),
+);
 
 import {
     loadAssetPreview,
@@ -16,6 +19,7 @@ import { ResourceRequestError } from "../resourceClient";
 
 beforeEach(() => {
     authFetch.mockReset();
+    ensureAuth.mockReset().mockResolvedValue(undefined);
 });
 
 const operations = [
@@ -183,6 +187,74 @@ describe("asset previews", () => {
         expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:preview");
     });
 
+    it("shares the 60 s deadline between fetch and body, admitting the fifth preview even if the body ignores abort", async () => {
+        const body = pendingBody();
+        let sendHeaders!: (response: Response) => void;
+        authFetch.mockReturnValueOnce(new Promise((resolve) => (sendHeaders = resolve)));
+        const first = preview("assets/held.png");
+        const rejected = vi.fn<(error: unknown) => void>();
+        void first.src.catch(rejected);
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(authFetch).toHaveBeenCalledOnce();
+        sendHeaders(body.response);
+        for (const name of ["b", "c", "d", "fifth"]) {
+            authFetch.mockResolvedValueOnce(pendingBody().response);
+            preview(`assets/${name}.png`);
+        }
+        await vi.advanceTimersByTimeAsync(58_999);
+        expect(body.read).toHaveBeenCalledOnce();
+        expect(authFetch).toHaveBeenCalledTimes(4);
+        expect(rejected).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(authFetch).toHaveBeenCalledTimes(5);
+        expect(authFetch.mock.calls[4][0]).toBe("/api/assets/preview/6173736574732f66696674682e706e67");
+        expect(authFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+        expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.any(Error));
+        expect(rejected.mock.calls[0][0]).toHaveProperty("name", "Error");
+
+        body.finish();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+    });
+
+    it("starts the 60 s deadline after sign-in even when fetch never returns headers", async () => {
+        let signIn!: () => void;
+        ensureAuth.mockReturnValueOnce(new Promise((resolve) => (signIn = resolve)));
+        authFetch.mockReturnValueOnce(new Promise(() => {}));
+        const handle = preview("assets/sign-in.png");
+        const rejected = vi.fn<(error: unknown) => void>();
+        void handle.src.catch(rejected);
+
+        await vi.advanceTimersByTimeAsync(90_000);
+        expect(authFetch).not.toHaveBeenCalled();
+        expect(rejected).not.toHaveBeenCalled();
+        signIn();
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(authFetch).toHaveBeenCalledOnce();
+        expect(rejected).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(authFetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+        expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.any(Error));
+        expect(rejected.mock.calls[0][0]).toHaveProperty("name", "Error");
+    });
+
+    it.each([
+        { body: "preview", size: 7, label: "a nonempty body" },
+        { body: null, size: 0, label: "an empty body" },
+    ])("preserves the MIME type and clears the deadline for $label", async ({ body, size }) => {
+        authFetch.mockResolvedValueOnce(new Response(body, { headers: { "Content-Type": "image/webp" } }));
+        const handle = preview("assets/webp-preview");
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(handle.src).resolves.toBe("blob:preview");
+        expect(URL.createObjectURL).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ type: "image/webp", size }),
+        );
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
     it.each(["HTTP", "network"])("rejects a %s preview failure and admits the next queued request", async (failure) => {
         let fail!: () => void;
         const response = new Promise<Response>((resolve, reject) => {
@@ -195,6 +267,8 @@ describe("asset previews", () => {
         for (let i = 0; i < 4; i++) authFetch.mockResolvedValueOnce(pendingBody().response);
         const failed = preview("assets/failed.png");
         for (const name of ["b", "c", "d", "queued"]) preview(`assets/${name}.png`);
+        // Each admitted preview signs in before its fetch.
+        await vi.advanceTimersByTimeAsync(0);
         expect(authFetch).toHaveBeenCalledTimes(4);
         fail();
         await vi.advanceTimersByTimeAsync(0);

@@ -21,7 +21,7 @@ import {
     translatorPipelineSignature,
 } from "../../../shared/translation/pipeline.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
-import { globalFetch } from "../globalApi.svelte";
+import { globalFetch, type GlobalFetchArgs } from "../globalApi.svelte";
 import { alertError } from "../alert";
 import { requestChatData } from "../process/request/request";
 import { anyLocalSend } from "../process/localSends";
@@ -406,6 +406,32 @@ export async function runTranslator(
     }
 }
 
+const TRANSLATION_PROVIDER_DEADLINE_MS = 60_000;
+
+/** Rejects on timeout or caller abort even if globalFetch returns a failure or keeps waiting after abort. */
+async function fetchTranslationProvider(url: string, { abortSignal: signal, ...options }: GlobalFetchArgs) {
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    let stop!: (reason: unknown) => void;
+    const stopped = new Promise<never>((_, reject) => {
+        stop = (reason) => {
+            reject(reason);
+            controller.abort(reason);
+        };
+    });
+    const onAbort = () => stop(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => {
+        stop(markTransient(new Error("Translation provider request timed out"), signal));
+    }, TRANSLATION_PROVIDER_DEADLINE_MS);
+    try {
+        return await Promise.race([stopped, globalFetch(url, { ...options, abortSignal: controller.signal })]);
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+    }
+}
+
 /**
  * The legacy `none` provider returns the input unchanged without a provider call.
  * DeepLX's wait is shared by all tab callers: unless no-wait is enabled, each request reserves the
@@ -458,7 +484,7 @@ async function translateMain(
         let url = provider.deeplOptions.freeApi
             ? "https://api-free.deepl.com/v2/translate"
             : "https://api.deepl.com/v2/translate";
-        const f = await globalFetch(url, {
+        const f = await fetchTranslationProvider(url, {
             abortSignal: arg.signal,
             headers: {
                 Authorization: "DeepL-Auth-Key " + provider.deeplOptions.key,
@@ -503,7 +529,7 @@ async function translateMain(
         }
 
         //Since the DeepLX API is non-CORS restricted, we can use the plain fetch function
-        const f = await globalFetch(url, {
+        const f = await fetchTranslationProvider(url, {
             abortSignal: arg.signal,
             method: "POST",
             headers: headers,
@@ -520,7 +546,7 @@ async function translateMain(
     if (provider.useExperimentalGoogleTranslator) {
         try {
             const ua = navigator.userAgent;
-            const d = await globalFetch(
+            const d = await fetchTranslationProvider(
                 `https://translate.google.com/m?tl=${arg.to}&sl=${arg.from}&q=${encodeURIComponent(text)}`,
                 {
                     abortSignal: arg.signal,
@@ -551,7 +577,7 @@ async function translateMain(
         `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${provider.translatorInputLanguage}&tl=${arg.to}&q=` +
         encodeURIComponent(text);
 
-    const f = await globalFetch(url, {
+    const f = await fetchTranslationProvider(url, {
         abortSignal: arg.signal,
         method: "GET",
         rawResponse: true,
@@ -626,10 +652,13 @@ export function isExpTranslator() {
  * separator count disagrees. Cache hits and joins take no permit. New chunk producers share
  * `MAX_TRANSLATION_WORKERS` slots (10), including each DeepLX batch and fallback call. Flights are
  * joinable by configuration, direction and exact text, even while queued; the last caller leaving
- * withdraws a queued flight. Admitted producers keep their permit until settlement and warm the
- * pair cache even after all callers leave. Each signal aborts only its caller's await. On a worker
- * attempt's first failure, its workers take no new job or chunk and its subscriptions leave before
- * the failed producer releases its permit; queued flights with no remaining caller are withdrawn.
+ * withdraws a queued flight. Admitted producers keep their permit until settlement and can warm the
+ * pair cache even after all callers leave. Each signal aborts only its caller's await. Each non-LLM
+ * call to `globalFetch` has a 60 s deadline that starts after any DeepLX slot wait. Experimental
+ * Google can fall back to regular Google with a fresh deadline. A timeout that reaches the producer
+ * is a transient failure and leaves no pair-cache entry. On a worker attempt's first failure, its
+ * workers take no new job or chunk and its subscriptions leave before the failed producer releases
+ * its permit. Queued flights with no remaining caller are withdrawn.
  * The attempt rejects with that same error, and a retry can join admitted producers or read their cache.
  * Both DOM dispatch modes share result application: combined paragraph jobs may rerun editdisplay
  * through `src/ts/parser/transformClient.ts`, then Markdown, before the final edittrans pass. The

@@ -25,7 +25,7 @@ export type JobFailureInfo = {
     end: Extract<GenerationTerminalEvent, { type: "error" }>;
 };
 
-/** Dialog/status payload for src/lib/Others/AlertComp.svelte; optional fields belong to the named variant. */
+/** Dialog/status payload for src/lib/Others/AlertComp.svelte, including optional actions for the named variant. */
 export interface alertData {
     /** Selects the dialog, popup or status rendered by AlertComp and its child components. */
     type:
@@ -55,6 +55,8 @@ export interface alertData {
         | "realmTerms";
     /** Display text or variant-specific encoded payload; `none` carries a dialog's answer. */
     msg: string;
+    /** `wait`: cancels the operation whose status is shown. */
+    onCancel?: () => void;
     /**
      * `error`: a hint; `progress`: a numeric percentage string without `%` (for example `50.00`);
      * other text dialogs may show a subtitle.
@@ -134,9 +136,9 @@ export function openAlertDialog<T>(open: () => T): { value: T; dialog: AlertDial
     }
 }
 
-/** Queues an error dialog with an Error's stack; a message that trims to "{}" is not shown. */
-export function alertError(msg: string | Error) {
-    const data = errorAlert(msg);
+/** Queues an error dialog with an Error's stack, suppressing "{}". A user cancellation can omit the error log. */
+export function alertError(msg: string | Error, { log = true } = {}) {
+    const data = errorAlert(msg, log);
     if (data) {
         void openDialog(data);
     }
@@ -174,8 +176,8 @@ export function errorReportText(message: string): string | null {
 }
 
 /** The `error` alert of `msg` (known errors get their hint), or null for one that is not shown. */
-function errorAlert(msg: string | Error): alertData | null {
-    console.error(msg);
+function errorAlert(msg: string | Error, log = true): alertData | null {
+    if (log) console.error(msg);
 
     let stackTrace: string | undefined = undefined;
 
@@ -364,21 +366,22 @@ export function alertToast(msg: string, onInstall?: (status: alertData) => void)
 }
 
 /**
- * Replaces the status; `onInstall` receives the exact object before installation, for cleanup with
- * `src/ts/stores.svelte.ts`'s `alertStore.clearStatus(expected)` without clearing a newer status.
+ * Shows a wait with an optional Cancel button. `onInstall` receives the exact status before installation
+ * so the caller can retire its most recent update with `alertClear(expected)`.
  */
-export function alertWait(msg: string, onInstall?: (status: alertData) => void) {
+export function alertWait(msg: string, onInstall?: (status: alertData) => void, onCancel?: () => void) {
     const data: alertData = {
         type: "wait",
         msg: msg,
+        ...(onCancel && { onCancel }),
     };
     onInstall?.(data);
     alertStoreImported.set(data);
 }
 
-/** Clears the status (a `wait`, `progress` or toast); a dialog shown or queued stays. */
-export function alertClear() {
-    alertStoreImported.clearStatus();
+/** Clears the status, optionally only the exact one installed by the caller. A dialog shown or queued stays. */
+export function alertClear(expected?: alertData) {
+    alertStoreImported.clearStatus(expected);
 }
 
 /** Resolves with the selected non-group character's `chaId`, or "" on Escape. */

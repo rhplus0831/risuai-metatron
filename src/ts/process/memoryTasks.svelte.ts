@@ -8,10 +8,11 @@ import {
 import type { MemoryTaskState, MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { compareRevision, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { chatEntry, findChat, heldChatRevision, type ChatRef } from "../storage/chatStore.svelte";
+import { readWithDeadline } from "../storage/readDeadline";
 import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, GenerationBlockedError, noteRemoteChanges } from "../storage/resourceSync.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
-import { authFetch } from "../storage/serverAuth";
+import { authFetch, ensureAuth } from "../storage/serverAuth";
 
 /**
  * The tab's view of the server's memory tasks (`server/src/prompt/memory/memoryTasks.ts`), of either
@@ -380,6 +381,16 @@ async function readBody(response: Response): Promise<Record<string, unknown>> {
     }
 }
 
+/** Bounds a manual Start or Cancel request and its body read after sign-in. */
+async function requestMemoryTask(path: string, init: RequestInit) {
+    await ensureAuth();
+    return await readWithDeadline(30_000, "The memory task request timed out", async (signal) => {
+        const response = await authFetch(path, { ...init, signal });
+        signal.throwIfAborted();
+        return { response, body: await readBody(response) };
+    });
+}
+
 /** The refusal or failure of a route's non-2xx answer (a 412 resets this module and halts saving). */
 function refusalOf(response: Response, body: Record<string, unknown>): MemoryTaskActionResult {
     if (response.status === 412 && body.error === "EpochMismatch") {
@@ -478,13 +489,12 @@ export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
         }
         let result: MemoryTaskActionResult;
         try {
-            const response = await authFetch(MEMORY_TASKS_PATH, {
+            const { response, body } = await requestMemoryTask(MEMORY_TASKS_PATH, {
                 method: "POST",
                 cache: "no-store",
                 headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
                 body: JSON.stringify({ characterId: ref.chaId, chatId: ref.chatId }),
             });
-            const body = await readBody(response);
             if (!current()) {
                 return { outcome: "superseded" };
             }
@@ -540,11 +550,10 @@ export function cancelMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> 
     const key = keyOf(ref.chaId, ref.chatId);
     return exclusive(key, async (_token, current) => {
         try {
-            const response = await authFetch(
+            const { response, body } = await requestMemoryTask(
                 `${MEMORY_TASKS_PATH}/${encodeURIComponent(ref.chaId)}/${encodeURIComponent(ref.chatId)}`,
                 { method: "DELETE", cache: "no-store", headers: { [RESOURCE_EPOCH_HEADER]: getResourceEpoch() } },
             );
-            const body = await readBody(response);
             if (!current()) {
                 return { outcome: "superseded" };
             }

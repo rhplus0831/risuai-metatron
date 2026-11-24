@@ -10,7 +10,8 @@ import {
 import { language } from "../../lang";
 import { recordClientEvent } from "../diagnostics/collector";
 import { openRoute } from "../router/router.svelte";
-import { authFetch } from "../storage/serverAuth";
+import { readWithDeadline } from "../storage/readDeadline";
+import { authFetch, ensureAuth } from "../storage/serverAuth";
 import { settings } from "../storage/settingsViews.svelte";
 
 /**
@@ -230,21 +231,30 @@ function sameKey(subscription: PushSubscription, key: string): boolean {
     return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
+async function requestPush<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    await ensureAuth();
+    return await readWithDeadline(30_000, "The push request timed out", request);
+}
+
 /** A key read; `failure` is set when the read failed and `key` is the last key read before. */
 type KeyRead = { key: string | null; failure?: unknown };
 
 /**
  * Reads the server's VAPID key: null (and `server-off`) when push is off there. Each sync reads it
- * again, so an open tab follows a key change, or push turned on or off on the server. A failed read
- * answers the last key read with the failure, and throws when there is none.
+ * again, so an open tab follows a key change, or push turned on or off on the server. The request and
+ * body read share a 30 s bound after sign-in. A failed read answers the last key read with the
+ * failure, and throws when there is none.
  */
 async function loadServerKey(): Promise<KeyRead> {
     try {
-        const response = await authFetch(PUSH_KEY_PATH);
-        if (!response.ok) {
-            throw new Error(language.pushNotifications.keyRequestFailed(response.status));
-        }
-        const body = (await response.json()) as { publicKey?: unknown };
+        const body = await requestPush(async (signal) => {
+            const response = await authFetch(PUSH_KEY_PATH, { signal });
+            signal.throwIfAborted();
+            if (!response.ok) {
+                throw new Error(language.pushNotifications.keyRequestFailed(response.status));
+            }
+            return (await response.json()) as { publicKey?: unknown };
+        });
         serverKey = typeof body.publicKey === "string" && body.publicKey ? body.publicKey : null;
     } catch (error) {
         if (serverKey) {
@@ -272,12 +282,16 @@ async function readyRegistration(): Promise<ServiceWorkerRegistration | null> {
     }
 }
 
+/** Removes an endpoint on the server, with a 30 s bound after sign-in. */
 async function removeOnServer(endpoint: string): Promise<void> {
-    const response = await authFetch(PUSH_SUBSCRIPTION_PATH, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ endpoint }),
-    });
+    const response = await requestPush((signal) =>
+        authFetch(PUSH_SUBSCRIPTION_PATH, {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ endpoint }),
+            signal,
+        }),
+    );
     if (!response.ok) {
         throw new Error(language.pushNotifications.removalFailed(response.status));
     }
@@ -346,9 +360,9 @@ async function flushPendingUnsubscribe(optedOut: boolean) {
  * `risu-push-registered` is evidence `{ endpoint, p256dh, auth, serverKey, at }`: an identical
  * registration skips PUT for `PUSH_REGISTRATION_REFRESH_MS` (24 h), while changed identity/key,
  * invalid evidence, or explicit enable (`force`) registers again. Evidence is read/written only
- * inside the push lock. A successful PUT stamps a complete identity; failed PUT, disable,
- * unsubscribe, or successful removal of its endpoint clears it. Storage failure leaves no reusable
- * in-memory evidence.
+ * inside the push lock. The PUT has a 30 s bound after sign-in. A successful PUT stamps a complete
+ * identity; failed PUT, disable, unsubscribe, or successful removal of its endpoint clears it.
+ * Storage failure leaves no reusable in-memory evidence.
  * A new subscription is undone before registration if another tab opted out while it was being created.
  */
 async function ensureSubscribed(force: boolean, known: KeyRead | null = null): Promise<void> {
@@ -415,11 +429,14 @@ async function ensureSubscribed(force: boolean, known: KeyRead | null = null): P
         return;
     }
     try {
-        const response = await authFetch(PUSH_SUBSCRIPTION_PATH, {
-            method: "PUT",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ subscription: serialized }),
-        });
+        const response = await requestPush((signal) =>
+            authFetch(PUSH_SUBSCRIPTION_PATH, {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ subscription: serialized }),
+                signal,
+            }),
+        );
         if (!response.ok) {
             throw new Error(language.pushNotifications.registrationRefused(response.status));
         }

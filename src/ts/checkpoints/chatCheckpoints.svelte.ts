@@ -13,11 +13,13 @@ import { heldChatRevision, isActiveChat, loadChat, type ChatRef } from "../stora
 import { prepare, request, type Answer } from "./chatRequest";
 
 /**
- * The checkpoint client (`/api/chat-checkpoints`). Requests use `authFetch`; a mutation sends
- * `RESOURCE_EPOCH_HEADER` and checks `assertSaveAdmission` in `beforeDispatch`, so none is dispatched
- * after a restore halt (a failure before dispatch is `not-sent`/`admission`). A 412 `EpochMismatch`, or
- * an answer naming another epoch, throws `epochMismatch(epoch)`, which runs the restore halt: the caller
- * sees the throw, except inside the flush or the refresh, where it is caught after the halt.
+ * The checkpoint client (`/api/chat-checkpoints`). Requests use `authFetch` with a 30 s deadline for
+ * fetch and JSON after sign-in. A timeout takes the transport-failure path with the current dispatch
+ * flag. If 200 headers have arrived, a body timeout answers with a null body. A mutation sends
+ * `RESOURCE_EPOCH_HEADER` and checks `assertSaveAdmission` in `beforeDispatch` to stop dispatch after a
+ * restore halt (a failure before dispatch is `not-sent`/`admission`). If the body arrives within the
+ * deadline, a 412 `EpochMismatch` or a body naming another epoch throws `epochMismatch(epoch)` and runs
+ * the restore halt. The caller sees the throw, except in the flush or refresh, which catch it after the halt.
  *
  * - Save and load share `prepare`: `generating` while `isChatGenerating(ref)`, `refused` while
  *   `refusedItems()` names the chat or its character's order, then `await flushResources()`,
@@ -28,11 +30,11 @@ import { prepare, request, type Answer } from "./chatRequest";
  *   `checkpointLoadBusy`, holds that guard through preparation and refresh, takes `heldChatRevision(ref)`
  *   after preparation (`null`: `unsaved`), and sends one `POST .../load` with it as `chatBaseRevision`.
  *   On 200 it re-reads through `loadChat(ref)`: `loaded` needs the refresh not to throw, a well-formed
- *   `chatRevision`, and a held revision equal or newer; every other 200 is `refresh-pending`. A 409
- *   `generating` returns without a refresh; a 409 with a string `error` and a null or string `revision`
- *   re-reads and returns `conflict`, so the caller may retry; 400/404/413 return
- *   `invalid`/`missing`/`tooLarge`; a malformed 409, a network failure after dispatch, a 5xx, or any
- *   other answer re-reads and returns `unknown`. A failed refresh leaves the outcome intact.
+ *   `chatRevision`, and a held revision equal or newer. Every other 200, including a body timeout,
+ *   is `refresh-pending`. A 409 `generating` returns without a refresh. A 409 with a string `error`
+ *   and a null or string `revision` re-reads and returns `conflict`, so the caller may retry.
+ *   400/404/413 return `invalid`/`missing`/`tooLarge`. A malformed 409, a network failure after dispatch,
+ *   a 5xx, or any other answer re-reads and returns `unknown`. A failed refresh leaves the outcome intact.
  * - Rename, delete, and `writeCheckpointPolicy` skip the preparation. Rename and delete send the row's
  *   `revision` as `baseRevision` (409 for a stale row).
  */
@@ -74,6 +76,7 @@ export type CheckpointLoadResult =
     | CheckpointFailure;
 
 const path = "/api/chat-checkpoints";
+const checkpointDeadline = { deadlineMs: 30_000 };
 const address = (ref: ChatRef) => ({ characterId: ref.chaId, chatId: ref.chatId });
 
 function requireActive(ref: ChatRef) {
@@ -142,7 +145,7 @@ function policy(value: unknown): value is CheckpointPolicy | null {
 }
 
 export async function listCheckpoints(ref: ChatRef): Promise<CheckpointResult<{ checkpoints: CheckpointSummary[] }>> {
-    const answer = await request(`${path}?${new URLSearchParams(address(ref))}`);
+    const answer = await request(`${path}?${new URLSearchParams(address(ref))}`, undefined, checkpointDeadline);
     if (
         answer.kind === "response" &&
         answer.status === 200 &&
@@ -169,7 +172,7 @@ async function writeSummary(
     operation: string,
     body: Record<string, unknown>,
 ): Promise<CheckpointResult<{ checkpoint: CheckpointSummary }>> {
-    const answer = await request(`${path}/${operation}`, body);
+    const answer = await request(`${path}/${operation}`, body, checkpointDeadline);
     return answer.kind === "response" && answer.status === 200 && summary(answer.body?.checkpoint)
         ? { status: "ok", checkpoint: answer.body.checkpoint }
         : failure(answer);
@@ -200,8 +203,7 @@ export async function deleteCheckpoint(
             id: checkpoint.id,
             baseRevision: checkpoint.revision,
         },
-        "POST",
-        () => requireActive(ref),
+        { ...checkpointDeadline, beforeDispatch: () => requireActive(ref) },
     );
     return answer.kind === "response" && answer.status === 200 && answer.body?.ok === true
         ? { status: "ok" }
@@ -227,8 +229,13 @@ export async function loadCheckpoint(ref: ChatRef, id: string): Promise<Checkpoi
         if (refused) return refused;
         const chatBaseRevision = heldChatRevision(ref);
         if (chatBaseRevision === null) return { status: "not-sent", reason: "unsaved" };
-        const answer = await request(`${path}/load`, { ...address(ref), id, chatBaseRevision }, "POST", () =>
-            requireActive(ref),
+        const answer = await request(
+            `${path}/load`,
+            { ...address(ref), id, chatBaseRevision },
+            {
+                ...checkpointDeadline,
+                beforeDispatch: () => requireActive(ref),
+            },
         );
         if (answer.kind === "failed" && !answer.dispatched) return failure(answer);
         if (answer.kind === "response") {
@@ -261,7 +268,7 @@ export async function loadCheckpoint(ref: ChatRef, id: string): Promise<Checkpoi
 
 /** An absent route, non-JSON answer, or invalid policy is unavailable, never an off policy. */
 export async function readCheckpointPolicy(ref: ChatRef): Promise<CheckpointPolicyResult> {
-    const answer = await request(`${path}/policy?${new URLSearchParams(address(ref))}`);
+    const answer = await request(`${path}/policy?${new URLSearchParams(address(ref))}`, undefined, checkpointDeadline);
     return answer.kind === "response" &&
         answer.status === 200 &&
         typeof answer.body?.epoch === "string" &&
@@ -280,7 +287,7 @@ export async function writeCheckpointPolicy(
             ...address(ref),
             ...(value === null ? { off: true } : { autoEvery: value.autoEvery, autoKeep: value.autoKeep }),
         },
-        "PUT",
+        { ...checkpointDeadline, method: "PUT" },
     );
     return answer.kind === "response" && answer.status === 200 && policy(answer.body?.policy)
         ? { status: "ok", policy: answer.body.policy }

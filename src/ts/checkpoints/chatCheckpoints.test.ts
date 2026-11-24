@@ -10,11 +10,15 @@ import { CheckpointServer, deferred } from "./tests/checkpointServer";
 
 const mocks = vi.hoisted(() => ({
     authFetch: vi.fn<typeof import("../storage/serverAuth").authFetch>(),
+    ensureAuth: vi.fn<typeof import("../storage/serverAuth").ensureAuth>(),
     reloadNotice: vi.fn(),
     terminal: vi.fn<(message: string) => Promise<void>>(),
 }));
 vi.mock("../storage/serverAuth", async () =>
-    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: mocks.authFetch,
+        ensureAuth: mocks.ensureAuth,
+    }),
 );
 vi.mock("../alert", async () =>
     (await import("../tests/alertMock")).createAlertMock({
@@ -119,6 +123,18 @@ const checkpointRequests = (operation: string) => server.requests.filter((r) => 
 const loadAnswer = () => server.answers.findLast((r) => r.path.endsWith("/load"))!.result;
 const texts = (client = tab) => client.chat.findChat(ref)!.message.map((message) => message.data);
 
+function holdLoadBody() {
+    const fetch = mocks.authFetch.getMockImplementation()!;
+    const body = deferred<unknown>();
+    const json = vi.fn(() => body.promise);
+    mocks.authFetch.mockImplementation(async (path, init, options) => {
+        const response = await fetch(path, init, options);
+        if (path === "/api/chat-checkpoints/load") vi.spyOn(response, "json").mockImplementation(json);
+        return response;
+    });
+    return { body, json };
+}
+
 beforeAll(() => warmMutationGraph(() => import("./chatCheckpoints.svelte")), 60_000);
 beforeEach(async () => {
     localStorage.clear();
@@ -127,6 +143,7 @@ beforeEach(async () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     vi.stubGlobal("location", { reload: vi.fn() });
     mocks.authFetch.mockReset();
+    mocks.ensureAuth.mockReset().mockResolvedValue();
     mocks.reloadNotice.mockReset();
     mocks.terminal.mockReset().mockResolvedValue();
     server = await CheckpointServer.create();
@@ -161,6 +178,164 @@ afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     server?.close();
+});
+
+describe("checkpoint request deadlines", () => {
+    it("bounds list, policy, save, rename, and delete requests at 30 seconds", async () => {
+        const checkpoint = await checkpointThenChange();
+        const fetch = mocks.authFetch.getMockImplementation()!;
+        const answer = deferred<Response>();
+        mocks.authFetch.mockImplementation((path, init, options) => {
+            if (!path.startsWith("/api/chat-checkpoints")) return fetch(path, init, options);
+            options?.beforeDispatch?.();
+            return answer.promise;
+        });
+        const checkpoints = tab.checkpoints;
+        const settled = vi.fn();
+        const pending = Object.entries({
+            list: checkpoints.listCheckpoints(ref),
+            readPolicy: checkpoints.readCheckpointPolicy(ref),
+            writePolicy: checkpoints.writeCheckpointPolicy(ref, null),
+            save: checkpoints.saveCheckpoint(ref, "Second checkpoint"),
+            rename: checkpoints.renameCheckpoint(ref, checkpoint, "New name"),
+            delete: checkpoints.deleteCheckpoint(ref, checkpoint),
+        }).map(async ([operation, result]) => settled(operation, await result));
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            const requestFailure = { status: "error", reason: "request" };
+            expect(Object.fromEntries(settled.mock.calls)).toEqual({
+                list: requestFailure,
+                readPolicy: { status: "unavailable" },
+                writePolicy: requestFailure,
+                save: requestFailure,
+                rename: requestFailure,
+                delete: requestFailure,
+            });
+        } finally {
+            answer.resolve(new Response(null, { status: 503 }));
+            await Promise.all(pending);
+        }
+    });
+
+    it("re-reads after a silent restore times out and allows Save As in another chat", async () => {
+        const checkpoint = await checkpointThenChange();
+        const held = server.holdLoad("answer");
+        const readAnswer = deferred();
+        const holdRead = vi.fn(() => readAnswer.promise);
+        const fetch = mocks.authFetch.getMockImplementation()!;
+        mocks.authFetch.mockImplementation(async (path, init, options) => {
+            const response = await fetch(path, init, options);
+            if (path === "/api/resources/read") await holdRead();
+            return response;
+        });
+        const settled = vi.fn();
+        const loading = tab.checkpoints.loadCheckpoint(ref, checkpoint.id).then(settled);
+        try {
+            await held.entered;
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(settled).not.toHaveBeenCalled();
+            expect(get(tab.checkpoints.checkpointLoadBusy)).toBe(true);
+            expect(texts()).toEqual(["Past the fork"]);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(holdRead).toHaveBeenCalledOnce();
+            expect(get(tab.checkpoints.checkpointLoadBusy)).toBe(true);
+            expect(settled).not.toHaveBeenCalled();
+
+            readAnswer.resolve();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(settled).toHaveBeenCalledExactlyOnceWith({ status: "unknown" });
+            expect(texts()).toEqual(["At the fork"]);
+            expect(get(tab.checkpoints.checkpointLoadBusy)).toBe(false);
+
+            const other = { chaId: ref.chaId, chatId: "second" };
+            expect(await tab.checkpoints.saveCheckpoint(other, "Another chat's checkpoint")).toMatchObject({
+                status: "ok",
+                checkpoint: { name: "Another chat's checkpoint" },
+            });
+        } finally {
+            readAnswer.resolve();
+            held.release();
+            await loading;
+        }
+    });
+
+    it("reports refresh-pending when a restore gets 200 headers but its body misses the same deadline", async () => {
+        const checkpoint = await checkpointThenChange();
+        const headers = server.holdLoad("answer");
+        const { body, json } = holdLoadBody();
+        const settled = vi.fn();
+        const loading = tab.checkpoints.loadCheckpoint(ref, checkpoint.id).then(settled);
+        try {
+            await headers.entered;
+            await vi.advanceTimersByTimeAsync(20_000);
+            headers.release();
+
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(json).toHaveBeenCalledOnce();
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledExactlyOnceWith({
+                status: "refresh-pending",
+                chatRevision: null,
+                safety: null,
+            });
+            expect(texts()).toEqual(["At the fork"]);
+        } finally {
+            headers.release();
+            body.resolve({});
+            await loading;
+        }
+    });
+
+    it("ignores a late restore body that would otherwise halt on an epoch mismatch", async () => {
+        const checkpoint = await checkpointThenChange();
+        const { body, json } = holdLoadBody();
+        const beforeReload = vi.fn();
+        tab.sync.beforeRestoreReload(beforeReload);
+        const settled = vi.fn();
+        const loading = tab.checkpoints.loadCheckpoint(ref, checkpoint.id).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(json).toHaveBeenCalledOnce();
+            await vi.advanceTimersByTimeAsync(30_000);
+            const expected = { status: "refresh-pending", chatRevision: null, safety: null };
+            expect(settled).toHaveBeenCalledExactlyOnceWith(expected);
+
+            const revision = tab.chat.heldChatRevision(ref);
+            remoteEdit([{ op: "setText", id: "reply", text: "Edited after the readback" }]);
+            body.resolve({ ...loadAnswer().body, epoch: "another-epoch" });
+            await vi.advanceTimersByTimeAsync(0);
+
+            expect(settled).toHaveBeenCalledExactlyOnceWith(expected);
+            expect(beforeReload).not.toHaveBeenCalled();
+            expect(tab.chat.heldChatRevision(ref)).toBe(revision);
+            expect(texts()).toEqual(["At the fork"]);
+        } finally {
+            body.resolve({});
+            await loading;
+        }
+    });
+
+    it("waits for sign-in before starting the checkpoint deadline", async () => {
+        const signIn = deferred();
+        mocks.ensureAuth.mockReturnValueOnce(signIn.promise);
+        const settled = vi.fn();
+        const listing = tab.checkpoints.listCheckpoints(ref).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(settled).not.toHaveBeenCalled();
+            expect(server.requests).toHaveLength(0);
+        } finally {
+            signIn.resolve();
+            await listing;
+        }
+        expect(settled).toHaveBeenCalledExactlyOnceWith({ status: "ok", checkpoints: [] });
+    });
 });
 
 describe("chat checkpoints over the server store", () => {

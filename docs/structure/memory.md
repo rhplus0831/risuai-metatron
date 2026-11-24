@@ -171,6 +171,11 @@ and [live-update feed](live-update-feed.md); the other task kind is the
 A manual start on an archived group's chat returns 409 `groupArchived`. The tab releases that attempt's fence and shows
 the refusal. See [server route limits](server-generation.md#limitations) for work queued before the upgrade.
 
+The tab's Start and Cancel (`memoryTasks.svelte.ts` `startMemoryTask`, `cancelMemoryTask`) share one request slot per
+chat and wait at most 30 s for the answer and body, counted after sign-in. A timeout is the `failed` result: the slot
+frees, and a failed Start leaves its `uncertain` fence until the feed reports the chat. Either may be pressed again: the
+server answers `running` for a live task, and cancelling nothing is a no-op.
+
 A task's kind must match the chat's algorithm at its start (`notHypaV3`, `notStructuredMemory`), and again before each
 further window and each commit, read from the chat and the settings as stored rather than the task's scope. A mismatch
 ends the task skipped with the same reasons and accepts no further result; a HypaV3 task first lets its in-flight
@@ -450,6 +455,8 @@ lookahead starts at stored coverage and does not defer summaries.
 - A cancelled recording stays counted against the shared memory-task capacity while a tracked local encode,
   script-worker regex, or Google token count settles; its automatic chapter fetch is aborted at cancel. Decision: owner,
   2026-11-24 (known-issues review): passing the task signal to the counter would also end a running local encode.
+- A manual start that landed as waiting for the next send, but whose answer was lost (a timeout included), is not shown
+  as waiting until Start is pressed again. Decision: Bounded Client Waits D5, [archive](../archived-plan/README.md).
 
 ### Gotchas
 

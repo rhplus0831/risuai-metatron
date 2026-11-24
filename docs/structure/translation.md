@@ -145,7 +145,7 @@ a [chat setting](#state).
    `globalPreset`. Its LLM adapter runs `shared/translation/pipeline.ts` through `requestChatData` in translate mode.
    With a captured context, combined paragraphs rerun `editdisplay` through `serverProcessScript` (target `translation`)
    before Markdown. DOM jobs finish before `applyEdittransRegex`. LLM results go directly to that regex. See
-   `translateHTML` for traversal, cancellation, queue, and cache rules.
+   `translateHTML` for traversal, cancellation, queue, provider deadline, and cache rules.
 3. The translation editors in `src/lib/ChatScreens/Chat.svelte` capture `llmTranslationCacheKey(text)`, then read and
    write that full key with `readLLMCacheEntry`/`writeLLMCacheEntry`, so a later settings switch cannot redirect the
    edit.
@@ -294,7 +294,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Server translation uses `Echo`, a temporary store, and fake LLM requests and token counts.
 - `translateHtmlLifetime.test.ts` and `translateHtmlWorkers.test.ts` answer the direct Google adapter's `globalFetch`
   from a `fetch`-shaped stub (`globalFetchFromResponse` in `src/ts/tests/globalApiMock.ts`); the workers test holds each
-  answer, reading the open-request count at its peak.
+  answer, reading the open-request count at its peak, and runs the 60 s provider deadline under fake timers.
 - Not tested: mounted bilingual rendering.
 
 ## Known Hazards
@@ -318,3 +318,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
   (`server/src/translation/runner.ts`, `tokens.count`) gets no signal: queued or in flight, it keeps the run counted
   against server capacity until it settles (Google's own 30 s timer once dispatched). Decision: owner, 2026-11-24
   (known-issues review): the signal would also end a running local encode.
+- An experimental Google request that times out falls back to regular Google with a fresh 60 s bound, so a rendered
+  producer can hold its permit for up to 120 s. A rendered LLM translation has no tab-side bound; it holds no permit,
+  and leaving the chat cancels it. Decision: Bounded Client Waits D8, [archive](../archived-plan/README.md).

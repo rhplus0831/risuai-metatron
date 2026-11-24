@@ -1011,7 +1011,11 @@ describe("server module file imports", () => {
             controller.enqueue(encode({ done, total: 2 }));
             controller.enqueue(new TextEncoder().encode("\n"));
             await vi.advanceTimersByTimeAsync(0);
-            expect(alertWait).toHaveBeenLastCalledWith(`Loading... (Adding Assets ${done} / 2)`);
+            expect(alertWait).toHaveBeenLastCalledWith(
+                `Loading... (Adding Assets ${done} / 2)`,
+                expect.any(Function),
+                expect.any(Function),
+            );
             expect(list()).toEqual(before);
             expect(alerts.normal).not.toHaveBeenCalled();
         }

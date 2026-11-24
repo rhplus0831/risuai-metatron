@@ -36,8 +36,10 @@ import { authFetch } from "../storage/serverAuth";
 import {
     importOverServer,
     ServerImportAnswerError,
+    ServerImportCancelledError,
     ServerImportFailedError,
     ServerImportRequestError,
+    withServerImportWait,
 } from "../storage/serverImportClient";
 
 /**
@@ -78,11 +80,12 @@ function isSelection(value: unknown): value is UpstreamImportSelection {
  * Throws `ServerImportRequestError` for a refusal
  * (a 400 carries the server's reason, a Risu Account backup's among them), `ServerImportFailedError`
  * when the conversion failed, `ServerImportAnswerError` for a malformed answer, and a network failure
- * as it is.
+ * as it is. Aborting `signal` stops progress and rejects with `ServerImportCancelledError`.
  */
 export function prepareUpstreamImport(
     file: Blob,
     onProgress?: (progress: UpstreamImportProgress) => void,
+    signal?: AbortSignal,
 ): Promise<UpstreamImportPrepared> {
     return importOverServer<UpstreamImportPrepared>(
         UPSTREAM_IMPORT_PREPARE_PATH,
@@ -108,6 +111,7 @@ export function prepareUpstreamImport(
             }
             return null;
         },
+        { signal },
     );
 }
 
@@ -208,7 +212,7 @@ function failureText(error: unknown): string {
 }
 
 /**
- * Restores an upstream RisuAI `.bin`: prepare with progress, the report (Cancel removes the prepared
+ * Restores an upstream RisuAI `.bin`: a cancellable prepare with progress, the report (Cancel removes the prepared
  * import), then the commit with a wait state, asking again with the count while the server answers
  * that changes were saved since the preview (Restore resends with that count, Cancel cancels).
  * Only `alertUpstreamImportReport`'s own Restore callback authorizes each commit.
@@ -220,11 +224,16 @@ function failureText(error: unknown): string {
  * may have happened. Every unconsumed prepare is cancelled best effort; a 412 reloads.
  */
 export async function restoreUpstreamBackup(file: Blob): Promise<void> {
-    alertWait(language.upstreamImport.uploading);
     let prepared: UpstreamImportPrepared;
     try {
-        prepared = await prepareUpstreamImport(file, (progress) => alertWait(progressText(progress)));
+        prepared = await withServerImportWait(language.upstreamImport.uploading, (signal, showWait) =>
+            prepareUpstreamImport(file, (progress) => showWait(progressText(progress)), signal),
+        );
     } catch (error) {
+        if (error instanceof ServerImportCancelledError) {
+            alertError(language.importCancelled, { log: false });
+            return;
+        }
         if (error instanceof ServerImportRequestError && error.status === 412) {
             // The server data changed since this tab loaded it; reload and try again.
             location.reload();

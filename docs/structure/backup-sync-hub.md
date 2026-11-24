@@ -101,7 +101,8 @@ and keeps what spans files.
 - Upstream RisuAI backup restore (`restoreUpstreamBackup`, tab → server → every tab):
   - The upload and the server's conversion show as a wait alert with the phase and its counts. A refusal (a Risu Account
     backup, a damaged file, a backup too large or over the worker's memory limit, another import waiting) is an
-    `alertError` and nothing changes; a 412 reloads.
+    `alertError` and nothing changes; a 412 reloads. The wait's Cancel aborts the prepare (its stage expires); the
+    commit's wait has none.
   - The report dialog's Cancel cancels the prepared import; only its own Restore commits. The server verifies the staged
     file first and reads no row of it. A `409 changedSinceReview`, also for a write that landed during that check, asks
     again with the count of changes saved since the preview (on this or another device; the safety snapshot keeps them),
@@ -146,6 +147,8 @@ and keeps what spans files.
 - While a stage waits, a `pagehide` sends its cancel as one `keepalive` request with a `risu-auth` token signed ahead
   (best effort; the TTL stays the fallback). A commit refused as busy (409 `Another import is running`) or in
   maintenance (503 `Maintenance in progress`) is retried once after five seconds; any other refusal cancels the stage.
+- The prepare and commit waits carry a Cancel (`withServerImportWait`), also during the retry's five seconds. A
+  cancelled commit cancels the stage; a cancelled prepare has no token yet, and its stage expires.
 
 ### Upstream database import
 
@@ -276,6 +279,8 @@ and keeps what spans files.
 - Manual compatibility check: `util/upstream/checkBinCompat.mjs` runs upstream's decoder/defaults against pinned
   `legacy` or `current` targets; `--bin` checks an existing export. The `current` target also runs upstream's plugin
   storage migration ([build/test platforms](build-test-platforms.md#files)).
+- The import waits' Cancel (Realm prepare and commit, backup prepare) through the real alert store:
+  `pnpm --silent test:agent src/ts/storage/tests/serverImportWait.test.ts`.
 - Settings-report redaction: `pnpm --silent test:agent src/ts/storage/tests/snapshots.test.ts` (`buildSettingsReport`).
 - Snapshot flush and refusal notes: `pnpm --silent test:agent src/lib/Setting/Pages/Storage/storageController.test.ts`.
 - Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, and a
@@ -306,3 +311,6 @@ and keeps what spans files.
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
   check `ui.realmTermsAccepted`. Decision: owner, 2026-11-10 (known-issues review): the gate is a notice to the server's
   owner, not a security boundary.
+- An upstream backup prepare and a Realm download end only by their answer, a network failure, or the wait's Cancel. A
+  Realm download with `forceRedirect` (`downloadRisuHub`; no product caller passes it) shows no wait, so no Cancel,
+  during its prepare. Decision: Bounded Client Waits D3 and D6, [archive](../archived-plan/README.md).

@@ -217,6 +217,10 @@ The transport below retains this tab's in-memory log.
   from either alerts `pushNotifications.failed`.
 - A failed disable (`error`, which the settings' off button alerts) retries at the next sync:
   `disablePushOnThisBrowser`, `flushPendingUnsubscribe`, `flushPendingRemoval` comments.
+- The key read, the registration PUT and the removal DELETE each wait at most 30 s after sign-in (`requestPush`), so a
+  queued unit, and the `risu-push` lock, ends within the sum of its requests' bounds. A timed-out PUT clears the
+  `risu-push-registered` stamp, so the next sync registers again; a timed-out DELETE stays a pending removal for the
+  next sync; a timed-out key read falls back to the cached key.
 - Without Web Locks the push queue is per tab, so another tab can opt this browser out while `ensureSubscribed` waits on
   `subscribe`: it reads the opt-out flag again after `subscribe` and undoes a subscription it just made, unregistered.
 
@@ -316,6 +320,10 @@ The transport below retains this tab's in-memory log.
   (`util/headlessHost.mjs` `openPage`) with no record and a new client id: the requesting device shows "no answer" after
   two minutes, and the relay keeps the entry until it drops it. A remote "Reload page" keeps the tab. No chat data is
   lost. Decision: owner, 2026-11-21 (found-issues review): rare, and a fix changes where attempts are stored.
+- A push request delayed in transit past its bound can land after a newer opposite request for the same endpoint: a
+  stale registration is removed at the push service's first 404 or 410, and a stale removal lasts until the next
+  registration (at most 24 h). The browser's own `subscribe` step has no bound. Decision: Bounded Client Waits D9,
+  [archive](../archived-plan/README.md).
 
 ### Gotchas
 
