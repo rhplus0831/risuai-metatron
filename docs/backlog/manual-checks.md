@@ -43,6 +43,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Timeline Reading View (2, 4)**: at phone width (about 360px), the Timeline Read view of a long chat: a group heading (date, event count, turns ago) wraps and the ★ of an important event does not shift its title (2); the search input and its button stay on one line (4).
 - [ ] **Settings Item Spacing**: at phone width (about 360px) the Interaction, Advanced, and Model settings pages read evenly (rows 0.5rem apart, 1rem around a labelled control), and no label wraps onto its control.
 - [ ] **Response Checks (3)**: at phone width (about 360px), the Request Rules settings page: the six minimum-length fields of the Response checks section and their request kind labels fit the page without horizontal scroll.
+- [ ] **Bounded Client Waits**: on a phone with a throttled or interrupted connection, a checkpoint restore and a memory task start each end with their failure message within about a minute and leave their controls usable.
 
 ## iOS Safari and the Home Screen app
 
@@ -141,6 +142,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Module and Persona Folders (1, 2)**: a module folder folded and reloaded stays folded on that device and open on another (2); with two devices, moving a module into a folder on one while editing that module's lorebook on the other keeps both changes after both save, with no conflict notice (1).
 - [ ] **Response Checks (1)**: two devices that each set a different request kind's minimum on the Request Rules page while apart both keep their value after syncing.
 - [ ] **Tokenizer Worker**: start a very long count in the tokenizer playground and close the browser tab (a real disconnect: editing the text or leaving the page does not end the request). A second very long count from another tab then finishes in about the time of one such count, not two. A short count answers at once in either case.
+- [ ] **Bounded Client Waits**: Cancel during a module upload returns the tab with the cancelled message, and a second import can start once the server's import slot is free.
 
 ## Real providers and external services
 
@@ -180,6 +182,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
 - [ ] **Headless Host**: the server restarted under a running `pnpm host:headless` (the host is listed again without a restart of the script); a server with HTTPS files (the script connects, and a second start reuses the profile); the `PORT`/`RISU_HOST` forms of the owner's own setup (a service unit, a Tailscale-bound server), where the refusal message must be clear when the server is not on loopback. On Windows: a start with `Port` or `Risu_Chrome` spelled in mixed case finds the server's port and the Chrome binary (checked on Linux with the Windows lookup only). With HTTPS files whose certificate does not verify: the page loads, and its public stylesheets still load (only the local listener's key is excepted).
 - [ ] **Tokenizer Worker**: the Docker image: the first send after a start counts its prompt (the worker finds `server/assets/token/` under the image's root), and the container stops within its grace period while a long count is running (in-process, shutdown now ends the worker before it waits for tracked requests; the real container's grace period is unchecked).
+- [ ] **Bounded Client Waits**: Web Push enabled in two tabs with the server stopped: both toggles become usable within about two minutes, and the subscription is registered at the next reconciliation (reload or the page shown again) after the server returns.
 
 ## Scripts, specs, and measurements nobody ran
 
