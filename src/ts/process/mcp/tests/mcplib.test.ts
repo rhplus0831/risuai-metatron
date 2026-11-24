@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureAuth } from "src/ts/storage/serverAuth";
 import type { MCPPrompt, MCPTool } from "../mcplib";
 
 // The tab's remote MCP client (`src/ts/process/mcp/mcplib.ts` `MCPClient`) over a fake
@@ -60,6 +61,9 @@ vi.mock("src/ts/globalApi.svelte", async () =>
     }),
 );
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock(),
+);
 
 const enc = new TextEncoder();
 
@@ -886,5 +890,157 @@ describe("caller cancellation and deadlines", () => {
             login.resolve();
         }
         await settled;
+    });
+});
+
+describe("remote MCP OAuth", () => {
+    const discoveryUrl = "http://mcp.test/.well-known/oauth-authorization-server";
+    const registrationUrl = "http://mcp.test/register";
+    const helperUrl = "https://account.sionyw.com/oauthhelper/api";
+    const refreshToken = {
+        clientId: "c1",
+        clientSecret: "s1",
+        refreshToken: "stored-refresh",
+        tokenUrl: "http://mcp.test/token",
+    };
+    const credentials = (attempt: string) => ({
+        access_token: `${attempt}-access`,
+        refresh_token: `${attempt}-refresh`,
+    });
+
+    function oauthResponse(call: Call): Reply {
+        switch (call.url) {
+            case discoveryUrl:
+                return reply({
+                    json: {
+                        authorization_endpoint: "http://mcp.test/authorize",
+                        registration_endpoint: registrationUrl,
+                        token_endpoint: refreshToken.tokenUrl,
+                    },
+                });
+            case registrationUrl:
+                return reply({ status: 201, json: { client_id: "c1", client_secret: "s1" } });
+            case helperUrl:
+                return reply({ json: { success: true, payload: { code: "server-code" } } });
+            case refreshToken.tokenUrl:
+                return reply({ json: credentials("current") });
+            case "http://mcp.test/mcp":
+                if (!call.headers.Authorization) return reply({ status: 401 });
+                if (call.body.id === undefined) return reply({ status: 202 });
+                return rpcJson(call, call.body.method === "initialize" ? INFO : TOOLS);
+            default:
+                throw new Error(`Unexpected fetchNative(${call.url})`);
+        }
+    }
+
+    beforeEach(() => {
+        vi.spyOn(crypto.subtle, "digest").mockResolvedValue(new ArrayBuffer(32));
+    });
+
+    it.each([
+        { stage: "discovery", url: discoveryUrl, part: "headers" },
+        { stage: "client registration", url: registrationUrl, part: "JSON body" },
+        { stage: "authorization-code helper", url: helperUrl, part: "headers" },
+        { stage: "token exchange", url: refreshToken.tokenUrl, part: "JSON body" },
+        { stage: "token refresh", url: refreshToken.tokenUrl, part: "JSON body" },
+    ])("fails a tool listing at 30 seconds when $stage stalls on $part", async ({ stage, url, part }) => {
+        const client = await newClient();
+        vi.useFakeTimers();
+        const signedIn = deferred<void>();
+        const discovered = deferred<void>();
+        const released = deferred<void>();
+        const followsDiscovery = stage !== "discovery" && stage !== "token refresh";
+        if (stage === "token refresh") client.getRefreshToken = async () => refreshToken;
+        if (stage === "discovery") vi.mocked(ensureAuth).mockReturnValueOnce(signedIn.promise);
+        let waiting: Call | undefined;
+        server.handle = (call) => {
+            const answer = oauthResponse(call);
+            if (followsDiscovery && call.url === discoveryUrl) return discovered.promise.then(() => answer);
+            if (call.url !== url) return answer;
+            if (part === "headers") {
+                waiting = call;
+                return released.promise.then(() => answer);
+            }
+            return {
+                ...answer,
+                json: async () => {
+                    waiting = call;
+                    await released.promise;
+                    return answer.json();
+                },
+            };
+        };
+        let failure: unknown;
+        const listing = client.getToolList().catch((error: unknown) => {
+            failure = error;
+        });
+        try {
+            if (stage === "discovery") {
+                await vi.advanceTimersByTimeAsync(30_001);
+                expect(waiting, "OAuth exchange during sign-in").toBeUndefined();
+                expect(failure).toBeUndefined();
+                signedIn.resolve();
+            }
+            if (followsDiscovery) {
+                await vi.advanceTimersByTimeAsync(0);
+                expect(calls.at(-1)?.url).toBe(discoveryUrl);
+                await vi.advanceTimersByTimeAsync(10_000);
+                discovered.resolve();
+            }
+            await vi.advanceTimersByTimeAsync(0);
+            expect(waiting?.url).toBe(url);
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(failure).toBeUndefined();
+            expect(waiting?.signal?.aborted).not.toBe(true);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(failure).toMatchObject({ message: "MCP Handshake Failed" });
+            expect(waiting?.signal?.aborted).toBe(true);
+        } finally {
+            client.destroy();
+            signedIn.resolve();
+            discovered.resolve();
+            released.resolve();
+            await listing;
+            vi.mocked(ensureAuth).mockReset();
+        }
+    });
+
+    it.each([
+        { stage: "token exchange", grantType: "authorization_code" },
+        { stage: "token refresh", grantType: "refresh_token" },
+    ])("keeps the replacement credentials when an abandoned $stage answers", async ({ grantType }) => {
+        const client = await newClient();
+        if (grantType === "refresh_token") client.getRefreshToken = async () => refreshToken;
+        const register = vi.fn();
+        client.registerRefreshToken = register;
+        const late = deferred<ReturnType<typeof credentials>>();
+        let abandoned: Call | undefined;
+        server.handle = (call) => {
+            if (call.url === refreshToken.tokenUrl && call.body.grant_type === grantType && !abandoned) {
+                return reply({
+                    json: () => {
+                        abandoned = call;
+                        return late.promise;
+                    },
+                });
+            }
+            return oauthResponse(call);
+        };
+        const first = client.getToolList().catch((error: unknown) => error);
+        try {
+            await checkpoint(() => abandoned !== undefined);
+            expect(await client.getToolList()).toEqual(TOOLS.tools);
+            late.resolve(credentials("abandoned"));
+            const result = await first;
+
+            expect(client.accessToken).toBe("current-access");
+            expect(register).toHaveBeenCalledExactlyOnceWith({ ...refreshToken, refreshToken: "current-refresh" });
+            expect(result).toMatchObject({ message: "MCP Handshake Failed" });
+            expect(abandoned?.signal?.aborted).toBe(true);
+        } finally {
+            client.destroy();
+            late.resolve(credentials("abandoned"));
+            await first;
+        }
     });
 });

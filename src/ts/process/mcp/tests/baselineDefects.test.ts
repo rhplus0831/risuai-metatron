@@ -37,6 +37,9 @@ vi.mock("src/ts/globalApi.svelte", async () =>
     }),
 );
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock(),
+);
 vi.mock("src/ts/storage/collectionStore.svelte", () => ({ addAuthRefresh: vi.fn(), addModule: vi.fn() }));
 vi.mock("src/ts/stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 vi.mock("src/ts/process/modules", () => ({ getModuleMcps: vi.fn(() => []) }));

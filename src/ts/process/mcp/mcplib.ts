@@ -4,6 +4,7 @@ import { alertInput } from "../../alert";
 import { type MCPTool, MCPToolHandler } from "../../../../shared/mcp/risuaccess/host.ts";
 import { parseSseEvent, SseFramer } from "../../../../shared/mcp/sse.ts";
 import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
+import { ensureAuth } from "../../storage/serverAuth";
 
 /**
  * Remote MCP JSON-RPC over streamable HTTP or legacy SSE, with OAuth, sessions, and paginated
@@ -15,6 +16,8 @@ import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 
 /** Mirrors `server/src/mcp/client.ts` MCP_REQUEST_TIMEOUT_MS. */
 const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const MCP_OAUTH_TIMEOUT_MS = 30_000;
+const MCP_HANDSHAKE_FAILED = "MCP Handshake Failed";
 const MAX_PENDING_PING_REPLIES = 4;
 
 // Mirrors MAX_TOOL_LIST_PAGES, MAX_TOOL_LIST_TOOLS and MAX_TOOL_LIST_BYTES in server/src/mcp/client.ts.
@@ -139,6 +142,7 @@ export class MCPClient {
      * `The MCP client was closed`; a settled waiter is checked too. `reset` does not set this flag.
      */
     private closed = false;
+    private oauthAttempt: AbortController | null = null;
     private pendingPingReplies = 0;
     /** Only the current legacy GET stream may reset the session when it ends. */
     private legacy: AbortController | null = null;
@@ -805,7 +809,7 @@ export class MCPClient {
         this.assertOpen();
         if (legacySession && this.legacy !== legacySession) throw new Error("The MCP session ended");
         if (http.status === 401) {
-            await waitWithSignal(this.oauthLogin(), signal);
+            await waitWithSignal(this.oauthLogin(signal), signal);
             signal?.throwIfAborted();
             return this.handshake(signal);
         }
@@ -831,7 +835,26 @@ export class MCPClient {
 
             return this.serverInfo;
         } else {
-            throw "MCP Handshake Failed";
+            throw MCP_HANDSHAKE_FAILED;
+        }
+    }
+
+    async oauthLogin(signal?: AbortSignal) {
+        this.assertOpen();
+        signal?.throwIfAborted();
+        // A second login on this client can supersede the first without closing the client.
+        const previous = this.oauthAttempt;
+        const attempt = new AbortController();
+        this.oauthAttempt = attempt;
+        previous?.abort(new Error(MCP_HANDSHAKE_FAILED));
+        const abandon = () => attempt.abort(signal.reason);
+        signal?.addEventListener("abort", abandon, { once: true });
+        if (signal?.aborted) abandon();
+        try {
+            await this.runOAuthLogin(attempt.signal);
+        } finally {
+            signal?.removeEventListener("abort", abandon);
+            if (this.oauthAttempt === attempt) this.oauthAttempt = null;
         }
     }
 
@@ -843,90 +866,121 @@ export class MCPClient {
      * only when the server issued a non-empty string. The server's authorization endpoint must use
      * `http:` or `https:` before `openURL` may open it.
      */
-    async oauthLogin() {
-        // A retired client starts no login step: a refresh would spend the token a newer client holds.
-        this.assertOpen();
-        if (this.getRefreshToken) {
-            const refreshTokenData = await this.getRefreshToken();
+    private async runOAuthLogin(attempt: AbortSignal) {
+        const assertAttempt = () => {
             this.assertOpen();
-            if (typeof refreshTokenData?.refreshToken === "string" && refreshTokenData.refreshToken !== "") {
-                //get access token using refresh token
-                const tokenResponse = await fetchNative(refreshTokenData.tokenUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    body: new URLSearchParams({
-                        grant_type: "refresh_token",
-                        refresh_token: refreshTokenData.refreshToken,
-                        client_id: refreshTokenData.clientId,
-                        client_secret: refreshTokenData.clientSecret,
-                    }).toString(),
-                });
-                if (tokenResponse.status === 200) {
-                    const tokenData = await tokenResponse.json().catch((): null => null);
-                    if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
-                        const rotated = tokenData.refresh_token;
-                        this.assertOpen();
-                        if (typeof rotated === "string" && rotated !== "" && this.registerRefreshToken) {
-                            this.registerRefreshToken({
-                                clientId: refreshTokenData.clientId,
-                                clientSecret: refreshTokenData.clientSecret,
-                                refreshToken: rotated,
-                                tokenUrl: refreshTokenData.tokenUrl,
-                            });
-                        }
-                        this.accessToken = tokenData.access_token;
-                        return;
+            attempt.throwIfAborted();
+        };
+        const exchange = async (
+            url: string,
+            init: Parameters<typeof fetchNative>[1],
+            { readStatus, ignoreInvalidJson }: { readStatus?: number; ignoreInvalidJson?: boolean } = {},
+        ) => {
+            assertAttempt();
+            await waitWithSignal(ensureAuth(), attempt); // Sign-in may be waiting for the user.
+            assertAttempt();
+            const request = new AbortController();
+            const abandon = () => request.abort(attempt.reason);
+            attempt.addEventListener("abort", abandon, { once: true });
+            const timer = setTimeout(() => request.abort(new Error(MCP_HANDSHAKE_FAILED)), MCP_OAUTH_TIMEOUT_MS);
+            try {
+                const work = fetchNative(url, { ...init, signal: request.signal }).then(async (response) => {
+                    if (request.signal.aborted) {
+                        void response.body?.cancel().catch(() => {});
+                        request.signal.throwIfAborted();
                     }
+                    const { status } = response;
+                    if (readStatus !== undefined && status !== readStatus) return { status };
+                    const body = response.json();
+                    return { status, data: await (ignoreInvalidJson ? body.catch(() => null) : body) };
+                });
+                const answer = await waitWithSignal(work, request.signal);
+                request.signal.throwIfAborted();
+                return answer;
+            } finally {
+                clearTimeout(timer);
+                attempt.removeEventListener("abort", abandon);
+            }
+        };
+
+        if (this.getRefreshToken) {
+            const refreshTokenData = await waitWithSignal(this.getRefreshToken(), attempt);
+            assertAttempt();
+            if (typeof refreshTokenData?.refreshToken === "string" && refreshTokenData.refreshToken !== "") {
+                const { data: tokenData } = await exchange(
+                    refreshTokenData.tokenUrl,
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/x-www-form-urlencoded",
+                        },
+                        body: new URLSearchParams({
+                            grant_type: "refresh_token",
+                            refresh_token: refreshTokenData.refreshToken,
+                            client_id: refreshTokenData.clientId,
+                            client_secret: refreshTokenData.clientSecret,
+                        }).toString(),
+                    },
+                    { readStatus: 200, ignoreInvalidJson: true },
+                );
+                if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
+                    const rotated = tokenData.refresh_token;
+                    assertAttempt();
+                    if (typeof rotated === "string" && rotated !== "" && this.registerRefreshToken) {
+                        this.registerRefreshToken({
+                            clientId: refreshTokenData.clientId,
+                            clientSecret: refreshTokenData.clientSecret,
+                            refreshToken: rotated,
+                            tokenUrl: refreshTokenData.tokenUrl,
+                        });
+                    }
+                    assertAttempt();
+                    this.accessToken = tokenData.access_token;
+                    return;
                 }
             }
         }
 
-        this.assertOpen();
         const OauthDiscovery = new URL(this.url);
         OauthDiscovery.pathname = "/.well-known/oauth-authorization-server";
-        const oauthResponse = await fetchNative(OauthDiscovery.toString(), {
-            method: "GET",
-            headers: {
-                Accept: "application/json",
-            },
-        });
-
-        //default discovery URLS
-        let discoveryURLS = {
-            authorization_endpoint: OauthDiscovery.origin + "/authorize",
-            token_endpoint: OauthDiscovery.origin + "/token",
-            registration_endpoint: OauthDiscovery.origin + "/register",
-        };
-
-        if (oauthResponse.status === 200) {
-            discoveryURLS = await oauthResponse.json();
-        }
+        const oauthResponse = await exchange(
+            OauthDiscovery.toString(),
+            { method: "GET", headers: { Accept: "application/json" } },
+            { readStatus: 200 },
+        );
+        const discoveryURLS =
+            oauthResponse.status === 200
+                ? oauthResponse.data
+                : {
+                      authorization_endpoint: OauthDiscovery.origin + "/authorize",
+                      token_endpoint: OauthDiscovery.origin + "/token",
+                      registration_endpoint: OauthDiscovery.origin + "/register",
+                  };
 
         const redirectURL = "https://account.sionyw.com/oauthhelper"; //Just a placeholder, should be replaced with actual redirect URL
 
-        this.assertOpen();
-        const registerResponse = await fetchNative(discoveryURLS.registration_endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Accept: "application/json",
+        const registerResponse = await exchange(
+            discoveryURLS.registration_endpoint,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json",
+                },
+                body: JSON.stringify({
+                    client_name: "RS-MCP-CLIENT",
+                    redirect_uris: [redirectURL],
+                    response_types: ["code"],
+                    grant_types: ["authorization_code"],
+                    token_endpoint_auth_method: "client_secret_basic",
+                }),
             },
-            body: JSON.stringify({
-                client_name: "RS-MCP-CLIENT",
-                redirect_uris: [redirectURL],
-                response_types: ["code"],
-                grant_types: ["authorization_code"],
-                token_endpoint_auth_method: "client_secret_basic",
-            }),
-        });
-
+            { readStatus: 201 },
+        );
         if (registerResponse.status !== 201) {
             throw new Error("Failed to register client with OAuth server");
         }
-
-        const clientData = await registerResponse.json();
+        const clientData = registerResponse.data;
 
         const code_verifier = (v4() + v4()).replace(/-/g, "");
         const sha256 = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code_verifier));
@@ -948,12 +1002,14 @@ export class MCPClient {
         authUrl.searchParams.set("code_challenge", code_challenge);
         authUrl.searchParams.set("code_challenge_method", "S256");
 
-        this.assertOpen();
+        assertAttempt();
         openURL(authUrl.toString());
-        const code = await alertInput("Input Authorization Code", undefined, undefined, { secret: true });
-        this.assertOpen();
+        const code = await waitWithSignal(
+            alertInput("Input Authorization Code", undefined, undefined, { secret: true }),
+            attempt,
+        );
 
-        const authHelperResponse = await fetchNative("https://account.sionyw.com/oauthhelper/api", {
+        const { data: authHelperResponseJson } = await exchange("https://account.sionyw.com/oauthhelper/api", {
             method: "POST",
             body: JSON.stringify({
                 code: code,
@@ -962,39 +1018,35 @@ export class MCPClient {
                 Accept: "application/json",
             },
         });
-
-        const authHelperResponseJson = await authHelperResponse.json();
-
         if (authHelperResponseJson.success !== true) {
             throw new Error("Failed to get authorization code from helper");
         }
 
         const payload = authHelperResponseJson.payload;
-
-        this.assertOpen();
-
-        const tokenResponse = await fetchNative(discoveryURLS.token_endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
+        const tokenResponse = await exchange(
+            discoveryURLS.token_endpoint,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: new URLSearchParams({
+                    grant_type: "authorization_code",
+                    code: payload.code || "",
+                    redirect_uri: redirectURL,
+                    client_id: clientData.client_id,
+                    client_secret: clientData.client_secret,
+                    code_verifier: code_verifier,
+                }).toString(),
             },
-            body: new URLSearchParams({
-                grant_type: "authorization_code",
-                code: payload.code || "",
-                redirect_uri: redirectURL,
-                client_id: clientData.client_id,
-                client_secret: clientData.client_secret,
-                code_verifier: code_verifier,
-            }).toString(),
-        });
-
+            { readStatus: 200 },
+        );
         if (tokenResponse.status !== 200) {
             throw new Error("Failed to exchange authorization code for access token");
         }
+        const tokenData = tokenResponse.data;
 
-        const tokenData = await tokenResponse.json();
-
-        this.assertOpen();
+        assertAttempt();
         if (
             typeof tokenData.refresh_token === "string" &&
             tokenData.refresh_token !== "" &&
@@ -1007,6 +1059,7 @@ export class MCPClient {
                 tokenUrl: discoveryURLS.token_endpoint,
             });
         }
+        assertAttempt();
         this.accessToken = tokenData.access_token;
     }
 
@@ -1129,6 +1182,7 @@ export class MCPClient {
      */
     destroy() {
         this.closed = true;
+        this.oauthAttempt?.abort(new Error("The MCP client was closed"));
         this.reset();
     }
 
