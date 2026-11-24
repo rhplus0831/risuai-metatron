@@ -7,11 +7,11 @@
 // warning listing the passed tests slower than <ms>, default 1000) and caches the output under
 // `node_modules/.cache/agent-test/` keyed by the working tree. Everything the run writes to stderr (Node warnings, worker-thread traces from
 // passing tests) is held back: a passing run reports only its line count, a failing run prints the
-// last STDERR_TAIL lines after the report, and `--verbose` prints all of it either way. The key is `git write-tree` over a temporary index with every change staged (untracked
-// files included, `.gitignore` honored), plus the Node and Vitest versions and the arguments. When
-// nothing changed since the last run, the stored output is printed again with the stored exit code
-// instead of running the tests, so two agents checking the same tree pay for one run. Failures are
-// cached too (the same tree gives the same result); `--force` runs anyway and replaces the entry.
+// last STDERR_TAIL lines after the report, and `--verbose` prints all of it either way. The key
+// uses the working-tree files and the git-ignored files in the type-check cache's source roots,
+// plus the Node and test tool versions and the arguments. An unchanged key replays the stored
+// output and exit code. A result (including failure) is saved only when its key still matches
+// after the run. `--force` runs anyway and replaces the entry if the inputs stayed the same.
 // A whole-suite run (no file filter: the gate, `--tags-filter=slow`, `--all`) first takes a
 // machine-wide lock (GATE_LOCK_PORT) that every checkout and worktree sees, so such runs queue
 // instead of sharing the CPUs: the suite is compute-bound, and three at once each take about
@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { changedFiles, fileVersions, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
 import { MAX_RERUN_FILES, RESULTS_FILE_ENV, mergeRerun, planRerun, withoutFilters } from "./agentTestResults.mjs";
 import { E2E_SERVER_PORT, E2E_VITE_PORT } from "./playwright/globalSetup.mjs";
-import { workingTreeId } from "./workingTree.mjs";
+import { programKey, workingTreeFiles } from "./typeCheckCache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = join(root, "node_modules", ".cache", "agent-test");
@@ -83,6 +83,7 @@ const lock = !args.includes("--no-lock");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
 const e2e = args.includes("--e2e");
+const toolPackage = e2e ? "@playwright/test" : "vitest";
 /** Rerun policy is part of the cache key, so disabling reruns cannot replay a merged result. */
 const rerun = !args.includes("--no-rerun");
 const isSlowTests = (arg) => arg === "--slow-tests" || arg.startsWith("--slow-tests=");
@@ -106,7 +107,6 @@ for (const arg of args.filter(isSlowTests)) {
 // options that change the output.
 let command;
 let keyArgs;
-let toolVersion;
 const vitestArgs = [];
 if (e2e) {
     // These flags govern the Vitest reporter and per-file reruns; e2e refuses them with exit 2.
@@ -121,7 +121,6 @@ if (e2e) {
     command = [playwrightCli, "test", ...specArgs, "--reporter=dot", ...playwrightArgs];
     // Selected specs and the Playwright version distinguish e2e cache entries.
     keyArgs = ["--e2e", ...specArgs, ...playwrightArgs];
-    toolVersion = `playwright ${packageVersion("@playwright/test")}`;
 } else {
     vitestArgs.push(
         ...args.filter(
@@ -143,7 +142,6 @@ if (e2e) {
         ...(slowTestsMs === undefined ? [] : [`--slow-tests=${slowTestsMs}`]),
         rerun ? `--rerun-alone=${MAX_RERUN_FILES}` : "--no-rerun",
     ];
-    toolVersion = packageVersion("vitest");
 }
 
 function isSpecArg(arg) {
@@ -392,24 +390,23 @@ function printStderr(stderr, exitCode) {
     }
 }
 
-// A failed add or write-tree also disables caching; the tests still run.
-const tree = workingTreeId(root);
-if (tree === null) log("not a git checkout (or git failed): running without the cache");
+function cacheInputs() {
+    const inputs = workingTreeFiles(root);
+    if (inputs === null) return null;
+    const settings = { node: process.version, tool: packageVersion(toolPackage) };
+    return { tree: inputs.tree, key: programKey(keyArgs, settings, inputs.files, () => true) };
+}
 
+const inputs = cacheInputs();
+if (inputs === null) log("cache inputs unavailable, running without the cache");
 const argsHash = createHash("sha256").update(JSON.stringify(keyArgs)).digest("hex").slice(0, 16);
 const entryFile = join(cacheDir, `${argsHash}.json`);
-const key =
-    tree === null
-        ? null
-        : createHash("sha256")
-              .update(JSON.stringify([tree, process.version, toolVersion, keyArgs]))
-              .digest("hex");
 
 /** Cache replays start with `[agent-test] cached result ...` and finish before either lock is acquired. */
-const cached = key === null || force ? null : readEntry(entryFile);
-if (cached && cached.key === key && typeof cached.exitCode === "number") {
+const cached = inputs === null || force ? null : readEntry(entryFile);
+if (inputs && cached?.key === inputs.key && typeof cached.exitCode === "number") {
     log(
-        `cached result from ${ago(cached.finishedAt)}: working tree unchanged (tree ${tree.slice(0, 7)}). ` +
+        `cached result from ${ago(cached.finishedAt)}: cache inputs unchanged (tree ${inputs.tree.slice(0, 7)}). ` +
             "Pass --force to run again.",
     );
     process.stdout.write(cached.stdout);
@@ -480,14 +477,13 @@ if (full.code === null) interrupted(full.stdout, full.stderr);
 const { code, stdout, stderr } = full.code !== 0 && rerun && !e2e ? await rerunFailedFiles(full) : full;
 process.stdout.write(stdout);
 printStderr(stderr, code);
-if (key !== null) {
+if (inputs && cacheInputs()?.key === inputs.key) {
     mkdirSync(cacheDir, { recursive: true });
     writeFileSync(
         entryFile,
         JSON.stringify(
             {
-                key,
-                tree,
+                ...inputs,
                 args: keyArgs,
                 exitCode: code,
                 finishedAt: new Date().toISOString(),
@@ -499,6 +495,8 @@ if (key !== null) {
             2,
         ),
     );
-    log(`cached (tree ${tree.slice(0, 7)}); the next run on this working tree replays this output`);
+    log(`cached (tree ${inputs.tree.slice(0, 7)}); the next run with these inputs replays this output`);
+} else if (inputs) {
+    log("cache inputs changed during the run, result was not saved");
 }
 process.exit(code);
