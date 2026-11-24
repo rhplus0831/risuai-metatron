@@ -1335,14 +1335,13 @@ async function writeRecoveryDraft(
             };
             retryWrite = retryWrite ? retryWrite.then(write) : write();
         };
-        // A group can settle before the flush. Persist even the empty remainder so an Apply
-        // after reload cannot repeat a write already acknowledged by this page.
+        // Another key can hold the flush open after this group answered. Store each narrowed
+        // remainder at acknowledgement, including subsequent groups from a split Apply.
         const onAnswer = () => {
             if (writes.some((write) => write.remaining === undefined)) return;
             if (
                 partial ||
                 retry ||
-                writes.every((write) => write.remaining === null) ||
                 writes.some((write) => write.answered && (write.remaining || write.ignoredTranslation))
             )
                 persist(remainingWork());
