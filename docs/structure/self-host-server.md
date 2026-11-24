@@ -366,6 +366,9 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   takeover can still block. Neither the queue nor a request is cancelled, because a hung volume already stalls the
   store's synchronous commits and Docker's stop timeout is the bound. A process that ends mid-write leaves a temporary
   file beside its target.
+- `orderedWriter` frees a key and its slot only when the write settles, so four stalled keys hold every later auth,
+  push, and diagnostics write; the tab's sign-in check gives up at its 20 s bound, and the registration still lands
+  later. Decision: owner, 2026-11-24 (reproduction round): a stalled local file step is not bounded.
 - Replacing bytes under an already cached immutable content name does not update a browser's cached asset, and a fresh
   copy stays under the [accepted exposure](#invariants). Decision: Direct Asset URLs closeout, archive.
 - Swept bytes stay in a browser's immutable cache until evicted; browser-only keys are no root. Decision: Asset
@@ -379,6 +382,10 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
 - A chunked body over the cap to the snapshot restore is not refused: the operation runs and the adapter discards the
   body ([Request bodies](#request-bodies)). The snapshot restore is authenticated. Decision: Server Byte Budgets D1,
   archive.
+- An asset path lock is held through its write's file steps, and a thumbnail slot (two by default) through its native
+  encode, with no caller signal: a second write to the same path or a request for the same thumbnail waits as long as
+  the first, and two encodes that never finish hold every thumbnail. Other paths proceed. Decision: owner, 2026-11-24
+  (reproduction round): a stalled file step or encode is not bounded.
 - The thumbnail cache has no byte cap. It holds at most two sizes per asset, an asset's removal removes its entries, and
   a changed source (the key carries its stat) leaves a stale entry for the startup sweep, so it grows with the asset
   library, not without bound. Decision: owner, 2026-11-10 (known-issues review).

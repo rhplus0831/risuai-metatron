@@ -16,7 +16,6 @@ when the owner keeps the behavior. When a fix closes part of an entry, rewrite t
 
 Sources the entries name (drop a line when no entry names it any more):
 
-- Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
 - Second fix round of 2026-11-22: no report; the implementers' and reviewers' reports and probes are kept with the review
   material outside the repository.
 - Reproduction round of 2026-11-24: no report in the repository; the probes, named by repository path, and the agents'
@@ -35,12 +34,9 @@ Sources the entries name (drop a line when no entry names it any more):
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (1)
-- [self-host-server](#self-host-server) (2)
 - [server-generation](#server-generation) (1)
-- [server-resources](#server-resources) (4)
-- [structured-memory](#structured-memory) (2)
+- [structured-memory](#structured-memory) (1)
 - [test-harness](#test-harness) (1)
-- [tokenizers](#tokenizers) (1)
 - [translation](#translation) (2)
 - [ui-theming](#ui-theming) (1)
 
@@ -202,26 +198,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
   at `4c84cd229` by the reproduction round's probe `src/ts/storage/tests/pluginImportAssets.probe.test.ts` (neither the
   grant nor the revoke written after ten minutes). [Queue](../../src/ts/plugins/apiV3/permissionStore.ts#L166)
 
-## self-host-server
-
-Guide: [Self-Host Server (Hono on Node), Docker](../structure/self-host-server.md#known-hazards).
-
-- `orderedWriter` frees a key and its share of the four writer slots only when the operation settles, with no cancel or
-  deadline. A durable write that never settles (a held file step) holds its key: a repeat browser registration on login
-  waits behind it, and four such keys hold every later auth, push and diagnostics write. The tab's shared sign-in check
-  gives up at its 20 s bound with "The server did not answer the sign-in check in time", failing the tab's resource
-  reads, asset I/O and feed setup meanwhile; the registration still lands later and a new check accepts it. Reproduced
-  on 2026-11-24 at `4c84cd229` by the reproduction round's probe `server/src/tests/orderedRegistration.probe.test.ts`
-  (the repeat login still pending after ten minutes). [Writer](../../server/src/data/orderedWriter.ts#L37) ·
-  [Login](../../server/src/routes/auth.ts#L255)
-
-- Asset path locks and thumbnail slots are held through their operation with no caller signal: a second write to the
-  same asset path, and a second request for the same thumbnail, wait for as long as the first write's file step or the
-  native encode is held. Other paths proceed (two thumbnail slots by default). Reproduced on 2026-11-24 at `4c84cd229`
-  by the reproduction round's probe `server/src/tests/serviceCapacity.probe.test.ts` (the same-path publish and the same
-  thumbnail still pending after ten minutes). [Path lock](../../server/src/http/assetLeases.ts#L61) · [Thumbnail
-  slot](../../server/src/http/assetThumbnails.ts#L360)
-
 ## server-generation
 
 Guide: [Server generation: jobs, channels, transforms, LLM and token routes](../structure/server-generation.md#known-hazards).
@@ -236,62 +212,9 @@ Guide: [Server generation: jobs, channels, transforms, LLM and token routes](../
   reroll or keeps the rollback copy durable. [Begin](../../server/src/prompt/runner.ts#L1508) ·
   [Trim](../../shared/rerollCandidates.ts#L229)
 
-## server-resources
-
-Guide: [Server resources](../structure/server-resources.md#known-hazards).
-
-- Snapshot create, pin, edit, remove and staging share one `exclusive` chain, which advances only when the previous
-  operation settles; with no abort signal, a held step keeps every later snapshot action of every tab waiting (listing
-  still answers). Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
-  `server/src/tests/snapshotImport.probe.test.ts` (a pin of another snapshot still pending after ten minutes).
-  [Queue](../../server/src/data/snapshots.ts#L163)
-
-- A restore keeps maintenance closed until its drain and install settle, and the drain has no deadline: every resource
-  write of every user meanwhile gets 503 `Maintenance in progress` with `Retry-After: 5`, and is not queued. Shutdown's
-  signal is checked during validation and before live replacement only. Reproduced on 2026-11-24 at `4c84cd229` by the
-  reproduction round's probe `server/src/tests/snapshotImport.probe.test.ts` (503 after ten minutes of drain and during
-  the safety snapshot). [Maintenance](../../server/src/data/snapshots.ts#L504) ·
-  [Gate](../../server/src/routes/resources.ts#L99)
-
-- An archive restore's validation queues behind a snapshot restore's validation and install in the restore queue, with
-  no timer; an unrelated manual snapshot still succeeds. A queued archive that runs after the epoch changed gets 412
-  before it changes anything. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
-  `server/src/tests/snapshotImport.probe.test.ts` (one validator entered of two). [Restore
-  queue](../../server/src/routes/backups.ts#L57)
-
-- The shared file-import slot (module, CharX, Realm) and the archive and upstream slot stay busy through their staging
-  cleanup, so a cleanup that does not settle makes every later import of the same slot, from any browser, answer 409
-  "Another import is running". Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
-  `server/src/tests/snapshotImport.probe.test.ts` (409 for CharX during module cleanup and for upstream prepare during
-  archive cleanup). [File import](../../server/src/http/fileImport.ts#L291) · [Slots](../../server/src/app.ts#L1124)
-
 ## structured-memory
 
 Guide: [Structured Memory Records](../structure/structured-memory/records.md#known-hazards).
-
-- A memory row loaded from a database snapshot, a checkpoint chunk, or a memory restore is held to less than a row the
-  server wrote, and two things follow. Both were reproduced on 2026-11-12 through `tx.restoreMemory`, which checks rows
-  with `checkMemoryRow` as a snapshot load does.
-  - The read rounds (`/package`, `/coverage`, `/story`, `/find`, `/runs`, `/threads`) charge a row's stored bytes and
-    answer the re-serialized record. Three event rows of 782 stored bytes each (arrays of `1e20`) serialized to 2,482
-    bytes, and with a 1,564-byte budget `/story` answered two of them in 4,619 bytes. The overrun stays near the
-    expansion of a number (about three to five times), needs a restored crafted backup, and a round's first record is
-    served whatever its size. Measuring each record's serialized size inside the round cost 1.6 to 1.8 ms on a 10 to
-    12 ms `/package` round of 500 ordinary events (about 18%), so it was not added.
-  - `checkMemoryRow` checks a row's columns, not its record's shape, so an event without `storyTime`, `keyLines`, or
-    `participants` loads, where the chat-file restore (`restore.ts`) refuses it. The server's readers take those three
-    as empty by the owner's decision of 2026-11-12 (`eventBody` in `card.ts`, `eventVectorTexts` and the timeline's
-    full lines in `retrieve.ts`, `remappedEvent` in `pages.ts`), and the tab's readers supply them. An
-    event's other parts (`summary`, `stateChanges`, `knowledge`, `relationshipShifts`, `openThreads`, `sources`) and a
-    part of the wrong type are admitted as written: the restore validator admits such a row on purpose, since refusing
-    it there made one row fail the memory export of every chat. The read rounds answer such a row and the panel
-    renders it (wide review of 2026-11-14, cut X2, in a running server: 37 crafted events restored through
-    `tx.restoreMemory`, all admitted, all 259 read rounds answered 200). A send does not fail on one: prompt
-    selection, coverage, retrieval, vector warming, and the recording loop skip an event with a missing, null, or
-    wrongly typed field (`memoryEventHasReadableFields` in `shared/structuredMemory.ts`, `254ed796f`) and leave the row
-    as stored. The server has never written such an event.
-
-  Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
 
 - A Timeline edit whose answer never comes disables the mounted Timeline's edit and repair controls, the open editor's
   Cancel and every other event's Edit included: `editStructuredMemory` calls `readAnswer` without `deadlineMs`, and
@@ -312,16 +235,6 @@ Guide: [Test Harness](../structure/test-harness.md#known-hazards).
   next run printed "cached result … working tree unchanged" and `OK 1 passed`; only `--force` ran it and failed. The
   type-check cache had the same gap and now compares its complete input key before saving
   (`util/typeCheckCache.mjs`). [Cache key](../../util/agentTest.mjs#L396)
-
-## tokenizers
-
-Guide: [Tokenizers](../structure/tokenizers.md#known-hazards).
-
-- A posted ordinary tokenizer call holds the ordinary worker until its reply or the worker's exit; a caller that aborts
-  is rejected at once, but later uncached counts wait in FIFO order behind the running encode, with no per-call timer. A
-  late reply does not fill the cache. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
-  `server/src/tests/serviceCapacity.probe.test.ts` (the next count still pending after ten minutes). The same queue
-  holds shutdown (found issues, Server generation). [Worker host](../../server/src/prompt/tokenizers/workerHost.ts#L181)
 
 ## translation
 

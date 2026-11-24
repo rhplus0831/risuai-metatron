@@ -438,6 +438,11 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 
 - An in-flight translation can commit after restore. While trashed its commit fails, wasting the model call. Decision:
   owner, 2026-11-22 (restore keeps chat identity).
+- A snapshot, restore, or import step whose file I/O never returns holds what queues behind it, with no deadline: later
+  snapshot create, pin, edit, and remove (one `exclusive` chain), every resource write (503 `Maintenance in progress`
+  while a restore drains or installs), an archive validation behind a restore, and imports of the same slot (409
+  `Another import is running` until staging cleanup settles). Decision: owner, 2026-11-24 (reproduction round), as for
+  the [stalled disk](self-host-server.md#limitations).
 - `server/src/routes/resourceBoot.ts` `bootItems` recomputes every item's hash in a stale item-kind record on each boot
   read; the client's cache saves transfer bytes, but there is no server hash cache to save this work. Decision: Boot
   Resource Cache S4, [archive](../archived-plan/README.md).

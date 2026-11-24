@@ -412,6 +412,11 @@ of the group: no walk reads them.
   their own snapshots because those include the column. Their upstream export reads no memory events, so a chat needing
   the projection exports as `memory-unreadable`. They ignore declines and can record or adopt despite one. Decision:
   Structured Memory slice 6c, archive.
+- A row loaded from a snapshot, a checkpoint chunk, or a memory restore passes `checkMemoryRow`, which checks columns,
+  not the record's shape. Read rounds charge its stored bytes and answer the re-serialized record (three to five times
+  larger for crafted numbers); measuring each record cost about 18% of a `/package` round. An event missing parts or
+  with a wrong type loads; readers take missing parts as empty, sends skip it (`memoryEventHasReadableFields`).
+  Decision: owner, 2026-11-12 and 2026-11-24.
 - The package holds no runs and no page history. Decision: Structured Memory slice 1d, archive.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
