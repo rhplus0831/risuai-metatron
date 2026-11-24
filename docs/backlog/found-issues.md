@@ -39,7 +39,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 1
-- [Client features](#client-features): 5
+- [Client features](#client-features): 4
 - [Docs](#docs): 1
 - [Draft recovery](#draft-recovery): 1
 - [Rendering](#rendering): 1
@@ -135,21 +135,6 @@ not reproduced.
 through `waitForResourceFlush` (30 s).
 
 **Suggested handling:** race these flushes with `waitForResourceFlush` and keep the browser-local source on timeout.
-
-### Import "save could not be confirmed" alerts no longer report network failures
-
-The character, plugin, and module import confirmations (`characterImportUnconfirmed`, `pluginImportUnconfirmed`,
-`moduleImportUnconfirmed` in `src/lang/en.ts:1003`, `:1060`, `:1660`) show the save error only for an immediate refusal
-(400 or 413, a restore halt, a blocked generation): `flushResources` retries lost answers, so a network outage ends in
-the `waitForResourceFlush` 30 s timeout and the save-pending alerts (`importSavePending`, `pluginImportSavePending`).
-The tests (`src/ts/plugins/plugins.test.ts`, `src/ts/process/modulesImport.test.ts`,
-`src/ts/characterCardsImport.test.ts`) were updated to that. Read from the code and its tests.
-
-**Why it matters:** the `{{error}}` variants lost their network-failure cases; a guide or alert text that promises the
-error reason for a network failure would now be wrong.
-
-**Suggested handling:** check the import alert descriptions in the characters and modules guides against this, and
-keep or reword the `{{error}}` alerts for refusals only.
 
 ## Docs
 

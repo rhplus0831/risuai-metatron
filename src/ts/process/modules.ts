@@ -559,8 +559,10 @@ function moduleImportErrorMessage(error: unknown): string {
  * `discarded`: a change of the same module, or any change of this tab's other than adding the module)
  * dropped it:
  * `moduleImportDiscarded`. A flush that fails (a generation this tab's other changes wait for, a
- * refused or unreachable save) is `moduleImportUnconfirmed`; the module stays in the list unless a
- * conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush later fails.
+ * refused save) is `moduleImportUnconfirmed`; a save still unanswered at the `waitForResourceFlush`
+ * bound (`flushResources` retries a lost answer, so a network outage ends here) is
+ * `importSavePending`. The module stays in the list unless a conflict discarded it, in which case it
+ * is `moduleImportDiscarded` even if the flush later fails.
  * The flush saves every pending change, not only the module.
  * With `announce`, `successImport` comes only after that acknowledgement, and only while its
  * `moduleImportSaving` wait alert is still the status: an alert that replaced it meanwhile stays.
