@@ -168,17 +168,16 @@ async function turns(count = 5): Promise<void> {
 const CHARS_PER_TOKEN: Record<string, number> = { claude: 1, cl100k_base: 2, o200k_base: 3, gemmaSentencePiece: 4 };
 
 function stubTokens() {
-    return createTokenCounter({
-        tokenizers: {
-            encode: async (family: string, text: string) => {
-                const per = CHARS_PER_TOKEN[family];
-                if (per === undefined) {
-                    throw new Error(`Unexpected tokenizer: ${family}`);
-                }
-                return new Array<number>(Math.ceil(text.length / per)).fill(1);
-            },
-        } as unknown as Tokenizers,
-    });
+    const tokenizers = {
+        encode: async (family: string, text: string) => {
+            const per = CHARS_PER_TOKEN[family];
+            if (per === undefined) {
+                throw new Error(`Unexpected tokenizer: ${family}`);
+            }
+            return new Array<number>(Math.ceil(text.length / per)).fill(1);
+        },
+    } satisfies Pick<Tokenizers, "encode">;
+    return { tokenizers, tokens: createTokenCounter({ tokenizers: tokenizers as unknown as Tokenizers }) };
 }
 
 const json = (data: unknown, status = 200) =>
@@ -554,7 +553,7 @@ function harness(options: HarnessOptions = {}) {
     const h = openStore(options);
     const provider = scriptedProvider({ ignoreAbort: options.ignoreAbort });
     const embeddings = scriptedEmbeddings({ fail: options.embeddingFail });
-    const tokens = stubTokens();
+    const { tokenizers, tokens } = stubTokens();
     const registry = createLlmRequests({
         store: h.store,
         kinds: h.kinds,
@@ -639,6 +638,7 @@ function harness(options: HarnessOptions = {}) {
         provider,
         embeddings,
         hostDeps,
+        tokenizers,
         service,
         events,
         clock,
@@ -2962,6 +2962,20 @@ describe("structured memory tasks", () => {
             expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
         });
 
+        it("aborts the automatic chapter fetch when the recording is cancelled and releases capacity after settlement", async () => {
+            const t = timeline();
+            const { request, terminal } = await beginChapter(t);
+            expect(request.signal.aborted).toBe(false);
+            expect(t.service.aliveCount()).toBe(1);
+
+            expect(t.service.cancel(ref("k1"))).toBe(true);
+            expect(request.signal.aborted).toBe(true);
+            expect((await terminal).status).toMatchObject({ state: "cancelled", reason: "cancelled" });
+            await t.service.drain();
+            expect(t.service.aliveCount()).toBe(0);
+            expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
+        });
+
         it("stays cancelled when a chapter answer arrives after cancellation", async () => {
             const t = timeline({ ignoreAbort: true });
             const { request, terminal } = await beginChapter(t);
@@ -2974,6 +2988,43 @@ describe("structured memory tasks", () => {
             expect(t.service.status(ref("k1"))).toEqual(cancelled);
             expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
         });
+    });
+
+    it("keeps a cancelled recording charged until its outstanding local encode settles", async () => {
+        const t = structuredHarness();
+        const entered = deferred();
+        const release = deferred();
+        const encode = t.tokenizers.encode;
+        const held = vi.spyOn(t.tokenizers, "encode").mockImplementationOnce(async (...args) => {
+            entered.resolve();
+            await release.promise;
+            return encode(...args);
+        });
+        const terminal = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        try {
+            await Promise.race([
+                entered.promise,
+                terminal.then(({ status }) => {
+                    throw new Error(`Recording ended before the local encode: ${JSON.stringify(status)}`);
+                }),
+                t.provider.request(0).then(() => {
+                    throw new Error("The recording reached the provider before the local encode");
+                }),
+            ]);
+            expect(t.service.cancel(ref("k1"))).toBe(true);
+            expect((await terminal).status).toMatchObject({ state: "cancelled", reason: "cancelled" });
+            await turns(1);
+            expect(t.service.aliveCount()).toBe(1);
+
+            release.resolve();
+            await t.service.drain();
+            expect(t.service.aliveCount()).toBe(0);
+            expect(contents(t).events).toEqual([]);
+        } finally {
+            release.resolve();
+            held.mockRestore();
+        }
     });
 
     it.each([

@@ -73,6 +73,16 @@ const tr = (text: string, source: string, extra: Partial<MessageTranslation> = {
 });
 const TRANSLATE = "/api/translate/message";
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise, resolve, reject };
+}
+
 beforeAll(() => {
     vi.spyOn(console, "log").mockImplementation(() => {});
 });
@@ -679,6 +689,95 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect(runner().runningCount()).toBe(0);
     });
 
+    it.each(["headers", "body"])(
+        "aborts a dispatched provider fetch waiting for response %s at the translation deadline and allows a retry",
+        async (stage) => {
+            await seed();
+            const url = "https://provider.test/v1/chat/completions";
+            const profiles = await single("modelProfiles");
+            profiles.data[0] = {
+                ...profiles.data[0],
+                modelId: "reverse_proxy",
+                forceReplaceUrl: url,
+                customProxyRequestModel: "mock-model",
+                customAPIFormat: 0,
+            };
+            await write("modelProfiles", profiles.data);
+
+            const entered = deferred<AbortSignal>();
+            const release = deferred<void>();
+            const aborted = vi.fn();
+            const answer = { choices: [{ message: { role: "assistant", content: "translated" } }] };
+            const waitForReply = async (signal: AbortSignal) => {
+                signal.throwIfAborted();
+                const stopped = deferred<never>();
+                const onAbort = () => {
+                    aborted();
+                    stopped.reject(signal.reason);
+                };
+                signal.addEventListener("abort", onAbort, { once: true });
+                entered.resolve(signal);
+                try {
+                    await Promise.race([release.promise, stopped.promise]);
+                } finally {
+                    signal.removeEventListener("abort", onAbort);
+                }
+            };
+            let hold = true;
+            const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+                expect(String(input)).toBe(url);
+                if (!hold) return Response.json(answer);
+                const signal = init!.signal!;
+                if (stage === "headers") {
+                    await waitForReply(signal);
+                    return Response.json(answer);
+                }
+                const body = new ReadableStream<Uint8Array>(
+                    {
+                        async pull(controller) {
+                            await waitForReply(signal);
+                            controller.enqueue(new TextEncoder().encode(JSON.stringify(answer)));
+                            controller.close();
+                        },
+                    },
+                    { highWaterMark: 0 },
+                );
+                return new Response(body, { headers: { "content-type": "application/json" } });
+            });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            const first = translate(req("r"));
+            try {
+                const signal = await Promise.race([
+                    entered.promise,
+                    first.then(({ status, body }) => {
+                        throw new Error(
+                            `Translation ended before the provider hold: HTTP ${status} ${JSON.stringify(body)}`,
+                        );
+                    }),
+                ]);
+                expect(signal.aborted).toBe(false);
+                expect(runner().workingCount()).toBe(1);
+                await vi.advanceTimersByTimeAsync(TRANSLATION_DEADLINE_MS);
+                expect(await first).toMatchObject({ status: 504, body: { error: "The translation took too long" } });
+                expect(aborted).toHaveBeenCalledOnce();
+                await runner().drain();
+                expect(runner().workingCount()).toBe(0);
+                expect((await message("r")).translation).toBeUndefined();
+
+                hold = false;
+                expect(await translate(req("r"))).toMatchObject({
+                    status: 200,
+                    body: { outcome: "applied", translation: { text: "translated" } },
+                });
+                expect(runner().workingCount()).toBe(0);
+            } finally {
+                release.resolve();
+                provider.mockRestore();
+                vi.useRealTimers();
+            }
+        },
+    );
+
     // A step on a profile runs on that profile, not the slot.
     it("runs a step on a profile on that profile: a dead connection fails the run (502) where the slot's Echo answers, a deleted profile fails it by name, and nothing is stored", async () => {
         // Nothing listens on port 9: the test wants the refused connection.
@@ -855,15 +954,6 @@ describe("createTranslationRunner over a fake request layer", () => {
             await tick();
         }
         throw new Error("until: condition not met");
-    }
-    function deferred<T>() {
-        let resolve!: (value: T) => void;
-        let reject!: (reason: unknown) => void;
-        const promise = new Promise<T>((res, rej) => {
-            resolve = res;
-            reject = rej;
-        });
-        return { promise, resolve, reject };
     }
     /** A `runInJob` that stays pending until the test settles it. */
     function pendingAnswers() {
