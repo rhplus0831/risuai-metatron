@@ -1,13 +1,14 @@
 # Bounded Client Waits Plan
 
-Status: second draft, 2026-11-24 at `5fced8637`; held. Its full audit
-([report](../reports/audits/plan-runner/bounded-client-waits-2026-11-24.md), which also holds the first draft's) found
-3 P1: an import that streams keepalives can no longer answer a late refusal as an HTTP error (B01), a delayed Web Push
-PUT can undo a newer DELETE on the server (B02), and the asset write and preview have silent server work longer than
-their allowance (B03); and 9 P2. The owner decides the scope before a revision. The first draft (at `719b2d877`) failed
-its audit with 5 P1; the owner then moved the Timeline, plugin permission refresh, MCP OAuth, shutdown order, and the
-server capacity checks to a batch round (`/home/codex/review-reports/waits-batch-2026-11-24/`), which landed, and this
-plan keeps the six waits that need a new server read, a progress signal, or a per-feature design.
+Status: third draft, 2026-11-24, reshaped after the second draft's full audit
+([report](../reports/audits/plan-runner/bounded-client-waits-2026-11-24.md), which also holds the first draft's): 3 P1
+and 9 P2. A Claude Fable review then judged each wait and finding by how an ordinary user reaches it and what a fix
+costs, and the owner's rule allowed a cheaper shape only where the outcome for an ordinary user stays the same: every
+timeout now falls into the failure path a dropped connection already takes, imports get a Cancel instead of timers,
+and nothing changes on the server or the wire. That removes B01 to B03 by design; the rare remainders are Limitations.
+Not yet audited in this shape. The first draft (at `719b2d877`) failed its audit with 5 P1; the owner then moved the
+Timeline, plugin permission refresh, MCP OAuth, shutdown order, and the server capacity checks to a batch round
+(`/home/codex/review-reports/waits-batch-2026-11-24/`), which landed.
 
 Sources: the [known issues](../backlog/known-issues.md) entries under chat-store (checkpoints), memory (memory tasks),
 characters-modules and backup-sync-hub (imports), assets, translation (rendered), and network-jobs (Web Push), read at
@@ -27,8 +28,8 @@ retry without replaying work that may already have landed.
 - The user's own time (a password prompt, a file picker, a confirmation) stays outside every timer.
 
 Not goals: the batch round's items; the waits on a stalled local file step (Limitations, `719b2d877`); the save loop
-(Bounded Resource Writes, archived); resumable uploads; changing a concurrency limit (ten translation permits, four
-previews, ten asset writes).
+(Bounded Resource Writes, archived); resumable uploads; the in-tab CharX save queue (a Limitation);
+changing a concurrency limit (ten translation permits, four previews, ten asset writes).
 
 ## Current State
 
@@ -56,11 +57,12 @@ reading only, by the reproduction round or the audit).
   - upstream backup prepare: archive planning precedes headers; a long decode or asset step has no heartbeat.
     The tab adds a module or character only from a usable result; Realm and backup prepare leave staged data that
     expires; a backup is replaced only by a separate commit (traced, A6).
-- **Asset writes and previews** (reproduced for the queues). `/api/write` answers one JSON acknowledgement after
-  durable publication, silent before headers; `assetClient.ts` retries a write up to eight times (~29, ~138), and the
-  ten-slot queue frees an item in `finally` (`assetQueue.ts` ~209). Storage-report previews (four slots,
-  `assetLifecycleClient.ts` ~65) await one `response.blob()` after the server prepares the thumbnail before headers
-  and then streams it with `Content-Length` (traced, A16).
+- **Asset writes and previews** (reproduced for the queues). The ten-slot asset save queue (`assetQueue.ts`) is built
+  only by `CharXImporter` (`processzip.ts` ~234), which `characterCards.ts` (~317) creates only for a CharX given as
+  bytes or a stream; every product caller passes a `File` or `Blob`, which goes to the server import. `assetClient.ts`
+  makes up to eight attempts, including the first (~29, ~138). Storage-report previews (four slots,
+  `assetLifecycleClient.ts` ~65) await one `response.blob()` after the server prepares the thumbnail before headers;
+  releasing a row already frees its slot (~125) (traced, A16).
 - **Rendered translation** (reproduced for the permit path). Ten permits for new non-LLM work; a producer keeps its
   permit until its work settles, can warm the pair cache after subscribers leave, and a render can join work the
   composer started without a permit. Rendered LLM translation (`translateRenderedLLM`) takes no permit and has its own
@@ -79,77 +81,65 @@ the batch round's rule that a bound starts after `ensureAuth()`.
 
 ### One rule for a bounded wait
 
-- **D1. A small JSON request gets 30 s** (Q1), covering the fetch and its body read. The clock starts after
-  `await ensureAuth()`: sign-in keeps its own 20 s machine-step bounds, and the password prompt is the user's time
-  (audit A1). A request that never left (`authFetch`'s `beforeDispatch` not reached) is reported as unsent, not as a
-  lost answer.
-- **D2. A transfer gets an allowance before headers and an idle bound after them** (Q1). Before headers: 45 s plus
-  the request body at 32 KiB/s. After headers: 60 s with no new chunk ends it; every chunk resets it, a partial NDJSON
-  line included (`serverImportClient.ts` ~156 already sees chunk boundaries). The existing end-of-stream and
-  trailing-line checks stay.
-- **D3. A healthy silent phase is made observable, not timed out.** Where the server works before or between lines,
-  it sends headers at once and a keepalive line at least every 15 s (D8). No bound in this plan is shorter than a
-  phase the tab cannot observe.
-- **D4. At the bound the caller frees what it holds** (a flag, a queue unit, a permit, a slot, a Web Lock), and a late
-  answer of the abandoned request installs nothing: each request carries a token, and an answer whose token is not
-  the live one, or that is older than a newer feed observation of the same state, is dropped.
-- **D5. A write that may have landed is reconciled before it is offered again**: by a read where one exists or is
-  added (D6, D7), or by an idempotent repeat (D11).
+- **D1. A small JSON request gets 30 s**, covering the fetch and its body read, through `readWithDeadline`. The clock
+  starts after `await ensureAuth()`: sign-in keeps its own bounds, and the password prompt is the user's time. This is
+  the batch round's rule (`cfb711900`, `1aa3cac25`, `f3097ebd5`).
+- **D2. A timeout is the feature's existing transport failure.** At the bound the request is aborted and its await
+  rejects, so the code after the await runs the path a dropped connection already takes, and a late answer has nothing
+  left to install. No request token, no new outcome, no new read.
+- **D3. No timer on work the tab cannot observe.** An import has healthy silent phases; it gets a cancel the user can
+  reach (D6), not a bound. The server and the wire format do not change in this plan.
 
 ### Per feature
 
-- **D6. Checkpoints: two guards.** The tab-wide `checkpointLoadBusy` covers only the live request (Close and Escape);
-  a per-chat reconciliation guard, kept in the module (not the dialog, so it survives a remount), covers Restore and
-  Save As of that chat. At the D1 bound the tab-wide guard is released and other chats are free at once; the chat
-  stays guarded while the existing chat read (Restore) or the checkpoint list read (Save As) runs. Three outcomes are
-  told apart in the dialog: unsent (plain failure, retry allowed), confirmed with the refresh pending, and unknown. If
-  the reconciling read fails, the chat stays guarded and the dialog offers **Check again**, which reruns only the read;
-  Restore is never replayed by it. The bound is an option of the request helper, off for chat trash.
-- **D7. Memory tasks: a per-chat state read.** A new authenticated GET returns, for one character and chat, the
-  service's `status(ref)` and `pendingManual(ref)`, checked against the resource epoch. Start and Cancel take D1; at
-  the bound the slot frees for other chats, and the same chat's controls wait for this read (D1 too). Its answer
-  installs only under D4's rules. If the read times out as well, the controls show an unknown state with a Retry that
-  reruns only the read.
-- **D8. Import keepalives.** A tab that sends `risu-import-keepalive: 1` gets headers at once and a
-  `{"type":"keepalive"}` line at least every 15 s from module, CharX, Realm prepare and commit (PNG included), and
-  upstream backup prepare, until its result line; a request without the header gets today's stream (older tabs).
-  The tab ignores keepalive lines apart from resetting D2's idle bound.
-- **D9. Import failure text by route** (audit A6): a module, CharX, or Realm import ended before its result says that
-  nothing was added and the import can be retried; a Realm or backup prepare ended early says the prepared data
-  expires by itself; only an uncertain backup **commit** says to reload and check whether the backup was restored.
-  Existing interruption messages are reused where they already say this.
-- **D10. Asset writes and previews.** A write takes D2's pre-header allowance per attempt; an attempt that expires
-  aborts the retry loop for that item (no retry behind a newly admitted item), and the queue's existing failure path
-  runs. A preview reads its body through a reader with D2's bounds; a timed-out preview frees its slot, and the
-  explicit release and late object-URL guard stay.
-- **D11. Web Push: idempotent repeat, not a new read** (Q3). PUT and DELETE by endpoint are idempotent on the server
-  (the slice confirms it first and stops if not). Each Enable or Disable records its intent with a generation number
-  before its request; at the D1 bound the unit settles, leaves the queue, and releases the Web Lock at once, keeping
-  the intent as pending; the next reconciliation repeats the pending PUT or DELETE. A late answer stamps success or
-  clears pending evidence only if its generation is still the newest. The key read takes D1, and the cached-key
-  fallback stays.
-- **D12. Rendered translation, permit path.** Each non-LLM provider request of a rendered translation takes a 60 s
-  bound (Q2); at the bound the producer settles as failed and frees its permit; a render that joined the producer gets
-  the same failure; a late result does not publish into the pair cache once a newer cache generation exists. The row
-  keeps today's retries and its source-text fallback. The LLM path is checked first: if its request is already bounded
-  (by the server's job deadline or its own), it is left as it is; otherwise it takes the same 60 s bound and the same
-  late-cache rule.
+- **D4. Checkpoints.** `chatRequest.ts`'s helper takes an opt-in bound (D1), on for every checkpoint request (list,
+  policy, save, rename, delete, load) and off for chat trash. At the bound it answers `failed` with the dispatch flag it
+  has; if a 200's headers arrived and only the body is late, it answers that response with a null body, as it does for
+  an unreadable body today. `loadCheckpoint` is unchanged: a timed-out load is its `unknown` outcome, the chat read runs
+  under its own 60 s bound, and `checkpointLoadBusy` is released in `finally`. Restore may be pressed again: the server
+  refuses a load whose `chatBaseRevision` is not current (`server/src/data/checkpointService.ts` ~303).
+- **D5. Memory tasks.** Start and Cancel take D1. A timeout is the existing `failed` result: Start leaves its
+  `uncertain` fence, the chat's request slot is freed (other chats never shared it), and the same action can be
+  repeated, since both are idempotent on the server (`start` answers `running` for a live job, `cancel` of nothing is
+  a no-op). No state read is added.
+- **D6. Imports: Cancel.** The wait status of a module upload, a CharX upload, a Realm prepare, a Realm commit and an
+  upstream backup prepare carries a Cancel button, also on each progress update. Cancel aborts the request through a
+  signal the import transport now accepts; the caller's existing failure handling runs (Realm's staging cancellation
+  included), and the message says the import was cancelled and nothing was added. A backup commit gets no Cancel.
+- **D7. Storage previews.** A preview takes a 60 s bound from after sign-in over its fetch and body. At the bound it
+  runs the same path as an explicit release (abort, reject, free the slot, no object URL from a late body), and the row
+  shows its existing failure state.
+- **D8. Rendered translation.** Each non-LLM provider request (DeepL, DeepLX, both Google requests) takes a 60 s bound
+  at the fetch, composed with the caller's signal; DeepLX's slot wait stays outside it. A timeout throws a transient
+  error, so the producer notifies its subscribers, skips the cache write and frees its permit as for any provider
+  failure, and the row keeps its two retries and its source-text fallback. A flight the composer started takes the same
+  bound. The LLM translator is not changed.
+- **D9. Web Push.** The key read, the registration PUT and the removal DELETE each take D1. A timed-out PUT clears the
+  stamp, so the next reconciliation registers again; a timed-out DELETE is recorded as a pending removal, which the next
+  reconciliation retries; a timed-out key read falls back to the cached key. The unit ends, and the Web Lock is
+  released, when its last step settles: within the sum of its requests' bounds.
 
 ### Limitations
 
-- A request abandoned at its bound may still land; D5's read or repeat reconciles it, and a write the server applies
-  after that read is seen at the next read.
-- An idle bound does not end a transfer that keeps sending bytes slower than a user would wait for.
-- A tab from before D8 gets no keepalives and keeps today's unbounded import wait.
+- A request abandoned at its bound may still land. Restore is refused or repeated harmlessly by its base revision;
+  Start, Cancel, PUT and DELETE are idempotent repeats; a Save As may appear in the list after its failure message.
+- A manual memory start that landed as waiting for the next send, with its answer lost, is not shown as waiting until
+  Start is pressed again; an `uncertain` fence stays until the feed reports the chat, as after any failed Start.
+- An import ends only by its answer, a network failure, or Cancel; an unattended tab keeps waiting.
+- The in-tab CharX reader's save queue (ten slots) still waits on an unanswered write. It is built only for a CharX
+  given as bytes or a stream, which no product path passes.
+- A thumbnail the server takes longer than 60 s to prepare shows as failed in the storage report.
+- A rendered LLM translation has no tab-side bound. It holds no permit; leaving the chat cancels it.
+- A Web Push request delayed in transit past its bound can land after a newer opposite request for the same endpoint.
+  A stale registration is removed at the push service's first 404 or 410; a stale removal lasts until the next
+  registration (at most 24 h). The browser's own subscribe step has no bound.
 
 ### Questions for the owner
 
-- **Q1. Numbers.** 30 s for a JSON request; 45 s plus 32 KiB/s before headers, 60 s idle after them, keepalive every
-  15 s. Proposed as written.
-- **Q2. Rendered translation's provider bound.** Proposed 60 s per request (a long message can take tens of seconds on
-  a slow provider). Alternative: 30 s.
-- **Q3. Web Push recovery.** Proposed: the idempotent repeat (D11), no server change. Alternative: an authenticated
-  read of one subscription, which shows the true state at once but adds a route.
+- **Q1. Numbers.** 30 s for a JSON request; 60 s for a preview and for a translation provider request. Proposed as
+  written.
+- **Q2. Cancel placement.** Proposed: Cancel is on the import wait from the start. Alternative: show it after 15 s, so
+  a quick import never shows a button.
 
 ## Rules For Every Slice
 
@@ -158,80 +148,77 @@ the batch round's rule that a bound starts after `ensureAuth()`.
 - The reproduction probes are the starting point for the regression tests: a slice copies the probe describes it
   closes into its worktree and moves the cases into the destination test file its section names (V6: they fail before
   the change). Probe assertions that describe old behavior are replaced, not kept. Probe files are not committed.
-- Tests use fake timers and held promises; none waits in real time. Each slice adds a healthy-slow case beside its
-  silent case: a phase that is slow but observable is not cut.
+- Tests use fake timers and held promises; none waits in real time.
+- A slice that adds `ensureAuth()` updates the test mocks of `serverAuth` that export only `authFetch`, with the
+  existing mock factory (`src/ts/storage/tests/serverAuthMock.ts`); search every test that mocks or spies the module.
 - Each slice runs its focused tests, `pnpm --silent check:changed`, and `pnpm --silent format:check`.
 - User-visible strings go in `src/lang/en.ts` and `src/lang/ko.ts`, next to the feature's keys (U2).
 
 ## Slices
 
-Order: 1 to 5 side by side in separate worktrees (disjoint files, except `src/lang/en.ts` and `ko.ts`, where each adds
-keys next to its feature); then 6 on the integrated tree.
+Order: 1 to 4 side by side in separate worktrees (disjoint files, except `src/lang/en.ts` and `ko.ts`); then 5 on the
+integrated tree.
 
-### 1. Checkpoints (_medium_)
+### 1. Checkpoints and memory tasks (_small_)
 
-- `src/ts/checkpoints/chatCheckpoints.svelte.ts`, `src/ts/checkpoints/chatRequest.ts` (an opt-in bound),
-  `src/lib/Others/ChatCheckpointsDialog.svelte`, `src/ts/hotkey.ts` (Escape's guard): D1, D4, D5, D6.
-- Tests: `src/ts/checkpoints/chatCheckpoints.test.ts`, `src/lib/Others/ChatCheckpointsDialog.test.ts`, from the
-  probe `src/lib/Others/checkpointMemoryControls.probe.test.ts` (describe `checkpoint dialog`): another chat's Save As
-  after a held restore; the same chat stays guarded across a dialog remount until its read settles; Check again does
-  not resend Restore; a late restore answer installs nothing; chat trash keeps its behavior.
+- `src/ts/checkpoints/chatRequest.ts` (the opt-in bound, the kept 200),
+  `src/ts/checkpoints/chatCheckpoints.svelte.ts` (opt in), `src/ts/process/memoryTasks.svelte.ts`: D1, D2, D4, D5.
+- Tests: `src/ts/checkpoints/chatCheckpoints.test.ts`, `src/ts/process/memoryTasks.test.ts`, from the probe
+  `src/lib/Others/checkpointMemoryControls.probe.test.ts`: another chat's Save As after a held restore's bound and
+  chat read; a held 200 body answers `refresh-pending`, not `unknown`; a late restore answer installs nothing; chat
+  trash is not bounded; Cancel after a held Start's bound, and Start after a held Cancel's; a timed-out Start leaves
+  the `uncertain` fence; a password prompt does not count.
 
-### 2. Memory tasks (_medium_)
+### 2. Import Cancel (_medium_)
 
-- `server/src/routes/memoryTasks.ts` (the GET), `src/ts/process/memoryTasks.svelte.ts`, the memory task controls'
-  component: D1, D4, D5, D7.
-- Tests: `server/src/tests/memoryTasks.test.ts` (the read, its epoch check, `pendingManual`),
-  `src/ts/process/memoryTasks.test.ts` from the probe's `manual memory tasks` describe: Cancel after a held Start;
-  Start after a held Cancel; a late Start answer older than a feed observation installs nothing; the read timing out
-  leaves Retry.
+- `src/ts/alert.ts` and `src/lib/Others/AlertComp.svelte` (a wait status with a cancel callback),
+  `src/ts/storage/serverImportClient.ts` (a `signal` option), `moduleImportClient.ts`, `charxImportClient.ts`,
+  `realmImportClient.ts`, `src/ts/drive/upstreamBackupClient.ts`, `src/ts/process/modules.ts`,
+  `src/ts/characterCards.ts`: D3, D6.
+- Tests: `src/lib/Others/AlertComp.test.ts` (the button, absent on a plain wait),
+  `src/ts/storage/tests/moduleImportClient.test.ts`, `charxImportClient.test.ts`,
+  `src/ts/characterCardsRealmImport.test.ts`, the upstream backup client's test, from the probe
+  `src/ts/storage/tests/pluginImportAssets.probe.test.ts` (imports, backup prepare): Cancel during held headers and
+  during a held body ends each action with the cancelled message and adds nothing; a Realm cancel attempts the staging
+  cancellation; an import left alone still completes after ten minutes of silence.
 
-### 3. Import transport and asset writes (_medium_)
+### 3. Previews and rendered translation (_small_)
 
-- Server: `server/src/http/fileImport.ts`, `server/src/routes/importModule.ts`, `importCharx.ts`, `importRealm.ts`,
-  `importPng.ts`, `backupsUpstream.ts` (keepalives behind the header). Tab: `src/ts/storage/serverImportClient.ts`,
-  `src/ts/storage/realmImportClient.ts`, `src/ts/drive/upstreamBackupClient.ts`, `src/ts/process/modules.ts` and
-  `src/ts/characterCards.ts` (failure text only), `src/ts/storage/assetClient.ts`: D2, D3, D4, D8, D9, D10 (writes).
-- Tests: `server/src/tests/importModule.test.ts`, `importCharx.test.ts`, `importRealm.test.ts` (keepalives with and
-  without the header); `src/ts/characterCardsRealmImport.test.ts`, `src/ts/storage/tests/assetClient.test.ts`, and
-  the client import test the guide names, from the probe `src/ts/storage/tests/pluginImportAssets.probe.test.ts`
-  (imports, archive writes, backup prepare): a silent server ends at the bound; a slow import with keepalives is not
-  cut; an expired write does not retry.
+- `src/ts/storage/assetLifecycleClient.ts`, `src/ts/translator/translator.ts`: D7, D8.
+- Tests: `src/ts/storage/tests/assetLifecycleClient.test.ts` (a held `ReadableStream` body: the fifth preview starts
+  at the bound; a late body creates no object URL; MIME type and an empty body are kept),
+  `src/ts/translator/translateHtmlWorkers.test.ts`, from the probe
+  `src/ts/network/renderedTranslationMcpPush.probe.test.ts` (`rendered translation`): the eleventh request starts
+  after a held one's bound; the timed-out producer writes no cache entry and its joined render fails with it; a
+  composer-first flight is bounded; a DeepLX slot wait does not count.
 
-### 4. Previews and rendered translation (_small_)
+### 4. Web Push (_small_)
 
-- `src/ts/storage/assetLifecycleClient.ts`, `src/ts/translator/translator.ts`: D2, D4, D10 (previews), D12.
-- Tests: `src/ts/storage/tests/assetLifecycleClient.test.ts`; a translator test beside `translatorLLM.test.ts`, from
-  the probes' preview and `rendered translation` describes: the fifth preview starts after a held body's bound; a late
-  preview does not create an object URL; a timed-out producer frees its permit and its joined render fails with it; a
-  late result does not publish over a newer cache generation.
+- `src/ts/network/pushNotifications.ts`: D1, D2, D9.
+- Tests: `src/ts/network/pushNotifications.test.ts`, from the probe's `Web Push` describe: a held PUT ends at its
+  bound and the other tab's Disable runs; the next reconciliation repeats the registration; a timed-out removal is
+  retried as a pending removal; a held key read falls back to the cached key.
 
-### 5. Web Push (_small_)
+### 5. Close-out (_small_)
 
-- `src/ts/network/pushNotifications.ts` (`server/src/routes/push.ts` read only): D1, D4, D5, D11.
-- Tests: `src/ts/network/pushNotifications.test.ts`, from the probe's `Web Push` describe: a timed-out unit releases
-  the lock for the other tab; the next reconciliation repeats the pending request; a late PUT after a newer Disable
-  stamps nothing.
+Depends on 1 to 4.
 
-### 6. Close-out (_small_)
-
-Depends on 1 to 5.
-
-- Integrate 1 to 5 and run the whole suite once on the integrated tree (V1), with the type check and format check.
+- Integrate 1 to 4 and run the whole suite once on the integrated tree (V1), with the type check and format check.
 - The guides each slice changed: their Flows and Tests sections, and the Limitations above.
-- [known issues](../backlog/known-issues.md): delete each closed bullet.
+- [known issues](../backlog/known-issues.md): delete each closed bullet; the assets bullet's save-queue half moves to
+  the assets guide's Limitations.
 
 ## Outside this plan
 
 - The batch round's items (Timeline, plugin permission refresh, MCP OAuth, shutdown order, server capacity checks).
 - The waits on a stalled local file step (Limitations in self-host-server and server-resources, `719b2d877`).
-- Stale whole-field chat writes (the lore popup handback, the PO translator's remove, recovery Apply): the Conditional
-  Chat Writes plan.
+- The lore popup through a write fence (Lore Popup Through a Fence plan); the PO translator's leftover append and a
+  recovery Apply's late answer, which are Limitations.
 
 ## Manual Checks
 
-- On a phone with a throttled or interrupted connection: a checkpoint restore, a memory task start, and a module
-  import each end with their failure message and leave their controls usable.
-- A Realm import of a large card over a slow link completes (keepalives keep it open past 60 s).
-- Web Push enabled in two tabs with the server stopped: both tabs' toggles become usable within 30 s, and the
-  subscription is registered after the server returns.
+- On a phone with a throttled or interrupted connection: a checkpoint restore and a memory task start each end with
+  their failure message within about a minute and leave their controls usable.
+- Cancel during a module upload returns the tab, and a second import can start once the server's slot is free.
+- Web Push enabled in two tabs with the server stopped: both toggles become usable within about two minutes, and the
+  subscription is registered at the next reconciliation (reload or the page shown again) after the server returns.

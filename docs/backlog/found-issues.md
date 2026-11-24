@@ -33,8 +33,26 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
+- [Backup sync](#backup-sync): 1
 - [Docs](#docs): 1
 - [Rendering](#rendering): 1
+
+## Backup sync
+
+### An upstream backup commit whose 200 body is unreadable is treated as failed
+
+Read only (2026-11-24, from the Bounded Client Waits audit's B08, not reproduced). `commitUpstreamImport`
+(`src/ts/drive/upstreamBackupClient.ts:128`) reads the commit answer with `res.json()` inside a `catch {}`, so a 200
+whose body is cut off becomes an empty answer, which the caller turns into a `ServerImportAnswerError`.
+`commitAnswerLost` (`:183`) treats only a `TypeError` and a gateway status as a lost answer, so that error takes the
+failure path, which unregisters the restore-selection hook (`:247`) although the server answers 200 only after it has
+replaced the database.
+
+**Why it matters:** after a restore that did land, the tab may not keep the restored prompt preset, model preset and
+persona selection, and the user is told the restore failed.
+
+**Suggested handling:** reproduce with a held or cut 200 body; then treat a 200 whose body cannot be read as a lost
+answer (keep the hook and ask the user to reload), as the gateway case does.
 
 ## Docs
 

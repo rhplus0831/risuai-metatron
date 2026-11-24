@@ -308,8 +308,8 @@
 - An Apply whose answer arrives only after its 30 s wait leaves the draft in its first format: after a reload, Apply
   again rebuilds every op and, after its confirmation, sets a field edited elsewhere back to the draft's text. A reload
   before the answer resends the journaled group without the draft's id, with the same result. Decision: owner,
-  2026-11-24 (known-issues review): a client-only checkpoint was tried and reverted (`913806ba3`); the Conditional Chat
-  Writes plan lets the server refuse the replay.
+  2026-11-24 (known-issues review): a client-only checkpoint was tried and reverted (`913806ba3`), and a server-side
+  condition for it needs the edit's before-values carried through the journal; the confirmation stays the defense.
 - A draft whose refused HypaV3 summaries match another draft of the chat records them as filed and counts on that copy;
   if that draft expires or is applied first, a later Apply removes the last copy. Refused values over about 8 MiB no
   longer fit the progress row, and two tabs applying one draft can leave one failing on the progress version until
