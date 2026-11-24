@@ -2070,6 +2070,7 @@ export const languageKorean = {
     confirmRemoveModuleFeature: "정말로 이 기능을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
     editModule: "모듈 수정",
     importModule: "모듈 가져오기",
+    importCancelled: "가져오기가 취소되었습니다. 아무것도 추가되지 않았습니다.",
     moduleImportUploading: "모듈 파일을 업로드하는 중... 용량이 큰 파일은 몇 분 정도 걸릴 수 있습니다.",
     moduleImportSaving: "가져온 모듈을 저장하는 중...",
     moduleImportDiscarded:

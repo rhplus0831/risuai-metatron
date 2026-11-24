@@ -21,7 +21,13 @@ import { LocalWriter, saveAsset, VirtualWriter } from "../globalApi.svelte";
 import { checkPersonaBinded, selectSingleFileHandle } from "../util";
 import { loadAssetsInBatches, saveAssets } from "../storage/assetQueue";
 import { importModuleOverServer } from "../storage/moduleImportClient";
-import { ServerImportFailedError, ServerImportRequestError } from "../storage/serverImportClient";
+import {
+    alertServerImportError,
+    ServerImportCancelledError,
+    ServerImportFailedError,
+    ServerImportRequestError,
+    withServerImportWait,
+} from "../storage/serverImportClient";
 import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
@@ -385,7 +391,7 @@ export function stripImportedModuleMcp(module: { mcp?: unknown }): boolean {
  * with the reader the server uses, `shared/moduleImport.ts`). Its `mcp` field is removed immediately
  * after decoding, with a notice deferred to `addImportedModule` after a confirmed save. Before anything
  * is sent, the low-level access question is asked and `prepareModuleImport` runs. Then the file
- * itself is uploaded (`importModuleOverServer`, its progress in the wait alert), and only the
+ * itself is uploaded (`importModuleOverServer`, its progress in a cancellable wait), and only the
  * stored assets' keys (`assets[i][1]`) are copied from the server's module into the prepared one; a
  * server module with another asset count is `noData`. Returns the prepared module under a fresh
  * id, or null when nothing is to be added: a question was declined, or the failure is already
@@ -408,17 +414,16 @@ export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
     if (!(await prepareModuleImport(module))) {
         return null;
     }
-    alertWait(language.moduleImportUploading);
     let stored: ModuleImportResult;
     try {
-        stored = await importModuleOverServer(file, {
-            onProgress: (done, total) => {
-                alertWait(`Loading... (Adding Assets ${done} / ${total})`);
-            },
-        });
+        stored = await withServerImportWait(language.moduleImportUploading, (signal, showWait) =>
+            importModuleOverServer(file, {
+                signal,
+                onProgress: (done, total) => showWait(`Loading... (Adding Assets ${done} / ${total})`),
+            }),
+        );
     } catch (error) {
-        // Each alert replaces the wait alert; nothing clears the store after it.
-        alertError(moduleImportErrorMessage(error));
+        alertServerImportError(error, moduleImportErrorMessage(error));
         return null;
     }
     if (!copyStoredKeys(module, stored.module)) {
@@ -427,7 +432,6 @@ export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
         return null;
     }
     module.id = v4();
-    alertClear();
     return module;
 }
 
@@ -494,9 +498,10 @@ export type ServerImportTexts = {
  * `serverImportClient.ts`).
  * The route's invalid-file text maps to `noData`, an unrecognized refusal shows the server's text,
  * a 413 without JSON text is a proxy's or tunnel's refusal of the upload's size, and a `TypeError`
- * is an interrupted upload (possibly a refusal the browser never saw).
+ * is an interrupted upload (possibly a refusal the browser never saw). A user cancellation has its own message.
  */
 export function serverImportErrorMessage(error: unknown, texts: ServerImportTexts): string {
+    if (error instanceof ServerImportCancelledError) return language.importCancelled;
     if (error instanceof ServerImportRequestError) {
         switch (error.status) {
             case 400:

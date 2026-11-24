@@ -144,6 +144,10 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
   `src/ts/storage/charxImportClient.ts` `importCharxOverServer` select the routes; their response contracts are in
   `src/ts/process/modules.ts` and `shared/charxImport.ts`. `serverImportErrorMessage` (`modules.ts`) shows a 413 without
   JSON text as a proxy's or tunnel's upload limit.
+- An import has no timer: its server has healthy silent phases. `withServerImportWait` (`serverImportClient.ts`) puts a
+  Cancel on the upload's wait and on each progress update, aborts the request's `signal` on a press, and retires the
+  wait when the result is handed to the importer. The transport rejects with `ServerImportCancelledError` at any phase,
+  after a result line too, and `serverImportErrorMessage` shows `importCancelled`.
 
 ## Flows
 

@@ -451,8 +451,12 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(alerts.select).not.toHaveBeenCalled();
         expect(b.globalFetch).not.toHaveBeenCalled();
         expect(b.saveAsset).not.toHaveBeenCalled();
-        expect(alerts.store.set).toHaveBeenCalledWith({ type: "wait", msg: "Downloading..." });
-        expect(alerts.wait).toHaveBeenCalledWith("Loading... (Saving Assets 1/1)");
+        expect(alerts.wait).toHaveBeenCalledWith("Downloading...", expect.any(Function), expect.any(Function));
+        expect(alerts.wait).toHaveBeenCalledWith(
+            "Loading... (Saving Assets 1/1)",
+            expect.any(Function),
+            expect.any(Function),
+        );
         expect(alerts.error).not.toHaveBeenCalled();
         expect(b.ids()).toHaveLength(before.length + 1);
         expect(b.imports()).toBe(imports + 1);
@@ -700,12 +704,16 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         const importing = b.cards.downloadRisuHub("slow-id", { forceRedirect: true });
         await vi.advanceTimersByTimeAsync(0);
         expect(b.commits()).toHaveLength(1);
-        expect(alerts.store.set).not.toHaveBeenCalledWith({ type: "wait", msg: "Downloading..." });
-        expect(alerts.wait).not.toHaveBeenCalledWith("Loading...");
+        expect(alerts.wait.mock.calls.map(([msg]) => msg)).not.toContain("Downloading...");
+        expect(alerts.wait.mock.calls.map(([msg]) => msg)).not.toContain("Loading...");
         for (let done = 1; done <= 2; done++) {
             controller.enqueue(new TextEncoder().encode(line({ done, total: 2 })));
             await vi.advanceTimersByTimeAsync(0);
-            expect(alerts.wait).toHaveBeenLastCalledWith(`Loading... (Saving Assets ${done}/2)`);
+            expect(alerts.wait).toHaveBeenLastCalledWith(
+                `Loading... (Saving Assets ${done}/2)`,
+                expect.any(Function),
+                expect.any(Function),
+            );
             expect(b.ids()).toEqual(before);
         }
         controller.enqueue(new TextEncoder().encode(line(charxCommitted())));
@@ -716,7 +724,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
 
         b.answer(line(charxPrepared(cardV3("Quiet"))), line(charxCommitted()));
         await b.cards.downloadRisuHub("loud-id");
-        expect(alerts.wait).toHaveBeenLastCalledWith("Loading...");
+        expect(alerts.wait).toHaveBeenLastCalledWith("Loading...", expect.any(Function), expect.any(Function));
     });
 
     describe("staged cancellation and commit retries", () => {

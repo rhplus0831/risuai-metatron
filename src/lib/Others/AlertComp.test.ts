@@ -3,7 +3,14 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { alertInput, dismissReloadNotice, reloadNotice, showHypaV2Alert, type alertData } from "src/ts/alert";
+import {
+    alertInput,
+    alertWait,
+    dismissReloadNotice,
+    reloadNotice,
+    showHypaV2Alert,
+    type alertData,
+} from "src/ts/alert";
 import { saveOverUnseenMemory } from "src/ts/storage/tests/memoryEditorServer";
 import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "src/ts/alertQueue";
 import { initHotkey } from "src/ts/hotkey";
@@ -506,6 +513,22 @@ describe("alert dialog focus and keyboard answers", () => {
         await expect(dialog.closed).resolves.toBe("");
         await hideAlert();
         expect(document.activeElement).toBe(other);
+    });
+
+    it("runs Cancel on a cancellable wait and removes the button on a plain wait", async () => {
+        const onCancel = vi.fn();
+        alertWait("Uploading", undefined, onCancel);
+        await showAlert();
+        const buttons = () =>
+            [...target.querySelectorAll("button")].filter((button) => button.textContent?.trim() === language.cancel);
+        expect(buttons()).toHaveLength(1);
+        buttons()[0].click();
+        expect(onCancel).toHaveBeenCalledOnce();
+
+        alertWait("Saving");
+        flushSync();
+        expect(target.textContent).toContain("Saving");
+        expect(target.querySelector("button")).toBeNull();
     });
 
     it("leaves the composer focused when wait, wait2, and progress overlays appear", async () => {

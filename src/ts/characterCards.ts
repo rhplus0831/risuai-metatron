@@ -2,16 +2,7 @@ import { settings } from "./storage/settingsViews.svelte";
 import { filterBlockedRealmCards, isRealmCreatorBlocked } from "./realmBlocking";
 import { ensureRealmTerms } from "./realmTerms";
 import { writable, type Writable } from "svelte/store";
-import {
-    alertCardExport,
-    alertClear,
-    alertError,
-    alertInput,
-    alertNormal,
-    alertStore,
-    alertWait,
-    type alertData,
-} from "./alert";
+import { alertCardExport, alertError, alertInput, alertNormal, alertStore, alertWait, type alertData } from "./alert";
 import {
     defaultSdDataFunc,
     type character,
@@ -23,7 +14,15 @@ import {
     appVer,
 } from "./storage/database.svelte";
 import { importPreset } from "./storage/presets.svelte";
-import { blobToUint8Array, checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
+import {
+    blobToUint8Array,
+    checkNullish,
+    decryptBuffer,
+    isKnownUri,
+    selectFileByDom,
+    sleep,
+    sleepAbortable,
+} from "./util";
 import { language } from "src/lang";
 import { confirmLowLevelAccessImport } from "./lowLevelAccessImport";
 import { v4 as uuidv4, v4 } from "uuid";
@@ -79,7 +78,7 @@ import {
     prepareRealmImport,
     REALM_COMMIT_RETRY_DELAY_MS,
 } from "./storage/realmImportClient";
-import { ServerImportRequestError } from "./storage/serverImportClient";
+import { alertServerImportError, ServerImportRequestError, withServerImportWait } from "./storage/serverImportClient";
 import { type CharxImportResult, INVALID_CHARX_FILE } from "../../shared/charxImport.ts";
 import {
     REALM_DOWNLOAD_FAILED,
@@ -273,7 +272,8 @@ async function countPngAssetChunks(input: Blob | Uint8Array): Promise<number> {
  * A JSON card (a name ending in `json`) is read whole: `importCharacterCardSpec`, else `convertOffSpecCards` for an
  * off-spec card with a name, a description and a greeting, else `noData`; a stream under such a name returns null
  * without an alert. Declining a v2/v3 JSON card's `lowLevelAccess` question returns null silently
- * and skips the off-spec fallback. A CharX upload that fails is alerted (`serverImportErrorMessage`) and returns null.
+ * and skips the off-spec fallback. A failed or cancelled CharX upload alerts through `serverImportErrorMessage`
+ * and returns null before the local card import begins.
  *
  * A PNG is streamed, not read into bytes first (only a `Blob` without `stream()` is read whole). Its `chara` (V2) and
  * `ccv3` (V3) text chunks are kept, `ccv3` winning when both exist; a later chunk of the same key replaces the text
@@ -332,17 +332,17 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             cardData = importer.cardData;
             moduleData = importer.moduleData ? Buffer.from(importer.moduleData) : null;
         } else {
-            alertWait(language.charxImportUploading);
             let stored: CharxImportResult;
             try {
-                stored = await importCharxOverServer(f.data, {
-                    onProgress: (done, total) => {
-                        alertWait(`Loading... (Saving Assets ${done}/${total})`);
-                    },
-                });
+                const file = f.data;
+                stored = await withServerImportWait(language.charxImportUploading, (signal, showWait) =>
+                    importCharxOverServer(file, {
+                        signal,
+                        onProgress: (done, total) => showWait(`Loading... (Saving Assets ${done}/${total})`),
+                    }),
+                );
             } catch (error) {
-                // Each alert replaces the wait alert; nothing clears the store after it.
-                alertError(charxImportErrorMessage(error));
+                alertServerImportError(error, charxImportErrorMessage(error));
                 return null;
             }
             cardData = stored.card;
@@ -2381,8 +2381,8 @@ export async function getRisuHub(arg: {
  * cards never reach preparation.
  * `src/ts/storage/realmImportClient.ts` stages PNG/CharX on the server; the tab receives card text,
  * not the file. `commitRealmCard` resolves any applicable password and `lowLevelAccess` prompts
- * before committing the staged assets. Legacy JSON goes through the standard importer in hub mode,
- * fetching portrait/assets through `/hub-proxy`.
+ * before committing the staged assets. The prepare and commit waits can each be cancelled. Legacy JSON
+ * goes through the standard importer in hub mode, fetching portrait/assets through `/hub-proxy`.
  */
 export async function downloadRisuHub(
     id: string,
@@ -2409,20 +2409,16 @@ export async function downloadRisuHub(
                 return;
             }
         }
-        if (!arg.forceRedirect) {
-            alertStore.set({
-                type: "wait",
-                msg: "Downloading...",
-            });
-        }
         // The server downloads and stages the card and answers its text (`POST /api/import/realm`):
         // the tab never fetches Realm or holds the file. Nothing is stored until the commit, after
         // the card's questions (an rcc card's password, its `lowLevelAccess`).
         let download: RealmPrepared;
         try {
-            download = await prepareRealmImport(id);
+            download = await withServerImportWait(arg.forceRedirect ? undefined : "Downloading...", (signal) =>
+                prepareRealmImport(id, { signal }),
+            );
         } catch (error) {
-            alertError(realmImportErrorMessage(error));
+            alertServerImportError(error, realmImportErrorMessage(error));
             return;
         }
 
@@ -2446,9 +2442,6 @@ export async function downloadRisuHub(
         checkCharOrder();
         if (imported && (settings.ui.goCharacterOnImport || arg.forceRedirect)) {
             changeChar(imported);
-            // The download's status only. The import's own success dialog stays, as on the staged
-            // (PNG, CharX) path; a dialog of anything else is never closed from here.
-            alertClear();
         }
     } catch (error) {
         console.error(error);
@@ -2463,7 +2456,8 @@ export async function downloadRisuHub(
  * `src/ts/storage/realmImportClient.ts` and the character is built from the stored keys.
  * A pagehide guard is registered at entry, before prompts, and released in finally once commit
  * succeeds or the normal cancel settles. It sends one best-effort keepalive cancel with auth signed
- * ahead. Busy/maintenance commit refusals alone are retried once after five seconds.
+ * ahead. Busy/maintenance commit refusals alone are retried once after five seconds. Cancel stops
+ * either request or the retry delay before the character is built.
  * Read failures and declined prompts trigger best-effort cancellation before commit. If the commit
  * throws before returning a validated result, cancellation is also attempted, but assets may already
  * be stored.
@@ -2490,27 +2484,25 @@ async function commitRealmCard(
                 return null;
             }
         }
-        if (!quiet) {
-            alertWait("Loading...");
-        }
         let stored: RealmCommitted;
         try {
-            for (let attempt = 0; ; attempt++) {
-                try {
-                    stored = await commitRealmImport(download.token, {
-                        onProgress: (done, total) => {
-                            alertWait(`Loading... (Saving Assets ${done}/${total})`);
-                        },
+            stored = await withServerImportWait(quiet ? undefined : "Loading...", async (signal, showWait) => {
+                const commit = () =>
+                    commitRealmImport(download.token, {
+                        signal,
+                        onProgress: (done, total) => showWait(`Loading... (Saving Assets ${done}/${total})`),
                     });
-                    break;
+                try {
+                    return await commit();
                 } catch (error) {
-                    if (attempt !== 0 || !isRetriableRealmCommitRefusal(error)) throw error;
-                    await sleep(REALM_COMMIT_RETRY_DELAY_MS);
+                    if (!isRetriableRealmCommitRefusal(error)) throw error;
+                    await sleepAbortable(REALM_COMMIT_RETRY_DELAY_MS, signal);
+                    return commit();
                 }
-            }
+            });
             committed = true;
         } catch (error) {
-            alertError(realmImportErrorMessage(error));
+            alertServerImportError(error, realmImportErrorMessage(error));
             return null;
         }
         if (download.kind === "charx" && charx && stored.kind === "charx") {

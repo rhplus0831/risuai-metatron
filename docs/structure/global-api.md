@@ -49,8 +49,9 @@
 - `src/ts/alert.ts`, the helpers over the alert slot (module header): `alertData` (field comments name the dialog that
   reads each), `openAlertDialog`, `alertError`, `alertJobError`, `alertConfirm`, `alertConfirmWithCheckbox`,
   `alertConfirmWithChecklist`, `alertSelect`, `alertInput`, `alertCardExport`, `alertRealmTerms`, `alertRequestLogs`,
-  `showHypaV2Alert`, `alertWait`, `alertToast` (`onInstall`), `alertClear`, `waitAlert`, `doingAlert`, and `alertStore`,
-  a `set` wrapper over the real store.
+  `showHypaV2Alert`, `alertWait` (`onInstall`, `onCancel`: a Cancel button on the wait), `alertToast` (`onInstall`),
+  `alertClear` (`expected` clears only that status), `waitAlert`, `doingAlert`, and `alertStore`, a `set` wrapper over
+  the real store.
 - `src/lib/Others/AlertComp.svelte` renders and answers the queued alert; its component contract covers keyboard
   handling and `src/ts/sourcemap.ts` `translateStackTrace`'s stale-trace rule. Every branch paints at `z-1100`, above a
   plugin's full-screen container (`showContainer`, `z-index: 1000`); `ReloadNotice.svelte` sits above that layer.

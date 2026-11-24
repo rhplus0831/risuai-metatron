@@ -101,7 +101,8 @@ and keeps what spans files.
 - Upstream RisuAI backup restore (`restoreUpstreamBackup`, tab → server → every tab):
   - The upload and the server's conversion show as a wait alert with the phase and its counts. A refusal (a Risu Account
     backup, a damaged file, a backup too large or over the worker's memory limit, another import waiting) is an
-    `alertError` and nothing changes; a 412 reloads.
+    `alertError` and nothing changes; a 412 reloads. The wait's Cancel aborts the prepare (its stage expires); the
+    commit's wait has none.
   - The report dialog's Cancel cancels the prepared import; only its own Restore commits. The server verifies the staged
     file first and reads no row of it. A `409 changedSinceReview`, also for a write that landed during that check, asks
     again with the count of changes saved since the preview (on this or another device; the safety snapshot keeps them),
@@ -146,6 +147,8 @@ and keeps what spans files.
 - While a stage waits, a `pagehide` sends its cancel as one `keepalive` request with a `risu-auth` token signed ahead
   (best effort; the TTL stays the fallback). A commit refused as busy (409 `Another import is running`) or in
   maintenance (503 `Maintenance in progress`) is retried once after five seconds; any other refusal cancels the stage.
+- The prepare and commit waits carry a Cancel (`withServerImportWait`), also during the retry's five seconds. A
+  cancelled commit cancels the stage; a cancelled prepare has no token yet, and its stage expires.
 
 ### Upstream database import
 

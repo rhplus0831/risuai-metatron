@@ -22,7 +22,8 @@ import {
  * the staged file. A pagehide guard sends one best-effort keepalive cancel using auth signed ahead.
  * `commitRealmCard` retries a busy/maintenance commit refusal once after five seconds; this transport
  * classifies those refusals but never retries itself. Errors are the shared file import client's
- * (`serverImportClient.ts`).
+ * (`serverImportClient.ts`). Both prepare and commit accept its cancellation signal. Cancelling a
+ * prepare leaves an undisclosed token to expire. A cancelled commit still needs the owner's stage cleanup.
  */
 
 // The Realm commit route (`server/src/routes/importRealm.ts`) uses these refusals from
@@ -52,15 +53,16 @@ export function isRetriableRealmCommitRefusal(error: unknown): boolean {
  * prepared line (`RealmPrepared`): staged PNG/CharX card text and token, plus an embedded
  * `module.risum` only for CharX; legacy JSON is passed through with no stage or token. The owner
  * registers `cancelRealmImportOnPagehide` as soon as it receives a staged token, before any prompts.
- * Throws `ServerImportRequestError` for a non-2xx answer,
+ * Throws `ServerImportCancelledError` on abort, `ServerImportRequestError` for a non-2xx answer,
  * `ServerImportFailedError` for a failure line, `ServerImportAnswerError` for a malformed answer, and
  * a network failure as it is (a `TypeError`).
  */
-export function prepareRealmImport(id: string): Promise<RealmPrepared> {
+export function prepareRealmImport(id: string, options: ServerImportOptions = {}): Promise<RealmPrepared> {
     return importOverServer(
         REALM_IMPORT_PATH,
         { body: JSON.stringify({ id }), contentType: "application/json" },
         readPrepared,
+        options,
     );
 }
 

@@ -1646,6 +1646,7 @@ export const languageEnglish = {
     confirmRemoveModuleFeature: "Do you really want to remove this feature? This action cannot be undone.",
     editModule: "Edit Module",
     importModule: "Import Module",
+    importCancelled: "The import was cancelled. Nothing was added.",
     moduleImportUploading: "Uploading the module file... A large file can take several minutes.",
     moduleImportFileTooLarge: "The module file is larger than the server accepts.",
     moduleImportAssetTooLarge: "An asset in the module file is larger than the server accepts.",
