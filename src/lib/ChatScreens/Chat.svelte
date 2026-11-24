@@ -243,6 +243,8 @@
         unReroll?: () => void;
         onOpenInlineEditor?: () => void;
         onCloseInlineEditor?: () => void;
+        /** Called when an editor opens, through every path (the automatic popup included), before it renders. */
+        onEditing?: () => void;
         character?: simpleCharacterArgument | string | null;
         firstMessage?: boolean;
         altGreeting?: boolean;
@@ -280,6 +282,7 @@
         unReroll = () => {},
         onOpenInlineEditor,
         onCloseInlineEditor,
+        onEditing,
         character = null,
         firstMessage = false,
         altGreeting = false,
@@ -309,6 +312,10 @@
         if (translationDraft?.open && translationDraft.translation) {
             editTranslationTarget = { kind: "stored", edit: translationDraft.translation };
         }
+    });
+
+    $effect.pre(() => {
+        if (onEditing && isEditing()) untrack(onEditing);
     });
 
     const editedMessage = $derived(chatRef && editorMessageId ? heldMessage(chatRef, editorMessageId) : undefined);

@@ -28,7 +28,9 @@
      *
      * Rows that come in above every shown row (an opening's deferred rows, a loaded or unfolded page) are held
      * out of the layout until rendered and the reader is not scrolling; appended or newer rows never wait. A new
-     * path that adds rows above the shown ones goes through this hold too (`holdRow`).
+     * path that adds rows above the shown ones goes through this hold too (`holdRow`). Rows already shown
+     * whose top is above the view keep their height while the reader scrolls (`lockRowsAboveView`) and are
+     * released with the held rows.
      *
      * A row whose `Chat` is mounted again (a text change, a stream's end, a reload) keeps its height until the
      * new instance has rendered, and its top is put back after (`keepRowHeight`, `settleRowHeight`).
@@ -227,18 +229,67 @@
         }
     }
 
+    /**
+     * Rows whose top is above the view keep their last measured height while the reader scrolls (with
+     * `chat-row-locked`, `src/styles.css`), so growth inside them (a late image, a re-render, a far row's
+     * size estimate) stays out of the layout during the scroll animation. Their content sits at the row's
+     * bottom and overflows at its top, the way such growth goes at rest in this reversed scroller, so the
+     * release (with the held rows, after the scroll) moves nothing below the row's top. One pass per
+     * scroll, at the reader's first wheel, touch move, or scroll key: rows that pass above the view later
+     * in the same scroll are not locked.
+     */
+    const lockedRows = new Set<Row>();
+    let lockPassDone = false;
+
+    function lockRowsAboveView(scroller: HTMLElement) {
+        if (lockPassDone || anchor || capturing || suspendTrim || revealBatch) return;
+        lockPassDone = true;
+        markScrolling();
+        const viewTop = scroller.getBoundingClientRect().top;
+        // Every read before the first write. The heights are the resize observer's, not a layout read.
+        const locks: [Row, number][] = [];
+        for (const row of rows.values()) {
+            const height = rowHeights.get(row.element);
+            if (!height || !row.instance || row.held || row.kept || lockedRows.has(row) || isEditing(row)) continue;
+            if (row.element.getBoundingClientRect().top < viewTop) locks.push([row, height]);
+        }
+        for (const [row, height] of locks) {
+            lockedRows.add(row);
+            row.element.style.height = `${height}px`;
+            row.element.classList.add("chat-row-locked");
+        }
+    }
+
+    function unlockRow(row: Row) {
+        if (!lockedRows.delete(row)) return;
+        row.element.style.height = "";
+        row.element.classList.remove("chat-row-locked");
+        // The containment observer skipped the locked row; let it measure the natural size.
+        if (row.instance && !row.element.classList.contains("far")) {
+            observer?.unobserve(row.element);
+            observer?.observe(row.element);
+        }
+    }
+
+    function unlockRows() {
+        lockPassDone = false;
+        for (const row of [...lockedRows]) unlockRow(row);
+    }
+
     function releaseHeldRows() {
         cancelAnimationFrame(releaseFrame);
         releaseFrame = undefined;
         setScrollGate(false);
         for (const row of [...heldRows]) showRow(row);
+        unlockRows();
         holding = false;
     }
 
     const rendered = (row: Row) => !!row.instance && row.renderedInstance === row.instance;
 
     function scheduleRelease() {
-        if (releaseFrame !== undefined || readerScrolling || ![...heldRows].some(rendered)) return;
+        if (releaseFrame !== undefined || readerScrolling) return;
+        if (!lockedRows.size && ![...heldRows].some(rendered)) return;
         setScrollGate(true);
         // The compositor learns of the gate at the next commit, so the rows are shown a frame
         // later, and the gate is lifted a frame after their growth commits. A frame's input and
@@ -254,6 +305,7 @@
             frame(() => {
                 if (!readerScrolling) {
                     for (const row of [...heldRows]) if (rendered(row)) showRow(row);
+                    unlockRows();
                     holding = heldRows.size > 0;
                 }
                 frame(() => {
@@ -276,37 +328,61 @@
         scheduleRelease();
     }
 
+    function settleScrolling() {
+        clearTimeout(quietTimer);
+        if (touching) return;
+        readerScrolling = false;
+        lockPassDone = false;
+        scheduleRelease();
+    }
+
+    function markScrolling() {
+        readerScrolling = true;
+        clearTimeout(quietTimer);
+        // Without scrollend (older Safari), quiet input counts as the end.
+        quietTimer = setTimeout(settleScrolling, 400);
+    }
+
     $effect(() => {
         const scroller = chatBody?.parentElement;
         if (!scroller) return;
-        const settle = () => {
-            clearTimeout(quietTimer);
-            if (touching) return;
-            readerScrolling = false;
-            scheduleRelease();
-        };
-        const active = () => {
-            readerScrolling = true;
-            clearTimeout(quietTimer);
-            // Without scrollend (older Safari), quiet input counts as the end.
-            quietTimer = setTimeout(settle, 400);
+        const settle = settleScrolling;
+        const active = markScrolling;
+        // The last finger can leave the screen outside the scroller (a second finger started there), or
+        // on a node a re-render detached, whose touchend reaches only the node itself.
+        const lifted = (event: TouchEvent) => {
+            if (!touching || event.touches.length > 0) return;
+            touching = false;
+            active();
         };
         const touch = (event: TouchEvent) => {
             touching = event.touches.length > 0;
+            if (event.type === "touchstart") {
+                // A TouchList is not iterable in every engine.
+                const started = event.changedTouches;
+                for (let i = 0; i < (started?.length ?? 0); i++) {
+                    for (const end of ["touchend", "touchcancel"] as const)
+                        started[i].target.addEventListener(end, lifted, { passive: true, once: true });
+                }
+            }
             active();
         };
         const events = ["wheel", "scroll", "touchmove"] as const;
         for (const event of events) scroller.addEventListener(event, active, { passive: true });
         for (const event of ["touchstart", "touchend", "touchcancel"] as const)
             scroller.addEventListener(event, touch, { passive: true });
+        for (const event of ["touchend", "touchcancel"] as const)
+            window.addEventListener(event, lifted, { passive: true });
         scroller.addEventListener("scrollend", settle);
         return () => {
             clearTimeout(quietTimer);
             readerScrolling = false;
             touching = false;
+            unlockRows();
             for (const event of events) scroller.removeEventListener(event, active);
             for (const event of ["touchstart", "touchend", "touchcancel"] as const)
                 scroller.removeEventListener(event, touch);
+            for (const event of ["touchend", "touchcancel"] as const) window.removeEventListener(event, lifted);
             scroller.removeEventListener("scrollend", settle);
         };
     });
@@ -320,6 +396,8 @@
     function applyAnchor(keepEditorsVisible = false) {
         const scroller = chatBody?.parentElement;
         if (!anchor || !scroller) return;
+        // An anchor places rows by their natural size.
+        unlockRows();
         // A removed row (a deletion's, a reroll's, a write that gave the message a new id) hands
         // following over to the row that is newest now.
         if (anchor.mode === "start" && !anchor.element.isConnected) anchor = latestAnchor() ?? { mode: "end" };
@@ -370,9 +448,16 @@
             if (revealBatch?.next === 0) return;
             anchor = null;
         };
-        // A sideways wheel does not scroll the transcript.
+        // Input that can start a scroll animation; a scrollbar drag places the view directly.
+        const animatedScroll = () => {
+            release();
+            lockRowsAboveView(scroller);
+        };
+        // A sideways wheel does not scroll the transcript; a Ctrl wheel zooms.
         const wheel = (event: WheelEvent) => {
-            if (event.deltaY !== 0) release();
+            if (event.deltaY === 0) return;
+            if (event.ctrlKey) release();
+            else animatedScroll();
         };
         // Only a press on the scroller itself (its scrollbar); a click in a row or the composer does not scroll.
         const pointer = (event: PointerEvent) => {
@@ -381,11 +466,11 @@
         const key = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
             if (scrollKeys.has(event.key) && !target?.closest?.("input, textarea, select, [contenteditable]")) {
-                release();
+                animatedScroll();
             }
         };
         scroller.addEventListener("wheel", wheel, { passive: true });
-        scroller.addEventListener("touchmove", release, { passive: true });
+        scroller.addEventListener("touchmove", animatedScroll, { passive: true });
         scroller.addEventListener("pointerdown", pointer, { passive: true });
         scroller.addEventListener("keydown", key);
         // Rows render their markdown and images after mounting; the viewport can resize too. Both run
@@ -396,7 +481,7 @@
         return () => {
             resize?.disconnect();
             scroller.removeEventListener("wheel", wheel);
-            scroller.removeEventListener("touchmove", release);
+            scroller.removeEventListener("touchmove", animatedScroll);
             scroller.removeEventListener("pointerdown", pointer);
             scroller.removeEventListener("keydown", key);
         };
@@ -603,7 +688,7 @@
                         const row = rowElements.get(element);
                         // A held row has no layout yet; it is observed again when shown.
                         if (!row || row.held) continue;
-                        if (!element.classList.contains("far")) {
+                        if (!lockedRows.has(row) && !element.classList.contains("far")) {
                             const style = getComputedStyle(element);
                             const blockSize =
                                 entry.boundingClientRect.height -
@@ -683,6 +768,9 @@
             ? undefined
             : new ResizeObserver((entries) => {
                   for (const entry of entries) {
+                      // A locked height is not the row's own.
+                      const row = rowElements.get(entry.target);
+                      if (row && lockedRows.has(row)) continue;
                       rowHeights.set(entry.target, entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
                   }
               });
@@ -711,6 +799,8 @@
         const openId = ++latestEditorOpen;
         const scroller = chatBody?.parentElement;
         if (!scroller || capturing || suspendTrim) return;
+        // The place is the row's natural top; unlocking moves nothing below it.
+        unlockRow(row);
         const offset = scroller.scrollTop;
         const place: EditorPlace = {
             openId,
@@ -820,8 +910,8 @@
         )
             return;
         // Measured before the offset is read: this layout is where the browser's anchoring answers.
-        const rect = row.element.getBoundingClientRect();
-        const offset = scroller.scrollTop;
+        let rect = row.element.getBoundingClientRect();
+        let offset = scroller.scrollTop;
         if (kept.editor) {
             if (kept.editor.anchor) {
                 anchor = kept.editor.anchor;
@@ -835,7 +925,15 @@
             if (wouldClipEditor(scroller, target)) return;
             scroller.scrollTop = target;
         } else {
-            if (offset !== kept.scrollTop) return;
+            if (offset !== kept.scrollTop || rect.bottom <= scroller.getBoundingClientRect().top) return;
+            // A locked row still shows the kept height and the correction needs its natural one. While
+            // the reader scrolls it stays locked and grows upward at the release instead.
+            if (lockedRows.has(row)) {
+                if (readerScrolling) return;
+                unlockRow(row);
+                rect = row.element.getBoundingClientRect();
+                offset = scroller.scrollTop;
+            }
             if (rect.bottom <= scroller.getBoundingClientRect().top || Math.abs(rect.height - kept.height) < 1) return;
             scroller.scrollTop = offset + kept.height - rect.height;
         }
@@ -868,7 +966,7 @@
             dispose: () => {},
         };
         rowElements.set(element, row);
-        rowSizes?.observe(element);
+        rowSizes?.observe(element, { box: "border-box" });
         if (held) holdRow(row);
         row.dispose = $effect.root(() => {
             let mountKey: MountKey | undefined;
@@ -942,6 +1040,7 @@
                                 unReroll,
                                 onOpenInlineEditor: () => void openInlineEditor(row),
                                 onCloseInlineEditor: () => closeInlineEditor(row),
+                                onEditing: () => unlockRow(row),
                                 get rerollBusy() {
                                     return rerollBusy;
                                 },
@@ -989,6 +1088,7 @@
 
     function removeRow(row: Row, defer = false) {
         row.dispose();
+        lockedRows.delete(row);
         keptRows.delete(row);
         rowSizes?.unobserve(row.element);
         observer?.unobserve(row.element);
@@ -1158,6 +1258,7 @@
     }
 
     onDestroy(() => {
+        unlockRows();
         anchor = null;
         armDeferredRows();
         finishReveal();

@@ -686,6 +686,13 @@ annotation {
     display: none;
 }
 
+/* Height kept while the reader scrolls (`Chats.svelte`): growth overflows at the top, where it goes at rest. */
+.chat-message-container.chat-row-locked {
+    overflow-x: visible;
+    overflow-y: clip;
+    align-content: unsafe end;
+}
+
 /* Near rows stay uncontained so fixed overlays and overflowing highlights keep their viewport. */
 .chat-message-container.far {
     content-visibility: auto;

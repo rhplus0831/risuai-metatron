@@ -33,9 +33,27 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
+- [App startup](#app-startup): 1
 - [Backup sync](#backup-sync): 1
+- [Chat screen](#chat-screen): 1
 - [Docs](#docs): 1
 - [Rendering](#rendering): 1
+
+## App startup
+
+### The window error handler throws on an error event without an error
+
+Seen on 2026-11-22 in a headed-Chrome probe and read again at `7cb004284`. `updateErrorHandling`
+(`src/ts/bootstrap.ts:445`) reads `event.error.target`. Chrome dispatches the "ResizeObserver loop completed with
+undelivered notifications" error with `error` set to null, and a cross-origin script error has no error object either,
+so the handler throws its own `TypeError` for each such event. The probe that showed it (21 secondary errors in one
+batch) ran a prototype that caused ResizeObserver loops; no current code path was shown to cause one.
+
+**Why it matters:** low. Each such event adds a second page error to the console, and the alert the handler meant to
+decide on never runs.
+
+**Suggested handling:** read `event.error?.target`, and decide whether an error event without an error should alert
+at all.
 
 ## Backup sync
 
@@ -53,6 +71,25 @@ persona selection, and the user is told the restore failed.
 
 **Suggested handling:** reproduce with a held or cut 200 body; then treat a 200 whose body cannot be read as a lost
 answer (keep the hook and ask the user to reload), as the gateway case does.
+
+## Chat screen
+
+### Saving through the automatic popup editor can move the view by the row's height change
+
+Measured on 2026-11-22 at `efba3bf17` in headed Chrome (2 of 2 runs), read again at `7cb004284`. With the automatic
+popup editor on (the default), `startOriginalEdit` (`src/lib/ChatScreens/Chat.svelte:835`) calls
+`onOpenInlineEditor` only when the popup is off, so `Chats.svelte` records no `editorPlace` for the row
+(`openInlineEditor`, `src/lib/ChatScreens/Chats.svelte:813`) and `closeInlineEditor` (`:833`) has nothing to restore.
+While the popup is open the row takes its shorter editor layout; when the view's top is inside the row, the browser's
+scroll anchoring picks a node of an earlier row, and on save the reader stays at that node. In the run, a 1,457 px row
+became 439 px and the reader ended 1,018 px higher. With the view's top near the row's start the save returns to the
+pre-edit place.
+
+**Why it matters:** after editing a long message in the popup, the reader lands on an earlier message and has to
+scroll back.
+
+**Suggested handling:** record the editor place on the popup path too (without the inline reveal), so the close
+restores it.
 
 ## Docs
 

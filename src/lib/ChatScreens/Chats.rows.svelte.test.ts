@@ -16,6 +16,7 @@ type RowProps = {
     largePortrait: boolean;
     onOpenInlineEditor?: () => void;
     onCloseInlineEditor?: () => void;
+    onEditing?: () => void;
 };
 type Row = {
     props: RowProps;
@@ -1868,6 +1869,97 @@ describe("latest message scroll anchor", () => {
             expect(ui.scroller.scrollTop).toBe(-700);
             await rendered(second);
             expect(ui.scroller.scrollTop).toBe(-800);
+        });
+    });
+    describe("the reader lock", () => {
+        // The reader is at -500 with m3 (300 px) above the view and m5 (700 px) in it; the wheel that took
+        // over locked m3. The lock is released three frames after the scroll ends.
+        function scrolling() {
+            const ui = anchored();
+            ui.natural.set("m5", { top: -200, height: 700 });
+            ui.natural.set("m3", { top: -900, height: 300 });
+            resize();
+            endReveal();
+            ui.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+            ui.scroller.scrollTop = -500;
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            return ui;
+        }
+        const locked = (id: string) => {
+            const element = latest(id).element;
+            return element.classList.contains("chat-row-locked") ? element.style.height : null;
+        };
+        const settle = async (ui: ReturnType<typeof scrolling>) => {
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await vi.advanceTimersByTimeAsync(48);
+        };
+
+        it("keeps rows above the view at their measured height until the scroll has ended", async () => {
+            const ui = scrolling();
+            expect(locked("m3")).toBe("300px");
+            expect(locked("m5")).toBeNull();
+            // A late image in the locked row: its size reaches the layout only after the scroll.
+            ui.natural.set("m3", { top: -1500, height: 900 });
+            resize();
+            expect(locked("m3")).toBe("300px");
+            await vi.advanceTimersByTimeAsync(48);
+            expect(locked("m3")).toBe("300px");
+            await settle(ui);
+            expect(locked("m3")).toBeNull();
+            expect(latest("m3").element.style.height).toBe("");
+        });
+
+        it("ends after 400 ms without scroll input where scrollend is missing", async () => {
+            const ui = scrolling();
+            await vi.advanceTimersByTimeAsync(399);
+            expect(locked("m3")).toBe("300px");
+            await vi.advanceTimersByTimeAsync(1 + 48);
+            expect(locked("m3")).toBeNull();
+            expect(ui.scroller.scrollTop).toBe(-500);
+        });
+
+        it("takes no lock for a sideways or Ctrl wheel, and locks again at the next scroll", async () => {
+            const ui = scrolling();
+            await settle(ui);
+            ui.scroller.dispatchEvent(new WheelEvent("wheel", { deltaX: 80 }));
+            // happy-dom's WheelEvent leaves out the modifier keys of its init.
+            const zoom = Object.defineProperty(new WheelEvent("wheel", { deltaY: -100 }), "ctrlKey", { value: true });
+            ui.scroller.dispatchEvent(zoom);
+            expect(locked("m3")).toBeNull();
+            ui.scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }));
+            expect(locked("m3")).toBe("300px");
+        });
+
+        it("unlocks a row when an editor opens on it, and every row when an anchor takes over", async () => {
+            const ui = scrolling();
+            ui.natural.set("m2", { top: -1300, height: 400 });
+            await settle(ui);
+            resize();
+            ui.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+            expect([locked("m2"), locked("m3")]).toEqual(["400px", "300px"]);
+            latest("m3").props.onEditing?.();
+            expect([locked("m2"), locked("m3")]).toEqual(["400px", null]);
+            ui.instance.scrollToLatestMessage();
+            flushSync();
+            expect([locked("m2"), locked("m3")]).toEqual([null, null]);
+        });
+
+        it("releases a finger's lock when the touched node was detached before the finger lifted", async () => {
+            const ui = scrolling();
+            await settle(ui);
+            const target = document.createElement("span");
+            latest("m5").element.append(target);
+            const touchList = (count: number) => Array.from({ length: count }, () => ({ target }));
+            ui.scroller.dispatchEvent(
+                Object.assign(new Event("touchstart"), { touches: touchList(1), changedTouches: touchList(1) }),
+            );
+            ui.scroller.dispatchEvent(new Event("touchmove"));
+            expect(locked("m3")).toBe("300px");
+            // A re-render took the node out: its touchend reaches neither the scroller nor the window.
+            target.remove();
+            target.dispatchEvent(Object.assign(new Event("touchend"), { touches: [], changedTouches: touchList(1) }));
+            await vi.advanceTimersByTimeAsync(400 + 48);
+            expect(locked("m3")).toBeNull();
         });
     });
 });
