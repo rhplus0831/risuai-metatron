@@ -279,6 +279,8 @@ and keeps what spans files.
 - Manual compatibility check: `util/upstream/checkBinCompat.mjs` runs upstream's decoder/defaults against pinned
   `legacy` or `current` targets; `--bin` checks an existing export. The `current` target also runs upstream's plugin
   storage migration ([build/test platforms](build-test-platforms.md#files)).
+- The import waits' Cancel (Realm prepare and commit, backup prepare) through the real alert store:
+  `pnpm --silent test:agent src/ts/storage/tests/serverImportWait.test.ts`.
 - Settings-report redaction: `pnpm --silent test:agent src/ts/storage/tests/snapshots.test.ts` (`buildSettingsReport`).
 - Snapshot flush and refusal notes: `pnpm --silent test:agent src/lib/Setting/Pages/Storage/storageController.test.ts`.
 - Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, and a
@@ -309,3 +311,6 @@ and keeps what spans files.
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
   check `ui.realmTermsAccepted`. Decision: owner, 2026-11-10 (known-issues review): the gate is a notice to the server's
   owner, not a security boundary.
+- An upstream backup prepare and a Realm download end only by their answer, a network failure, or the wait's Cancel. A
+  Realm download with `forceRedirect` (`downloadRisuHub`; no product caller passes it) shows no wait, so no Cancel,
+  during its prepare. Decision: Bounded Client Waits D3 and D6, [archive](../archived-plan/README.md).

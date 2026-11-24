@@ -236,6 +236,11 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - The client protocol (request, preparation, and answer rules) is the module header of `chatCheckpoints.svelte.ts`; the
   server side is [chat writes and checkpoints](server-resources.md#chat-writes-and-checkpoints). The HypaV3 modal and
   the local lore draft follow a loaded chat's external replacement without writing it back.
+- Every checkpoint request (list, policy, save, rename, delete, load) waits at most 30 s for its answer and body,
+  counted after sign-in (`chatRequest.ts` `request`, `deadlineMs`); chat trash keeps no bound. A timeout is the
+  request's transport failure, so a timed-out restore re-reads the chat, answers `unknown`, and releases
+  `checkpointLoadBusy`. Restoring again is safe: the server refuses a load whose `chatBaseRevision` is no longer current
+  (`server/src/data/checkpointService.ts` `load`).
 
 ### Restore floor
 
@@ -295,7 +300,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ## Tests
 
-- Focused: `pnpm --silent test:agent chatStore resourceSyncChats chatCheckpoints`.
+- Focused: `pnpm --silent test:agent chatStore resourceSyncChats chatCheckpoints chatTrash`.
 - Loading and lore drafts: `pnpm --silent test:agent chatLazyLoading loreOverridesDraft.fence`; the
   [memory tests](memory.md#tests) cover the local lore fence.
 - `src/ts/storage/tests/{chatStore.test.ts,resourceSyncChats.test.ts}` use
@@ -354,6 +359,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   next boot: no deletion acknowledgement or `forgetCharacter` comes for it. The leak is bounded to that session's
   resend-bearing chats, whose payloads can be whole chat snapshots. Decision: Found Issues Decisions (owner,
   2026-11-08).
+- A checkpoint request abandoned at its 30 s bound may still land: a restore pressed again is refused by its base
+  revision or repeats harmlessly, and a Save As can appear in the list after its failure message. Decision: Bounded
+  Client Waits D2 and D4, [archive](../archived-plan/README.md).
 - The own-save echo of an unloaded chat's list field asks for a summary-list read. Decision: Found Issues Decisions
   (owner, 2026-11-08).
 - A followed job's generation that never got a `serverGenerations` entry keeps its feed lock past the job's terminal

@@ -355,7 +355,7 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 ## Tests
 
 - Focused tab tests:
-  `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/lib/Setting/Pages/personaGrid src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`.
+  `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/lib/Setting/Pages/personaGrid src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient,serverImportWait}`.
 - Persona picker and catalog UI tests:
   `pnpm --silent test:agent src/lib/Setting/listedPersona.test.ts src/lib/Others/GridCatalog.test.ts`.
 - Folder readers, mutations, and device-local fold state:
@@ -410,6 +410,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   `shared/ids.ts` accepts any nonempty string): the folder helpers and `normalizeItemFolders` keep nonblank ids only,
   the persona page's Folder select returns silently, and the module move throws in the store without an alert. The item
   stays at the root. Decision: owner, 2026-11-21 (found-issues review): one item, otherwise usable.
+- A module, CharX or Realm import ends only by its answer, a network failure, or the wait's Cancel: an unattended tab
+  keeps waiting. The wait closes when the server's result is handed to the importer, so the tab's local add step shows
+  none. Decision: Bounded Client Waits D3 and D6, [archive](../archived-plan/README.md).
 
 ### Gotchas
 
