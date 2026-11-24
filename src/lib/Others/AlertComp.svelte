@@ -21,7 +21,7 @@
 </script>
 
 <script lang="ts">
-    import { findChat, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { findChat, isChatGenerating, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
     import { memoryEditorWriteFence } from "src/ts/storage/chatFieldDraft.svelte";
     import { onDestroy, untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
@@ -921,7 +921,8 @@
                         {language.chatOptions}
                     </h1>
                     <button
-                        class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
+                        class="border-darkborderc border py-2 px-8 flex rounded-md enabled:hover:ring-2 items-center mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={$alertStore.chatRef !== undefined && isChatGenerating($alertStore.chatRef)}
                         onclick={() => {
                             alertStore.answer("0");
                         }}

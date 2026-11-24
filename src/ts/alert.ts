@@ -80,7 +80,7 @@ export interface alertData {
     generationInfo?: AlertGenerationInfo;
     /** `branches`: the character captured when the dialog was requested. */
     chaId?: string;
-    /** `hypaV2`: the chat captured when the dialog was requested. */
+    /** `hypaV2`, `chatOptions`: the chat captured when the dialog was requested. */
     chatRef?: ChatRef;
     /** `none` between two dialogs: the next one is queued and shows after the gap (`alertQueue.ts`). */
     dialogPending?: boolean;
@@ -307,10 +307,11 @@ export async function alertAddCharacter() {
 }
 
 /** Resolves with the chosen option's numeric index, or NaN on cancellation. */
-export async function alertChatOptions() {
+export async function alertChatOptions(ref?: ChatRef) {
     const result = await openDialog({
         type: "chatOptions",
         msg: language.chatOptions,
+        chatRef: ref,
     });
 
     return parseInt(result);

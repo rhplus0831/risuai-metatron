@@ -47,6 +47,7 @@
         createChat,
         ensureChatLoaded,
         findChat,
+        isChatGenerating,
         reorderActiveChats,
         selectedChatId,
         setChatMeta,
@@ -197,11 +198,12 @@
      */
     async function chatOptions(entry: ChatListEntry) {
         const ref = { chaId: chara.chaId, chatId: entry.id };
-        const option = await alertChatOptions();
+        const option = await alertChatOptions(ref);
         switch (option) {
             case 0: {
+                if (isChatGenerating(ref)) break;
                 const source = await chatCopySource(ref);
-                if (!source || !isActiveChat(ref)) {
+                if (!source || !isActiveChat(ref) || isChatGenerating(ref)) {
                     break;
                 }
                 delete source.pinned;

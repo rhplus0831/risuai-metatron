@@ -83,6 +83,7 @@ import { characterList } from "src/ts/storage/characterStore.svelte";
 import { applyRawCharacter } from "src/ts/storage/records.svelte";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
 import * as serverAuth from "src/ts/storage/serverAuth";
+import * as chatStore from "src/ts/storage/chatStore.svelte";
 import {
     assembleChats,
     chatEntry,
@@ -738,6 +739,61 @@ describe("the sidebar's new chat button", () => {
             vi.useRealTimers();
         }
     });
+
+    it.each(["as the dialog is answered", "while its source loads"])(
+        "blocks a chat copy when generation starts %s and copies the finished reply after release",
+        async (when) => {
+            vi.useFakeTimers();
+            const source = { chaId: "c", chatId: "j" };
+            const update = { jobId: "job-j", messageId: "m-j", generationId: `reply-${when}` };
+            const final = "The door opened and the courier stepped in.";
+            const load = vi.spyOn(chatStore, "ensureChatLoaded");
+            let resumeLoad!: () => void;
+            const pendingLoad = new Promise<void>((resolve) => {
+                resumeLoad = resolve;
+            });
+            if (when === "while its source loads") {
+                load.mockImplementationOnce(async () => {
+                    await pendingLoad;
+                    return findChat(source);
+                });
+            }
+            const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+            const request = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({}));
+            try {
+                alerts.chatOption = 0;
+                const side = renderSide("c");
+                const original = ids("c");
+                side.options("Chat J").click();
+                if (when === "while its source loads") {
+                    await vi.advanceTimersByTimeAsync(0);
+                    expect(load).toHaveBeenCalledExactlyOnceWith(source);
+                }
+                chatStore.applyServerGeneration(source, { ...update, text: "The door opened and", seq: 1 });
+                resumeLoad();
+                await vi.advanceTimersByTimeAsync(0);
+
+                expect(ids("c")).toEqual(original);
+                if (when === "as the dialog is answered") expect(load).not.toHaveBeenCalled();
+
+                chatStore.applyServerGeneration(source, { ...update, text: final, seq: 2 });
+                chatStore.endServerJob(update.jobId);
+                side.options("Chat J").click();
+                await vi.advanceTimersByTimeAsync(0);
+
+                expect(ids("c")).toHaveLength(original.length + 1);
+                const copy = chatList("c").find(({ name }) => name === "Chat J (Copy)")!;
+                expect(findChat({ chaId: "c", chatId: copy.id })?.message.map(({ data }) => data)).toEqual([final]);
+            } finally {
+                resumeLoad();
+                chatStore.endServerJob(update.jobId);
+                load.mockRestore();
+                request.mockRestore();
+                save.mockRestore();
+                vi.useRealTimers();
+            }
+        },
+    );
 });
 
 describe("copying only a chat's settings from the row's options", () => {

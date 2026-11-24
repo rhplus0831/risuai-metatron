@@ -14,13 +14,16 @@ import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storag
 import { findCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import {
+    applyServerGeneration,
     assembleChats,
     captureChatBaseline,
     chatNoticeSeq,
+    endServerJob,
     findChat,
     finishIdleChatRefresh,
     hasUnsavedChatWork,
     noteRemoteChat,
+    noteRemoteStreaming,
     seedChats,
     selectChat,
     setChatMeta,
@@ -167,6 +170,40 @@ describe("dialogs keep their requested character and chat", () => {
         await showAlert();
         return chat;
     }
+
+    it.each(["this tab's job", "the change feed"])(
+        "disables Create a Copy when %s locks a message after Chat Options opens",
+        async (origin) => {
+            installChats(true);
+            const chat = { chaId: "a", chatId: "chat-a-other" };
+            const listTarget = document.createElement("div");
+            document.body.append(listTarget);
+            sidebar = mount(SideChatList, { target: listTarget, props: { chara: findCharacter(chat.chaId)! } });
+            flushSync();
+            listTarget.querySelector<HTMLElement>(`[data-risu-chat-id="${chat.chatId}"] [role="button"]`)!.click();
+            await showAlert();
+            const copy = [...dialogPanel().querySelectorAll("button")].find(
+                (button) => button.textContent?.trim() === language.createCopy,
+            )!;
+            expect(copy.disabled).toBe(false);
+
+            const message = { messageId: "message-a-other", generationId: `reply-${origin}`, seq: 1 };
+            const jobId = "job-a-other";
+            const feed = { characterId: chat.chaId, id: chat.chatId };
+            const fromJob = origin === "this tab's job";
+            if (fromJob) applyServerGeneration(chat, { ...message, jobId, text: "The door opened and" });
+            else noteRemoteStreaming([{ ...feed, streaming: [message] }]);
+            try {
+                flushSync();
+                expect(copy.disabled).toBe(true);
+            } finally {
+                if (fromJob) endServerJob(jobId);
+                else noteRemoteStreaming([{ ...feed, streaming: [] }]);
+            }
+            flushSync();
+            expect(copy.disabled).toBe(false);
+        },
+    );
 
     it("shows the requested character's branches after selection changes while queued and while open", async () => {
         installChats();
