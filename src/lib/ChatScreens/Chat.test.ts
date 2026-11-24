@@ -80,6 +80,7 @@ vi.mock("src/ts/translator/translator", () => ({
     clearLLMCache: vi.fn(),
 }));
 vi.mock("src/ts/storage/serverAuth", () => ({
+    ensureAuth: async () => {},
     authFetch: (path: string, init: RequestInit) => hoisted.auth.fetch!(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));

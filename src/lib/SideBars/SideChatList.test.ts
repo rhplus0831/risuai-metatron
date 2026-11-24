@@ -703,6 +703,7 @@ describe("the sidebar's new chat button", () => {
     it("choosing Copy creates the chat and POSTs memory inheritance from its source", async () => {
         vi.useFakeTimers();
         const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        const signIn = vi.spyOn(serverAuth, "ensureAuth").mockResolvedValue();
         const request = vi
             .spyOn(serverAuth, "authFetch")
             .mockResolvedValue(Response.json({ revision: "memory-r1", inherited: true }));
@@ -735,6 +736,7 @@ describe("the sidebar's new chat button", () => {
             ]);
         } finally {
             request.mockRestore();
+            signIn.mockRestore();
             save.mockRestore();
             vi.useRealTimers();
         }

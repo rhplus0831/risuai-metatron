@@ -34,6 +34,7 @@ const { server, alerts, picker } = vi.hoisted(() => ({
 }));
 
 vi.mock("./storage/serverAuth", () => ({
+    ensureAuth: async () => {},
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
