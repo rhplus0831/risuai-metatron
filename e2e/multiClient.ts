@@ -666,13 +666,14 @@ export async function expectState(reader: Session, mirrors: Session[], chaId: st
 export async function holdBatch(s: Session, matches: (body: BatchBody) => boolean) {
     let held: Route | undefined;
     let body: BatchBody | undefined;
+    let disposed = false;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
         release = resolve;
     });
     const handler = async (route: Route) => {
         const candidate = route.request().postDataJSON() as BatchBody;
-        if (held || !matches(candidate)) return route.fallback();
+        if (disposed || held || !matches(candidate)) return route.fallback();
         held = route;
         body = candidate;
         await gate;
@@ -692,9 +693,12 @@ export async function holdBatch(s: Session, matches: (body: BatchBody) => boolea
             const response = await s.guard(() => answered);
             return { status: response.status(), body: (await response.json()) as BatchAnswer, time: Date.now() };
         },
+        // The route stays installed and only falls back: unrouting the page's last route makes the
+        // server push requests still in flight to the context's route while the page's fallback
+        // chain hands them there as well, and the second `route.continue` throws "already handled".
         async dispose() {
+            disposed = true;
             release();
-            await s.page.unroute(BATCH_URL, handler);
         },
     };
 }

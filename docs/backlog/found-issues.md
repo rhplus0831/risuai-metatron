@@ -37,7 +37,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Build and CI](#build-and-ci): 3
+- [Build and CI](#build-and-ci): 2
 - [Chat screen](#chat-screen): 1
 - [Client features](#client-features): 5
 - [Docs](#docs): 1
@@ -72,23 +72,6 @@ had the same gap and now compares its complete input key before saving.
 
 **Suggested handling:** reproduce with an ignored fixture a test reads; if it replays, key the result the way
 `util/typeCheckCache.mjs` keys a program.
-
-### The multi-client create, delete, and reorder e2e spec fails about one whole-file run in three
-
-`e2e/multiClient.spec.ts:379` ("concurrent chat creation deletion and reordering preserve every surviving chat") fails
-in about one of three whole-file runs and passes when run alone with `-g`, at `820ff970c` and later. The first error is
-always `route.continue: Route is already handled!` from the context-wide route of `isolateContext`
-(`util/playwright/stack.mjs:76`); the later "page closed" errors in `settle` (`e2e/fixtures.ts:40`) and `mirrorState`
-(`e2e/multiClient.ts:596`) follow from Playwright ending the test, and the "did not go idle" code frame the report
-prints is misleading. Reproduced in repeated runs; the cause is a hypothesis: `holdBatch` (`e2e/multiClient.ts:666`)
-calls `page.unroute` in `dispose()` with the default behavior while A's retried batch, which also carries `x1`, is
-falling back from the page handler to the context handler, so one request is handled twice.
-
-**Why it matters:** the run-wide e2e gate fails intermittently, and the failure reads like a save loop that never goes
-idle.
-
-**Suggested handling:** unroute with `{ behavior: "ignoreErrors" }` or `"wait"`, or let `holdBatch` hold only the first
-matching request, then run the file several times.
 
 ## Chat screen
 
