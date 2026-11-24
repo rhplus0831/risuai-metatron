@@ -135,10 +135,10 @@ None is in the gate; all are in `util/playwright/`.
 `pnpm test` for agents, and the only entry point that runs tests without `CI` or `HUMAN` (`--tags-filter=slow` is
 `pnpm test:slow`). Across processes:
 
-1. The wrapper keys the cache by the working tree's `git write-tree` (`workingTreeId` in `util/workingTree.mjs`),
-   versions, and arguments; a hit replays the stored output before any lock. The tree is taken with `git add -A` into a
-   temporary index in the OS temp directory, so untracked files count (one new probe file misses the cache) and the
-   checkout's own index is never touched.
+1. The wrapper keys the cache the way the type-check cache keys a program (`workingTreeFiles` and `programKey` in
+   `util/typeCheckCache.mjs`): the working tree, untracked files included (one new probe file misses the cache), the
+   contents of git-ignored files under the source roots, the Node and test-runner versions, and the arguments. A hit
+   replays the stored output before any lock; a finished run is stored only if the key still matches after it.
 2. A whole-suite run waits up to 15 minutes for the machine-wide lock, then runs even if the lock is still held. File
    filters bypass the lock. See the
    [parallel run timings](../reports/measurements/toolchain/test-suite-lock-2026-10-30.md).

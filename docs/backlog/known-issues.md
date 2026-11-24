@@ -32,13 +32,10 @@ Sources the entries name (drop a line when no entry names it any more):
 - [mcp](#mcp) (1)
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
-- [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (1)
 - [server-generation](#server-generation) (1)
 - [structured-memory](#structured-memory) (1)
-- [test-harness](#test-harness) (1)
 - [translation](#translation) (2)
-- [ui-theming](#ui-theming) (1)
 
 ## assets
 
@@ -96,12 +93,14 @@ Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md
 Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-pipeline.md#known-hazards).
 
 - The PO translator and DevTool autopilot check the tab's chat binding with `checkServerJobBinding` before appending
-  a user message. A refusal only the server's admission finds, such as a binding mismatch, can leave the appended
-  message in the transcript. The append leaves existing messages in place. Source read in the second fix round
-  of 2026-11-22.
-  A fix moves the append into admission or removes the appended message on refusal.
-  [PO translator](../../src/ts/process/files/multisend.ts#L70) · [DevTool autopilot](../../src/lib/SideBars/DevTool.svelte#L290) ·
-  [Binding check](../../src/ts/process/serverCommands.ts#L1143)
+  a user message, and the append is saved before the job is created. A refusal only the server's admission finds, such
+  as a binding mismatch, leaves the appended message in the transcript. Reproduced on 2026-11-24 in a scratch test
+  (a 409 binding mismatch after the append was saved). Removing it by id is not safe: another tab can edit the saved
+  row first, and the server's single-id remove neither checks the base revision nor the stored text, so a fix needs a
+  conditional remove (the row still holds the appended text) in the chat write protocol, or the append moved into
+  admission. [PO translator](../../src/ts/process/files/multisend.ts#L76) ·
+  [DevTool autopilot](../../src/lib/SideBars/DevTool.svelte#L293) ·
+  [Server remove](../../server/src/data/chatStore.ts#L2781)
 
 ## chat-store
 
@@ -174,20 +173,6 @@ Guide: [Network and Jobs: Fetch Routing, Aux Fetch, Generation Job Client, Job C
   `src/ts/network/renderedTranslationMcpPush.probe.test.ts` (no Disable completed in two tabs after ten minutes).
   [Queue](../../src/ts/network/pushNotifications.ts#L418)
 
-## persistence
-
-Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistence.md#known-hazards).
-
-- Boot's browser-local import holds the whole tab on its loading screen while the server refuses saves.
-  `importSafeLocalPluginStorage` and `importSectionField` await `flushResources()` without `waitForResourceFlush`, and
-  boot awaits `importBrowserLocalData` before live updates, plugins, and routing start, so each populated import step
-  spends its own ten-attempt budget on the 30 s cycle backoff: with one legacy plugin-storage value and one legacy
-  dialogue and every batch answered 503, plugins started at 450 s, behind "Moving Browser Data To The Server..." with no
-  cancel. The browser-local values stay intact. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's
-  probe `src/ts/bootstrap.browserLocalImport.probe.test.ts` (plugin loading not started at 30 s; the answered control
-  passes). A fix races these flushes with `waitForResourceFlush` and keeps the browser-local source on timeout. [Plugin
-  storage import](../../src/ts/storage/browserLocalImport.ts#L169) · [Boot](../../src/ts/bootstrap.ts#L153)
-
 ## plugin-sandbox
 
 Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
@@ -224,18 +209,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   [Edit](../../src/lib/Others/StructuredMemory/TimelineTab.svelte#L504) ·
   [Request](../../src/ts/process/structuredMemory.svelte.ts#L286)
 
-## test-harness
-
-Guide: [Test Harness](../structure/test-harness.md#known-hazards).
-
-- The test wrapper's result cache omits git-ignored inputs. `util/agentTest.mjs` keys a stored result on
-  `workingTreeId`, which honors `.gitignore`, and has no end-of-run check, so a test that reads an ignored file (a
-  local fixture, a generated file) replays a stale result after that file changes. Reproduced on 2026-11-24 at
-  `4c84cd229` with a scratch test reading a `*.local` fixture: after the fixture changed from `pass` to `fail` the
-  next run printed "cached result … working tree unchanged" and `OK 1 passed`; only `--force` ran it and failed. The
-  type-check cache had the same gap and now compares its complete input key before saving
-  (`util/typeCheckCache.mjs`). [Cache key](../../util/agentTest.mjs#L396)
-
 ## translation
 
 Guide: [Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
@@ -253,14 +226,3 @@ Guide: [Translation: Providers, the LLM Translator, Presets, Server and Stored T
   2026-11-24 at `4c84cd229` by the reproduction round's probe `server/src/tests/serviceCapacity.probe.test.ts` (one unit
   of provider work still counted after the deadline and a completed retry).
   [Capacity](../../server/src/translation/runner.ts#L503)
-
-## ui-theming
-
-Guide: [UI Components and Theming](../structure/ui-theming.md#known-hazards).
-
-- The sidebar's whole-chat Copy (Chat Options, Create a Copy) copies a chat whose reply is still streaming with the text
-  streamed so far: the copy is a separate chat that never receives the finished text and shows nothing that marks it cut
-  off, while the original finishes. A message's Branch is disabled and rechecked with `isMessageLocked` for that
-  message. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
-  `src/lib/SideBars/SideChatList.copyStreaming.probe.test.ts` (the new chat held `The door opened and`). A fix disables
-  Copy while the chat generates. [Copy](../../src/lib/SideBars/SideChatList.svelte#L168)

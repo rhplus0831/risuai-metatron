@@ -85,8 +85,9 @@ handlers that reapply UI settings and repair incoming orders.
   chat read (`jobChannel.ts`), 60 s for an export chunk (`chatEdits.ts`), 120 s per boot read. Chat loads have
   [their own](chat-store.md#limitations) bound. Only a complete read installs; owner replacement leaves its read running
   until its deadline, with adoption fenced separately.
-- Plugin storage and settings verification reads in the [browser-local import](persistence.md#browser-local-import) get
-  30 s each. Failure leaves the browser copy for the next boot.
+- Plugin storage and settings in the [browser-local import](persistence.md#browser-local-import) wait 30 s each for
+  their save (`waitForResourceFlush`) and for their verification read. Failure leaves the browser copy for the next
+  boot.
 
 ### Serialization
 

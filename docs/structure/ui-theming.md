@@ -309,7 +309,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and
   regenerate controls disabled, and its open message or stored-translation editor turns read-only with the text kept
   until release, the expanded popup included. Its Branch item is disabled too, and the handler checks the lock again
-  before it copies; an earlier, finished row can still branch.
+  before it copies; an earlier, finished row can still branch. The chat list's Create a Copy is disabled while any
+  message of that chat is locked (`isChatGenerating`), and the handler checks again before and after it loads the
+  source.
 - While the chat is busy, the reroll arrows of every row, the side menu's Continue and Reroll, and checkpoint Save and
   Load are disabled, and Enter in the draft box does what its disabled Send Draft button does. The handlers keep their
   checks. Ctrl+M and the move-to-trash action show `chatGenerating` when blocked.
