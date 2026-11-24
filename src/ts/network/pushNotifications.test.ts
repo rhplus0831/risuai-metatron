@@ -1,6 +1,7 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { languageEnglish } from "../../lang/en";
+import { createFakeLockManager } from "../storage/tests/fakeLockManager";
 
 // This browser's Web Push (`pushNotifications.ts`) over stubbed browser APIs (`Notification`,
 // `PushManager`, `navigator.serviceWorker` with one registration) and a fake `authFetch`: the
@@ -21,13 +22,17 @@ import { languageEnglish } from "../../lang/en";
 
 const deps = vi.hoisted(() => ({
     authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
+    ensureAuth: vi.fn<() => Promise<void>>(),
     openRoute: vi.fn<(path: string) => boolean>(() => true),
     settings: { ui: { notification: true } },
     /** `recordClientEvent`: the diagnostics of the foreground cleanup. */
     record: vi.fn<(input: unknown) => void>(),
 }));
 vi.mock("../storage/serverAuth", async () =>
-    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: deps.authFetch }),
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: deps.authFetch,
+        ensureAuth: deps.ensureAuth,
+    }),
 );
 vi.mock("../router/router.svelte", () => ({ openRoute: deps.openRoute }));
 vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
@@ -41,6 +46,7 @@ const PROMPT_DISMISSED = "risu-push-prompt-dismissed";
 const BROWSER_OFF = "risu-push-browser-off";
 const PENDING_REMOVAL = "risu-push-pending-removal";
 const PENDING_UNSUBSCRIBE = "risu-push-pending-unsubscribe";
+const REGISTERED = "risu-push-registered";
 const TAG = "risuai-chat-completion";
 
 function base64url(bytes: Uint8Array): string {
@@ -116,6 +122,7 @@ class FakeNotification {
 /** What the fake server answers: the key route (its status and key), the PUT, the DELETE. */
 const server = { key: 200, publicKey: KEY as string | null, put: 204, delete: 204 };
 const requests: { method: string; path: string; body?: unknown }[] = [];
+const heldResponses = new Map<string, Promise<Response>>();
 let visibility: DocumentVisibilityState = "visible";
 /** `document.hasFocus()`: off by default, so the tab's notification is shown. */
 let focused = false;
@@ -186,6 +193,7 @@ beforeEach(() => {
     storage.throwWrites = false;
     vi.stubGlobal("localStorage", storage);
     requests.length = 0;
+    heldResponses.clear();
     created.length = 0;
     workerListeners.length = 0;
     current = null;
@@ -199,6 +207,7 @@ beforeEach(() => {
     deps.settings.ui.notification = true;
     deps.openRoute.mockClear().mockReturnValue(true);
     deps.record.mockClear();
+    deps.ensureAuth.mockReset().mockResolvedValue(undefined);
     registration.pushManager.getSubscription.mockClear();
     registration.pushManager.subscribe.mockClear();
     registration.showNotification.mockClear();
@@ -208,6 +217,11 @@ beforeEach(() => {
     deps.authFetch.mockReset().mockImplementation(async (path, init) => {
         const method = init?.method ?? "GET";
         requests.push({ method, path, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+        const held = heldResponses.get(method);
+        if (held) {
+            heldResponses.delete(method);
+            return held;
+        }
         if (path === "/api/push/key") {
             return {
                 ok: server.key < 300,
@@ -374,7 +388,6 @@ describe("subscription serialization", () => {
 });
 
 describe("registration refresh", () => {
-    const REGISTERED = "risu-push-registered";
     const DAY = 24 * 60 * 60 * 1_000;
     const START = 1_900_000_000_000;
     beforeEach(() => {
@@ -523,6 +536,163 @@ describe("registration refresh", () => {
             expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
         },
     );
+});
+
+describe("push request deadlines", () => {
+    const DEADLINE_MS = 30_000;
+
+    function lastSignal(method: string) {
+        return deps.authFetch.mock.calls.findLast(([, init]) => (init?.method ?? "GET") === method)?.[1]?.signal;
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    });
+
+    it("releases the risu-push lock for another tab's Disable when a PUT times out", async () => {
+        const locks = createFakeLockManager();
+        Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
+        const enabling = await boot();
+        vi.resetModules();
+        const disabling = await boot();
+
+        FakeNotification.permission = "granted";
+        const endpoint = "https://fcm.googleapis.com/fcm/send/shared";
+        current = fakeSubscription(endpoint, KEY_BYTES);
+        heldResponses.set("PUT", deferred<Response>().promise);
+        const enable = enabling.enablePushOnThisBrowser();
+        await settle();
+        expect(calls("PUT")).toHaveLength(1);
+
+        const disabled = vi.fn();
+        const disable = disabling.disablePushOnThisBrowser().then(disabled);
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+        expect(locks.held()).toEqual(["risu-push"]);
+        expect(locks.waiting()).toEqual(["risu-push"]);
+        expect(calls("DELETE")).toEqual([]);
+        expect(disabled).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(disabled).toHaveBeenCalledOnce();
+        await disable;
+        await expect(enable).resolves.toBe(false);
+        expect(calls("DELETE")).toEqual([{ method: "DELETE", path: "/api/push/subscription", body: { endpoint } }]);
+        expect(locks.held()).toEqual([]);
+        expect(state(disabling)).toMatchObject({ optedOut: true, subscribed: false, busy: false });
+    });
+
+    it("clears the registration stamp after a PUT times out and sends a new PUT on reconciliation", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const stamp = localStorage.getItem(REGISTERED);
+        expect(stamp).not.toBeNull();
+        requests.length = 0;
+
+        heldResponses.set("PUT", deferred<Response>().promise);
+        const enable = module.enablePushOnThisBrowser();
+        await settle();
+        const put = {
+            method: "PUT",
+            path: "/api/push/subscription",
+            body: { subscription: current!.toJSON() },
+        };
+        expect(calls("PUT")).toEqual([put]);
+        const signal = lastSignal("PUT");
+        expect(localStorage.getItem(REGISTERED)).toBe(stamp);
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+        expect(signal?.aborted).toBe(true);
+        expect(state(module)).toMatchObject({ subscribed: false, busy: false });
+        expect(state(module).error).toBeTruthy();
+        await expect(enable).resolves.toBe(false);
+
+        await module.reconcilePush();
+        expect(calls("PUT")).toEqual([put, put]);
+        expect(localStorage.getItem(REGISTERED)).not.toBeNull();
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("records a DELETE that times out and retries the same endpoint on reconciliation", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const removal = {
+            method: "DELETE",
+            path: "/api/push/subscription",
+            body: { endpoint: current!.endpoint },
+        };
+
+        heldResponses.set("DELETE", deferred<Response>().promise);
+        const disable = module.disablePushOnThisBrowser();
+        await settle();
+        expect(calls("DELETE")).toEqual([removal]);
+        const signal = lastSignal("DELETE");
+        expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+        expect(localStorage.getItem(PENDING_REMOVAL)).toBe(removal.body.endpoint);
+        expect(signal?.aborted).toBe(true);
+        expect(state(module)).toMatchObject({ optedOut: true, subscribed: false, busy: false });
+        await disable;
+
+        await module.reconcilePush();
+        expect(calls("DELETE")).toEqual([removal, removal]);
+        expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
+    });
+
+    it("uses the cached VAPID key when the GET and its JSON body exceed one deadline", async () => {
+        const module = await boot();
+        FakeNotification.permission = "granted";
+        const headers = deferred<Response>();
+        const body = deferred<{ publicKey: string }>();
+        const response = new Response();
+        const readBody = vi.spyOn(response, "json").mockReturnValue(body.promise);
+        heldResponses.set("GET", headers.promise);
+
+        const sync = module.reconcilePush();
+        await settle();
+        expect(calls("GET").at(-1)).toEqual({ method: "GET", path: "/api/push/key" });
+        const signal = lastSignal("GET");
+        await vi.advanceTimersByTimeAsync(20_000);
+        headers.resolve(response);
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 20_000 - 1);
+        expect(readBody).toHaveBeenCalledOnce();
+        expect(signal?.aborted).toBe(false);
+        expect(calls("PUT")).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(calls("PUT")).toHaveLength(1);
+        expect(signal?.aborted).toBe(true);
+        await sync;
+        expect(JSON.parse(localStorage.getItem(REGISTERED)!)).toMatchObject({ serverKey: KEY });
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("gives the request a full 30 seconds after sign-in settles", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const signIn = deferred();
+        deps.ensureAuth.mockReturnValueOnce(signIn.promise);
+        heldResponses.set("DELETE", deferred<Response>().promise);
+
+        const disable = module.disablePushOnThisBrowser();
+        await vi.advanceTimersByTimeAsync(2 * DEADLINE_MS);
+        expect(calls("DELETE")).toEqual([]);
+        expect(state(module).busy).toBe(true);
+
+        signIn.resolve();
+        await settle();
+        expect(calls("DELETE")).toHaveLength(1);
+        const signal = lastSignal("DELETE");
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+        expect(signal?.aborted).toBe(false);
+        expect(state(module).busy).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(signal?.aborted).toBe(true);
+        expect(state(module).busy).toBe(false);
+        await disable;
+    });
 });
 
 describe("startPushNotifications", () => {
