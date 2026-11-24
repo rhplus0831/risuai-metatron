@@ -447,6 +447,9 @@ lookahead starts at stored coverage and does not defer summaries.
 - The custom embedding URL is fetched directly by the server with no local-target restriction. Only an authenticated tab
   writes `hypaCustomSettings`, no card or module supplies the URL, and a local embedding server is a supported setup.
   Decision: owner, 2026-11-10 (known-issues review): the same trust as `/proxy`.
+- A cancelled recording stays counted against the shared memory-task capacity while a tracked local encode,
+  script-worker regex, or Google token count settles; its automatic chapter fetch is aborted at cancel. Decision: owner,
+  2026-11-24 (known-issues review): passing the task signal to the counter would also end a running local encode.
 
 ### Gotchas
 

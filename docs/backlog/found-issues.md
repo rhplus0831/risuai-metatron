@@ -35,7 +35,6 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [Docs](#docs): 1
 - [Rendering](#rendering): 1
-- [Server generation](#server-generation): 1
 
 ## Docs
 
@@ -72,22 +71,3 @@ stops cards that load web fonts this way; allowing only known font hosts (whose 
 most of those; loading and scoping the imported sheet is a larger change.
 
 **Decision:** owner, 2026-11-15: left as it is; the owner will deal with it separately. Do not fix it in passing.
-
-## Server generation
-
-### A token count queued behind a long encode holds shutdown before the tokenizer worker is ended
-
-Reproduced on 2026-11-22 at the Tokenizer Worker plan's slice 2 by holding an encode in the worker; the order was read
-again at `07fb41a0d`. An admitted Structured Memory request with `sceneBudget` awaits its token counts
-(`server/src/routes/structuredMemory.ts:251`, through `jobChatTokenCounter`, with no signal), and the app tracks that
-handler (`snapshots.track`, `server/src/app.ts:826`). Shutdown's `snapshots.stop()` (`server/src/app.ts:1286`) waits
-for every tracked handler before the chain reaches `tokenizers.dispose()` (`server/src/app.ts:1292`), which is what
-would end the worker. So a count queued behind a long encode in the ordinary worker holds shutdown until that encode
-ends.
-
-**Why it matters:** the plan's manual check "the container stops within its grace period while a count is running"
-can fail on a text near the 2 MiB count body for `novellist` or `gemma`. It is not a regression: before the worker,
-the same encode held the thread.
-
-**Suggested handling:** end or abort the tokenizer calls earlier in shutdown (before `snapshots.stop()`), or pass the
-request's signal to the scene-budget count; otherwise qualify the manual check.

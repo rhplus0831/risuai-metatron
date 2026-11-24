@@ -314,3 +314,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
   `saveStoredTranslationEdit` does not compare the editor's captured `base` (reproduced 2026-11-17, cross-check F4). An
   open editor shows a notice when the translation changes under it (`Chat.svelte`). Decision: owner, 2026-11-17: the
   rule of message text, where a base check makes slow edits conflict.
+- A translation deadline aborts a dispatched provider fetch, but the Google history count before it
+  (`server/src/translation/runner.ts`, `tokens.count`) gets no signal: queued or in flight, it keeps the run counted
+  against server capacity until it settles (Google's own 30 s timer once dispatched). Decision: owner, 2026-11-24
+  (known-issues review): the signal would also end a running local encode.

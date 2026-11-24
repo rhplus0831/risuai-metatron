@@ -88,6 +88,8 @@ handlers that reapply UI settings and repair incoming orders.
 - Plugin storage and settings in the [browser-local import](persistence.md#browser-local-import) wait 30 s each for
   their save (`waitForResourceFlush`) and for their verification read. Failure leaves the browser copy for the next
   boot.
+- A live plugin-permission refresh (`refreshPluginPermissions`) gives its read 30 s after sign-in inside its queue unit;
+  an expired refresh installs nothing, and the later grant and revoke units run.
 
 ### Serialization
 

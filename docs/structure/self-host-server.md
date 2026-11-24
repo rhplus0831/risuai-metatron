@@ -167,7 +167,9 @@ admission, wire keys, body caps, and response policy.
    state, routes), `serve()`, `attachWebSocket`, `startBackgroundTasks` (`generationJobs.startGc`, `snapshots.start`,
    `diagnostics.start`, the thumbnail sweep, the [asset mark](#asset-mark)).
 2. SIGINT or SIGTERM: `beginShutdown`, the HTTP drain (`SHUTDOWN_GRACE_MS`), `dispose()`; for a restore or an import see
-   [shutdown during a restore](server-resources.md#shutdown-during-a-restore).
+   [shutdown during a restore](server-resources.md#shutdown-during-a-restore). `dispose()` ends the tokenizer workers
+   after the job, translation and memory drains and before it awaits the snapshot drain, so a queued count rejects (a
+   scene read answers its saved record) while admitted writes still finish.
 
 `__NODE__` in the flagged `index.html` lets the client mount only when this server is present; the same script carries
 `__RISU_AI_DISCLOSURE__` (`RISU_AI_DISCLOSURE`), which the client's `aiLawApplies` reads. The flag is part of the

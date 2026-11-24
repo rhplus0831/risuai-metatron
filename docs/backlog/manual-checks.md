@@ -179,7 +179,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Static Audit Fixes (SA12)**: durable writes on Windows, macOS, and network mounts, and under real power loss.
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
 - [ ] **Headless Host**: the server restarted under a running `pnpm host:headless` (the host is listed again without a restart of the script); a server with HTTPS files (the script connects, and a second start reuses the profile); the `PORT`/`RISU_HOST` forms of the owner's own setup (a service unit, a Tailscale-bound server), where the refusal message must be clear when the server is not on loopback. On Windows: a start with `Port` or `Risu_Chrome` spelled in mixed case finds the server's port and the Chrome binary (checked on Linux with the Windows lookup only). With HTTPS files whose certificate does not verify: the page loads, and its public stylesheets still load (only the local listener's key is excepted).
-- [ ] **Tokenizer Worker**: the Docker image: the first send after a start counts its prompt (the worker finds `server/assets/token/` under the image's root), and the container stops within its grace period while a count is running ([found issues](found-issues.md#server-generation) records why a count queued behind a long encode can hold shutdown).
+- [ ] **Tokenizer Worker**: the Docker image: the first send after a start counts its prompt (the worker finds `server/assets/token/` under the image's root), and the container stops within its grace period while a long count is running (in-process, shutdown now ends the worker before it waits for tracked requests; the real container's grace period is unchecked).
 
 ## Scripts, specs, and measurements nobody ran
 

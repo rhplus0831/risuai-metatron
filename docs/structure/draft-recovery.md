@@ -165,6 +165,9 @@
 - A memory field edit or OOC answer the server refuses (`memoryRefused`, `oocAnswerRefusals`) counts as refused for the
   draft's chat, so the draft stays and Apply reports it as not saved. Apply first rereads a chat that is behind and
   keeps the draft when the target cannot be verified. An OOC exchange the server already holds exactly counts as saved.
+- The group result names the refused ops and memory fields (`refusedMeta`), also for a remembered group. Apply stores
+  the narrowed remainder in the draft's row (format 3) and keeps its save answer in the page; a later Apply first
+  settles that answer, then retries only what is left, also after a reload.
 - A real `hypaV3Data` that Structured Memory refuses (`setChatMeta`'s recovery source) is filed as a draft of its own
   before the flush, or a memory-only draft is kept; the dialog says which.
 - A non-delete character edit past the boot's three-day trash threshold becomes a draft instead of replaying. Explicit
@@ -302,6 +305,15 @@
   refusal the composer stays empty until a chat switch, another remount, or a reload brings the text back from the
   hand-off row; a draft send's whole snapshot waits the same way. Decision: owner, 2026-11-21 (found-issues review): the
   text is kept and the trigger is uncommon.
+- An Apply whose answer arrives only after its 30 s wait leaves the draft in its first format: after a reload, Apply
+  again rebuilds every op and, after its confirmation, sets a field edited elsewhere back to the draft's text. A reload
+  before the answer resends the journaled group without the draft's id, with the same result. Decision: owner,
+  2026-11-24 (known-issues review): a client-only checkpoint was tried and reverted (`913806ba3`); the Conditional Chat
+  Writes plan lets the server refuse the replay.
+- A draft whose refused HypaV3 summaries match another draft of the chat records them as filed and counts on that copy;
+  if that draft expires or is applied first, a later Apply removes the last copy. Refused values over about 8 MiB no
+  longer fit the progress row, and two tabs applying one draft can leave one failing on the progress version until
+  reload. Decision: owner, 2026-11-24 (known-issues review): each needs independent events to coincide.
 
 ### Gotchas
 

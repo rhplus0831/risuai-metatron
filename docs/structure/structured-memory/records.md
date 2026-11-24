@@ -317,8 +317,7 @@ of the group: no walk reads them.
   held. A caller holds an opaque token, so a write takes `MemoryEventWrite`.
 - Every stored record must fit `MAX_READ_RESPONSE_BYTES`, including all of a page's embedded sections. Individual input
   limits such as `sectionBodyChars` also apply to edits. The round budget can serve an oversized first row and charges
-  the stored representation. See [known issues](../../backlog/known-issues.md#structured-memory) for the difference
-  between stored and re-serialized bytes.
+  the stored representation. See [Limitations](#limitations) for the difference between stored and re-serialized bytes.
 - Table-of-contents statements never select `data`; `octet_length(data)` takes the size from the row's header. Column
   values come from the serialized record, so `toJSON` cannot make a column disagree with `data`.
 - The store checks what its columns and rows need, not a record's whole shape: the callers own that, and a record from

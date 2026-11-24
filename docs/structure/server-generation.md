@@ -417,8 +417,8 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   for a continue. A checkpoint would show the hidden text on every client. Decision: Generation Progress Window D23.
 - A reply over the candidate limit (`MAX_CANDIDATES_BYTES_PER_MESSAGE`, 192 KiB) rerolled in place is lost when the
   process dies before the reroll's final write: the begin write clears the text, `trimCandidates` drops the previous
-  reply, and its rollback copy lives only in the runner. Request History keeps the old text. Decision: owner,
-  2026-11-24 (known-issues review): a durable rollback copy needs a conditional chat write.
+  reply, and its rollback copy lives only in the runner. Request History keeps the old text. Decision: owner, 2026-11-24
+  (known-issues review): a durable rollback copy needs a conditional chat write.
 - If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request
   deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.

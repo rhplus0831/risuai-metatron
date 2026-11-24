@@ -144,6 +144,9 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   null stays chatless. Only implicit targeting without a chat argument (the Playground) uses the current selection, and
   a tab request without a chat sends its tool calls with the chat selected when it began (`requestServer` in
   `src/ts/process/request/transport.ts`); module discovery keeps its own fallback.
+- Each remote OAuth exchange in the tab (discovery, registration, the code helper, token exchange, refresh) gets 30 s
+  after app sign-in, its response body included. The authorization page and the code prompt are outside the clock, and
+  only the live login attempt installs tokens (`mcplib.ts`).
 - Preserve optional trailing caller signals: tab requests pass them through `getTools`/`callTool` in `mcp.ts`; job
   callbacks pass them to `readyTabClient` for tab clients and directly to the named client's listings/calls. Remote MCP
   and Google Search forward signals to network work and throw on abort. `request.ts` converts aborted discovery to an

@@ -243,7 +243,9 @@ accepted edit advances that revision immediately so another edit can follow.
 Timeline submits `eventText` for a non-retracted event or `eventRelease` to release its mark. Both use the coverage
 revision through `editStructuredMemory`. After either outcome `sendTextEdit` rereads coverage and the open record, and
 refreshes or invalidates the story read. A changed base title or summary discards the draft. The component contract
-defines the selection, revision and read-only guards.
+defines the selection, revision and read-only guards. Each request these controls wait on (the edit, a repair, each
+coverage or story round, the chapter and cost reads) gets its own 30 s bound (`CHAT_MEMORY_WRITE_DEADLINE_MS`) after
+sign-in; a timed-out edit still rereads before the controls return.
 
 ### The writer line
 

@@ -28,13 +28,9 @@ Sources the entries name (drop a line when no entry names it any more):
 - [characters-modules](#characters-modules) (2)
 - [chat-pipeline](#chat-pipeline) (1)
 - [chat-store](#chat-store) (1)
-- [draft-recovery](#draft-recovery) (1)
-- [mcp](#mcp) (1)
-- [memory](#memory) (2)
+- [memory](#memory) (1)
 - [network-jobs](#network-jobs) (1)
-- [plugin-sandbox](#plugin-sandbox) (1)
-- [structured-memory](#structured-memory) (1)
-- [translation](#translation) (2)
+- [translation](#translation) (1)
 
 ## assets
 
@@ -115,34 +111,6 @@ Guide: [Chat Store: Chat Module, Write Protocol, Checkpoints](../structure/chat-
   by `SEND_FLUSH_DEADLINE_MS` (30 s). [Restore guard](../../src/ts/checkpoints/chatCheckpoints.svelte.ts#L224) ·
   [Request](../../src/ts/checkpoints/chatRequest.ts#L20)
 
-## draft-recovery
-
-Guide: [Draft Recovery: Journal, Composer Rows, Recovery Drafts](../structure/draft-recovery.md#known-hazards).
-
-- A second recovery Apply replays the ops the first one saved, over edits made since. When the server refuses part of
-  a draft (a memory field edit after a job's write, an OOC answer another tab already stored), `applyRecoveryDraft`
-  keeps the whole draft, and a later Apply rebuilds every op, so a note the first Apply saved and another tab edited
-  since is set back to the draft's text. The same happens when the first Apply's wait ends at its 30-second bound and
-  the save commits later: the draft stays, Apply is enabled again, and a second Apply after a newer edit replays it
-  and reports success. Reproduced on 2026-11-24 at `4c84cd229` by rerunning the reviewer probes of the second fix
-  round of 2026-11-22: "a retry of memoryNote / mixedNote preserves a subsequent revision of the already-saved note"
-  failed with `Expected: "Newer saved note"`, `Received: "Original local note"`, and the timed-out case stored
-  "Recovered B" over "New edit B". A fix records which ops the acknowledgement refused (the group result needs a
-  field or exchange identity) and retries only those.
-  [Apply](../../src/ts/storage/journalRecovery.ts#L1148)
-
-## mcp
-
-Guide: [MCP: Client Registry, Remote and Internal Clients, RisuAccess, Tool Dispatch](../structure/mcp.md#known-hazards).
-
-- MCP OAuth discovery, client registration and token exchange (`mcplib.ts`) have no request deadline or signal, so a
-  remote tool listing that meets a 401 waits for as long as one of them is unanswered; another caller of the same remote
-  client can proceed. The internal clients' shared handshake (`readyTabClient`, the filesystem picker and the Google
-  credentials step) is held by the user's own interactive step. Reproduced on 2026-11-24 at `4c84cd229` by the
-  reproduction round's probe `src/ts/network/renderedTranslationMcpPush.probe.test.ts` (the listing had not ended after
-  ten minutes). The refresh token branch has no deadline either, by reading.
-  [OAuth](../../src/ts/process/mcp/mcplib.ts#L889) · [Handshake](../../src/ts/process/mcp/mcp.ts#L56)
-
 ## memory
 
 Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
@@ -153,13 +121,6 @@ Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
   2026-11-24 at `4c84cd229` by the reproduction round's probe `src/lib/Others/checkpointMemoryControls.probe.test.ts`
   (`{ outcome: 'busy' }` where `cancelled` and `queued` were expected). [Request
   slot](../../src/ts/process/memoryTasks.svelte.ts#L410)
-
-- A cancelled Structured Memory recording keeps its place in the server's shared memory-task capacity until its tracked
-  host calls settle (`memoryTasks.ts` charges a task once while any call remains), so a host call that never answers (a
-  held token count) holds that capacity across chats and warmers. Cancel publishes the cancelled terminal at once and
-  fences the task's commits; a late result adds nothing. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction
-  round's probe `server/src/tests/serviceCapacity.probe.test.ts` (one unsettled task ten minutes after cancellation).
-  [Capacity](../../server/src/prompt/memory/memoryTasks.ts#L892)
 
 ## network-jobs
 
@@ -172,28 +133,6 @@ Guide: [Network and Jobs: Fetch Routing, Aux Fetch, Generation Job Client, Job C
   `src/ts/network/renderedTranslationMcpPush.probe.test.ts` (no Disable completed in two tabs after ten minutes).
   [Queue](../../src/ts/network/pushNotifications.ts#L418)
 
-## plugin-sandbox
-
-Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
-
-- A plugin permission refresh whose answer never comes holds every later grant, revocation and permission-list save of
-  the tab: `refreshPluginPermissions` runs in the store's promise queue and submits its resource read without a deadline
-  or signal. Synchronous lookups still read the mirror, and other tabs have their own queues. Reproduced on 2026-11-24
-  at `4c84cd229` by the reproduction round's probe `src/ts/storage/tests/pluginImportAssets.probe.test.ts` (neither the
-  grant nor the revoke written after ten minutes). [Queue](../../src/ts/plugins/apiV3/permissionStore.ts#L166)
-
-## structured-memory
-
-Guide: [Structured Memory Records](../structure/structured-memory/records.md#known-hazards).
-
-- A Timeline edit whose answer never comes disables the mounted Timeline's edit and repair controls, the open editor's
-  Cancel and every other event's Edit included: `editStructuredMemory` calls `readAnswer` without `deadlineMs`, and
-  `repairing` clears `sending` only after the write and its reads settle. Opening another event and the panel's tab
-  selector still work. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
-  `src/lib/Others/checkpointMemoryControls.probe.test.ts` (another event's Edit still disabled after ten minutes).
-  [Edit](../../src/lib/Others/StructuredMemory/TimelineTab.svelte#L504) ·
-  [Request](../../src/ts/process/structuredMemory.svelte.ts#L286)
-
 ## translation
 
 Guide: [Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
@@ -204,10 +143,3 @@ Guide: [Translation: Providers, the LLM Translator, Presets, Server and Stored T
   translation bypass the queue. Reproduced on 2026-11-24 at `4c84cd229` by the reproduction round's probe
   `src/ts/network/renderedTranslationMcpPush.probe.test.ts` (ten provider requests where eleven were expected).
   [Permits](../../src/ts/translator/translator.ts#L112)
-
-- Server translation counts a run's underlying provider work against capacity after the caller's deadline: the caller
-  gets 504 "The translation took too long", and the work stays counted until the provider answers, so enough of them
-  make the route answer 429 for every user. A late answer is not applied over a newer translation. Reproduced on
-  2026-11-24 at `4c84cd229` by the reproduction round's probe `server/src/tests/serviceCapacity.probe.test.ts` (one unit
-  of provider work still counted after the deadline and a completed retry).
-  [Capacity](../../server/src/translation/runner.ts#L503)
