@@ -25,8 +25,9 @@ import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 //   `pendingManual`, one superseded by a frame, a late one for a task already known terminal), a
 //   transport failure's uncertain fence and what resolves it, one request per chat, and "Cancel".
 
-const { server, routes } = vi.hoisted(() => ({
+const { server, routes, ensureAuth } = vi.hoisted(() => ({
     server: { current: null as any },
+    ensureAuth: vi.fn<typeof import("../storage/serverAuth").ensureAuth>(),
     /** The memory task routes: every request as sent, answered by the test's `answer`. */
     routes: {
         requests: [] as { path: string; init: RequestInit }[],
@@ -36,6 +37,7 @@ const { server, routes } = vi.hoisted(() => ({
 
 vi.mock("../storage/serverAuth", async () =>
     (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        ensureAuth,
         authFetch: async (path: string, init: RequestInit = {}) => {
             if (path.startsWith(MEMORY_TASKS_PATH)) {
                 routes.requests.push({ path, init });
@@ -229,6 +231,7 @@ beforeAll(() => warmMutationGraph(() => import("./memoryTasks.svelte")), 60_000)
 
 beforeEach(() => {
     localStorage.clear();
+    ensureAuth.mockReset().mockResolvedValue();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -552,6 +555,76 @@ describe("Summarize now and Cancel", () => {
         tasks.noteMemoryTaskFrame(entry(terminal("A", "cancelled", server.current.chat("c", "k")!.revision)));
         expect(state()).toBe("cancelled");
         expect(fenced()).toBe(false);
+    });
+
+    it("leaves an uncertain fence and lets Cancel run after a silent Start times out", async () => {
+        const { tasks, awaiting, state } = await boot();
+        const answer = deferred<Response>();
+        routes.answer = async (_path, init) =>
+            init.method === "POST" ? answer.promise : json(200, { cancelled: true });
+        const settled = vi.fn();
+        const starting = tasks.startMemoryTask(refK).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(routes.requests).toHaveLength(1);
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ outcome: "failed", stage: "request" }),
+            );
+            expect(awaiting()).toBe(true);
+            expect(state()).toBeNull();
+            expect(await tasks.cancelMemoryTask(refK)).toEqual({ outcome: "cancelled" });
+        } finally {
+            answer.resolve(json(200, { outcome: "queued", status: live("A", "queued") }));
+            await starting;
+        }
+    });
+
+    it("lets Start run after a Cancel whose response body times out", async () => {
+        const { tasks } = await boot();
+        const body = deferred<unknown>();
+        const cancelAnswer = json(200, { cancelled: true });
+        const readBody = vi.spyOn(cancelAnswer, "json").mockReturnValue(body.promise);
+        routes.answer = async (_path, init) =>
+            init.method === "DELETE" ? cancelAnswer : json(200, { outcome: "queued", status: live("A", "queued") });
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "queued" });
+
+        const settled = vi.fn();
+        const cancelling = tasks.cancelMemoryTask(refK).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(readBody).toHaveBeenCalledOnce();
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ outcome: "failed", stage: "request" }),
+            );
+            expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "queued" });
+        } finally {
+            body.resolve({ cancelled: true });
+            await cancelling;
+        }
+    });
+
+    it("waits for sign-in before starting the memory task deadline", async () => {
+        const { tasks } = await boot();
+        const signIn = deferred<void>();
+        ensureAuth.mockReturnValueOnce(signIn.promise);
+        routes.answer = async () => json(200, { outcome: "queued", status: live("A", "queued") });
+        const settled = vi.fn();
+        const starting = tasks.startMemoryTask(refK).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(settled).not.toHaveBeenCalled();
+            expect(routes.requests).toHaveLength(0);
+        } finally {
+            signIn.resolve();
+            await starting;
+        }
+        expect(settled).toHaveBeenCalledExactlyOnceWith({ outcome: "queued" });
     });
 
     it("does not revive a task's fence from a late queued answer once its terminal was adopted, and lets a frame's status win over the answer's", async () => {

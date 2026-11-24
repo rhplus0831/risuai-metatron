@@ -276,6 +276,23 @@ describe("chat trash in the tab", () => {
         expect(mocks.error).toHaveBeenCalledExactlyOnceWith(language.chatTrash.unknown);
     });
 
+    it("keeps a chat-trash request pending past the checkpoint deadline", async () => {
+        const { chat, trash } = await boot();
+        const held = holdAnswer("/api/chat-trash/trash");
+        const settled = vi.fn();
+        const trashing = trash.trashChat(ref, chat.chatTrashRevision(ref)).then(settled);
+        try {
+            await held.committed;
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(settled).not.toHaveBeenCalled();
+        } finally {
+            held.release();
+            await trashing;
+        }
+        expect(settled).toHaveBeenCalledExactlyOnceWith(true);
+        expect(idsOf(chat.activeChatList(ref.chaId))).toEqual(["first"]);
+    });
+
     it("leaves an unacknowledged create unsent", async () => {
         const { chat, trash, language } = await boot();
         chat.createChat("c", savedChat("new"));
