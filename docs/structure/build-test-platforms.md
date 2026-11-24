@@ -403,6 +403,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 - In `public/sw.js`, `registerCache` labels fallback `/sw/img/` entries `image/png`, and `getSource` returns cached
   responses whole without processing `Range`; fallback media therefore keep the legacy MIME and range behavior.
   Decision: Audit Findings and Performance Leftovers 5, [archive](../archived-plan/README.md).
+- `.github/workflows/ci.yml` pins its actions by tag (`actions/checkout@v5`, `actions/setup-node@v5`,
+  `actions/cache@v4`), not by commit hash, so a publisher can move a tag to other code. Decision: owner, 2026-11-24: the
+  workflow is not in use, since agent sessions run the checks, so the tags stay.
 
 ### Gotchas
 

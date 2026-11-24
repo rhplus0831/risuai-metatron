@@ -37,7 +37,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Build and CI](#build-and-ci): 2
+- [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 1
 - [Client features](#client-features): 5
 - [Docs](#docs): 1
@@ -47,20 +47,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Server storage and workers](#server-storage-and-workers): 3
 
 ## Build and CI
-
-### The CI workflow pins its actions by tag
-
-Read on 2026-11-20 at `bcc698905`, in the file only. The three actions of `.github/workflows/ci.yml` are pinned by tag
-(`actions/checkout@v5`, `actions/setup-node@v5`, `actions/cache@v4`), not by commit hash. Not checked: whether the
-forge runs this workflow at all.
-
-**Why it matters:** low. A tag can be moved to other code by the action's publisher.
-
-**Suggested handling:** pin the actions by hash if the workflow is in use.
-
-**Decision:** owner, 2026-11-20: `dev` stays out of the triggers on purpose
-([build guide](../structure/build-test-platforms.md#ci)); do not file its absence. Owner, 2026-11-21: pin by hash only
-if the workflow is in use.
 
 ### The test wrapper's result cache omits ignored inputs
 
