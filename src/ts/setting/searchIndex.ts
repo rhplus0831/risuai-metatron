@@ -6,6 +6,7 @@ import { matchText, prepareQuery, MATCH_SCORE, type PreparedQuery } from "../uti
 import { editedMainProfile } from "../storage/settingsViews.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
+    CREDITS_SETTINGS_MENU,
     DEVICE_LINK_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
     INPUT_HOOKS_SETTINGS_MENU,
@@ -211,6 +212,7 @@ const PAGES: PageEntry[] = [
     { menu: STORAGE_SETTINGS_MENU, label: (lang) => lang.storagePage.title },
     { menu: 6, label: (lang) => lang.advancedSettings },
     { menu: 77, label: (lang) => lang.supporterThanks },
+    { menu: CREDITS_SETTINGS_MENU, label: (lang) => lang.creditsPage.title },
 ];
 
 // The Model menu's tabs (`ModelMenuTabs.svelte`), which share its one navigation entry.

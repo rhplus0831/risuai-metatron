@@ -1,5 +1,6 @@
 import {
     API_KEYS_SETTINGS_MENU,
+    CREDITS_SETTINGS_MENU,
     DEVICE_LINK_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
     INPUT_HOOKS_SETTINGS_MENU,
@@ -53,6 +54,7 @@ export const SETTINGS_PAGES = {
     hotkeys: 15,
     advanced: 6,
     thanks: 77,
+    credits: CREDITS_SETTINGS_MENU,
 } as const satisfies Record<string, number>;
 
 /** The playground tool slugs (`/playground/:tool`) and their `PlaygroundStore` value. The menu is 1, the chat 2. */

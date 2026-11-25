@@ -12,6 +12,7 @@
         ContactIcon,
         DatabaseBackupIcon,
         HardDriveIcon,
+        HeartHandshakeIcon,
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
@@ -66,6 +67,7 @@
         VOICE_SETTINGS_MENU,
         INTERACTION_SETTINGS_MENU,
         STORAGE_SETTINGS_MENU,
+        CREDITS_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
     } from "src/ts/stores.svelte";
@@ -79,6 +81,7 @@
     import PersonaSettings from "./Pages/PersonaSettings.svelte";
     import PromptSettings from "./Pages/PromptSettings.svelte";
     import ThanksPage from "./Pages/ThanksPage.svelte";
+    import CreditsPage from "./Pages/CreditsPage.svelte";
     import ModuleSettings from "./Pages/Module/ModuleSettings.svelte";
     import HotkeySettings from "./Pages/HotkeySettings.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
@@ -177,6 +180,11 @@
             entries: [
                 { menus: [6], icon: ActivityIcon, label: () => language.advancedSettings },
                 { menus: [77], icon: BoxIcon, label: () => language.supporterThanks },
+                {
+                    menus: [CREDITS_SETTINGS_MENU],
+                    icon: HeartHandshakeIcon,
+                    label: () => language.creditsPage.navLabel,
+                },
             ],
         },
     ];
@@ -417,6 +425,8 @@
                         <HotkeySettings />
                     {:else if $SettingsMenuIndex === 77}
                         <ThanksPage />
+                    {:else if $SettingsMenuIndex === CREDITS_SETTINGS_MENU}
+                        <CreditsPage />
                     {/if}
                 </div>
             {/key}

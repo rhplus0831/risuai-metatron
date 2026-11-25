@@ -161,6 +161,10 @@ entry point.
   box is 0 (off) and the page stores the number a request enforces ([response checks](llm-requests.md#response-checks)).
 - Input hooks and Request Rules are handwritten pages. Their titles are searchable through `searchIndex.ts` and their
   rows have no individual `SettingItem` anchors.
+- `CreditsPage` (menu `CREDITS_SETTINGS_MENU`, route `credits`) links the original Risuai repository, this fork's
+  repository, and the forks and community plugins the fork learned from, and states the license. Project names and URLs
+  are in the page and their descriptions in `creditsPage` (`src/lang/en.ts`). Its last group repeats the
+  Acknowledgements section of `README.md`: change both together.
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Display/*`, and `Device/*`.
 

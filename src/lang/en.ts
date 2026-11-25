@@ -4001,6 +4001,36 @@ export const languageEnglish = {
             "The resource snapshot was not restored because the server data was replaced elsewhere. The app will reload to show the current data.",
         unreadableSnapshot: "Unreadable snapshot — delete it, then scan again.",
     },
+    // The Source & credits settings page (`CreditsPage.svelte`). Project names are not translated and stay in the page.
+    creditsPage: {
+        title: "Source code & credits",
+        navLabel: "Source & credits",
+        description: "Where this app's source code is, and the projects it comes from and learned from.",
+        original: {
+            title: "Original project",
+            risuai: "The AI roleplay chat client this app is a fork of, by Kwaroran.",
+        },
+        fork: {
+            title: "This fork",
+            metatron: "The source code of this app.",
+        },
+        references: {
+            title: "Projects this fork learned from",
+            description:
+                "Other Risuai forks and community plugins whose features, policies, and bug fixes were studied while planning this fork. Thank you to their authors.",
+            pocketRisu:
+                "Storage dashboard and asset cleanup, deletion and disk space policies, settings search, and bug fixes that were checked against this app.",
+            risuBard:
+                "A fork of PocketRisu. Script state per reroll, named chat checkpoints, OOC turns, and turn markers in memory.",
+            haejeokRisuai:
+                "Message search across chats, Korean-aware fuzzy matching, server-made thumbnails, and stopping a generation from another device.",
+            risuNest:
+                "The alert queue, plugin safe mode, asset cleanup with a storage dashboard, and the network guard for unit tests.",
+            memorySystem: "A community memory system, studied for the structured memory.",
+        },
+        license:
+            "Risuai Metatron keeps the license of Risuai, the GNU General Public License version 3. You may use, change, and share it under that license.",
+    },
     storagePage: {
         title: "Storage",
         navLabel: "Storage",

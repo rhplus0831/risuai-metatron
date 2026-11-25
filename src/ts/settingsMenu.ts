@@ -33,3 +33,5 @@ export const DEVICE_LINK_SETTINGS_MENU = 25;
 export const INTERACTION_SETTINGS_MENU = 22;
 /** Disk usage, asset cleanup, and resource snapshots (`StorageSettings.svelte`). */
 export const STORAGE_SETTINGS_MENU = 23;
+/** The source repositories and the projects this fork learned from (`CreditsPage.svelte`). */
+export const CREDITS_SETTINGS_MENU = 27;

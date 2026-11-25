@@ -3962,6 +3962,33 @@ export const languageKorean = {
             "다른 곳에서 서버 데이터가 교체되어 리소스 스냅샷을 복원하지 않았습니다. 최신 데이터를 표시하기 위해 앱을 새로고침합니다.",
         unreadableSnapshot: "읽을 수 없는 스냅샷입니다. 삭제한 뒤 다시 스캔해 주세요.",
     },
+    creditsPage: {
+        title: "소스 코드 및 참고 프로젝트",
+        navLabel: "소스 및 참고 프로젝트",
+        description: "이 앱의 소스 코드가 있는 곳과, 이 앱의 바탕이 된 프로젝트 및 참고한 프로젝트입니다.",
+        original: {
+            title: "원본 프로젝트",
+            risuai: "이 앱이 포크한 AI 롤플레이 채팅 클라이언트입니다. Kwaroran이 만들었습니다.",
+        },
+        fork: {
+            title: "이 포크",
+            metatron: "이 앱의 소스 코드입니다.",
+        },
+        references: {
+            title: "참고한 프로젝트",
+            description:
+                "이 포크를 계획하면서 기능, 정책, 버그 수정을 살펴본 다른 Risuai 포크와 커뮤니티 플러그인입니다. 만든 분들께 감사드립니다.",
+            pocketRisu:
+                "저장소 대시보드와 에셋 정리, 삭제 및 디스크 공간 정책, 설정 검색, 그리고 이 앱의 코드와 대조한 버그 수정.",
+            risuBard:
+                "PocketRisu의 포크입니다. 리롤별 스크립트 상태, 이름 붙인 채팅 체크포인트, OOC 턴, 메모리의 턴 표시.",
+            haejeokRisuai: "채팅 전체 메시지 검색, 한국어 퍼지 매칭, 서버에서 만드는 썸네일, 다른 기기에서 생성 중지.",
+            risuNest: "알림 큐, 플러그인 안전 모드, 에셋 정리와 저장소 대시보드, 단위 테스트의 네트워크 가드.",
+            memorySystem: "커뮤니티 메모리 시스템입니다. 구조화 메모리를 만들 때 살펴보았습니다.",
+        },
+        license:
+            "Risuai Metatron은 Risuai의 라이선스인 GNU General Public License 버전 3을 그대로 따릅니다. 이 라이선스에 따라 사용, 수정, 배포할 수 있습니다.",
+    },
     storagePage: {
         title: "저장소 관리",
         navLabel: "저장소",

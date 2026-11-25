@@ -118,6 +118,7 @@ export {
     VOICE_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
     STORAGE_SETTINGS_MENU,
+    CREDITS_SETTINGS_MENU,
 } from "./settingsMenu";
 /**
  * A remount token (some callers set a random value): `{#key}` blocks in `src/lib/ChatScreens/Chat.svelte` and

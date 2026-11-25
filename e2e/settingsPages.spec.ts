@@ -44,6 +44,7 @@ const PAGES: [number, string][] = [
     [23, "storage"],
     [15, "hotkeys"],
     [6, "advanced"],
+    [27, "credits"],
 ];
 
 const openSettings = (page: Page, index: number) =>

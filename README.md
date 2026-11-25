@@ -134,3 +134,15 @@ The server makes every provider request itself, so inside the container `localho
 ## Upstream and license
 
 Risuai Metatron is based on [Risuai](https://github.com/kwaroran/Risuai) by Kwaroran and keeps its license, [GPL-3.0](LICENSE). The version in `version.json` is the Risuai release this fork is compatible with. The home menu shows the fork's own build ID (commit date and hash) above it.
+
+## Acknowledgements
+
+Risuai Metatron was planned with other Risuai forks and community plugins open beside it. Their features, policies, and bug fixes were studied, and many of Metatron's features started from an idea one of them had first:
+
+- [PocketRisu](https://github.com/PocketRisu/PocketRisu): the storage dashboard and asset cleanup, the deletion and disk space policies, settings search, and a list of bug fixes that was checked against Metatron's code.
+- [RisuBard](https://github.com/rpaddict/RisuBard), a fork of PocketRisu: script state per reroll, named chat checkpoints, OOC turns, and turn markers in memory.
+- [HaejeokRisuai](https://github.com/nevaeh5379/HaejeokRisuai): message search across chats, Korean-aware fuzzy matching, server-made thumbnails, and stopping a generation from another device.
+- [RisuNest](https://github.com/rsyumi/RisuNest): the alert queue, plugin safe mode, asset cleanup with a storage dashboard, and the network guard for unit tests.
+- [Archive Center](https://github.com/Flazer31/archive-center), [Dusk Atelier](https://github.com/Pyser08/Dusk-Atelier), and HypaPlus-R: community memory systems, studied for the structured memory.
+
+The [fork feature ledger](docs/backlog/fork-feature-ledger.md) records what became of each idea, and the app lists these projects under Settings › Advanced & about › Source & credits. Thank you to the authors of these projects.
