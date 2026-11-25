@@ -66,7 +66,8 @@ import {
  * mode, handler set, and captured viewport/language on the next animation frame (or after 16 ms
  * when frames are withheld). While the message is locked by a generation (it streams), the
  * transform is skipped: the text goes through
- * the browser steps raw, and the row renders again when the lock ends. Each target is answered as
+ * the browser steps raw, and the row renders again when the lock ends. A locked row that no stream
+ * chunk reached (a whole reply) starts no render at all (`ChatBody`'s `held`). Each target is answered as
  * soon as its result is known; a failed target or request leaves its text unprocessed, and a batch
  * shows one toast on its first failure; there is no browser fallback on the server path. A first call
  * refused for the chat's binding (409 `chatBindingMismatch`) while the chat has unacknowledged work waits

@@ -147,6 +147,14 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
   budgets.
 - `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
   wait for the answer.
+- A locked row that no stream chunk reached (a whole reply: Response Streaming off, Half Streaming, a continue or reroll
+  of either) is held (`Chat.svelte` `held`, from `isMessageStreamed`): `ChatBody` starts no render and keeps its last
+  finished body, or the loading markup without one, until the render after the lock settles, so the raw text never shows
+  during the job's tail. An empty row (a stream before its first chunk) and a streamed row render as before; a held body
+  is settled for `whenRendered`.
+  - `Chats.svelte` sends a held row's text changes and its release as updates rather than mounting `Chat` again, so a
+    continue keeps showing the reply it extends.
+  - An auto-translate decision's empty first result after the lock still shows for its 10 ms flip.
 
 ### Display transform failures
 

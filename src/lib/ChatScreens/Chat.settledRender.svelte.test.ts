@@ -684,3 +684,37 @@ describe("confirmed text on remount", () => {
         expect(targets("peer")).toHaveLength(3);
     });
 });
+
+describe("rows of a whole reply while locked", () => {
+    const lock = (seq: number) =>
+        applyServerGeneration(ref, {
+            jobId: "streaming-job",
+            messageId: "row",
+            // Ended generations stay retired for the module: each test locks with a new one.
+            generationId: `held-${counter}`,
+            text: "[row]",
+            seq,
+        });
+
+    it("holds a locked row that no chunk reached and renders it through the transform once the lock ends", async () => {
+        lock(0);
+        const row = render();
+        await drain();
+        expect(row.text()).not.toContain("[row]");
+        expect(document.body.innerHTML).toContain("animation: spin");
+        expect(targets()).toHaveLength(0);
+
+        endServerJob("streaming-job");
+        await drain();
+        expect(row.text()).toBe("[row][stored history]");
+        expect(targets()).toHaveLength(1);
+    });
+
+    it("shows a streamed row's text while it is locked", async () => {
+        lock(1);
+        const row = render();
+        await drain();
+        expect(row.text()).toBe("[row]");
+        expect(targets()).toHaveLength(0);
+    });
+});

@@ -119,6 +119,7 @@
         findChat,
         isChatGenerating,
         isMessageLocked,
+        isMessageStreamed,
         isStreamingMessage,
         patchMessage,
         removeMessages,
@@ -396,6 +397,13 @@
      * off): while it streams and until the job releases it, and also a previous group speaker's reply.
      */
     let locked = $derived(isMessageLocked(displayedChat, editorMessageId));
+    /**
+     * The body keeps its last finished render (`ChatBody`'s `held`): the message is locked by a generation that sent
+     * it no stream chunk, so its text arrived whole (Response Streaming off, Half Streaming, a continue or reroll of
+     * either) and has not been through the display transform, which skips a locked message. Showing it would flash
+     * the raw text for the rest of the job's tail. An empty row (a stream before its first chunk) renders as usual.
+     */
+    let held = $derived(locked && message !== "" && !isMessageStreamed(displayedChat, editorMessageId));
     const rerollsDisabled = $derived(rerollBusy ?? (displayedChat !== null && isChatGenerating(displayedChat)));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
 
@@ -547,7 +555,8 @@
         return clearSettledRender;
     });
 
-    // The server transform shows a locked (streaming) message raw: it renders again once the lock ends.
+    // The server transform shows a locked (streaming) message raw, and a held one keeps its body: it renders again
+    // once the lock ends.
     $effect(() => {
         const now = locked;
         if (wasLocked && !now) {
@@ -1643,6 +1652,7 @@
                     bind:translating
                     bind:retranslate
                     {streaming}
+                    {held}
                     {renderRawStreaming}
                     {rawStreamingText}
                     {storedPath}

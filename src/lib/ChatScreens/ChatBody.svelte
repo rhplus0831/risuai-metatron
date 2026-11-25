@@ -70,6 +70,10 @@
      * `src/ts/parser/renderErrors.ts` retry after 250 ms, then 1,000 ms, while the run is live. Other errors, or a
      * third failure, alert once with the original stack and show the input text.
      * Raw streaming (`renderRawStreaming`, untranslated) shows the text as it is and needs no parse.
+     * A held row (`held`) starts no render and aborts the current one: the body stays at `lastParsed`, or at the loading
+     * markup when the row has no finished render, which is also what the render after the hold shows while pending
+     * (an auto-translate decision's empty first result still shows for its 10 ms flip, as on any row). A held body is
+     * settled for `whenRendered`.
      */
 
     interface Props {
@@ -88,6 +92,11 @@
         bodyRoot?: HTMLElement | null;
         /** The row's message is streaming: the rendered path shows the original and translates once it ends. */
         streaming?: boolean;
+        /**
+         * The row's text arrived whole while its generation still holds it (`Chat.svelte`): it has not been through
+         * the display transform yet, so the body keeps what it showed and renders once the hold ends.
+         */
+        held?: boolean;
         renderRawStreaming?: boolean;
         rawStreamingText?: string;
         /**
@@ -126,6 +135,7 @@
         onMixedRender,
         bodyRoot,
         streaming = false,
+        held = false,
         renderRawStreaming = false,
         rawStreamingText = "",
         storedPath = false,
@@ -181,7 +191,7 @@
     }
 
     let shouldRenderRawStreaming = $derived(
-        renderRawStreaming && (storedPath ? !storedTranslationShown : !translated && !retranslate),
+        !held && renderRawStreaming && (storedPath ? !storedTranslationShown : !translated && !retranslate),
     );
     let rawStreamingRevision = $state(0);
     let wasRawStreaming = false;
@@ -598,12 +608,20 @@
         return body;
     }
 
-    let markParsingResult = $derived.by(() => {
+    /** The body's render: a promise while one runs, or the held body itself (`{#await}` shows it at once). */
+    let markParsingResult = $derived.by((): Promise<string> | string => {
         // Translation can await before ParseMarkdown reads the parser's asset inputs.
         moduleAssets;
         confirmedRevision;
         rawStreamingRevision;
         parseController?.abort();
+        if (held) {
+            parseController = undefined;
+            // The aborted run must not write its partial result as the held body.
+            ++parseRun;
+            if (!lastParsed) lastParsed = LOADING_HTML;
+            return lastParsed;
+        }
         parseController = new AbortController();
         return markParsing(
             msgDisplay,
@@ -639,9 +657,9 @@
         if (shouldRenderRawStreaming) {
             return;
         }
-        markParsingResult;
+        const result = markParsingResult;
         checkImg();
-        markParsingResult.then(checkImg);
+        void Promise.resolve(result).then(checkImg);
     });
 </script>
 

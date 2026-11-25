@@ -33,7 +33,8 @@
      * released with the held rows.
      *
      * A row whose `Chat` is mounted again (a text change, a stream's end, a reload) keeps its height until the
-     * new instance has rendered, and its top is put back after (`keepRowHeight`, `settleRowHeight`).
+     * new instance has rendered, and its top is put back after (`keepRowHeight`, `settleRowHeight`). A held row (a
+     * whole reply its generation still locks) takes text changes and its release as updates instead.
      *
      * Scrolling follows a scroll anchor (`ScrollAnchor`) that input releases to the reader. `suspendTrim` (a
      * screenshot or a message jump) and an unbounded window (`loadPages === Infinity`, a screenshot) skip the
@@ -974,14 +975,25 @@
             let imageSource: string | undefined;
             let imageThumb: 512 | undefined;
             let sent: RowUpdate | undefined;
+            /** The mounted instance's last text came while the row was held: leaving the hold is an update too. */
+            let mountedHeld = false;
+            // A whole reply its generation still locks (`Chat.svelte`'s `held`, by the same rule). Its text changes
+            // (a continue's acceptance, the tail's writes) and its release reach the mounted instance as updates, so
+            // its body keeps the render it showed; a new instance would have none and show the loading markup.
+            const wholeReplyHeld = $derived(
+                row.input.message.data !== "" &&
+                    isMessageLocked(ref, row.input.message.chatId) &&
+                    !isMessageStreamed(ref, row.input.message.chatId),
+            );
             $effect(() => {
                 if (!row.armed) return;
                 const { message, idx, streaming, optimized, mode } = row.input;
+                const replyHeld = wholeReplyHeld;
                 const ctx = context;
                 const data = message.data;
                 const portrait = message.role === "user" ? ctx.userIconPortrait : ctx.portrait;
                 const key: MountKey = {
-                    text: streaming ? null : data,
+                    text: streaming || replyHeld ? null : data,
                     // Keep disabled's historical by-content comparison, even for legacy object values.
                     rest: JSON.stringify([
                         portrait,
@@ -1016,7 +1028,7 @@
                 untrack(() => {
                     if (
                         mountKey &&
-                        mountKey.text === key.text &&
+                        (mountKey.text === key.text || replyHeld || mountedHeld) &&
                         mountKey.rest === key.rest &&
                         mountedCharacter === ctx.character
                     ) {
@@ -1061,6 +1073,7 @@
                     }
                     // Keep the latest equal string after a reload on the same-string comparison path.
                     mountKey = key;
+                    mountedHeld = replyHeld;
                     mountedCharacter = ctx.character;
                     imageSource = nextImageSource;
                     imageThumb = nextImageThumb;

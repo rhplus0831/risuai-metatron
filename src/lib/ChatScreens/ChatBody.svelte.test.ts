@@ -757,3 +757,73 @@ describe("ChatBody render lifetime", () => {
         expect(target.textContent).toBe("Settled body");
     });
 });
+
+describe("ChatBody held row", () => {
+    const spinner = (target: HTMLElement) => target.innerHTML.includes("animation: spin");
+
+    it("shows the loading markup for a held row without a render and renders its text once the hold ends", async () => {
+        const props = $state({ ...bodyProps(), msgDisplay: "Whole reply", held: true });
+        const { target, instance } = mountBody(props);
+        expect(ParseMarkdown).not.toHaveBeenCalled();
+        expect(spinner(target)).toBe(true);
+        await instance.whenRendered();
+
+        // The tail's writes change the text; nothing renders it while the row is held.
+        props.msgDisplay = "Processed reply";
+        flushSync();
+        await drain();
+        expect(ParseMarkdown).not.toHaveBeenCalled();
+        expect(spinner(target)).toBe(true);
+
+        props.held = false;
+        flushSync();
+        expect(callsFor("Processed reply")).toHaveLength(1);
+        // The render after the hold keeps the loading markup while it is pending.
+        await drain();
+        expect(spinner(target)).toBe(true);
+        await settle("Processed reply");
+        expect(target.textContent).toBe("Processed reply");
+        expect(spinner(target)).toBe(false);
+    });
+
+    it("keeps the last finished body while held and drops a render the hold aborted", async () => {
+        const props = $state({ ...bodyProps(), held: false });
+        const { target, instance } = mountBody(props);
+        await settle("Old text");
+        await instance.whenRendered();
+        expect(target.textContent).toBe("Old text");
+
+        props.msgDisplay = "Continued text";
+        flushSync();
+        const interrupted = hoisted.parses.find((parse) => parse.text === "Continued text")!;
+        const signal = callsFor("Continued text")[0][6];
+        props.held = true;
+        flushSync();
+        expect(signal?.aborted).toBe(true);
+        interrupted.resolve("<p>Aborted body</p>");
+        await drain();
+        expect(target.textContent).toBe("Old text");
+        expect(spinner(target)).toBe(false);
+
+        props.held = false;
+        flushSync();
+        const parses = hoisted.parses.filter((parse) => parse.text === "Continued text");
+        expect(parses).toHaveLength(2);
+        await drain();
+        expect(target.textContent).toBe("Old text");
+        parses[1].resolve("<p>Continued body</p>");
+        await drain();
+        await instance.whenRendered();
+        expect(target.textContent).toBe("Continued body");
+    });
+
+    it("shows the held body over raw streaming", async () => {
+        const props = $state({ ...bodyProps(), held: false, renderRawStreaming: false, rawStreamingText: "Raw text" });
+        const { target } = mountBody(props);
+        await settle("Old text");
+        props.held = true;
+        props.renderRawStreaming = true;
+        flushSync();
+        expect(target.textContent).toBe("Old text");
+    });
+});
