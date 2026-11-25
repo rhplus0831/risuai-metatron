@@ -1,16 +1,17 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
+import { settleFlush } from "../storage/tests/flushRetry";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "../tests/lowLevelAccessDialog";
+import type { RisuModule } from "./modules";
 
 // `importModule` creates its record through `addModule` for every file kind, over the real save
 // adapter and the real server store (`storeBackedServer.ts`): a `.risum` (written by
 // `exportModuleLegacy`, read by the real reader with the RPack map from disk), a CharX (the real
 // zip importer, converted by `convertCharacterToModule`; no character is created), a native module
-// JSON (its `lowLevelAccess` confirmation kept), a native lore file, an external lore file, and a
+// JSON (its `lowLevelAccess` question kept), a native lore file, an external lore file, and a
 // regex file. The collection holds the module with a fresh id and is on the server after one cycle.
 // A CharX whose converted module `addModule` refuses reports `noData` only, never success, and
 // inserts nothing.
@@ -25,10 +26,13 @@ const { server, alerts, picker } = vi.hoisted(() => {
         error: vi.fn((msg: unknown) => alerts.show("error")(msg)),
         normal: vi.fn((msg: unknown) => alerts.show("normal")(msg)),
         wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
+        toast: vi.fn((msg: unknown) => alerts.show("toast")(msg)),
         clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         reload: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
+        // "0" imports a module that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         store: { set: vi.fn(), subscribe: vi.fn() },
     };
     return {
@@ -48,9 +52,11 @@ vi.mock("../alert", async () =>
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertReloadNotice: alerts.reload,
         alertStore: alerts.store,
         alertWait: alerts.wait,
+        alertToast: alerts.toast,
         alertClear: alerts.clear,
     }),
 );
@@ -68,17 +74,6 @@ vi.mock("./files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("../tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-vi.mock("../rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
@@ -221,7 +216,7 @@ describe("importModule adds the module through addModule", () => {
             error: {
                 name: "AssetSaveError",
                 failed: 1,
-                cause: "setItem Error",
+                cause: { name: "AssetWriteError", status: 503 },
             },
         });
         expect(fetch.mock.calls.filter(([url]) => url === "/api/assets/write")).toHaveLength(8);
@@ -291,7 +286,7 @@ describe("importModule adds the module through addModule", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("native module JSON: a fresh id, the lowLevelAccess confirmation kept", async () => {
+    it("native module JSON: a fresh id, the lowLevelAccess question kept", async () => {
         const { imported, list, modules, sync, record } = await boot();
         const file = {
             type: "risuModule",
@@ -304,10 +299,10 @@ describe("importModule adds the module through addModule", () => {
         const { module } = await imported({ name: "native.json", data: encode(file) });
         expect(module.id).not.toBe("old");
         expect(module).toMatchObject({ name: "Native", description: "n", lowLevelAccess: true });
-        expect(alerts.confirm).toHaveBeenCalledWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledWith(...lowLevelAccessDialog());
 
-        // Declined: nothing is added.
-        alerts.confirm.mockResolvedValueOnce(false);
+        // Cancelled: nothing is added.
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
         const before = list();
         picker.file = { name: "native.json", data: encode(file) };
         expect(await modules.importModule()).toBe(false);
@@ -372,6 +367,170 @@ describe("importModule adds the module through addModule", () => {
     });
 });
 
+describe("module imports remove MCP servers", () => {
+    const paths = [".risum dialog", ".risum file boundary", "risuModule JSON", "#import_module= link"] as const;
+    const source = (extra: Partial<RisuModule> = {}) => ({
+        type: "risuModule",
+        id: "source-id",
+        name: "Imported module",
+        description: "Keep this description",
+        lorebook: [],
+        regex: [regex("Kept rule")],
+        ...extra,
+    });
+    const startImport = async (
+        h: Awaited<ReturnType<typeof boot>>,
+        path: (typeof paths)[number],
+        data: ReturnType<typeof source>,
+    ) => {
+        if (path === "#import_module= link") {
+            const encoded = Buffer.from(encode(data)).toString("base64");
+            vi.stubGlobal("location", new URL(`http://localhost/#import_module=${encodeURIComponent(encoded)}`));
+            return h.cards.characterURLImport();
+        }
+        if (path === "risuModule JSON") {
+            picker.file = { name: "module.json", data: encode(data) };
+        } else {
+            const bytes = await h.modules.exportModuleLegacy(data, { saveData: false, alertEnd: false });
+            if (path === ".risum file boundary") {
+                const module = await h.modules.importModuleFile(new Blob([new Uint8Array(bytes!)]));
+                if (module) await h.modules.addImportedModule(module, { announce: true });
+                return module;
+            }
+            picker.file = { name: "module.risum", data: bytes! };
+        }
+        return h.modules.importModule();
+    };
+
+    it.each(paths)(
+        "%s drops MCP and leaves one toast after the save acknowledgement and success dialog",
+        async (path) => {
+            const h = await boot();
+            const data = source({ mcp: { url: "https://module.example/mcp" } });
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => (release = resolve));
+            let applied!: () => void;
+            const batchApplied = new Promise<void>((resolve) => (applied = resolve));
+            const realFetch = h.fake.fetch.bind(h.fake);
+            vi.spyOn(h.fake, "fetch").mockImplementation(async (url, init) => {
+                const response = await realFetch(url, init);
+                if (url === "/api/resources/batch") {
+                    applied();
+                    await held;
+                }
+                return response;
+            });
+            const importing = startImport(h, path, data);
+            await batchApplied;
+            try {
+                // The server has saved the record, but the tab has not received its acknowledgement.
+                expect(h.list()).toHaveLength(1);
+                expect(h.list()[0]).not.toHaveProperty("mcp");
+                expect(h.record("modules")).toEqual(h.list());
+                expect(h.shown()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+                expect(h.stores.alertStore.status()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+                expect(alerts.toast).not.toHaveBeenCalled();
+                expect(alerts.normal).not.toHaveBeenCalled();
+            } finally {
+                release();
+                await importing;
+            }
+            if (path === ".risum file boundary") expect(await importing).not.toHaveProperty("mcp");
+            expect(h.list()[0]).toMatchObject({
+                name: "Imported module",
+                description: "Keep this description",
+                lorebook: [],
+                regex: [regex("Kept rule")],
+            });
+            expect(alerts.toast).toHaveBeenCalledExactlyOnceWith(language.moduleImportMcpDropped);
+            const toast = { type: "toast", msg: language.moduleImportMcpDropped };
+            expect(h.stores.alertStore.status()).toEqual(toast);
+            if (path === "risuModule JSON") {
+                expect(alerts.normal).not.toHaveBeenCalled();
+            } else {
+                expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successImport);
+                expect(h.shown()).toEqual({ type: "normal", msg: language.successImport });
+                h.stores.alertStore.answer("");
+            }
+            expect(h.shown()).toEqual(toast);
+            h.collectionStore.setEnabledModules([h.list()[0].id]);
+            expect(h.modules.getModuleMcps()).toEqual([]);
+            await h.sync.flushResources();
+            expect(h.record("modules")).toEqual(h.list());
+            expect(alerts.toast).toHaveBeenCalledExactlyOnceWith(language.moduleImportMcpDropped);
+            expect(alerts.error).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each(
+        paths.flatMap((path) => [
+            [path, "with", lowLevelAccessAnswer.with, true],
+            [path, "without", lowLevelAccessAnswer.without, false],
+        ]) as [(typeof paths)[number], string, string, boolean][],
+    )("%s imports a module that asks for low-level access %s it", async (path, _choice, answer, stored) => {
+        const h = await boot();
+        alerts.select.mockResolvedValueOnce(answer);
+        await startImport(h, path, source({ lowLevelAccess: true }));
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+        expect(h.list()).toHaveLength(1);
+        expect(h.list()[0]).toMatchObject({ name: "Imported module", lowLevelAccess: stored });
+        await h.sync.flushResources();
+        expect(h.record("modules")).toEqual(h.list());
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)("%s imports a module without an MCP field without a removal toast", async (path) => {
+        const h = await boot();
+        await startImport(h, path, source());
+        expect(h.list()).toHaveLength(1);
+        expect(h.list()[0]).toMatchObject({ name: "Imported module", description: "Keep this description" });
+        expect(h.list()[0]).not.toHaveProperty("mcp");
+        expect(h.record("modules")).toEqual(h.list());
+        if (path !== "risuModule JSON") {
+            expect(h.shown()).toEqual({ type: "normal", msg: language.successImport });
+            h.stores.alertStore.answer("");
+        }
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(h.stores.alertStore.status()).toBeNull();
+        expect(h.shown().type).toBe("none");
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each(paths)("%s adds nothing and shows no removal toast when low-level access is declined", async (path) => {
+        const h = await boot();
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
+        await startImport(h, path, source({ lowLevelAccess: true, mcp: { url: "https://module.example/mcp" } }));
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+        expect(h.list()).toEqual([]);
+        await h.sync.flushResources();
+        expect(h.record("modules")).toEqual([]);
+        expect(h.fake.batchCount()).toBe(0);
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(h.stores.alertStore.status()?.type).not.toBe("toast");
+        expect(h.shown().type).not.toBe("toast");
+    });
+
+    it("readModule removes MCP silently before the embedded module is saved", async () => {
+        const h = await boot();
+        const bytes = await h.modules.exportModuleLegacy(source({ mcp: { url: "https://module.example/mcp" } }), {
+            saveData: false,
+            alertEnd: false,
+        });
+        const module = await h.modules.readModule(Buffer.from(bytes!));
+        expect(module).not.toHaveProperty("mcp");
+        expect(module).toMatchObject({ name: "Imported module", regex: [regex("Kept rule")] });
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(await h.modules.addImportedModule(module, { announce: false })).toBe(true);
+        expect(h.list()).toHaveLength(1);
+        expect(h.list()[0]).not.toHaveProperty("mcp");
+        expect(h.record("modules")).toEqual(h.list());
+        expect(alerts.toast).not.toHaveBeenCalled();
+        expect(h.stores.alertStore.status()).toBeNull();
+        expect(h.shown().type).toBe("none");
+    });
+});
+
 describe("a CharX whose converted module is refused", () => {
     it("reports noData only, never success, and inserts nothing", async () => {
         const { modules, cards, list, sync, record, mirrorText } = await boot();
@@ -417,10 +576,14 @@ describe("the import alert waits for the acknowledgement", () => {
         return alerts.clear.mock.invocationCallOrder.some((order) => order > last);
     };
     /** A `.risum` of a module named `name` (the dialog's announcing branch). */
-    const risum = async (modules: Awaited<ReturnType<typeof boot>>["modules"], name: string) => ({
+    const risum = async (
+        modules: Awaited<ReturnType<typeof boot>>["modules"],
+        name: string,
+        extra: Partial<RisuModule> = {},
+    ) => ({
         name: `${name}.risum`,
         data: await modules.exportModuleLegacy(
-            { id: "file-id", name, description: "" },
+            { id: "file-id", name, description: "", ...extra },
             { saveData: false, alertEnd: false },
         ),
     });
@@ -497,6 +660,35 @@ describe("the import alert waits for the acknowledgement", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it("points to the module already in the list when its save response misses the deadline", async () => {
+        const { modules, list, record, fake, sync, shown } = await boot();
+        picker.file = json("Pending module");
+        fake.holdNextBatchResponse = true;
+        const settled = vi.fn();
+        const importing = modules.importModule().then(settled);
+        const notice =
+            "This item is already in your list and its save is still pending. Please check back shortly without importing it again.";
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(fake.releaseBatchResponse).not.toBeNull();
+            expect(names(list())).toEqual(["Pending module"]);
+            expect(record("modules")).toEqual(list());
+            expect(shown()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(shown()).toEqual({ type: "error", msg: notice });
+            expect(settled).toHaveBeenCalledOnce();
+        } finally {
+            fake.releaseBatchResponse?.();
+            await importing;
+            await sync.flushResources();
+        }
+        expect(names(list())).toEqual(["Pending module"]);
+        expect(shown()).toEqual({ type: "error", msg: notice });
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
     it("an import alone survives another tab's rename of a different module: both saved, success announced, no notice", async () => {
         const h = await boot();
         const { modules, list, record, fake, sync } = h;
@@ -537,42 +729,47 @@ describe("the import alert waits for the acknowledgement", () => {
         collectionStore.updateModule(m0, { name: "mine" });
         collectionStore.addPreset({ name: "p3" });
         remote(fake, (modules) => (modules[0].name = "theirs"));
-        // The first batch (modules and presets) conflicts; the presets retry fails.
+        // The first batch (modules and presets) conflicts; the presets retry fails, and the flush's
+        // resend after its backoff stays unanswered: the import stops waiting at its save deadline.
         let batches = 0;
         intercept(async (url, answer) => {
             if (url === "/api/resources/batch" && ++batches === 2) {
+                fake.holdNextBatch = true;
                 return Response.json({ error: "down" }, { status: 503 });
             }
             return answer();
         });
         picker.file = await risum(modules, "Lost");
-        await modules.importModule();
-        expect(batches).toBe(2);
+        await settleFlush(modules.importModule());
+        expect(batches).toBe(3);
+        expect(fake.releaseBatch).not.toBeNull();
         expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportDiscarded);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(names(list())).toEqual(["theirs"]);
         expect(names(record("modules"))).toEqual(["theirs"]);
-        // The preset is saved by the ordinary retry.
-        await vi.advanceTimersByTimeAsync(35_000);
-        await sync.flushResources();
+        // The preset is saved once the server answers the resend.
+        fake.releaseBatch!();
+        await settleFlush(sync.flushResources());
         expect(names(record("presets"))).toContain("p3");
     });
 
-    it("a failed flush with the module still listed reports moduleImportUnconfirmed with the reason; the module is saved later", async () => {
+    it("a save the server does not answer, with the module still listed, reports importSavePending and no MCP removal toast; the module is saved later", async () => {
         const h = await boot();
         const { modules, list, record, fake, sync } = h;
-        fake.failNext = { status: 0, times: 1, match: (path: string) => path === "/api/resources/batch" };
-        picker.file = await risum(modules, "Unconfirmed");
-        await modules.importModule();
-        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
-            language.moduleImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
-        );
+        // A failed request is retried by the flush; an unanswered one outlasts the import's save deadline.
+        fake.holdNextBatch = true;
+        picker.file = await risum(modules, "Unconfirmed", { mcp: { url: "https://module.example/mcp" } });
+        await settleFlush(modules.importModule());
+        expect(fake.releaseBatch).not.toBeNull();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.importSavePending);
         expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.toast).not.toHaveBeenCalled();
         expect(names(list())).toEqual(["Unconfirmed"]);
         expect(record("modules") ?? []).toEqual([]);
-        await vi.advanceTimersByTimeAsync(35_000);
-        await sync.flushResources();
+        fake.releaseBatch!();
+        await settleFlush(sync.flushResources());
         expect(names(record("modules"))).toEqual(["Unconfirmed"]);
+        expect(alerts.toast).not.toHaveBeenCalled();
     });
 
     it("keeps an error alert that appeared while the import waited: no success alert and no clear over it", async () => {
@@ -736,6 +933,7 @@ describe("server module file imports", () => {
         expect(await modules.importModuleFile(new Blob([new Uint8Array(bytes)]))).toBeNull();
         expect(fetch).not.toHaveBeenCalled();
         expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.errors.noData);
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(alerts.confirm).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(list()).toEqual(before);
@@ -749,10 +947,11 @@ describe("server module file imports", () => {
         );
         const before = list();
         const fetch = vi.spyOn(server.current, "fetch");
-        alerts.confirm.mockResolvedValueOnce(false);
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
         picker.file = { name: "permission.risum", data: bytes };
         await modules.importModule();
-        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+        expect(alerts.confirm).not.toHaveBeenCalled();
         expect(fetch).not.toHaveBeenCalled();
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -791,10 +990,9 @@ describe("server module file imports", () => {
         const realFetch = server.current.fetch.bind(server.current);
         const fetch = vi.spyOn(server.current, "fetch").mockImplementation((url, init) => {
             if (url !== "/api/import/module") return realFetch(url, init);
-            expect(alerts.confirm.mock.calls).toEqual([
-                [language.lowLevelAccessConfirm],
-                [language.bootstrap.resetLorebookQuestion],
-            ]);
+            expect(alerts.select.mock.calls).toEqual([lowLevelAccessDialog()]);
+            expect(alerts.confirm.mock.calls).toEqual([[language.bootstrap.resetLorebookQuestion]]);
+            expect(alerts.select.mock.invocationCallOrder[0]).toBeLessThan(alerts.confirm.mock.invocationCallOrder[0]);
             return Promise.resolve(response);
         });
         const before = list();
@@ -813,7 +1011,11 @@ describe("server module file imports", () => {
             controller.enqueue(encode({ done, total: 2 }));
             controller.enqueue(new TextEncoder().encode("\n"));
             await vi.advanceTimersByTimeAsync(0);
-            expect(alertWait).toHaveBeenLastCalledWith(`Loading... (Adding Assets ${done} / 2)`);
+            expect(alertWait).toHaveBeenLastCalledWith(
+                `Loading... (Adding Assets ${done} / 2)`,
+                expect.any(Function),
+                expect.any(Function),
+            );
             expect(list()).toEqual(before);
             expect(alerts.normal).not.toHaveBeenCalled();
         }
@@ -879,6 +1081,7 @@ describe("server module file imports", () => {
             message: () => "Invalid authentication",
         },
         { name: "other 413 text", status: 413, error: "Proxy limit", message: () => "Proxy limit" },
+        { name: "a proxy's HTML 413", status: 413, message: () => language.uploadRefusedByProxy },
         { name: "other HTTP error text", status: 500, error: "Store unavailable", message: () => "Store unavailable" },
         {
             name: "non-JSON HTTP error",

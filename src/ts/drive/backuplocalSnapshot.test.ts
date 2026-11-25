@@ -32,7 +32,10 @@ type Support = {
 let support: Support;
 
 const mocks = vi.hoisted(() => ({
-    flush: vi.fn(async () => ({ discarded: [] as string[] })),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+        discarded: [],
+        refused: [],
+    })),
     authFetch: vi.fn(),
     inventory: { current: null as any },
     writer: { chunks: [] as Uint8Array[] },
@@ -46,24 +49,37 @@ const mocks = vi.hoisted(() => ({
     },
 }));
 
-vi.mock("../storage/resourceSync.svelte", () => ({ flushResources: () => mocks.flush() }));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: () => mocks.flush(),
+        refusedItems: () => [],
+    }),
+);
+// The refused-change labels' readers: the rune stores do not load in the node environment, and
+// these backups have no refused changes to name.
+vi.mock("../storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("../storage/snapshots.svelte", () => ({ buildBackupInventory: () => mocks.inventory.current }));
 vi.mock("../storage/serverAuth", () => ({
     authFetch: (path: string, init: RequestInit) => mocks.authFetch(path, init),
     getNodeServerProxyAuth: async () => null,
 }));
-vi.mock("../globalApi.svelte", () => ({
-    LocalWriter: class {
-        writer = { abort: async () => undefined };
-        async init() {
-            return true;
-        }
-        async write(data: Uint8Array) {
-            mocks.writer.chunks.push(new Uint8Array(data));
-        }
-        async close() {}
-    },
-}));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        LocalWriter: class {
+            writer = { abort: async () => undefined };
+            async init() {
+                return true;
+            }
+            async write(data: Uint8Array) {
+                mocks.writer.chunks.push(new Uint8Array(data));
+            }
+            async close() {}
+        },
+    }),
+);
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(mocks.alerts));
 vi.mock("src/lang", () => ({
     language: { partialBackupFirstConfirm: "first?", partialBackupSecondConfirm: "second?" },
@@ -133,7 +149,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-    mocks.flush.mockReset().mockResolvedValue({ discarded: [] });
+    mocks.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
     mocks.authFetch.mockReset();
     mocks.writer.chunks.length = 0;
     mocks.inventory.current = null;
@@ -153,7 +169,7 @@ describe("SavePartialLocalBackup over the real export route", () => {
                 data: alice("assets/new.png"),
             });
             expect(response.status).toBe(200);
-            return { discarded: [] };
+            return { discarded: [], refused: [] };
         });
 
         await SavePartialLocalBackup();

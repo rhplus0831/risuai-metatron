@@ -1,13 +1,18 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { serve } from "@hono/node-server";
+import { parseContextReport } from "../../../shared/contextReport.ts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+    type GenerationPreviewResult,
     type GenerationTerminalEvent,
+    type StructuredMemoryTaskInput,
+    type MemoryTaskRecordAnswer,
     type MemoryChatRef,
     type MemoryTaskInput,
     type MemoryTaskService,
@@ -16,6 +21,16 @@ import {
 } from "../../../shared/jobs.ts";
 import { LLMFlags, LLMFormat, type LLMModel, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { messageSourceHash } from "../data/memoryStore.ts";
+import type { Message } from "../../../shared/database.ts";
+import { parseAnalysis } from "../prompt/memory/structured/analysis.ts";
+import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
+import { newScenePage } from "../prompt/memory/structured/pages.ts";
+import { confirmedWindows, writerCadence, writerCeiling } from "../prompt/memory/structured/window.ts";
+import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
+import * as localModels from "../prompt/transformers.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // Memory on the server, end to end. A send (and a preview) as a server job on a real listening
@@ -194,6 +209,7 @@ const batch = (body: unknown) => api("/api/resources/batch", { method: "POST", b
 
 /** The section homes of the settings used here. */
 const SECTION_OF: Record<string, string> = {
+    memoryAlgorithmType: "ui",
     hypaV3: "memoryTranslateMedia",
     hypav2: "memoryTranslateMedia",
     hanuraiEnable: "memoryTranslateMedia",
@@ -240,6 +256,26 @@ async function patchPreset(kind: "presets" | "modelPresets" | "modelProfiles", p
     });
     expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
 }
+/** Install a connection without changing either of the model preset's slots. */
+async function installChatMemoryConnection() {
+    const current = await single("modelProfiles");
+    const main = current.data.find((profile: { id: string }) => profile.id === profileId);
+    const result = await batch({
+        ops: [
+            {
+                kind: "modelProfiles",
+                id: "main",
+                baseRevision: current.revision,
+                data: [
+                    ...current.data.filter((profile: { id: string }) => profile.id !== "chat-memory"),
+                    { ...main, id: "chat-memory", name: "Chat memory", customProxyRequestModel: "chat-memory-model" },
+                ],
+            },
+        ],
+    });
+    expect(result.status).toBe(200);
+}
+
 /** Patches the selected HypaV3 preset's settings. */
 async function patchHypaV3(settings: Record<string, unknown>) {
     const current = await single("hypaV3Presets");
@@ -294,6 +330,22 @@ const longText = (i: number) =>
     `the party walked through the ${["forest", "desert", "city", "cave"][i % 4]} and talked at length about item ${i}. `.repeat(
         3,
     );
+
+function candidateReply(): Message {
+    return {
+        chatId: "a2",
+        role: "char",
+        data: "Selected reply: the beacon shines blue.",
+        candidates: [
+            { id: "discarded", data: "Discarded reply: the beacon shines red." },
+            { id: "selected", data: "Selected reply: the beacon shines blue." },
+            { id: "unused", data: "Unused reply: the beacon shines green." },
+        ],
+        selected: 1,
+        candidatesRevision: 4,
+        scriptstateCheckpoint: { before: null, after: { beacon: "blue" } },
+    };
+}
 
 let seeded = 0;
 /** A character with memory on and a chat `k` of `count` long messages (`m0..`), or the given messages. */
@@ -432,11 +484,12 @@ async function job(
     chaId: string,
     extra: Record<string, unknown> = {},
     options: {
+        command?: Record<string, unknown>;
         observeStages?: boolean;
         onEvent?: (event: any) => void;
         answer?: (event: any) => unknown | Promise<unknown>;
         hooks?: Record<string, unknown>;
-        answerCallback?: (event: any) => Record<string, unknown>;
+        answerCallback?: (event: any) => Record<string, unknown> | Promise<Record<string, unknown>>;
     } = {},
 ): Promise<{ status: number; body: any; events: any[]; terminal: GenerationTerminalEvent | undefined }> {
     const chat = await readChat(chaId, (extra.chatId as string | undefined) ?? "k");
@@ -465,6 +518,7 @@ async function job(
         body: JSON.stringify({
             kind,
             clientId: "tab",
+            ...(options.command ? { command: options.command } : {}),
             ...(options.hooks ? { hooks: options.hooks } : {}),
             context: {
                 characterId: chaId,
@@ -512,7 +566,7 @@ async function job(
                 }
             }
             if (event.type === "callback" && options.answerCallback) {
-                ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
+                ws.send(JSON.stringify({ type: "answer", id: event.id, ...(await options.answerCallback(event)) }));
             }
         };
     });
@@ -598,6 +652,9 @@ async function startStack(options: { memoryTasks?: "disabled" | MemoryTaskServic
         ...defaultMemorySettings,
         hypaCustomSettings: { url: embedderUrl, key: EMBED_KEY, model: "emb-model" },
     });
+    // The chats here are sized for the ratio defaults (a fifth of the context for memory, background
+    // summaries above 85% of it); the seeded preset is in token mode.
+    await patchHypaV3({ budgetMode: "ratio" });
     return stack;
 }
 
@@ -649,7 +706,66 @@ afterEach(async () => {
     await patchSettings(defaultMemorySettings);
 });
 
+it.each([
+    { v2: false, field: "hypaV3Data", data: {}, missing: "V3 summaries" },
+    {
+        v2: false,
+        field: "hypaV3Data",
+        data: { summaries: [{ text: "A past event", isImportant: false }] },
+        missing: "V3 chatMemos",
+    },
+    { v2: true, field: "hypaV2Data", data: {}, missing: "V2 both chunk lists" },
+    { v2: true, field: "hypaV2Data", data: { chunks: [], lastMainChunkID: 0 }, missing: "V2 mainChunks" },
+    { v2: true, field: "hypaV2Data", data: { mainChunks: [], lastMainChunkID: 0 }, missing: "V2 chunks" },
+])("completes a memory-enabled send over stored metadata missing $missing", async ({ v2, field, data }) => {
+    await patchSettings({ hypav2: v2, hypaV3: !v2, hypaModel: "MiniLM", hypaAllocatedTokens: 0 });
+    const chaId = await seedCharacter({ messages: [{ role: "user", data: "Hello", chatId: "u1" }] });
+    await setChatMeta(chaId, { memoryEnabled: true, [field]: data });
+    expect((await readChat(chaId)).data[field]).toStrictEqual(data);
+
+    const { terminal } = await job("send", chaId);
+
+    expect(terminal, JSON.stringify(terminal)).toMatchObject({ type: "done" });
+    expect(mains()).toHaveLength(1);
+    expect(summaries()).toHaveLength(0);
+    expect((await readChat(chaId)).data.message.at(-1)).toMatchObject({ role: "char", data: "Main reply." });
+    if (!v2) expect((await readChat(chaId)).data[field]).toStrictEqual(data);
+});
+
 describe("HypaV3", () => {
+    it("keeps taskless OOC summary checkpoints on the copy and selects them into the preview", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        try {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter();
+            await setChatMeta(chaId, {
+                oocLog: {
+                    target: {
+                        id: "target",
+                        segment: "discussion",
+                        anchorMessageId: "m23",
+                        question: "Explain the journey",
+                        time: 1,
+                    },
+                },
+            });
+            const before = JSON.stringify(await readChat(chaId));
+            const characterBefore = JSON.stringify(await readCharacter(chaId));
+            const { terminal } = await job("preview", chaId, { oocExchangeId: "target" });
+            expect(JSON.stringify(await readChat(chaId))).toBe(before);
+            expect(JSON.stringify(await readCharacter(chaId))).toBe(characterBefore);
+            expect(terminal, JSON.stringify(terminal)).toMatchObject({ type: "done", result: { ooc: true } });
+            if (terminal?.type !== "done") throw new Error(JSON.stringify(terminal));
+            const result = terminal.result as import("../../../shared/jobs.ts").GenerationPreviewResult;
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toEqual([]);
+            expect(memoryCard(result.messages)?.content).toContain("Summary 1: events happened.");
+            expect(result.messages.at(-1)).toMatchObject({ role: "user", content: "Explain the journey" });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it(
         "requests the summaries without streaming, stores them before the main request, puts the memory card in the prompt, and reuses the vectors on the next send",
         async () => {
@@ -792,7 +908,7 @@ describe("HypaV3", () => {
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
             expect(summaries().length).toBeGreaterThan(0);
             expect(mains()).toHaveLength(0);
-            const card = memoryCard((terminal as any).result);
+            const card = memoryCard((terminal as any).result.messages);
             expect(card?.content).toContain("Summary 1: events happened.");
             expect((await readChat(chaId)).data.hypaV3Data.summaries).toHaveLength(summaries().length);
         },
@@ -1192,84 +1308,202 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
     );
 });
 
+describe("per-chat memory sends", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+    afterEach(() => vi.useRealTimers());
+
+    it("uses the chat connection for HypaV3 summaries and the preset's main slot for the reply", async () => {
+        await patchSettings({ hypaV3: true });
+        await installChatMemoryConnection();
+        const chaId = await seedCharacter();
+        await setChatMeta(chaId, { memoryProfileId: "chat-memory" });
+        const result = await job("send", chaId, { input: "Continue", userMessageId: "latest" });
+        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+        expect(summaries().length).toBeGreaterThan(0);
+        expect(summaries().map(({ body }) => body.model)).toEqual(summaries().map(() => "chat-memory-model"));
+        expect(mains().map(({ body }) => body.model)).toEqual(["m"]);
+        expect((await readChat(chaId)).data.hypaV3Data.summaries.length).toBeGreaterThan(0);
+    });
+
+    it("fails a send needing a new HypaV3 summary with the named-profile refusal for a gone connection", async () => {
+        await patchSettings({ hypaV3: true });
+        const chaId = await seedCharacter();
+        await setChatMeta(chaId, { memoryProfileId: "deleted" });
+        const result = await job("send", chaId, { input: "Continue", userMessageId: "latest" });
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            message: expect.stringContaining("Cannot send the request: the connection it names no longer exists."),
+        });
+        expect(upstream).toEqual([]);
+        expect((await readChat(chaId)).data.hypaV3Data?.summaries ?? []).toEqual([]);
+    });
+
+    it(
+        "sends two chats of one owner with and without memory, asking even when the owner is on",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter();
+            await seedChat(chaId, "off");
+            await setChatMeta(chaId, { memoryEnabled: true });
+            const off = await readChat(chaId, "off");
+            expect(
+                (
+                    await batch({
+                        chats: [
+                            {
+                                characterId: chaId,
+                                chatId: "off",
+                                baseRevision: off.revision,
+                                ops: [{ op: "meta", set: { memoryEnabled: false } }],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            const onSend = await job(
+                "send",
+                chaId,
+                { input: "Remember this", userMessageId: "on-user" },
+                { answer: () => "once" },
+            );
+            expect(onSend.terminal?.type, JSON.stringify(onSend.terminal)).toBe("done");
+            expect(questions(onSend.events)).toEqual([]);
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            expect((await readChat(chaId)).data.hypaV3Data.summaries.length).toBeGreaterThan(0);
+            upstream.length = 0;
+            embedCalls.length = 0;
+            const offSend = await job(
+                "send",
+                chaId,
+                { chatId: "off", input: "Continue", userMessageId: "off-user" },
+                { answer: () => "once" },
+            );
+            expect(offSend.terminal?.type, JSON.stringify(offSend.terminal)).toBe("done");
+            expect(questions(offSend.events)).toEqual([expect.objectContaining({ kind: "memoryTrim" })]);
+            expect(summaries()).toEqual([]);
+            expect(embedCalls).toEqual([]);
+            expect(memoryCard(mains()[0].body.messages)).toBeUndefined();
+            expect((await readChat(chaId, "off")).data).not.toHaveProperty("hypaV3Data");
+        },
+        SLOW,
+    );
+
+    it(
+        "the memory answer enables only this chat, clears its ack, and runs memory in the same send",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false, supaMemoryOnCount: 7 } });
+            await setChatMeta(chaId, { memoryEnabled: false, memoryTrimAck: 6 });
+            const owner = await readCharacter(chaId);
+            const result = await job(
+                "send",
+                chaId,
+                { input: "Remember", userMessageId: "memory-user" },
+                { answer: () => "memory" },
+            );
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(questions(result.events)).toEqual([expect.objectContaining({ kind: "memoryTrim" })]);
+            const chat = (await readChat(chaId)).data;
+            expect(chat).toHaveProperty("memoryEnabled", true);
+            expect(chat).not.toHaveProperty("memoryTrimAck");
+            expect(await readCharacter(chaId)).toEqual(owner);
+            expect(ownerRecords(result.events, chaId)).toEqual([]);
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            expect(chat.hypaV3Data.summaries.length).toBeGreaterThan(0);
+        },
+        SLOW,
+    );
+
+    it(
+        "ignore suppresses this chat's question until its switch turns on and off again",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: true, supaMemoryOnCount: 7 } });
+            await setChatMeta(chaId, { memoryEnabled: false });
+            const owner = await readCharacter(chaId);
+            const send = (id: string) =>
+                job("send", chaId, { input: "Continue", userMessageId: id }, { answer: () => "ignore" });
+            const first = await send("first");
+            expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
+            expect(questions(first.events)).toHaveLength(1);
+            expect((await readChat(chaId)).data.memoryTrimAck).toBe(7);
+            const second = await send("second");
+            expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+            expect(questions(second.events)).toEqual([]);
+            // The tab's on operation sets the switch and removes the ack in one write.
+            const current = await readChat(chaId);
+            expect(
+                (
+                    await batch({
+                        chats: [
+                            {
+                                characterId: chaId,
+                                chatId: "k",
+                                baseRevision: current.revision,
+                                ops: [{ op: "meta", set: { memoryEnabled: true }, unset: ["memoryTrimAck"] }],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            await setChatMeta(chaId, { memoryEnabled: false });
+            const third = await send("third");
+            expect(third.terminal?.type, JSON.stringify(third.terminal)).toBe("done");
+            expect(questions(third.events)).toHaveLength(1);
+            expect((await readChat(chaId)).data.memoryTrimAck).toBe(7);
+            expect(await readCharacter(chaId)).toEqual(owner);
+            expect(summaries()).toEqual([]);
+        },
+        SLOW,
+    );
+});
+
 // The no-memory trim question (`docs/structure/memory.md`, "The no-memory trim question"): a memory
 // method is set, the owner's toggle is off, and the trim would drop chat history. The three answers
 // through the owner socket; the per-chat "don't ask again" against the owner's `supaMemoryOnCount`
 // and its invalidation by a later turn-on; the owner read when the answer is applied (a toggle
-// another tab made while the question waited); a group's one question for both speakers; a
-// preview and an overflow the example dialogue absorbs ask nothing; an invalid answer and an abort
-// while waiting end the job without a trim or a preference written.
+// another tab made while the question waited); a preview and an overflow the example dialogue absorbs
+// ask nothing; an invalid answer and an abort while waiting end the job without a trim or a preference
+// written.
 describe("the no-memory trim question", () => {
     it(
-        "'memory' turns the owner's toggle on (counting the transition), emits the record, runs memory in the same send, and is not asked again",
+        "'memory' turns this chat's memory on without touching the owner, runs memory in the same send, and is not asked again",
         async () => {
-            const ws = new WebSocket(
-                `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false } });
+            const owner = await readCharacter(chaId);
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                { input: "Hello V3", userMessageId: "u1" },
+                { answer: () => "memory" },
             );
-            const frames: any[] = [];
-            ws.onmessage = (message) => frames.push(JSON.parse(String(message.data)));
-            try {
-                await new Promise<void>((resolve, reject) => {
-                    ws.onopen = () => resolve();
-                    ws.onerror = () => reject(new Error("feed socket failed"));
-                });
-                await waitFor(() => frames.some((frame) => frame.type === "hello"));
-                await patchSettings({ hypaV3: true });
-                const chaId = await seedCharacter({ extra: { supaMemory: false } });
-                let patchBase = "";
-                const { events, terminal } = await job(
-                    "send",
-                    chaId,
-                    { input: "Hello V3", userMessageId: "u1" },
-                    {
-                        answer: async () => {
-                            patchBase = (await readCharacter(chaId)).revision;
-                            return "memory";
-                        },
-                    },
-                );
-                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-                expect(questions(events)).toHaveLength(1);
-                // The owner: on, its first off→on transition counted, the record sent to the tab.
-                const owner = (await readCharacter(chaId)).data;
-                expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([true, 1]);
-                expect(ownerRecords(events, chaId).map((event) => event.data.supaMemory)).toEqual([true]);
-                const memoryPatches = () =>
-                    frames
-                        .filter((frame) => frame.type === "change")
-                        .flatMap((frame) => frame.changes.resources)
-                        .filter(
-                            (ref) =>
-                                ref.kind === "characters" && ref.id === chaId && ref.patch?.set?.supaMemory === true,
-                        );
-                await waitFor(() => memoryPatches().length > 0);
-                expect(memoryPatches()).toHaveLength(1);
-                expect(memoryPatches()[0].patch).toEqual({
-                    baseRevision: patchBase,
-                    set: { supaMemory: true, supaMemoryOnCount: 1 },
-                    remove: [],
-                });
-                // Memory ran in this send: the summaries, the card in the main request, the data stored.
-                expect(summaries().length).toBeGreaterThan(0);
-                expect(mains()).toHaveLength(1);
-                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
-                const chat = await readChat(chaId);
-                expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
-                expect(chat.data.memoryTrimAck).toBeUndefined();
-                // The next send finds the owner on: no question, memory again.
-                upstream.length = 0;
-                const next = await job(
-                    "send",
-                    chaId,
-                    { input: "Hello again", userMessageId: "u2" },
-                    { answer: () => "once" },
-                );
-                expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
-                expect(questions(next.events)).toHaveLength(0);
-                expect(memoryCard(mains()[0].body.messages)).toBeDefined();
-            } finally {
-                ws.close();
-            }
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(questions(events)).toHaveLength(1);
+            // The chat stores the switch; the owner, its count, and its revision stay, and no record is sent.
+            expect(await readCharacter(chaId)).toEqual(owner);
+            expect(ownerRecords(events, chaId)).toEqual([]);
+            // Memory ran in this send: the summaries, the card in the main request, the data stored.
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toHaveLength(1);
+            expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+            const chat = await readChat(chaId);
+            expect(chat.data.memoryEnabled).toBe(true);
+            expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
+            expect(chat.data.memoryTrimAck).toBeUndefined();
+            // The next send finds the chat on: no question, memory again.
+            upstream.length = 0;
+            const next = await job(
+                "send",
+                chaId,
+                { input: "Hello again", userMessageId: "u2" },
+                { answer: () => "once" },
+            );
+            expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
+            expect(questions(next.events)).toHaveLength(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
         },
         SLOW,
     );
@@ -1374,67 +1608,6 @@ describe("the no-memory trim question", () => {
     );
 
     it(
-        "a group send asks once for both speakers, and 'memory' turns the group's toggle on",
-        async () => {
-            await patchSettings({ hypaV3: true });
-            const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
-            const cid = await seedCharacter({ count: 0, extra: { name: "Cid" } });
-            const groupOf = (name: string) =>
-                seedCharacter({
-                    messages: Array.from({ length: 24 }, (_, i) => ({
-                        role: i % 2 === 0 ? "user" : "char",
-                        data: longText(i),
-                        chatId: `m${i}`,
-                        ...(i % 2 === 1 ? { saying: i % 4 === 1 ? bob : cid } : {}),
-                    })),
-                    extra: {
-                        name,
-                        type: "group",
-                        supaMemory: false,
-                        characters: [bob, cid],
-                        characterTalks: [1, 1],
-                        characterActive: [true, true],
-                        orderByOrder: true,
-                        firstMessage: "",
-                        desc: "",
-                    },
-                });
-            const once = await groupOf("Once");
-            const trimmed = await job(
-                "group",
-                once,
-                { input: "hello all", userMessageId: "u1" },
-                { answer: () => "once" },
-            );
-            expect(trimmed.terminal?.type, JSON.stringify(trimmed.terminal)).toBe("done");
-            expect(questions(trimmed.events)).toHaveLength(1);
-            expect(mains()).toHaveLength(2);
-            expect(summaries()).toHaveLength(0);
-            expect((await readChat(once)).data.message.slice(-2).map((m: any) => m.saying)).toEqual([bob, cid]);
-            expect((await readCharacter(once)).data.supaMemory).toBe(false);
-            upstream.length = 0;
-            const memory = await groupOf("Memory");
-            const enabled = await job(
-                "group",
-                memory,
-                { input: "hello all", userMessageId: "u1" },
-                { answer: () => "memory" },
-            );
-            expect(enabled.terminal?.type, JSON.stringify(enabled.terminal)).toBe("done");
-            expect(questions(enabled.events)).toHaveLength(1);
-            const group = (await readCharacter(memory)).data;
-            expect([group.type, group.supaMemory, group.supaMemoryOnCount]).toEqual(["group", true, 1]);
-            expect(ownerRecords(enabled.events, memory)).toHaveLength(1);
-            expect(mains()).toHaveLength(2);
-            expect(summaries().length).toBeGreaterThan(0);
-            // Both speakers' requests carried the memory card; neither member's own toggle was touched.
-            expect(mains().every((entry) => memoryCard(entry.body.messages) !== undefined)).toBe(true);
-            expect((await readCharacter(bob)).data.supaMemoryOnCount).toBeUndefined();
-        },
-        SLOW,
-    );
-
-    it(
         "a preview trims without asking, and an overflow the example dialogue absorbs asks nothing",
         async () => {
             await patchSettings({ hypaV3: true });
@@ -1443,7 +1616,7 @@ describe("the no-memory trim question", () => {
             expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
             expect(questions(preview.events)).toHaveLength(0);
             expect(summaries()).toHaveLength(0);
-            const result = (preview.terminal as any).result as { content: string }[];
+            const result = (preview.terminal as any).result.messages as { content: string }[];
             expect(JSON.stringify(result)).not.toContain("Message number 0:");
             expect(memoryCard(result)).toBeUndefined();
             expect((await readCharacter(chaId)).data.supaMemory).toBe(false);
@@ -1542,7 +1715,7 @@ describe("credentials and the other consumers", () => {
             const { terminal } = await job("preview", chaId);
             expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
             // The description follows the main prompt in the first system message.
-            const first = ((terminal as any).result as { content: string }[])[0];
+            const first = ((terminal as any).result.messages as { content: string }[])[0];
             expect(first.content).toBe("Main prompt.\n\nDesc of Mira.\n\nnear\n\nmid\n\nlow");
             // The paragraphs as documents, then the first four messages (each under its speaker) as the query.
             expect(embedCalls[0].input).toEqual(["far", "low", "near", "mid"]);
@@ -1577,7 +1750,7 @@ describe("credentials and the other consumers", () => {
 });
 
 // A memory task service makes a send select from the stored summaries instead of summarizing
-// (`docs/structure/chat-pipeline.md`, the job's HypaV3 step): the dispatch (previews and server-slot
+// (`docs/structure/memory.md`, "HypaV3 job modes"): the dispatch (previews and server-slot
 // sends select only; a Plugin `memory` slot and a request trigger keep the summaries in the job), the
 // `memoryProgress` runs before any legacy progress of the same work, the gap question and its
 // answers, the approved initial run with its per-summary saves, the retryable error of an edit, the
@@ -1585,6 +1758,8 @@ describe("credentials and the other consumers", () => {
 // with its source-generation check. The service is a fake: hand-offs and leases recorded, the status
 // and `pendingManual` set by the test.
 function createFakeMemoryTasks() {
+    const records: { input: StructuredMemoryTaskInput; options: { through?: string } }[] = [];
+    let recordAnswer: MemoryTaskRecordAnswer = { outcome: "refused", reason: "shuttingDown" };
     const handOffs: MemoryTaskInput[] = [];
     const leases: { chatRef: MemoryChatRef; ownerId: string; released: boolean }[] = [];
     let status: MemoryTaskStatus | null = null;
@@ -1608,11 +1783,20 @@ function createFakeMemoryTasks() {
         pendingManual() {
             return manual;
         },
+        record(input: StructuredMemoryTaskInput, options: { through?: string } = {}) {
+            records.push({ input, options });
+            return recordAnswer;
+        },
+        rebuild: () => recordAnswer,
     } satisfies MemoryTaskService;
     return {
         service,
         handOffs,
         leases,
+        records,
+        set recordAnswer(value: MemoryTaskRecordAnswer) {
+            recordAnswer = value;
+        },
         setStatus(value: MemoryTaskStatus | null) {
             status = value;
         },
@@ -1620,6 +1804,8 @@ function createFakeMemoryTasks() {
             manual = value;
         },
         reset() {
+            records.length = 0;
+            recordAnswer = { outcome: "refused", reason: "shuttingDown" };
             handOffs.length = 0;
             leases.length = 0;
             status = null;
@@ -1876,7 +2062,7 @@ describe("HypaV3 with a memory task service", () => {
                     expect(terminal?.type, `${kind}: ${JSON.stringify(terminal)}`).toBe("done");
                     expect(questions(events)).toHaveLength(0);
                     if (kind === "preview") {
-                        const result = (terminal as any).result as { content: string }[];
+                        const result = (terminal as any).result.messages as { content: string }[];
                         expect(memoryCard(result)?.content).toContain(seededSummary.text);
                         expect(JSON.stringify(result)).not.toContain("Message number 2:");
                         expect(JSON.stringify(result)).toContain("Message number 23:");
@@ -2161,29 +2347,10 @@ describe("HypaV3 with a memory task service", () => {
     );
 
     it(
-        "memory-stop after two summaries keeps the two, trims the rest, and the group's second speaker selects only",
+        "memory-stop after two summaries keeps the two, trims the rest, and hands the stopped gap to the task service",
         async () => {
             await withHypaV3({ gapConfirmTokens: 0 }, async () => {
-                const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
-                const cid = await seedCharacter({ count: 0, extra: { name: "Cid" } });
-                const group = await seedCharacter({
-                    messages: Array.from({ length: 36 }, (_, i) => ({
-                        role: i % 2 === 0 ? "user" : "char",
-                        data: longText(i),
-                        chatId: `m${i}`,
-                        ...(i % 2 === 1 ? { saying: i % 4 === 1 ? bob : cid } : {}),
-                    })),
-                    extra: {
-                        name: "Band",
-                        type: "group",
-                        characters: [bob, cid],
-                        characterTalks: [1, 1],
-                        characterActive: [true, true],
-                        orderByOrder: true,
-                        firstMessage: "",
-                        desc: "",
-                    },
-                });
+                const chaId = await seedCharacter({ count: 36 });
                 let runId: string | undefined;
                 let stopped: { status: number; body: any } | undefined;
                 state.holdSummary = async () => {
@@ -2193,9 +2360,9 @@ describe("HypaV3 with a memory task service", () => {
                     }
                 };
                 const { events, terminal } = await job(
-                    "group",
-                    group,
-                    { input: "hello all", userMessageId: "u1" },
+                    "send",
+                    chaId,
+                    { input: "Hello", userMessageId: "u1" },
                     {
                         answer: () => "generate",
                         onEvent: (event) => {
@@ -2213,18 +2380,16 @@ describe("HypaV3 with a memory task service", () => {
                 expect(stopped).toMatchObject({ status: 200, body: { stopped: true } });
                 expect(questions(events)).toHaveLength(1);
                 expect(summaries()).toHaveLength(2);
-                expect((await readChat(group)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
+                expect((await readChat(chaId)).data.hypaV3Data.summaries.map((s: any) => s.text)).toEqual([
                     "Summary 1: events happened.\n\nPart two of 1.",
                     "Summary 2: events happened.\n\nPart two of 2.",
                 ]);
-                // Both speakers replied from the stored summaries with the rest of the history trimmed.
-                expect(mains()).toHaveLength(2);
-                for (const main of mains()) {
-                    const prompt = JSON.stringify(main.body.messages);
-                    expect(memoryCard(main.body.messages)?.content).toContain("Summary 1: events happened.");
-                    expect(prompt).not.toContain("Message number 20:");
-                    expect(prompt).toContain("Message number 35:");
-                }
+                // The reply came from the stored summaries with the rest of the history trimmed.
+                expect(mains()).toHaveLength(1);
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+                expect(prompt).not.toContain("Message number 20:");
+                expect(prompt).toContain("Message number 35:");
                 expect(
                     memoryNotices(events)
                         .filter((n) => n.runId === runId)
@@ -2233,7 +2398,7 @@ describe("HypaV3 with a memory task service", () => {
                 expect(memoryNotices(events).filter((n) => n.phase === "blocking")).toHaveLength(0);
                 expect(fake.leases).toHaveLength(1);
                 expect(fake.handOffs).toHaveLength(1);
-                expect(fake.handOffs[0].speakerId).toBe(cid);
+                expect(fake.handOffs[0].speakerId).toBe(chaId);
             });
         },
         SLOW,
@@ -2454,6 +2619,82 @@ describe("HypaV3 with a memory task service", () => {
     );
 });
 
+const requestTrigger = {
+    comment: "Record request",
+    type: "request",
+    conditions: [],
+    lowLevelAccess: true,
+    effect: [
+        {
+            type: "v2SetRequestState",
+            indent: 0,
+            index: "0",
+            indexType: "value",
+            value: "Request trigger reached the memory writer",
+            valueType: "value",
+        },
+    ],
+};
+const analysis = (index: number) =>
+    JSON.stringify({
+        title: index === 0 ? "The promise" : "The storm",
+        summary: index === 0 ? "Cara promises to return." : "Lightning destroys the harbor.",
+        participants: [],
+        storyTime: { text: "" },
+        keyLines: [],
+        stateChanges: [],
+        knowledge: [],
+        relationshipShifts: [],
+        openThreads: { add: [], close: [], transitions: [] },
+    });
+const pluginHooks = {
+    ...NO_GENERATION_HOOKS,
+    providers: [
+        {
+            name: "receipt-provider",
+            model: {
+                id: "pluginmodel:::receipt-provider",
+                name: "receipt-provider",
+                shortName: "receipt-provider",
+                fullName: "receipt-provider",
+                internalID: "pluginmodel:::receipt-provider",
+                provider: LLMProvider.AsIs,
+                format: LLMFormat.Plugin,
+                flags: [LLMFlags.hasFullSystemPrompt],
+                parameters: ["temperature"],
+                tokenizer: LLMTokenizer.Unknown,
+            } satisfies LLMModel,
+        },
+    ],
+};
+
+async function installReceiptPlugin() {
+    const profiles = await single("modelProfiles");
+    expect(
+        (
+            await batch({
+                ops: [
+                    {
+                        kind: "modelProfiles",
+                        id: "main",
+                        baseRevision: profiles.revision,
+                        data: [
+                            ...profiles.data,
+                            {
+                                ...profiles.data[0],
+                                id: "receipt-plugin",
+                                name: "Receipt Plugin",
+                                customAPIFormat: LLMFormat.Plugin,
+                                currentPluginProvider: "receipt-provider",
+                            },
+                        ],
+                    },
+                ],
+            })
+        ).status,
+    ).toBe(200);
+}
+
 // The server's own memory task service, as in production: a send over the lookahead line selects the
 // stored summaries and hands its chat to the service, whose task writes the summaries after the job
 // ended; the manual routes are open.
@@ -2482,6 +2723,7 @@ describe("HypaV3 with the server's memory task service", () => {
 
     beforeAll(async () => {
         serviceStack = await startStack();
+        await installReceiptPlugin();
         // A small recent share leaves summaries for the similarity search (their chunks embedded).
         await patchHypaV3({ recentMemoryRatio: 0.1, similarMemoryRatio: 0.6 });
     }, SLOW);
@@ -2492,6 +2734,481 @@ describe("HypaV3 with the server's memory task service", () => {
     // The file's `afterEach` turns memory off again: on before each test.
     beforeEach(async () => {
         await patchSettings({ hypaV3: true });
+    });
+
+    describe("Record now task visibility", () => {
+        const messages = [
+            { chatId: "u1", role: "user", data: "Make a promise." },
+            { chatId: "a1", role: "char", data: "Cara promises to return." },
+            { chatId: "u2", role: "user", data: "What happens next?" },
+            { chatId: "a2", role: "char", data: "Lightning destroys the harbor." },
+        ];
+        const trigger = requestTrigger;
+        let previousAlgorithm: string;
+        beforeEach(async () => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
+            await patchSettings({ hypaV3: false, memoryAlgorithmType: "structuredMemory" });
+            await patchHypaV3({ structured: { cadence: "manual", windowTurns: 1 } });
+        });
+        afterEach(async () => {
+            await patchPreset("modelPresets", { seperateModelsForAxModels: false, auxSlots: {} });
+            await patchSettings({ memoryAlgorithmType: previousAlgorithm });
+            vi.useRealTimers();
+        });
+        const observe = (chaId: string) => {
+            const statuses: MemoryTaskStatus[] = [];
+            const off = tasks().onStatus(({ chatRef, status }) => {
+                if (chatRef.chaId === chaId && chatRef.chatId === "k") statuses.push(status);
+            });
+            onTestFinished(off);
+            return statuses;
+        };
+        const record = (chaId: string, options: Parameters<typeof job>[3] = {}) =>
+            job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a2" }, ...options },
+            );
+
+        it.each(["Plugin memory model", "request trigger"] as const)(
+            "publishes %s Record now progress and a mid-run hello, then done after receipts and metadata",
+            async (mode) => {
+                const plugin = mode === "Plugin memory model";
+                await patchPreset("modelPresets", {
+                    seperateModelsForAxModels: plugin,
+                    auxSlots: plugin ? { memory: { profileId: "receipt-plugin" } } : {},
+                });
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: plugin ? {} : { lowLevelAccess: true, triggerscript: [trigger] },
+                });
+                const statuses = observe(chaId);
+                let calls = 0;
+                let hello: any;
+                const during: (MemoryTaskStatus | undefined)[] = [];
+                let ws: WebSocket | undefined;
+                const duringRequest = async () => {
+                    const index = calls++;
+                    during.push(statuses.at(-1));
+                    if (index === 0) {
+                        ws = new WebSocket(
+                            `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
+                        );
+                        hello = await new Promise<any>((resolve, reject) => {
+                            ws!.onerror = () => reject(new Error("feed socket failed"));
+                            ws!.onmessage = (event) => {
+                                const frame = JSON.parse(String(event.data));
+                                if (frame.type === "hello") resolve(frame);
+                            };
+                        });
+                    }
+                    await setChatMeta(chaId, { note: `Metadata during window ${index + 1}` });
+                    return { outcome: "answered", value: { success: true, content: analysis(index) } };
+                };
+                state.summaries = [analysis(0), analysis(1)];
+                if (!plugin)
+                    state.holdSummary = async () => {
+                        await duringRequest();
+                    };
+                try {
+                    const result = await record(chaId, { hooks: pluginHooks, answerCallback: duringRequest });
+                    expect(result.terminal?.type === "done" && result.terminal.result).toEqual({
+                        memoryRecord: "completed",
+                    });
+                    expect(calls).toBe(2);
+                    expect(during).toEqual([
+                        expect.objectContaining({ kind: "structuredMemory", state: "running", done: 0, total: 2 }),
+                        expect.objectContaining({ kind: "structuredMemory", state: "running", done: 1, total: 2 }),
+                    ]);
+                    expect(hello.memoryTasks).toContainEqual({ characterId: chaId, chatId: "k", status: during[0] });
+
+                    const stored = await readChat(chaId);
+                    expect(
+                        stored.data.message
+                            .filter((m: any) => m.role === "char")
+                            .map((m: any) => m.generationInfo?.memory?.state),
+                    ).toEqual(["recorded", "recorded"]);
+                    expect(stored.data.note).toBe("Metadata during window 2");
+                    expect(statuses.filter(({ state }) => TERMINAL_STATES.has(state))).toEqual([
+                        expect.objectContaining({
+                            state: "done",
+                            done: 2,
+                            total: 2,
+                            terminalRevision: stored.revision,
+                        }),
+                    ]);
+                    expect(new Set(statuses.map(({ taskId }) => taskId)).size).toBe(1);
+                    expect(statuses.at(-1)).toMatchObject({ terminalRevision: stored.revision });
+                } finally {
+                    ws?.close();
+                    state.holdSummary = null;
+                }
+            },
+        );
+
+        it.each(["skipped", "failed"] as const)(
+            "ends Record now %s after its first recorded window and fails the command",
+            async (outcome) => {
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: { lowLevelAccess: true, triggerscript: [trigger] },
+                });
+                const statuses = observe(chaId);
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                state.summaries = [analysis(0), outcome === "failed" ? "" : analysis(1)];
+                state.holdSummary = async () => {
+                    if (outcome === "skipped" && state.summaryIndex === 1) {
+                        store.applyChanges({
+                            chats: [
+                                {
+                                    characterId: chaId,
+                                    chatId: "k",
+                                    baseRevision: store.chatRevision(chaId, "k"),
+                                    ops: [{ op: "setText", id: "a2", text: "The storm never happened." }],
+                                },
+                            ],
+                        });
+                    }
+                };
+                try {
+                    const result = await record(chaId);
+                    expect(result.terminal).toMatchObject({
+                        type: "error",
+                        ...(outcome === "skipped" ? { code: "memoryRecordSkipped", message: "windowChanged" } : {}),
+                    });
+                    const stored = await readChat(chaId);
+                    expect(stored.data.message[1].generationInfo.memory.state).toBe("recorded");
+                    expect(statuses.at(-1)).toMatchObject({
+                        kind: "structuredMemory",
+                        state: outcome,
+                        done: 1,
+                        total: 2,
+                        terminalRevision: stored.revision,
+                        ...(outcome === "skipped" ? { reason: "windowChanged" } : { error: expect.any(String) }),
+                    });
+                    expect(statuses.filter(({ state }) => TERMINAL_STATES.has(state))).toHaveLength(1);
+                } finally {
+                    state.holdSummary = null;
+                    store.close();
+                }
+            },
+        );
+
+        it("cancels the visible Record now task while its runner is still suspended on provider I/O", async () => {
+            const chaId = await seedCharacter({ messages, extra: { lowLevelAccess: true, triggerscript: [trigger] } });
+            const statuses = observe(chaId);
+            const entered = deferred();
+            const release = deferred();
+            const fetch = globalThis.fetch;
+            let suspended = false;
+            const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+                if (String(url) === providerUrl) {
+                    suspended = true;
+                    entered.resolve();
+                    await release.promise;
+                    suspended = false;
+                    return Response.json({ choices: [{ message: { role: "assistant", content: analysis(0) } }] });
+                }
+                return fetch(url, init);
+            });
+            const attached = deferred();
+            const pending = record(chaId, {
+                onEvent: () => attached.resolve(),
+            });
+            onTestFinished(() => {
+                release.resolve();
+                spy.mockRestore();
+            });
+            try {
+                await Promise.race([
+                    entered.promise,
+                    pending.then((result) => {
+                        throw new Error(`Runner did not suspend: ${JSON.stringify(result.terminal)}`);
+                    }),
+                ]);
+                await attached.promise;
+                expect(statuses.at(-1)).toMatchObject({ kind: "structuredMemory", state: "running" });
+                expect((await api(`/api/generations/${currentJobId}?clientId=tab`, { method: "DELETE" })).status).toBe(
+                    200,
+                );
+                expect(suspended).toBe(true);
+                const stored = await readChat(chaId);
+                expect(statuses.at(-1)).toMatchObject({
+                    kind: "structuredMemory",
+                    state: "cancelled",
+                    reason: "cancelled",
+                    terminalRevision: stored.revision,
+                });
+                expect(tasks().snapshot()).toContainEqual({ chatRef: { chaId, chatId: "k" }, status: statuses.at(-1) });
+                expect(summaries()).toEqual([]);
+            } finally {
+                release.resolve();
+                spy.mockRestore();
+                expect((await pending).terminal).toMatchObject({ type: "error", reason: "aborted" });
+            }
+        });
+
+        it("returns completed when there is nothing to record and queued when the service accepts the press", async () => {
+            const empty = await seedCharacter({ messages: [] });
+            const nothing = await job("command", empty, { mode: "manual" }, { command: { type: "memoryRecord" } });
+            expect(nothing.terminal?.type === "done" && nothing.terminal.result).toEqual({ memoryRecord: "completed" });
+            const chaId = await seedCharacter({ messages: messages.slice(0, 2) });
+            const terminal = nextTerminal(chaId);
+            state.summaries = [analysis(0)];
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a1" } },
+            );
+            expect(result.terminal?.type === "done" && result.terminal.result).toEqual({ memoryRecord: "queued" });
+            expect(await terminal).toMatchObject({ state: "done", done: 1, total: 1 });
+        });
+    });
+
+    it.each(["task service", "request trigger"] as const)(
+        "Record now preserves Castle when repairing an earlier event through the %s",
+        async (mode) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            const previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
+            try {
+                await patchSettings({ hypaV3: false, memoryAlgorithmType: "structuredMemory" });
+                await patchHypaV3({ structured: { cadence: "manual", windowTurns: 1 } });
+                const chaId = await seedCharacter({
+                    messages: [
+                        { chatId: "u1", role: "user", data: "Where are we?" },
+                        { chatId: "a1", role: "char", data: "At the old farm." },
+                        { chatId: "u2", role: "user", data: "Travel to the castle." },
+                        { chatId: "a2", role: "char", data: "We have reached the castle." },
+                    ],
+                    extra:
+                        mode === "request trigger"
+                            ? {
+                                  lowLevelAccess: true,
+                                  triggerscript: [
+                                      {
+                                          comment: "Record request",
+                                          type: "request",
+                                          conditions: [],
+                                          lowLevelAccess: true,
+                                          effect: [
+                                              {
+                                                  type: "v2SetVar",
+                                                  indent: 0,
+                                                  var: "seen",
+                                                  operator: "=",
+                                                  value: "1",
+                                                  valueType: "value",
+                                              },
+                                          ],
+                                      },
+                                  ],
+                              }
+                            : {},
+                });
+                state.summaries = [
+                    { place: "Old farm", summary: "We visited the old farm." },
+                    { place: "Castle", summary: "We reached the castle." },
+                    { place: "Red old farm", summary: "The old farm was red." },
+                ].map(({ place, summary }) =>
+                    JSON.stringify({
+                        title: place,
+                        summary,
+                        participants: [],
+                        storyTime: { text: "" },
+                        keyLines: [],
+                        stateChanges: [],
+                        knowledge: [],
+                        relationshipShifts: [],
+                        openThreads: { add: [], close: [], transitions: [] },
+                        scene: { place, time: "", state: "", participants: [] },
+                    }),
+                );
+                const record = async (messageId: string) => {
+                    const recordedTask = mode === "task service" ? nextTerminal(chaId) : null;
+                    const result = await job(
+                        "command",
+                        chaId,
+                        { mode: "manual" },
+                        {
+                            command: { type: "memoryRecord", messageId },
+                        },
+                    );
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    if (recordedTask) {
+                        expect(await recordedTask).toMatchObject({ kind: "structuredMemory", state: "done", done: 1 });
+                        await tasks().drain();
+                    } else {
+                        expect(
+                            result.events
+                                .filter((event) => event.type === "notice" && event.kind === "memoryProgress")
+                                .map((event) => event.payload),
+                        ).toContainEqual(
+                            expect.objectContaining({
+                                phase: "blocking",
+                                reason: "requestTrigger",
+                            }),
+                        );
+                    }
+                };
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                try {
+                    const contents = () => store.memory.readContents(chaId, "k")!;
+                    const event = (id: string) => store.memory.readRecord(chaId, "k", "events", id)!.data;
+                    const scene = () =>
+                        store.memory.readRecord(
+                            chaId,
+                            "k",
+                            "pages",
+                            contents().pages.find(({ type }) => type === "scene")!.id,
+                        )!.data;
+                    await record("a1");
+                    const old = event(contents().events[0].id);
+                    expect(scene().sections.find(({ heading }) => heading === "place")!.body).toBe("Old farm");
+                    await record("a2");
+                    const later = event(contents().events[1].id);
+                    const sceneBefore = scene();
+                    expect(sceneBefore.sections.find(({ heading }) => heading === "place")!.body).toBe("Castle");
+                    expect(
+                        (
+                            await batch({
+                                chats: [
+                                    {
+                                        characterId: chaId,
+                                        chatId: "k",
+                                        baseRevision: (await readChat(chaId)).revision,
+                                        ops: [{ op: "setText", id: "a1", text: "At the red old farm." }],
+                                    },
+                                ],
+                            })
+                        ).status,
+                    ).toBe(200);
+                    expect(event(old.id).rerecord).toBe(true);
+
+                    await record("a1");
+
+                    expect(scene().sections.find(({ heading }) => heading === "place")!.body).toBe("Castle");
+                    expect(scene()).toEqual(sceneBefore);
+                    expect(event(later.id)).toEqual(later);
+                    expect(event(old.id)).toEqual({ ...old, status: "retracted" });
+                    expect(contents().events).toHaveLength(3);
+                    const replacement = event(contents().events[2].id);
+                    expect(replacement).toMatchObject({ status: "active", summary: "The old farm was red." });
+                    expect(replacement).not.toHaveProperty("rerecord");
+                    expect(replacement.sources.map(({ messageId }) => messageId)).toEqual(["u1", "a1"]);
+                    expect(replacement.sources[1].hash).toBe(
+                        messageSourceHash({ role: "char", data: "At the red old farm." }),
+                    );
+                    expect(summaries()).toHaveLength(3);
+                } finally {
+                    store.close();
+                }
+            } finally {
+                await patchSettings({ memoryAlgorithmType: previousAlgorithm });
+                vi.useRealTimers();
+            }
+        },
+    );
+
+    it("records only the selected candidate text when record now is pressed on the newest reply, and a later candidate switch marks the event for rerecording", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const previousAlgorithm = (await single("ui")).data.memoryAlgorithmType;
+        try {
+            await patchSettings({ hypaV3: false, memoryAlgorithmType: "structuredMemory" });
+            await patchHypaV3({ structured: { cadence: "manual" } });
+            const carrier = candidateReply();
+            const chaId = await seedCharacter({
+                messages: [{ chatId: "u2", role: "user", data: "Second user" }, { ...carrier }],
+            });
+            state.summaries = [
+                JSON.stringify({
+                    title: "The beacon",
+                    summary: "The beacon shines blue.",
+                    participants: [],
+                    storyTime: { text: "" },
+                    keyLines: [],
+                    stateChanges: [],
+                    knowledge: [],
+                    relationshipShifts: [],
+                    openThreads: { add: [], close: [], transitions: [] },
+                }),
+            ];
+            const recordedTask = nextTerminal(chaId);
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a2" } },
+            );
+            expect(result.terminal?.type, JSON.stringify(result)).toBe("done");
+            expect(await recordedTask).toMatchObject({ kind: "structuredMemory", state: "done", done: 1 });
+            expect(summaries()).toHaveLength(1);
+            const input = JSON.stringify(summaries()[0].body.messages);
+            expect(input).toContain("Second user");
+            expect(input).toContain("Selected reply: the beacon shines blue.");
+            expect(input).not.toContain("Discarded reply: the beacon shines red.");
+            expect(input).not.toContain("Unused reply: the beacon shines green.");
+            const store = createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+            try {
+                const events = store.memory.readContents(chaId, "k")!.events;
+                expect(events).toHaveLength(1);
+                const recorded = store.memory.readRecord(chaId, "k", "events", events[0].id)!.data;
+                expect(recorded.sources.map(({ messageId }) => messageId)).toEqual(["u2", "a2"]);
+                expect(recorded.sources[1].hash).toBe(
+                    messageSourceHash({ role: "char", data: "Selected reply: the beacon shines blue." }),
+                );
+            } finally {
+                store.close();
+            }
+            const read = await readChat(chaId);
+            const reply = read.data.message.at(-1);
+            expect(reply.data).toBe(carrier.data);
+            expect(reply.candidates[reply.selected].data).toBe(carrier.data);
+            // Switching the recorded reply to another candidate changes the text the event cites.
+            const switched = await batch({
+                chats: [
+                    {
+                        characterId: chaId,
+                        chatId: "k",
+                        baseRevision: read.revision,
+                        ops: [
+                            {
+                                op: "selectCandidate",
+                                messageId: "a2",
+                                candidateId: "discarded",
+                                expect: { candidatesRevision: reply.candidatesRevision },
+                            },
+                        ],
+                    },
+                ],
+            });
+            expect(switched.status, JSON.stringify(switched.body).slice(0, 300)).toBe(200);
+            expect(switched.body.chats[0].selections).toEqual(["applied"]);
+            const reread = createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+            try {
+                const [event] = reread.memory.readContents(chaId, "k")!.events;
+                expect(reread.memory.readRecord(chaId, "k", "events", event.id)!.data.rerecord).toBe(true);
+            } finally {
+                reread.close();
+            }
+        } finally {
+            await patchSettings({ memoryAlgorithmType: previousAlgorithm });
+            vi.useRealTimers();
+        }
     });
 
     it(
@@ -2609,4 +3326,2041 @@ describe("HypaV3 with the server's memory task service", () => {
         },
         SLOW,
     );
+});
+
+describe("structured memory job hand-offs", () => {
+    const fake = createFakeMemoryTasks();
+    let stack: Stack;
+    let transformers: localModels.TransformersService;
+    const messages = [
+        { chatId: "u1", role: "user", data: "First user" },
+        { chatId: "a1", role: "char", data: "First reply" },
+        { chatId: "u2", role: "user", data: "Second user" },
+        { chatId: "a2", role: "char", data: "Second reply" },
+    ];
+    beforeAll(async () => {
+        // Capture the real service so refusals can be injected at the local-model process boundary.
+        const createdModels = vi.spyOn(localModels, "createTransformers");
+        try {
+            stack = await startStack({ memoryTasks: fake.service });
+            transformers = createdModels.mock.results[0].value;
+        } finally {
+            createdModels.mockRestore();
+        }
+        await patchPreset("modelProfiles", { maxContext: 5000 });
+    });
+    beforeEach(async () => {
+        use(stack);
+        fake.reset();
+        await patchSettings({ ...defaultMemorySettings, memoryAlgorithmType: "structuredMemory" });
+        await patchHypaV3({ structured: { cadence: "everyTurn" } });
+    });
+    afterAll(async () => {
+        use(blockingStack);
+        await closeStack(stack);
+    });
+
+    describe("candidate memory confirmation", () => {
+        beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+        afterEach(() => vi.useRealTimers());
+
+        async function windowsFor(messages: Message[], confirmedBefore: string) {
+            const presets = (await single("hypaV3Presets")).data;
+            return confirmedWindows({
+                messages,
+                confirmedBefore,
+                recorded: { messages: new Set(), greeting: false },
+                cadence: writerCadence({ hypaV3Presets: presets.items, hypaV3PresetId: presets.selectedId }),
+                maxContext: 5000,
+                tokenizer: { tokenizeChat: async () => 1 },
+                limit: 10,
+            });
+        }
+
+        it("rerolls in place with no carrier or candidate text in writer windows, HypaV3 input, or the prompt", async () => {
+            for (const algorithm of ["structuredMemory", "hypaV3"]) {
+                fake.reset();
+                fake.setPendingManual(algorithm === "hypaV3");
+                upstream.length = 0;
+                embedCalls.length = 0;
+                await patchSettings({
+                    memoryAlgorithmType: algorithm === "structuredMemory" ? algorithm : "none",
+                    hypaV3: algorithm === "hypaV3",
+                });
+                const carrier = candidateReply();
+                const chaId = await seedCharacter({ messages: [...messages.slice(0, 3), { ...carrier }] });
+                state.mainTexts = ["Regenerated reply: the beacon shines gold."];
+                const result = await job("reroll", chaId, { rerollMessageId: "a2" });
+                expect(result.terminal, JSON.stringify(result)).toMatchObject({ type: "done", messageId: "a2" });
+                const stored = (await readChat(chaId)).data.message as Message[];
+                expect(stored.map(({ chatId }) => chatId)).toEqual(["u1", "a1", "u2", "a2"]);
+                const reply = stored.at(-1)!;
+                expect(reply.data).toBe("Regenerated reply: the beacon shines gold.");
+                expect(reply.candidates![reply.selected!].data).toBe(reply.data);
+                if (algorithm === "structuredMemory") {
+                    expect(fake.handOffs).toHaveLength(1);
+                    expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u2" });
+                    expect(writerCeiling(stored)).toBe("u2");
+                    const input = fake.handOffs[0] as unknown as StructuredMemoryTaskInput;
+                    const windows = await windowsFor(stored, input.confirmedBefore);
+                    expect(windows!.map(({ messages }) => messages.map(({ data }) => data))).toEqual([
+                        ["First user", "First reply"],
+                    ]);
+                } else {
+                    expect(fake.handOffs).toHaveLength(1);
+                    const input = fake.handOffs[0];
+                    expect(
+                        input.history
+                            .filter(({ memo }) => ["u1", "a1", "u2", "a2"].includes(memo ?? ""))
+                            .map(({ memo, content }) => ({ memo, content })),
+                    ).toEqual([
+                        { memo: "u1", content: "First user" },
+                        { memo: "a1", content: "First reply" },
+                        { memo: "u2", content: "Second user" },
+                    ]);
+                    expect(
+                        input.sources.filter((source) => source.kind === "message").map((source) => source.id),
+                    ).toEqual(["u1", "a1", "u2"]);
+                    for (const { data } of carrier.candidates!) expect(JSON.stringify(input)).not.toContain(data);
+                }
+                const inputs = JSON.stringify({
+                    requests: upstream.map(({ body }) => body.messages),
+                    embeddings: embedCalls.map(({ input }) => input),
+                });
+                expect(inputs).toContain("Second user");
+                for (const text of [...carrier.candidates!.map(({ data }) => data), reply.data]) {
+                    expect(inputs).not.toContain(text);
+                }
+            }
+        });
+
+        it("confirms only the selected candidate in the writer window after the next send", async () => {
+            const carrier = candidateReply();
+            const chaId = await seedCharacter({ messages: [...messages.slice(0, 3), { ...carrier }] });
+            const result = await job("send", chaId, { input: "Keep the blue beacon", userMessageId: "u3" });
+            expect(result.terminal?.type, JSON.stringify(result)).toBe("done");
+            expect(fake.handOffs).toHaveLength(1);
+            expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u3" });
+            const stored = (await readChat(chaId)).data.message as Message[];
+            expect(stored.find(({ chatId }) => chatId === "a2")!.data).toBe(carrier.data);
+            const input = fake.handOffs[0] as unknown as StructuredMemoryTaskInput;
+            const windows = await windowsFor(stored, input.confirmedBefore);
+            expect(windows!.map(({ messages }) => messages.map(({ data }) => data))).toEqual([
+                ["First user", "First reply"],
+                ["Second user", "Selected reply: the beacon shines blue."],
+            ]);
+            expect(windows!.flatMap(({ sources }) => sources.map(({ messageId }) => messageId))).toEqual([
+                "u1",
+                "a1",
+                "u2",
+                "a2",
+            ]);
+        });
+    });
+
+    describe("approved Structured Memory gaps", () => {
+        // Real network and storage, with the job's timers held still: no provider or tokenizer races
+        // a production deadline, and the socket terminal is the synchronization point.
+        beforeEach(async () => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            await patchPreset("modelProfiles", { maxContext: 900 });
+            await patchPreset("presets", { temperature: 73 });
+            await patchHypaV3({
+                gapConfirmTokens: 0,
+                structured: {
+                    cadence: "everyTurn",
+                    windowTurns: 1,
+                    laneSplit: "manual",
+                    laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+        });
+        afterEach(async () => {
+            vi.useRealTimers();
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchPreset("presets", { temperature: 80 });
+            await patchSettings({ autoContinueChat: false });
+        });
+        const openStore = () =>
+            createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+
+        it.each(["chat-memory", "deleted"])(
+            "runs an approved Structured Memory gap with connection %s and keeps the reply on the main slot",
+            async (connection) => {
+                await installChatMemoryConnection();
+                const chaId = await seedCharacter();
+                await setChatMeta(chaId, { memoryProfileId: connection });
+                state.summaries = Array.from({ length: 24 }, (_, index) => analysis(index));
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Continue", userMessageId: "latest" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events).map(({ kind }) => kind)).toEqual(["memoryGap"]);
+                expect(mains().map(({ body }) => body.model)).toEqual(["m"]);
+                const store = openStore();
+                try {
+                    const records = readRecordSet(store.memory, chaId, "k")!;
+                    if (connection === "deleted") {
+                        expect(summaries()).toEqual([]);
+                        expect(records.events).toEqual([]);
+                        expect(
+                            records.contents.runs.map(
+                                ({ id }) => store.memory.readRecord(chaId, "k", "runs", id)!.data,
+                            ),
+                        ).toEqual([
+                            expect.objectContaining({
+                                result: "failed",
+                                error: "Cannot send the request: the connection it names no longer exists.",
+                            }),
+                        ]);
+                        const reply = (await readChat(chaId)).data.message.at(-1);
+                        expect(reply.data).toBe("Main reply.");
+                        expect(reply.generationInfo.context.memory).toMatchObject({
+                            kind: "structuredMemory",
+                            coverage: "gap",
+                            writer: { state: "failed" },
+                        });
+                    } else {
+                        expect(summaries().length).toBeGreaterThan(0);
+                        expect(summaries().map(({ body }) => body.model)).toEqual(
+                            summaries().map(() => "chat-memory-model"),
+                        );
+                        expect(records.events.length).toBeGreaterThan(0);
+                        expect(records.contents.runs.every(({ result }) => result === "recorded")).toBe(true);
+                    }
+                } finally {
+                    store.close();
+                }
+            },
+        );
+
+        it("trimming only blank history leaves coverage intact and asks no memory gap question", async () => {
+            const chaId = await seedCharacter({
+                extra: { firstMessage: "" },
+                // Per-message overhead alone exceeds the 900-token context. The nonblank history
+                // fits, so the trim can free enough tokens without losing any of its four messages.
+                messages: [
+                    ...Array.from({ length: 300 }, (_, i) => ({ chatId: `blank-${i}`, role: "user", data: "" })),
+                    ...messages,
+                ],
+            });
+            // Answer an unexpected question as well, so a regression fails an assertion, not a timeout.
+            const result = await job("send", chaId, {}, { answer: () => "continue" });
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            const report = parseContextReport(reply.generationInfo.context);
+            expect(report?.memory).toMatchObject({ kind: "structuredMemory", coverage: "covered", gapTokens: 0 });
+            expect(report?.history).toMatchObject({ total: 4, kept: 4, droppedTokens: 0 });
+            expect(questions(result.events)).toEqual([]);
+            expect(summaries()).toEqual([]);
+        });
+
+        it("reports required memory overflow with its own status before any embedding", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                (item: { id: string }) => item.id === presetRecord.selectedId,
+            ).settings;
+            await patchSettings({ hypaModel: "MiniLM" });
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 100,
+                structured: {
+                    cadence: "manual",
+                    requiredCap: 1,
+                    laneSplit: "manual",
+                    laneTargets: { pages: 500, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            const chaId = await seedCharacter({ messages });
+            const store = openStore();
+            const embeddings = vi.spyOn(transformers, "runEmbedding");
+            try {
+                const [scene, ada] = memoryRecords(["scene", "ada"]).pages;
+                Object.assign(scene, { type: "scene", title: "Gate scene", participants: ["ada"] });
+                Object.assign(ada, { type: "character", title: "Ada" });
+                writeMemory(store, chaId, "k", { pages: [scene, ada] });
+                for (const refusal of [
+                    new localModels.TransformersQueueFullError(),
+                    new localModels.TransformersQueueWaitError(),
+                ]) {
+                    embeddings.mockClear().mockRejectedValue(refusal);
+                    const result = await job("send", chaId);
+                    // The required pages are refused before retrieval embeds anything, so a refusing
+                    // local model is never reached and cannot turn the refusal into its own error.
+                    expect(embeddings).not.toHaveBeenCalled();
+                    expect(result.terminal).toMatchObject({
+                        type: "error",
+                        code: "memoryRequiredOverCap",
+                        status: 500,
+                        message: expect.stringContaining("required memory pages"),
+                    });
+                    expect(upstream).toEqual([]);
+                }
+            } finally {
+                embeddings.mockRestore();
+                store.close();
+                await patchHypaV3(priorSettings);
+            }
+        });
+
+        it("required overflow ends send and preview jobs without a chat write or provider request under inlay errors", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                (item: { id: string }) => item.id === presetRecord.selectedId,
+            ).settings;
+            await patchSettings({ inlayErrorResponse: true });
+            const chaId = await seedCharacter({
+                messages: [...messages, { chatId: "u3", role: "user", data: "Continue" }],
+            });
+            const store = openStore();
+            try {
+                const [scene, charter] = memoryRecords(["scene", "charter"]).pages;
+                Object.assign(scene, {
+                    type: "scene",
+                    title: "Gate scene",
+                    participants: [],
+                    sections: [{ ...scene.sections[0], body: "The gate remains closed. ".repeat(100) }],
+                });
+                Object.assign(charter, { title: "Binding charter", contextMode: "always" });
+                writeMemory(store, chaId, "k", { pages: [scene, charter] });
+                const before = await readChat(chaId);
+                const contents = store.memory.readContents(chaId, "k");
+                for (const requiredCap of [1, 10000]) {
+                    await patchHypaV3({
+                        budgetMode: "tokens",
+                        memoryBudgetTokens: 100,
+                        structured: {
+                            requiredCap,
+                            cadence: "manual",
+                            laneSplit: "manual",
+                            laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
+                        },
+                    });
+                    for (const kind of ["send", "preview", "previewPrompt"]) {
+                        const result = await job(kind, chaId);
+                        expect(result.terminal).toMatchObject({
+                            type: "error",
+                            message: expect.stringContaining("required memory pages"),
+                            code: "memoryRequiredOverCap",
+                        });
+                        if (result.terminal?.type !== "error") throw new Error(JSON.stringify(result.terminal));
+                        expect(result.terminal.message).toContain("Gate scene (");
+                        expect(result.terminal.message).toContain("Binding charter (");
+                        expect(result.terminal.message).toContain(`over the limit of ${requiredCap === 1 ? 1 : 100}`);
+                        expect(await readChat(chaId)).toEqual(before);
+                        expect(store.memory.readContents(chaId, "k")).toEqual(contents);
+                        expect(upstream).toEqual([]);
+                        expect(questions(result.events)).toEqual([]);
+                        expect(fake.handOffs).toEqual([]);
+                    }
+                }
+            } finally {
+                store.close();
+                await patchHypaV3(priorSettings);
+            }
+        });
+
+        it.each([
+            { body: "돌다리", overCap: false, behavior: "sends the saved scene at the required-page limit" },
+            {
+                body: "돌다리 A",
+                overCap: true,
+                behavior: "refuses the saved scene one token above the required-page limit",
+            },
+            {
+                body: "돌다리 A",
+                overCap: true,
+                plugin: true,
+                behavior: "matches the saved scene charge to the bound plugin model's refusal",
+            },
+        ])("$behavior", async ({ body, overCap, plugin }) => {
+            const limit = plugin ? 15 : 14;
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                ({ id }: { id: string }) => id === presetRecord.selectedId,
+            ).settings;
+            onTestFinished(() => patchHypaV3(priorSettings));
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 200,
+                structured: {
+                    cadence: "manual",
+                    requiredCap: limit,
+                    laneSplit: "manual",
+                    laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            const pluginModel: LLMModel | undefined = plugin
+                ? {
+                      id: "pluginmodel:::scene-counter",
+                      name: "scene-counter",
+                      shortName: "scene-counter",
+                      fullName: "scene-counter",
+                      internalID: "scene-counter",
+                      flags: [],
+                      parameters: [],
+                      provider: LLMProvider.AsIs,
+                      format: LLMFormat.Plugin,
+                      tokenizer: LLMTokenizer.tiktokenCl100kBase,
+                  }
+                : undefined;
+            if (pluginModel) {
+                onTestFinished(() => patchPreset("modelProfiles", { modelId: "reverse_proxy" }));
+                await patchPreset("modelProfiles", { modelId: pluginModel.id });
+            }
+            const chaId = await seedCharacter({ messages: [], extra: { firstMessage: "" } });
+            await setChatMeta(chaId, { memoryEnabled: true, memoryMode: "structuredMemory" });
+            const store = openStore();
+            try {
+                const scene = newScenePage("scene");
+                scene.sections = [{ heading: "place", body, provenance: [], sources: [], locked: false, updatedAt: 1 }];
+                writeMemory(store, chaId, "k", { pages: [scene] });
+                const route = `/api/memory/structured/${chaId}/k/records/pages/scene?sceneBudget=1`;
+                if (pluginModel) {
+                    const unregistered = await api(route);
+                    expect(unregistered.status).toBe(200);
+                    expect(unregistered.body).not.toHaveProperty("sceneBudget");
+                }
+                const read = await api(
+                    pluginModel ? `${route}&pluginModel=${encodeURIComponent(JSON.stringify(pluginModel))}` : route,
+                );
+                const input = "Continue the scene.";
+                const { terminal } = await job(
+                    "send",
+                    chaId,
+                    { mode: "normal", input, userMessageId: "question" },
+                    pluginModel
+                        ? {
+                              hooks: {
+                                  ...NO_GENERATION_HOOKS,
+                                  providers: [{ name: pluginModel.name, model: pluginModel }],
+                              },
+                          }
+                        : {},
+                );
+                const history = (await readChat(chaId)).data.message as Message[];
+                const tokens = limit + Number(overCap);
+
+                if (overCap) {
+                    expect(terminal).toMatchObject({
+                        type: "error",
+                        stage: "assembly",
+                        code: "memoryRequiredOverCap",
+                        message: `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: Scene (${tokens}). Shorten the scene, or raise the required-page limit in Memory settings.`,
+                    });
+                    expect(upstream).toEqual([]);
+                    expect(server.context.requestHistory.list({ chaId, chatId: "k" }).items).toEqual([]);
+                    expect(history.map(({ role, data }) => [role, data])).toEqual([["user", input]]);
+                } else {
+                    expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                    expect(mains()).toHaveLength(1);
+                    expect(mains()[0].body.messages).toContainEqual(
+                        expect.objectContaining({ content: expect.stringContaining(`Scene | place: ${body}`) }),
+                    );
+                    expect(history.at(-1)).toMatchObject({ role: "char", data: "Main reply." });
+                    expect(parseContextReport(history.at(-1)?.generationInfo?.context)?.memory?.items).toContainEqual(
+                        expect.objectContaining({ id: scene.id, lane: "required", tokens }),
+                    );
+                }
+                expect(read.status).toBe(200);
+                expect(read.body).toMatchObject({
+                    data: scene,
+                    sceneBudget: { tokens, requiredTokens: tokens, limit },
+                });
+                expect(store.memory.readRecord(chaId, "k", "pages", scene.id)?.data).toEqual(scene);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("sends all three Korean scene fields at the writer limit within the default required-page cap", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                ({ id }: { id: string }) => id === presetRecord.selectedId,
+            ).settings;
+            onTestFinished(() => patchHypaV3(priorSettings));
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 2500,
+                structured: {
+                    cadence: "manual",
+                    laneSplit: "manual",
+                    laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+
+            const text = "오래된 돌다리 옆에서 등불이 길을 밝힌다. ".repeat(40).slice(0, 900);
+            const parsed = parseAnalysis(
+                JSON.stringify({ event: JSON.parse(analysis(0)), scene: { place: text, time: text, state: text } }),
+            );
+            if (!parsed.ok || !parsed.analysis.scene) throw new Error("Expected a scene from the writer");
+            const draft = parsed.analysis.scene;
+            const fields = ["place", "time", "state"] as const;
+            const scene = newScenePage("scene");
+            scene.sections = fields.map((heading) => ({
+                heading,
+                body: draft[heading],
+                provenance: [],
+                sources: [],
+                locked: false,
+                updatedAt: 1,
+            }));
+
+            const chaId = await seedCharacter({ messages: [], extra: { firstMessage: "" } });
+            await setChatMeta(chaId, { memoryEnabled: true, memoryMode: "structuredMemory" });
+            const store = openStore();
+            try {
+                writeMemory(store, chaId, "k", { pages: [scene] });
+            } finally {
+                store.close();
+            }
+
+            const { terminal } = await job("send", chaId, {
+                mode: "normal",
+                input: "Continue the scene.",
+                userMessageId: "question",
+            });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(scene.sections.map(({ body }) => body.length)).toEqual([600, 600, 600]);
+            expect(mains()).toHaveLength(1);
+            const body = text.slice(0, 600).trim();
+            const expectedScene = ["Scene", ...fields.map((heading) => `${heading}: ${body}`)].join(" | ");
+            expect(mains()[0].body.messages).toContainEqual(
+                expect.objectContaining({ content: expect.stringContaining(expectedScene) }),
+            );
+
+            const read = await api(`/api/memory/structured/${chaId}/k/records/pages/scene?sceneBudget=1`);
+            expect(read.status).toBe(200);
+            const budget = read.body.sceneBudget;
+            expect(budget).toMatchObject({ limit: 1500, tokens: expect.any(Number) });
+            expect(budget.requiredTokens).toBe(budget.tokens);
+            expect(budget.tokens).toBeLessThanOrEqual(1500);
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply).toMatchObject({ role: "char", data: "Main reply." });
+            expect(parseContextReport(reply.generationInfo.context)?.memory?.items).toContainEqual(
+                expect.objectContaining({ id: scene.id, lane: "required", tokens: budget.tokens }),
+            );
+        });
+
+        it("keeps screened text and retrieval in the send while storing the gap token report", async () => {
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({ gapConfirmTokens: 10000, structured: { cadence: "manual", windowTurns: 1 } });
+            const chaId = await seedCharacter({
+                messages: [...messages, { chatId: "u3", role: "user", data: "Continue" }],
+            });
+            const store = openStore();
+            try {
+                const records = memoryRecords(["recorded"]);
+                records.events[0].sources = messages
+                    .slice(0, 2)
+                    .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) }));
+                writeMemory(store, chaId, "k", records);
+                const before = readRecordSet(store.memory, chaId, "k");
+                const plain = await job("preview", chaId);
+                await patchHypaV3({
+                    gapConfirmTokens: 10000,
+                    structured: { cadence: "manual", windowTurns: 1, screening: { refusal: ["reply"], format: [] } },
+                });
+                const screened = await job("preview", chaId);
+                expect(plain.terminal?.type).toBe("done");
+                expect(screened.terminal?.type).toBe("done");
+                if (plain.terminal?.type !== "done" || screened.terminal?.type !== "done")
+                    throw new Error("Preview failed");
+                const baseline = plain.terminal.result as { messages: unknown[]; context: unknown };
+                const filtered = screened.terminal.result as { messages: unknown[]; context: unknown };
+                expect(filtered.messages).toEqual(baseline.messages);
+                expect(parseContextReport(filtered.context)?.memory?.items).toEqual(
+                    parseContextReport(baseline.context)?.memory?.items,
+                );
+                const result = await job("send", chaId);
+                expect(result.terminal?.type).toBe("done");
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(prompt).toContain("Second reply");
+                expect(
+                    mains()[0]
+                        .body.messages.filter((message: { role: string }) => message.role === "assistant")
+                        .map((message: { content: string }) => message.content),
+                ).not.toContain("First reply");
+                expect(prompt).toContain('character: \\"First reply');
+                expect(prompt).not.toContain("[m:");
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                const report = parseContextReport(reply.generationInfo.context);
+                expect(report?.memory?.items).toEqual(
+                    expect.arrayContaining([expect.objectContaining({ id: "a1", lane: "evidence", verified: true })]),
+                );
+                expect(report?.memory?.gapTokens).toBe(0);
+                expect(report?.memory?.confirmedThrough).toBeUndefined();
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("loads stored pages and scene participants into a successful send even when page embeddings fail", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                (item: { id: string }) => item.id === presetRecord.selectedId,
+            ).settings;
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 1500,
+                structured: {
+                    cadence: "manual",
+                    requiredCap: 1000,
+                    laneSplit: "manual",
+                    laneTargets: { pages: 500, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            const chaId = await seedCharacter({
+                messages: [...messages, { chatId: "u3", role: "user", data: "Continue" }],
+            });
+            const store = openStore();
+            try {
+                const [scene, ada, charter] = memoryRecords(["scene", "ada", "charter"]).pages;
+                Object.assign(scene, { type: "scene", title: "Gate scene", participants: ["ada"], sections: [] });
+                Object.assign(ada, {
+                    type: "character",
+                    title: "Ada",
+                    sections: [{ ...ada.sections[0], heading: "currentState", body: "Waiting at the gate" }],
+                });
+                Object.assign(charter, { contextMode: "always", title: "Charter" });
+                writeMemory(store, chaId, "k", { pages: [scene, ada, charter] });
+                state.embedMode = "leak";
+                const result = await job("send", chaId);
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(mains()).toHaveLength(1);
+                const prompt = mains()[0]
+                    .body.messages.map((message: { content: string }) => message.content)
+                    .join("\n");
+                expect(prompt).toContain("\nGate scene | present: Ada");
+                expect(prompt).toContain("\nAda | currentState: Waiting at the gate");
+                expect(prompt).toContain("\nCharter");
+                expect(prompt).not.toContain("[m:");
+                expect(embedCalls.length).toBeGreaterThan(0);
+                expect(summaries()).toEqual([]);
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                expect(reply.data).toBe("Main reply.");
+                expect(reply.generationInfo.context.memory.items).toEqual(
+                    expect.arrayContaining([
+                        expect.objectContaining({ id: "scene", kind: "page", lane: "required", verified: true }),
+                        expect.objectContaining({ id: "charter", kind: "page", lane: "required", verified: true }),
+                        expect.objectContaining({ id: "ada", kind: "page", lane: "pages", verified: true }),
+                    ]),
+                );
+            } finally {
+                store.close();
+                await patchHypaV3(priorSettings);
+            }
+        });
+
+        describe("story-date anchors", () => {
+            const rule =
+                "These records are authoritative for the past, and the scene for the present; recent messages win over both.";
+            const anchor = 'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.';
+            const datedEvent = `${anchor}\n\nEarlier events:\n(2 days ago) Bridge crossing: We crossed the bridge.`;
+
+            async function seedDatedEvents(apart: boolean, rangeStart: number) {
+                const memoryPresets = (await single("hypaV3Presets")).data;
+                const previous = memoryPresets.items.find(
+                    ({ id }: { id: string }) => id === memoryPresets.selectedId,
+                ).settings;
+                onTestFinished(() => patchHypaV3(previous));
+                await patchHypaV3({
+                    budgetMode: "tokens",
+                    memoryBudgetTokens: 300,
+                    structured: {
+                        cadence: "manual",
+                        windowTurns: 1,
+                        flowEvents: 0,
+                        laneSplit: "manual",
+                        laneTargets: { flow: 0, events: 200, pages: 0, threads: 0, evidence: 0 },
+                        volatileBeforeLastUser: apart,
+                    },
+                });
+                const presets = (await single("presets")).data;
+                const preset = presets.find(({ id }: { id: string }) => id === presetId);
+                onTestFinished(() => patchPreset("presets", { promptTemplate: preset.promptTemplate ?? null }));
+                await patchPreset("presets", { promptTemplate: [{ type: "chat", rangeStart, rangeEnd: "end" }] });
+
+                const history = [
+                    { role: "char", chatId: "old", data: "We crossed the bridge." },
+                    { role: "user", chatId: "middle", data: "Where now?" },
+                    { role: "char", chatId: "new", data: "The lantern is lit." },
+                    { role: "user", chatId: "question", data: "Do you remember the bridge?" },
+                ] satisfies Message[];
+                const chaId = await seedCharacter({ messages: history, extra: { firstMessage: "" } });
+                const store = openStore();
+                try {
+                    const events = [
+                        { index: 0, title: "Bridge crossing", day: 1 },
+                        { index: 2, title: "Lantern lit", day: 3 },
+                    ].map(({ index, title, day }) => {
+                        const message = history[index];
+                        return {
+                            ...memoryRecords([message.chatId], title).events[0],
+                            summary: message.data,
+                            storyTime: { text: "", date: { year: 2025, month: 4, day } },
+                            sources: [{ messageId: message.chatId, index, hash: messageSourceHash(message) }],
+                        };
+                    });
+                    writeMemory(store, chaId, "k", { events });
+                } finally {
+                    store.close();
+                }
+                return chaId;
+            }
+
+            it.each([
+                {
+                    apart: true,
+                    rangeStart: -1,
+                    behavior: "sends the anchor beside a dated event with a last-message range",
+                },
+                { apart: false, rangeStart: 0, behavior: "sends one anchor with joined memory placement" },
+            ])("$behavior", async ({ apart, rangeStart }) => {
+                const chaId = await seedDatedEvents(apart, rangeStart);
+                const { terminal } = await job("send", chaId);
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(mains()).toHaveLength(1);
+                const entries = (mains()[0].body.messages as { content: string }[]).map(({ content }) => content);
+                const expectedEntry = apart ? datedEvent : `${rule}\n${datedEvent}`;
+                expect(entries).toContainEqual(expect.stringContaining(expectedEntry));
+                expect(entries.join("\n").split(anchor)).toHaveLength(2);
+                if (apart) {
+                    expect(entries.at(-2)).toBe(datedEvent);
+                    expect(entries.join("\n")).not.toContain(rule);
+                }
+
+                const reply = (await readChat(chaId)).data.message.at(-1) as Message;
+                expect(parseContextReport(reply.generationInfo?.context)?.memory?.items).toContainEqual(
+                    expect.objectContaining({ id: "old", lane: "events", verified: true }),
+                );
+                const history = server.context.requestHistory;
+                const [request] = history.list({ chaId, chatId: "k" }).items;
+                const logged = JSON.parse(history.get(request.id)!.prompt!);
+                expect(logged).toContainEqual(
+                    expect.objectContaining({ content: expect.stringContaining(expectedEntry) }),
+                );
+            });
+
+            it("returns the anchor in Preview's memory block when only the separate event entry has an item", async () => {
+                const chaId = await seedDatedEvents(true, 0);
+                const { terminal } = await job("preview", chaId);
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                if (terminal?.type !== "done") throw new Error("Preview failed");
+                const { context, messages, memoryBlock } = terminal.result as GenerationPreviewResult;
+                const entries = messages.map(({ content }) => content);
+                expect(entries).toContainEqual(expect.stringContaining(`${rule}\n${anchor}`));
+                expect(memoryBlock?.map((index) => entries[index])).toEqual([datedEvent]);
+                expect(parseContextReport(context)?.memory?.items?.map(({ lane }) => lane)).toEqual(["events"]);
+                expect(upstream).toEqual([]);
+            });
+        });
+
+        it("both preview kinds return the selected memory without questions, writer hand-offs, receipts or stored changes", async () => {
+            const chaId = await seedCharacter();
+            const store = openStore();
+            try {
+                const storedChat = () => store.readChatSource(chaId, "k");
+                const chat = storedChat();
+                const stored = (chat.data as { message: Message[] }).message;
+                const records = memoryRecords(["promise"], "Remember the promise");
+                records.events[0].sources = stored.slice(0, 2).map((message, index) => ({
+                    messageId: message.chatId!,
+                    index,
+                    hash: messageSourceHash(message),
+                }));
+                writeMemory(store, chaId, "k", { events: records.events });
+                const contents = store.memory.readContents(chaId, "k");
+                fake.setPendingManual(true);
+                for (const kind of ["preview", "previewPrompt"]) {
+                    const result = await job(kind, chaId, {}, { answer: () => "generate" });
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    expect(questions(result.events)).toEqual([]);
+                    expect(fake.handOffs).toEqual([]);
+                    expect(summaries()).toEqual([]);
+                    expect(store.memory.readContents(chaId, "k")).toEqual(contents);
+                    expect(storedChat()).toEqual(chat);
+                    if (result.terminal?.type === "done" && kind === "previewPrompt") {
+                        expect(JSON.stringify(result.terminal.result)).toContain("turns ago:");
+                        expect(JSON.stringify(result.terminal.result)).not.toContain("[m:");
+                    }
+                    if (result.terminal?.type === "done" && kind === "preview") {
+                        const value = result.terminal.result as {
+                            messages: { content: string }[];
+                            context: unknown;
+                            memoryBlock: number[];
+                        };
+                        expect(Object.keys(value).sort()).toEqual(["context", "memoryBlock", "messages"]);
+                        const block = value.memoryBlock.map((index) => value.messages[index].content);
+                        expect(block.join("\n")).toContain("turns ago:");
+                        expect(JSON.stringify(value.messages)).not.toContain("[m:");
+                        const report = parseContextReport(value.context);
+                        expect(report?.memory).toMatchObject({
+                            kind: "structuredMemory",
+                            coverage: "gap",
+                            items: [{ id: "promise", kind: "event", lane: "flow", verified: true }],
+                        });
+                    }
+                }
+            } finally {
+                store.close();
+            }
+        });
+
+        it("sends edited sources raw with a stale manifest and leaves every stored memory row intact", async () => {
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({ structured: { cadence: "manual", windowTurns: 1 } });
+            const original = messages;
+            const chaId = await seedCharacter({
+                messages: [
+                    original[0],
+                    { ...original[1], data: "Changed first reply" },
+                    ...original.slice(2),
+                    { chatId: "u3", role: "user", data: "Continue" },
+                ],
+            });
+            const store = openStore();
+            try {
+                const e = {
+                    ...memoryRecords(["old"], "Old summary sentinel").events[0],
+                    pinned: true,
+                    keyLines: [{ speaker: "C", text: "Old quotation sentinel" }],
+                    sources: original
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) })),
+                };
+                writeMemory(store, chaId, "k", { events: [e] });
+                const before = store.memory.readContents(chaId, "k");
+                const record = store.memory.readRecord(chaId, "k", "events", "old");
+                const result = await job("send", chaId);
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(prompt).toContain("First user");
+                expect(prompt).toContain("Changed first reply");
+                expect(prompt).not.toContain("Old summary sentinel");
+                expect(prompt).not.toContain("Old quotation sentinel");
+                const report = (await readChat(chaId)).data.message.at(-1).generationInfo.context;
+                expect(parseContextReport(report)?.memory?.excluded).toContainEqual({
+                    id: "old",
+                    kind: "event",
+                    lane: "events",
+                    reason: "stale",
+                    staleReason: "changed",
+                });
+                expect(report.memory.items).toEqual([]);
+                expect(store.memory.readContents(chaId, "k")).toEqual(before);
+                expect(store.memory.readRecord(chaId, "k", "events", "old")).toEqual(record);
+                expect(summaries()).toEqual([]);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("runs an approved ordinary gap without consuming a marked repair window", async () => {
+            const chaId = await seedCharacter();
+            state.summaries = Array.from({ length: 24 }, (_, i) =>
+                JSON.stringify({
+                    title: `New ordinary event ${i}`,
+                    summary: `Later ordinary turn ${i}.`,
+                    participants: [],
+                    storyTime: { text: "" },
+                    keyLines: [],
+                    stateChanges: [],
+                    knowledge: [],
+                    relationshipShifts: [],
+                    openThreads: { add: [], close: [], transitions: [] },
+                }),
+            );
+            const store = openStore();
+            try {
+                const original: Message[] = (await readChat(chaId)).data.message;
+                const e = {
+                    ...memoryRecords(["repair"], "Old event").events[0],
+                    rerecord: true,
+                    sources: original
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+                };
+                writeMemory(store, chaId, "k", { events: [e] });
+                const old = store.memory.readRecord(chaId, "k", "events", "repair")!.data;
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: chaId,
+                            chatId: "k",
+                            baseRevision: store.chatRevision(chaId, "k"),
+                            ops: [{ op: "setText", id: original[1].chatId!, text: `${original[1].data} Edited.` }],
+                        },
+                    ],
+                });
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Continue", userMessageId: "latest" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events).map((q) => q.kind)).toEqual(["memoryGap"]);
+                const contents = store.memory.readContents(chaId, "k")!;
+                expect(contents.runs.length).toBeGreaterThan(0);
+                const recordedIds = contents.runs.flatMap(({ id }) =>
+                    store.memory.readRecord(chaId, "k", "runs", id)!.data.window.map((source) => source.messageId),
+                );
+                expect(recordedIds).not.toContain(original[0].chatId);
+                expect(recordedIds).not.toContain(original[1].chatId);
+                expect(store.memory.readRecord(chaId, "k", "events", "repair")!.data).toEqual(old);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("records an approved gap before replying, restores reply temperature and selects the committed records", async () => {
+            const chaId = await seedCharacter();
+            state.summaries = Array.from({ length: 24 }, (_, i) =>
+                JSON.stringify({
+                    title: `Recorded promise ${i}`,
+                    summary: `Cara promised to return at dawn ${i}.`,
+                    participants: [],
+                    storyTime: { text: "" },
+                    keyLines: [],
+                    stateChanges: [],
+                    knowledge: [],
+                    relationshipShifts: [],
+                    openThreads: { add: [], close: [], transitions: [] },
+                }),
+            );
+            const store = openStore();
+            try {
+                state.onMain = async () => store.memory.readContents(chaId, "k");
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Go on", userMessageId: "latest" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events)).toEqual([
+                    expect.objectContaining({
+                        kind: "memoryGap",
+                        payload: {
+                            gapTokens: expect.any(Number),
+                            plannedCalls: expect.any(Number),
+                        },
+                    }),
+                ]);
+                expect(questions(result.events)[0].payload.gapTokens).toBeGreaterThan(0);
+                expect(summaries().length).toBeGreaterThan(0);
+                expect(summaries().every((request) => request.body.temperature === 0)).toBe(true);
+                expect(mains()).toHaveLength(1);
+                expect(mains()[0].body.temperature).toBe(0.73);
+                const contents = store.memory.readContents(chaId, "k")!;
+                expect(contents.events.length).toBeGreaterThan(0);
+                expect(contents.runs).toHaveLength(summaries().length);
+                expect(contents.runs.every((run) => run.result === "recorded")).toBe(true);
+                expect(mains()[0].chatAtRequest.events).toHaveLength(contents.events.length);
+                const prompt = JSON.stringify(mains()[0].body.messages);
+                expect(prompt).toContain("Recorded promise");
+                expect(prompt).not.toContain("[m:");
+                expect(prompt).not.toContain("Message number 0:");
+                expect(prompt).toContain("Message number 23:");
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                expect(reply.data).toBe("Main reply.");
+                expect(reply.generationInfo.context.memory).toMatchObject({
+                    kind: "structuredMemory",
+                    confirmedThrough: "m23",
+                    stages: expect.arrayContaining([{ stage: "gap", reason: "generated" }]),
+                });
+                // The card must use ids that only exist after the writer commits.
+                expect(
+                    reply.generationInfo.context.memory.items.some(
+                        (item: any) => item.verified && contents.events.some(({ id }) => id === item.id),
+                    ),
+                ).toBe(true);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("ends an unrecorded window quietly and spends the writer start only once across auto-continue rounds", async () => {
+            await patchSettings({ autoContinueChat: true });
+            const chaId = await seedCharacter();
+            state.summaries = ["not valid writer JSON", "not valid writer JSON"];
+            state.mainTexts = ["Reply without a period", "Main reply."];
+            const result = await job(
+                "send",
+                chaId,
+                { input: "Go on", userMessageId: "latest" },
+                { answer: () => "generate" },
+            );
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(questions(result.events).map((question) => question.kind)).toEqual(["memoryGap"]);
+            expect(summaries()).toHaveLength(1);
+            expect(summaries()[0].body.temperature).toBe(0);
+            expect(mains().map((request) => request.body.temperature)).toEqual([0.73, 0.73]);
+            const store = openStore();
+            try {
+                const contents = store.memory.readContents(chaId, "k")!;
+                expect(contents.events).toEqual([]);
+                expect(contents.runs).toEqual([expect.objectContaining({ result: "failed" })]);
+            } finally {
+                store.close();
+            }
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply.data).toBe("Reply without a periodMain reply.");
+            expect(reply.generationInfo.context.memory).toMatchObject({
+                kind: "structuredMemory",
+                coverage: "gap",
+                items: [],
+                writer: { state: "failed" },
+            });
+        });
+    });
+
+    it("hands off an edited event on a send with no ordinary window due, but leaves manual cadence waiting", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            for (const cadence of ["everyK", "manual"]) {
+                fake.reset();
+                await patchHypaV3({ structured: { cadence, cadenceTurns: 99 } });
+                const chaId = await seedCharacter({ messages });
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                try {
+                    const event = memoryRecords(["old"]).events[0];
+                    event.sources = messages
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) }));
+                    writeMemory(store, chaId, "k", { events: [event] });
+                    expect(
+                        (
+                            await batch({
+                                chats: [
+                                    {
+                                        characterId: chaId,
+                                        chatId: "k",
+                                        baseRevision: (await readChat(chaId)).revision,
+                                        ops: [{ op: "setText", id: "a1", text: "Edited first reply" }],
+                                    },
+                                ],
+                            })
+                        ).status,
+                    ).toBe(200);
+                    expect(store.memory.readRecord(chaId, "k", "events", "old")!.data.rerecord).toBe(true);
+                    const result = await job("send", chaId, { input: "Continue", userMessageId: "u3" });
+                    expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                    expect(fake.handOffs, cadence).toHaveLength(cadence === "manual" ? 0 : 1);
+                    if (cadence !== "manual")
+                        expect(fake.handOffs[0]).toMatchObject({
+                            kind: "structuredMemory",
+                            confirmedBefore: "u3",
+                            chatRef: { chaId, chatId: "k" },
+                        });
+                    expect(questions(result.events)).toEqual([]);
+                    expect(summaries()).toEqual([]);
+                    expect(
+                        store.memory.readContents(chaId, "k")!.events.map(({ id, status }) => ({ id, status })),
+                    ).toEqual([{ id: "old", status: "active" }]);
+                } finally {
+                    store.close();
+                }
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("sends with unreadable stored event fields without rewriting their rows", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const store = createResourceStore({
+            file: path.join(rootDir, "save", "data", "resources.sqlite"),
+            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+        });
+        const saved = new DatabaseSync(path.join(rootDir, "save", "data", "resources.sqlite"), { readOnly: true });
+        try {
+            await patchHypaV3({
+                structured: {
+                    cadence: "manual",
+                    windowTurns: 1,
+                    laneSplit: "manual",
+                    laneTargets: { flow: 1000, pages: 0, events: 1000, evidence: 1000, threads: 0 },
+                },
+            });
+            const chaId = await seedCharacter({ messages });
+            const events = [
+                { field: "summary", value: null },
+                { field: "knowledge", value: {} },
+                { field: "sources", value: 7 },
+                { field: "keyLines", value: null },
+                { field: "participants", value: {} },
+            ].map(({ field, value }) => ({
+                ...memoryRecords([`${chaId}-${field}`], "Unreadable stored event").events[0],
+                sources: messages.slice(0, 2).map((message, index) => ({
+                    messageId: message.chatId,
+                    index,
+                    hash: messageSourceHash(message as Message),
+                })),
+                [field]: value,
+            }));
+            writeMemory(store, chaId, "k", { events });
+            const rows = () =>
+                saved
+                    .prepare("SELECT data FROM memory_events WHERE id IN (SELECT value FROM json_each(?)) ORDER BY seq")
+                    .all(JSON.stringify(events.map(({ id }) => id)));
+            const before = rows();
+            expect(before).toHaveLength(5);
+            const result = await job("send", chaId, { input: "Continue", userMessageId: "u3" });
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(mains()).toHaveLength(1);
+            expect(summaries()).toEqual([]);
+            expect(questions(result.events)).toEqual([]);
+            expect(JSON.stringify(mains()[0].body.messages)).not.toContain("Unreadable stored event");
+            expect((await readChat(chaId)).data.message.at(-1).data).toBe("Main reply.");
+            expect(rows()).toEqual(before);
+        } finally {
+            saved.close();
+            store.close();
+            vi.useRealTimers();
+        }
+    });
+
+    it("hands off due input jobs and pending manual starts, but no idle, preview or service-free job", async () => {
+        for (const row of [
+            { kind: "send", cadence: "everyTurn", manual: false, count: 1 },
+            { kind: "send", cadence: "everyK", manual: false, count: 0 },
+            { kind: "send", cadence: "everyK", manual: true, count: 1 },
+            { kind: "preview", cadence: "everyTurn", manual: true, count: 0 },
+            { kind: "previewPrompt", cadence: "everyTurn", manual: true, count: 0 },
+        ]) {
+            fake.reset();
+            fake.setPendingManual(row.manual);
+            await patchHypaV3({ structured: { cadence: row.cadence, cadenceTurns: 3 } });
+            const chaId = await seedCharacter({ messages });
+            const result = await job(
+                row.kind,
+                chaId,
+                row.kind === "send" ? { input: "Confirm both", userMessageId: "u3" } : {},
+            );
+            expect(result.terminal?.type, JSON.stringify({ row, ...result })).toBe("done");
+            expect(fake.handOffs, JSON.stringify(row)).toHaveLength(row.count);
+            if (row.count)
+                expect(fake.handOffs[0]).toMatchObject({
+                    kind: "structuredMemory",
+                    confirmedBefore: "u3",
+                    chatRef: { chaId, chatId: "k" },
+                });
+            expect(questions(result.events)).toEqual([]);
+            expect(summaries()).toEqual([]);
+        }
+        // The same selection must work even when no task service was installed.
+        use(blockingStack);
+        try {
+            await patchSettings({ ...defaultMemorySettings, memoryAlgorithmType: "structuredMemory" });
+            const chaId = await seedCharacter({ messages });
+            const result = await job("send", chaId, { input: "Confirm both", userMessageId: "u3" });
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(fake.handOffs).toEqual([]);
+            expect(summaries()).toEqual([]);
+        } finally {
+            await patchSettings({ memoryAlgorithmType: "none" });
+            use(stack);
+        }
+    });
+
+    it("hands off despite a Plugin memory slot or an applicable request trigger", async () => {
+        const profiles = await single("modelProfiles");
+        const added = await batch({
+            ops: [
+                {
+                    kind: "modelProfiles",
+                    id: "main",
+                    baseRevision: profiles.revision,
+                    data: [
+                        ...profiles.data,
+                        {
+                            ...profiles.data[0],
+                            id: "structured-plugin",
+                            name: "Plugin memory",
+                            customAPIFormat: LLMFormat.Plugin,
+                            currentPluginProvider: "prov",
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(added.status).toBe(200);
+        try {
+            for (const plugin of [true, false]) {
+                fake.reset();
+                await patchPreset("modelPresets", {
+                    seperateModelsForAxModels: plugin,
+                    auxSlots: plugin ? { memory: { profileId: "structured-plugin" } } : {},
+                });
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: plugin
+                        ? {}
+                        : {
+                              lowLevelAccess: true,
+                              triggerscript: [
+                                  {
+                                      comment: "request",
+                                      type: "request",
+                                      conditions: [],
+                                      lowLevelAccess: true,
+                                      effect: [
+                                          {
+                                              type: "v2SetVar",
+                                              indent: 0,
+                                              var: "seen",
+                                              operator: "=",
+                                              value: "1",
+                                              valueType: "value",
+                                          },
+                                      ],
+                                  },
+                              ],
+                          },
+                });
+                const result = await job("send", chaId, { input: "Confirm both", userMessageId: "u3" });
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(fake.handOffs).toHaveLength(1);
+                expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u3" });
+                expect(summaries()).toEqual([]);
+                expect(result.events.filter((entry) => entry.type === "callback")).toEqual([]);
+            }
+        } finally {
+            await patchPreset("modelPresets", { seperateModelsForAxModels: false, auxSlots: {} });
+        }
+    });
+
+    it("captures confirmation before output triggers and before an older reply being continued", async () => {
+        const chaId = await seedCharacter({
+            messages,
+            extra: {
+                lowLevelAccess: true,
+                triggerscript: [
+                    {
+                        comment: "Append user after reply",
+                        type: "output",
+                        conditions: [],
+                        lowLevelAccess: true,
+                        effect: [
+                            {
+                                type: "v2Impersonate",
+                                indent: 0,
+                                role: "user",
+                                value: "Trigger user",
+                                valueType: "value",
+                            },
+                        ],
+                    },
+                ],
+            },
+        });
+        const sent = await job("send", chaId, { input: "Real user", userMessageId: "u3" });
+        expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+        expect((await readChat(chaId)).data.message.at(-1)).toMatchObject({ role: "user", data: "Trigger user" });
+        expect(fake.handOffs).toHaveLength(1);
+        expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "u3" });
+        fake.reset();
+        const older = await seedCharacter({
+            messages: [
+                ...messages,
+                { chatId: "u3", role: "user", data: "Third user" },
+                { chatId: "a3", role: "char", data: "Third reply" },
+            ],
+        });
+        const continued = await job("continue", older, { continueMessageId: "a2" });
+        expect(continued.terminal?.type, JSON.stringify(continued.terminal)).toBe("done");
+        expect(fake.handOffs).toHaveLength(1);
+        expect(fake.handOffs[0]).toMatchObject({ kind: "structuredMemory", confirmedBefore: "a2" });
+    });
+    describe("recording receipts and commands", () => {
+        beforeAll(installReceiptPlugin);
+        beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+        afterEach(async () => {
+            vi.useRealTimers();
+            await patchPreset("modelPresets", { seperateModelsForAxModels: false, auxSlots: {} });
+        });
+        const pluginSlot = (enabled: boolean) =>
+            patchPreset("modelPresets", {
+                seperateModelsForAxModels: enabled,
+                auxSlots: enabled ? { memory: { profileId: "receipt-plugin" } } : {},
+            });
+
+        const testStore = () =>
+            createResourceStore({
+                file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+            });
+        const testJob = (chaId: string, hooks?: Record<string, unknown>) =>
+            job("command", chaId, { mode: "manual" }, { command: { type: "memoryTest" }, ...(hooks ? { hooks } : {}) });
+
+        it("reports the made chapter in done and remakes it with the same frame under fine-tuning", async () => {
+            const settings = { eventsPerGroup: 3, instructions: "Keep harbor names.", language: "English" };
+            await patchHypaV3({ structured: settings });
+            const chaId = await seedCharacter({ count: 16 });
+            await setChatMeta(chaId, { structuredMemoryLanguage: "Korean" });
+            const store = testStore();
+            onTestFinished(() => store.close());
+            const messages = store.readChatSource(chaId, "k").data!.message;
+            const events = memoryRecords(messages.map((_, i) => `e${i}`)).events.map((event, i) => ({
+                ...event,
+                sources: [{ messageId: messages[i].chatId!, index: i, hash: messageSourceHash(messages[i]) }],
+            }));
+            const revision = writeMemory(store, chaId, "k", { events });
+            const first = { title: "Crossing", synopsis: "Mira found the ferry." };
+            const second = { title: "The ferry", synopsis: "Mira reached the landing." };
+            state.summaries = [JSON.stringify(first), JSON.stringify(second)];
+            const command = (fields: Record<string, unknown>) =>
+                job("command", chaId, { mode: "manual" }, { command: { type: "memoryChapters", ...fields } });
+            const made = await command({ limit: 1 });
+            expect(made.terminal).toMatchObject({
+                type: "done",
+                result: { kind: "memoryChapters", made: 1, failed: 0, left: 1 },
+            });
+            const route = `/api/memory/structured/${chaId}/k/chapters`;
+            const saved = (await api(route)).body;
+            expect(saved).toMatchObject({
+                revision,
+                chapters: [{ ...first, events: [{ id: "e0" }, { id: "e1" }, { id: "e2" }] }],
+            });
+
+            await patchHypaV3({
+                structured: {
+                    ...settings,
+                    fineTuning: true,
+                    analysisPrompt: "Custom analysis frame",
+                    patchPrompt: "Custom patch frame",
+                },
+            });
+            const remade = await command({ remake: saved.chapters[0].id });
+            expect(remade.terminal).toMatchObject({
+                type: "done",
+                result: { kind: "memoryChapters", remade: "replaced" },
+            });
+            const updated = (await api(route)).body;
+            expect(updated).toMatchObject({ revision, chapters: [{ ...second, events: saved.chapters[0].events }] });
+            expect(updated.chapters[0].id).not.toBe(saved.chapters[0].id);
+            const prompts = summaries().map(({ body }) => body.messages);
+            expect(prompts).toHaveLength(2);
+            expect(JSON.stringify(prompts[0])).toContain("Korean");
+            expect(JSON.stringify(prompts[0])).toContain(settings.instructions);
+            expect(prompts[1]).toEqual(prompts[0]);
+            expect(store.memory.readContents(chaId, "k")!.runs).toEqual([]);
+        });
+
+        it.each([
+            ["queued writer", /writer is working/i],
+            ["running writer", /writer is working/i],
+            ["plugin memory model", /plugin model/i],
+            ["request trigger", /request trigger/i],
+            ["memory off", /memory is turned off/i],
+        ] as const)("refuses the chapter command for %s", async (reason, message) => {
+            const chaId = await seedCharacter({
+                messages,
+                extra: reason === "request trigger" ? { lowLevelAccess: true, triggerscript: [requestTrigger] } : {},
+            });
+            if (reason === "queued writer" || reason === "running writer") {
+                fake.setStatus({
+                    kind: "structuredMemory",
+                    taskId: "writer",
+                    state: reason === "queued writer" ? "queued" : "running",
+                    done: 0,
+                    total: 1,
+                });
+            }
+            if (reason === "plugin memory model") await pluginSlot(true);
+            if (reason === "memory off") await setChatMeta(chaId, { memoryEnabled: false });
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryChapters", limit: 1 }, hooks: pluginHooks },
+            );
+            expect(result.terminal).toMatchObject({ type: "error", message: expect.stringMatching(message) });
+            expect(upstream).toHaveLength(0);
+        });
+
+        it("re-records a greeting through the job without a message id or eligible user and expands plain-text names", async () => {
+            const storedText = "{{char}} greets {{user}}.";
+            const held = [
+                { chatId: "ignored-user", role: "user", data: "Disabled question", disabled: true },
+                { chatId: "reply", role: "char", data: "Unconfirmed reply" },
+                { chatId: "later", role: "char", data: "Later unconfirmed reply" },
+            ];
+            // A request trigger selects the real job writer instead of the detached task service.
+            const chaId = await seedCharacter({
+                messages: held,
+                extra: { firstMessage: storedText, lowLevelAccess: true, triggerscript: [requestTrigger] },
+            });
+            const store = testStore();
+            try {
+                const greeting = {
+                    fmIndex: -1,
+                    hash: `v3:${createHash("sha256")
+                        .update(JSON.stringify(["greeting", storedText]))
+                        .digest("hex")}`,
+                };
+                writeMemory(store, chaId, "k", {
+                    events: [
+                        {
+                            ...memoryRecords(["old"]).events[0],
+                            sources: [{ messageId: "removed-reply", index: 0, hash: "v3:removed" }],
+                            greeting: { fmIndex: 0, hash: "v3:old" },
+                            rerecord: true,
+                        },
+                    ],
+                });
+                state.summaries = [analysis(0)];
+                const result = await job("command", chaId, { mode: "manual" }, { command: { type: "memoryRecord" } });
+                expect(result.terminal).toMatchObject({ type: "done", result: { memoryRecord: "completed" } });
+                expect(summaries()).toHaveLength(1);
+                const persona = (await single("personas")).data.find(
+                    (entry: { id: string }) => entry.id === personaId,
+                ).name;
+                const prompt = summaries()[0]
+                    .body.messages.map((message: { content: string }) => message.content)
+                    .join("\n");
+                expect(prompt).toContain(`[greeting] Mira:\nMira greets ${persona}.`);
+                expect(prompt).not.toContain("Unconfirmed reply");
+                const contents = store.memory.readContents(chaId, "k")!;
+                const events = contents.events.map(({ id }) => store.memory.readRecord(chaId, "k", "events", id)!.data);
+                expect(events.every((event) => !event.rerecord)).toBe(true);
+                expect(events.filter(({ status }) => status === "active")).toEqual([
+                    expect.objectContaining({ greeting, sources: [], summary: "Cara promises to return." }),
+                ]);
+                const run = store.memory.readRecord(chaId, "k", "runs", contents.runs.at(-1)!.id)!.data;
+                expect(run).toMatchObject({ greeting, window: [], result: "recorded", receipt: { state: "recorded" } });
+                expect((await readChat(chaId)).data.message).toEqual(held);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("uses the chat's named connection for the writer test run", async () => {
+            await installChatMemoryConnection();
+            const chaId = await seedCharacter({ messages: messages.slice(0, 3) });
+            await setChatMeta(chaId, { memoryProfileId: "chat-memory" });
+            state.summaries = [analysis(0)];
+            const result = await testJob(chaId);
+            expect(result.terminal).toMatchObject({
+                type: "done",
+                result: { kind: "memoryTest", outcome: "recorded" },
+            });
+            expect(summaries().map(({ body }) => body.model)).toEqual(["chat-memory-model"]);
+            expect(mains()).toEqual([]);
+        });
+
+        it("uses the chat's named connection for Record now on a job with a request trigger", async () => {
+            await installChatMemoryConnection();
+            const chaId = await seedCharacter({
+                messages: messages.slice(0, 2),
+                extra: { lowLevelAccess: true, triggerscript: [requestTrigger] },
+            });
+            await setChatMeta(chaId, { memoryProfileId: "chat-memory" });
+            state.summaries = [analysis(0)];
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a1" } },
+            );
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(summaries().map(({ body }) => body.model)).toEqual(["chat-memory-model"]);
+            const store = testStore();
+            try {
+                expect(store.memory.readContents(chaId, "k")!.runs).toEqual([
+                    expect.objectContaining({ result: "recorded" }),
+                ]);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("tests the newest window through an unanswered reply, returns validation and slot warnings, and saves nothing", async () => {
+            await patchHypaV3({
+                structured: {
+                    cadence: "everyTurn",
+                    fineTuning: true,
+                    analysisPrompt:
+                        "<|im_start|>user<|im_sep|>{{slot::messages}} {{slot::scene}} {{slot::typo}}<|im_end|>",
+                    patchPrompt: "<|im_start|>user<|im_sep|>{{slot::cast}} {{slot::previous}}<|im_end|>",
+                },
+            });
+            const chaId = await seedCharacter({ messages });
+            const store = testStore();
+            try {
+                const records = memoryRecords(["last"], "Cara promises to return.");
+                const window = messages.slice(2).map((message, index) => ({
+                    messageId: message.chatId,
+                    hash: messageSourceHash(message as Message),
+                    index: index + 2,
+                }));
+                records.runs[0].window = window;
+                records.events[0].sources = window;
+                records.pages[0].sections[0].locked = true;
+                writeMemory(store, chaId, "k", records);
+                const beforeChat = await readChat(chaId);
+                const beforeMemory = readRecordSet(store.memory, chaId, "k");
+                const beforeRevision = store.memory.readContents(chaId, "k")!.revision;
+                const draft = {
+                    ...JSON.parse(analysis(0)),
+                    keyLines: [{ speaker: "C", text: "Invented quotation" }],
+                    openThreads: { add: [{ title: "A new promise", who: [] }], close: [], transitions: [] },
+                    pageCandidates: [{ targetId: "last", reason: "New fact", confidence: 1 }],
+                    scene: { place: "Harbor", time: "Dawn", state: "Waiting", participants: [] },
+                };
+                const patch = { pageId: "last", heading: "Gate", op: "upsert", body: "Overwrite locked facts" };
+                state.summaries = [JSON.stringify(draft), JSON.stringify({ patches: [patch] })];
+                const result = await testJob(chaId);
+                expect(result.status).toBe(200);
+                expect(result.terminal).toMatchObject({
+                    type: "done",
+                    result: {
+                        kind: "memoryTest",
+                        customPrompt: true,
+                        outcome: "recorded",
+                        messageIds: ["u2", "a2"],
+                        patchCalled: true,
+                        analysis: { event: { summary: "Cara promises to return." } },
+                        patches: [patch],
+                        unverified: [expect.objectContaining({ text: "Invented quotation" })],
+                        warnings: [expect.objectContaining({ kind: "lockedSection" })],
+                        slots: {
+                            analysis: {
+                                unquoted: ["format", "rules", "language", "cast", "threads", "previous"],
+                                unknown: ["typo"],
+                            },
+                            patch: { unquoted: ["format", "rules", "language"], unknown: [] },
+                        },
+                    },
+                });
+                expect(summaries()).toHaveLength(2);
+                expect(summaries()[0].body.messages[0].content).toContain("Second reply");
+                expect(await readChat(chaId)).toEqual(beforeChat);
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(beforeMemory);
+                expect(store.memory.readContents(chaId, "k")!.revision).toBe(beforeRevision);
+                expect(fake.leases).toEqual([]);
+                expect(fake.handOffs).toEqual([]);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("falls back from changed or disabled run messages to the first open window and reports none without one", async () => {
+            for (const invalid of ["hash", "disabled", "empty"] as const) {
+                const chaId = await seedCharacter({ messages: invalid === "empty" ? [messages[0]] : messages });
+                const store = testStore();
+                try {
+                    if (invalid !== "empty") {
+                        const run = memoryRecords(["last"]).runs[0];
+                        run.window = messages.slice(2).map((message, index) => ({
+                            messageId: message.chatId,
+                            hash: messageSourceHash(message as Message),
+                            index: index + 2,
+                        }));
+                        writeMemory(store, chaId, "k", { runs: [run] });
+                        const current = await readChat(chaId);
+                        const changed = await batch({
+                            chats: [
+                                {
+                                    characterId: chaId,
+                                    chatId: "k",
+                                    baseRevision: current.revision,
+                                    ops:
+                                        invalid === "hash"
+                                            ? [{ op: "setText", id: "a2", text: "Changed reply" }]
+                                            : [
+                                                  {
+                                                      op: "setMessage",
+                                                      id: "a2",
+                                                      message: { ...messages[3], disabled: true },
+                                                  },
+                                              ],
+                                },
+                            ],
+                        });
+                        expect(changed.status).toBe(200);
+                    }
+                    const before = await readChat(chaId);
+                    const beforeMemory = readRecordSet(store.memory, chaId, "k");
+                    const count = summaries().length;
+                    state.summaries.push(analysis(0));
+                    const result = await testJob(chaId);
+                    expect(result.terminal).toMatchObject({
+                        type: "done",
+                        result: {
+                            kind: "memoryTest",
+                            customPrompt: false,
+                            outcome: invalid === "empty" ? "none" : "recorded",
+                            messageIds: invalid === "empty" ? [] : ["u1", "a1"],
+                            patchCalled: false,
+                        },
+                    });
+                    expect(summaries()).toHaveLength(count + (invalid === "empty" ? 0 : 1));
+                    expect(await readChat(chaId)).toEqual(before);
+                    expect(readRecordSet(store.memory, chaId, "k")).toEqual(beforeMemory);
+                } finally {
+                    store.close();
+                }
+            }
+        });
+
+        it("uses the cadence test window when omission leaves the newest run with no readable message", async () => {
+            await patchHypaV3({ structured: { cadence: "everyTurn", omitUserMessages: true } });
+            const chaId = await seedCharacter({ messages });
+            const store = testStore();
+            try {
+                const run = memoryRecords(["last-user-only"]).runs[0];
+                run.window = [{ messageId: "u2", index: 2, hash: messageSourceHash(messages[2] as Message) }];
+                writeMemory(store, chaId, "k", { runs: [run] });
+                const before = readRecordSet(store.memory, chaId, "k");
+                state.summaries = [analysis(0)];
+                const result = await testJob(chaId);
+                expect(result.terminal).toMatchObject({
+                    type: "done",
+                    result: { kind: "memoryTest", outcome: "recorded", messageIds: ["u1", "a1"] },
+                });
+                const prompt = JSON.stringify(summaries()[0].body.messages);
+                expect(prompt).toContain("[m:a1]");
+                expect(prompt).toContain("First reply");
+                expect(prompt).not.toContain("Second user");
+                expect(prompt).not.toContain("First user");
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("falls back to a fresh test window when screening now matches the newest recorded run", async () => {
+            await patchHypaV3({
+                structured: { cadence: "everyTurn", screening: { refusal: ["SECOND REPLY"], format: [] } },
+            });
+            const chaId = await seedCharacter({ messages });
+            const store = testStore();
+            try {
+                const run = memoryRecords(["last"]).runs[0];
+                run.window = messages.slice(2).map((message, index) => ({
+                    messageId: message.chatId,
+                    hash: messageSourceHash(message as Message),
+                    index: index + 2,
+                }));
+                writeMemory(store, chaId, "k", { runs: [run] });
+                const before = readRecordSet(store.memory, chaId, "k");
+                state.summaries = [analysis(0)];
+                const result = await testJob(chaId);
+                expect(result.terminal).toMatchObject({
+                    type: "done",
+                    result: { kind: "memoryTest", outcome: "recorded", messageIds: ["u1", "a1"] },
+                });
+                expect(JSON.stringify(summaries()[0].body.messages)).toContain("First reply");
+                expect(JSON.stringify(summaries()[0].body.messages)).not.toContain("Second reply");
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
+            } finally {
+                store.close();
+            }
+        });
+
+        it("refuses unsafe test jobs by reason without cancelling memory work and rejects rebuilds at admission", async () => {
+            for (const reason of [
+                "plugin",
+                "trigger",
+                "queued",
+                "running",
+                "adoption",
+                "algorithm",
+                "rebuild",
+            ] as const) {
+                fake.reset();
+                await pluginSlot(reason === "plugin");
+                await patchSettings({ memoryAlgorithmType: reason === "algorithm" ? "none" : "structuredMemory" });
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: reason === "trigger" ? { lowLevelAccess: true, triggerscript: [requestTrigger] } : {},
+                });
+                if (reason === "adoption")
+                    await setChatMeta(chaId, {
+                        hypaV3Data: {
+                            summaries: [{ text: "Old memory", chatMemos: ["u1", "a1"], isImportant: false }],
+                        },
+                    });
+                const status =
+                    reason === "queued" || reason === "running"
+                        ? { kind: "structuredMemory" as const, taskId: "existing", state: reason, done: 0, total: 1 }
+                        : null;
+                fake.setStatus(status);
+                const store = testStore();
+                try {
+                    if (reason === "rebuild")
+                        store.memory.rebuild.begin(
+                            chaId,
+                            "k",
+                            { epoch, mode: "rebuild", plan: [["u1", "a1"]] },
+                            rebuildSeed("rebuild", readRecordSet(store.memory, chaId, "k")!),
+                        );
+                    const beforeChat = await readChat(chaId);
+                    const beforeMemory = readRecordSet(store.memory, chaId, "k");
+                    const result = await testJob(chaId, pluginHooks);
+                    if (reason === "rebuild") {
+                        expect(result.status).toBe(409);
+                        expect(result.body).toEqual({ error: "memoryRebuilding" });
+                        expect(result.events).toEqual([]);
+                    } else
+                        expect(result.terminal).toMatchObject({
+                            type: "error",
+                            message: expect.stringMatching(
+                                {
+                                    plugin: /plugin model/i,
+                                    trigger: /request trigger/i,
+                                    queued: /writer is working/i,
+                                    running: /writer is working/i,
+                                    adoption: /adopt or decline/i,
+                                    algorithm: /not this chat's memory/i,
+                                }[reason],
+                            ),
+                        });
+                    expect(fake.service.status()).toEqual(status);
+                    expect(fake.leases).toEqual([]);
+                    expect(fake.records).toEqual([]);
+                    expect(summaries()).toEqual([]);
+                    expect(await readChat(chaId)).toEqual(beforeChat);
+                    expect(readRecordSet(store.memory, chaId, "k")).toEqual(beforeMemory);
+                } finally {
+                    store.close();
+                }
+            }
+        });
+
+        it("stores a reply's tab requirement or paused notice even when its cadence hands off no task", async () => {
+            for (const cadence of ["everyK", "manual"]) {
+                await patchHypaV3({ structured: { cadence, cadenceTurns: 3 } });
+                for (const reason of ["pluginModel", "requestTrigger", "writerPaused"]) {
+                    fake.reset();
+                    await pluginSlot(reason === "pluginModel");
+                    const chaId = await seedCharacter({
+                        messages,
+                        extra:
+                            reason === "requestTrigger"
+                                ? { lowLevelAccess: true, triggerscript: [requestTrigger] }
+                                : {},
+                    });
+                    if (reason === "writerPaused") {
+                        const store = createResourceStore({
+                            file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                        });
+                        try {
+                            writeMemory(store, chaId, "k", {
+                                runs: Array.from({ length: 5 }, (_, index) => ({
+                                    id: `failed-${index}`,
+                                    window: [],
+                                    model: "writer",
+                                    inputTokens: 0,
+                                    outputTokens: 0,
+                                    durationMs: 0,
+                                    result: "failed" as const,
+                                })),
+                            });
+                        } finally {
+                            store.close();
+                        }
+                    }
+                    const sent = await job("send", chaId, { input: "Confirm both", userMessageId: "u3" });
+                    expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+                    const reply = (await readChat(chaId)).data.message.at(-1);
+                    expect(reply.generationInfo).toMatchObject({
+                        memory: {
+                            state: reason === "writerPaused" ? "skipped" : "notAutomatic",
+                            reason,
+                        },
+                    });
+                    expect(fake.handOffs).toEqual([]);
+                }
+            }
+        });
+
+        it("refuses Record now from a held chat for server, Plugin and request-trigger writers", async () => {
+            for (const mode of ["server", "plugin", "trigger"] as const) {
+                fake.reset();
+                fake.recordAnswer = {
+                    outcome: "queued",
+                    status: { kind: "structuredMemory", taskId: "record", state: "queued", done: 0, total: 0 },
+                };
+                await pluginSlot(mode === "plugin");
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: mode === "trigger" ? { lowLevelAccess: true, triggerscript: [requestTrigger] } : {},
+                });
+                await setChatMeta(chaId, {
+                    hypaV3Data: { summaries: [{ text: "Old memory", chatMemos: ["u1", "a1"], isImportant: false }] },
+                });
+                const before = (await api(`/api/memory/structured/${chaId}/k`)).body;
+                const callback = vi.fn(() => ({ outcome: "answered", value: { success: true, content: analysis(0) } }));
+                const result = await job(
+                    "command",
+                    chaId,
+                    { mode: "manual" },
+                    {
+                        command: { type: "memoryRecord", messageId: "a2" },
+                        hooks: pluginHooks,
+                        answerCallback: callback,
+                    },
+                );
+                expect(result.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringMatching(/adopt or decline/i),
+                });
+                expect(callback).not.toHaveBeenCalled();
+                expect(fake.records).toEqual([]);
+                expect(summaries()).toEqual([]);
+                expect((await api(`/api/memory/structured/${chaId}/k`)).body).toEqual(before);
+            }
+        });
+
+        it("keeps a held send from asking about a gap or handing off a waiting manual start", async () => {
+            await patchPreset("modelProfiles", { maxContext: 900 });
+            await patchHypaV3({
+                gapConfirmTokens: 0,
+                structured: {
+                    cadence: "manual",
+                    windowTurns: 1,
+                    laneSplit: "manual",
+                    laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            fake.setPendingManual(true);
+            const chaId = await seedCharacter();
+            await setChatMeta(chaId, {
+                hypaV3Data: { summaries: [{ text: "Old memory", chatMemos: ["m0", "m1"], isImportant: false }] },
+            });
+            const before = (await api(`/api/memory/structured/${chaId}/k`)).body;
+            try {
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Continue the story", userMessageId: "next" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events)).toEqual([]);
+                expect(fake.handOffs).toEqual([]);
+                expect(fake.leases).toEqual([]);
+                expect(summaries()).toEqual([]);
+                expect((await readChat(chaId)).data.message.at(-1).generationInfo.memory).toMatchObject({
+                    state: "notAutomatic",
+                    reason: "awaitingAdoption",
+                });
+                expect((await api(`/api/memory/structured/${chaId}/k`)).body).toEqual(before);
+            } finally {
+                await patchPreset("modelProfiles", { maxContext: 5000 });
+            }
+        });
+
+        it("record now and rebuild admit the chat switch even when the owner disagrees", async () => {
+            for (const command of [
+                { type: "memoryRecord", messageId: "a2" },
+                { type: "memoryRebuild", mode: "rebuild", turns: 1 },
+            ]) {
+                const chaId = await seedCharacter({ messages });
+                await setChatMeta(chaId, { memoryEnabled: false });
+                const off = await job("command", chaId, { mode: "manual" }, { command });
+                expect(off.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringMatching(/memory is turned off/i),
+                });
+                await patchCharacter(chaId, { supaMemory: false });
+                await setChatMeta(chaId, { memoryEnabled: true });
+                fake.recordAnswer = {
+                    outcome: "queued",
+                    status: { kind: "structuredMemory", taskId: "record", state: "queued", done: 0, total: 0 },
+                };
+                const on = await job("command", chaId, { mode: "manual" }, { command });
+                expect(on.terminal?.type, JSON.stringify(on.terminal)).toBe("done");
+            }
+        });
+
+        it("validates record commands and hands the pressed message or resume to the memory service", async () => {
+            const chaId = await seedCharacter({ messages });
+            fake.recordAnswer = {
+                outcome: "queued",
+                status: { kind: "structuredMemory", taskId: "record", state: "queued", done: 0, total: 0 },
+            };
+            for (const command of [{ type: "memoryRecord", messageId: "a2" }, { type: "memoryRecord" }]) {
+                const result = await job("command", chaId, { mode: "manual" }, { command });
+                expect(result.terminal?.type, JSON.stringify(result)).toBe("done");
+            }
+            expect(
+                fake.records.map(({ input, options }) => ({ kind: input.kind, chatRef: input.chatRef, options })),
+            ).toEqual([
+                { kind: "structuredMemory", chatRef: { chaId, chatId: "k" }, options: { through: "a2" } },
+                { kind: "structuredMemory", chatRef: { chaId, chatId: "k" }, options: {} },
+            ]);
+            expect((await readChat(chaId)).data.message).toEqual(messages);
+            for (const messageId of ["", null, 42]) {
+                const invalid = await job(
+                    "command",
+                    chaId,
+                    { mode: "manual" },
+                    { command: { type: "memoryRecord", messageId } },
+                );
+                expect(invalid.status).toBe(400);
+            }
+            const user = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "u1" } },
+            );
+            expect(user.terminal).toMatchObject({ type: "error" });
+            expect(fake.records).toHaveLength(2);
+            fake.recordAnswer = { outcome: "refused", reason: "queueFull" };
+            const full = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a2" } },
+            );
+            expect(full.terminal).toMatchObject({ type: "error", message: expect.stringContaining("Too many chats") });
+        });
+
+        it("refuses a job's replacement when the old event loses its re-record intent during the provider call", async () => {
+            await pluginSlot(true);
+            for (const change of ["retracted", "unmarked", "removed"] as const) {
+                const chaId = await seedCharacter({ messages: messages.slice(0, 2) });
+                const store = createResourceStore({
+                    file: path.join(rootDir, "save", "data", "resources.sqlite"),
+                    kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+                });
+                try {
+                    const event = { ...memoryRecords(["old"]).events[0], rerecord: true };
+                    event.sources = messages
+                        .slice(0, 2)
+                        .map((m, index) => ({ messageId: m.chatId, index, hash: messageSourceHash(m as Message) }));
+                    writeMemory(store, chaId, "k", { events: [event] });
+                    let calls = 0;
+                    const result = await job(
+                        "command",
+                        chaId,
+                        { mode: "manual" },
+                        {
+                            command: { type: "memoryRecord", messageId: "a1" },
+                            hooks: pluginHooks,
+                            answerCallback: () => {
+                                calls += 1;
+                                const { rerecord, ...old } = store.memory.readRecord(chaId, "k", "events", "old")!.data;
+                                writeMemory(
+                                    store,
+                                    chaId,
+                                    "k",
+                                    change === "removed"
+                                        ? { remove: { events: ["old"] } }
+                                        : {
+                                              events: [
+                                                  {
+                                                      ...old,
+                                                      ...(change === "retracted"
+                                                          ? { status: "retracted" as const, rerecord: true }
+                                                          : {}),
+                                                  },
+                                              ],
+                                          },
+                                );
+                                return { outcome: "answered", value: { success: true, content: analysis(0) } };
+                            },
+                        },
+                    );
+                    expect(calls, JSON.stringify(result)).toBe(1);
+                    expect(
+                        store.memory.readContents(chaId, "k")!.events.map(({ id, status }) => ({ id, status })),
+                        change,
+                    ).toEqual(
+                        change === "removed"
+                            ? []
+                            : [{ id: "old", status: change === "retracted" ? "retracted" : "active" }],
+                    );
+                } finally {
+                    store.close();
+                }
+            }
+        });
+
+        it("records tab-bound windows in order on the owner's job channel through the newest reply", async () => {
+            await patchHypaV3({ structured: { cadence: "manual" } });
+            for (const plugin of [true, false]) {
+                fake.reset();
+                await pluginSlot(plugin);
+                const chaId = await seedCharacter({
+                    messages,
+                    extra: plugin ? {} : { lowLevelAccess: true, triggerscript: [requestTrigger] },
+                });
+                state.summaries = [analysis(0), analysis(1)];
+                state.summaryIndex = 0;
+                const callbacks: any[] = [];
+                const result = await job(
+                    "command",
+                    chaId,
+                    { mode: "manual" },
+                    {
+                        command: { type: "memoryRecord", messageId: "a2" },
+                        hooks: pluginHooks,
+                        answerCallback: (event) => {
+                            callbacks.push(event);
+                            return {
+                                outcome: "answered",
+                                value: { success: true, content: analysis(callbacks.length - 1) },
+                            };
+                        },
+                    },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const data = (await api(`/api/memory/structured/${chaId}/k`)).body;
+                expect(data.events).toHaveLength(2);
+                const records = await Promise.all(
+                    data.events.map(
+                        async ({ id }: { id: string }) =>
+                            (await api(`/api/memory/structured/${chaId}/k/records/events/${id}`)).body,
+                    ),
+                );
+                expect(
+                    records.map((record) =>
+                        record.data.sources.map((source: { messageId: string }) => source.messageId),
+                    ),
+                ).toEqual([
+                    ["u1", "a1"],
+                    ["u2", "a2"],
+                ]);
+                const chat = (await readChat(chaId)).data;
+                expect(
+                    chat.message
+                        .filter((message: any) => message.role === "char")
+                        .map((message: any) => message.generationInfo?.memory?.state),
+                ).toEqual(["recorded", "recorded"]);
+                expect(fake.records).toEqual([]);
+                expect(fake.leases).toHaveLength(1);
+                expect(fake.leases[0].released).toBe(true);
+                if (plugin) {
+                    expect(callbacks).toHaveLength(2);
+                    expect(callbacks.every((event) => event.name === "provider")).toBe(true);
+                } else {
+                    expect(callbacks).toEqual([]);
+                    expect(summaries().map((entry) => entry.body.messages[0].content)).toEqual([
+                        "Request trigger reached the memory writer",
+                        "Request trigger reached the memory writer",
+                    ]);
+                }
+            }
+        });
+    });
 });

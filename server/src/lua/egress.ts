@@ -4,11 +4,16 @@ import { isIP } from "node:net";
 import ipaddr from "ipaddr.js";
 
 /**
- * The egress guard of Lua's `request(id, url)`, ported from the previous attempt's runtime: HTTPS
- * only, at most 120 characters, the client's three banned prefixes, no `localhost`, and every
- * resolved address public; the connection is pinned to a validated address, so DNS cannot rebind
- * it. It runs on the main thread, so its rate counter is the server's, whichever worker asks.
+ * The egress guard of Lua's `request(id, url)`: HTTPS only, at most 120 characters, the three
+ * banned Risu prefixes, no `localhost`, and every resolved address public; the connection is
+ * pinned to a validated address, so DNS cannot rebind it. It runs on the main thread, so its
+ * rate counter is the server's, whichever worker asks:
+ * 30 validated requests per minute, with a 10 s deadline and a 2 MB response cap per request.
+ * The low-level access check is in `server/src/lua/runtime.ts`, before any request reaches
+ * `server/src/scripts/workerPool.ts` and this guard.
  */
+
+/** URLs longer than this are refused before URL parsing or name resolution. */
 export const MAX_URL_LENGTH = 120;
 export const MAX_REQUESTS_PER_WINDOW = 30;
 export const REQUEST_WINDOW_MS = 60_000;

@@ -10,10 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `.svelte.test.ts` so the props can be `$state` and change on the mounted rows.
 
 vi.mock("src/ts/storage/database.svelte", () => ({ appVer: "1234.5.67" }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: async (path: string) => path,
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 // `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
 vi.mock("src/ts/stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 vi.mock("src/ts/translator/translator", () => ({
@@ -45,6 +42,7 @@ let registry: ChatStyleRegistry;
 // starved test worker could reach it and get the decoder's fallback instead of the sheet. A stopped
 // clock leaves only the work limit, which these small sheets never reach.
 beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(performance, "now").mockReturnValue(0);
 });
 afterEach(async () => {
@@ -52,6 +50,7 @@ afterEach(async () => {
     registry?.destroy();
     document.body.innerHTML = "";
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 /** Waits (timer by timer, so the parser's awaits settle) until `ready` holds. */
@@ -59,7 +58,7 @@ async function until(ready: () => boolean) {
     for (let round = 0; round < 50; round++) {
         flushSync();
         if (ready()) return;
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await vi.advanceTimersByTimeAsync(0);
     }
     flushSync();
     expect(ready()).toBe(true);
@@ -81,6 +80,22 @@ function render(bodies: Body[]) {
 }
 
 describe("ChatBody under a chat style registry", () => {
+    it("shares scoped CSS and sanitized attributes from an attributed message style", async () => {
+        const { target } = render([
+            {
+                id: "a",
+                idx: 0,
+                msgDisplay:
+                    '<style media="all" onload="bad()">body{display:none}.probe{color:red}</style><p class="probe">hello</p>',
+            },
+        ]);
+        await until(() => rendered(target, "a"));
+        expect(sheets()).toEqual([".chattext body{display:none;}" + RED]);
+        expect(registry.container.firstElementChild?.getAttribute("media")).toBe("all");
+        expect(registry.container.firstElementChild?.hasAttribute("onload")).toBe(false);
+        expect(rowStyles(target, "a")).toEqual(["/**/"]);
+    });
+
     it("shares one sheet between rows of the same style and leaves placeholders in the rows", async () => {
         const { target } = render([
             { id: "b", idx: 1, msgDisplay: styled(".probe{color:red}", "newer") },
@@ -153,7 +168,6 @@ describe("ChatBody under a chat style registry", () => {
             translated: false,
             translating: false,
             retranslate: false,
-            modelShortName: "",
         });
         mounted.push(mount(ChatBody, { target, props }));
         await until(() => target.querySelector("p.x-risu-probe") !== null);

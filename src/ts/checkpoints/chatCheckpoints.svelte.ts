@@ -7,19 +7,39 @@ import {
     type CheckpointPolicy,
     type CheckpointSummary,
 } from "../../../shared/chatCheckpoints.ts";
-import { compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { compareRevision } from "../../../shared/resources.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { heldChatRevision, isChatGenerating, loadChat, type ChatRef } from "../storage/chatStore.svelte";
-import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
-import {
-    assertSaveAdmission,
-    flushResources,
-    GenerationBlockedError,
-    generatingNoticeCount,
-    refusedItems,
-} from "../storage/resourceSync.svelte";
-import { authFetch } from "../storage/serverAuth";
+import { heldChatRevision, isActiveChat, loadChat, type ChatRef } from "../storage/chatStore.svelte";
+import { prepare, request, type Answer } from "./chatRequest";
 
+/**
+ * The checkpoint client (`/api/chat-checkpoints`). Requests use `authFetch` with a 30 s deadline for
+ * fetch and JSON after sign-in. A timeout takes the transport-failure path with the current dispatch
+ * flag. If 200 headers have arrived, a body timeout answers with a null body. A mutation sends
+ * `RESOURCE_EPOCH_HEADER` and checks `assertSaveAdmission` in `beforeDispatch` to stop dispatch after a
+ * restore halt (a failure before dispatch is `not-sent`/`admission`). If the body arrives within the
+ * deadline, a 412 `EpochMismatch` or a body naming another epoch throws `epochMismatch(epoch)` and runs
+ * the restore halt. The caller sees the throw, except in the flush or refresh, which catch it after the halt.
+ *
+ * - Save and load share `prepare`: `generating` while `isChatGenerating(ref)`, `refused` while
+ *   `refusedItems()` names the chat or its character's order, then `await flushResources()`,
+ *   `discarded` when its report names `chats/<chaId>/<chatId>` or `chats/<chaId>`, then both refusals
+ *   again. A `GenerationBlockedError` is `generating` with `noticeShown` when `generatingNoticeCount()`
+ *   moved (the caller must not show `chatGenerating` twice); any other flush failure is `saveFailed`.
+ * - `saveCheckpoint` checks `busy` only at entry. `loadCheckpoint` refuses `busy` while
+ *   `checkpointLoadBusy`, holds that guard through preparation and refresh, takes `heldChatRevision(ref)`
+ *   after preparation (`null`: `unsaved`), and sends one `POST .../load` with it as `chatBaseRevision`.
+ *   On 200 it re-reads through `loadChat(ref)`: `loaded` needs the refresh not to throw, a well-formed
+ *   `chatRevision`, and a held revision equal or newer. Every other 200, including a body timeout,
+ *   is `refresh-pending`. A 409 `generating` returns without a refresh. A 409 with a string `error`
+ *   and a null or string `revision` re-reads and returns `conflict`, so the caller may retry.
+ *   400/404/413 return `invalid`/`missing`/`tooLarge`. A malformed 409, a network failure after dispatch,
+ *   a 5xx, or any other answer re-reads and returns `unknown`. A failed refresh leaves the outcome intact.
+ * - Rename, delete, and `writeCheckpointPolicy` skip the preparation. Rename and delete send the row's
+ *   `revision` as `baseRevision` (409 for a stale row).
+ */
+
+/** The chat whose checkpoint dialog is open (null: closed); held here, outside `stores.svelte.ts`. */
 export const chatCheckpointsDialog = writable<ChatRef | null>(null);
 const loading = writable(false);
 /** Shared modal guard, held from before the flush until the load's refresh finishes. */
@@ -55,55 +75,12 @@ export type CheckpointLoadResult =
     | { status: "unknown" }
     | CheckpointFailure;
 
-type Answer =
-    | { kind: "response"; status: number; body: Record<string, unknown> | null }
-    | { kind: "failed"; dispatched: boolean };
-
 const path = "/api/chat-checkpoints";
+const checkpointDeadline = { deadlineMs: 30_000 };
 const address = (ref: ChatRef) => ({ characterId: ref.chaId, chatId: ref.chatId });
 
-/** Transport failures stay distinct from admission failures; epoch changes always throw to the caller. */
-async function request(url: string, body?: Record<string, unknown>, method = "POST"): Promise<Answer> {
-    let dispatched = body === undefined;
-    let response: Response;
-    try {
-        response = await authFetch(
-            url,
-            body === undefined
-                ? { cache: "no-store" }
-                : {
-                      method,
-                      cache: "no-store",
-                      headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-                      body: JSON.stringify(body),
-                  },
-            body === undefined
-                ? {}
-                : {
-                      beforeDispatch: () => {
-                          assertSaveAdmission();
-                          dispatched = true;
-                      },
-                  },
-        );
-    } catch {
-        return { kind: "failed", dispatched };
-    }
-    let parsed: unknown = null;
-    try {
-        parsed = await response.json();
-    } catch {
-        // A 200 load is committed even if its response body cannot be read.
-    }
-    const result = isPlainObject(parsed) ? parsed : null;
-    if (response.status === 412 && result?.error === "EpochMismatch" && typeof result.epoch === "string") {
-        throw epochMismatch(result.epoch);
-    }
-    const epoch = getResourceEpoch();
-    if (epoch && typeof result?.epoch === "string" && result.epoch !== epoch) {
-        throw epochMismatch(result.epoch);
-    }
-    return { kind: "response", status: response.status, body: result };
+function requireActive(ref: ChatRef) {
+    if (!isActiveChat(ref)) throw new Error("The checkpoint chat is no longer active");
 }
 
 function failure(answer: Answer): CheckpointFailure {
@@ -168,7 +145,7 @@ function policy(value: unknown): value is CheckpointPolicy | null {
 }
 
 export async function listCheckpoints(ref: ChatRef): Promise<CheckpointResult<{ checkpoints: CheckpointSummary[] }>> {
-    const answer = await request(`${path}?${new URLSearchParams(address(ref))}`);
+    const answer = await request(`${path}?${new URLSearchParams(address(ref))}`, undefined, checkpointDeadline);
     if (
         answer.kind === "response" &&
         answer.status === 200 &&
@@ -179,37 +156,6 @@ export async function listCheckpoints(ref: ChatRef): Promise<CheckpointResult<{ 
         return { status: "ok", checkpoints: answer.body.checkpoints };
     }
     return failure(answer);
-}
-
-function localRefusal(ref: ChatRef): CheckpointFailure | null {
-    if (isChatGenerating(ref)) return { status: "not-sent", reason: "generating" };
-    if (
-        refusedItems().some(
-            (item) =>
-                (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
-                (item.kind === "order" && item.chaId === ref.chaId),
-        )
-    ) {
-        return { status: "not-sent", reason: "refused" };
-    }
-    return null;
-}
-
-async function prepare(ref: ChatRef): Promise<CheckpointFailure | null> {
-    const refused = localRefusal(ref);
-    if (refused) return refused;
-    const notices = generatingNoticeCount();
-    try {
-        const { discarded } = await flushResources();
-        if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`) || discarded.includes(`chats/${ref.chaId}`)) {
-            return { status: "not-sent", reason: "discarded" };
-        }
-    } catch (error) {
-        return error instanceof GenerationBlockedError
-            ? { status: "not-sent", reason: "generating", noticeShown: generatingNoticeCount() !== notices }
-            : { status: "not-sent", reason: "saveFailed" };
-    }
-    return localRefusal(ref);
 }
 
 export async function saveCheckpoint(
@@ -226,7 +172,7 @@ async function writeSummary(
     operation: string,
     body: Record<string, unknown>,
 ): Promise<CheckpointResult<{ checkpoint: CheckpointSummary }>> {
-    const answer = await request(`${path}/${operation}`, body);
+    const answer = await request(`${path}/${operation}`, body, checkpointDeadline);
     return answer.kind === "response" && answer.status === 200 && summary(answer.body?.checkpoint)
         ? { status: "ok", checkpoint: answer.body.checkpoint }
         : failure(answer);
@@ -250,11 +196,15 @@ export async function deleteCheckpoint(
     ref: ChatRef,
     checkpoint: Pick<CheckpointSummary, "id" | "revision">,
 ): Promise<CheckpointResult> {
-    const answer = await request(`${path}/delete`, {
-        ...address(ref),
-        id: checkpoint.id,
-        baseRevision: checkpoint.revision,
-    });
+    const answer = await request(
+        `${path}/delete`,
+        {
+            ...address(ref),
+            id: checkpoint.id,
+            baseRevision: checkpoint.revision,
+        },
+        { ...checkpointDeadline, beforeDispatch: () => requireActive(ref) },
+    );
     return answer.kind === "response" && answer.status === 200 && answer.body?.ok === true
         ? { status: "ok" }
         : failure(answer);
@@ -279,7 +229,14 @@ export async function loadCheckpoint(ref: ChatRef, id: string): Promise<Checkpoi
         if (refused) return refused;
         const chatBaseRevision = heldChatRevision(ref);
         if (chatBaseRevision === null) return { status: "not-sent", reason: "unsaved" };
-        const answer = await request(`${path}/load`, { ...address(ref), id, chatBaseRevision });
+        const answer = await request(
+            `${path}/load`,
+            { ...address(ref), id, chatBaseRevision },
+            {
+                ...checkpointDeadline,
+                beforeDispatch: () => requireActive(ref),
+            },
+        );
         if (answer.kind === "failed" && !answer.dispatched) return failure(answer);
         if (answer.kind === "response") {
             if (answer.status === 200) {
@@ -311,7 +268,7 @@ export async function loadCheckpoint(ref: ChatRef, id: string): Promise<Checkpoi
 
 /** An absent route, non-JSON answer, or invalid policy is unavailable, never an off policy. */
 export async function readCheckpointPolicy(ref: ChatRef): Promise<CheckpointPolicyResult> {
-    const answer = await request(`${path}/policy?${new URLSearchParams(address(ref))}`);
+    const answer = await request(`${path}/policy?${new URLSearchParams(address(ref))}`, undefined, checkpointDeadline);
     return answer.kind === "response" &&
         answer.status === 200 &&
         typeof answer.body?.epoch === "string" &&
@@ -330,7 +287,7 @@ export async function writeCheckpointPolicy(
             ...address(ref),
             ...(value === null ? { off: true } : { autoEvery: value.autoEvery, autoKeep: value.autoKeep }),
         },
-        "PUT",
+        { ...checkpointDeadline, method: "PUT" },
     );
     return answer.kind === "response" && answer.status === 200 && policy(answer.body?.policy)
         ? { status: "ok", policy: answer.body.policy }

@@ -1,14 +1,33 @@
 <script lang="ts">
+    import {
+        BookAlertIcon,
+        ChevronUpIcon,
+        CircleAlertIcon,
+        GaugeIcon,
+        LoaderCircleIcon,
+        SettingsIcon,
+    } from "@lucide/svelte";
     import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
     import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import type { SettingHit } from "src/ts/setting/searchIndex";
+    import { memoryHealthFacts } from "src/ts/process/chatStatus.svelte";
+    import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
+    import {
+        memoryItemTitles,
+        memoryStatusWord,
+        newestMemoryReceipt,
+        readStructuredMemoryContents,
+        standingMemoryReport,
+    } from "src/ts/process/structuredMemory.svelte";
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
+    import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
-    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
+    import { hypaV3ModalOpen, settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { countTokensInScope, jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
     import { get } from "svelte/store";
@@ -19,23 +38,41 @@
         parseContextReport,
         turnCount,
         type ContextReport,
+        type ContextSectionKind,
     } from "../../../shared/contextReport.ts";
     import { maxContextOverrideOf } from "../../../shared/sections.ts";
+    import { supaMemoryOnCount } from "../../../shared/characters.ts";
+    import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings, setChatMemoryEnabled } from "src/ts/storage/chatMemory.svelte";
     import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
+    import MemoryManifest from "../Others/StructuredMemory/MemoryManifest.svelte";
     import Portal from "../UI/GUI/Portal.svelte";
 
-    // The composer's context chip: how the last request spent the model's context, read from the open
-    // chat's latest `generationInfo.context` (`shared/contextReport.ts`). The prompt is rebuilt and
-    // trimmed every send, so the chip shows the history window, or the share of the prompt budget while
-    // all eligible history fits; the popover breaks the last request down. While the user types, the
-    // chip estimates how many older messages the send would push out (`displacement`).
+    /**
+     * The composer's context line: how the last request spent the model's context, read from the open chat's
+     * latest `generationInfo.context` (`shared/contextReport.ts`). The prompt is rebuilt and trimmed every send,
+     * so the line shows the history window kept and the share of the prompt budget (`maxContext - maxResponse`)
+     * used; the popover breaks the last request down. While the user types, the line estimates how many older
+     * messages the send would push out (`displacement`).
+     *
+     * The memory word is the chat's memory as the next send resolves it (`memoryNow`), not the last reply's:
+     * a chat with memory set up shows the line before its first reply, and the last reply's coverage is the
+     * word only while the same memory is still on. The popover's memory block states it, says how the last
+     * reply differed, and holds the chat's switch and the ways to the memory panel and settings.
+     *
+     * `DefaultChatScreen.svelte` mounts it above the composer row, keyed by the open chat; it is hidden in group
+     * chats and with `settings.ui.contextMeter` off. A lore budget rejection replaces the gauge icon (unless the
+     * chat set `loreBudgetWarnOff`), and the memory and task marks sit outside the truncated part of the line.
+     * The popover is portaled and follows its line on resize, scroll, and composer growth. The estimate is counted
+     * asynchronously; a failed count clears it.
+     */
 
     interface Props {
         /** The displayed chat; the mount is keyed by it, so a chat switch starts closed. */
         chatRef: ChatRef;
         /** The selected character is a group: the meter is not shown. */
         group: boolean;
-        /** The composer row's height, matched like the send and menu buttons. */
+        /** The composer row's height: the line above it moves as it grows, so an open popover follows. */
         height: string;
         /** The composer text (shared across chats), for the displacement estimate. */
         draft?: string;
@@ -51,19 +88,19 @@
 
     const PANEL_WIDTH = 352;
     const EDGE = 8;
-    // Bar colors by size rank; danger stays for warnings.
-    const PALETTE = [
-        "bg-primary-500",
-        "bg-success-500",
-        "bg-secondary-500",
-        "bg-primary-300",
-        "bg-success-300",
-        "bg-secondary-300",
-        "bg-primary-700",
-        "bg-success-700",
-        "bg-secondary-700",
-    ];
-    const OTHER_COLOR = "bg-neutral-400";
+    const memoryColor = "bg-meter-memory";
+    /**
+     * The fixed sections whose size follows the bot rather than the preset, grouped by where the user would cut
+     * them down. A group at or above `SPLIT_FROM` percent of the prompt budget leaves the fixed group's neutral
+     * color for its own in the bar, the legend, and its rows' dots; a smaller one stays neutral, so a bot with
+     * little lore or description reads as one fixed block. The two colors are told apart from each other, the
+     * neutral, the memory, and the history colors under simulated color blindness too.
+     */
+    const SPLIT_GROUPS = [
+        { kind: "lore", color: "bg-meter-lore", sections: ["lorebook"] },
+        { kind: "character", color: "bg-meter-character", sections: ["description", "examples", "persona"] },
+    ] as const satisfies readonly { kind: string; color: string; sections: readonly ContextSectionKind[] }[];
+    const SPLIT_FROM = 5;
 
     const visible = $derived(settings.ui.contextMeter && !group);
 
@@ -107,6 +144,12 @@
     const report = $derived(source?.kind === "report" ? source.report : null);
     const unit = $derived(settings.ui.contextMeterTurnUnit === "message" ? "message" : "user");
     const warn = $derived(settings.ui.contextMeterFixedWarn);
+    const settingsLabel = $derived(
+        language.contextUsage.basis(
+            unit === "user" ? language.contextUsage.basisTurns : language.contextUsage.basisMessages,
+            warn,
+        ),
+    );
 
     const fmt = (value: number) => value.toLocaleString();
     /** `part` of `whole` in whole percent; 100 without a whole. */
@@ -116,9 +159,139 @@
         whole > 0 ? Math.min(100, Math.max(0, (part / whole) * 100)) : part > 0 ? 100 : 0;
 
     const promptBudget = $derived(report ? report.maxContext - report.maxResponse : 0);
+    // What the reply request holds: the counted messages, the offered tool schemas, and the
+    // messages Request Interception inserts (the report keeps the last two apart from `input`).
+    const occupied = $derived(report ? report.input + (report.toolSchemas ?? 0) + (report.interceptions ?? 0) : 0);
     const fixed = $derived(report ? fixedShare(report) * 100 : 0);
     const fixedOver = $derived(report !== null && fixed > warn);
     const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
+    // The lore budget left entries out of the last request: the chip warns unless this chat turned
+    // the warning off (the popover lists them either way).
+    const loreWarnOff = $derived(findChat(chatRef)?.loreBudgetWarnOff === true);
+    const loreWarn = $derived(report !== null && report.lore.rejectedCount > 0 && !loreWarnOff);
+    // The memory's token budget was reduced to fit the last request's max context, as the server reported it.
+    const budgetReduced = $derived(report?.memory?.budgetReduced ?? []);
+
+    type MemoryKind = NonNullable<ContextReport["memory"]>["kind"];
+
+    /** The report's name for a memory algorithm; null for none. */
+    function memoryKindOf(algorithm: ReturnType<typeof chatMemoryAlgorithm>): MemoryKind | null {
+        switch (algorithm) {
+            case "structuredMemory":
+                return "structuredMemory";
+            case "hypaMemoryV3":
+                return "hypaV3";
+            case "hypaMemoryV2":
+                return "hypaV2";
+            case "hanuraiMemory":
+                return "hanurai";
+            case "supaMemory":
+                return "supa";
+            default:
+                return null;
+        }
+    }
+
+    // The chat's memory as the next send resolves it (`assemblePrompt`'s `memoryConfigured` and
+    // `chatMemoryEnabled`), from the chat's list entry and the settings: null with no memory set up.
+    // Unlike the report it follows the chat's switch and mode at once.
+    const memoryNow: { on: boolean; kind: MemoryKind } | null = $derived.by(() => {
+        const entry = visible ? chatEntry(chatRef) : undefined;
+        if (!entry) {
+            return null;
+        }
+        const memorySettings = chatMemorySettings();
+        const kind = memoryKindOf(chatMemoryAlgorithm(memorySettings, entry));
+        return kind ? { on: chatMemoryEnabled(entry, findCharacter(chatRef.chaId), memorySettings), kind } : null;
+    });
+    const memoryNowName = $derived(memoryNow ? language.contextUsage.memoryKinds[memoryNow.kind] : "");
+    /**
+     * The report's memory, a Structured Memory one with its writer as the chat's runs leave it now
+     * (`standingMemoryReport`): a failure a later run made good is not repeated until the next send.
+     */
+    const reportMemory = $derived.by(() => {
+        const memory = report?.memory ?? null;
+        return memory?.kind === "structuredMemory"
+            ? standingMemoryReport(
+                  memory,
+                  memoryHealthFacts(chatRef),
+                  newestMemoryReceipt(findChat(chatRef)?.message ?? []),
+              )
+            : memory;
+    });
+    /** The last reply's memory is the one that is on now: its coverage still describes the chat. */
+    const reportedNow = $derived(memoryNow?.on === true && reportMemory?.kind === memoryNow.kind ? reportMemory : null);
+    const leftOut = $derived(report ? Math.max(0, report.history.total - report.history.kept) : 0);
+    // Memory is off and the last request left history out: nothing summarizes it. The server asks about
+    // that trim once per send unless the chat answered "don't ask again" (`memoryTrimAck`, valid while it
+    // equals the owner's count), and the line keeps quiet then too.
+    const memoryOffWarn = $derived(
+        memoryNow?.on === false &&
+            leftOut > 0 &&
+            chatEntry(chatRef)?.memoryTrimAck !== supaMemoryOnCount(findCharacter(chatRef.chaId)),
+    );
+
+    // The chat's background memory task (`memoryTasks.svelte.ts`): HypaV3 summaries or the Structured
+    // Memory writer. Unlike the report it is live: the line shows queued or running tasks, and the
+    // popover says how they ended.
+    const task = $derived(visible ? memoryTaskStatus(chatRef) : null);
+    /** The meter's source as content: a new reply, or a continue that rewrote the report, changes it. */
+    const sourceKey = (value: Source | null) =>
+        value ? JSON.stringify([value.messageId, value.kind === "report" ? value.report : value.input]) : null;
+    // A memory task this mount saw run and then commit, with the source it followed: the notice
+    // holds until the source changes, and ends for good then (deleting the newer reply does not bring
+    // it back).
+    let landed: { taskId: string; source: string | null } | null = $state(null);
+    let liveTaskId: string | null = null;
+    $effect(() => {
+        const current = task;
+        untrack(() => {
+            if (current?.state === "queued" || current?.state === "running") {
+                liveTaskId = current.taskId;
+                return;
+            }
+            if (current?.state === "done" && current.taskId === liveTaskId && current.lastCommittedRevision) {
+                landed = { taskId: current.taskId, source: sourceKey(source) };
+            }
+            liveTaskId = null;
+        });
+    });
+    $effect(() => {
+        if (landed && sourceKey(source) !== landed.source) {
+            landed = null;
+        }
+    });
+    const taskStrings = $derived.by(() => {
+        const s = language.contextUsage;
+        return task?.kind === "structuredMemory"
+            ? s.writerTask
+            : {
+                  title: s.taskTitle,
+                  queued: s.taskQueued,
+                  running: s.taskRunning,
+                  runningUnknown: s.taskRunningUnknown,
+                  liveNote: s.taskLiveNote,
+                  done: s.taskDone,
+                  failed: s.taskFailed,
+                  failedMark: s.taskFailedMark,
+              };
+    });
+    const taskView: { tone: "live" | "done" | "failed"; text?: string; error?: string } | null = $derived.by(() => {
+        const s = taskStrings;
+        if (task?.state === "queued") {
+            return { tone: "live", text: s.queued };
+        }
+        if (task?.state === "running") {
+            return { tone: "live", text: task.total > 0 ? s.running(task.done, task.total) : s.runningUnknown };
+        }
+        if (task?.state === "done" && landed?.taskId === task.taskId && landed.source === sourceKey(source)) {
+            return { tone: "done" };
+        }
+        if (task?.state === "failed") {
+            return { tone: "failed", error: task.error };
+        }
+        return null;
+    });
 
     type Basis = {
         report: ContextReport;
@@ -159,11 +332,7 @@
      * history before it unchanged, and the same token scope and sizes.
      */
     function estimateBasis(r: ContextReport, trim: Basis["trim"], messageId: string): Basis | null {
-        const memoryConfigured =
-            readSettingsRoot("supaModelType") !== "none" ||
-            !!readSettingsRoot("hanuraiEnable") ||
-            !!readSettingsRoot("hypav2") ||
-            !!readSettingsRoot("hypaV3");
+        const memoryConfigured = chatMemoryAlgorithm(chatMemorySettings(), chatEntry(chatRef)) !== "none";
         if (memoryConfigured || readSettingsRoot("presetChain") || chatBinding(chatRef)?.ok === false) {
             return null;
         }
@@ -333,70 +502,259 @@
         };
     });
 
-    const chip = $derived.by(() => {
+    /** The line's word for a Structured Memory report. */
+    function memoryStatusText(memory: NonNullable<ContextReport["memory"]>): string {
+        const word = memoryStatusWord(memory);
+        if (word === "gap" || word === "memoryOn") {
+            return language.contextUsage[word];
+        }
+        return language.structuredMemory.meter.status[word];
+    }
+
+    /**
+     * The line: what the last reply kept, the memory word, then the percentage and a fixed share over its
+     * warning. `word` is a Structured Memory writer word a task mark can stand in for: a live task says
+     * more than "pending" or "recorded", and a failed one repeats "failed".
+     */
+    type Chip = {
+        lead: string[];
+        memory: { text: string; warn: boolean; word?: string } | null;
+        tail: string[];
+        summary: string;
+    };
+
+    const chip: Chip | null = $derived.by(() => {
+        const s = language.contextUsage;
+        // The switch's state, for a line whose last reply does not describe it.
+        const stated = memoryNow ? { text: memoryNow.on ? s.memoryOn : s.memoryOff, warn: memoryOffWarn } : null;
+        const statedSummary = memoryNow
+            ? (memoryNow.on ? s.memoryNowOnSummary : s.memoryNowOffSummary)(memoryNowName)
+            : null;
+        const withStated = (summary: string) => (statedSummary ? `${summary}; ${statedSummary}` : summary);
         if (!source) {
-            return null;
+            return stated && statedSummary ? { lead: [], memory: stated, tail: [], summary: statedSummary } : null;
         }
         if (source.kind === "legacy") {
             const percent = percentOf(source.input, source.maxContext);
-            return { text: `${percent}%`, note: "", summary: language.contextUsage.legacySummary(percent) };
+            return {
+                lead: [],
+                memory: stated,
+                tail: [`${percent}%`],
+                summary: withStated(s.legacySummary(percent)),
+            };
         }
         const r = source.report;
         const kept = turnCount(r, unit).kept;
-        const keptText = unit === "user" ? language.contextUsage.turns(kept) : language.contextUsage.messages(kept);
-        let result: { text: string; note: string; summary: string };
-        if (r.memory) {
+        const keptText = unit === "user" ? s.turns(kept) : s.messages(kept);
+        const percent = percentOf(occupied, promptBudget);
+        const result: Chip = { lead: [keptText], memory: stated, tail: [`${percent}%`], summary: "" };
+        if (reportedNow?.kind === "structuredMemory") {
+            const tokens = s.tokens(fmt(reportedNow.tokens));
+            const status = memoryStatusText(reportedNow);
+            const word = memoryStatusWord(reportedNow);
+            result.lead.push(tokens);
+            result.memory = { text: status, warn: word === "gap", word };
+            result.summary = s.memorySummary(keptText, memoryNowName, `${tokens}, ${status}`);
+        } else if (reportedNow) {
+            // "covered" only says nothing left out is unsummarized: with nothing left out, no summary is behind it.
             const coverage =
-                r.memory.coverage === "covered"
-                    ? language.contextUsage.summarized
-                    : r.memory.coverage === "gap"
-                      ? language.contextUsage.gap
-                      : language.contextUsage.memoryOn;
-            result = {
-                text: keptText,
-                note: coverage,
-                summary: language.contextUsage.memorySummary(keptText, memoryName, coverage),
-            };
-        } else if (r.history.kept >= r.history.total) {
-            const percent = percentOf(r.input, promptBudget);
-            result = { text: `${percent}%`, note: "", summary: language.contextUsage.fullSummary(percent) };
+                reportedNow.coverage === "covered" && leftOut > 0
+                    ? s.summarized
+                    : reportedNow.coverage === "gap"
+                      ? s.gap
+                      : s.memoryOn;
+            result.memory = { text: coverage, warn: reportedNow.coverage === "gap" };
+            result.summary = s.memorySummary(keptText, memoryNowName, coverage);
         } else {
-            result = { text: keptText, note: "", summary: language.contextUsage.trimmedSummary(keptText) };
+            result.summary = withStated(leftOut > 0 ? s.trimmedSummary(keptText) : s.fullSummary(percent));
         }
         if (fixedOver) {
-            result.summary += `; ${language.contextUsage.fixedWarnSummary}`;
+            result.tail.push(s.fixedPart(Math.round(fixed)));
+            result.summary += `; ${s.fixedWarnSummary}`;
+        }
+        if (loreWarn) {
+            result.summary += `; ${s.loreWarnSummary(r.lore.rejectedCount)}`;
+        }
+        if (budgetReduced.length > 0) {
+            result.summary += `; ${s.memoryReducedSummary}`;
         }
         return result;
     });
 
-    // Sections with tokens, largest first (the sort is stable, so ties keep the report's order). The
-    // bar spans the prompt budget, or the section total when attribution exceeds it.
-    const chipTitle = $derived(
-        chip
-            ? language.contextUsage.chipLabel(chip.summary) +
-                  (estimate ? ` ${language.contextUsage.estimateTitle}: ${estimate.line}` : "")
-            : "",
+    /**
+     * The line with a task's mark, which sits where the memory word ends: in place of a word it stands in
+     * for, else after it, so the line still opens with what the last reply kept. A failed task marks the
+     * line too, since nothing else on it says the summaries or records stopped.
+     */
+    const chipLine = $derived.by(() => {
+        if (!chip) {
+            return null;
+        }
+        const mark =
+            taskView?.tone === "live" && taskView.text
+                ? { tone: "live" as const, text: taskView.text }
+                : taskView?.tone === "failed"
+                  ? { tone: "failed" as const, text: taskStrings.failedMark }
+                  : null;
+        const word = chip.memory?.word;
+        const replaced =
+            mark?.tone === "live"
+                ? word === "pending" || word === "recorded"
+                : mark?.tone === "failed" && word === "failed";
+        return {
+            lead: chip.lead.join(" · "),
+            memory: replaced ? null : chip.memory,
+            mark,
+            tail: chip.tail.join(" · "),
+        };
+    });
+
+    const chipTitle = $derived.by(() => {
+        if (!chip) {
+            return "";
+        }
+        const s = language.contextUsage;
+        const summary = chip.summary + (chipLine?.mark ? `; ${s.taskSummary(chipLine.mark.text)}` : "");
+        return (
+            (source ? s.chipLabel(summary) : s.chipLabelNoReply(summary)) +
+            (estimate ? ` ${s.estimateTitle}: ${estimate.line}` : "")
+        );
+    });
+
+    // What the popover's memory block says of the last reply: that nothing summarizes the history it left
+    // out, and that its memory is not the one stated above the breakdown.
+    const memoryNotes = $derived.by(() => {
+        const s = language.contextUsage;
+        const notes: { key: "leftOut" | "last"; text: string; warn: boolean }[] = [];
+        if (!memoryNow?.on && leftOut > 0) {
+            notes.push({
+                key: "leftOut",
+                text: (memoryNow ? s.memoryOffLeftOut : s.memoryNoneLeftOut)(leftOut),
+                warn: memoryOffWarn,
+            });
+        }
+        if (report && !reportedNow && (report.memory || memoryNow?.on)) {
+            notes.push({
+                key: "last",
+                text: report.memory ? s.memoryLastUsed(memoryName) : s.memoryLastWithout,
+                warn: false,
+            });
+        }
+        return notes;
+    });
+    // The memory panel the chat menu's row opens; HypaV2's editor is an alert and stays in the menu.
+    const memoryPanelLabel = $derived(
+        memoryNow?.kind === "structuredMemory"
+            ? language.structuredMemory.panel.title
+            : memoryNow?.kind === "hypaV3"
+              ? language.hypaMemoryV3Modal
+              : null,
     );
 
+    // The split groups large enough to show apart from the rest of the fixed group, in `SPLIT_GROUPS` order.
+    const splits = $derived(
+        SPLIT_GROUPS.map((split) => {
+            const sections: readonly ContextSectionKind[] = split.sections;
+            const tokens = (report?.sections ?? []).reduce(
+                (sum, section) => sum + (sections.includes(section.kind) ? section.tokens : 0),
+                0,
+            );
+            return { kind: split.kind, color: split.color, sections, tokens };
+        }).filter((split) => promptBudget > 0 && split.tokens * 100 >= promptBudget * SPLIT_FROM),
+    );
+    // Sections with tokens, largest first; ties keep the report's order. The tool schemas and the
+    // inserted Request Interception messages are rows of their own among them. Dots identify their group.
     const rows = $derived.by(() => {
         if (!report) {
             return [];
         }
-        return report.sections
+        const splitColor = (kind: ContextSectionKind | "toolSchemas" | "interceptions") =>
+            splits.find((split) => kind !== "toolSchemas" && kind !== "interceptions" && split.sections.includes(kind))
+                ?.color;
+        return [
+            ...report.sections,
+            { kind: "toolSchemas" as const, tokens: report.toolSchemas ?? 0 },
+            { kind: "interceptions" as const, tokens: report.interceptions ?? 0 },
+        ]
             .filter((section) => section.tokens > 0)
             .sort((a, b) => b.tokens - a.tokens)
-            .map((section, index) => ({
+            .map((section) => ({
                 kind: section.kind,
                 tokens: section.tokens,
-                color: PALETTE[index] ?? OTHER_COLOR,
+                color:
+                    section.kind === "memory"
+                        ? memoryColor
+                        : section.kind === "history"
+                          ? "bg-primary-500"
+                          : (splitColor(section.kind) ?? "bg-neutral-400"),
             }));
     });
-    const barScale = $derived(
-        Math.max(
-            promptBudget,
-            rows.reduce((sum, row) => sum + row.tokens, 0),
-        ),
+    // The reserve belongs to the prompt budget; growth thresholds use the summarizer's history count.
+    const hypa = $derived.by(() => {
+        const memory = report?.memory;
+        if (!report || memory?.kind !== "hypaV3" || memory.reserved === undefined || memory.summarizeIn === undefined) {
+            return null;
+        }
+        return {
+            tokens: memory.tokens,
+            reserved: memory.reserved,
+            summarizeIn: memory.summarizeIn,
+            prepared: memory.prepared ?? 0,
+            lookaheadIn: settings.ui.contextMeterLookahead ? memory.lookaheadIn : undefined,
+        };
+    });
+    const historyTokens = $derived(rows.find((row) => row.kind === "history")?.tokens ?? 0);
+    // The fixed group, less the groups split out of it, then those groups, the memory, and the history. A
+    // fixed share over its warning shows on the tick and the line under the bar: the segments keep their colors.
+    const barRows = $derived(
+        [
+            {
+                kind: splits.length > 0 ? ("fixedRest" as const) : ("fixed" as const),
+                tokens:
+                    rows.reduce(
+                        (sum, row) => sum + (row.kind !== "memory" && row.kind !== "history" ? row.tokens : 0),
+                        0,
+                    ) - splits.reduce((sum, split) => sum + split.tokens, 0),
+                color: "bg-neutral-400",
+            },
+            ...splits.map((split) => ({ kind: split.kind, tokens: split.tokens, color: split.color })),
+            {
+                kind: "memory" as const,
+                tokens: rows.find((row) => row.kind === "memory")?.tokens ?? 0,
+                color: memoryColor,
+            },
+            { kind: "history" as const, tokens: historyTokens, color: "bg-primary-500" },
+        ].filter((row) => row.tokens > 0),
     );
+    const barEntries = $derived(rows.reduce((sum, row) => sum + (hypa && row.kind === "memory" ? 0 : row.tokens), 0));
+    const unusedReserve = $derived(hypa ? Math.max(0, hypa.reserved - hypa.tokens) : 0);
+    const barScale = $derived(Math.max(promptBudget, barEntries + (hypa ? Math.max(hypa.reserved, hypa.tokens) : 0)));
+    const runwayScale = $derived(historyTokens + (hypa ? Math.max(hypa.summarizeIn, hypa.lookaheadIn ?? 0) : 0));
+    /** A threshold of history growth, positioned on the runway. An empty runway has no room left. */
+    const pointAt = (tokens: number) => (runwayScale > 0 ? widthOf(historyTokens + tokens, runwayScale) : 100);
+    /** The history and memory block's lines for the left-out history. */
+    const omitted = $derived.by(() => {
+        if (!report || leftOut === 0) {
+            return null;
+        }
+        const count = leftOut;
+        // Without a split the report does not say why each one is left out (a trim, a chat range,
+        // formatting): no tag, except that a send without memory summarized none of them.
+        const tags: { text: string; tone: "memory" | "warn" }[] = [];
+        if (!report.memory) {
+            tags.push({ text: language.contextUsage.omittedNoMemory, tone: "warn" });
+        }
+        const summarized = report.memory?.summarized;
+        if (summarized !== undefined) {
+            if (summarized > 0) {
+                tags.push({ text: language.contextUsage.omittedSummarized(summarized), tone: "memory" });
+            }
+            if (count > summarized) {
+                tags.push({ text: language.contextUsage.omittedUnsummarized(count - summarized), tone: "warn" });
+            }
+        }
+        return { count, tags };
+    });
 
     let open = $state(false);
     let trigger: HTMLButtonElement | undefined = $state();
@@ -404,7 +762,30 @@
     let place = $state({ right: EDGE, top: "auto", bottom: `${EDGE}px`, maxHeight: 240, width: PANEL_WIDTH });
     const panelId = $props.id();
 
-    // Prefer above the chip, then below; use the viewport when neither side has enough room.
+    // A Structured Memory report names records by id, so the popover reads their titles as it opens:
+    // the boolean keeps a new report from reading again, and a closed popover reads nothing. A failed
+    // read leaves the rows without titles.
+    const listsMemory = $derived(open && report?.memory?.kind === "structuredMemory");
+    let memoryTitles: ReadonlyMap<string, string> = $state.raw(new Map());
+    let titleRead = 0;
+    $effect(() => {
+        if (!listsMemory) {
+            return;
+        }
+        const number = ++titleRead;
+        untrack(() =>
+            readStructuredMemoryContents(chatRef).then((result) => {
+                if (number === titleRead) {
+                    memoryTitles = result.outcome === "ok" ? memoryItemTitles(result.value) : new Map();
+                }
+            }),
+        );
+    });
+
+    /**
+     * Prefer above the chip, then below; use the viewport when neither side has enough room. A chip scrolled out
+     * of the viewport vertically, or a viewport too short for the popover, closes it instead.
+     */
     function position() {
         if (!trigger) {
             return false;
@@ -448,15 +829,15 @@
         }
     }
 
-    // A meter turned off, a group, or a chat whose reports are gone closes it, so it never reopens on
-    // its own when they come back.
+    // A meter turned off, a group, or a chat whose line is gone (no report and no memory set up) closes
+    // it, so it never reopens on its own when they come back.
     $effect(() => {
-        if (!source) {
+        if (!chip) {
             untrack(() => (open = false));
         }
     });
 
-    // The composer grows with its text, moving the chip.
+    // The composer grows with its text, moving the line above it.
     $effect(() => {
         void height;
         if (untrack(() => open)) {
@@ -501,6 +882,17 @@
         }
     }
 
+    function setLoreWarnOff(off: boolean) {
+        if (!findChat(chatRef)) {
+            return;
+        }
+        if (off) {
+            setChatMeta(chatRef, { loreBudgetWarnOff: true });
+        } else {
+            setChatMeta(chatRef, {}, ["loreBudgetWarnOff"]);
+        }
+    }
+
     function openSettings() {
         close(false);
         openSetting({
@@ -513,6 +905,24 @@
             available: true,
             score: 0,
         } satisfies SettingHit);
+    }
+
+    function openMemorySettings() {
+        close(false);
+        $settingsOpen = true;
+        $SettingsMenuIndex = MEMORY_SETTINGS_MENU;
+    }
+
+    function openMemoryPanel() {
+        close(false);
+        $hypaV3ModalOpen = true;
+    }
+
+    /** The sidebar's memory switch: turning it on also drops the chat's trim acknowledgement. */
+    function setMemoryOn(on: boolean) {
+        if (chatEntry(chatRef)) {
+            setChatMemoryEnabled(chatRef, on);
+        }
     }
 </script>
 
@@ -529,39 +939,98 @@
     }}
 />
 
+{#snippet dot()}
+    <span class="shrink-0" aria-hidden="true">·</span>
+{/snippet}
+
 {#if chip}
-    <button
-        type="button"
-        bind:this={trigger}
-        class="peer-focus:border-textcolor flex items-center gap-1 border-y border-darkborderc px-2 text-sm whitespace-nowrap max-w-36 min-w-0 shrink-0 hover:bg-selected transition-colors context-meter-chip"
-        class:text-textcolor2={!fixedOver}
-        class:text-danger-500={fixedOver}
-        style:height
-        aria-label={chipTitle}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        title={chipTitle}
-        onfocusout={onFocusOut}
-        onclick={() => {
-            if (open) {
-                close(false);
-            } else {
-                void show();
-            }
-        }}
-    >
-        <span class="min-w-0 truncate">{chip.text}</span>
-        {#if estimate?.suffix}
-            <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
-        {/if}
-        {#if chip.note}
-            <span class="hidden sm:inline truncate min-w-0 text-xs">· {chip.note}</span>
-        {/if}
-    </button>
+    <!-- Right-aligned with the menu button, on the line above the composer row it shares with the health badge. -->
+    <div class="mr-2 mb-1 ml-4 flex min-w-0 grow justify-end context-meter">
+        <button
+            type="button"
+            bind:this={trigger}
+            class="flex max-w-full min-w-0 items-center gap-1 rounded-sm px-1 text-xs leading-5 whitespace-nowrap hover:underline context-meter-chip"
+            class:text-textcolor2={!fixedOver}
+            class:text-danger-500={fixedOver}
+            aria-label={chipTitle}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            aria-controls={open ? panelId : undefined}
+            title={chipTitle}
+            onfocusout={onFocusOut}
+            onclick={() => {
+                if (open) {
+                    close(false);
+                } else {
+                    void show();
+                }
+            }}
+        >
+            {#if loreWarn}
+                <span class="shrink-0 text-danger-500" data-context-meter-lore-warn>
+                    <BookAlertIcon size={13} aria-hidden="true" />
+                </span>
+            {:else}
+                <span class="shrink-0" aria-hidden="true"><GaugeIcon size={13} /></span>
+            {/if}
+            {#if budgetReduced.length > 0}
+                <span class="shrink-0 text-danger-500" data-context-meter-memory-reduced
+                    >{language.contextUsage.memoryReduced}</span
+                >
+                <span class="shrink-0" aria-hidden="true">·</span>
+            {/if}
+            {#if chipLine?.lead}
+                <span class="min-w-0 truncate">{chipLine.lead}</span>
+            {/if}
+            {#if chipLine?.memory}
+                {#if chipLine.lead}
+                    {@render dot()}
+                {/if}
+                <span
+                    class="shrink-0"
+                    class:text-danger-500={chipLine.memory.warn}
+                    data-context-meter-memory-word
+                    data-tone={chipLine.memory.warn ? "warn" : "plain"}>{chipLine.memory.text}</span
+                >
+            {/if}
+            {#if chipLine?.mark}
+                {#if chipLine.lead || chipLine.memory}
+                    {@render dot()}
+                {/if}
+                {#if chipLine.mark.tone === "live"}
+                    <span class="flex shrink-0 items-center gap-0.5 text-secondary-500" data-context-meter-task-mark>
+                        <LoaderCircleIcon
+                            size={11}
+                            class="animate-spin motion-reduce:animate-none"
+                            aria-hidden="true"
+                        />
+                        <span class="tabular-nums">{chipLine.mark.text}</span>
+                    </span>
+                {:else}
+                    <span class="flex shrink-0 items-center gap-0.5 text-danger-500" data-context-meter-task-failed>
+                        <CircleAlertIcon size={11} aria-hidden="true" />
+                        <span>{chipLine.mark.text}</span>
+                    </span>
+                {/if}
+            {/if}
+            {#if chipLine?.tail}
+                {#if chipLine.lead || chipLine.memory || chipLine.mark}
+                    {@render dot()}
+                {/if}
+                <span class="shrink-0">{chipLine.tail}</span>
+            {/if}
+            {#if estimate?.suffix}
+                <span class="shrink-0">· {language.contextUsage.estimateLead}</span>
+                <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
+            {/if}
+            <span class="shrink-0 transition-transform" class:rotate-180={open} aria-hidden="true">
+                <ChevronUpIcon size={12} />
+            </span>
+        </button>
+    </div>
 {/if}
 
-{#if open && source}
+{#if open && chip}
     <Portal>
         <div
             bind:this={panel}
@@ -580,15 +1049,29 @@
             <div class="flex items-start justify-between gap-2">
                 <div class="flex flex-col">
                     <h2 id="{panelId}-title" class="text-base font-semibold">{language.contextUsage.title}</h2>
-                    <span class="text-xs text-textcolor2">{language.contextUsage.asOfLastReply}</span>
+                    <span class="text-xs text-textcolor2"
+                        >{source ? language.contextUsage.asOfLastReply : language.contextUsage.noReplyYet}</span
+                    >
                 </div>
-                <button
-                    type="button"
-                    class="rounded-md px-2 py-1 text-textcolor2 hover:bg-selected hover:text-textcolor"
-                    onclick={() => close(true)}
-                >
-                    {language.contextUsage.close}
-                </button>
+                <div class="flex items-center gap-1">
+                    <button
+                        type="button"
+                        class="rounded-md px-2 py-1 text-textcolor2 hover:bg-selected hover:text-textcolor"
+                        data-context-meter-settings
+                        aria-label={settingsLabel}
+                        title={settingsLabel}
+                        onclick={openSettings}
+                    >
+                        <SettingsIcon size={16} aria-hidden="true" />
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded-md px-2 py-1 text-textcolor2 hover:bg-selected hover:text-textcolor"
+                        onclick={() => close(true)}
+                    >
+                        {language.contextUsage.close}
+                    </button>
+                </div>
             </div>
 
             {#if estimate}
@@ -599,33 +1082,183 @@
                 </div>
             {/if}
 
-            {#if source.kind === "legacy"}
+            {#if taskView}
+                <div
+                    class="flex flex-col gap-1 rounded-md bg-darkbutton p-2 text-xs"
+                    data-context-meter-task
+                    data-tone={taskView.tone}
+                >
+                    <div class="flex justify-between gap-2">
+                        <span class="font-semibold">{taskStrings.title}</span>
+                        {#if taskView.text}
+                            <span class="text-right text-secondary-500 tabular-nums">{taskView.text}</span>
+                        {/if}
+                    </div>
+                    {#if taskView.tone === "live"}
+                        <span class="text-textcolor2">{taskStrings.liveNote}</span>
+                    {:else if taskView.tone === "done"}
+                        <span class="text-secondary-500">{taskStrings.done}</span>
+                    {:else}
+                        <span class="text-danger-500">{taskStrings.failed}</span>
+                        {#if taskView.error}
+                            <span class="break-words text-textcolor2" data-context-meter-task-error
+                                >{taskView.error}</span
+                            >
+                        {/if}
+                        <button
+                            type="button"
+                            class="self-start text-textcolor underline hover:text-primary-500"
+                            data-context-meter-task-settings
+                            onclick={openMemorySettings}>{language.contextUsage.memorySettings}</button
+                        >
+                    {/if}
+                </div>
+            {/if}
+
+            <div
+                class="flex flex-col gap-1 rounded-md bg-darkbutton p-2 text-xs"
+                data-context-meter-memory-now={memoryNow ? (memoryNow.on ? "on" : "off") : "none"}
+            >
+                <div class="flex justify-between gap-2">
+                    <span class="font-semibold">{language.contextUsage.memoryNowTitle}</span>
+                    <span class="text-right" class:text-secondary-500={memoryNow?.on === true}>
+                        {memoryNow
+                            ? (memoryNow.on ? language.contextUsage.memoryNowOn : language.contextUsage.memoryNowOff)(
+                                  memoryNowName,
+                              )
+                            : language.contextUsage.memoryNowNone}
+                    </span>
+                </div>
+                {#each memoryNotes as note (note.key)}
+                    <span
+                        class:text-textcolor2={!note.warn}
+                        class:text-danger-500={note.warn}
+                        data-context-meter-memory-note={note.key}>{note.text}</span
+                    >
+                {/each}
+                <div class="flex flex-wrap gap-x-3 gap-y-0.5">
+                    {#if memoryNow}
+                        <button
+                            type="button"
+                            class="text-textcolor underline hover:text-primary-500"
+                            data-context-meter-memory-toggle
+                            onclick={() => setMemoryOn(!memoryNow.on)}
+                            >{memoryNow.on
+                                ? language.contextUsage.memoryTurnOff
+                                : language.contextUsage.memoryTurnOn}</button
+                        >
+                    {/if}
+                    {#if memoryPanelLabel}
+                        <button
+                            type="button"
+                            class="text-textcolor underline hover:text-primary-500"
+                            data-context-meter-memory-panel
+                            onclick={openMemoryPanel}>{memoryPanelLabel}</button
+                        >
+                    {/if}
+                    <button
+                        type="button"
+                        class="text-textcolor underline hover:text-primary-500"
+                        data-context-meter-memory-now-settings
+                        onclick={openMemorySettings}>{language.contextUsage.memorySettings}</button
+                    >
+                </div>
+            </div>
+
+            {#if source?.kind === "legacy"}
                 <span>{language.contextUsage.input(fmt(source.input), fmt(source.maxContext))}</span>
                 <span class="text-textcolor2">{language.contextUsage.legacyNote}</span>
             {:else if report}
-                <div class="flex flex-col gap-1">
-                    <span>{language.contextUsage.input(fmt(report.input), fmt(report.maxContext))}</span>
-                    <span class="text-xs text-textcolor2"
-                        >{language.contextUsage.replyBudget(fmt(report.maxResponse))}</span
-                    >
+                <div class="flex flex-col gap-1" data-context-meter-headline>
+                    {#if promptBudget > 0}
+                        <span>
+                            <span class="text-lg font-semibold tabular-nums">{fmt(occupied)}</span>
+                            <span class="text-textcolor2 tabular-nums">
+                                {language.contextUsage.inputOfBudget(
+                                    fmt(promptBudget),
+                                    percentOf(occupied, promptBudget),
+                                )}
+                            </span>
+                        </span>
+                        <span class="text-xs text-textcolor2"
+                            >{language.contextUsage.budgetFrom(fmt(report.maxContext), fmt(report.maxResponse))}</span
+                        >
+                    {:else}
+                        <span>{language.contextUsage.input(fmt(occupied), fmt(report.maxContext))}</span>
+                        <span class="text-xs text-textcolor2">{language.contextUsage.noBudget}</span>
+                    {/if}
                 </div>
 
                 {#if barScale > 0}
-                    <div class="flex h-3 w-full shrink-0 overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
-                        {#each rows as row (row.kind)}
-                            <div class={row.color} style:width="{widthOf(row.tokens, barScale)}%"></div>
+                    <div class="relative shrink-0" data-context-meter-bar>
+                        <div class="flex h-3 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
+                            {#each barRows as row, index (row.kind)}
+                                <div
+                                    class="shrink-0 {row.color}"
+                                    class:border-l={index > 0}
+                                    class:border-darkbg={index > 0}
+                                    style:width="{widthOf(row.tokens, barScale)}%"
+                                ></div>
+                            {/each}
+                            {#if hypa}
+                                <div class="min-w-0 grow"></div>
+                                <div
+                                    class="shrink-0 context-meter-reserve"
+                                    data-context-meter-reserve
+                                    style:width="{widthOf(unusedReserve, barScale)}%"
+                                ></div>
+                            {/if}
+                        </div>
+                        <div
+                            class="absolute -top-0.5 -bottom-0.5 w-0.5 -translate-x-1/2"
+                            class:bg-textcolor={!fixedOver}
+                            class:bg-danger-500={fixedOver}
+                            data-context-meter-fixed-warn
+                            style:left="{widthOf((promptBudget * warn) / 100, barScale)}%"
+                            aria-hidden="true"
+                        ></div>
+                    </div>
+                    <div class="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-textcolor2 tabular-nums">
+                        {#each barRows as row (row.kind)}
+                            <span class="flex items-center gap-1">
+                                <span class="h-2.5 w-2.5 shrink-0 rounded-xs {row.color}" aria-hidden="true"></span>
+                                {language.contextUsage.groups[row.kind]}
+                                {fmt(row.tokens)}
+                            </span>
                         {/each}
+                        {#if unusedReserve > 0}
+                            <span class="flex items-center gap-1">
+                                <span class="h-2.5 w-2.5 shrink-0 rounded-xs context-meter-reserve" aria-hidden="true"
+                                ></span>
+                                {language.contextUsage.legendReserveEmpty}
+                                {fmt(unusedReserve)}
+                            </span>
+                        {/if}
                     </div>
                 {/if}
-                {#if promptBudget <= 0}
-                    <span class="text-xs text-textcolor2">{language.contextUsage.noBudget}</span>
-                {/if}
+                <span
+                    class="text-xs"
+                    class:text-danger-500={fixedOver}
+                    title={language.contextUsage.fixedShareHelp}
+                    data-context-meter-fixed
+                >
+                    {language.contextUsage.fixedShare(Math.round(fixed))}
+                    {#if fixedOver}
+                        {language.contextUsage.fixedShareOver(warn)}
+                    {/if}
+                </span>
 
                 <ul class="flex flex-col gap-1" data-context-meter-sections>
                     {#each rows as row (row.kind)}
                         <li class="flex items-center gap-2" data-section={row.kind}>
                             <span class="h-2.5 w-2.5 shrink-0 rounded-full {row.color}" aria-hidden="true"></span>
-                            <span class="grow">{language.contextUsage.sections[row.kind]}</span>
+                            <span class="grow"
+                                >{row.kind === "toolSchemas"
+                                    ? language.contextUsage.toolSchemas
+                                    : row.kind === "interceptions"
+                                      ? language.contextUsage.interceptions
+                                      : language.contextUsage.sections[row.kind]}</span
+                            >
                             <span class="tabular-nums">{language.contextUsage.tokens(fmt(row.tokens))}</span>
                             {#if promptBudget > 0}
                                 <span class="w-10 text-right tabular-nums text-textcolor2"
@@ -634,134 +1267,257 @@
                             {/if}
                         </li>
                     {/each}
-                    {#if report.adjustment !== 0}
-                        <li
-                            class="flex items-center gap-2"
-                            data-section="other"
-                            title={language.contextUsage.otherHelp}
-                        >
-                            <span class="h-2.5 w-2.5 shrink-0" aria-hidden="true"></span>
-                            <span class="grow">{language.contextUsage.other}</span>
-                            <span class="tabular-nums"
-                                >{language.contextUsage.tokens(
-                                    `${report.adjustment > 0 ? "+" : "−"}${fmt(Math.abs(report.adjustment))}`,
-                                )}</span
-                            >
-                            {#if promptBudget > 0}
-                                <span class="w-10"></span>
-                            {/if}
-                        </li>
-                    {/if}
                 </ul>
+                {#if report.adjustment !== 0}
+                    <span
+                        class="text-xs text-textcolor2 tabular-nums"
+                        data-context-meter-other
+                        title={language.contextUsage.otherHelp}
+                    >
+                        {language.contextUsage.otherLine(
+                            `${report.adjustment > 0 ? "+" : "−"}${fmt(Math.abs(report.adjustment))}`,
+                        )}
+                    </span>
+                {/if}
                 {#if !report.attributionExact}
                     <span class="text-xs text-textcolor2">{language.contextUsage.approximate}</span>
                 {/if}
 
-                <div class="flex flex-col gap-1 border-t border-darkborderc pt-3">
-                    <span
-                        >{language.contextUsage.historyIncluded(
-                            report.history.kept,
-                            report.history.total,
-                            report.history.keptUser,
-                            report.history.totalUser,
-                        )}</span
+                {@const turns = turnCount(report, unit)}
+                {@const other = turnCount(report, unit === "user" ? "message" : "user")}
+                <div class="flex flex-col gap-1 border-t border-darkborderc pt-3" data-context-meter-history>
+                    <div class="flex items-baseline justify-between gap-2">
+                        <span class="font-semibold">{language.contextUsage.sections.history}</span>
+                        <span class="font-semibold text-textcolor tabular-nums" data-context-meter-kept
+                            >{language.contextUsage.historySent(turns.kept, other.kept, unit)}</span
+                        >
+                    </div>
+                    <span class="text-right text-xs text-textcolor2 tabular-nums" data-context-meter-total
+                        >{language.contextUsage.historyTotal(turns.total, other.total, unit)}</span
                     >
-                    {#if report.history.total > report.history.kept}
-                        <span class="text-textcolor2" data-context-meter-omitted
+                    {#if omitted}
+                        <span class="text-right text-xs text-textcolor2 tabular-nums" data-context-meter-omitted
                             >{language.contextUsage.historyOmitted(
-                                report.history.total - report.history.kept,
+                                omitted.count,
                                 fmt(report.history.droppedTokens),
                             )}</span
                         >
+                        {#if omitted.tags.length > 0}
+                            <div class="flex flex-wrap gap-1.5 text-xs" data-context-meter-omitted-tags>
+                                {#each omitted.tags as tag (tag.tone)}
+                                    <span
+                                        class="rounded-sm bg-darkbutton px-1.5 py-px"
+                                        class:text-secondary-500={tag.tone === "memory"}
+                                        class:text-danger-500={tag.tone === "warn"}
+                                        data-tone={tag.tone}>{tag.text}</span
+                                    >
+                                {/each}
+                            </div>
+                        {/if}
+                    {/if}
+                    {#if hypa}
+                        <div class="mt-1 flex flex-col gap-2 text-xs">
+                            <div class="flex justify-between gap-2">
+                                <span class="text-textcolor2">{language.contextUsage.runwayCaption}</span>
+                                <span class="text-right tabular-nums">
+                                    {language.contextUsage.runwayUsage(fmt(historyTokens), fmt(hypa.summarizeIn))}
+                                </span>
+                            </div>
+                            <div
+                                class="relative h-2 w-full rounded-sm bg-darkbutton"
+                                data-context-meter-runway
+                                aria-hidden="true"
+                            >
+                                <div
+                                    class="h-full rounded-sm bg-primary-500"
+                                    style:width="{runwayScale > 0 ? widthOf(historyTokens, runwayScale) : 100}%"
+                                ></div>
+                                <div
+                                    class="absolute -top-1 -bottom-1 w-0.5 -translate-x-1/2 bg-secondary-500"
+                                    data-context-meter-summarize
+                                    style:left="{pointAt(hypa.summarizeIn)}%"
+                                ></div>
+                                {#if hypa.lookaheadIn !== undefined}
+                                    <div
+                                        class="absolute -top-1 -bottom-1 -translate-x-1/2 border-l border-dashed border-textcolor2"
+                                        data-context-meter-lookahead
+                                        style:left="{pointAt(hypa.lookaheadIn)}%"
+                                    ></div>
+                                {/if}
+                            </div>
+                            <div class="flex flex-col gap-0.5">
+                                {#if hypa.lookaheadIn !== undefined}
+                                    <div
+                                        class="flex justify-between gap-2 text-textcolor2"
+                                        data-context-meter-next-lookahead
+                                    >
+                                        <span>{language.contextUsage.lookaheadLabel}</span>
+                                        <span class="text-right tabular-nums">
+                                            {hypa.lookaheadIn > 0
+                                                ? language.contextUsage.tokensAway(fmt(hypa.lookaheadIn))
+                                                : language.contextUsage.lookaheadPassed}
+                                        </span>
+                                    </div>
+                                {/if}
+                                <div class="flex justify-between gap-2 text-secondary-500" data-context-meter-next>
+                                    {#if hypa.prepared > 0}
+                                        <span title={language.contextUsage.preparedHelp} data-context-meter-prepared>
+                                            {language.contextUsage.preparedInLabel(hypa.prepared)}
+                                        </span>
+                                    {:else}
+                                        <span>{language.contextUsage.summarizeInLabel}</span>
+                                    {/if}
+                                    <span class="text-right tabular-nums">
+                                        {hypa.summarizeIn <= 0
+                                            ? language.contextUsage.nextSend
+                                            : language.contextUsage.tokensAway(fmt(hypa.summarizeIn))}
+                                    </span>
+                                </div>
+                            </div>
+                            {#if unusedReserve > 0}
+                                <span class="text-textcolor2">
+                                    {language.contextUsage.memoryReserveNote(fmt(hypa.reserved))}
+                                    <button
+                                        type="button"
+                                        class="text-textcolor underline hover:text-primary-500"
+                                        data-context-meter-memory-settings
+                                        onclick={openMemorySettings}>{language.contextUsage.memorySettings}</button
+                                    >
+                                </span>
+                            {/if}
+                        </div>
+                    {/if}
+                    {#if report.memory}
+                        <div class="mt-1 ml-1 flex flex-col gap-1 border-l-2 border-darkborderc pl-2.5">
+                            <div class="flex flex-col gap-1" data-context-meter-memory>
+                                {#if (report.memory.kind === "hypaV3" || report.memory.kind === "structuredMemory") && report.memory.budget !== undefined}
+                                    <div class="flex justify-between gap-2">
+                                        <!-- "Structured memory" already says memory, which `memoryBudget` adds. -->
+                                        <span
+                                            >{report.memory.kind === "hypaV3"
+                                                ? language.contextUsage.memoryBudget(memoryName)
+                                                : language.contextUsage.budgetReducedFields.memory}</span
+                                        >
+                                        <span class="tabular-nums"
+                                            >{fmt(report.memory.tokens)} / {fmt(report.memory.budget)}</span
+                                        >
+                                    </div>
+                                {:else}
+                                    <span
+                                        >{report.memory.kind === "structuredMemory"
+                                            ? language.structuredMemory.meter.tokensSent(fmt(report.memory.tokens))
+                                            : language.contextUsage.memoryLine(
+                                                  memoryName,
+                                                  fmt(report.memory.tokens),
+                                              )}</span
+                                    >
+                                {/if}
+                                {#if budgetReduced.length > 0}
+                                    <div
+                                        class="flex flex-col gap-0.5 text-xs text-danger-500 tabular-nums"
+                                        data-context-meter-budget-reduced
+                                    >
+                                        <span>{language.contextUsage.budgetReducedNote}</span>
+                                        {#each budgetReduced as reduction (reduction.field)}
+                                            <span data-field={reduction.field}
+                                                >{language.contextUsage.budgetReducedValue(
+                                                    language.contextUsage.budgetReducedFields[reduction.field],
+                                                    fmt(reduction.configured),
+                                                    fmt(reduction.applied),
+                                                )}</span
+                                            >
+                                        {/each}
+                                    </div>
+                                {/if}
+                            </div>
+                            {#if report.memory.summarized === undefined && omitted}
+                                <!-- No split: the memory card did not reach the prompt, another memory kind, or an older report.
+                                     With nothing left out there is nothing for the sentence to cover. -->
+                                <span class="text-xs text-textcolor2" data-context-meter-coverage
+                                    >{report.memory.coverage === "covered"
+                                        ? language.contextUsage.coverageCovered
+                                        : report.memory.coverage === "gap"
+                                          ? language.contextUsage.coverageGap
+                                          : language.contextUsage.coverageUnknown}</span
+                                >
+                            {/if}
+                            {#if reportMemory?.kind === "structuredMemory"}
+                                <MemoryManifest memory={reportMemory} titles={memoryTitles} />
+                            {/if}
+                        </div>
                     {/if}
                 </div>
 
-                {#if report.lore.budget > 0 || report.lore.budgetUsed > 0 || report.lore.rejectedCount > 0}
+                {#if report.lore.budget > 0 || report.lore.budgetUsed > 0 || report.lore.rejectedCount > 0 || loreWarnOff}
                     {@const rejected = report.lore.rejectedCount > 0}
                     <div class="flex flex-col gap-1" data-context-meter-lore>
                         <div class="flex justify-between gap-2 text-textcolor">
                             <span title={language.contextUsage.loreBudgetHelp}>{language.contextUsage.loreBudget}</span>
                             <span class="tabular-nums">{fmt(report.lore.budgetUsed)} / {fmt(report.lore.budget)}</span>
                         </div>
-                        <div class="h-2 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
-                            <div
-                                class="h-full"
-                                class:bg-primary-500={!rejected}
-                                class:bg-danger-300={rejected}
-                                style:width="{widthOf(report.lore.budgetUsed, report.lore.budget)}%"
-                            ></div>
-                        </div>
                         {#if rejected}
+                            <div class="h-2 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
+                                <div
+                                    class="h-full bg-danger-300"
+                                    style:width="{widthOf(report.lore.budgetUsed, report.lore.budget)}%"
+                                ></div>
+                            </div>
+                            {@const named = report.lore.rejected ?? []}
                             <span class="text-xs text-textcolor"
                                 >{language.contextUsage.loreRejected(
                                     report.lore.rejectedCount,
                                     fmt(report.lore.rejectedTokens),
                                 )}</span
                             >
+                            {#if named.length > 0}
+                                <ul class="flex flex-col gap-0.5 text-xs" data-context-meter-lore-rejected>
+                                    {#each named as entry, index (index)}
+                                        <li class="flex gap-2">
+                                            <span class="min-w-0 grow truncate" title={entry.name}>{entry.name}</span>
+                                            <span class="shrink-0 tabular-nums text-textcolor2"
+                                                >{language.contextUsage.tokens(fmt(entry.tokens))}</span
+                                            >
+                                        </li>
+                                    {/each}
+                                    {#if report.lore.rejectedCount > named.length}
+                                        <li class="text-textcolor2">
+                                            {language.contextUsage.loreRejectedMore(
+                                                report.lore.rejectedCount - named.length,
+                                            )}
+                                        </li>
+                                    {/if}
+                                </ul>
+                            {/if}
                         {/if}
-                    </div>
-                {/if}
-
-                {#if report.memory}
-                    <div class="flex flex-col gap-1" data-context-meter-memory>
-                        {#if report.memory.kind === "hypaV3" && report.memory.budget !== undefined}
-                            <div class="flex justify-between gap-2">
-                                <span>{language.contextUsage.memoryBudget(memoryName)}</span>
-                                <span class="tabular-nums"
-                                    >{fmt(report.memory.tokens)} / {fmt(report.memory.budget)}</span
+                        {#if rejected || loreWarnOff}
+                            <div class="flex flex-wrap items-center gap-x-2 text-xs text-textcolor2">
+                                {#if loreWarnOff}
+                                    <span>{language.contextUsage.loreWarnOffNote}</span>
+                                {/if}
+                                <button
+                                    type="button"
+                                    class="text-textcolor underline hover:text-primary-500"
+                                    data-context-meter-lore-toggle
+                                    onclick={() => setLoreWarnOff(!loreWarnOff)}
                                 >
+                                    {loreWarnOff ? language.contextUsage.loreWarnOn : language.contextUsage.loreWarnOff}
+                                </button>
                             </div>
-                            <div class="h-2 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
-                                <div
-                                    class="h-full bg-secondary-500"
-                                    style:width="{widthOf(report.memory.tokens, report.memory.budget)}%"
-                                ></div>
-                            </div>
-                        {:else}
-                            <span>{language.contextUsage.memoryLine(memoryName, fmt(report.memory.tokens))}</span>
                         {/if}
-                        <span class="text-xs text-textcolor2"
-                            >{report.memory.coverage === "covered"
-                                ? language.contextUsage.coverageCovered
-                                : report.memory.coverage === "gap"
-                                  ? language.contextUsage.coverageGap
-                                  : language.contextUsage.coverageUnknown}</span
-                        >
                     </div>
                 {/if}
-
-                <div class="flex flex-col gap-1" data-context-meter-fixed>
-                    <div class="flex justify-between gap-2" class:text-danger-500={fixedOver}>
-                        <span title={language.contextUsage.fixedShareHelp}
-                            >{language.contextUsage.fixedShare(Math.round(fixed))}</span
-                        >
-                    </div>
-                    <div class="relative h-2 w-full rounded-sm bg-darkbutton" aria-hidden="true">
-                        <div
-                            class="h-full rounded-sm"
-                            class:bg-neutral-400={!fixedOver}
-                            class:bg-danger-500={fixedOver}
-                            style:width="{Math.min(100, fixed)}%"
-                        ></div>
-                        <div class="absolute -top-0.5 -bottom-0.5 w-0.5 bg-textcolor" style:left="{warn}%"></div>
-                    </div>
-                    {#if fixedOver}
-                        <span class="text-xs text-danger-500">{language.contextUsage.fixedShareOver(warn)}</span>
-                    {/if}
-                </div>
             {/if}
-
-            <div class="flex flex-wrap items-center gap-x-2 border-t border-darkborderc pt-3 text-xs text-textcolor2">
-                <span
-                    >{language.contextUsage.basis(
-                        unit === "user" ? language.contextUsage.basisTurns : language.contextUsage.basisMessages,
-                        warn,
-                    )}</span
-                >
-                <button type="button" class="text-textcolor underline hover:text-primary-500" onclick={openSettings}>
-                    {language.contextUsage.changeSettings}
-                </button>
-            </div>
         </div>
     </Portal>
 {/if}
+
+<style>
+    /* The memory budget HypaV3's count holds that the memory sent does not fill. */
+    .context-meter-reserve {
+        background: repeating-linear-gradient(
+            135deg,
+            color-mix(in srgb, var(--color-secondary-500) 45%, transparent) 0 3px,
+            transparent 3px 7px
+        );
+    }
+</style>

@@ -1,4 +1,4 @@
-import { findCharacter, selectedCharacter } from "./storage/characterStore.svelte";
+import { selectedCharacter } from "./storage/characterStore.svelte";
 import { settings } from "./storage/settingsViews.svelte";
 import { checkNullish, sleep } from "./util";
 import { v4 as uuidv4, v4 } from "uuid";
@@ -15,24 +15,26 @@ import {
     OpenRealmStore,
 } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
-import { alertConfirm, alertError, alertMd, alertNormal, alertNormalWait, alertSelect, waitAlert } from "./alert";
+import { alertConfirm, alertError, alertMd, alertNormal, waitAlert } from "./alert";
 import { hasher } from "./parser/parser.svelte";
+import { markTransient } from "./parser/renderErrors";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
 import {
-    chatEntry,
-    chatList,
+    isActiveChat,
+    activeChatList,
     currentChatRef,
     ensureChat,
     selectChat,
-    selectedChat,
     type ChatRef,
 } from "./storage/chatStore.svelte";
-import { selectCharacter, setChatOpen } from "./storage/selection.svelte";
-import { listBackups, restoreBackup, ResourceEpochMismatchError } from "./storage/resourceClient";
+import { canSelectCharacter, selectCharacter, setChatOpen } from "./storage/selection.svelte";
 import {
     readAsset,
     readAssets,
+    missingAssets,
+    assetContentHash,
+    throwIfAborted,
     writeAsset,
     writeAssets,
     type AssetRequestOptions,
@@ -45,6 +47,30 @@ import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { getNodeServerProxyAuth } from "./storage/serverAuth";
+import { aiDisclosureEnabled } from "./platform";
+import { redactBodyText, redactHeaderText } from "../../shared/logRedaction.ts";
+
+/**
+ * Client facade for asset bytes and URLs, remote fetches and tab request logs, downloads and
+ * writers, and navigation/UI helpers. Re-exports preserve the same state objects as their owners.
+ *
+ * Asset transport, cancellation, retries and upload checks belong to src/ts/storage/assetClient.ts;
+ * shared/assetBatch.ts defines the batch framing. URL selection and fallback source lifetimes are
+ * specified on getFileSrc and holdFileSrc here; public/sw.js controls signed subresource loads.
+ *
+ * Fetch routing and failure rules live on globalFetch and fetchNative here. Host classification
+ * comes through src/ts/network/localNetwork.ts from shared/localNetwork.ts; proxy authentication
+ * comes from src/ts/storage/serverAuth.ts, and src/ts/stores.svelte.ts supplies body interceptors.
+ * The log helpers keep this tab's newest-first array in place, separate from server request history
+ * displayed by src/lib/Others/RequestLogs/ServerRequestHistory.svelte.
+ *
+ * Save entry points, conflict/restore handling and the re-exported saving indicator belong to
+ * src/ts/storage/resourceSync.svelte.ts. Chat folds belong to src/ts/chatFold.svelte.ts; character
+ * order repair belongs to src/ts/storage/characterOrder.ts.
+ */
+
+/** Fold state and actions owned by src/ts/chatFold.svelte.ts. */
+export { chatFoldedState, chatFoldedStateMessageIndex, foldChatToMessage } from "./chatFold.svelte";
 
 interface fetchLog {
     body: string;
@@ -58,13 +84,21 @@ interface fetchLog {
     status?: number;
 }
 
+/** Entry-count ceiling for this tab's request log, independent of server history. */
 const FETCH_LOG_MAX_ENTRIES = 20;
+/** UTF-16 code-unit budget for retained body, header and response strings (newest entry excepted). */
 const FETCH_LOG_MAX_CHARS = 16 * 1024 * 1024;
+/** This tab's live request-log array; readers keep its identity, so writers must trim in place. */
 const fetchLog: fetchLog[] = [];
 
-/** Keeps the newest entries within both budgets, always retaining the newest entry whole. */
+/** Redacts credentials before retention, then keeps the newest entries within both budgets. */
 function writeFetchLog(entry: fetchLog): void {
-    fetchLog.unshift(entry);
+    fetchLog.unshift({
+        ...entry,
+        body: redactBodyText(entry.body),
+        header: redactHeaderText(entry.header),
+        response: redactBodyText(entry.response),
+    });
     let retainedChars = 0;
     let length = Math.min(fetchLog.length, FETCH_LOG_MAX_ENTRIES);
     for (let i = 0; i < length; i++) {
@@ -79,11 +113,12 @@ function writeFetchLog(entry: fetchLog): void {
     fetchLog.length = length;
 }
 
-export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string) {
+/** Downloads bytes or a string as octet-stream data; a Blob passes through without a copy, keeping its type. */
+export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer | string | Blob) {
     if (typeof dat === "string") {
         dat = Buffer.from(dat, "utf-8");
     }
-    const data = new Uint8Array(dat);
+    const blob = dat instanceof Blob ? dat : new Blob([new Uint8Array(dat)], { type: "application/octet-stream" });
     const downloadURL = (data: string, fileName: string) => {
         const a = document.createElement("a");
         a.href = data;
@@ -94,7 +129,6 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
         a.remove();
     };
 
-    const blob = new Blob([data], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
 
     downloadURL(url, name);
@@ -107,39 +141,115 @@ export async function downloadFile(name: string, dat: Uint8Array | ArrayBuffer |
 type FileSource = {
     src: Promise<string>;
     url: string | null;
+    failure?: { error: unknown };
     pinned: boolean;
     holders: number;
     revokeTimer?: ReturnType<typeof setTimeout>;
 };
 
-/** One shared load per path, pinned by plain reads or held by previews; failed loads are dropped. */
+/**
+ * One shared fallback load per path, pinned by plain reads for the page or held by previews.
+ * Empty results are dropped so the next read tries again; controller loss drops resolved worker URLs.
+ * Terminal failures are retained on the source for opt-in readers without rejecting its shared promise.
+ */
 const fileSources = new Map<string, FileSource>();
 /** Let rows shifted by a list edit re-hold their sources before releasing their blobs. */
 const FILE_SOURCE_RELEASE_GRACE_MS = 100;
 
 /** How long a service-worker request may take before the read falls back to an object URL. */
 const SW_REQUEST_TIMEOUT_MS = 10_000;
-const knownSwPaths = new Set<string>();
 let swCache: Promise<Cache> | undefined;
 
+/** Drops resolved worker URLs on controller loss, preserving blobs and pending loads and their holds. */
+export function invalidateWorkerFileSources(): void {
+    for (const [loc, source] of fileSources) {
+        if (source.url?.startsWith("/sw/img/")) fileSources.delete(loc);
+    }
+}
+
 /**
- * A capable worker controlling this page allows a direct URL without reading or retaining bytes.
- * Otherwise, reads share a worker-cache URL or object URL, pinned for the page by this plain read;
- * previews use `holdFileSrc` to release theirs. Only the fallback detects missing or empty files.
+ * Direct mode resolves `/api/asset/<hex of the UTF-8 key>` at once (`""` for an empty key), without
+ * a read, Cache Storage lookup, registration, shared file source, or pin: nothing needs revoking.
+ * `public/sw.js` signs the subresource load; the browser HTTP cache holds the bytes. A missing file
+ * is not detected here: its element receives a 404. A failed direct element retries once through
+ * `recoverDirectAssetElement` only after the controller or direct capability is lost.
+ *
+ * Each call checks `usingSw`, `directAssets`, and a controlling worker. Controller loss or a
+ * capability re-probe sends new calls through the fallback; switching modes leaves existing
+ * fallback sources' pin and hold lifetimes intact.
+ * Fallback failures resolve `""` unless `rejectFailedReads` is set. Missing/empty files and empty keys
+ * always resolve `""`; direct mode never rejects. Default reads keep the shared fallback promise.
+ * Rejecting reads retain HTTP status; only network failures, 408, 429 and 5xx are marked for render retries.
  *
  * @param {string} loc - The location of the file.
  * @returns {Promise<string>} - A promise that resolves to the source URL of the file.
  */
-export function getFileSrc(loc: string): Promise<string> {
+export function getFileSrc(loc: string, options: { rejectFailedReads?: boolean } = {}): Promise<string> {
     if (canUseDirectAssets()) {
         return Promise.resolve(directAssetSrc(loc));
     }
+    return getFallbackFileSrc(loc, options);
+}
+
+/** Resolves a pinned fallback even if direct capability returns while an element is recovering. */
+function getFallbackFileSrc(loc: string, options: { rejectFailedReads?: boolean } = {}): Promise<string> {
     const source = getFileSource(loc);
     source.pinned = true;
+    if (options.rejectFailedReads) {
+        return source.src.then((src) => {
+            if (source.failure) throw source.failure.error;
+            return src;
+        });
+    }
     return source.src;
 }
 
-/** Direct URLs need no release; fallback previews hold a source until released or pinned by a plain read. */
+const recoveredDirectElements = new WeakSet<Element>();
+
+/**
+ * One error-triggered retry for a direct asset after controller/capability loss. Genuine errors while
+ * direct assets remain usable are left alone. Capture listeners also handle parser-created sources;
+ * changing a source child requires its media parent to load again. A changed src wins across awaits.
+ */
+export async function recoverDirectAssetElement(element: EventTarget | null): Promise<boolean> {
+    if (
+        !(
+            element instanceof HTMLImageElement ||
+            element instanceof HTMLMediaElement ||
+            element instanceof HTMLSourceElement
+        ) ||
+        canUseDirectAssets() ||
+        recoveredDirectElements.has(element)
+    )
+        return false;
+    const failedSrc = element.getAttribute("src");
+    if (!failedSrc) return false;
+    let key: string;
+    try {
+        const url = new URL(failedSrc, location.href);
+        if (url.origin !== location.origin) return false;
+        const hex = /^\/api\/asset\/((?:[\da-fA-F]{2})+)$/.exec(url.pathname)?.[1];
+        if (!hex) return false;
+        key = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.from(hex, "hex"));
+        if (!key.startsWith("assets/")) return false;
+    } catch {
+        return false;
+    }
+    recoveredDirectElements.add(element);
+    const src = await getFallbackFileSrc(key);
+    if (!src || element.getAttribute("src") !== failedSrc) return false;
+    element.setAttribute("src", src);
+    if (element instanceof HTMLSourceElement && element.parentElement instanceof HTMLMediaElement) {
+        element.parentElement.load();
+    }
+    return true;
+}
+
+/**
+ * Preview source and release handle; direct URLs need no release. In the fallback, the last release
+ * revokes and drops an unpinned `blob:` URL after `FILE_SOURCE_RELEASE_GRACE_MS`. A new hold or plain
+ * read cancels that timer. Worker URLs are never revoked.
+ */
 export function holdFileSrc(loc: string): { src: Promise<string>; release(): void } {
     if (canUseDirectAssets()) {
         return { src: Promise.resolve(directAssetSrc(loc)), release() {} };
@@ -158,7 +268,12 @@ export function holdFileSrc(loc: string): { src: Promise<string>; release(): voi
     };
 }
 
-/** Direct thumbnails need no read or pin; fallback returns getFileSrc's own promise for the original. */
+/**
+ * Direct mode adds `?w=<size>`: `server/src/routes/storage.ts` serves a WebP thumbnail or a 307 to
+ * the query-free original, followed by `public/sw.js`. Otherwise returns `getFileSrc`'s own promise
+ * for the full image: pages without a worker, uncontrolled pages, and fallback loads get no
+ * decoded-memory saving, an accepted trade-off.
+ */
 export function getThumbSrc(loc: string, size: 256 | 512): Promise<string> {
     if (canUseDirectAssets()) {
         return Promise.resolve(loc ? directAssetSrc(loc) + "?w=" + size : "");
@@ -166,7 +281,10 @@ export function getThumbSrc(loc: string, size: 256 | 512): Promise<string> {
     return getFileSrc(loc);
 }
 
-/** Returns a direct asset URL when a capable worker controls this page, otherwise null. */
+/**
+ * Direct URL for inlay audio and video in `src/ts/parser/parser.svelte.ts`; null without a capable
+ * controlling worker, so the parser can use its own object URL fallback.
+ */
 export function getDirectAssetSrc(loc: string): string | null {
     return canUseDirectAssets() ? directAssetSrc(loc) : null;
 }
@@ -194,6 +312,12 @@ function directAssetFetchUrl(input: RequestInfo | URL): string | null {
     }
 }
 
+/**
+ * Signs same-origin `assets/` URLs on GET/HEAD without a `risu-auth` header, using a fresh token.
+ * Legacy `/sw/img/<hex>` URLs map to `/api/asset/<hex>` so rows rendered before worker activation
+ * cleared their cache entries remain fetchable. Signed requests use `mode: "same-origin"` so a
+ * redirect cannot leave the origin. Other requests pass through unchanged.
+ */
 async function fetchFileSrcWith(
     originalFetch: typeof fetch,
     input: RequestInfo | URL,
@@ -220,7 +344,10 @@ async function fetchFileSrcWith(
     return originalFetch.call(globalThis, input, init);
 }
 
-/** Fetches same-origin displayed assets with auth, mapping legacy worker URLs to the asset route. */
+/**
+ * Rich copy in `src/lib/ChatScreens/Chat.svelte` needs bytes for message images and character/user
+ * icons; `public/sw.js` signs subresource loads but does not sign `fetch()`.
+ */
 export function fetchFileSrc(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     return fetchFileSrcWith(fetch, input, init);
 }
@@ -228,7 +355,12 @@ export function fetchFileSrc(input: RequestInfo | URL, init?: RequestInit): Prom
 let fileSrcFetchScope:
     { depth: number; active: boolean; originalFetch: typeof fetch; wrapper: typeof fetch } | undefined;
 
-/** Signs asset fetches made by capture libraries, including CSS and font resources outside the captured row. */
+/**
+ * Screenshot capture in `src/lib/ChatScreens/DefaultChatScreen.svelte` signs fetches for images,
+ * computed-style URLs from shared chat styles outside the rows, and fonts. Nested runs share one
+ * wrapper; the last run disables signing and restores fetch only if global fetch is still this
+ * wrapper. A wrapper retained by another script stays inactive.
+ */
 export async function withFileSrcFetch<T>(run: () => T | Promise<T>): Promise<T> {
     if (!fileSrcFetchScope) {
         const originalFetch = globalThis.fetch;
@@ -261,7 +393,8 @@ export async function withFileSrcFetch<T>(run: () => T | Promise<T>): Promise<T>
 function getFileSource(loc: string): FileSource {
     let source = fileSources.get(loc);
     if (!source) {
-        source = { src: loadFileSrc(loc), url: null, pinned: false, holders: 0 };
+        source = { src: Promise.resolve(""), url: null, pinned: false, holders: 0 };
+        source.src = loadFileSrc(loc, source);
         fileSources.set(loc, source);
         void source.src.then((src) => {
             source.url = src;
@@ -298,9 +431,23 @@ class MissingFileError extends Error {
     }
 }
 
-async function loadFileSrc(loc: string): Promise<string> {
+/**
+ * Fallback URL: `/sw/img/<hex>` only with a controlling worker and a cached file. The page shares `risuCache`
+ * with the worker, so a Cache Storage hit needs no worker request; a miss posts bytes to
+ * `/sw/register/<hex>`. When Cache Storage is unavailable or denied, `/sw/check/<hex>` answers
+ * instead. Every worker request is bounded by `SW_REQUEST_TIMEOUT_MS`.
+ *
+ * Without a controller (checked again after worker awaits), with `usingSw` false, or after a failed
+ * worker request, falls back to a `blob:` URL of type `image/png`.
+ * Never a data URL: it would inflate the text `serverProcessScript` sends to the server in
+ * `src/ts/parser/transformClient.ts`. Missing or empty bytes are never registered or shown: they
+ * resolve `""`, as does an empty key or failed load. Only terminal non-missing failures are recorded
+ * on the shared source for opt-in readers, marking network failures, 408, 429 and 5xx as retryable;
+ * permanent HTTP refusals reject without render retries. A successful blob fallback records no failure.
+ */
+async function loadFileSrc(loc: string, source: FileSource): Promise<string> {
+    if (!loc) return "";
     let bytes: Promise<Uint8Array> | null = null;
-    // A missing or empty file is never registered or shown: the read resolves `""` and is tried again.
     const read = () =>
         (bytes ??= (async () => {
             const data = (await readAsset(loc)) as unknown as Uint8Array | null;
@@ -310,18 +457,15 @@ async function loadFileSrc(loc: string): Promise<string> {
             return data;
         })());
     try {
-        if (usingSw) {
+        if (usingSw && navigator.serviceWorker?.controller) {
             try {
                 const encoded = Buffer.from(loc, "utf-8").toString("hex");
                 const url = "/sw/img/" + encoded;
-                if (knownSwPaths.has(loc)) return url;
                 let hasCache: boolean;
                 try {
-                    // The page shares Cache Storage with the worker; a hit needs no worker request.
                     const cache = await (swCache ??= caches.open("risuCache"));
                     hasCache = !!(await cache.match(url));
                 } catch {
-                    // Cache Storage can be unavailable or denied even with a controlling worker.
                     swCache = undefined;
                     const check = await fetch("/sw/check/" + encoded, {
                         signal: AbortSignal.timeout(SW_REQUEST_TIMEOUT_MS),
@@ -339,8 +483,7 @@ async function loadFileSrc(loc: string): Promise<string> {
                     }
                     await sleep(10);
                 }
-                knownSwPaths.add(loc);
-                return url;
+                if (navigator.serviceWorker?.controller) return url;
             } catch (error) {
                 if (error instanceof MissingFileError) {
                     throw error;
@@ -351,6 +494,7 @@ async function loadFileSrc(loc: string): Promise<string> {
         }
         return URL.createObjectURL(new Blob([(await read()) as Uint8Array<ArrayBuffer>], { type: "image/png" }));
     } catch (error) {
+        if (!(error instanceof MissingFileError)) source.failure = { error: markTransient(error) };
         console.error(error);
         return "";
     }
@@ -367,12 +511,13 @@ export async function readImage(data: string) {
 }
 
 /**
- * Saves an asset file with the given data, custom ID, and file name.
+ * Saves an asset file, skipping a canonical upload when the server already holds verified bytes.
+ * A failed or timed-out check uploads normally; custom ids always write.
  *
  * @param {Uint8Array} data - The data of the asset file.
  * @param {string} [customId=''] - The custom ID for the asset file.
  * @param {string} [fileName=''] - The name of the asset file.
- * @param {AssetRequestOptions} [options] - `signal` aborts the write (and its retries, `writeAsset`).
+ * @param {AssetRequestOptions} [options] - `signal` aborts the check, write, and retries with its reason.
  * @returns {Promise<string>} - A promise that resolves to the path of the saved asset file.
  */
 export async function saveAsset(
@@ -382,6 +527,18 @@ export async function saveAsset(
     options: AssetRequestOptions = {},
 ) {
     const form = await assetKey(data, customId, fileName);
+    if (customId === "" && assetContentHash(form) !== null) {
+        try {
+            const missing = await missingAssets([form], options);
+            throwIfAborted(options.signal);
+            if (!missing.has(form)) {
+                return form;
+            }
+        } catch (error) {
+            throwIfAborted(options.signal);
+            console.warn("Asset missing check failed; uploading asset", error);
+        }
+    }
     await writeAsset(form, data, options);
     return form;
 }
@@ -408,7 +565,7 @@ export async function assetKey(data: Uint8Array, customId: string = "", fileName
     return `assets/${id}.${fileExtension}`;
 }
 
-/** Writes each item under its key with the batch route (`writeAssets`: one request per batch, retried). */
+/** Checks canonical items with matching `sha256`, then batches uploads through `writeAssets` with retries. */
 export async function saveAssetBatch(
     items: readonly AssetWriteItem[],
     options: AssetRequestOptions = {},
@@ -434,15 +591,23 @@ export async function loadAssets(
     return readAssets(keys, options);
 }
 
+/** The save adapter's shared write-activity indicator; see src/ts/storage/resourceSync.svelte.ts. */
 export { saving } from "./storage/resourceSync.svelte";
 
 let usingSw = false;
 let directAssets = false;
 
+/** Records whether `registerSw` in `src/ts/bootstrap.ts` returned `ready`, separately from capability. */
 export function setUsingSw(value: boolean) {
     usingSw = value;
 }
 
+/**
+ * Records the controlling worker's `/sw/init` `directAssets` capability from `src/ts/bootstrap.ts`.
+ * Non-JSON responses (including older workers), missing or false flags, unavailable workers, and
+ * unsupported browsers leave it false. `controllerchange` clears it and probes the new controller;
+ * only the newest probe for the current controller can set it again.
+ */
 export function setDirectAssets(value: boolean) {
     directAssets = value;
 }
@@ -468,19 +633,22 @@ function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
     if (!timeoutMs || timeoutMs <= 0) {
         return {
             signal: originalSignal,
-            cleanup: () => {
+            clearTimer: () => {
                 /* no-op */
             },
+            detach: undefined as (() => void) | undefined,
         };
     }
 
     const controller = new AbortController();
     const onAbort = () => controller.abort();
+    let detach: (() => void) | undefined;
     if (originalSignal) {
         if (originalSignal.aborted) {
             controller.abort();
         } else {
             originalSignal.addEventListener("abort", onAbort, { once: true });
+            detach = () => originalSignal.removeEventListener("abort", onAbort);
         }
     }
 
@@ -488,10 +656,8 @@ function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
 
     return {
         signal: controller.signal,
-        cleanup: () => {
-            clearTimeout(timeoutId);
-            originalSignal?.removeEventListener("abort", onAbort);
-        },
+        clearTimer: () => clearTimeout(timeoutId),
+        detach,
     };
 }
 
@@ -584,11 +750,15 @@ export function appendFetchLog(entry: fetchLog) {
 }
 
 /**
- * Performs a global fetch request.
- *
- * @param {string} url - The URL to fetch.
- * @param {GlobalFetchArgs} [arg={}] - The arguments for the fetch request.
- * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
+ * Buffered remote call with tab logging and `{ ok, data, headers, status }` results. Routing uses
+ * `shared/localNetwork.ts`: a qualifying `networkRoute: "local_network"` always takes the proxy;
+ * otherwise localhost/127.0.0.1/0.0.0.0, `plainFetchForce`, or `settings.providers.usePlainFetch`
+ * selects plain fetch unless `plainFetchDeforce`; then userscript `userScriptFetch`, else proxy.
+ * `bodyIntercepterStore` interceptors run before dispatch, logging throws and retaining the body
+ * so far. The timeout starts after those interceptors, covers the selected buffered transport,
+ * and combines with `abortSignal`; its timer/listener is removed on settlement.
+ * The method defaults to POST. Proxy encoding and headers are governed by `fetchWithProxy`.
+ * An already-aborted call, routing error, or transport failure becomes `ok: false`, status 400.
  */
 export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promise<GlobalFetchResult> {
     try {
@@ -630,7 +800,8 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
             }
             return await fetchWithProxy(url, requestArg);
         } finally {
-            timeoutSignal.cleanup();
+            timeoutSignal.clearTimer();
+            timeoutSignal.detach?.();
         }
     } catch (error) {
         console.error(error);
@@ -673,6 +844,14 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
 }
 
 /**
+ * The JSON content type a request body gets by default. A GET has no body and gets none: a cross-origin plain fetch
+ * would otherwise need a CORS preflight, which some hosts (plugin update URLs among them) do not answer.
+ */
+function defaultContentType(arg: GlobalFetchArgs): { "Content-Type"?: string } {
+    return arg.method === "GET" ? {} : { "Content-Type": "application/json" };
+}
+
+/**
  * Performs a fetch request using plain fetch.
  *
  * @param {string} url - The URL to fetch.
@@ -681,7 +860,7 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
  */
 async function fetchWithPlainFetch(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const headers = { "Content-Type": "application/json", ...arg.headers };
+        const headers = { ...defaultContentType(arg), ...arg.headers };
         const response = await fetch(new URL(url), {
             body: JSON.stringify(arg.body),
             headers,
@@ -706,7 +885,7 @@ async function fetchWithPlainFetch(url: string, arg: GlobalFetchArgs): Promise<G
  */
 async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const headers = { "Content-Type": "application/json", ...arg.headers };
+        const headers = { ...defaultContentType(arg), ...arg.headers };
         const response = await userScriptFetch(url, {
             body: JSON.stringify(arg.body),
             headers,
@@ -723,17 +902,22 @@ async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<Glob
 }
 
 /**
- * Performs a fetch request using a proxy.
- *
- * @param {string} url - The URL to fetch.
- * @param {GlobalFetchArgs} arg - The arguments for the fetch request.
- * @returns {Promise<GlobalFetchResult>} - The result of the fetch request.
+ * Same-origin `/proxy2` exchange (`server/src/routes/proxy.ts`): `risu-url` is the encoded target,
+ * `risu-header` the encoded JSON upstream headers. A fresh JWT is sent as `risu-auth` when present,
+ * `useRisuToken` adds `x-risu-tk: use`, and `requestTimeoutMs` adds `risu-timeout-ms` (floored,
+ * at least 1). These outer headers are separate from the upstream headers.
+ * URLSearchParams uses form encoding; other bodies use JSON, with matching default upstream content types (none for
+ * a GET).
+ * Method defaults to POST. Raw responses return bytes; otherwise a non-JSON response is a failure
+ * even on HTTP success. Transport/auth errors become status 400 results; response reads are logged.
  */
 async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
         arg.headers ??= {};
-        arg.headers["Content-Type"] ??=
-            arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
+        if (arg.method !== "GET") {
+            arg.headers["Content-Type"] ??=
+                arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
+        }
         const nodeProxyAuth = await getNodeServerProxyAuth();
         const headers = {
             "risu-header": encodeURIComponent(JSON.stringify(arg.headers)),
@@ -792,37 +976,33 @@ async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<Global
  */
 const re = /\\/g;
 
-/**
- * Gets the basename of a given path.
- *
- * @param {string} data - The path to get the basename from.
- * @returns {string} - The basename of the path.
- */
+/** Returns the final path segment after converting backslashes to slashes; a trailing separator yields "". */
 export function getBasename(data: string) {
     const splited = data.replace(re, "/").split("/");
     const lasts = splited[splited.length - 1];
     return lasts;
 }
 
-/** The `characterOrder` mutation; it lives in the storage layer (`storage/characterOrder.ts`). */
+/**
+ * The `characterOrder` mutation from `src/ts/storage/characterOrder.ts`, kept on this facade for
+ * `src/ts/characters.ts` and the plugin API in `src/ts/plugins/apiV3/v3.svelte.ts`.
+ */
 export { checkCharOrder } from "./storage/characterOrder";
 
-/**
- * Retrieves the fetch logs array.
- *
- * @returns {fetchLog[]} The fetch logs array.
- */
+/** Returns this tab's live log array, whose identity writers preserve; it is not server history. */
 export function getFetchLogs() {
     return fetchLog;
 }
 
 /**
- * Opens a URL in the appropriate environment.
+ * Opens a new tab with `noopener,noreferrer`, isolating its opener and initial session storage from this tab.
  *
  * @param {string} url - The URL to open.
  */
 export function openURL(url: string) {
-    window.open(url, "_blank");
+    // `noopener`: the new page gets no `window.opener`, and a same-origin page opened this way starts
+    // with its own `sessionStorage` instead of a copy of this tab's (the live-page claim counts tabs).
+    window.open(url, "_blank", "noopener,noreferrer");
 }
 
 /**
@@ -842,7 +1022,9 @@ function formDataToString(formData: FormData): string {
 }
 
 /**
- * Class representing a local writer.
+ * Streams a download through `streamsaver`. `writeBackup` frames each record as a native-endian
+ * Uint32 UTF-8 basename byte length, basename bytes, Uint32 data byte length, then data bytes;
+ * `write` instead passes bytes through unchanged.
  */
 export class LocalWriter {
     writer: WritableStreamDefaultWriter;
@@ -903,7 +1085,7 @@ export class LocalWriter {
 }
 
 /**
- * Class representing a virtual writer.
+ * In-memory writer over `AppendableBuffer`; close and abort leave its accumulated bytes available.
  */
 export class VirtualWriter {
     buf = new AppendableBuffer();
@@ -931,6 +1113,8 @@ export class VirtualWriter {
 
 /**
  * A class to manage a buffer that can be appended to and deappended from.
+ * `deappend` discards bytes from the front; slice offsets and length still count from the original
+ * stream start, while `buffer` copies only the retained bytes.
  */
 export class AppendableBuffer {
     deapended: number = 0;
@@ -956,7 +1140,7 @@ export class AppendableBuffer {
         // New way (faster)
         const requiredLength = this.#byteLength + data.length;
         if (this.#buffer.byteLength < requiredLength) {
-            let newLength = this.#buffer.byteLength * 2;
+            let newLength = Math.max(this.#buffer.byteLength, 128);
             while (newLength < requiredLength) {
                 newLength *= 2;
             }
@@ -1015,20 +1199,17 @@ export class AppendableBuffer {
 }
 
 /**
- * Fetches data from a given URL using native fetch or through a proxy.
- * @param {string} url - The URL to fetch data from.
- * @param {Object} arg - The arguments for the fetch request.
- * @param {string} arg.body - The body of the request.
- * @param {Object} [arg.headers] - The headers of the request.
- * @param {string} [arg.method="POST"] - The HTTP method of the request.
- * @param {AbortSignal} [arg.signal] - The signal to abort the request.
- * @param {boolean} [arg.useRisuTk] - Whether to use Risu token.
- * @param {string} [arg.chatId] - The chat ID associated with the request.
- * @returns {Promise<Object>} - A promise that resolves to an object containing the response body, headers, and status.
- * @returns {ReadableStream<Uint8Array>} body - The response body as a readable stream.
- * @returns {Headers} headers - The response headers.
- * @returns {number} status - The response status code.
- * @throws {Error} - Throws an error if the request is aborted or if there is an error in the response.
+ * Streaming remote call returning a `Response`; transport failures reject. Accepts an optional string, Uint8Array, or
+ * ArrayBuffer body. Method defaults to POST; exact GET/HEAD discard the body, while DELETE/PATCH retain it. String bodies
+ * alone run `bodyIntercepterStore` interceptors before encoding (throws are logged and the body so far kept).
+ * A qualifying `networkRoute: "local_network"` (`shared/localNetwork.ts`) takes same-origin `/proxy2`; otherwise userscript
+ * `userScriptFetch` when present, else direct fetch. The proxy sends encoded `risu-url` and JSON `risu-header`, outer
+ * Content-Type application/json, a fresh `risu-auth` JWT when present, optional `x-risu-tk: use` (`useRisuTk`), and
+ * `risu-timeout-ms` (`requestTimeoutMs`, floored to at least 1). The request body remains its encoded bytes.
+ * Timeout starts after interceptors and limits the wait for response headers. The caller's `signal` keeps aborting the
+ * request until the body ends, errors, or is cancelled. Logging defaults on, records a streamed-fetch placeholder before
+ * dispatch, and does not consume the response. The plugin adapter's GET default and body normalization are in
+ * `src/ts/plugins/apiV3/v3.svelte.ts`.
  */
 export async function fetchNative(
     url: string,
@@ -1091,8 +1272,9 @@ export async function fetchNative(
         });
     }
     try {
+        let response: Response;
         if (window.userScriptFetch && !throughProxy) {
-            return await window.userScriptFetch(url, {
+            response = await window.userScriptFetch(url, {
                 body: realBody as any,
                 headers: headers,
                 method: arg.method,
@@ -1127,20 +1309,58 @@ export async function fetchNative(
                 signal: requestSignal,
             });
 
-            return new Response(r.body, {
+            response = new Response(r.body, {
                 headers: r.headers,
                 status: r.status,
             });
         } else {
-            return await fetch(url, {
+            response = await fetch(url, {
                 body: realBody as any,
                 headers: headers,
                 method: arg.method,
                 signal: requestSignal,
             });
         }
+        const detach = timeoutSignal.detach;
+        if (!detach || !response.body) {
+            detach?.();
+            return response;
+        }
+
+        const reader = response.body.getReader();
+        // Body errors can arrive while the wrapper is waiting for the consumer to read again.
+        void reader.closed.catch(detach);
+        return new Response(
+            new ReadableStream({
+                async pull(controller) {
+                    try {
+                        const { done, value } = await reader.read();
+                        if (done) {
+                            detach();
+                            controller.close();
+                        } else {
+                            controller.enqueue(value);
+                        }
+                    } catch (error) {
+                        detach();
+                        controller.error(error);
+                    }
+                },
+                async cancel(reason) {
+                    try {
+                        await reader.cancel(reason);
+                    } finally {
+                        detach();
+                    }
+                },
+            }),
+            { status: response.status, statusText: response.statusText, headers: response.headers },
+        );
+    } catch (error) {
+        timeoutSignal.detach?.();
+        throw error;
     } finally {
-        timeoutSignal.cleanup();
+        timeoutSignal.clearTimer();
     }
 }
 
@@ -1158,12 +1378,7 @@ export function toggleFullscreen() {
           });
 }
 
-/**
- * Removes non-Latin characters from a string, replaces multiple spaces with a single space, and trims the string.
- *
- * @param {string} data - The input string to be processed.
- * @returns {string} The processed string with non-Latin characters removed, multiple spaces replaced by a single space, and trimmed.
- */
+/** ASCII-only: accented Latin letters are removed too. */
 export function trimNonLatin(data: string) {
     return data
         .replace(/[^\x00-\x7F]/g, "")
@@ -1210,43 +1425,7 @@ export class BlankWriter {
     }
 }
 
-/**
- * Lets the user pick one of the server's resource snapshots (taken every 10 minutes while data
- * changes, 20 kept) and restores it; the app then reloads.
- */
-export async function loadInternalBackup() {
-    let backups: Awaited<ReturnType<typeof listBackups>>;
-    try {
-        backups = await listBackups();
-    } catch (error) {
-        alertError(error instanceof Error ? error.message : String(error));
-        return;
-    }
-
-    const selectOptions = ["Cancel", ...backups.map((backup) => new Date(backup.createdAt).toLocaleString())];
-
-    const alertResult = parseInt(await alertSelect(selectOptions)) - 1;
-
-    if (!(alertResult >= 0 && alertResult < backups.length)) {
-        return;
-    }
-
-    try {
-        await restoreBackup(backups[alertResult].id);
-    } catch (error) {
-        if (!(error instanceof ResourceEpochMismatchError)) {
-            alertError(error instanceof Error ? error.message : String(error));
-            return;
-        }
-    }
-    await alertNormalWait("Loaded backup");
-    location.reload();
-}
-
-/**
- * A debugging class for performance measurement.
- */
-
+/** Collects elapsed milliseconds by key from one shared start time, merges samples and logs their averages. */
 export class PerformanceDebugger {
     kv: { [key: string]: number[] } = {};
     startTime: number;
@@ -1305,6 +1484,7 @@ export class PerformanceDebugger {
     }
 }
 
+/** The persisted UI locale `cn` is passed to Intl as `zh`. */
 export function getLanguageCodes() {
     let languageCodes: {
         code: string;
@@ -1338,221 +1518,23 @@ export function getLanguageCodes() {
     return languageCodes;
 }
 
+/** The upstream RisuAI version this build is compatible with (`appVer`), with `appSubVer` when set. */
 export function getVersionString(): string {
     let versionString = appVer;
     if (appSubVer) {
         versionString += "-" + appSubVer;
     }
-    if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE") {
-        versionString = "Nightly Build " + import.meta.env.VITE_RISU_BUILD_TIME;
-    }
     return versionString;
 }
 
-export function toGetter<T extends object>(
-    getterFn: () => T,
-    args?: {
-        //blocks this.children from being accessed
-        restrictChildren: string[];
-    },
-): T {
-    const dummyTarget = () => {};
-
-    return new Proxy(dummyTarget, {
-        get(target, prop, receiver) {
-            const realInstance = getterFn();
-
-            if (args?.restrictChildren && args.restrictChildren.includes(prop as string)) {
-                throw new Error(`Access to property '${String(prop)}' is restricted`);
-            }
-
-            if (realInstance === null || realInstance === undefined) {
-                return (realInstance as any)[prop];
-            }
-
-            const value = Reflect.get(realInstance as object, prop);
-
-            if (typeof value === "function") {
-                return value.bind(realInstance);
-            }
-
-            return value;
-        },
-
-        set(target, prop, value, receiver) {
-            if (args?.restrictChildren && args.restrictChildren.includes(prop as string)) {
-                throw new Error(`Access to property '${String(prop)}' is restricted`);
-            }
-            const realInstance = getterFn();
-            return Reflect.set(realInstance as object, prop, value, receiver);
-        },
-
-        has(target, prop) {
-            const realInstance = getterFn();
-            return Reflect.has(realInstance as object, prop);
-        },
-
-        ownKeys(target) {
-            const realInstance = getterFn();
-            return Reflect.ownKeys(realInstance as object);
-        },
-
-        construct(target, argArray, newTarget) {
-            const realInstance = getterFn() as any;
-            return new realInstance(...argArray);
-        },
-
-        deleteProperty(target, prop) {
-            const realInstance = getterFn();
-            return Reflect.deleteProperty(realInstance as object, prop);
-        },
-
-        getPrototypeOf() {
-            const realInstance = getterFn();
-            return Reflect.getPrototypeOf(realInstance as object);
-        },
-    }) as unknown as T;
-}
-
-const countriesWithAiLaw = new Set<string>([
-    // EU
-    // AI Act
-    // https://artificialintelligenceact.eu/
-
-    "AT",
-    "BE",
-    "BG",
-    "HR",
-    "CY",
-    "CZ",
-    "DK",
-    "EE",
-    "FI",
-    "FR",
-    "DE",
-    "EL",
-    "GR",
-    "HU",
-    "IE",
-    "IT",
-    "LV",
-    "LT",
-    "LU",
-    "MT",
-    "NL",
-    "PL",
-    "PT",
-    "RO",
-    "SK",
-    "SI",
-    "ES",
-    "SE",
-
-    //China
-    //Measures for Labeling of AI-Generated Synthetic Content
-    // 关于印发《人工智能生成合成内容标识办法》的通知
-    // https://www.cac.gov.cn/2025-03/14/c_1743654684782215.htm
-    "CN",
-
-    //Although CN Law doesn't apply, just in case
-    "HK",
-    "MO",
-
-    //TW isn't under mainland china jurisdiction
-    //de facto, de jure in TW law, unlike HK and MO,
-    //So we don't include it for now
-    //"TW",
-
-    // Republic of Korea
-    // AI Basic Act
-    // 인공지능 발전과 신뢰 기반 조성 등에 관한 기본법
-    // https://www.law.go.kr/%EB%B2%95%EB%A0%B9/%EC%9D%B8%EA%B3%B5%EC%A7%80%EB%8A%A5%20%EB%B0%9C%EC%A0%84%EA%B3%BC%20%EC%8B%A0%EB%A2%B0%20%EA%B8%B0%EB%B0%98%20%EC%A1%B0%EC%84%B1%20%EB%93%B1%EC%97%90%20%EA%B4%80%ED%95%9C%20%EA%B8%B0%EB%B3%B8%EB%B2%95/(20676,20250121)
-    "KR",
-
-    // Vietnam
-    // Digital Tech Law
-    // Luật Công nghệ số
-    "VN",
-]);
-
+/**
+ * Whether the client shows its AI disclosure: the empty-chat warning (`DefaultChatScreen`), the request-info
+ * disclaimer (`AlertComp`), and the chat row's model button regardless of `requestInfoInsideChat` (`Chat`). It is the
+ * page flag `aiDisclosureEnabled` (`src/ts/platform.ts`), set by the server operator through `RISU_AI_DISCLOSURE`
+ * and off by default.
+ */
 export function aiLawApplies(): boolean {
-    //TODO: implement actual logic
-    //lets now assume it always applies
-    //so we don't have legal issues later
-
-    return true;
-}
-
-export function aiWatermarkingLawApplies(): boolean {
-    //TODO: implement actual logic
-    //lets now assume it is false for now,
-    //becuase very few countries have it for now
-    return false;
-}
-
-export const chatFoldedState = $state<{
-    data: null | {
-        targetCharacterId: string;
-        targetChatId: string;
-        targetMessageId: string;
-    };
-}>({
-    data: null,
-});
-
-//Since its exported, we cannot use $derived here
-export let chatFoldedStateMessageIndex = $state({
-    index: -1,
-});
-
-$effect.root(() => {
-    $effect(() => {
-        if (!chatFoldedState.data) {
-            return;
-        }
-        const ref = currentChatRef();
-        if (chatFoldedState.data.targetCharacterId !== ref?.chaId) {
-            chatFoldedState.data = null;
-        } else if (chatFoldedState.data.targetChatId !== ref.chatId) {
-            chatFoldedState.data = null;
-        }
-    });
-
-    $effect(() => {
-        if (chatFoldedState.data === null) {
-            chatFoldedStateMessageIndex.index = -1;
-            return;
-        }
-        const chat = selectedChat();
-        const messageIndex = (chat?.message ?? []).findIndex((v) => {
-            return chatFoldedState.data?.targetMessageId === v.chatId;
-        });
-        if (messageIndex === -1) {
-            console.warn("Target message for folding id" + chatFoldedState.data?.targetMessageId + " not found");
-            chatFoldedStateMessageIndex.index = -1;
-            return;
-        }
-        chatFoldedStateMessageIndex.index = messageIndex;
-    });
-});
-
-export function foldChatToMessage(targetMessageIdOrIndex: string | number) {
-    let targetMessageId = "";
-    if (typeof targetMessageIdOrIndex === "number") {
-        const message = selectedChat()?.message[targetMessageIdOrIndex];
-        targetMessageId = message?.chatId;
-    } else {
-        targetMessageId = targetMessageIdOrIndex;
-    }
-    const ref = currentChatRef();
-    if (!ref) {
-        return;
-    }
-    chatFoldedState.data = {
-        targetCharacterId: ref.chaId,
-        targetChatId: ref.chatId,
-        targetMessageId: targetMessageId,
-    };
+    return aiDisclosureEnabled;
 }
 
 /** Selects a chat of the selected character by id or by its index in the list (per tab), and opens it. */
@@ -1561,19 +1543,22 @@ export function changeChatTo(IdOrIndex: string | number) {
     if (!character) {
         return;
     }
-    selectChat(character.chaId, IdOrIndex);
+    if (!selectChat(character.chaId, IdOrIndex)) return;
     setChatOpen(true);
     ReloadGUIPointer.set(Math.random());
 }
 
-/** Opens a pin by id, selecting its chat before its character so only the target chat is loaded. */
+/**
+ * Shared home/rail navigation by `{ chaId, chatId }` (per tab). Selects the chat before its character
+ * so only the target chat is loaded. An archived owner or a missing target leaves selection unchanged.
+ */
 export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
-    if (!findCharacter(ref.chaId) || !chatEntry(ref)) {
+    if (!canSelectCharacter(ref.chaId) || !isActiveChat(ref)) {
         return;
     }
     reseter?.();
     ensureChat(ref.chaId);
-    selectChat(ref.chaId, ref.chatId);
+    if (!selectChat(ref.chaId, ref.chatId)) return;
     PlaygroundStore.set(ref.chaId === "§playground" ? 2 : 0);
     OpenRealmStore.set(false);
     selectCharacter(ref.chaId);
@@ -1581,16 +1566,16 @@ export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
     ReloadGUIPointer.set(Math.random());
 }
 
-/** A name for a copy or branch of a chat, unique among the chats of `chaId` (default: the selected character). */
+/** A name for a copy, branch, or settings-only copy of a chat, unique among the chats of `chaId` (default: the selected character). */
 export function createChatCopyName(
     originalName: string,
-    type: "Copy" | "Branch",
+    type: "Copy" | "Branch" | "Settings",
     chaId: string = selectedCharacter()?.chaId ?? "",
 ): string {
-    let name = originalName.replaceAll(/\(((Copy|Branch)( \d+)?)\)$/g, "").trim();
+    let name = originalName.replaceAll(/\(((Copy|Branch|Settings)( \d+)?)\)$/g, "").trim();
     let copyIndex = 1;
     let newName = `${name} (${type})`;
-    const names = new Set(chatList(chaId).map((entry) => entry.name));
+    const names = new Set(activeChatList(chaId).map((entry) => entry.name));
     while (names.has(newName)) {
         copyIndex++;
         newName = `${name} (${type} ${copyIndex})`;

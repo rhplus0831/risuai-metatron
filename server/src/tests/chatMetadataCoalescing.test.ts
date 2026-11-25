@@ -19,6 +19,8 @@ import {
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import { createTriggerRuntime } from "../prompt/triggers.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { applyOwnWrite } from "./ownWrite.ts";
 
 // Real storage and runtime boundaries; the fake job deliberately has no setPendingFlush hook.
 const cleanups: (() => void)[] = [];
@@ -62,7 +64,7 @@ function setup() {
     const bound = { presetId: first("presets"), modelPresetId: first("modelPresets"), personaId: first("personas") };
     store.put(kinds.get("characters")!, "c", { chaId: "c", type: "character", name: "Owner" }, null);
     const write = (ops: ChatOp[]) =>
-        store.applyChanges({
+        applyOwnWrite(store, {
             chats: [{ characterId: "c", chatId: "k", baseRevision: store.chatRevision("c", "k"), ops }],
         });
     write([
@@ -110,7 +112,7 @@ function setup() {
         emit() {},
         emitRecords: vi.fn(() => []),
         onClientMessage: () => () => {},
-        write: (build) => store.applyChanges(build(), { epoch: store.epoch() }),
+        write: (build) => applyOwnWrite(store, build(), { epoch: store.epoch() }),
     };
     const workers = { runLua: vi.fn(), regex: vi.fn() };
     const deps = {
@@ -198,12 +200,13 @@ function holdMicrotasks() {
 describe("chat metadata coalescing", () => {
     it("coalesces 1 and 50 synchronous host setters into one write and adoption with immediate reads", async () => {
         const h = setup();
-        const adoption = vi.spyOn(h.store, "chatMeta");
+        // The adoption takes the stored metadata from the write's own change, not from a read.
+        const metadataRead = vi.spyOn(h.store, "chatMeta");
         const samples = [];
         for (const n of [1, 50]) {
             const before = h.store.chatRevision("c", "k")!;
             const oldMap = scopeChat(h.run.scope)!.scriptstate;
-            adoption.mockClear();
+            metadataRead.mockClear();
             vi.mocked(h.job.emitRecords).mockClear();
             h.resetCounts();
             for (let i = 0; i < n; i++) {
@@ -218,7 +221,7 @@ describe("chat metadata coalescing", () => {
             await Promise.resolve();
             expect(h.counts.transactions).toBe(1);
             expect(h.counts.messages).toBe(0);
-            expect(adoption).toHaveBeenCalledTimes(1);
+            expect(metadataRead).not.toHaveBeenCalled();
             expect(h.job.emitRecords).toHaveBeenCalledTimes(1);
             samples.push({ ...h.counts });
             expect(h.stored()).toMatchObject({
@@ -228,6 +231,97 @@ describe("chat metadata coalescing", () => {
             expect(h.run.scope.chatRevision).toBe(h.stored().revision);
         }
         expect(samples[1]).toEqual(samples[0]);
+    });
+
+    it("stores a non-finite Lua chat variable as the text a read returns and other values raw", async () => {
+        const h = setup();
+        const before = h.store.chatRevision("c", "k")!;
+        const sync = h.run.bindings.host.sync!;
+        const setRaw = (key: string, value: unknown) => sync.setChatVar(["id", key, value], h.run.nativeCtx);
+        const setChanged = (key: string, value: unknown) => sync.setChatVarChanged(["id", key, value], h.run.nativeCtx);
+        // Lua's 0/0 and math.huge arrive as JS numbers; JSON cannot hold them, and the store refuses them.
+        setRaw("nan", NaN);
+        expect(setChanged("inf", Infinity)).toBe(true);
+        // Finite numbers and booleans stay raw: reroll checkpoints compare them strictly.
+        setRaw("num", 5);
+        setRaw("flag", false);
+        expect(h.get("nan")).toBe("NaN");
+        await Promise.resolve();
+        expect(h.services.fence).not.toThrow();
+        expect(h.stored()).toMatchObject({
+            revision: revisionAfter(before, 1),
+            data: { scriptstate: { $old: "kept", $nan: "NaN", $inf: "Infinity", $num: 5, $flag: false } },
+        });
+        // The same values again compare equal to what is stored, so nothing is queued.
+        expect(setChanged("inf", Infinity)).toBeUndefined();
+        expect(setChanged("num", 5)).toBeUndefined();
+        await Promise.resolve();
+        expect(h.stored().revision).toBe(revisionAfter(before, 1));
+
+        // A trigger's triggerlua run writes through the trigger's working copy instead.
+        const written: [string, unknown][] = [];
+        const working = {
+            chat: scopeChat(h.run.scope)!,
+            getVar: () => "",
+            setVar: (key: string, value: string) => (written.push([key, value]), true),
+        };
+        await h.run.bindings.withWorking(working, async () => {
+            setRaw("nan", NaN);
+            setChanged("inf", -Infinity);
+            setRaw("num", 5);
+            setChanged("flag", true);
+        });
+        expect(written).toEqual([
+            ["nan", "NaN"],
+            ["inf", "-Infinity"],
+            ["num", 5],
+            ["flag", true],
+        ]);
+    });
+
+    it("stores a number or boolean Lua passes as message or local-lore text as its text", async () => {
+        const h = setup();
+        const sync = h.run.bindings.host.sync!;
+        const lore = (name: unknown, content: unknown) =>
+            sync.upsertLocalLoreBookMain(["id", name, content, "{}"], h.run.nativeCtx);
+        // Lua's 0/0 and math.huge arrive as JS numbers, which the store refuses as message text.
+        sync.setChat(["id", 0, NaN], h.run.nativeCtx);
+        sync.addChat(["id", "char", 42], h.run.nativeCtx);
+        sync.insertChat(["id", 0, "user", true], h.run.nativeCtx);
+        sync.addChat(["id", "char", -Infinity], h.run.nativeCtx);
+        lore("test", NaN);
+        lore(7, "first");
+        // The same number names the same entry, so it is replaced.
+        lore(7, Infinity);
+        await Promise.resolve();
+        expect(h.services.fence).not.toThrow();
+        const data = h.store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as {
+            message: { data: unknown }[];
+            localLore: { comment: unknown; content: unknown }[];
+        };
+        expect(data.message.map((message) => message.data)).toEqual(["true", "NaN", "42", "-Infinity"]);
+        expect(data.localLore.map((book) => [book.comment, book.content])).toEqual([
+            ["test", "NaN"],
+            ["7", "Infinity"],
+        ]);
+
+        // A trigger's triggerlua run writes the working copy, which the trigger applies at its end.
+        const chat = structuredClone(scopeChat(h.run.scope)!);
+        await h.run.bindings.withWorking({ chat, getVar: () => "", setVar: () => true }, async () => {
+            sync.setChat(["id", 0, Infinity], h.run.nativeCtx);
+            sync.insertChat(["id", 0, "user", NaN], h.run.nativeCtx);
+            sync.addChat(["id", "char", false], h.run.nativeCtx);
+            lore(NaN, 5);
+        });
+        expect(chat.message.map((message) => message.data)).toEqual([
+            "NaN",
+            "Infinity",
+            "NaN",
+            "42",
+            "-Infinity",
+            "false",
+        ]);
+        expect(chat.localLore?.map((book) => [book.comment, book.content])).toContainEqual(["NaN", "5"]);
     });
 
     it("coalesces one CBS evaluation and separates awaited command segments", async () => {
@@ -247,7 +341,6 @@ describe("chat metadata coalescing", () => {
             ctx: h.run.nativeCtx,
             character: () => h.run.scope.db.characters[0],
             runManualTrigger: async () => {},
-            multisend() {},
         });
         expect(
             await commands.processMultiCommand(
@@ -273,8 +366,8 @@ describe("chat metadata coalescing", () => {
         );
         expect(h.services.liveChat().note).toBe("pending note");
         const ops: ChatOp[] = [{ op: "meta", set: { name: "other field" } }];
-        const result = h.write(ops).chats[0];
-        refreshChatAfterWrite(h.store, h.run.scope, ops, result);
+        const applied = h.write(ops);
+        refreshChatAfterWrite(h.store, h.run.scope, applied.chats[0], applied.written?.chats[0]);
         expect(h.services.liveChat()).toMatchObject({
             name: "other field",
             note: "pending note",
@@ -398,7 +491,13 @@ describe("chat metadata coalescing", () => {
     it("silently discards a batch when the chat was deleted", async () => {
         const h = setup();
         h.set("x", "pending");
-        h.write([{ op: "delete" }]);
+        // A spare active chat lets `k` go to the trash and be deleted.
+        h.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
+        deleteChatThroughTrash(h.store, "c", "k");
         const writes = vi.spyOn(h.job, "write");
         await Promise.resolve();
         expect(() => flushChatMetadata(h.job)).not.toThrow();
@@ -482,7 +581,7 @@ describe("chat metadata coalescing", () => {
         expect(frozen.bindings.services.parse("{{getvar::display}}/{{getvar::live}}", null)).toBe("only/null");
     });
 
-    it("keeps the trigger result's whole-map replay after a concurrent key arrives", async () => {
+    it("keeps a variable another writer saved during the trigger run beside the trigger's own", async () => {
         const h = setup();
         const parse = h.services.parse;
         vi.spyOn(h.services, "parse").mockImplementation((text, ...args) => {
@@ -501,7 +600,7 @@ describe("chat metadata coalescing", () => {
             "manual",
             { manualName: "go" },
         );
-        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $x: "own" });
+        expect(h.stored().data.scriptstate).toEqual({ $old: "kept", $x: "own", $concurrent: "tab" });
         expect(h.stored().data.note).toBe("after");
     });
 

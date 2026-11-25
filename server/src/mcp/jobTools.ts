@@ -48,6 +48,10 @@ export type JobToolState = {
     llm: { active: number };
 };
 
+/**
+ * Allocate once per job, as `server/src/jobs/runSetup.ts` does: its runs share cached sets, the
+ * tool-call budget, and the one-at-a-time AI access counter rather than resetting them per request.
+ */
 export function createJobToolState(): JobToolState {
     return { sets: new Map(), attempts: 0, warned: false, llm: { active: 0 } };
 }
@@ -166,14 +170,21 @@ export function createJobTools(deps: {
             );
             return typeof code === "string" ? code : "";
         },
-        writeRefresh: (entry: McpRefresh) => {
+        writeRefresh: (entry: McpRefresh, previous?: McpRefresh) => {
             services.fence(ctx);
             try {
                 // Read again inside the build: the one retry of a conflict sees the stored list.
-                job.write(() => registry.refreshChanges(identifier, entry));
+                job.write(() => registry.refreshChanges(identifier, entry, previous));
             } catch (error) {
                 throw services.latch(error);
             }
+        },
+        writeRotatedRefresh(entry, previous) {
+            if (job.signal.aborted || ctx.signal.aborted) {
+                registry.writeRotatedRefresh(identifier, entry, previous, job.epoch);
+                return;
+            }
+            this.writeRefresh(entry, previous);
         },
     });
 

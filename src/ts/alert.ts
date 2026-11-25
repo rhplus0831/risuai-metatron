@@ -9,6 +9,14 @@ import type { GenerationTerminalEvent } from "../../shared/jobs.ts";
 import type { UpstreamImportReport } from "../../shared/upstreamBackup.ts";
 import { currentChatRef, type ChatRef } from "./storage/chatStore.svelte";
 
+/**
+ * Helpers over `src/ts/stores.svelte.ts`'s alert slot, a `createAlertQueue` from `src/ts/alertQueue.ts`.
+ * Dialog helpers queue dialogs; an awaited helper waits for its own dialog's answer. Status writes
+ * (`wait`, `toast`, `progress`) replace the status. Targets are captured before queuing: Branches'
+ * `chaId`, HypaV2's `chatRef`, and the requestdata message copy supplied by
+ * `src/lib/ChatScreens/Chat.svelte`. Terminal and reload notices have separate stores outside this slot.
+ */
+
 /** A server job's failure as the tab received it, for the error alert's debug actions. */
 export type JobFailureInfo = {
     jobId: string;
@@ -17,7 +25,9 @@ export type JobFailureInfo = {
     end: Extract<GenerationTerminalEvent, { type: "error" }>;
 };
 
+/** Dialog/status payload for src/lib/Others/AlertComp.svelte, including optional actions for the named variant. */
 export interface alertData {
+    /** Selects the dialog, popup or status rendered by AlertComp and its child components. */
     type:
         | "error"
         | "normal"
@@ -41,12 +51,29 @@ export interface alertData {
         | "progress"
         | "pluginconfirm"
         | "requestlogs"
-        | "upstreamImportReport";
+        | "upstreamImportReport"
+        | "realmTerms";
+    /** Display text or variant-specific encoded payload; `none` carries a dialog's answer. */
     msg: string;
+    /** `wait`: cancels the operation whose status is shown. */
+    onCancel?: () => void;
+    /**
+     * `error`: a hint; `progress`: a numeric percentage string without `%` (for example `50.00`);
+     * other text dialogs may show a subtitle.
+     */
     submsg?: string;
+    /** `input`: suggested [value, label] pairs. */
     datalist?: [string, string][];
+    /** `error`: the original stack before optional source-map translation. */
     stackTrace?: string;
+    /** `input`: the field's initial value. */
     defaultValue?: string;
+    /** `input`: a password or credential, whose keys must not reach plugins even when visible. */
+    secret?: boolean;
+    /** `ask`: optional checkbox; changed through the queue, never through store set/update. */
+    confirmCheckbox?: { label: string; checked: boolean };
+    /** `ask`: optional list of checkboxes, each changed through the queue like `confirmCheckbox`. */
+    confirmChecklist?: { id: string; label: string; checked: boolean }[];
     /** `error`: a server job's failure (`alertJobError`): "Copy debug info" and "Open in request history". */
     jobFailure?: JobFailureInfo;
     /** `requestlogs`: the job the request history opens filtered to. */
@@ -55,7 +82,7 @@ export interface alertData {
     generationInfo?: AlertGenerationInfo;
     /** `branches`: the character captured when the dialog was requested. */
     chaId?: string;
-    /** `hypaV2`: the chat captured when the dialog was requested. */
+    /** `hypaV2`, `chatOptions`: the chat captured when the dialog was requested. */
     chatRef?: ChatRef;
     /** `none` between two dialogs: the next one is queued and shows after the gap (`alertQueue.ts`). */
     dialogPending?: boolean;
@@ -71,9 +98,9 @@ type AlertGenerationInfo = {
     message?: DeepReadonly<Message>;
 };
 /**
- * Writes to the alert slot (`stores.svelte.ts`): status types (`wait`, `progress`, `toast`) replace
- * the status, other types queue a dialog, and `none` closes the dialog shown (its own close only; a
- * status writer ends its status with `alertClear`).
+ * Set-only facade for `src/ts/stores.svelte.ts`'s alert store. Status types replace status; other
+ * non-`none` types queue dialogs. `none` answers the visible dialog, or clears status when none is
+ * visible. Status producers must use `alertClear()` so they cannot dismiss an intervening dialog.
  */
 export const alertStore = {
     set: (d: alertData) => {
@@ -109,8 +136,9 @@ export function openAlertDialog<T>(open: () => T): { value: T; dialog: AlertDial
     }
 }
 
-export function alertError(msg: string | Error) {
-    const data = errorAlert(msg);
+/** Queues an error dialog with an Error's stack, suppressing "{}". A user cancellation can omit the error log. */
+export function alertError(msg: string | Error, { log = true } = {}) {
+    const data = errorAlert(msg, log);
     if (data) {
         void openDialog(data);
     }
@@ -118,18 +146,38 @@ export function alertError(msg: string | Error) {
 
 /**
  * A server job's error: the message as `alertError` shows it, with the job's failure fields for the
- * alert's debug actions. `at`: when the tab received the job's end.
+ * alert's debug actions. `at` is when the tab received the job's end.
  */
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
-    const data = errorAlert(end.message);
+    const message = jobErrorText(end);
+    if (message === null) return;
+    const data = errorAlert(message);
     if (data) {
         void openDialog({ ...data, jobFailure: { jobId, at, end } });
     }
 }
 
+/** A job's main error message, without its network hint or debug info; null for an ignored message. */
+export function jobErrorText(end: JobFailureInfo["end"]): string | null {
+    let translated = end.message;
+    if (end.code === "memoryRecordSkipped") {
+        const reasons = language.memoryTasks.reasons;
+        translated = language.structuredMemory.receipt.recordSkipped(
+            Object.hasOwn(reasons, end.message) ? reasons[end.message] : "",
+        );
+    }
+    return errorReportText(translated);
+}
+
+/** The main text an error alert displays, or null when that message is suppressed. */
+export function errorReportText(message: string): string | null {
+    const text = message.trim();
+    return text === "{}" ? null : text;
+}
+
 /** The `error` alert of `msg` (known errors get their hint), or null for one that is not shown. */
-function errorAlert(msg: string | Error): alertData | null {
-    console.error(msg);
+function errorAlert(msg: string | Error, log = true): alertData | null {
+    if (log) console.error(msg);
 
     let stackTrace: string | undefined = undefined;
 
@@ -146,13 +194,9 @@ function errorAlert(msg: string | Error): alertData | null {
         }
     }
 
-    msg = msg.trim();
-
-    const ignoredErrors = ["{}"];
-
-    if (ignoredErrors.includes(msg)) {
-        return null;
-    }
+    const text = errorReportText(msg);
+    if (text === null) return null;
+    msg = text;
 
     let submsg = "";
 
@@ -174,12 +218,12 @@ export async function waitAlert() {
     await alertStoreImported.idle();
 }
 
+const terminalNoticeStore = writable<string | null>(null);
 /**
  * The notice the page ends on (a restore replaced the server data, and the page reloads once it is
- * acknowledged): a modal dialog (`TerminalNotice.svelte`) above every other alert and overlay. No
+ * acknowledged): a modal dialog (`src/lib/Others/TerminalNotice.svelte`) above every other alert and overlay. No
  * other alert replaces or clears it, and Escape does not close it; only its own OK acknowledges it.
  */
-const terminalNoticeStore = writable<string | null>(null);
 export const terminalNotice = readonly(terminalNoticeStore);
 let terminalPending: Promise<void> | null = null;
 let acknowledgeTerminal: (() => void) | null = null;
@@ -216,30 +260,31 @@ export function acknowledgeTerminalNotice() {
     acknowledgeTerminal?.();
 }
 
+const reloadNoticeStore = writable<string | null>(null);
+const pendingReloadNotices: string[] = [];
 /**
  * The save adapter's "another tab or device changed this data, your change was replaced" notice: a
- * panel (`ReloadNotice.svelte`) outside `alertStore`, so no other alert (a progress `wait`, a
+ * panel (`src/lib/Others/ReloadNotice.svelte`) outside `alertStore`, so no other alert (a progress `wait`, a
  * toast, an error, `alertClear`) replaces or hides it. It stays until the user dismisses it.
  */
-const reloadNoticeStore = writable<string | null>(null);
 export const reloadNotice = readonly(reloadNoticeStore);
 
-/**
- * Shows `msg` as the reload notice. Latched until dismissed: while a notice is shown, another call
- * keeps it (one notice per episode on screen); after `dismissReloadNotice`, the next call shows it
- * again.
- */
+/** Keep the visible notice until dismissal and queue each distinct reason that arrives meanwhile. */
 export function alertReloadNotice(msg: string) {
-    if (get(reloadNoticeStore) === null) {
+    const visible = get(reloadNoticeStore);
+    if (visible === null) {
         reloadNoticeStore.set(msg);
+    } else if (visible !== msg && !pendingReloadNotices.includes(msg)) {
+        pendingReloadNotices.push(msg);
     }
 }
 
-/** Dismisses the reload notice (its OK button); nothing when none is shown. */
+/** Dismisses the visible reason and shows the next one, if any. */
 export function dismissReloadNotice() {
-    reloadNoticeStore.set(null);
+    reloadNoticeStore.set(pendingReloadNotices.shift() ?? null);
 }
 
+/** Queues a plain-text notice without waiting for its dismissal. */
 export function alertNormal(msg: string) {
     void openDialog({
         type: "normal",
@@ -247,6 +292,7 @@ export function alertNormal(msg: string) {
     });
 }
 
+/** Queues a plain-text notice and resolves without a value when that dialog closes. */
 export async function alertNormalWait(msg: string) {
     await openDialog({
         type: "normal",
@@ -254,6 +300,7 @@ export async function alertNormalWait(msg: string) {
     });
 }
 
+/** Resolves with the add-character action token, "cancel" from its button, or "" on Escape. */
 export async function alertAddCharacter() {
     return await openDialog({
         type: "addchar",
@@ -261,15 +308,18 @@ export async function alertAddCharacter() {
     });
 }
 
-export async function alertChatOptions() {
+/** Resolves with the chosen option's numeric index, or NaN on cancellation. */
+export async function alertChatOptions(ref?: ChatRef) {
     const result = await openDialog({
         type: "chatOptions",
         msg: language.chatOptions,
+        chatRef: ref,
     });
 
     return parseInt(result);
 }
 
+/** Encodes options with `||` and an optional `__DISPLAY__<display>||` prefix; resolves with an index string or "". */
 export async function alertSelect(msg: string[], display?: string) {
     const message = display !== undefined ? `__DISPLAY__${display}||${msg.join("||")}` : msg.join("||");
     return await openDialog({
@@ -278,6 +328,7 @@ export async function alertSelect(msg: string[], display?: string) {
     });
 }
 
+/** Queues the legacy `wait2` dialog and resolves without a value when it closes; it is not a status. */
 export async function alertErrorWait(msg: string) {
     await openDialog({
         type: "wait2",
@@ -285,6 +336,7 @@ export async function alertErrorWait(msg: string) {
     });
 }
 
+/** Queues a Markdown notice rendered by src/lib/Others/AlertComp.svelte without waiting for dismissal. */
 export function alertMd(msg: string) {
     void openDialog({
         type: "markdown",
@@ -300,6 +352,10 @@ export function doingAlert() {
     return alertStoreImported.hasDialogs() || get(alertStoreImported).type === "progress";
 }
 
+/**
+ * Replaces the status; `onInstall` receives the exact object before installation, for cleanup with
+ * `src/ts/stores.svelte.ts`'s `alertStore.clearStatus(expected)` without clearing a newer status.
+ */
 export function alertToast(msg: string, onInstall?: (status: alertData) => void) {
     const data: alertData = {
         type: "toast",
@@ -309,20 +365,26 @@ export function alertToast(msg: string, onInstall?: (status: alertData) => void)
     alertStoreImported.set(data);
 }
 
-export function alertWait(msg: string, onInstall?: (status: alertData) => void) {
+/**
+ * Shows a wait with an optional Cancel button. `onInstall` receives the exact status before installation
+ * so the caller can retire its most recent update with `alertClear(expected)`.
+ */
+export function alertWait(msg: string, onInstall?: (status: alertData) => void, onCancel?: () => void) {
     const data: alertData = {
         type: "wait",
         msg: msg,
+        ...(onCancel && { onCancel }),
     };
     onInstall?.(data);
     alertStoreImported.set(data);
 }
 
-/** Clears the status (a `wait`, `progress` or toast); a dialog shown or queued stays. */
-export function alertClear() {
-    alertStoreImported.clearStatus();
+/** Clears the status, optionally only the exact one installed by the caller. A dialog shown or queued stays. */
+export function alertClear(expected?: alertData) {
+    alertStoreImported.clearStatus(expected);
 }
 
+/** Resolves with the selected non-group character's `chaId`, or "" on Escape. */
 export async function alertSelectChar() {
     return await openDialog({
         type: "selectChar",
@@ -330,6 +392,7 @@ export async function alertSelectChar() {
     });
 }
 
+/** Queues a yes/no confirmation; resolves true only for the answer "yes", false for any other close. */
 export async function alertConfirm(msg: string) {
     const result = await openDialog({
         type: "ask",
@@ -339,6 +402,33 @@ export async function alertConfirm(msg: string) {
     return result === "yes";
 }
 
+/** One confirmation returning both the answer and its checkbox state, including on cancellation. */
+export async function alertConfirmWithCheckbox(
+    msg: string,
+    label: string,
+    checked = true,
+): Promise<{ confirmed: boolean; checked: boolean }> {
+    const checkbox = { label, checked };
+    const result = await openDialog({ type: "ask", msg, confirmCheckbox: checkbox });
+    return result.startsWith("{") ? JSON.parse(result) : { confirmed: false, checked: checkbox.checked };
+}
+
+/** One confirmation over a list of checkboxes, returning the answer and the checked ids, including on cancellation. */
+export async function alertConfirmWithChecklist(
+    msg: string,
+    items: readonly { id: string; label: string; checked: boolean }[],
+): Promise<{ confirmed: boolean; checked: string[] }> {
+    const checklist = items.map((item) => ({ ...item }));
+    const result = await openDialog({ type: "ask", msg, confirmChecklist: checklist });
+    return result.startsWith("{")
+        ? JSON.parse(result)
+        : { confirmed: false, checked: checklist.filter((item) => item.checked).map((item) => item.id) };
+}
+
+/**
+ * Queues Plugin Import confirmation; true only for "yes". src/lib/Others/AlertComp.svelte reads msg
+ * as a plugin name and newline-separated warnings, then a blank line and the confirmation text.
+ */
 export async function alertPluginConfirm(msg: string) {
     const result = await openDialog({
         type: "pluginconfirm",
@@ -348,6 +438,25 @@ export async function alertPluginConfirm(msg: string) {
     return result === "yes";
 }
 
+/**
+ * The RisuRealm terms dialog (`realmTerms.ts` `ensureRealmTerms`): RisuAI's Terms of Service and
+ * Privacy Policy with Accept and Decline. Resolves true only for Accept; any other close declines.
+ * `src/ts/hotkey.ts` gives it no Enter shortcut (a focused button can still activate); Escape answers "".
+ */
+export async function alertRealmTerms() {
+    const result = await openDialog({
+        type: "realmTerms",
+        msg: "",
+    });
+
+    return result === "yes";
+}
+
+/**
+ * Character export choice; an empty answer (including Escape) becomes `{ type: "cancel", type2: "" }`.
+ * The close button in `src/lib/Others/AlertComp.svelte` keeps its selected `type2`; the caller in
+ * `src/ts/characterCards.ts` ignores the format when `type` is "cancel".
+ */
 export async function alertCardExport() {
     const result = await openDialog({
         type: "cardexport",
@@ -362,15 +471,23 @@ export async function alertCardExport() {
     };
 }
 
-export async function alertInput(msg: string, datalist?: [string, string][], defaultValue?: string) {
+/** Resolves with the input's value, or "" on Escape. */
+export async function alertInput(
+    msg: string,
+    datalist?: [string, string][],
+    defaultValue?: string,
+    options?: { secret?: boolean },
+) {
     return await openDialog({
         type: "input",
         msg: msg,
         datalist: datalist ?? [],
         defaultValue: defaultValue ?? "",
+        ...(options?.secret ? { secret: true } : {}),
     });
 }
 
+/** Resolves with the selected module's id, or "" when closed without picking one. */
 export async function alertModuleSelect() {
     return await openDialog({
         type: "selectModule",
@@ -387,6 +504,11 @@ export function alertRequestData(info: AlertGenerationInfo) {
     });
 }
 
+/**
+ * Captures `currentChatRef()` before queuing. `src/lib/Others/AlertComp.svelte` reads `findChat(ref)`
+ * and writes `setChatMeta(ref, ...)`; while the chat is unloaded or lacks HypaV2 data, it renders no
+ * editor and writes nothing.
+ */
 export function showHypaV2Alert() {
     void openDialog({
         type: "hypaV2",

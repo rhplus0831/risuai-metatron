@@ -11,6 +11,7 @@
     import { ChevronDownIcon } from "@lucide/svelte";
     import { alertConfirm, alertError } from "src/ts/alert";
     import { exportChat } from "src/ts/characters";
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import { downloadFile, openPinnedChat } from "src/ts/globalApi.svelte";
     import { DynamicGUI, gridOpenStore, settingsOpen, sideBarStore } from "src/ts/stores.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
@@ -18,6 +19,14 @@
     import { characterData, recordData, type RecordKind } from "src/ts/storage/records.svelte";
     import { discardRefused, refusedItems, retryRefused, type RefusedItem } from "src/ts/storage/resourceSync.svelte";
     import { refusedItemsFor, refusedRecordExportText, type RefusedRecordItem } from "./refusedData";
+
+    /**
+     * The save adapter's refused writes (`refusedItems`, `src/ts/storage/resourceSync.svelte.ts`) in two forms: the
+     * `chat` form, mounted by `src/lib/ChatScreens/DefaultChatScreen.svelte` for its displayed chat, and the `app`
+     * pill, mounted by `src/App.svelte`. A mounted chat form registers its chat key and the app form leaves that
+     * chat's refusal out until it unmounts, so settings, home, or a loading chat hands the refusal back to the app
+     * list. Rows resolve their chats through `chatEntry`, so a chat that is not loaded still has its name.
+     */
 
     type Props = { form: "chat"; chaId: string; chatId: string } | { form: "app" };
 
@@ -84,7 +93,7 @@
     async function exportItem(item: RefusedItem) {
         try {
             if (item.kind === "chat") {
-                if (chatEntry(item)) await exportChat(item.chatId);
+                if (chatEntry(item)) await exportChat({ chaId: item.chaId, chatId: item.chatId });
             } else if (item.kind === "record") {
                 const text = refusedRecordExportText(item, localRecord(item));
                 if (text !== undefined) {
@@ -148,7 +157,7 @@
                     <p class="whitespace-pre-wrap text-textcolor2" data-risu-refused-reason>{item.reason}</p>
                 </div>
                 <div class="flex flex-wrap gap-1">
-                    {#if hasLocal && item.kind === "chat" && props.form === "app"}
+                    {#if hasLocal && item.kind === "chat" && props.form === "app" && !isArchivedGroup(findCharacter(item.chaId))}
                         <button
                             type="button"
                             disabled={busy}

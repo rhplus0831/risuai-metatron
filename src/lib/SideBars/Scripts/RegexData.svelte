@@ -4,6 +4,7 @@
     import { ReloadGUIPointer } from "src/ts/stores.svelte";
     import { alertConfirm } from "src/ts/alert";
     import type { customscript } from "src/ts/storage/database.svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import Check from "../../UI/GUI/CheckInput.svelte";
     import TextInput from "../../UI/GUI/TextInput.svelte";
     import TextAreaInput from "../../UI/GUI/TextAreaInput.svelte";
@@ -11,16 +12,51 @@
     import OptionInput from "../../UI/GUI/OptionInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
+    import { onDestroy } from "svelte";
+
+    /**
+     * Edits one regex script, offering `editinput`, `editoutput`, `editprocess`, `editdisplay`,
+     * `edittrans`, and `disabled`. Flags are native `g/i/m/u/s` plus `<move_top>`, `<move_bottom>`,
+     * `<repeat_back>`, `<cbs>`, and `<no_end_nl>`; the order input writes `<order n>`.
+     * Execution gates custom flags on `ableFlag` in `shared/scripts/regex.ts`; its cache key
+     * still expands a literal `<cbs>` input regardless of `ableFlag`.
+     */
 
     interface Props {
         value: customscript;
-        onRemove?: () => void;
+        onRemove?: (row: symbol) => void;
         onClose?: () => void;
         onOpen?: () => void;
         idx: number;
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable(), onRemove = () => {}, onClose = () => {}, onOpen = () => {}, idx }: Props = $props();
+    let {
+        value = $bindable(),
+        onRemove = () => {},
+        onClose = () => {},
+        onOpen = () => {},
+        idx,
+        popupEditorContext = undefined,
+    }: Props = $props();
+    let destroyed = false;
+    onDestroy(() => (destroyed = true));
+
+    // The owner alone cannot distinguish same-text scripts after a remote reorder.
+    let cachedPopupEditorContext: { owner: unknown; row: symbol } | undefined;
+    const rowPopupEditorContext = $derived.by(() => {
+        const owner = popupEditorContext;
+        const row = recordValueIdentity(value);
+        // Keep popup write-back callbacks when a parent rebuild retains this backing row.
+        if (
+            !cachedPopupEditorContext ||
+            !Object.is(cachedPopupEditorContext.owner, owner) ||
+            cachedPopupEditorContext.row !== row
+        ) {
+            cachedPopupEditorContext = { owner, row };
+        }
+        return cachedPopupEditorContext;
+    });
 
     const checkFlagContain = (flag: string, matchFlag: string) => {
         if (flag.length === 1) {
@@ -94,12 +130,13 @@
         <button
             class="valuer"
             onclick={async () => {
+                const context = rowPopupEditorContext;
                 const d = await alertConfirm(language.removeConfirm + value.comment);
-                if (d) {
+                if (d && !destroyed && context === rowPopupEditorContext) {
                     if (!open) {
                         onClose();
                     }
-                    onRemove();
+                    onRemove(context.row);
                 }
             }}
         >
@@ -138,6 +175,7 @@
                 autocomplete="off"
                 size="sm"
                 bind:value={value.out}
+                popupEditorContext={rowPopupEditorContext}
                 onInput={(e) => {
                     $ReloadGUIPointer += 1;
                 }}

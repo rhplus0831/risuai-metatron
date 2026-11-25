@@ -1,2 +1,5 @@
-// Moved to `shared/localNetwork.ts` (the server request layer uses it too).
+/**
+ * Client import surface for the host policy in `shared/localNetwork.ts`, shared with server requests.
+ */
+
 export * from "../../../shared/localNetwork.ts";

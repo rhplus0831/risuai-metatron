@@ -3,6 +3,13 @@ import type { LLMModel } from "../llm.ts";
 import { imageTokens, NON_IMAGE_TOKENS } from "./imageTokens.ts";
 
 /**
+ * Shared chat-token arithmetic with text counts and model settings supplied by a host.
+ * `src/ts/tokenizer.ts` supplies server-backed tab counts; server prompt hosts supply their own counters. Message
+ * overhead is always added, names and explicitly requested thoughts cost an extra token each, and unsupported
+ * multimodals use message overhead rather than image rules. `tokenizeChats` leaves thought counting disabled.
+ */
+
+/**
  * A prompt's token arithmetic, shared by the client (`ChatTokenizer`) and the server: each
  * message's text plus `chatAdditionalTokens`, its name, its thoughts, and model-specific images.
  */
@@ -18,6 +25,14 @@ export type ChatTokenHost = {
     gptVisionQuality: () => string | undefined;
 };
 
+/**
+ * A prompt's token arithmetic over `ChatTokenHost.count`. While the host's model takes no inlay images
+ * (`supportsInlayImage` false) every multimodal entry counts as `chatAdditionalTokens`; only otherwise are `mainModel`
+ * (the resolved main `LLMModel`) and `requestModel` (the selected OpenRouter/NanoGPT wire id, otherwise undefined)
+ * read. The production hosts (`src/ts/tokenizer.ts` `ChatTokenizer`, `server/src/prompt/runner.ts`,
+ * `server/src/prompt/memory/memoryTaskHost.ts`) supply both; a count-only host may omit them and gets the
+ * unknown-model fallback.
+ */
 export class ChatTokenCounter {
     private host: ChatTokenHost;
 

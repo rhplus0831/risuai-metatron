@@ -1,8 +1,13 @@
 // @vitest-environment node
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
-import { MAX_FEED_PATCH_BYTES } from "../../../shared/resources.ts";
+import { MAX_FEED_PATCH_BYTES, MAX_FEED_PUBLICATION_PATCH_BYTES } from "../../../shared/resources.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import {
@@ -15,6 +20,8 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 
 // The publisher of the live updates: the resource store publishes one change set per committed
 // outer write (`put`, `delete`, `applyChanges`, `transaction`) after the commit, with side effects
@@ -29,9 +36,13 @@ const plugins = kinds.get("plugins")!;
 const ui = kinds.get("ui")!;
 
 const stores: ResourceStore[] = [];
+const dirs: string[] = [];
 afterEach(() => {
     for (const store of stores.splice(0)) {
         store.close();
+    }
+    for (const dir of dirs.splice(0)) {
+        rmSync(dir, { recursive: true, force: true });
     }
     vi.restoreAllMocks();
 });
@@ -51,6 +62,185 @@ const chatCreate = (id: string, messages: { chatId: string; data: string; role: 
 const empty = { resources: [], chats: [], chatOrders: [] };
 
 describe("the change feed", () => {
+    it("keeps the trash mark on a coalesced live entry even when its summary exceeds the publication budget", () => {
+        const { store, events } = setup();
+        const ref = { characterId: "c", chatId: "k" };
+        const id = { characterId: "c", id: "k" };
+        store.put(characters, "c", { chaId: "c" }, null);
+        store.applyChanges({
+            chats: ["k", "spare"].map((chatId) => ({
+                ...ref,
+                chatId,
+                baseRevision: null,
+                ops: [chatCreate(chatId)],
+            })),
+        });
+        const entries = () => events.flatMap((event) => (event.type === "change" ? event.changes.chats : []));
+        const stamp = Date.UTC(2026, 4, 1);
+        vi.useFakeTimers({ toFake: ["Date"], now: stamp });
+        try {
+            const change = (action: "trash" | "restore" | "delete", held = false) =>
+                store.changeChatTrash(
+                    action,
+                    { ...ref, revision: store.chatRevision("c", "k")! },
+                    store.epoch(),
+                    () => held,
+                );
+            events.length = 0;
+            const small = change("trash");
+            expect(entries()).toMatchObject([
+                {
+                    ...id,
+                    revision: small.revision,
+                    trashedAt: stamp,
+                    summary: { ...id, revision: small.revision, trashedAt: stamp, name: "k" },
+                },
+            ]);
+            const active = change("restore");
+            events.length = 0;
+            // Two commits in the same publication, as happens when a nested write joins an outer one.
+            store.applyChanges({
+                get chats() {
+                    store.applyChanges({
+                        chats: [
+                            {
+                                ...ref,
+                                baseRevision: active.revision,
+                                ops: [{ op: "meta", set: { name: "x".repeat(MAX_FEED_PUBLICATION_PATCH_BYTES) } }],
+                            },
+                        ],
+                    });
+                    change("trash");
+                    return [];
+                },
+            });
+            const marked = store.chatRevision("c", "k")!;
+            expect(events).toHaveLength(1);
+            expect(entries()).toEqual([{ ...id, revision: marked, trashedAt: stamp }]);
+            const writes = store.writeCount();
+            events.length = 0;
+            expect(change("trash", true)).toMatchObject({ revision: marked, trashedAt: stamp });
+            expect(change("delete", true)).toMatchObject({ error: "generating", revision: marked });
+            expect(store.writeCount()).toBe(writes);
+            expect(events).toEqual([]);
+            const restored = change("restore", true);
+            expect(restored).toMatchObject({ ...id, trashedAt: null });
+            expect(events).toHaveLength(1);
+            expect(entries()).toMatchObject([{ ...id, revision: restored.revision, trashedAt: null }]);
+            events.length = 0;
+            const restoredWrites = store.writeCount();
+            expect(change("restore", true)).toEqual(restored);
+            expect(store.writeCount()).toBe(restoredWrites);
+            expect(events).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("coalesces summary knowledge across writes and nested scopes at the final revision", () => {
+        // `last: "deletion"`: the chat is trashed and permanently deleted after `first`, ending as a tombstone.
+        const cases: {
+            first: ChatOp;
+            last: ChatOp | "deletion";
+            known: "summary" | "base" | "unknown";
+            name?: string;
+        }[] = [
+            {
+                first: { op: "meta", set: { name: "Renamed" } },
+                last: { op: "setText", id: "m", text: "checkpoint" },
+                known: "summary",
+                name: "Renamed",
+            },
+            {
+                first: { op: "setText", id: "m", text: "one" },
+                last: { op: "setText", id: "m", text: "two" },
+                known: "base",
+            },
+            {
+                first: { op: "meta", set: { name: "First" } },
+                last: { op: "meta", set: { name: "Last" } },
+                known: "summary",
+                name: "Last",
+            },
+            {
+                first: { op: "meta", set: { name: "First" } },
+                last: { op: "replace", chat: { id: "k", name: "Unknown", note: "", localLore: [], message: [] } },
+                known: "unknown",
+            },
+            {
+                first: {
+                    op: "replace",
+                    chat: {
+                        id: "k",
+                        name: "Unknown",
+                        note: "",
+                        localLore: [],
+                        message: [{ chatId: "m", data: "M", role: "char" }],
+                    },
+                },
+                last: { op: "setText", id: "m", text: "two" },
+                known: "unknown",
+            },
+            { first: { op: "meta", set: { name: "First" } }, last: "deletion", known: "unknown" },
+        ];
+        for (const nested of [false, true])
+            for (const { first, last, known, name } of cases) {
+                const { store, events } = setup();
+                store.put(characters, "c", { chaId: "c" }, null);
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [chatCreate("k", [{ chatId: "m", data: "M", role: "char" }])],
+                        },
+                        // Another active chat lets `k` go to the trash.
+                        { characterId: "c", chatId: "j", baseRevision: null, ops: [chatCreate("j")] },
+                    ],
+                });
+                const base = store.chatRevision("c", "k");
+                const group = (op: ChatOp) => ({
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: store.chatRevision("c", "k"),
+                    ops: [op],
+                });
+                events.length = 0;
+                // Input evaluation supplies independently committed writes in one publication scope. A
+                // deletion has no batch form, so it always commits inside the scope.
+                store.applyChanges({
+                    get chats() {
+                        store.applyChanges({ chats: [group(first)] });
+                        if (last === "deletion") deleteChatThroughTrash(store, "c", "k");
+                        else if (nested) store.applyChanges({ chats: [group(last)] });
+                        expect(events).toEqual([]);
+                        return nested || last === "deletion" ? [] : [group(last)];
+                    },
+                });
+                const revision = store.chatRevision("c", "k");
+                expect(events).toHaveLength(1);
+                const event = events[0];
+                if (event.type !== "change") throw new Error("expected a committed change");
+                expect(
+                    event.changes.chats,
+                    `${nested}: ${first.op} then ${last === "deletion" ? last : last.op}`,
+                ).toEqual([
+                    {
+                        characterId: "c",
+                        id: "k",
+                        revision,
+                        // A tombstone carries no trash mark.
+                        ...(revision === null ? {} : { trashedAt: null }),
+                        ...(known === "base" ? { summaryBase: base } : {}),
+                        ...(known === "summary"
+                            ? { summary: { characterId: "c", id: "k", revision, name, fmIndex: -1 } }
+                            : {}),
+                    },
+                ]);
+            }
+    });
+
     it("delivers reentrant publications to every listener in publish order even when a listener throws", () => {
         const logged = vi.spyOn(console, "error").mockImplementation(() => {});
         const feed = createChangeFeed();
@@ -109,6 +299,86 @@ describe("the change feed", () => {
 });
 
 describe("the store publishes committed changes", () => {
+    it("logs independent nested commits once and publishes their newest cursor even when the enclosing write fails", () => {
+        for (const outcome of ["commit", "input throw", "rollback"] as const) {
+            const { store, events } = setup();
+            const epoch = store.epoch();
+            const before = store.get(ui, "main")!;
+            let nested!: string;
+            const write = () =>
+                store.applyChanges({
+                    get ops() {
+                        nested = store.put(modules, "main", [], null).revision;
+                        expect(store.cursor()).toBe(1);
+                        expect(store.listChanges(0, 1, epoch)).toEqual({
+                            epoch,
+                            cursor: 1,
+                            changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: nested }] },
+                        });
+                        expect(events).toEqual([]);
+                        if (outcome === "input throw") throw new Error("input failed");
+                        return [
+                            { kind: ui, id: "main", baseRevision: before.revision, data: { language: "de" } },
+                            ...(outcome === "rollback"
+                                ? [{ kind: modules, id: "main", baseRevision: null, data: [] }]
+                                : []),
+                        ];
+                    },
+                });
+            if (outcome === "commit") write();
+            else expect(write).toThrow(outcome === "input throw" ? "input failed" : ResourceBatchConflictError);
+            const cursor = outcome === "commit" ? 2 : 1;
+            const resources = [
+                { kind: "modules", id: "main", revision: nested },
+                ...(outcome === "commit"
+                    ? [{ kind: "ui", id: "main", revision: store.get(ui, "main")!.revision }]
+                    : []),
+            ];
+            expect(store.cursor()).toBe(cursor);
+            expect(store.listChanges(0, cursor, epoch)).toEqual({ epoch, cursor, changes: { ...empty, resources } });
+            expect(events).toEqual([{ type: "change", epoch, cursor, changes: { ...empty, resources } }]);
+        }
+    });
+
+    it("keeps each publication's committed cursor during reentrant writes and omits it from streaming-only frames", () => {
+        const { store, feed, events } = setup();
+        let nested = false;
+        feed.subscribe((event) => {
+            if (event.type === "change" && !nested) {
+                nested = true;
+                store.put(plugins, "main", [], null);
+            }
+        });
+        const observed: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => observed.push(event));
+        store.put(modules, "main", [], null);
+        expect(store.cursor()).toBe(2);
+        expect(observed).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: 1,
+                changes: {
+                    ...empty,
+                    resources: [{ kind: "modules", id: "main", revision: store.get(modules, "main")!.revision }],
+                },
+            },
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: 2,
+                changes: {
+                    ...empty,
+                    resources: [{ kind: "plugins", id: "main", revision: store.get(plugins, "main")!.revision }],
+                },
+            },
+        ]);
+        const streaming = [{ characterId: "c", id: "k", streaming: [] }];
+        store.publishStreaming(streaming);
+        expect(events.at(-1)).toEqual({ type: "change", epoch: store.epoch(), changes: empty, streaming });
+        expect(store.cursor()).toBe(2);
+    });
+
     it("publishes an independently committed input write when the outer batch throws or rolls back", () => {
         for (const failure of ["input throw", "transaction rollback"] as const) {
             const { store, events } = setup();
@@ -134,6 +404,7 @@ describe("the store publishes committed changes", () => {
                 {
                     type: "change",
                     epoch: store.epoch(),
+                    cursor: expect.any(Number),
                     changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: nestedRevision }] },
                 },
             ]);
@@ -156,6 +427,7 @@ describe("the store publishes committed changes", () => {
         expect(events[0]).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: created }] },
         });
         expect(observed[0]).toBe(created);
@@ -165,6 +437,7 @@ describe("the store publishes committed changes", () => {
         expect(events.at(-1)).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: { ...empty, resources: [{ kind: "modules", id: "main", revision: updated }] },
         });
     });
@@ -188,6 +461,7 @@ describe("the store publishes committed changes", () => {
         expect(events.at(-1)).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: {
                 resources: [{ kind: "characters", id: "c", revision: created }],
                 chats: [],
@@ -234,12 +508,14 @@ describe("the store publishes committed changes", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [{ kind: "characters", id: "c", revision: applied.results[0].revision }],
                     chats: applied.chats.map((chat) => ({
                         characterId: "c",
                         id: chat.id,
                         revision: chat.revision,
+                        trashedAt: null,
                     })),
                     // The order the character's create made, then the creates: one entry, the final revision.
                     chatOrders: [{ characterId: "c", revision: order.revision }],
@@ -263,6 +539,7 @@ describe("the store publishes committed changes", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [],
                     chats: [
@@ -270,7 +547,10 @@ describe("the store publishes committed changes", () => {
                             characterId: "c",
                             id: "k",
                             revision: reordered.chats[0].revision,
+                            trashedAt: null,
                             patch: { baseRevision: k, messages: [{ after: null, message: stored[0] }], count: 1 },
+                            // The text write leaves the summary as it was at the base.
+                            summaryBase: k,
                         },
                     ],
                     chatOrders: [{ characterId: "c", revision: reordered.chatOrders[0].revision }],
@@ -379,6 +659,7 @@ describe("the store publishes committed changes", () => {
         expect(events[0]).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: {
                 resources: [
                     { kind: "modules", id: "main", revision: store.get(modules, "main")!.revision },
@@ -430,7 +711,7 @@ describe("the store publishes committed changes", () => {
         expect(events).toHaveLength(1);
     });
 
-    it("publishes `replaceAll`'s new epoch after it is installed, and later changes carry it", () => {
+    it("publishes `replaceAll`'s new epoch after it is installed, and later changes carry it", async () => {
         const { feed, store, events } = setup();
         const before = store.epoch();
         const installed: string[] = [];
@@ -439,7 +720,11 @@ describe("the store publishes committed changes", () => {
                 installed.push(store.epoch());
             }
         });
-        const next = store.replaceAll({ rows: [], chats: [], messages: [], chatOrders: [] } as never);
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-change-feed-"));
+        dirs.push(dir);
+        const backup = path.join(dir, "empty.sqlite");
+        await store.backupTo(backup);
+        const next = await installSnapshot(store, backup, kinds);
         expect(next).not.toBe(before);
         expect(events.filter((event) => event.type === "epoch")).toEqual([{ type: "epoch", epoch: next }]);
         expect(installed).toEqual([next]);
@@ -464,7 +749,9 @@ describe("the store publishes committed changes", () => {
             ]),
         );
         expect(listing.resources.every((entry) => Object.keys(entry).sort().join() === "id,kind,revision")).toBe(true);
-        expect(listing.chats).toEqual([{ characterId: "c", id: "k", revision: applied.chats[0].revision }]);
+        expect(listing.chats).toEqual([
+            { characterId: "c", id: "k", revision: applied.chats[0].revision, trashedAt: null },
+        ]);
         expect(listing.chatOrders).toEqual([
             {
                 characterId: "c",
@@ -680,7 +967,7 @@ describe("field patches in the feed", () => {
         expect(store.get(characters, "c")).toEqual(before);
         expect(store.chatMeta("c", "k")!.data.name).toBe("K2");
 
-        // A character patch (a send job's stamp) publishes the one field over the normalized record.
+        // A character field patch (a client's save) publishes the one field over the normalized record.
         const stamped = store.applyChanges(
             {
                 ops: [
@@ -698,6 +985,7 @@ describe("field patches in the feed", () => {
             {
                 type: "change",
                 epoch: store.epoch(),
+                cursor: expect.any(Number),
                 changes: {
                     resources: [
                         {
@@ -942,6 +1230,492 @@ describe("item patches in the feed", () => {
     });
 });
 
+describe("the publication patch budget", () => {
+    const plain: ResourceKind = { name: "plain", schemaVersion: 1, normalize: (input) => input };
+    const list: ResourceKind = { name: "list", schemaVersion: 1, normalize: (input) => input };
+    const nearCap = 60 * 1024;
+    const remainder = 16 * 1024; // Four 60 KiB patches leave exactly 16 KiB of the 256 KiB budget.
+
+    function budgetSetup() {
+        const feed = createChangeFeed();
+        const store = createResourceStore({
+            file: ":memory:",
+            kinds: createKindRegistry([...DEFAULT_RESOURCE_KINDS, plain, list]),
+            feed,
+        });
+        stores.push(store);
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        return { store, events };
+    }
+
+    /** Size the expected wire patch from the input, never from a published patch. */
+    function sizedPatch<T>(bytes: number, make: (text: string) => T): T {
+        const payloadBytes = bytes - Buffer.byteLength(JSON.stringify(make("")));
+        const text = "€".repeat(Math.floor(payloadBytes / 3)) + "x".repeat(payloadBytes % 3);
+        const patch = make(text);
+        expect(Buffer.byteLength(JSON.stringify(patch))).toBe(bytes);
+        expect(bytes).toBeLessThanOrEqual(MAX_FEED_PATCH_BYTES);
+        return patch;
+    }
+
+    function publicationPatchBytes(events: ChangeFeedEvent[]) {
+        expect(events).toHaveLength(1);
+        const [event] = events;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        return [...event.changes.resources, ...event.changes.chats].map((entry) =>
+            entry.patch === undefined ? 0 : Buffer.byteLength(JSON.stringify(entry.patch)),
+        );
+    }
+
+    function field(store: ResourceStore, id: string, bytes = nearCap) {
+        const baseRevision = store.put(plain, id, { blob: "" }, null).revision;
+        const patch = sizedPatch(bytes, (blob) => ({ baseRevision, set: { blob }, remove: [] }));
+        return {
+            op: { kind: plain, id, baseRevision, patch: { set: patch.set } },
+            patch,
+            ref: () => ({ kind: plain.name, id, revision: store.revisionOf(plain, id) }),
+        };
+    }
+
+    /** `bytes`: the patch's size, or a function of the chat's base revision that returns it. */
+    function chat(store: ResourceStore, id: string, bytes: number | ((baseRevision: string) => number) = nearCap) {
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: id,
+                    baseRevision: null,
+                    ops: [chatCreate(id, [])],
+                },
+            ],
+        });
+        const baseRevision = store.chatRevision("c", id)!;
+        const patch = sizedPatch(typeof bytes === "number" ? bytes : bytes(baseRevision), (data) => ({
+            baseRevision,
+            messages: [{ after: null, message: { chatId: "m", data, role: "char" as const } }],
+            count: 1,
+        }));
+        return {
+            group: {
+                characterId: "c",
+                chatId: id,
+                baseRevision,
+                // An inserted row: a whole-row patch is its only body, whatever its size.
+                ops: [
+                    { op: "append", anchor: { start: true }, messages: [patch.messages[0].message] },
+                ] satisfies ChatOp[],
+            },
+            patch,
+            ref: () => ({ characterId: "c", id, revision: store.chatRevision("c", id), trashedAt: null }),
+        };
+    }
+
+    it.each([0, 1])("budgets a rowDelta at the remaining publication bytes plus %i", (excess) => {
+        const { store, events } = budgetSetup();
+        store.put(characters, "c", { chaId: "c" }, null);
+        const data = "x".repeat(100 * 1024);
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [chatCreate("k", [{ chatId: "m", role: "char", data }])],
+                },
+            ],
+        });
+        const baseRevision = store.chatRevision("c", "k")!;
+        const rowDelta = sizedPatch(remainder + excess, (text) => ({
+            baseRevision,
+            count: 1,
+            rowDiffs: [
+                { id: "m", text: { keep: data.length, text, base: { length: data.length, hash: textHash(data) } } },
+            ],
+        }));
+        const records = ["a", "b", "c", "d"].map((id) => field(store, id));
+        events.length = 0;
+        store.applyChanges({
+            ops: records.map((entry) => entry.op),
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision,
+                    ops: [{ op: "setText", id: "m", text: data + rowDelta.rowDiffs[0].text.text }],
+                },
+            ],
+        });
+        expect(events).toHaveLength(1);
+        const event = events[0];
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.resources).toEqual(records.map((entry) => ({ ...entry.ref(), patch: entry.patch })));
+        expect(event.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: store.chatRevision("c", "k"),
+                trashedAt: null,
+                // At the exact budget the body stays and leaves no room for summaryBase. An oversized
+                // body is dropped, so the small summaryBase that follows still fits.
+                ...(excess ? { summaryBase: baseRevision } : { rowDelta }),
+            },
+        ]);
+        const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+        const payloads = [
+            ...event.changes.resources.map(({ patch }) => patch),
+            ...event.changes.chats.flatMap(({ patch, delta, rowDelta, summary, summaryBase }) => [
+                patch,
+                delta,
+                rowDelta,
+                summary,
+                summaryBase,
+            ]),
+        ].filter((value) => value !== undefined);
+        expect(payloads.reduce<number>((sum, value) => sum + bytes(value), 0)).toBe(
+            excess ? 4 * nearCap + bytes(baseRevision) : MAX_FEED_PUBLICATION_PATCH_BYTES,
+        );
+        expect(store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data!.message).toEqual([
+            { chatId: "m", role: "char", data: data + rowDelta.rowDiffs[0].text.text },
+        ]);
+    });
+
+    it("coalesces successive row deltas to the later revision without any body", () => {
+        const { store, events } = budgetSetup();
+        store.put(characters, "c", { chaId: "c" }, null);
+        const data = "x".repeat(100 * 1024);
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [chatCreate("k", [{ chatId: "m", role: "char", data }])],
+                },
+            ],
+        });
+        const baseRevision = store.chatRevision("c", "k")!;
+        const group = (text: string) => ({
+            characterId: "c",
+            chatId: "k",
+            baseRevision: store.chatRevision("c", "k"),
+            ops: [{ op: "setText", id: "m", text }] satisfies ChatOp[],
+        });
+        events.length = 0;
+        store.applyChanges({
+            get chats() {
+                store.applyChanges({ chats: [group(data + " first")] });
+                expect(events).toEqual([]);
+                return [group(data + " first second")];
+            },
+        });
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: expect.any(Number),
+                changes: {
+                    ...empty,
+                    chats: [
+                        {
+                            characterId: "c",
+                            id: "k",
+                            revision: store.chatRevision("c", "k"),
+                            trashedAt: null,
+                            summaryBase: baseRevision,
+                        },
+                    ],
+                },
+            },
+        ]);
+        expect(store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data!.message).toEqual([
+            { chatId: "m", role: "char", data: data + " first second" },
+        ]);
+    });
+
+    it("shares the publication byte budget across patches, deltas, summaries and summary bases", () => {
+        const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+        for (const excess of [0, 1]) {
+            const { store, events } = budgetSetup();
+            store.put(characters, "c", { chaId: "c" }, null);
+            const memory = "m".repeat(100 * 1024);
+            store.applyChanges({
+                chats: ["delta", "summary", "dropped", "tail", "overflow"].map((id) => ({
+                    characterId: "c",
+                    chatId: id,
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create" as const,
+                            chat: {
+                                id,
+                                name: id,
+                                note: "",
+                                localLore: [],
+                                message: [],
+                                ...(["delta", "overflow"].includes(id) ? { supaMemoryData: memory } : {}),
+                            },
+                        },
+                    ],
+                })),
+            });
+            const base = (id: string) => store.chatRevision("c", id)!;
+            const next = (id: string) => base(id).replace(/:(\d+)$/, (_, n) => `:${Number(n) + 1}`);
+            const metaPatch = (id: string, name: string) => ({
+                baseRevision: base(id),
+                count: 0,
+                meta: { id, name, note: "", localLore: [], fmIndex: -1 },
+            });
+            const summary = (id: string, name: string) => ({
+                characterId: "c",
+                id,
+                revision: next(id),
+                name,
+                fmIndex: -1,
+            });
+            const note = "n".repeat(3000);
+            const name = "한".repeat(400);
+            const droppedName = "x".repeat(1000);
+            const delta = { baseRevision: base("delta"), count: 0, metaFields: { set: { note }, remove: [] } };
+            const keptSummary = summary("summary", name);
+            const keptPatch = metaPatch("summary", name);
+            const droppedPatch = metaPatch("dropped", droppedName);
+            const tailPatch = {
+                baseRevision: base("tail"),
+                count: 0,
+                meta: { id: "tail", name: "tail", note: "tail note", localLore: [], fmIndex: -1 },
+            };
+            const deltaBase = base("delta");
+            const tailBase = base("tail");
+            const remaining = [
+                delta,
+                deltaBase,
+                keptPatch,
+                keptSummary,
+                droppedPatch,
+                tailPatch,
+                tailBase,
+            ].reduce<number>((sum, value) => sum + bytes(value), 0);
+            expect(bytes(summary("dropped", droppedName))).toBeGreaterThan(bytes(tailPatch) + bytes(tailBase));
+            const records = ["a", "b", "c"].map((id) => field(store, id, MAX_FEED_PATCH_BYTES));
+            records.push(field(store, "d", MAX_FEED_PATCH_BYTES - remaining + excess));
+            const groups = [
+                { id: "delta", set: { note } },
+                { id: "summary", set: { name } },
+                { id: "dropped", set: { name: droppedName } },
+                { id: "tail", set: { note: "tail note" } },
+                { id: "overflow", set: { note: "cannot fit" } },
+            ].map(({ id, set }) => ({
+                characterId: "c",
+                chatId: id,
+                baseRevision: base(id),
+                ops: [{ op: "meta" as const, set }],
+            }));
+            events.length = 0;
+            store.applyChanges({ ops: records.map((entry) => entry.op), chats: groups });
+            expect(events).toHaveLength(1);
+            const event = events[0];
+            if (event.type !== "change") throw new Error("expected a committed change");
+            expect(event.changes.resources).toEqual(records.map((entry) => ({ ...entry.ref(), patch: entry.patch })));
+            const ref = (id: string) => ({ characterId: "c", id, revision: base(id), trashedAt: null });
+            expect(event.changes.chats).toEqual([
+                { ...ref("delta"), delta, summaryBase: deltaBase },
+                { ...ref("summary"), patch: keptPatch, summary: keptSummary },
+                // A dropped changed projection is unknown, never an unchanged-base claim.
+                { ...ref("dropped"), patch: droppedPatch },
+                { ...ref("tail"), patch: tailPatch, ...(excess ? {} : { summaryBase: tailBase }) },
+                ref("overflow"),
+            ]);
+            const payloads = [
+                ...event.changes.resources.map((entry) => entry.patch),
+                ...event.changes.chats.flatMap(({ patch, delta, summary, summaryBase }) => [
+                    patch,
+                    delta,
+                    summary,
+                    summaryBase,
+                ]),
+            ].filter((payload) => payload !== undefined);
+            expect(payloads.reduce<number>((sum, payload) => sum + bytes(payload), 0)).toBe(
+                MAX_FEED_PUBLICATION_PATCH_BYTES + excess - (excess ? bytes(tailBase) : 0),
+            );
+        }
+    });
+
+    it("budgets mixed patches in wire order while preserving later fitting patches, refs, orders and locks", () => {
+        const { store, events } = budgetSetup();
+        expect(MAX_FEED_PUBLICATION_PATCH_BYTES).toBe(256 * 1024);
+        const record = field(store, "record");
+        const listBase = store.put(list, "items", [{ id: "item", blob: "" }], null).revision;
+        const itemPatch = sizedPatch(nearCap, (blob) => ({
+            baseRevision: listBase,
+            items: [],
+            changes: [{ id: "item", set: { blob }, remove: [] }],
+        }));
+        store.put(characters, "c", { chaId: "c", name: "C" }, null);
+        const first = chat(store, "first");
+        const second = chat(store, "second");
+        const dropped = chat(store, "dropped");
+        // Each append of an undated row leaves its chat's summary unchanged, so each entry also carries its base as
+        // `summaryBase`, after its patch on the wire: the small patch fills exactly what the four kept
+        // 60 KiB patches and the four summary bases (the dropped entry's included, which still fits) leave.
+        const summaryBaseBytes = (baseRevision: string) => Buffer.byteLength(JSON.stringify(baseRevision));
+        const smallBytes = (baseRevision: string) =>
+            remainder -
+            [first, second, dropped].reduce((sum, entry) => sum + summaryBaseBytes(entry.group.baseRevision), 0) -
+            summaryBaseBytes(baseRevision);
+        const chats = [first, second, dropped, chat(store, "small", smallBytes)];
+        const order = store.readRefs([], { chatCollections: ["c"] }).chatCollections[0].order!;
+        const streaming = [
+            {
+                characterId: "c",
+                id: "dropped",
+                streaming: [
+                    { messageId: "m", generationId: "g1", seq: 2 },
+                    { messageId: "other", generationId: "g2", seq: 3 },
+                ],
+            },
+            { characterId: "c", id: "small", streaming: [] },
+        ];
+        events.length = 0;
+
+        const result = store.applyChanges(
+            {
+                get ops() {
+                    // Chat writes happen first, but resources precede them on the wire.
+                    store.applyChanges({ chats: chats.map((entry) => entry.group) });
+                    expect(events).toEqual([]);
+                    return [
+                        record.op,
+                        { kind: list, id: "items", baseRevision: listBase, patch: { changes: itemPatch.changes } },
+                    ];
+                },
+                chatOrders: [
+                    { characterId: "c", baseRevision: order.revision, ids: ["small", "dropped", "second", "first"] },
+                ],
+            },
+            { committed: () => streaming },
+        );
+
+        expect(publicationPatchBytes(events)).toEqual([
+            nearCap,
+            nearCap,
+            nearCap,
+            nearCap,
+            0,
+            smallBytes(chats[3].group.baseRevision),
+        ]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: expect.any(Number),
+                changes: {
+                    resources: [
+                        { ...record.ref(), patch: record.patch },
+                        { kind: "list", id: "items", revision: result.results[1].revision, patch: itemPatch },
+                    ],
+                    chats: [
+                        { ...chats[0].ref(), patch: chats[0].patch, summaryBase: chats[0].group.baseRevision },
+                        { ...chats[1].ref(), patch: chats[1].patch, summaryBase: chats[1].group.baseRevision },
+                        { ...chats[2].ref(), summaryBase: chats[2].group.baseRevision },
+                        { ...chats[3].ref(), patch: chats[3].patch, summaryBase: chats[3].group.baseRevision },
+                    ],
+                    chatOrders: [{ characterId: "c", revision: result.chatOrders[0].revision }],
+                },
+                streaming,
+            },
+        ]);
+
+        events.length = 0;
+        const released = streaming.map((entry) => ({ ...entry, streaming: [] }));
+        store.publishStreaming(released);
+        expect(events).toEqual([{ type: "change", epoch: store.epoch(), changes: empty, streaming: released }]);
+    });
+
+    it("budgets only after nested scopes merge and repeated keys lose their patches", () => {
+        const { store, events } = budgetSetup();
+        const repeated = field(store, "repeated");
+        const kept = ["a", "b", "c", "d"].map((id) => field(store, id));
+        const dropped = field(store, "overflow", remainder + 1);
+        const small = field(store, "small", remainder);
+        events.length = 0;
+
+        store.applyChanges({
+            get ops() {
+                // This nested scope alone exceeds the budget. Its last patch must survive until
+                // the outer write coalesces `repeated`, freeing room for all four kept patches.
+                store.applyChanges({ ops: [repeated.op, ...kept.map((entry) => entry.op)] });
+                expect(events).toEqual([]);
+                return [
+                    {
+                        ...repeated.op,
+                        baseRevision: store.revisionOf(plain, "repeated"),
+                        patch: { set: { blob: "again" } },
+                    },
+                    dropped.op,
+                    small.op,
+                ];
+            },
+        });
+
+        expect(publicationPatchBytes(events)).toEqual([0, nearCap, nearCap, nearCap, nearCap, 0, remainder]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: expect.any(Number),
+                changes: {
+                    ...empty,
+                    resources: [
+                        repeated.ref(),
+                        ...kept.map((entry) => ({ ...entry.ref(), patch: entry.patch })),
+                        dropped.ref(),
+                        { ...small.ref(), patch: small.patch },
+                    ],
+                },
+            },
+        ]);
+    });
+
+    it("budgets committed nested writes together after the outer write rolls back", () => {
+        const { store, events } = budgetSetup();
+        const large = ["a", "b", "c", "d", "overflow"].map((id) => field(store, id));
+        const small = field(store, "small", remainder);
+        const rolledBack = field(store, "rolled-back", 1024);
+        const before = store.get(plain, "rolled-back");
+        events.length = 0;
+
+        expect(() =>
+            store.applyChanges({
+                get ops() {
+                    store.applyChanges({ ops: large.slice(0, 3).map((entry) => entry.op) });
+                    store.applyChanges({ ops: [...large.slice(3).map((entry) => entry.op), small.op] });
+                    expect(events).toEqual([]);
+                    return [rolledBack.op, { kind: plain, id: "a", baseRevision: null, data: {} }];
+                },
+            }),
+        ).toThrow(ResourceBatchConflictError);
+
+        expect(store.get(plain, "rolled-back")).toEqual(before);
+        expect(publicationPatchBytes(events)).toEqual([nearCap, nearCap, nearCap, nearCap, 0, remainder]);
+        expect(events).toEqual([
+            {
+                type: "change",
+                epoch: store.epoch(),
+                cursor: expect.any(Number),
+                changes: {
+                    ...empty,
+                    resources: [
+                        ...large.slice(0, 4).map((entry) => ({ ...entry.ref(), patch: entry.patch })),
+                        large[4].ref(),
+                        { ...small.ref(), patch: small.patch },
+                    ],
+                },
+            },
+        ]);
+    });
+});
+
 // A generation job's write runs `committed` after the commit and before the change is
 // published, and the lists it returns ride on that change as `streaming`; a job's end publishes
 // its released locks without a write (`publishStreaming`).
@@ -1002,6 +1776,7 @@ describe("the store publishes generation locks", () => {
         expect(change(events[0])).toEqual({
             type: "change",
             epoch: store.epoch(),
+            cursor: expect.any(Number),
             changes: {
                 resources: [],
                 chats: [expect.objectContaining({ characterId: "c", id: "k", revision: applied.chats[0].revision })],
@@ -1024,7 +1799,7 @@ describe("the store publishes generation locks", () => {
             },
             { epoch: store.epoch(), jobToken: "T", committed: () => [] },
         );
-        expect(Object.keys(change(events[0]))).toEqual(["type", "epoch", "changes"]);
+        expect(Object.keys(change(events[0]))).toEqual(["type", "epoch", "changes", "cursor"]);
     });
 
     it("runs `committed` without a feed attached (the job's bookkeeping does not depend on one)", () => {
@@ -1160,3 +1935,72 @@ describe("the store publishes generation locks", () => {
         expect(events).toEqual([]);
     });
 });
+
+it.each([false, true])(
+    "publishes exactly one epoch after durable install even when DETACH fails (%s), and can install again",
+    async (failDetach) => {
+        const { store, feed, events } = setup();
+        store.put(characters, "saved", { chaId: "saved", name: "Snapshot" }, null);
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-detach-"));
+        dirs.push(dir);
+        const source = path.join(dir, "source.sqlite");
+        await store.backupTo(source);
+        const first = await stageSnapshot(source, kinds);
+        const second = await stageSnapshot(source, kinds);
+        store.put(characters, "live", { chaId: "live" }, null);
+        events.length = 0;
+        const exec = DatabaseSync.prototype.exec;
+        let installedDb: DatabaseSync | undefined;
+        let committed = false;
+        let detachedInTransaction = false;
+        let injected = false;
+        vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql) {
+            if (sql.includes("INSERT INTO main.resources")) installedDb = this;
+            if (sql === "DETACH DATABASE staged") {
+                detachedInTransaction ||= this.isTransaction;
+                if (failDetach && !injected) {
+                    injected = true;
+                    throw new Error("detach unavailable");
+                }
+            }
+            exec.call(this, sql);
+            if (this === installedDb && sql === "COMMIT") committed = true;
+        });
+        const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+        const visible: unknown[] = [];
+        feed.subscribe((event) => {
+            if (event.type !== "epoch") return;
+            visible.push({
+                eventEpoch: event.epoch,
+                epoch: store.epoch(),
+                committed,
+                persisted: installedDb!.prepare("SELECT value FROM meta WHERE key = 'epoch'").get()!.value,
+                saved: store.get(characters, "saved")?.data,
+                live: store.get(characters, "live"),
+            });
+        });
+        const epoch = store.replaceAll(first.file, first.report);
+        expect(events).toEqual([{ type: "epoch", epoch }]);
+        expect(visible).toEqual([
+            {
+                eventEpoch: epoch,
+                epoch,
+                committed: true,
+                persisted: epoch,
+                saved: expect.objectContaining({ chaId: "saved", name: "Snapshot" }),
+                live: null,
+            },
+        ]);
+        expect(detachedInTransaction).toBe(false);
+        expect(errors).toHaveBeenCalledTimes(failDetach ? 1 : 0);
+        committed = false;
+        const next = store.replaceAll(second.file, second.report);
+        expect(next).not.toBe(epoch);
+        expect(store.epoch()).toBe(next);
+        expect(events).toEqual([
+            { type: "epoch", epoch },
+            { type: "epoch", epoch: next },
+        ]);
+        expect(visible[1]).toMatchObject({ epoch: next, persisted: next, committed: true });
+    },
+);

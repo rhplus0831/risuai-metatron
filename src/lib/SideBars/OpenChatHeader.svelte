@@ -43,7 +43,7 @@
         editing = false;
         // A chat deleted meanwhile takes no write.
         const current = chatEntry(owner);
-        if (current && draft.trim() !== "" && draft !== current.name) {
+        if (current && current.trashedAt === undefined && draft.trim() !== "" && draft !== current.name) {
             setChatMeta(owner, { name: draft });
         }
     }

@@ -208,6 +208,33 @@ async function runCommand(characterId: string, command: GenerationCommand) {
 }
 
 describe("Lua form command jobs", () => {
+    it.each([
+        { type: "button", data: "stop" },
+        { type: "form", key: "stop", values: { answer: "kept" } },
+    ] satisfies GenerationCommand[])(
+        "$type stopChat retains earlier writes and skips later character and module handlers",
+        async (command) => {
+            const handlers = (body: string) => `
+            onButtonClick = async(function(id, data) ${body} end)
+            onFormSubmit = async(function(id, key, meta) ${body} end)
+        `;
+            const characterId = await seedCharacter({
+                codes: [
+                    handlers('addChat(id, "char", "before stop")'),
+                    handlers('setChatVar(id, "kept", "yes"); addChat(id, "char", "stopping"); stopChat(id)'),
+                    handlers('addChat(id, "char", "late character")'),
+                ],
+                moduleCode: handlers('addChat(id, "char", "late module")'),
+            });
+            const { terminal, events } = await runCommand(characterId, command);
+            const stored = await readChat(characterId);
+            expect(stored.data.message.map(({ data }) => data)).toEqual(["before submit", "before stop", "stopping"]);
+            expect(stored.data.scriptstate).toMatchObject({ $kept: "yes" });
+            expect(terminal).toEqual({ type: "done", epoch, revision: stored.revision });
+            expect(events.filter(({ type }) => type === "done" || type === "error")).toEqual([terminal]);
+        },
+    );
+
     it("delivers the form key and JSON data to both character triggers and a module trigger", async () => {
         const record = (label: string) =>
             formHandler(`
@@ -233,19 +260,31 @@ describe("Lua form command jobs", () => {
         ]);
     });
 
-    it("refuses a form in a group chat with a 400 terminal and leaves the chat unchanged", async () => {
+    it("refuses a form in a group chat at admission with groupArchived and leaves the chat unchanged", async () => {
         const characterId = await seedCharacter({
             type: "group",
             codes: [formHandler('addChat(id, "char", "must not run")')],
         });
         const before = await readChat(characterId);
-        const { terminal } = await runCommand(characterId, { type: "form", key: "survey", values: {} });
-        expect(terminal).toMatchObject({
-            type: "error",
-            status: 400,
-            message: "Forms do not run in a group chat",
-            stage: "setup",
-        });
+        const command: GenerationCommand = { type: "form", key: "survey", values: {} };
+        const created = await api(
+            "/api/generations",
+            json({
+                kind: "command",
+                clientId: "tab",
+                context: {
+                    characterId,
+                    chatId: "k",
+                    ...bound,
+                    mode: command.type,
+                    input: "",
+                    chatRevision: before.revision,
+                },
+                command,
+            }),
+        );
+        expect(created.status).toBe(409);
+        expect(created.body).toEqual({ error: "groupArchived" });
         expect(await readChat(characterId)).toEqual(before);
     });
 

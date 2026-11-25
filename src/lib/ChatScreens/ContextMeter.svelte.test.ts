@@ -4,6 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { historyDigest, type ContextReport } from "../../../shared/contextReport.ts";
+import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../../../shared/presets.ts";
 import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 
@@ -18,22 +19,36 @@ import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 
 const mocks = vi.hoisted(() => ({
     authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
+    healthFacts: vi.fn<typeof import("src/ts/process/chatStatus.svelte").memoryHealthFacts>(() => null),
 }));
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+// The meter reads the facts the health reads hold; a test states them, since nothing here starts those reads.
+vi.mock("src/ts/process/chatStatus.svelte", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/process/chatStatus.svelte")>()),
+    memoryHealthFacts: mocks.healthFacts,
+}));
 vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
 );
 
 import { language } from "src/lang";
 import { doingAlert } from "src/ts/alert";
+import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import { currentJump, finishJump, jumpVersion } from "src/ts/setting/settingJump.svelte";
 import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { findChat, patchMessage, removeMessages, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import {
+    appendMessage,
+    findChat,
+    patchMessage,
+    removeMessages,
+    setChatMeta,
+    type ChatRef,
+} from "src/ts/storage/chatStore.svelte";
 import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
-import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+import { hypaV3ModalOpen, MEMORY_SETTINGS_MENU, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 import { jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
 import ContextMeter from "./ContextMeter.svelte";
 
@@ -76,7 +91,23 @@ const reply = (chatId: string, info?: Info): FixtureMessage => ({
     generationInfo: info,
 });
 
-function install(messages: FixtureMessage[]) {
+type ChatMemory = { memoryMode: "hypaV3" | "structuredMemory"; memoryEnabled: boolean };
+
+/**
+ * Installs the chat. Its memory is the one its newest report was sent with, on (HypaV3 or Structured
+ * Memory, as the chat's own mode), unless `memory` says otherwise; a chat without one has no memory set up.
+ */
+function install(messages: FixtureMessage[], memory?: ChatMemory | null) {
+    const sent = (
+        messages.findLast((message) => message.generationInfo?.context)?.generationInfo?.context as
+            ContextReport | undefined
+    )?.memory?.kind;
+    const chatMemory =
+        memory !== undefined
+            ? memory
+            : sent === "hypaV3" || sent === "structuredMemory"
+              ? { memoryMode: sent, memoryEnabled: true }
+              : null;
     installFlatDatabaseWithChats({
         characters: [
             {
@@ -84,14 +115,16 @@ function install(messages: FixtureMessage[]) {
                 type: "character",
                 name: "C",
                 chatPage: 0,
-                chats: [{ id: "k", name: "K", note: "", localLore: [], message: messages }],
+                chats: [{ id: "k", name: "K", note: "", localLore: [], message: messages, ...chatMemory }],
             },
         ],
     } as any);
-    // The fixture installs no defaults: the three meter settings are set as the server's normalization would.
+    // The fixture installs no defaults: the settings are set as the server's normalization would.
+    settings.memoryTranslateMedia.supaModelType = "none";
     settings.ui.contextMeter = true;
     settings.ui.contextMeterTurnUnit = "user";
     settings.ui.contextMeterFixedWarn = 60;
+    settings.ui.contextMeterLookahead = true;
 }
 
 const CHIP = { x: 500, y: 700, left: 500, right: 600, top: 700, bottom: 744, width: 100, height: 44 };
@@ -112,6 +145,19 @@ function render(props: { group?: boolean; draft?: string; generating?: boolean }
 const chip = () => target.querySelector<HTMLButtonElement>("button.context-meter-chip");
 const panel = () => document.body.querySelector<HTMLElement>('[role="dialog"].context-meter-panel');
 const chipText = () => chip()?.textContent?.replace(/\s+/g, " ").trim();
+/** Sets the chat's memory mode and switch, as the sidebar's memory panel does. */
+function setMemory(memory: ChatMemory) {
+    setChatMeta(ref, memory);
+    flushSync();
+}
+const memoryWord = () => chip()?.querySelector<HTMLElement>("[data-context-meter-memory-word]") ?? null;
+const memoryBlock = () => panel()?.querySelector<HTMLElement>("[data-context-meter-memory-now]") ?? null;
+const memoryNotes = () =>
+    [...(memoryBlock()?.querySelectorAll<HTMLElement>("[data-context-meter-memory-note]") ?? [])].map((note) => [
+        note.dataset.contextMeterMemoryNote,
+        note.textContent?.trim(),
+        note.classList.contains("text-danger-500"),
+    ]);
 const outside = () => {
     const other = document.createElement("button");
     document.body.appendChild(other);
@@ -152,12 +198,34 @@ const sectionRows = () =>
         row.dataset.section,
         row.textContent?.replace(/\s+/g, " ").trim(),
     ]);
+/** A HypaV3 label/value row's label and value, e.g. `rowText(opened, "next")`. */
+const rowText = (opened: Element, name: string) =>
+    [...opened.querySelector(`[data-context-meter-${name}]`)!.children].map((cell) => cell.textContent?.trim());
+/** A live-update `memoryTask` frame for `chat` (the meter's chat by default); a terminal holds no revision fence. */
+function taskFrame(status: MemoryTaskStatus, chat: ChatRef = ref) {
+    noteMemoryTaskFrame({ type: "memoryTask", epoch: "e", characterId: chat.chaId, chatId: chat.chatId, status });
+    flushSync();
+}
+const live = (state: "queued" | "running", done = 0, total = 0): MemoryTaskStatus => ({
+    taskId: "t1",
+    state,
+    done,
+    total,
+});
+const ended = (
+    state: "done" | "failed" | "cancelled" | "skipped",
+    extra: Partial<Extract<MemoryTaskStatus, { terminalRevision: string | null }>> = {},
+): MemoryTaskStatus => ({ taskId: "t1", state, done: 8, total: 8, terminalRevision: null, ...extra });
+const taskBlock = () => panel()?.querySelector<HTMLElement>("[data-context-meter-task]") ?? null;
 
 beforeEach(() => {
     vi.useFakeTimers();
+    resetMemoryTasks();
     vi.mocked(doingAlert).mockReturnValue(false);
+    mocks.healthFacts.mockReset().mockReturnValue(null);
     settingsOpen.set(false);
     SettingsMenuIndex.set(-1);
+    hypaV3ModalOpen.set(false);
     target = document.createElement("div");
     document.body.appendChild(target);
 });
@@ -169,11 +237,122 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
+describe("Structured Memory in the context meter", () => {
+    it("shows memory tokens and gives uncovered history priority over writer state, falling back to memory-on without a writer", () => {
+        install([reply("m1", { context: report() })], { memoryMode: "structuredMemory", memoryEnabled: true });
+        render();
+        for (const coverage of ["gap", "unknown", "covered"] as const) {
+            for (const state of ["recorded", "pending", "failed", "paused", "notAutomatic", undefined] as const) {
+                patchMessage(ref, "m1", {
+                    generationInfo: {
+                        context: report({
+                            memory: {
+                                kind: "structuredMemory",
+                                tokens: 137,
+                                coverage,
+                                ...(state ? { writer: { state } } : {}),
+                            },
+                        }),
+                    },
+                });
+                flushSync();
+                const word =
+                    coverage === "gap"
+                        ? language.contextUsage.gap
+                        : coverage === "unknown"
+                          ? language.structuredMemory.meter.status.unknown
+                          : state
+                            ? language.structuredMemory.meter.status[state]
+                            : language.contextUsage.memoryOn;
+                expect(chipText(), `${coverage}/${state}`).toBe(
+                    `3 turns · ${language.contextUsage.tokens("137")} · ${word} · 75%`,
+                );
+                // Only uncovered history warns: the health badge owns the writer's states.
+                expect(memoryWord()!.dataset.tone, `${coverage}/${state}`).toBe(coverage === "gap" ? "warn" : "plain");
+            }
+        }
+    });
+
+    it("reads titles once per structured popover opening and lists included, unverified and left-out items with lane spend and budget", async () => {
+        const memory: NonNullable<ContextReport["memory"]> = {
+            kind: "structuredMemory",
+            coverage: "covered",
+            tokens: 137,
+            budget: 500,
+            items: [
+                { id: "same", kind: "event", lane: "flow", tokens: 100, reason: "recent", verified: true },
+                { id: "same", kind: "thread", lane: "threads", tokens: 37, reason: "open", verified: false },
+            ],
+            excluded: [{ id: "omitted", kind: "event", lane: "events", reason: "budget" }],
+            excludedTotal: 1,
+            lanes: [
+                { lane: "flow", spent: 100, target: Number.MAX_SAFE_INTEGER },
+                { lane: "threads", spent: 37, target: 80 },
+            ],
+        };
+        mocks.authFetch
+            .mockReset()
+            .mockResolvedValueOnce(
+                Response.json({
+                    revision: "r1",
+                    pages: [],
+                    events: [
+                        { id: "same", title: "A promise" },
+                        { id: "omitted", title: "Left behind" },
+                    ],
+                    threads: [{ id: "same", title: "Find the key" }],
+                    runs: [],
+                }),
+            )
+            .mockResolvedValueOnce(new Response("unavailable", { status: 503 }));
+        install([reply("m1", { context: report({ memory }) })]);
+        render();
+        await settle();
+        expect(mocks.authFetch).not.toHaveBeenCalled();
+        const opened = await openPanel();
+        expect(mocks.authFetch.mock.calls.map(([url]) => url)).toEqual(["/api/memory/structured/c/k"]);
+        const rows = () => [...panel()!.querySelectorAll<HTMLElement>("[data-memory-manifest-item]")];
+        expect(
+            rows().map((row) => [
+                row.dataset.memoryManifestItem,
+                row.querySelector("[title]")?.getAttribute("title"),
+                row.querySelector("[data-memory-manifest-verified]")?.getAttribute("data-memory-manifest-verified"),
+            ]),
+        ).toEqual([
+            ["flow", "A promise", "true"],
+            ["threads", "Find the key", "false"],
+        ]);
+        expect(opened.querySelector('[data-memory-manifest-excluded="budget"]')?.textContent).toContain("Left behind");
+        expect(opened.querySelector('[data-memory-manifest-lane="flow"]')?.textContent).toContain("100");
+        expect(opened.querySelector('[data-memory-manifest-lane="threads"]')?.textContent).toContain("37 / 80");
+        expect(opened.querySelector("[data-context-meter-memory]")?.textContent).toContain("137 / 500");
+        patchMessage(ref, "m1", { generationInfo: { context: report({ memory: { ...memory, tokens: 138 } }) } });
+        await settle();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+        keydown(opened, "Escape");
+        patchMessage(ref, "m1", { generationInfo: { context: report({ memory }) } });
+        await settle();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(1);
+        await openPanel();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(2);
+        expect(rows()).toHaveLength(2);
+        expect(rows().every((row) => row.querySelector("span")?.textContent === "")).toBe(true);
+        expect(panel()!.textContent).not.toContain("A promise");
+        keydown(panel()!, "Escape");
+        patchMessage(ref, "m1", {
+            generationInfo: { context: report({ memory: { kind: "hypaV3", tokens: 137, coverage: "covered" } }) },
+        });
+        await openPanel();
+        expect(mocks.authFetch).toHaveBeenCalledTimes(2);
+        expect(panel()!.querySelector("[data-memory-manifest]")).toBeNull();
+    });
+});
+
 describe("the chip", () => {
-    it("shows the share of the prompt budget while all eligible history was kept", () => {
+    it("shows the kept count and the share of the prompt budget while all eligible history was kept", () => {
         install([reply("m1", { inputTokens: 600, maxContext: 1000, context: report() })]);
         render();
-        expect(chipText()).toBe("75%");
+        expect(chipText()).toBe("3 turns · 75%");
         expect(chip()!.classList.contains("text-danger-500")).toBe(false);
         expect(chip()!.getAttribute("aria-label")).toBe(
             language.contextUsage.chipLabel(language.contextUsage.fullSummary(75)),
@@ -183,10 +362,10 @@ describe("the chip", () => {
     it("shows the kept count in the turn unit once history was trimmed, and follows the unit setting", () => {
         install([reply("m1", { context: trimmed() })]);
         render();
-        expect(chipText()).toBe("2 turns");
+        expect(chipText()).toBe("2 turns · 75%");
         settings.ui.contextMeterTurnUnit = "message";
         flushSync();
-        expect(chipText()).toBe("4 messages");
+        expect(chipText()).toBe("4 messages · 75%");
     });
 
     it("with memory, shows the kept count and the coverage, and names the memory kind in its label", () => {
@@ -202,9 +381,19 @@ describe("the chip", () => {
                 generationInfo: { context: trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage } }) },
             });
             flushSync();
-            expect(chipText(), coverage).toBe(`2 turns · ${note}`);
+            expect(chipText(), coverage).toBe(`2 turns · ${note} · 75%`);
             expect(chip()!.getAttribute("aria-label"), coverage).toContain(`2 turns, HypaV3 ${note}`);
+            expect(memoryWord()!.textContent, coverage).toBe(note);
+            expect(memoryWord()!.classList.contains("text-danger-500"), coverage).toBe(coverage === "gap");
         }
+    });
+
+    it("with memory and no history left out, does not call the history summarized", () => {
+        // HypaV3 reports "covered" when no history was trimmed, before any summary exists.
+        install([reply("m1", { context: report({ memory: { kind: "hypaV3", tokens: 0, coverage: "covered" } }) })]);
+        render();
+        expect(chipText()).toBe(`3 turns · ${language.contextUsage.memoryOn} · 75%`);
+        expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.summarized);
     });
 
     it("takes the danger tone only when the fixed share exceeds the warning level", () => {
@@ -217,8 +406,10 @@ describe("the chip", () => {
         render();
         expect(chip()!.classList.contains("text-danger-500")).toBe(false);
         expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.fixedWarnSummary);
+        expect(chipText()).toBe("3 turns · 73%");
         settings.ui.contextMeterFixedWarn = 59;
         flushSync();
+        expect(chipText()).toBe("3 turns · 73% · fixed 60%");
         expect(chip()!.classList.contains("text-danger-500")).toBe(true);
         expect(chip()!.classList.contains("text-textcolor2")).toBe(false);
         expect(chip()!.getAttribute("aria-label")).toContain(language.contextUsage.fixedWarnSummary);
@@ -243,7 +434,7 @@ describe("the chip", () => {
             reply("m2", { inputTokens: 300, maxContext: 1000 }),
         ]);
         render();
-        expect(chipText()).toBe("2 turns");
+        expect(chipText()).toBe("2 turns · 75%");
     });
 
     it("rejects negative legacy input and needs a positive context size", () => {
@@ -272,8 +463,706 @@ describe("the chip", () => {
     });
 });
 
+describe("the chat's memory as it is now", () => {
+    const hypa = (on: boolean): ChatMemory => ({ memoryMode: "hypaV3", memoryEnabled: on });
+    const covered = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "covered" } });
+    const s = language.contextUsage;
+
+    it("names no memory while none is set up, whatever the last reply was sent with", () => {
+        install([reply("m1", { context: covered() })], null);
+        render();
+        expect(chipText()).toBe("2 turns · 75%");
+        expect(memoryWord()).toBeNull();
+        expect(chip()!.getAttribute("aria-label")).toBe(s.chipLabel(s.trimmedSummary("2 turns")));
+    });
+
+    it("follows the chat's switch at once: off drops the last reply's coverage, on brings it back", () => {
+        install([reply("m1", { context: covered() })]);
+        render();
+        expect(chipText()).toBe(`2 turns · ${s.summarized} · 75%`);
+        setMemory(hypa(false));
+        expect(chipText()).toBe(`2 turns · ${s.memoryOff} · 75%`);
+        expect(chip()!.getAttribute("aria-label")).toBe(
+            s.chipLabel(`${s.trimmedSummary("2 turns")}; ${s.memoryNowOffSummary("HypaV3")}`),
+        );
+        setMemory(hypa(true));
+        expect(chipText()).toBe(`2 turns · ${s.summarized} · 75%`);
+    });
+
+    it("says memory on, without the last reply's coverage, when that reply used no memory or another one", () => {
+        install([reply("m1", { context: report() })], hypa(true));
+        render();
+        expect(chipText()).toBe(`3 turns · ${s.memoryOn} · 75%`);
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+        expect(chip()!.getAttribute("aria-label")).toBe(
+            s.chipLabel(`${s.fullSummary(75)}; ${s.memoryNowOnSummary("HypaV3")}`),
+        );
+        // A Structured Memory reply's tokens and writer word are not HypaV3's.
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    memory: { kind: "structuredMemory", tokens: 137, coverage: "gap", writer: { state: "failed" } },
+                }),
+            },
+        });
+        flushSync();
+        expect(chipText()).toBe(`3 turns · ${s.memoryOn} · 75%`);
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+    });
+
+    it("names the legacy algorithm of the settings and the owner's switch for a chat that chose neither", () => {
+        install([reply("m1", { inputTokens: 600, maxContext: 1000 })]);
+        settings.memoryTranslateMedia.supaModelType = "subModel";
+        render();
+        expect(chipText()).toBe(`${s.memoryOff} · 60%`);
+        expect(chip()!.getAttribute("aria-label")).toBe(
+            s.chipLabel(`${s.legacySummary(60)}; ${s.memoryNowOffSummary(s.memoryKinds.supa)}`),
+        );
+        setChatMeta(ref, { memoryEnabled: true });
+        flushSync();
+        expect(chipText()).toBe(`${s.memoryOn} · 60%`);
+    });
+
+    it("shows the line before the first reply once memory is set up, with a popover of the memory alone", async () => {
+        install([{ chatId: "u1", role: "user", data: "hello" }], hypa(true));
+        render();
+        expect(chipText()).toBe(s.memoryOn);
+        expect(chip()!.getAttribute("aria-label")).toBe(s.chipLabelNoReply(s.memoryNowOnSummary("HypaV3")));
+        const opened = await openPanel();
+        expect(opened.textContent).toContain(s.noReplyYet);
+        expect(opened.textContent).not.toContain(s.asOfLastReply);
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("on");
+        expect(memoryNotes()).toEqual([]);
+        expect(opened.querySelector("[data-context-meter-headline], [data-context-meter-history]")).toBeNull();
+        // Unsetting the mode leaves no memory and no report: the line and its popover go.
+        setChatMeta(ref, {}, ["memoryMode"]);
+        flushSync();
+        expect(chip()).toBeNull();
+        expect(panel()).toBeNull();
+    });
+
+    it("warns of memory off only while history is left out and the chat did not silence the trim question", () => {
+        install([reply("m1", { context: report() })], hypa(false));
+        render();
+        expect(memoryWord()!.textContent).toBe(s.memoryOff);
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed() } });
+        flushSync();
+        expect(memoryWord()!.dataset.tone).toBe("warn");
+        expect(memoryWord()!.classList.contains("text-danger-500")).toBe(true);
+        // "Don't ask again" holds while it equals the owner's count (0 for a character that never counted).
+        setChatMeta(ref, { memoryTrimAck: 0 });
+        flushSync();
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+        setChatMeta(ref, { memoryTrimAck: 1 });
+        flushSync();
+        expect(memoryWord()!.dataset.tone).toBe("warn");
+    });
+
+    it("states the memory in the popover and says how the last reply differed", async () => {
+        install([reply("m1", { context: covered() })]);
+        render();
+        await openPanel();
+        const state = () => memoryBlock()!.querySelector(".text-right")!.textContent?.trim();
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("on");
+        expect(state()).toBe(s.memoryNowOn("HypaV3"));
+        expect(memoryNotes()).toEqual([]);
+
+        // Off after a reply that used it: the history it left out goes unsummarized from now on.
+        setMemory(hypa(false));
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("off");
+        expect(state()).toBe(s.memoryNowOff("HypaV3"));
+        expect(memoryNotes()).toEqual([
+            ["leftOut", s.memoryOffLeftOut(2), true],
+            ["last", s.memoryLastUsed("HypaV3"), false],
+        ]);
+        setChatMeta(ref, { memoryTrimAck: 0 });
+        flushSync();
+        expect(memoryNotes()[0]).toEqual(["leftOut", s.memoryOffLeftOut(2), false]);
+
+        // On after a reply sent without it.
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed() } });
+        setMemory(hypa(true));
+        expect(memoryNotes()).toEqual([["last", s.memoryLastWithout, false]]);
+
+        // No memory set up: only the way to the settings.
+        setChatMeta(ref, {}, ["memoryMode", "memoryEnabled"]);
+        flushSync();
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("none");
+        expect(state()).toBe(s.memoryNowNone);
+        expect(memoryNotes()).toEqual([["leftOut", s.memoryNoneLeftOut(2), false]]);
+        expect(memoryBlock()!.querySelector("[data-context-meter-memory-toggle]")).toBeNull();
+        expect(memoryBlock()!.querySelector("[data-context-meter-memory-panel]")).toBeNull();
+        memoryBlock()!.querySelector<HTMLButtonElement>("[data-context-meter-memory-now-settings]")!.click();
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
+        expect(panel()).toBeNull();
+    });
+
+    it("switches the chat's memory from the popover, dropping the trim acknowledgement as it turns on", async () => {
+        install([reply("m1", { context: trimmed() })], hypa(false));
+        setChatMeta(ref, { memoryTrimAck: 0 });
+        render();
+        await openPanel();
+        const toggle = () => memoryBlock()!.querySelector<HTMLButtonElement>("[data-context-meter-memory-toggle]")!;
+        expect(toggle().textContent).toBe(s.memoryTurnOn);
+        toggle().click();
+        flushSync();
+        expect(findChat(ref)).toMatchObject({ memoryEnabled: true });
+        expect(findChat(ref)).not.toHaveProperty("memoryTrimAck");
+        expect(chipText()).toBe(`2 turns · ${s.memoryOn} · 75%`);
+        // The popover stays for the next press.
+        expect(toggle().textContent).toBe(s.memoryTurnOff);
+        toggle().click();
+        flushSync();
+        expect(findChat(ref)).toMatchObject({ memoryEnabled: false });
+        expect(memoryWord()!.textContent).toBe(s.memoryOff);
+    });
+
+    it("opens the chat's memory panel for HypaV3 and Structured Memory only", async () => {
+        install([reply("m1", { inputTokens: 600, maxContext: 1000 })]);
+        settings.memoryTranslateMedia.supaModelType = "subModel";
+        render();
+        await openPanel();
+        const button = () => memoryBlock()!.querySelector<HTMLButtonElement>("[data-context-meter-memory-panel]");
+        expect(button()).toBeNull();
+        setMemory({ memoryMode: "structuredMemory", memoryEnabled: false });
+        expect(button()!.textContent).toBe(language.structuredMemory.panel.title);
+        setMemory(hypa(true));
+        expect(button()!.textContent).toBe(language.hypaMemoryV3Modal);
+        button()!.click();
+        flushSync();
+        expect(get(hypaV3ModalOpen)).toBe(true);
+        expect(panel()).toBeNull();
+    });
+});
+
 describe("the popover", () => {
-    it("opens focused, lists the sections largest first with the signed Other row outside the bar", async () => {
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "shows positive %s separately and includes them in the occupied count and percentage",
+        async (kind) => {
+            const label = language.contextUsage[kind];
+            install([reply("m1", { context: report({ [kind]: 120 }) })]);
+            render();
+            const opened = await openPanel();
+            const headline = () => opened.querySelector("span.text-lg.font-semibold")!;
+            expect(headline().textContent).toBe("720");
+            expect(headline().nextElementSibling!.textContent?.trim()).toBe(
+                language.contextUsage.inputOfBudget("800", 90),
+            );
+            expect(chipText()).toContain("90%");
+            expect(sectionRows()).toContainEqual([kind, `${label} 120 tokens 15%`]);
+
+            // Both request additions occupy space, independently of message input.
+            patchMessage(ref, "m1", { generationInfo: { context: report({ toolSchemas: 40, interceptions: 120 }) } });
+            flushSync();
+            expect(headline().textContent).toBe("760");
+            expect(headline().nextElementSibling!.textContent?.trim()).toBe(
+                language.contextUsage.inputOfBudget("800", 95),
+            );
+            expect(chipText()).toContain("95%");
+
+            for (const count of [0, undefined]) {
+                patchMessage(ref, "m1", { generationInfo: { context: report({ [kind]: count }) } });
+                flushSync();
+                expect(headline().textContent).toBe("600");
+                expect(headline().nextElementSibling!.textContent?.trim()).toBe(
+                    language.contextUsage.inputOfBudget("800", 75),
+                );
+                expect(chipText()).toContain("75%");
+                expect(sectionRows().map(([kind]) => kind)).toEqual(["history", "main", "description"]);
+                expect(opened.textContent).not.toContain(label);
+            }
+        },
+    );
+
+    it("uses the prompt budget in the headline and falls back when the reply consumes it", async () => {
+        const s = language.contextUsage;
+        install([reply("m1", { context: report() })]);
+        render();
+        const opened = await openPanel();
+        const input = opened.querySelector("span.text-lg.font-semibold")!;
+        expect(input.textContent).toBe("600");
+        expect(input.nextElementSibling!.textContent?.trim()).toBe(s.inputOfBudget("800", 75));
+        const terms = input.parentElement!.nextElementSibling!;
+        expect(terms.textContent).toBe(s.budgetFrom("1,000", "200"));
+        expect(terms.classList.contains("text-textcolor2")).toBe(true);
+        expect(opened.textContent).not.toContain(s.input("600", "1,000"));
+
+        for (const maxResponse of [1000, 1200]) {
+            patchMessage(ref, "m1", { generationInfo: { context: report({ maxResponse }) } });
+            flushSync();
+            expect(opened.querySelector("span.text-lg.font-semibold")).toBeNull();
+            expect(opened.textContent).toContain(s.input("600", "1,000"));
+            expect(opened.textContent).toContain(s.noBudget);
+            expect(opened.textContent).not.toContain(s.budgetFrom("1,000", maxResponse.toLocaleString()));
+        }
+    });
+
+    it("groups the composition and legend as fixed, memory, history and warns on the fixed share", async () => {
+        const s = language.contextUsage;
+        const sections: ContextReport["sections"] = [
+            { kind: "history", tokens: 400 },
+            { kind: "main", tokens: 270 },
+            { kind: "memory", tokens: 100 },
+            { kind: "description", tokens: 30 },
+        ];
+        install([reply("m1", { context: report({ sections, input: 820 }) })]);
+        render();
+        const opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        const segments = () => [...bar.querySelector<HTMLElement>(".h-3")!.children] as HTMLElement[];
+        const legend = () =>
+            [...bar.nextElementSibling!.children].map((entry) => entry.textContent?.replace(/\s+/g, " ").trim());
+        expect(segments().map((segment) => segment.style.width)).toEqual(["37.5%", "12.5%", "50%"]);
+        for (const [index, color] of ["bg-neutral-400", "bg-meter-memory", "bg-primary-500"].entries()) {
+            expect(segments()[index].classList.contains(color)).toBe(true);
+            expect(bar.nextElementSibling!.children[index].firstElementChild!.classList.contains(color)).toBe(true);
+        }
+        expect(legend()).toEqual([`${s.groups.fixed} 300`, `${s.groups.memory} 100`, `${s.groups.history} 400`]);
+        const tick = bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!;
+        expect(tick.style.left).toBe("60%");
+        expect(tick.classList.contains("bg-danger-500")).toBe(false);
+        expect(opened.querySelector("[data-context-meter-reserve]")).toBeNull();
+        const fixed = opened.querySelector("[data-context-meter-fixed]")!;
+        expect(fixed.textContent?.trim()).toBe(s.fixedShare(38));
+        expect(fixed.classList.contains("text-danger-500")).toBe(false);
+        expect(fixed.querySelector('[aria-hidden="true"]')).toBeNull();
+        for (const row of opened.querySelectorAll<HTMLElement>("[data-context-meter-sections] li")) {
+            const color =
+                row.dataset.section === "memory"
+                    ? "bg-meter-memory"
+                    : row.dataset.section === "history"
+                      ? "bg-primary-500"
+                      : "bg-neutral-400";
+            expect(row.firstElementChild!.classList.contains(color), row.dataset.section).toBe(true);
+        }
+
+        settings.ui.contextMeterFixedWarn = 37;
+        flushSync();
+        // The warning is on the tick and the line: the segment and its legend entry keep the group's color.
+        expect(segments()[0].classList.contains("bg-neutral-400")).toBe(true);
+        expect(bar.nextElementSibling!.firstElementChild!.firstElementChild!.classList.contains("bg-neutral-400")).toBe(
+            true,
+        );
+        expect(tick.classList.contains("bg-danger-500")).toBe(true);
+        expect(tick.classList.contains("bg-textcolor")).toBe(false);
+        expect(fixed.classList.contains("text-danger-500")).toBe(true);
+        expect(fixed.textContent?.replace(/\s+/g, " ").trim()).toBe(`${s.fixedShare(38)} ${s.fixedShareOver(37)}`);
+        expect(tick.style.left).toBe("37%");
+        for (const kind of ["main", "description"]) {
+            const dot = opened.querySelector(
+                `[data-context-meter-sections] [data-section="${kind}"]`,
+            )!.firstElementChild!;
+            expect(dot.classList.contains("bg-neutral-400"), `${kind} keeps the fixed group's neutral color`).toBe(
+                true,
+            );
+        }
+
+        // Empty groups contribute neither a segment nor a legend entry.
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    sections: [sections[1], sections[3], { kind: "memory", tokens: 0 }, { kind: "history", tokens: 0 }],
+                    input: 300,
+                    adjustment: 0,
+                }),
+            },
+        });
+        flushSync();
+        expect(segments().map((segment) => segment.style.width)).toEqual(["37.5%"]);
+        expect(legend()).toEqual([`${s.groups.fixed} 300`]);
+    });
+
+    it("shows the lorebook and the character group in their own colors from 5% of the prompt budget", async () => {
+        const s = language.contextUsage;
+        // The prompt budget is 800, so a group is split out of the fixed one from 40 tokens.
+        const sections = (lorebook: number, persona: number): ContextReport["sections"] => [
+            { kind: "history", tokens: 400 },
+            { kind: "main", tokens: 200 },
+            { kind: "memory", tokens: 100 },
+            { kind: "lorebook", tokens: lorebook },
+            { kind: "description", tokens: 20 },
+            { kind: "examples", tokens: 10 },
+            { kind: "persona", tokens: persona },
+        ];
+        const show = (lorebook: number, persona: number, overrides: Partial<ContextReport> = {}) => {
+            patchMessage(ref, "m1", {
+                generationInfo: {
+                    context: report({ sections: sections(lorebook, persona), input: 800, adjustment: 0, ...overrides }),
+                },
+            });
+            flushSync();
+        };
+        install([reply("m1", { context: report({ sections: sections(40, 9), input: 800, adjustment: 0 }) })]);
+        render();
+        const opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        const segments = () => [...bar.querySelector<HTMLElement>(".h-3")!.children] as HTMLElement[];
+        const colorOf = (element: Element) => [...element.classList].find((name) => /^bg-/.test(name));
+        const legend = () =>
+            [...bar.nextElementSibling!.children].map(
+                (entry) => `${colorOf(entry.firstElementChild!)} ${entry.textContent?.replace(/\s+/g, " ").trim()}`,
+            );
+        const dots = () =>
+            Object.fromEntries(
+                [...opened.querySelectorAll<HTMLElement>("[data-context-meter-sections] li")].map((row) => [
+                    row.dataset.section,
+                    colorOf(row.firstElementChild!),
+                ]),
+            );
+
+        // The lorebook is at 5% exactly; description, examples, and persona together are one token short of it.
+        expect(segments().map((segment) => [colorOf(segment), parseFloat(segment.style.width)])).toEqual([
+            ["bg-neutral-400", (239 / 800) * 100],
+            ["bg-meter-lore", 5],
+            ["bg-meter-memory", 12.5],
+            ["bg-primary-500", 50],
+        ]);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixedRest} 239`,
+            `bg-meter-lore ${s.groups.lore} 40`,
+            `bg-meter-memory ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(dots()).toEqual({
+            history: "bg-primary-500",
+            main: "bg-neutral-400",
+            memory: "bg-meter-memory",
+            lorebook: "bg-meter-lore",
+            description: "bg-neutral-400",
+            examples: "bg-neutral-400",
+            persona: "bg-neutral-400",
+        });
+        // The fixed share still counts the split groups: (200 + 40 + 39) / 800.
+        expect(opened.querySelector("[data-context-meter-fixed]")!.textContent?.trim()).toBe(s.fixedShare(35));
+
+        // One more persona token brings the character group to 5%; one lorebook token fewer drops that group.
+        show(39, 10);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixedRest} 239`,
+            `bg-meter-character ${s.groups.character} 40`,
+            `bg-meter-memory ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(dots()).toMatchObject({
+            lorebook: "bg-neutral-400",
+            description: "bg-meter-character",
+            examples: "bg-meter-character",
+            persona: "bg-meter-character",
+        });
+
+        // Both groups, in a fixed order whichever is larger, and over the warning without turning red.
+        settings.ui.contextMeterFixedWarn = 10;
+        show(40, 60);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixedRest} 200`,
+            `bg-meter-lore ${s.groups.lore} 40`,
+            `bg-meter-character ${s.groups.character} 90`,
+            `bg-meter-memory ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(segments().map(colorOf)).toEqual([
+            "bg-neutral-400",
+            "bg-meter-lore",
+            "bg-meter-character",
+            "bg-meter-memory",
+            "bg-primary-500",
+        ]);
+
+        // Neither group reaches 5%: one fixed block under its own name.
+        show(39, 9);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixed} 278`,
+            `bg-meter-memory ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(Object.values(dots()).filter((color) => color?.startsWith("bg-meter-"))).toEqual(["bg-meter-memory"]);
+
+        // With no prompt budget there is nothing to take a share of.
+        show(400, 60, { maxResponse: 1000 });
+        expect(legend()[0]).toBe(`bg-neutral-400 ${s.groups.fixed} 690`);
+    });
+
+    it("ends the composition with unused HypaV3 reserve and scales its warning tick to fit it", async () => {
+        const s = language.contextUsage;
+        const sections: ContextReport["sections"] = [
+            { kind: "history", tokens: 400 },
+            { kind: "main", tokens: 300 },
+            { kind: "memory", tokens: 100 },
+        ];
+        const memory = { kind: "hypaV3", tokens: 100, reserved: 500, summarizeIn: 100, coverage: "covered" } as const;
+        install([reply("m1", { context: report({ sections, input: 800, adjustment: 0, memory }) })]);
+        render();
+        const opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        const track = bar.querySelector<HTMLElement>(".h-3")!;
+        const reserve = bar.querySelector<HTMLElement>("[data-context-meter-reserve]")!;
+        // Scale = max(800, 700 + max(500, 100)) = 1,200; unused reserve = 400.
+        expect(
+            [...track.children].slice(0, 3).map((segment) => parseFloat((segment as HTMLElement).style.width)),
+        ).toEqual([25, (100 / 1200) * 100, (400 / 1200) * 100]);
+        expect(track.children).toHaveLength(5);
+        expect(parseFloat(reserve.style.width)).toBeCloseTo((400 / 1200) * 100);
+        expect(track.lastElementChild).toBe(reserve);
+        expect(reserve.previousElementSibling!.classList.contains("grow")).toBe(true);
+        expect(bar.nextElementSibling!.lastElementChild!.textContent?.replace(/\s+/g, " ").trim()).toBe(
+            `${s.legendReserveEmpty} 400`,
+        );
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("40%");
+        expect(bar.querySelector("[data-context-meter-summarize], [data-context-meter-lookahead]")).toBeNull();
+
+        // Memory already larger than its reservation leaves no empty reserve and uses the sent amount in the scale.
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({ sections, input: 800, adjustment: 0, memory: { ...memory, reserved: 50 } }),
+            },
+        });
+        flushSync();
+        expect(reserve.style.width).toBe("0%");
+        expect((track.firstElementChild as HTMLElement).style.width).toBe("37.5%");
+        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("60%");
+        expect(bar.nextElementSibling!.textContent).not.toContain(s.legendReserveEmpty);
+
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    sections,
+                    input: 800,
+                    adjustment: 0,
+                    memory: { kind: "hypaV2", tokens: 100, coverage: "covered" },
+                }),
+            },
+        });
+        flushSync();
+        expect(bar.querySelector("[data-context-meter-reserve]")).toBeNull();
+        expect(track.children).toHaveLength(3);
+    });
+
+    it("explains the signed counting difference below the sections and omits it at zero", async () => {
+        const s = language.contextUsage;
+        install([reply("m1", { context: report() })]);
+        render();
+        const opened = await openPanel();
+        for (const [adjustment, signed] of [
+            [20, "+20"],
+            [-70, "−70"],
+        ] as const) {
+            patchMessage(ref, "m1", { generationInfo: { context: report({ adjustment, input: 580 + adjustment }) } });
+            flushSync();
+            const line = opened.querySelector("[data-context-meter-other]")!;
+            expect(line.textContent?.trim()).toBe(s.otherLine(signed));
+            expect(line.getAttribute("title")).toBe(s.otherHelp);
+            expect(line.classList.contains("text-textcolor2")).toBe(true);
+            expect(opened.querySelector("[data-context-meter-sections]")!.nextElementSibling).toBe(line);
+            expect(opened.querySelector('[data-context-meter-sections] [data-section="other"]')).toBeNull();
+        }
+        patchMessage(ref, "m1", { generationInfo: { context: report({ adjustment: 0, input: 580 }) } });
+        flushSync();
+        expect(opened.querySelector("[data-context-meter-other]")).toBeNull();
+    });
+
+    it("orders the history explanation before its runway and removes hidden lookahead from the scale", async () => {
+        const s = language.contextUsage;
+        const sections: ContextReport["sections"] = [
+            { kind: "main", tokens: 100 },
+            { kind: "history", tokens: 400 },
+            { kind: "memory", tokens: 50 },
+        ];
+        const memory = {
+            kind: "hypaV3",
+            tokens: 50,
+            budget: 200,
+            reserved: 200,
+            summarizeIn: 100,
+            lookaheadIn: 400,
+            summarized: 1,
+            coverage: "gap",
+        } as const;
+        install([reply("m1", { context: trimmed({ sections, input: 550, adjustment: 0, memory }) })]);
+        render();
+        const opened = await openPanel();
+        const history = opened.querySelector("[data-context-meter-history]")!;
+        const order = ["kept", "total", "omitted", "omitted-tags", "runway", "next-lookahead", "next", "memory"];
+        for (let i = 1; i < order.length; i++) {
+            const before = history.querySelector(`[data-context-meter-${order[i - 1]}]`)!;
+            const after = history.querySelector(`[data-context-meter-${order[i]}]`)!;
+            expect(
+                before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING,
+                `${order[i - 1]} before ${order[i]}`,
+            ).toBeTruthy();
+        }
+        const runway = history.querySelector<HTMLElement>("[data-context-meter-runway]")!;
+        expect(runway.previousElementSibling!.textContent).toContain(s.runwayCaption);
+        expect(runway.previousElementSibling!.textContent).toContain(s.runwayUsage("400", "100"));
+        expect((runway.firstElementChild as HTMLElement).style.width).toBe("50%");
+        const summarize = runway.querySelector<HTMLElement>("[data-context-meter-summarize]")!;
+        expect(summarize.style.left).toBe("62.5%");
+        expect(summarize.classList.contains("border-dashed")).toBe(false);
+        const lookahead = runway.querySelector<HTMLElement>("[data-context-meter-lookahead]")!;
+        expect(lookahead.style.left).toBe("100%");
+        expect(lookahead.classList.contains("border-dashed")).toBe(true);
+        expect(rowText(history, "next-lookahead")).toEqual([s.lookaheadLabel, s.tokensAway("400")]);
+        expect(rowText(history, "next")).toEqual([s.summarizeInLabel, s.tokensAway("100")]);
+        expect(history.querySelector("[data-context-meter-memory] .h-2")).toBeNull();
+
+        settings.ui.contextMeterLookahead = false;
+        flushSync();
+        expect(runway.querySelector("[data-context-meter-lookahead]")).toBeNull();
+        expect(history.querySelector("[data-context-meter-next-lookahead]")).toBeNull();
+        expect((runway.firstElementChild as HTMLElement).style.width).toBe("80%");
+        expect(summarize.style.left).toBe("100%");
+
+        // Both thresholds at zero describe the current boundary, rather than the prompt composition.
+        settings.ui.contextMeterLookahead = true;
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: trimmed({
+                    sections,
+                    input: 550,
+                    adjustment: 0,
+                    memory: { ...memory, summarizeIn: 0, lookaheadIn: 0 },
+                }),
+            },
+        });
+        flushSync();
+        expect((runway.firstElementChild as HTMLElement).style.width).toBe("100%");
+        expect(summarize.style.left).toBe("100%");
+        expect(runway.querySelector<HTMLElement>("[data-context-meter-lookahead]")!.style.left).toBe("100%");
+        expect(rowText(history, "next-lookahead")).toEqual([s.lookaheadLabel, s.lookaheadPassed]);
+        expect(rowText(history, "next")).toEqual([s.summarizeInLabel, s.nextSend]);
+        settings.ui.contextMeterLookahead = false;
+        flushSync();
+        expect(summarize.style.left).toBe("100%");
+    });
+
+    it("puts ready summaries in the next label and links the unused reserve note to memory settings", async () => {
+        const s = language.contextUsage;
+        const memory = {
+            kind: "hypaV3",
+            tokens: 50,
+            budget: 200,
+            reserved: 200,
+            summarizeIn: 70,
+            prepared: 3,
+            coverage: "covered",
+        } as const;
+        const sections: ContextReport["sections"] = [
+            { kind: "main", tokens: 130 },
+            { kind: "history", tokens: 400 },
+            { kind: "memory", tokens: 50 },
+        ];
+        install([reply("m1", { context: trimmed({ sections, memory }) })]);
+        render();
+        const opened = await openPanel();
+        const next = opened.querySelector("[data-context-meter-next]")!;
+        const prepared = next.querySelector("[data-context-meter-prepared]")!;
+        expect(rowText(opened, "next")).toEqual([s.preparedInLabel(3), s.tokensAway("70")]);
+        expect(prepared.getAttribute("title")).toBe(s.preparedHelp);
+        expect(opened.querySelector("dl, [data-context-meter-prepared-help]")).toBeNull();
+        expect(opened.querySelector("[data-context-meter-lookahead], [data-context-meter-next-lookahead]")).toBeNull();
+        const link = () => opened.querySelector<HTMLButtonElement>("[data-context-meter-memory-settings]");
+        expect(link()!.parentElement!.textContent).toContain(s.memoryReserveNote("200"));
+        expect(next.compareDocumentPosition(link()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(
+            link()!.compareDocumentPosition(opened.querySelector("[data-context-meter-memory]")!) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ sections, memory: { ...memory, prepared: 0, reserved: 50 } }) },
+        });
+        flushSync();
+        expect(next.querySelector("[data-context-meter-prepared]")).toBeNull();
+        expect(rowText(opened, "next")).toEqual([s.summarizeInLabel, s.tokensAway("70")]);
+        expect(link()).toBeNull();
+        expect(opened.textContent).not.toContain(s.memoryReserveNote("50"));
+
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed({ sections, memory }) } });
+        flushSync();
+        link()!.click();
+        flushSync();
+        expect(panel()).toBeNull();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
+    });
+
+    it("keeps lore to its budget row until rejections need a danger bar and details", async () => {
+        const s = language.contextUsage;
+        const lore = { budgetUsed: 75, budget: 100, rejectedCount: 0, rejectedTokens: 0, active: 2 };
+        install([reply("m1", { context: report({ lore }) })]);
+        render();
+        const opened = await openPanel();
+        const block = opened.querySelector("[data-context-meter-lore]")!;
+        expect(block.children).toHaveLength(1);
+        expect(block.textContent?.replace(/\s+/g, " ").trim()).toBe(`${s.loreBudget} 75 / 100`);
+        expect(block.querySelector('[aria-hidden="true"]')).toBeNull();
+        expect(block.querySelector("[data-context-meter-lore-toggle]")).toBeNull();
+
+        setChatMeta(ref, { loreBudgetWarnOff: true });
+        flushSync();
+        expect(block.querySelector('[aria-hidden="true"]')).toBeNull();
+        expect(block.textContent).toContain(s.loreWarnOffNote);
+        expect(block.querySelector("[data-context-meter-lore-toggle]")!.textContent?.trim()).toBe(s.loreWarnOn);
+
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    lore: {
+                        ...lore,
+                        rejectedCount: 3,
+                        rejectedTokens: 80,
+                        rejected: [{ name: "Old war", tokens: 30 }],
+                    },
+                }),
+            },
+        });
+        flushSync();
+        const fill = block.querySelector<HTMLElement>('[aria-hidden="true"] > div')!;
+        expect(fill.classList.contains("bg-danger-300")).toBe(true);
+        expect(fill.style.width).toBe("75%");
+        expect(block.textContent).toContain(s.loreRejected(3, "80"));
+        expect(block.querySelector("[data-context-meter-lore-rejected]")).not.toBeNull();
+        expect(block.textContent).toContain(s.loreRejectedMore(2));
+
+        patchMessage(ref, "m1", { generationInfo: { context: report({ lore }) } });
+        flushSync();
+        expect(block.querySelector('[aria-hidden="true"], [data-context-meter-lore-rejected]')).toBeNull();
+        expect(block.textContent).not.toContain(s.loreRejected(3, "80"));
+    });
+
+    it("opens the meter settings from the header button whose accessible label explains the basis", async () => {
+        const s = language.contextUsage;
+        install([reply("m1", { context: report() })]);
+        render();
+        const opened = await openPanel();
+        const button = opened.querySelector<HTMLButtonElement>("[data-context-meter-settings]")!;
+        expect(button.getAttribute("aria-label")).toBe(s.basis(s.basisTurns, 60));
+        expect(button.getAttribute("title")).toBe(s.basis(s.basisTurns, 60));
+        expect(button.nextElementSibling!.textContent?.trim()).toBe(s.close);
+        expect(button.parentElement!.parentElement!.querySelector("h2")).not.toBeNull();
+        expect(opened.textContent).not.toContain(s.basis(s.basisTurns, 60));
+
+        settings.ui.contextMeterTurnUnit = "message";
+        settings.ui.contextMeterFixedWarn = 45;
+        flushSync();
+        expect(button.getAttribute("aria-label")).toBe(s.basis(s.basisMessages, 45));
+        expect(button.getAttribute("title")).toBe(s.basis(s.basisMessages, 45));
+        button.click();
+        flushSync();
+        expect(panel()).toBeNull();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(INTERACTION_SETTINGS_MENU);
+        expect(currentJump()).toMatchObject({
+            kind: "section",
+            id: "interaction.contextMeter",
+            sectionId: "interaction.contextMeter",
+            menu: INTERACTION_SETTINGS_MENU,
+            available: true,
+        });
+    });
+
+    it("opens focused and lists the sections largest first, with the counting difference outside the list", async () => {
         install([reply("m1", { context: report() })]);
         render();
         expect(panel()).toBeNull();
@@ -286,11 +1175,13 @@ describe("the popover", () => {
             ["history", `${language.contextUsage.sections.history} 450 tokens 56%`],
             ["main", `${language.contextUsage.sections.main} 100 tokens 13%`],
             ["description", `${language.contextUsage.sections.description} 30 tokens 4%`],
-            ["other", `${language.contextUsage.other} +20 tokens`],
         ]);
-        // The bar has one segment per section, none for Other.
-        expect(opened.querySelector('[aria-hidden="true"].h-3')!.children.length).toBe(3);
-        expect(opened.textContent).toContain(language.contextUsage.replyBudget("200"));
+        expect(opened.querySelector("[data-context-meter-other]")!.textContent?.trim()).toBe(
+            language.contextUsage.otherLine("+20"),
+        );
+        // The bar has one segment per group with tokens: the fixed sections and the history, no memory.
+        expect(opened.querySelector('[aria-hidden="true"].h-3')!.children.length).toBe(2);
+        expect(opened.querySelector("[data-context-meter-reserve]")).toBeNull();
         expect(opened.textContent).not.toContain(language.contextUsage.approximate);
         expect(opened.querySelector("[data-context-meter-omitted]")).toBeNull();
         expect(opened.querySelector("[data-context-meter-lore]")).toBeNull();
@@ -300,18 +1191,35 @@ describe("the popover", () => {
         install([reply("m1", { context: trimmed({ adjustment: -15, attributionExact: false }) })]);
         render();
         const opened = await openPanel();
-        expect(sectionRows().at(-1)).toEqual(["other", `${language.contextUsage.other} −15 tokens`]);
+        expect(sectionRows().at(-1)).toEqual([
+            "description",
+            `${language.contextUsage.sections.description} 30 tokens 4%`,
+        ]);
+        expect(opened.querySelector("[data-context-meter-other]")!.textContent?.trim()).toBe(
+            language.contextUsage.otherLine("−15"),
+        );
         expect(opened.textContent).toContain(language.contextUsage.approximate);
         expect(opened.querySelector("[data-context-meter-omitted]")!.textContent).toBe(
             language.contextUsage.historyOmitted(2, "300"),
         );
-        expect(opened.textContent).toContain(language.contextUsage.historyIncluded(4, 6, 2, 3));
+        // Without memory the report gives no reason for what it left out, but none of it was summarized.
+        const tags = opened.querySelectorAll<HTMLElement>("[data-context-meter-omitted-tags] span");
+        expect([...tags].map((tag) => [tag.dataset.tone, tag.textContent])).toEqual([
+            ["warn", language.contextUsage.omittedNoMemory],
+        ]);
+        // The setting's unit leads, the other in parentheses; the totals sit under them.
+        expect(opened.querySelector("[data-context-meter-kept]")!.textContent).toBe(
+            language.contextUsage.historySent(2, 4, "user"),
+        );
+        expect(opened.querySelector("[data-context-meter-total]")!.textContent).toBe(
+            language.contextUsage.historyTotal(3, 6, "user"),
+        );
     });
 
     it("reads a zero prompt budget as 100% and says so", async () => {
         install([reply("m1", { context: report({ maxContext: 1000, maxResponse: 1000, input: 600 }) })]);
         render();
-        expect(chipText()).toBe("100%");
+        expect(chipText()).toBe("3 turns · 100% · fixed 100%");
         const opened = await openPanel();
         expect(opened.textContent).toContain(language.contextUsage.noBudget);
         // No percent column without a budget.
@@ -331,15 +1239,88 @@ describe("the popover", () => {
         const lore = opened.querySelector("[data-context-meter-lore]")!;
         expect(lore.textContent).toContain(language.contextUsage.loreRejected(2, "80"));
         expect(lore.textContent).toContain("0 / 0");
+        // A report written before entries were named lists none.
+        expect(lore.querySelector("[data-context-meter-lore-rejected]")).toBeNull();
     });
 
-    it("shows the HypaV3 budget meter only with a budget, else the memory line, with the coverage text", async () => {
+    it("warns on the chip of left-out lore, names the entries, and turns the warning off in this chat", async () => {
+        install([
+            reply("m1", {
+                context: report({
+                    lore: {
+                        budgetUsed: 90,
+                        budget: 100,
+                        rejectedCount: 10,
+                        rejectedTokens: 500,
+                        rejected: [
+                            { name: "Far kingdom", tokens: 60 },
+                            { name: "Old war", tokens: 40 },
+                        ],
+                        active: 3,
+                    },
+                }),
+            }),
+        ]);
+        render();
+        const warned = () => chip()!.querySelector("[data-context-meter-lore-warn]") !== null;
+        expect(warned()).toBe(true);
+        expect(chip()!.getAttribute("aria-label")).toContain(language.contextUsage.loreWarnSummary(10));
+        const opened = await openPanel();
+        const lore = opened.querySelector("[data-context-meter-lore]")!;
+        const named = () =>
+            [...lore.querySelectorAll("[data-context-meter-lore-rejected] li")].map((row) =>
+                row.textContent!.replace(/\s+/g, " ").trim(),
+            );
+        expect(named()).toEqual([
+            "Far kingdom 60 tokens",
+            "Old war 40 tokens",
+            language.contextUsage.loreRejectedMore(8),
+        ]);
+        const toggle = () => lore.querySelector<HTMLButtonElement>("[data-context-meter-lore-toggle]")!;
+        expect(toggle().textContent!.trim()).toBe(language.contextUsage.loreWarnOff);
+
+        toggle().click();
+        flushSync();
+        expect(findChat(ref)!.loreBudgetWarnOff).toBe(true);
+        expect(warned()).toBe(false);
+        expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.loreWarnSummary(10));
+        // The popover still lists the entries and offers the warning back.
+        expect(named()).toHaveLength(3);
+        expect(lore.textContent).toContain(language.contextUsage.loreWarnOffNote);
+        expect(toggle().textContent!.trim()).toBe(language.contextUsage.loreWarnOn);
+
+        toggle().click();
+        flushSync();
+        expect(Object.hasOwn(findChat(ref)!, "loreBudgetWarnOff")).toBe(false);
+        expect(warned()).toBe(true);
+    });
+
+    it("keeps the way back while the warning is off, even when the last request used no lore", async () => {
+        install([reply("m1", { context: report() })]);
+        render();
+        const lore = async () => (await openPanel()).querySelector("[data-context-meter-lore]");
+        expect(await lore()).toBeNull();
+        chip()!.click();
+        flushSync();
+
+        setChatMeta(ref, { loreBudgetWarnOff: true });
+        flushSync();
+        const block = (await lore())!;
+        expect(block.textContent).toContain(language.contextUsage.loreWarnOffNote);
+        block.querySelector<HTMLButtonElement>("[data-context-meter-lore-toggle]")!.click();
+        flushSync();
+        expect(Object.hasOwn(findChat(ref)!, "loreBudgetWarnOff")).toBe(false);
+    });
+
+    it("shows the HypaV3 budget row only with a budget, else the memory line, with the coverage text", async () => {
         install([reply("m1", { context: trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } }) })]);
         render();
         let opened = await openPanel();
         let memory = opened.querySelector("[data-context-meter-memory]")!;
         expect(memory.textContent).toContain(language.contextUsage.memoryLine("HypaV3", "300"));
-        expect(memory.textContent).toContain(language.contextUsage.coverageGap);
+        expect(opened.querySelector("[data-context-meter-coverage]")!.textContent).toBe(
+            language.contextUsage.coverageGap,
+        );
         chip()!.click();
         flushSync();
         expect(panel()).toBeNull();
@@ -355,7 +1336,118 @@ describe("the popover", () => {
         expect(memory.textContent).toContain(language.contextUsage.memoryBudget("HypaV3"));
         expect(memory.textContent).toContain("300 / 500");
         expect(memory.textContent).not.toContain(language.contextUsage.memoryLine("HypaV3", "300"));
-        expect(memory.textContent).toContain(language.contextUsage.coverageCovered);
+        expect(opened.querySelector("[data-context-meter-coverage]")!.textContent).toBe(
+            language.contextUsage.coverageCovered,
+        );
+        // What was left out is a fact about the past: it sits under the totals, before the memory.
+        const omittedLine = opened.querySelector("[data-context-meter-omitted]")!;
+        expect(omittedLine.compareDocumentPosition(memory) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("leaves out the coverage text when no history was left out", async () => {
+        install([reply("m1", { context: report({ memory: { kind: "hypaV3", tokens: 0, coverage: "covered" } }) })]);
+        render();
+        const opened = await openPanel();
+        expect(opened.querySelector("[data-context-meter-memory]")).not.toBeNull();
+        expect(opened.querySelector("[data-context-meter-coverage]")).toBeNull();
+        expect(opened.textContent).not.toContain(language.contextUsage.coverageCovered);
+    });
+
+    it("shows the reported budget reductions in the chip, summary and memory breakdown only while present", async () => {
+        const s = language.contextUsage;
+        const memory = { kind: "hypaV3", tokens: 50, budget: 400, coverage: "covered" } as const;
+        const budgetReduced = [
+            { field: "memory", configured: 6000, applied: 400 },
+            { field: "headroom", configured: 2000, applied: 0 },
+            { field: "extra", configured: 1000, applied: 400 },
+        ] satisfies NonNullable<ContextReport["memory"]>["budgetReduced"];
+        const lines = budgetReduced.map(({ field, configured, applied }) =>
+            s.budgetReducedValue(s.budgetReducedFields[field], configured.toLocaleString(), applied.toLocaleString()),
+        );
+        install([reply("m1", { context: trimmed({ memory }) })]);
+        render();
+        const opened = await openPanel();
+        const absent = () => {
+            expect(chip()!.querySelector("[data-context-meter-memory-reduced]")).toBeNull();
+            expect(chipText()).not.toContain(s.memoryReduced);
+            for (const attribute of ["aria-label", "title"]) {
+                expect(chip()!.getAttribute(attribute)).not.toContain(s.memoryReducedSummary);
+            }
+            expect(opened.querySelector("[data-context-meter-budget-reduced]")).toBeNull();
+            expect(opened.textContent).not.toContain(s.budgetReducedNote);
+            for (const line of lines) {
+                expect(opened.textContent).not.toContain(line);
+            }
+        };
+        absent();
+
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ memory: { ...memory, budgetReduced } }) },
+        });
+        flushSync();
+        const mark = chip()!.querySelector("[data-context-meter-memory-reduced]")!;
+        expect(mark).not.toBeNull();
+        expect(mark.textContent?.trim()).toBe(s.memoryReduced);
+        expect(mark.classList.contains("text-danger-500")).toBe(true);
+        for (const attribute of ["aria-label", "title"]) {
+            expect(chip()!.getAttribute(attribute)).toContain(s.memoryReducedSummary);
+        }
+        const block = opened.querySelector("[data-context-meter-memory] [data-context-meter-budget-reduced]")!;
+        expect(block).not.toBeNull();
+        expect(block.classList.contains("text-danger-500")).toBe(true);
+        expect([...block.children].map((line) => line.textContent?.trim())).toEqual([s.budgetReducedNote, ...lines]);
+
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed({ memory }) } });
+        flushSync();
+        absent();
+    });
+
+    it("splits the history left out into summarized and unsummarized tags, replacing the coverage sentence", async () => {
+        const memory = {
+            kind: "hypaV3" as const,
+            tokens: 50,
+            budget: 200,
+            coverage: "gap" as const,
+            summarized: 1,
+            reserved: 200,
+            summarizeIn: 70,
+            lookaheadIn: 20,
+        };
+        const sections: ContextReport["sections"] = [
+            { kind: "main", tokens: 100 },
+            { kind: "history", tokens: 400 },
+            { kind: "description", tokens: 30 },
+            { kind: "memory", tokens: 50 },
+        ];
+        install([reply("m1", { context: trimmed({ sections, memory }) })]);
+        render();
+        let opened = await openPanel();
+        const tags = () =>
+            [...opened.querySelectorAll("[data-context-meter-omitted-tags] [data-tone]")].map((tag) => [
+                tag.getAttribute("data-tone"),
+                tag.textContent,
+            ]);
+        // One of the two messages left out is summarized, the other is not.
+        expect(opened.querySelector("[data-context-meter-omitted]")!.textContent).toBe(
+            language.contextUsage.historyOmitted(2, "300"),
+        );
+        expect(tags()).toEqual([
+            ["memory", language.contextUsage.omittedSummarized(1)],
+            ["warn", language.contextUsage.omittedUnsummarized(1)],
+        ]);
+        // The split replaces the coverage sentence.
+        expect(opened.querySelector("[data-context-meter-coverage]")).toBeNull();
+        expect(opened.textContent).not.toContain(language.contextUsage.coverageGap);
+        chip()!.click();
+        flushSync();
+
+        // Every message left out is summarized: one tag.
+        patchMessage(ref, "m1", {
+            generationInfo: { context: trimmed({ sections, memory: { ...memory, summarized: 2 } }) },
+        });
+        flushSync();
+        opened = await openPanel();
+        expect(tags()).toEqual([["memory", language.contextUsage.omittedSummarized(2)]]);
     });
 
     it("sits above the chip when there is room, below it otherwise, and stays below alerts", async () => {
@@ -398,7 +1490,7 @@ describe("the popover", () => {
         removeMessages(ref, ["m2"]);
         await settle();
         // The older report is the source now: the chip and the open popover follow it.
-        expect(chipText()).toBe("75%");
+        expect(chipText()).toBe("3 turns · 75%");
         opened = panel()!;
         expect(opened).not.toBeNull();
         expect(opened.querySelector("[data-context-meter-omitted]")).toBeNull();
@@ -418,6 +1510,297 @@ describe("the popover", () => {
         flushSync();
         expect(chip()).not.toBeNull();
         expect(panel()).toBeNull();
+    });
+});
+
+/** The chip's text with a live task's mark after the memory word, just before the percentage that ends `plain`. */
+const withTask = (plain: string, word: string) => {
+    const at = plain.lastIndexOf(" · ");
+    return at < 0 ? `${word} · ${plain}` : `${plain.slice(0, at)} · ${word}${plain.slice(at)}`;
+};
+
+describe("the background summary task", () => {
+    const hypaReport = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } });
+
+    it("puts a running writer in place of a pending or recorded memory word, and after any other word", () => {
+        install([reply("m1", { context: report() })], { memoryMode: "structuredMemory", memoryEnabled: true });
+        render();
+        const s = language.contextUsage;
+        const tokens = s.tokens("137");
+        const running = s.writerTask.running(4, 23);
+        taskFrame({ ...live("running", 4, 23), kind: "structuredMemory" });
+        for (const state of ["recorded", "pending", "failed", "paused", "notAutomatic"] as const) {
+            patchMessage(ref, "m1", {
+                generationInfo: {
+                    context: report({
+                        memory: { kind: "structuredMemory", tokens: 137, coverage: "covered", writer: { state } },
+                    }),
+                },
+            });
+            flushSync();
+            const word = language.structuredMemory.meter.status[state];
+            expect(chipText(), state).toBe(
+                state === "recorded" || state === "pending"
+                    ? `3 turns · ${tokens} · ${running} · 75%`
+                    : `3 turns · ${tokens} · ${word} · ${running} · 75%`,
+            );
+            expect(chip()!.getAttribute("aria-label"), state).toContain(word);
+        }
+    });
+
+    it("words a writer task's chip, label, and popover as recording", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        const s = language.contextUsage;
+        const writer = s.writerTask;
+        const expectWriterBlock = (tone: string, ...notes: string[]) => {
+            const block = taskBlock()!;
+            expect(block.dataset.tone).toBe(tone);
+            for (const text of [writer.title, ...notes]) {
+                expect(block.textContent).toContain(text);
+            }
+            for (const text of [
+                s.taskTitle,
+                s.taskQueued,
+                s.taskRunning(3, 8),
+                s.taskRunningUnknown,
+                s.taskLiveNote,
+                s.taskDone,
+                s.taskFailed,
+            ]) {
+                expect(block.textContent).not.toContain(text);
+            }
+        };
+
+        for (const [status, word, summaryWord] of [
+            [live("queued"), writer.queued, s.taskQueued],
+            [live("running"), writer.runningUnknown, s.taskRunningUnknown],
+            [live("running", 3, 8), writer.running(3, 8), s.taskRunning(3, 8)],
+        ] as const) {
+            taskFrame({ ...status, kind: "structuredMemory" });
+            expect(chipText()).toBe(withTask(plain!, word));
+            expect(chip()!.getAttribute("aria-label")).toContain(s.taskSummary(word));
+            expect(chip()!.getAttribute("aria-label")).not.toContain(s.taskSummary(summaryWord));
+            if (!panel()) await openPanel();
+            expectWriterBlock("live", word, writer.liveNote);
+        }
+
+        taskFrame(ended("done", { kind: "structuredMemory", lastCommittedRevision: "r2" }));
+        expect(chipText()).toBe(plain);
+        expectWriterBlock("done", writer.done);
+
+        taskFrame({ ...live("running", 3, 8), kind: "structuredMemory", taskId: "t2" });
+        taskFrame({ ...ended("failed", { kind: "structuredMemory", error: "upstream 429" }), taskId: "t2" });
+        expect(chipText()).toBe(withTask(plain!, writer.failedMark));
+        expect(chip()!.getAttribute("aria-label")).toContain(s.taskSummary(writer.failedMark));
+        expectWriterBlock("failed", writer.failed);
+    });
+
+    it("marks the line while the chat's task is queued or runs, with its count once the total is known", () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+
+        taskFrame(live("queued"));
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskQueued));
+        expect(chip()!.getAttribute("aria-label")).toContain(
+            `; ${language.contextUsage.taskSummary(language.contextUsage.taskQueued)}`,
+        );
+        taskFrame(live("running"));
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskRunningUnknown));
+        taskFrame(live("running", 3, 8));
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskRunning(3, 8)));
+        expect(chip()!.getAttribute("aria-label")).toContain(
+            language.contextUsage.taskSummary(language.contextUsage.taskRunning(3, 8)),
+        );
+
+        taskFrame(ended("cancelled"));
+        expect(chipText()).toBe(plain);
+        expect(chip()!.getAttribute("aria-label")).not.toContain(language.contextUsage.taskSummary(""));
+    });
+
+    it("ignores another chat's task", () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        taskFrame(live("running", 1, 4), { chaId: "c", chatId: "other" });
+        expect(chipText()).toBe(plain);
+    });
+
+    it("shows the running task in the popover, above the last reply's breakdown", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(live("running", 3, 8));
+        const opened = await openPanel();
+        const block = taskBlock()!;
+        expect(block.dataset.tone).toBe("live");
+        expect(block.textContent).toContain(language.contextUsage.taskRunning(3, 8));
+        expect(block.textContent).toContain(language.contextUsage.taskLiveNote);
+        // Before the headline, so it does not read as part of the report.
+        expect(
+            block.compareDocumentPosition(opened.querySelector("[data-context-meter-headline]")!) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+        taskFrame(live("running", 4, 8));
+        expect(taskBlock()!.textContent).toContain(language.contextUsage.taskRunning(4, 8));
+    });
+
+    it("after a task it saw run commits, says the summaries are stored until the report changes", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(live("running", 3, 8));
+        taskFrame(ended("done", { terminalRevision: null, lastCommittedRevision: "r2" }));
+        expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+        await openPanel();
+        expect(taskBlock()!.dataset.tone).toBe("done");
+        expect(taskBlock()!.textContent).toContain(language.contextUsage.taskDone);
+
+        appendMessage(ref, reply("m2", { context: hypaReport() }) as any);
+        flushSync();
+        expect(taskBlock()).toBeNull();
+        // The newer reply ended the notice: removing it does not bring the notice back.
+        removeMessages(ref, ["m2"]);
+        flushSync();
+        expect(taskBlock()).toBeNull();
+    });
+
+    it("ends the notice when a continue rewrites the same reply's report", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(live("running", 3, 8));
+        taskFrame(ended("done", { lastCommittedRevision: "r2" }));
+        await openPanel();
+        expect(taskBlock()!.dataset.tone).toBe("done");
+        patchMessage(ref, "m1", { generationInfo: { context: hypaReport() } });
+        flushSync();
+        expect(taskBlock()!.dataset.tone).toBe("done");
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: trimmed({ input: 700, memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } }),
+            },
+        });
+        flushSync();
+        expect(taskBlock()).toBeNull();
+    });
+
+    it("says nothing of a finished task it did not see run, or one that committed nothing", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        taskFrame(ended("done", { lastCommittedRevision: "r2" }));
+        await openPanel();
+        expect(taskBlock()).toBeNull();
+
+        taskFrame({ ...live("running", 0, 2), taskId: "t2" });
+        taskFrame({ ...ended("done"), taskId: "t2" });
+        expect(taskBlock()).toBeNull();
+    });
+
+    it("reports a failed task with its error and a way to the memory settings", async () => {
+        install([reply("m1", { context: hypaReport() })]);
+        render();
+        const plain = chipText();
+        taskFrame(ended("failed", { error: "upstream 429" }));
+        // The line says so too: nothing else on it tells that the summaries stopped.
+        expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+        const failed = target.querySelector<HTMLElement>("[data-context-meter-task-failed]")!;
+        expect(failed.textContent?.trim()).toBe(language.contextUsage.taskFailedMark);
+        expect(failed.classList.contains("text-danger-500")).toBe(true);
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskFailedMark));
+        expect(chip()!.getAttribute("aria-label")).toContain(
+            `; ${language.contextUsage.taskSummary(language.contextUsage.taskFailedMark)}`,
+        );
+        await openPanel();
+        const block = taskBlock()!;
+        expect(block.dataset.tone).toBe("failed");
+        expect(block.textContent).toContain(language.contextUsage.taskFailed);
+        expect(block.querySelector("[data-context-meter-task-error]")!.textContent).toBe("upstream 429");
+        block.querySelector<HTMLButtonElement>("[data-context-meter-task-settings]")!.click();
+        flushSync();
+        expect(get(settingsOpen)).toBe(true);
+        expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
+        expect(panel()).toBeNull();
+    });
+
+    it("puts a failed writer in place of the report's failed word, and after any other word", () => {
+        install([reply("m1", { context: report() })], { memoryMode: "structuredMemory", memoryEnabled: true });
+        render();
+        const tokens = language.contextUsage.tokens("137");
+        const failedMark = language.contextUsage.writerTask.failedMark;
+        taskFrame(ended("failed", { kind: "structuredMemory", error: "upstream 429" }));
+        for (const state of ["failed", "pending", "paused"] as const) {
+            patchMessage(ref, "m1", {
+                generationInfo: {
+                    context: report({
+                        memory: { kind: "structuredMemory", tokens: 137, coverage: "covered", writer: { state } },
+                    }),
+                },
+            });
+            flushSync();
+            expect(chipText(), state).toBe(
+                state === "failed"
+                    ? `3 turns · ${tokens} · ${failedMark} · 75%`
+                    : `3 turns · ${tokens} · ${language.structuredMemory.meter.status[state]} · ${failedMark} · 75%`,
+            );
+        }
+    });
+
+    it("stops repeating a report's failed writer once the chat's runs no longer end in a failure", async () => {
+        // The mocked facts are not reactive, so each step stores a report that differs where no line shows it.
+        let budget = 500;
+        const failed = () => ({
+            context: report({
+                memory: {
+                    kind: "structuredMemory",
+                    tokens: 137,
+                    budget: budget++,
+                    coverage: "covered",
+                    writer: { state: "failed" },
+                },
+            }),
+        });
+        const facts = {
+            paused: false,
+            lastRunFailed: true,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        };
+        const chip = (word: string) => `3 turns · ${language.contextUsage.tokens("137")} · ${word} · 75%`;
+        install([reply("m1", failed())], { memoryMode: "structuredMemory", memoryEnabled: true });
+        render();
+        // The report alone, and facts that confirm it, leave the word as the send wrote it.
+        expect(chipText()).toBe(chip(language.structuredMemory.meter.status.failed));
+        mocks.healthFacts.mockReturnValue(facts);
+        patchMessage(ref, "m1", { generationInfo: failed() });
+        flushSync();
+        expect(chipText()).toBe(chip(language.structuredMemory.meter.status.failed));
+        // A fill gaps made the failure good and wrote no receipt: the line stops saying failed and claims no more.
+        mocks.healthFacts.mockReturnValue({ ...facts, lastRunFailed: false });
+        patchMessage(ref, "m1", { generationInfo: failed() });
+        flushSync();
+        expect(chipText()).toBe(chip(language.contextUsage.memoryOn));
+        await openPanel();
+        expect(panel()!.querySelector("[data-memory-manifest]")).not.toBeNull();
+        expect(panel()!.querySelector("[data-memory-manifest-writer]")).toBeNull();
+        // A recording that reached the newest reply left its receipt there.
+        patchMessage(ref, "m1", { generationInfo: { ...failed(), memory: { state: "recorded", eventId: "e" } } });
+        flushSync();
+        expect(chipText()).toBe(chip(language.structuredMemory.meter.status.recorded));
+        expect(panel()!.querySelector<HTMLElement>("[data-memory-manifest-writer]")?.dataset.memoryManifestWriter).toBe(
+            "recorded",
+        );
+    });
+
+    it("shows on a legacy fallback too", async () => {
+        install([reply("m1", { inputTokens: 600, maxContext: 1000 })]);
+        render();
+        taskFrame(live("queued"));
+        expect(chipText()).toBe(`${language.contextUsage.taskQueued} · 60%`);
+        await openPanel();
+        expect(taskBlock()!.dataset.tone).toBe("live");
     });
 });
 
@@ -475,33 +1858,13 @@ describe("dismissal and focus", () => {
 
     it("the close button closes and returns focus to the chip", async () => {
         const opened = await openPanel();
-        opened.querySelector<HTMLButtonElement>("button")!.click();
+        const close = [...opened.querySelectorAll("button")].find(
+            (button) => button.textContent?.trim() === language.contextUsage.close,
+        )!;
+        close.click();
         flushSync();
         expect(panel()).toBeNull();
         expect(document.activeElement).toBe(chip());
-    });
-
-    it("the basis line names the unit and level, and its link records a jump to the meter's settings section", async () => {
-        settings.ui.contextMeterTurnUnit = "message";
-        settings.ui.contextMeterFixedWarn = 45;
-        flushSync();
-        const opened = await openPanel();
-        expect(opened.textContent).toContain(language.contextUsage.basis(language.contextUsage.basisMessages, 45));
-        const link = [...opened.querySelectorAll("button")].find(
-            (button) => button.textContent?.trim() === language.contextUsage.changeSettings,
-        )!;
-        link.click();
-        flushSync();
-        expect(panel()).toBeNull();
-        expect(get(settingsOpen)).toBe(true);
-        expect(get(SettingsMenuIndex)).toBe(INTERACTION_SETTINGS_MENU);
-        expect(currentJump()).toMatchObject({
-            kind: "section",
-            id: "interaction.contextMeter",
-            sectionId: "interaction.contextMeter",
-            menu: INTERACTION_SETTINGS_MENU,
-            available: true,
-        });
     });
 });
 
@@ -631,6 +1994,27 @@ describe("the displacement estimate", () => {
                     }
                 }),
         );
+    });
+
+    it("stands down the displacement estimate when Structured Memory is selected even with every legacy flag off", async () => {
+        autoCount = byLength;
+        installEstimate(QUEUE);
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const props = render({ draft: "d".repeat(10) });
+        await vi.advanceTimersByTimeAsync(400);
+        await settle();
+        expect(texts()).toEqual([]);
+        expect(suffix()).toBeNull();
+        await openPanel();
+        expect(block()).toBeNull();
+        props.draft = "changed draft";
+        await vi.advanceTimersByTimeAsync(400);
+        expect(texts()).toEqual([]);
+        // The same report is otherwise eligible; changing the algorithm releases the estimate.
+        settings.ui.memoryAlgorithmType = "none";
+        await settle();
+        expect(texts()).toEqual([REPLY, "changed draft"]);
+        expect(suffix()).not.toBeNull();
     });
 
     it("counts the reply and the draft at once in the job scope, then only the draft after 400 ms of quiet", async () => {

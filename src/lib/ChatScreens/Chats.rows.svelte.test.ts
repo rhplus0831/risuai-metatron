@@ -5,14 +5,18 @@ import { writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHAT_ROW_CAP } from "../../../shared/chatLoadPages.ts";
 
-type Message = { chatId: string; data: string; role: "char" | "user"; disabled?: boolean };
+type Message = { chatId: string; data: string; role: "char" | "user"; disabled?: boolean; isComment?: boolean };
 type RowProps = {
     messageId: string;
     message: string;
+    isComment: boolean;
     idx: number;
     name: string;
     img: string | Promise<string>;
     largePortrait: boolean;
+    onOpenInlineEditor?: () => void;
+    onCloseInlineEditor?: () => void;
+    onEditing?: () => void;
 };
 type Row = {
     props: RowProps;
@@ -79,7 +83,7 @@ vi.mock("src/ts/stores.svelte", async () =>
         reloadChatKey: (id: string | undefined, idx: number) => (id !== undefined ? `m:${id}` : `i:${idx}`),
     }),
 );
-vi.mock("src/ts/storage/chatStore.svelte", () => {
+vi.mock("src/ts/storage/chatStore.svelte", async () => {
     const selection = $state({ chaId: "c", chatId: "chat" });
     // Chat key → the entry that chat shows as streaming.
     const streaming: Record<string, { messageId: string; mode: string }> = $state({});
@@ -87,21 +91,26 @@ vi.mock("src/ts/storage/chatStore.svelte", () => {
     const locks: Record<string, string[]> = $state({});
     const streamed: Record<string, string[]> = $state({});
     return {
-        currentChatRef: () => selection,
-        selectedChatId: () => selection.chatId,
-        streamingEntry: (ref: { chaId: string; chatId: string } | null) =>
-            (ref === null ? undefined : streaming[`${ref.chaId}/${ref.chatId}`]) ?? null,
-        setStreamingState: (
-            ref: { chaId: string; chatId: string },
-            entry: { messageId: string; mode: string } | null,
-        ) => {
-            if (entry === null) delete streaming[`${ref.chaId}/${ref.chatId}`];
-            else streaming[`${ref.chaId}/${ref.chatId}`] = entry;
-        },
-        isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
-            ref !== null && messageId !== undefined && !!locks[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
-        isMessageStreamed: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
-            ref !== null && messageId !== undefined && !!streamed[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+        ...(await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+            currentChatRef: () => selection,
+            selectedChatId: () => selection.chatId,
+            streamingEntry: (ref: { chaId: string; chatId: string } | null) =>
+                (ref === null ? undefined : streaming[`${ref.chaId}/${ref.chatId}`]) ?? null,
+            setStreamingState: (
+                ref: { chaId: string; chatId: string },
+                entry: { messageId: string; mode: string } | null,
+            ) => {
+                if (entry === null) delete streaming[`${ref.chaId}/${ref.chatId}`];
+                else streaming[`${ref.chaId}/${ref.chatId}`] = entry;
+            },
+            isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
+                ref !== null && messageId !== undefined && !!locks[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+            isMessageStreamed: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) =>
+                ref !== null &&
+                messageId !== undefined &&
+                !!streamed[`${ref.chaId}/${ref.chatId}`]?.includes(messageId),
+        }),
+        // The test's own driver of the locks above; no such export exists.
         setLockedMessages: (
             ref: { chaId: string; chatId: string },
             messageIds: string[],
@@ -112,9 +121,9 @@ vi.mock("src/ts/storage/chatStore.svelte", () => {
         },
     };
 });
-vi.mock("src/ts/globalApi.svelte", () => {
+vi.mock("src/ts/globalApi.svelte", async () => {
     const chatFoldedStateMessageIndex = $state({ index: -1 });
-    return { chatFoldedStateMessageIndex };
+    return (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ chatFoldedStateMessageIndex });
 });
 
 import { chatFoldedStateMessageIndex as folded } from "src/ts/globalApi.svelte";
@@ -168,6 +177,13 @@ const clearUpdates = () =>
         row.updates.length = 0;
     });
 const rect = (top: number, bottom: number) => new DOMRect(0, top, 300, bottom - top);
+const fakeFrames = () =>
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
+/** Ends an opening's reveal at its 1200 ms deadline (under `fakeFrames`): input releases the anchor only after it. */
+const endReveal = () => {
+    vi.advanceTimersByTime(1200);
+    flushSync();
+};
 
 function render(
     input = messages(6),
@@ -185,6 +201,7 @@ function render(
         loadPages: window,
         suspendTrim: options.suspendTrim,
         revealing: false,
+        holding: false,
         hasNewUnreadMessage: false,
         onTrim: undefined as undefined | ((keep: number) => number | undefined),
     });
@@ -331,6 +348,25 @@ describe("chat row invalidation", () => {
         expect(untouchedReads).not.toHaveBeenCalled();
         expect(scrollRead).not.toHaveBeenCalled();
         expect(log).not.toHaveBeenCalled();
+    });
+
+    it("updates the comment flag both ways without remounting when text and role stay the same", () => {
+        const input = messages(6);
+        input[2].isComment = false;
+        const { props } = render(input);
+        const row = latest("m2");
+        expect(row.props.isComment).toBe(false);
+
+        for (const isComment of [true, false]) {
+            clearUpdates();
+            props.messages[2].isComment = isComment;
+            flushSync();
+
+            expect(row.updates).toEqual([{ isComment }]);
+            expect(latest("m2")).toBe(row);
+            expect(row.destroyed).toBe(false);
+            expect(state.rows).toHaveLength(6);
+        }
     });
 
     it.each(["text", "reload", "disabled"])("remounts only the row whose %s changes", (field) => {
@@ -565,7 +601,9 @@ describe("distant row containment", () => {
 describe("new reply notification", () => {
     it("reads the bottom before a same-chat character append and marks an unread reply", () => {
         settings.ui.autoScrollToNewMessage = true;
+        fakeFrames();
         const { props, scroller, append, ids } = render();
+        endReveal();
         // The reader scrolls away from the newest message the opening showed.
         scroller.dispatchEvent(new Event("wheel"));
         const oldIds = ids();
@@ -720,6 +758,9 @@ describe("opening row reveal", () => {
             state.rows.forEach((row) => row.settle());
             await frame();
             expect(ui.pending()).toEqual([]);
+            // The page loaded above shows over three frames (see "rows added above the view").
+            await frame();
+            await frame();
             expect(vi.getTimerCount()).toBe(0);
         },
     );
@@ -948,7 +989,8 @@ describe("opening staged mounting", () => {
         await flushWaits(16);
         expect(latest("m0").element.classList.contains("chat-row-pending")).toBe(true);
         for (const row of state.rows.slice(3)) row.settle();
-        await flushWaits(16);
+        // The held older rows show over three frames (see "rows added above the view").
+        await flushWaits(48);
         expect(ui.scroller.querySelector(".chat-row-pending")).toBeNull();
         expect(ui.props.revealing).toBe(false);
         expect(vi.getTimerCount()).toBe(0);
@@ -1169,6 +1211,168 @@ describe("opening staged mounting", () => {
         },
     );
 
+    describe("rows added above the view", () => {
+        const held = (ui: ReturnType<typeof render>) =>
+            containers(ui)
+                .filter((element) => element.classList.contains("chat-row-held"))
+                .map((element) => element.dataset.messageId ?? "unmounted");
+        const touch = (type: string, fingers: number) =>
+            Object.assign(new Event(type), { touches: Array.from({ length: fingers }, () => ({})) });
+        // Showing takes three frames: the scroll gate's commit, the rows, then lifting the gate.
+        const releaseFrames = () => flushWaits(48);
+        // Settles the first stage, then the older rows it arms, without running animation frames.
+        async function renderAll() {
+            for (let pass = 0; pass < 2; pass++) {
+                state.rows.forEach((row) => row.settle());
+                await flushWaits();
+            }
+        }
+
+        it("holds an opening's older rows until they render and the reader stops scrolling", async () => {
+            const ui = staged();
+            expect(containers(ui).map((element) => element.classList.contains("chat-row-held"))).toEqual([
+                ...Array(3).fill(false),
+                ...Array(9).fill(true),
+            ]);
+            expect(ui.props.holding).toBe(true);
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            for (const row of state.rows.filter((row) => row.props.messageId !== "m0")) row.settle();
+            await releaseFrames();
+            // Rendered, but the reader is still scrolling.
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            // m0 has not rendered yet.
+            expect(held(ui)).toEqual(["m0"]);
+            expect(ui.props.holding).toBe(true);
+            latest("m0").settle();
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("ends a scroll without scrollend after 400 ms without scroll input", async () => {
+            const ui = staged();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            state.rows.forEach((row) => row.settle());
+            await flushWaits(399);
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            await flushWaits(399);
+            expect(held(ui)).toHaveLength(9);
+            await flushWaits(1);
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+        });
+
+        it("keeps holding while a finger is down, even past scrollend", async () => {
+            const ui = staged();
+            ui.scroller.dispatchEvent(touch("touchstart", 1));
+            flushSync();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            state.rows.forEach((row) => row.settle());
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await flushWaits(1000);
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(touch("touchend", 0));
+            await flushWaits(399);
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+        });
+
+        it("checks for a scroll again in the frame that would show the rows", async () => {
+            const ui = staged();
+            await renderAll();
+            // A wheel dispatched after the release frame was requested and before it runs.
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            await releaseFrames();
+            expect(held(ui)).toHaveLength(9);
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+        });
+
+        it("makes new scrolls wait for the main thread from a frame before the rows show to a frame after", async () => {
+            const ui = staged();
+            const add = vi.spyOn(ui.scroller, "addEventListener");
+            const remove = vi.spyOn(ui.scroller, "removeEventListener");
+            const gates = () =>
+                add.mock.calls
+                    .filter(([, , options]) => (options as AddEventListenerOptions)?.passive === false)
+                    .map(([event]) => event);
+            await renderAll();
+            expect(gates()).toEqual(["wheel", "touchstart"]);
+            const gate = add.mock.calls.find(
+                ([, , options]) => (options as AddEventListenerOptions)?.passive === false,
+            )![1];
+            await flushWaits(16);
+            expect(held(ui)).toHaveLength(9);
+            await flushWaits(16);
+            expect(held(ui)).toEqual([]);
+            expect(remove.mock.calls.filter(([, listener]) => listener === gate)).toEqual([]);
+            await flushWaits(16);
+            expect(remove.mock.calls.filter(([, listener]) => listener === gate).map(([event]) => event)).toEqual([
+                "wheel",
+                "touchstart",
+            ]);
+            expect(vi.getTimerCount()).toBe(0);
+        });
+
+        it("contains a held row only after it is shown and measured", async () => {
+            const ui = staged();
+            const observer = Observer.live.at(-1)!;
+            await renderAll();
+            const element = latest("m0").element;
+            observer.deliver(element, false);
+            expect(element.classList.contains("far")).toBe(false);
+            expect(element.style.containIntrinsicBlockSize).toBe("");
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            observer.deliver(element, false);
+            expect(element.classList.contains("far")).toBe(true);
+            expect(element.style.containIntrinsicBlockSize).not.toBe("");
+        });
+
+        it("holds a loaded page above the view, never an appended reply", async () => {
+            const ui = render(longMessages(20), 12);
+            await renderAll();
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            ui.props.loadPages = 20;
+            flushSync();
+            expect(held(ui)).toEqual(["m7", "m6", "m5", "m4", "m3", "m2", "m1", "m0"]);
+            expect(ui.props.holding).toBe(true);
+            ui.append();
+            // The window keeps the newest 20: m0 leaves it.
+            expect(containers(ui)[0].dataset.messageId).toBe("m20");
+            expect(held(ui)).toEqual(["m7", "m6", "m5", "m4", "m3", "m2", "m1"]);
+            state.rows.forEach((row) => row.settle());
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await releaseFrames();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+        });
+
+        it.each(["capture", "suspendTrim", "whenRendered"])("%s shows held rows at once", async (mode) => {
+            const ui = staged();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            flushSync();
+            if (mode === "capture") ui.props.loadPages = Infinity;
+            if (mode === "suspendTrim") ui.props.suspendTrim = true;
+            if (mode === "whenRendered") void ui.instance.whenRendered();
+            await flushWaits();
+            expect(held(ui)).toEqual([]);
+            expect(ui.props.holding).toBe(false);
+        });
+    });
+
     it("a new opening and destroy cancel old staging without mounting removed rows", async () => {
         const ui = staged();
         const oldElements = containers(ui);
@@ -1206,23 +1410,28 @@ describe("opening staged mounting", () => {
 
 describe("latest message scroll anchor", () => {
     const chat = { chaId: "c", chatId: "chat" };
-    let callbacks: (() => void)[] = [];
+    let callbacks: ((entries?: ResizeObserverEntry[]) => void)[] = [];
+    // The laid-out rows' sizes, as a ResizeObserver reports them.
+    let sizes: () => ResizeObserverEntry[] = () => [];
     const resize = () => {
-        for (const callback of callbacks) callback();
+        const entries = sizes();
+        for (const callback of callbacks) callback(entries);
         flushSync();
     };
 
     beforeEach(() => {
+        fakeFrames();
         callbacks = [];
         vi.stubGlobal(
             "ResizeObserver",
             class {
-                callback: () => void;
+                callback: (entries?: ResizeObserverEntry[]) => void;
                 constructor(callback: ResizeObserverCallback) {
-                    this.callback = () => callback([], this as never);
+                    this.callback = (entries = []) => callback(entries, this as never);
                     callbacks.push(this.callback);
                 }
                 observe() {}
+                unobserve() {}
                 disconnect() {
                     callbacks = callbacks.filter((item) => item !== this.callback);
                 }
@@ -1249,12 +1458,17 @@ describe("latest message scroll anchor", () => {
             }
         };
         measure();
+        sizes = () =>
+            [...ui.scroller.querySelectorAll<HTMLElement>(".chat-message-container")].flatMap((row) => {
+                const box = natural.get(row.dataset.messageId ?? "");
+                return box ? [{ target: row, borderBoxSize: [{ blockSize: box.height }] } as never] : [];
+            });
         const push = (message: Message) => {
             ui.props.messages.push(message);
             flushSync();
             measure();
         };
-        return { ...ui, natural, push };
+        return { ...ui, natural, push, measure };
     }
 
     it("opens at the newest message's start, keeps it there as it renders, and lets the reader take over", () => {
@@ -1266,10 +1480,54 @@ describe("latest message scroll anchor", () => {
         ui.natural.set("m5", { top: -400, height: 900 });
         resize();
         expect(ui.scroller.scrollTop).toBe(-500);
+        endReveal();
         ui.scroller.dispatchEvent(new Event("wheel"));
         ui.natural.set("m5", { top: -600, height: 1100 });
         resize();
         expect(ui.scroller.scrollTop).toBe(-500);
+    });
+
+    it("keeps the opening's anchor through input while its newest row is still hidden", async () => {
+        const ui = anchored();
+        // The rows are shells and the view is at the bottom: released now, it would stay there.
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.scroller.dispatchEvent(new Event("touchmove"));
+        ui.scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }));
+        // The newest row is revealed once it has rendered, here still shorter than the view; the
+        // older rows stay hidden.
+        ui.natural.set("m5", { top: 300, height: 200 });
+        latest("m5").settle();
+        await vi.advanceTimersByTimeAsync(16);
+        flushSync();
+        const hidden = [...ui.scroller.querySelectorAll<HTMLElement>(".chat-row-pending")];
+        expect(hidden.map((row) => row.dataset.messageId)).toEqual(["m4", "m3", "m2", "m1", "m0"]);
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.natural.set("m5", { top: -400, height: 900 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+    });
+
+    it("moves to the start of the row that is newest now when the anchored row is removed or replaced", () => {
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        // A write that hands the newest message back under a new id replaces its row.
+        ui.props.messages.splice(5, 1, { chatId: "m5b", data: "text 5", role: "user" });
+        flushSync();
+        ui.measure();
+        ui.natural.set("m5b", { top: -350, height: 850 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-450);
+        // A deletion leaves the message before it as the newest.
+        ui.natural.set("m4", { top: -100, height: 600 });
+        ui.props.messages.pop();
+        flushSync();
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-200);
     });
 
     it("keeps the bottom for a newest message shorter than the view", () => {
@@ -1279,15 +1537,18 @@ describe("latest message scroll anchor", () => {
         expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
     });
 
-    it("does not release the anchor for a click in a row or keys typed in an input", () => {
+    it("does not release the anchor for a click in a row, keys typed in an input, or a sideways wheel", () => {
         const ui = anchored();
         ui.natural.set("m5", { top: -200, height: 700 });
         resize();
+        endReveal();
         const row = ui.scroller.querySelector(".chat-message-container")!;
         row.dispatchEvent(new Event("pointerdown", { bubbles: true }));
         const input = document.createElement("textarea");
         ui.scroller.append(input);
         input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+        // A sideways wheel.
+        ui.scroller.dispatchEvent(Object.assign(new Event("wheel"), { deltaX: 200, deltaY: 0 }));
         ui.natural.set("m5", { top: -400, height: 900 });
         resize();
         expect(ui.scroller.scrollTop).toBe(-500);
@@ -1300,6 +1561,7 @@ describe("latest message scroll anchor", () => {
     it("shows a reply that arrives whole from its start, locked or not", () => {
         settings.ui.autoScrollToNewMessage = true;
         const ui = anchored();
+        endReveal();
         ui.scroller.dispatchEvent(new Event("wheel"));
         ui.push({ chatId: "m6", data: "a whole reply", role: "char" });
         ui.natural.set("m6", { top: -100, height: 600 });
@@ -1322,6 +1584,7 @@ describe("latest message scroll anchor", () => {
     it("leaves a whole reply where the reader scrolled when its lock ends", () => {
         settings.ui.autoScrollToNewMessage = true;
         const ui = anchored();
+        endReveal();
         setLockedMessages(chat, ["m6"]);
         ui.push({ chatId: "m6", data: "a whole reply", role: "char" });
         ui.natural.set("m6", { top: -300, height: 800 });
@@ -1397,6 +1660,7 @@ describe("latest message scroll anchor", () => {
     it("leaves a reader who scrolled up during the stream where they are", () => {
         settings.ui.autoScrollToNewMessage = true;
         const ui = anchored();
+        endReveal();
         setLockedMessages(chat, ["m6"], ["m6"]);
         ui.push({ chatId: "m6", data: "", role: "char" });
         ui.scroller.dispatchEvent(new Event("wheel"));
@@ -1405,5 +1669,297 @@ describe("latest message scroll anchor", () => {
         setLockedMessages(chat, []);
         flushSync();
         expect(ui.scroller.scrollTop).toBe(-120);
+    });
+
+    describe("keeping the reader's place through inline editing", () => {
+        const wheel = (scroller: HTMLElement) => scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
+
+        function reading() {
+            const ui = anchored();
+            ui.natural.set("m5", { top: -450, height: 700 });
+            ui.natural.set("m4", { top: -650, height: 240 });
+            resize();
+            endReveal();
+            wheel(ui.scroller);
+            ui.scroller.scrollTop = -500;
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            return ui;
+        }
+
+        async function open(ui: ReturnType<typeof reading>, id: string, fieldTop: number) {
+            const row = latest(id);
+            const field = document.createElement("textarea");
+            field.className = "message-edit-area";
+            row.props.onOpenInlineEditor?.();
+            row.editing = true;
+            row.element.append(field);
+            vi.spyOn(field, "getBoundingClientRect").mockImplementation(() => {
+                const top = fieldTop - ui.scroller.scrollTop;
+                return rect(top, top + 100);
+            });
+            await vi.advanceTimersByTimeAsync(0);
+            return {
+                row,
+                close() {
+                    row.props.onCloseInlineEditor?.();
+                    row.editing = false;
+                    field.remove();
+                },
+            };
+        }
+
+        it.each(["cancel", "save"])("restores the remembered row top once after %s renders", async (action) => {
+            const ui = reading();
+            const editor = await open(ui, "m5", -300);
+            editor.close();
+            if (action === "save") {
+                ui.props.messages[5].data = "Revised reply";
+                flushSync();
+                expect(latest("m5")).not.toBe(editor.row);
+                editor.row.settle();
+            }
+            // Model the body moving the row's top after close, while it renders.
+            ui.natural.set("m5", { top: -550, height: 700 });
+            ui.scrollWrite.mockClear();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ui.scrollWrite).not.toHaveBeenCalled();
+            latest("m5").settle();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ui.scrollWrite.mock.calls).toEqual([[-600]]);
+        });
+
+        it("keeps the reader's later transcript scroll when the editor closes", async () => {
+            const ui = reading();
+            const editor = await open(ui, "m5", -550);
+            expect(ui.scroller.scrollTop).toBe(-650);
+            wheel(ui.scroller);
+            ui.scroller.scrollTop = -720;
+            ui.scrollWrite.mockClear();
+            // Close before the browser's scroll event is delivered.
+            editor.close();
+            editor.row.settle();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ui.scrollWrite).not.toHaveBeenCalled();
+            expect(ui.scroller.scrollTop).toBe(-720);
+        });
+
+        it.each(["before the first Save", "while the first close is rendering"])(
+            "skips the superseded restore when another editor opens %s",
+            async (when) => {
+                const ui = reading();
+                Object.defineProperty(ui.scroller, "scrollHeight", { value: 2000 });
+                ui.natural.set("m4", { top: -450, height: 200 });
+                const earlier = await open(ui, "m4", -350);
+                const remounts = when === "before the first Save";
+                if (remounts) await open(ui, "m5", -250);
+
+                earlier.close();
+                if (remounts) {
+                    ui.props.messages[4].data = "Revised earlier reply";
+                    flushSync();
+                    expect(latest("m4")).not.toBe(earlier.row);
+                    earlier.row.settle();
+                } else {
+                    await open(ui, "m5", -250);
+                }
+                ui.natural.set("m4", { top: -390, height: 140 });
+
+                ui.scrollWrite.mockClear();
+                latest("m4").settle();
+                await vi.advanceTimersByTimeAsync(0);
+                expect(ui.scrollWrite).not.toHaveBeenCalled();
+                expect(ui.scroller.scrollTop).toBe(-500);
+            },
+        );
+    });
+
+    describe("a row mounted again", () => {
+        // The reader took over at -500: m5 (700 px) starts 200 px below the view's top.
+        function reading() {
+            const ui = anchored();
+            ui.natural.set("m5", { top: -200, height: 700 });
+            ui.natural.set("m3", { top: -900, height: 300 });
+            resize();
+            endReveal();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            ui.scroller.scrollTop = -500;
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            return ui;
+        }
+        const edit = (ui: ReturnType<typeof reading>, index: number, data: string) => {
+            const before = latest(`m${index}`);
+            ui.props.messages[index].data = data;
+            flushSync();
+            expect(latest(`m${index}`)).not.toBe(before);
+            return latest(`m${index}`);
+        };
+        const rendered = async (row: Row) => {
+            row.settle();
+            await vi.advanceTimersByTimeAsync(0);
+        };
+
+        it("keeps its height until the new instance has rendered, then puts its top back", async () => {
+            const ui = reading();
+            const row = edit(ui, 5, "a longer text");
+            expect(row.element.style.minHeight).toBe("700px");
+            // The new text is 200 px taller: in the reversed scroller the row's top moved up by as much.
+            ui.natural.set("m5", { top: -400, height: 900 });
+            resize();
+            // A second remount before the first rendered keeps the first height, and the first
+            // instance's render releases nothing.
+            const again = edit(ui, 5, "an even longer text");
+            await rendered(row);
+            expect(row.element.style.minHeight).toBe("700px");
+            await rendered(again);
+            expect(row.element.style.minHeight).toBe("");
+            expect(ui.scroller.scrollTop).toBe(-700);
+        });
+
+        it("leaves the offset alone when it changed, after scroll input, for a row above the view, and under the anchor", async () => {
+            const ui = reading();
+            const scrolled = edit(ui, 5, "a longer text");
+            ui.natural.set("m5", { top: -400, height: 900 });
+            ui.scroller.scrollTop = -450;
+            await rendered(scrolled);
+            expect(ui.scroller.scrollTop).toBe(-450);
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            resize();
+
+            // Scroll input since the remount, though the offset is where it was.
+            const afterInput = edit(ui, 5, "a text longer still");
+            ui.natural.set("m5", { top: -600, height: 1100 });
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            await rendered(afterInput);
+            expect(ui.scroller.scrollTop).toBe(-450);
+            resize();
+
+            // m3 ends 100 px above the view's top: its growth moves nothing the reader sees.
+            const above = edit(ui, 3, "a longer text");
+            ui.natural.set("m3", { top: -1100, height: 500 });
+            await rendered(above);
+            expect(ui.scroller.scrollTop).toBe(-450);
+
+            // The app's anchor realigns by itself at the next resize.
+            ui.props.messages.push({ chatId: "m6", data: "a whole reply", role: "char" });
+            flushSync();
+            ui.measure();
+            ui.natural.set("m6", { top: -100, height: 600 });
+            resize();
+            settings.ui.autoScrollToNewMessage = true;
+            (ui.instance as unknown as { scrollToLatestMessage: () => void }).scrollToLatestMessage();
+            expect(ui.scroller.scrollTop).toBe(-200);
+            const anchored = edit(ui, 6, "a longer reply");
+            ui.natural.set("m6", { top: -300, height: 800 });
+            await rendered(anchored);
+            expect(anchored.element.style.minHeight).toBe("");
+            expect(ui.scroller.scrollTop).toBe(-200);
+        });
+
+        it("corrects every row of one flush, and keeps nothing for a row never laid out", async () => {
+            const ui = reading();
+            // m4 lies above m5 and inside the view; m1 was never given a size.
+            ui.natural.set("m4", { top: -500, height: 300 });
+            resize();
+            const first = edit(ui, 5, "a longer text");
+            const second = edit(ui, 4, "a longer text");
+            expect(edit(ui, 1, "another text").element.style.minHeight).toBe("");
+            ui.natural.set("m5", { top: -400, height: 900 });
+            ui.natural.set("m4", { top: -800, height: 400 });
+            await rendered(first);
+            expect(ui.scroller.scrollTop).toBe(-700);
+            await rendered(second);
+            expect(ui.scroller.scrollTop).toBe(-800);
+        });
+    });
+    describe("the reader lock", () => {
+        // The reader is at -500 with m3 (300 px) above the view and m5 (700 px) in it; the wheel that took
+        // over locked m3. The lock is released three frames after the scroll ends.
+        function scrolling() {
+            const ui = anchored();
+            ui.natural.set("m5", { top: -200, height: 700 });
+            ui.natural.set("m3", { top: -900, height: 300 });
+            resize();
+            endReveal();
+            ui.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+            ui.scroller.scrollTop = -500;
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            return ui;
+        }
+        const locked = (id: string) => {
+            const element = latest(id).element;
+            return element.classList.contains("chat-row-locked") ? element.style.height : null;
+        };
+        const settle = async (ui: ReturnType<typeof scrolling>) => {
+            ui.scroller.dispatchEvent(new Event("scrollend"));
+            await vi.advanceTimersByTimeAsync(48);
+        };
+
+        it("keeps rows above the view at their measured height until the scroll has ended", async () => {
+            const ui = scrolling();
+            expect(locked("m3")).toBe("300px");
+            expect(locked("m5")).toBeNull();
+            // A late image in the locked row: its size reaches the layout only after the scroll.
+            ui.natural.set("m3", { top: -1500, height: 900 });
+            resize();
+            expect(locked("m3")).toBe("300px");
+            await vi.advanceTimersByTimeAsync(48);
+            expect(locked("m3")).toBe("300px");
+            await settle(ui);
+            expect(locked("m3")).toBeNull();
+            expect(latest("m3").element.style.height).toBe("");
+        });
+
+        it("ends after 400 ms without scroll input where scrollend is missing", async () => {
+            const ui = scrolling();
+            await vi.advanceTimersByTimeAsync(399);
+            expect(locked("m3")).toBe("300px");
+            await vi.advanceTimersByTimeAsync(1 + 48);
+            expect(locked("m3")).toBeNull();
+            expect(ui.scroller.scrollTop).toBe(-500);
+        });
+
+        it("takes no lock for a sideways or Ctrl wheel, and locks again at the next scroll", async () => {
+            const ui = scrolling();
+            await settle(ui);
+            ui.scroller.dispatchEvent(new WheelEvent("wheel", { deltaX: 80 }));
+            // happy-dom's WheelEvent leaves out the modifier keys of its init.
+            const zoom = Object.defineProperty(new WheelEvent("wheel", { deltaY: -100 }), "ctrlKey", { value: true });
+            ui.scroller.dispatchEvent(zoom);
+            expect(locked("m3")).toBeNull();
+            ui.scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }));
+            expect(locked("m3")).toBe("300px");
+        });
+
+        it("unlocks a row when an editor opens on it, and every row when an anchor takes over", async () => {
+            const ui = scrolling();
+            ui.natural.set("m2", { top: -1300, height: 400 });
+            await settle(ui);
+            resize();
+            ui.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+            expect([locked("m2"), locked("m3")]).toEqual(["400px", "300px"]);
+            latest("m3").props.onEditing?.();
+            expect([locked("m2"), locked("m3")]).toEqual(["400px", null]);
+            ui.instance.scrollToLatestMessage();
+            flushSync();
+            expect([locked("m2"), locked("m3")]).toEqual([null, null]);
+        });
+
+        it("releases a finger's lock when the touched node was detached before the finger lifted", async () => {
+            const ui = scrolling();
+            await settle(ui);
+            const target = document.createElement("span");
+            latest("m5").element.append(target);
+            const touchList = (count: number) => Array.from({ length: count }, () => ({ target }));
+            ui.scroller.dispatchEvent(
+                Object.assign(new Event("touchstart"), { touches: touchList(1), changedTouches: touchList(1) }),
+            );
+            ui.scroller.dispatchEvent(new Event("touchmove"));
+            expect(locked("m3")).toBe("300px");
+            // A re-render took the node out: its touchend reaches neither the scroller nor the window.
+            target.remove();
+            target.dispatchEvent(Object.assign(new Event("touchend"), { touches: [], changedTouches: touchList(1) }));
+            await vi.advanceTimersByTimeAsync(400 + 48);
+            expect(locked("m3")).toBeNull();
+        });
     });
 });

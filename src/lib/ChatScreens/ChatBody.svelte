@@ -18,13 +18,13 @@
 </script>
 
 <script lang="ts">
-    import { tick } from "svelte";
+    import { onDestroy, tick } from "svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import isEqual from "lodash/isEqual";
-    import { sleep } from "src/ts/util";
+    import { sleepAbortable } from "src/ts/util";
+    import { isTransient } from "src/ts/parser/renderErrors";
     import { alertError } from "../../ts/alert";
     import {
-        addMetadataToElement,
         ParseMarkdown,
         postTranslationParse,
         trimMarkdown,
@@ -32,7 +32,12 @@
         type CbsConditions,
         type simpleCharacterArgument,
     } from "../../ts/parser/parser.svelte";
-    import { applyEdittransToStoredTranslation, getLLMCache, translateHTML } from "../../ts/translator/translator";
+    import {
+        applyEdittransToStoredTranslation,
+        getLLMCache,
+        llmTranslationCacheKey,
+        translateHTML,
+    } from "../../ts/translator/translator";
     import {
         bilingualInterleave,
         type BilingualInterleaveOptions,
@@ -42,7 +47,34 @@
     import { type ChatStyle, getChatStyleRegistry } from "../../ts/parser/chatStyles";
     import ChatRowStyles from "./ChatRowStyles.svelte";
     import { type CapturedTransform, captureTransform } from "../../ts/parser/transformClient";
-    import { getFileSrc } from "src/ts/globalApi.svelte";
+    import { getFileSrc, recoverDirectAssetElement } from "src/ts/globalApi.svelte";
+
+    /**
+     * A message row's body (`Chat.svelte`): `markParsing` translates and parses the display text, and the result
+     * goes in through `{@html}`. While a render is pending the body shows `lastParsed`: the last finished render,
+     * or the loading markup a translation sets with `showTranslationLoading`.
+     * `prepareShownBody` reuses the last prepared body while pending only for the same source and
+     * `hideAllImages`; `:then` always prepares again and refreshes it, so CBS variables read inside a pending
+     * body update on the next run.
+     *
+     * Each render run owns an `AbortController` (`parseController`), aborted when the next run starts in
+     * `markParsingResult`, when raw streaming starts, or on destroy. Its signal goes to `ParseMarkdown` and
+     * `translateHTML`; `run === parseRun` and `destroyed` remain the correctness guards. Only the run that set
+     * `translating` clears it (`translatingRun`). The cached-only auto-translate probe follows the effective
+     * translation key and rechecks changes; explicit choices stay separate, and an automatic decision never
+     * permits a cache miss. Probe state commits on completion or in its 10 ms `translated` flip; an aborted flip
+     * writes nothing and settles `pendingAutoTranslate`, so the next run probes again.
+     *
+     * ParseMarkdown opts into rejecting failed asset reads. Abort resolves quietly: no alert, retry or
+     * `lastParsed` write. Permanent HTTP asset refusals alert immediately without retrying. Errors marked transient in
+     * `src/ts/parser/renderErrors.ts` retry after 250 ms, then 1,000 ms, while the run is live. Other errors, or a
+     * third failure, alert once with the original stack and show the input text.
+     * Raw streaming (`renderRawStreaming`, untranslated) shows the text as it is and needs no parse.
+     * A held row (`held`) starts no render and aborts the current one: the body stays at `lastParsed`, or at the loading
+     * markup when the row has no finished render, which is also what the render after the hold shows while pending
+     * (an auto-translate decision's empty first result still shows for its 10 ms flip, as on any row). A held body is
+     * settled for `whenRendered`.
+     */
 
     interface Props {
         character?: simpleCharacterArgument | string | null;
@@ -55,10 +87,16 @@
         translating: boolean;
         retranslate: boolean;
         renderRevision?: number;
+        /** Reports a completed render whose server display transform may have mixed chat states. */
+        onMixedRender?: (capture: CapturedTransform) => void;
         bodyRoot?: HTMLElement | null;
-        modelShortName: string;
         /** The row's message is streaming: the rendered path shows the original and translates once it ends. */
         streaming?: boolean;
+        /**
+         * The row's text arrived whole while its generation still holds it (`Chat.svelte`): it has not been through
+         * the display transform yet, so the body keeps what it showed and renders once the hold ends.
+         */
+        held?: boolean;
         renderRawStreaming?: boolean;
         rawStreamingText?: string;
         /**
@@ -94,9 +132,10 @@
         translating = $bindable(false),
         retranslate = $bindable(false),
         renderRevision = 0,
+        onMixedRender,
         bodyRoot,
-        modelShortName = "",
         streaming = false,
+        held = false,
         renderRawStreaming = false,
         rawStreamingText = "",
         storedPath = false,
@@ -114,6 +153,10 @@
     let lastChatId = -10;
     /** The chat's `autoTranslate` the row last started from: a change starts it again. */
     let lastAutoTranslate: boolean | null = null;
+    let lastAutoDecision: boolean | undefined;
+    /** Explicit choices persist until the character, chat index or auto-translate flag changes. */
+    let userOwnsTranslation = false;
+    let lastCacheProbe: { key?: string; data: string; prefix: string; mode: string } | undefined;
     let lastRenderedRevision: number | null = null;
     /**
      * The newest render's run. Only that render writes `lastParsed` and `lastRenderedRevision`: an
@@ -121,6 +164,15 @@
      * next render is pending.
      */
     let parseRun = 0;
+    let parseController: AbortController | undefined;
+    let translatingRun: number | undefined;
+    let confirmedRevision = $state(0);
+    let pendingTransformOutcome: { run: number; outcome: CapturedTransform["provisionalOutcome"] } | undefined;
+    let destroyed = false;
+    onDestroy(() => {
+        destroyed = true;
+        parseController?.abort();
+    });
     let pendingAutoTranslate: Promise<void> | undefined;
 
     function getCbsCondition() {
@@ -139,8 +191,20 @@
     }
 
     let shouldRenderRawStreaming = $derived(
-        renderRawStreaming && (storedPath ? !storedTranslationShown : !translated && !retranslate),
+        !held && renderRawStreaming && (storedPath ? !storedTranslationShown : !translated && !retranslate),
     );
+    let rawStreamingRevision = $state(0);
+    let wasRawStreaming = false;
+    $effect.pre(() => {
+        const rawStreaming = shouldRenderRawStreaming;
+        if (rawStreaming && !wasRawStreaming) {
+            parseController?.abort();
+            ++parseRun;
+            // The next rendered body needs a fresh promise even when its text is unchanged.
+            rawStreamingRevision += 1;
+        }
+        wasRawStreaming = rawStreaming;
+    });
 
     const markParsing = async (
         data: string,
@@ -158,6 +222,8 @@
             shownStored: boolean;
             pairing: { source: string; options: BilingualInterleaveOptions } | null;
         },
+        display = { finished: false, mixed: false, reported: false, replaced: false },
+        signal?: AbortSignal,
     ): Promise<string> => {
         // track 'translated' and 'retranslate' state
         translated;
@@ -168,10 +234,71 @@
         const pairing = retryStored ? retryStored.pairing : bilingual;
         // The server transform's context, captured once for every stage and retry of this render (flag on).
         const transform = retryTransform !== undefined ? retryTransform : captureTransform(chatID);
+        if (tries === undefined && pendingTransformOutcome) {
+            if (transform && pendingTransformOutcome.run === run - 1) {
+                transform.provisionalOutcome = pendingTransformOutcome.outcome;
+            }
+            pendingTransformOutcome = undefined;
+        }
+        // A retry starts before any translation probes again; only its final display may opt in.
+        if (transform) transform.onProvisional = undefined;
+        const reportMixed = () => {
+            if (
+                destroyed ||
+                run !== parseRun ||
+                !display.finished ||
+                display.replaced ||
+                display.reported ||
+                transform?.pendingProvisional
+            )
+                return;
+            if (transform && (display.mixed || transform.mixedDisplay)) {
+                display.reported = true;
+                onMixedRender?.(transform);
+            }
+        };
+        const enableProvisional = () => {
+            if (!transform) return;
+            transform.onProvisional = ({ replaced, mixed, outcome }) => {
+                if (destroyed || run !== parseRun || display.replaced) return;
+                display.mixed ||= mixed;
+                if (replaced) {
+                    display.replaced = true;
+                    pendingTransformOutcome = outcome ? { run, outcome } : undefined;
+                    confirmedRevision += 1;
+                } else {
+                    reportMixed();
+                }
+            };
+        };
         const preservePendingContent = lastRenderedRevision !== null && requestedRevision !== lastRenderedRevision;
         let lastParsedQueue = "";
         let mode = "notrim" as const;
+        const parse = async (text: string, parseMode: "notrim" | "pretranslate" = mode) => {
+            signal?.throwIfAborted();
+            const result = await ParseMarkdown(text, charArg, parseMode, chatID, getCbsCondition(), transform, signal, {
+                rejectFailedAssetReads: true,
+            });
+            signal?.throwIfAborted();
+            return result;
+        };
+        const translate = async (text: string) => {
+            signal?.throwIfAborted();
+            translatingRun = run;
+            translating = true;
+            try {
+                const result = await translateHTML(text, false, charArg, chatID, retranslate, transform, signal);
+                signal?.throwIfAborted();
+                return result;
+            } finally {
+                if (translatingRun === run) {
+                    translatingRun = undefined;
+                    translating = false;
+                }
+            }
+        };
         try {
+            signal?.throwIfAborted();
             if (stored) {
                 // The normal display path; a stored translation takes the `edittrans` scripts first.
                 let text = shownStored ? applyEdittransToStoredTranslation(data, charArg, chatID, transform) : data;
@@ -179,73 +306,118 @@
                     // The display scripts see the pairs' wrappers between the lines.
                     text = bilingualInterleave(pairing.source, text, pairing.options);
                 }
-                const marked = await ParseMarkdown(text, charArg, mode, chatID, getCbsCondition(), transform);
+                enableProvisional();
+                const marked = await parse(text);
                 lastParsedQueue = marked;
                 return marked;
             }
             if (streaming) {
                 lastAutoTranslate = null;
-                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
+                enableProvisional();
+                const marked = await parse(data);
                 lastParsedQueue = marked;
                 return marked;
             }
             // Read before any await, so a change of the chat's flag renders again (and restarts the row).
             const auto = autoTranslate;
-            if (!isEqual(lastCharArg, charArg) || chatID !== lastChatId || auto !== lastAutoTranslate) {
-                lastParsedQueue = "";
-                lastCharArg = charArg;
-                lastChatId = chatID;
-                lastAutoTranslate = auto;
-                let translateText = false;
-                try {
-                    if (auto) {
-                        if (
-                            settings.memoryTranslateMedia.autoTranslateCachedOnly &&
-                            settings.memoryTranslateMedia.translatorType === "llm"
-                        ) {
-                            const cache = settings.memoryTranslateMedia.translateBeforeHTMLFormatting
-                                ? await getLLMCache(data)
-                                : !settings.memoryTranslateMedia.legacyTranslation
-                                  ? await getLLMCache(
-                                        await ParseMarkdown(
-                                            data,
-                                            charArg,
-                                            "pretranslate",
-                                            chatID,
-                                            getCbsCondition(),
-                                            transform,
-                                        ),
-                                    )
-                                  : await getLLMCache(
-                                        await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform),
-                                    );
+            const restartAuto = !isEqual(lastCharArg, charArg) || chatID !== lastChatId || auto !== lastAutoTranslate;
+            if (restartAuto) userOwnsTranslation = false;
+            else if (lastAutoDecision !== undefined && translated !== lastAutoDecision) userOwnsTranslation = true;
+            if (retranslate) userOwnsTranslation = true;
 
-                            translateText = cache !== null;
-                        } else {
-                            translateText = true;
+            const cachedOnly =
+                auto &&
+                settings.memoryTranslateMedia.autoTranslateCachedOnly &&
+                settings.memoryTranslateMedia.translatorType === "llm";
+            // Read synchronously so configuration changes invalidate this render, including after a miss.
+            const cachePrefix = cachedOnly && !userOwnsTranslation ? llmTranslationCacheKey("") : undefined;
+            const translateBeforeFormatting =
+                settings.memoryTranslateMedia.translatorType === "llm" &&
+                settings.memoryTranslateMedia.translateBeforeHTMLFormatting;
+            const legacyTranslation = settings.memoryTranslateMedia.legacyTranslation;
+            const translationMode = translateBeforeFormatting ? "raw" : legacyTranslation ? mode : "pretranslate";
+            let translationSource: string | undefined;
+            if (
+                restartAuto ||
+                (cachedOnly &&
+                    !userOwnsTranslation &&
+                    // A miss uses cheap triggers; a translated row already needs the effective source.
+                    (translated ||
+                        !lastCacheProbe ||
+                        data !== lastCacheProbe.data ||
+                        cachePrefix !== lastCacheProbe.prefix ||
+                        translationMode !== lastCacheProbe.mode))
+            ) {
+                lastParsedQueue = "";
+                let translateText = translated;
+                let probeKey: string | undefined;
+                const rememberProbe = () => {
+                    if (signal?.aborted || destroyed || run !== parseRun) return;
+                    lastCharArg = charArg;
+                    lastChatId = chatID;
+                    lastAutoTranslate = auto;
+                    lastAutoDecision = userOwnsTranslation ? undefined : translateText;
+                    lastCacheProbe =
+                        cachedOnly && !userOwnsTranslation
+                            ? { key: probeKey, data, prefix: cachePrefix, mode: translationMode }
+                            : undefined;
+                };
+                try {
+                    signal?.throwIfAborted();
+                    if (!userOwnsTranslation) {
+                        translateText = false;
+                        if (auto) {
+                            if (cachedOnly) {
+                                translationSource = translateBeforeFormatting
+                                    ? data
+                                    : await parse(data, legacyTranslation ? mode : "pretranslate");
+                                probeKey = llmTranslationCacheKey(translationSource);
+                                if (restartAuto || probeKey !== lastCacheProbe?.key) {
+                                    const cache = await getLLMCache(translationSource);
+                                    signal?.throwIfAborted();
+                                    translateText = cache !== null;
+                                } else {
+                                    translateText = lastAutoDecision ?? false;
+                                }
+                            } else {
+                                translateText = true;
+                            }
                         }
                     }
-
-                    const lastTranslated = translated;
-
-                    const translationUpdate = new Promise<void>((resolve) => {
-                        setTimeout(() => {
-                            translated = translateText;
-                            if (pendingAutoTranslate === translationUpdate) pendingAutoTranslate = undefined;
-                            resolve();
-                        }, 10);
-                    });
-
-                    // State change of `translated` triggers markParsing again,
-                    // causing redundant translation attempts. The empty body is what this
-                    // render shows until then (the template's prune takes a string).
-                    if (lastTranslated !== translateText) {
-                        pendingAutoTranslate = translationUpdate;
-                        return "";
-                    }
                 } catch (error) {
+                    if (signal?.aborted) throw error;
                     console.error(error);
+                    // An unsuccessful check cannot carry an earlier hit's permission forward.
+                    translateText = false;
+                    probeKey = undefined;
                 }
+
+                // State change of `translated` triggers markParsing again,
+                // causing redundant translation attempts. The empty body is what this
+                // render shows until then (the template's prune takes a string).
+                if (translated !== translateText) {
+                    let resolveUpdate: () => void;
+                    const translationUpdate = new Promise<void>((resolve) => {
+                        resolveUpdate = resolve;
+                    });
+                    const finishUpdate = () => {
+                        clearTimeout(timer);
+                        signal?.removeEventListener("abort", finishUpdate);
+                        if (pendingAutoTranslate === translationUpdate) pendingAutoTranslate = undefined;
+                        resolveUpdate();
+                    };
+                    const timer = setTimeout(() => {
+                        if (!signal?.aborted && !destroyed && run === parseRun) {
+                            rememberProbe();
+                            translated = translateText;
+                        }
+                        finishUpdate();
+                    }, 10);
+                    signal?.addEventListener("abort", finishUpdate, { once: true });
+                    pendingAutoTranslate = translationUpdate;
+                    return "";
+                }
+                rememberProbe();
             }
             if (retranslate || translated) {
                 if (settings.ui.showTranslationLoading && !preservePendingContent && run === parseRun) {
@@ -254,92 +426,98 @@
 
                 let transResult;
 
-                if (
-                    settings.memoryTranslateMedia.translatorType === "llm" &&
-                    settings.memoryTranslateMedia.translateBeforeHTMLFormatting
-                ) {
-                    await sleep(100);
-                    translating = true;
-                    data = await translateHTML(data, false, charArg, chatID, retranslate, transform);
-                    translating = false;
-                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
+                if (translateBeforeFormatting) {
+                    await sleepAbortable(100, signal);
+                    const translatedText = await translate(data);
+                    const marked = await parse(translatedText);
                     lastParsedQueue = marked;
                     lastCharArg = charArg;
                     transResult = marked;
-                } else if (!settings.memoryTranslateMedia.legacyTranslation) {
-                    const marked = await ParseMarkdown(
-                        data,
-                        charArg,
-                        "pretranslate",
-                        chatID,
-                        getCbsCondition(),
-                        transform,
-                    );
-                    translating = true;
-                    const translated = await postTranslationParse(
-                        await translateHTML(marked, false, charArg, chatID, retranslate, transform),
-                    );
-                    translating = false;
+                } else if (!legacyTranslation) {
+                    const marked = translationSource ?? (await parse(data, "pretranslate"));
+                    const translatedText = await translate(marked);
+                    signal?.throwIfAborted();
+                    const translated = await postTranslationParse(translatedText, signal);
+                    signal?.throwIfAborted();
                     lastParsedQueue = translated;
                     lastCharArg = charArg;
                     transResult = translated;
                 } else {
-                    const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
-                    translating = true;
-                    const translated = await translateHTML(marked, false, charArg, chatID, retranslate, transform);
-                    translating = false;
+                    const marked = translationSource ?? (await parse(data));
+                    const translated = await translate(marked);
                     lastParsedQueue = translated;
                     lastCharArg = charArg;
                     transResult = translated;
                 }
 
                 setTimeout(() => {
-                    retranslate = false;
+                    if (!signal?.aborted) retranslate = false;
                 }, 10);
 
                 return transResult;
             } else {
-                const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition(), transform);
+                enableProvisional();
+                const marked = await parse(data);
                 lastParsedQueue = marked;
                 lastCharArg = charArg;
                 return marked;
             }
         } catch (error) {
-            //retry
-            if (tries > 2) {
-                const wrapped = new Error(`Error while parsing chat message: ${error?.message ?? error}`);
-                if (error instanceof Error) {
-                    wrapped.stack = error.stack;
+            if (signal?.aborted) return lastParsedQueue;
+            if (isTransient(error) && (tries ?? 0) < 2) {
+                try {
+                    await sleepAbortable(tries ? 1000 : 250, signal);
+                    signal?.throwIfAborted();
+                    const retried = await markParsing(
+                        data,
+                        charArg,
+                        chatID,
+                        requestedRevision,
+                        run,
+                        (tries ?? 0) + 1,
+                        transform,
+                        { stored, shownStored, pairing },
+                        display,
+                        signal,
+                    );
+                    lastParsedQueue = retried;
+                    return retried;
+                } catch (retryError) {
+                    if (signal?.aborted) return lastParsedQueue;
+                    error = retryError;
                 }
-                alertError(wrapped);
-                return data;
             }
-            const retried = await markParsing(
-                data,
-                charArg,
-                chatID,
-                requestedRevision,
-                run,
-                (tries ?? 0) + 1,
-                transform,
-                {
-                    stored,
-                    shownStored,
-                    pairing,
-                },
-            );
-            if (retried !== undefined) {
-                lastParsedQueue = retried;
+            const wrapped = new Error(`Error while parsing chat message: ${error?.message ?? error}`);
+            if (error instanceof Error) {
+                wrapped.stack = error.stack;
             }
-            return retried;
+            lastParsedQueue = data;
+            alertError(wrapped);
+            return data;
         } finally {
-            //since trimMarkdown is fast, we don't need to cache it
-            if (run === parseRun) {
+            // Keep the final source for the next pending render's prepared body.
+            if (!destroyed && run === parseRun) {
                 lastParsed = lastParsedQueue;
                 lastRenderedRevision = requestedRevision;
+                // Retries share the capture; only their outer call reports the completed render.
+                if (tries === undefined) {
+                    display.finished = true;
+                    reportMixed();
+                }
             }
         }
     };
+
+    // Media errors do not bubble; one capture listener covers all sanitized parser HTML in this row.
+    $effect(() => {
+        const root = bodyRoot;
+        if (!root) return;
+        const recover = (event: Event) => {
+            void recoverDirectAssetElement(event.target);
+        };
+        root.addEventListener("error", recover, true);
+        return () => root.removeEventListener("error", recover, true);
+    });
 
     const checkImg = () => {
         if (!settings.memoryTranslateMedia.newImageHandlingBeta || !bodyRoot) {
@@ -406,29 +584,71 @@
 
     function shownBody(source: string): { html: string; styles: readonly ChatStyle[] } {
         if (!chatStyles || !source || !styleTag.test(source)) {
-            return {
-                html: addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(source)), modelShortName),
-                styles: NO_STYLES,
-            };
+            return { html: pruneEmptyBilingualPairs(trimMarkdown(source)), styles: NO_STYLES };
         }
         // Pruned before the styles are taken out: a pair side holding only a style is kept, as before.
-        const { html, styles } = trimMarkdownSharingStyles(source, pruneEmptyBilingualPairsIn);
-        return { html: addMetadataToElement(html, modelShortName), styles };
+        return trimMarkdownSharingStyles(source, pruneEmptyBilingualPairsIn);
     }
 
-    let markParsingResult = $derived.by(() => {
+    let shownMemo:
+        | {
+              source: string;
+              hideImages: boolean;
+              body: ReturnType<typeof shownBody>;
+          }
+        | undefined;
+
+    function prepareShownBody(source: string, pending = false) {
+        const hideImages = settings.ui.hideAllImages;
+        if (pending && shownMemo?.source === source && shownMemo.hideImages === hideImages) {
+            return shownMemo.body;
+        }
+        const body = shownBody(source);
+        shownMemo = { source, hideImages, body };
+        return body;
+    }
+
+    /** The body's render: a promise while one runs, or the held body itself (`{#await}` shows it at once). */
+    let markParsingResult = $derived.by((): Promise<string> | string => {
         // Translation can await before ParseMarkdown reads the parser's asset inputs.
         moduleAssets;
-        return markParsing(msgDisplay, character, idx, renderRevision, ++parseRun);
+        confirmedRevision;
+        rawStreamingRevision;
+        parseController?.abort();
+        if (held) {
+            parseController = undefined;
+            // The aborted run must not write its partial result as the held body.
+            ++parseRun;
+            if (!lastParsed) lastParsed = LOADING_HTML;
+            return lastParsed;
+        }
+        parseController = new AbortController();
+        return markParsing(
+            msgDisplay,
+            character,
+            idx,
+            renderRevision,
+            ++parseRun,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            parseController.signal,
+        );
     });
 
-    /** Wait for a settled DOM render, including auto-translation and replacement parses. */
+    /**
+     * Wait for a settled DOM render, including auto-translation and replacement parses (the ordered reveal and
+     * screenshot capture rely on it). The auto-translate path's first, empty result is not settled: the wait
+     * covers its delayed `translated` update and the real parse after it. Raw streaming settles at once.
+     */
     export async function whenRendered() {
         while (!shouldRenderRawStreaming) {
             const pending = markParsingResult;
             await pending;
             await pendingAutoTranslate;
             await tick();
+            if (shouldRenderRawStreaming) return;
             if (pending === markParsingResult && !pendingAutoTranslate) return;
         }
     }
@@ -437,9 +657,9 @@
         if (shouldRenderRawStreaming) {
             return;
         }
-        markParsingResult;
+        const result = markParsingResult;
         checkImg();
-        markParsingResult.then(checkImg);
+        void Promise.resolve(result).then(checkImg);
     });
 </script>
 
@@ -449,10 +669,10 @@
     {@html LOADING_HTML}
 {:else}
     {#await markParsingResult}
-        {@const shown = shownBody(lastParsed)}
+        {@const shown = prepareShownBody(lastParsed, true)}
         {#if chatStyles}<ChatRowStyles styles={shown.styles} messageIndex={idx} />{/if}{@html shown.html}
     {:then md}
-        {@const shown = shownBody(md)}
+        {@const shown = prepareShownBody(md)}
         {#if chatStyles}<ChatRowStyles styles={shown.styles} messageIndex={idx} />{/if}{@html shown.html}
     {/await}
 {/if}

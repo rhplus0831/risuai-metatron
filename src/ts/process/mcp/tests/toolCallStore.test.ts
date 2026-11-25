@@ -12,15 +12,20 @@ const chatStore = vi.hoisted(() => ({
     mergeChatMeta: vi.fn(),
 }));
 
-vi.mock("src/ts/storage/chatStore.svelte", () => ({
-    findChat: (ref: { chaId: string; chatId: string }) => chatStore.chats.get(`${ref.chaId}/${ref.chatId}`),
-    mergeChatMeta: chatStore.mergeChatMeta,
-}));
-vi.mock("src/ts/globalApi.svelte", () => ({ fetchNative: vi.fn(), openURL: vi.fn(), globalFetch: vi.fn() }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+        findChat: (ref: { chaId: string; chatId: string }) => chatStore.chats.get(`${ref.chaId}/${ref.chatId}`),
+        mergeChatMeta: chatStore.mergeChatMeta,
+    }),
+);
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/storage/collectionStore.svelte", () => ({ addAuthRefresh: vi.fn(), addModule: vi.fn() }));
 vi.mock("src/ts/stores.svelte", async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 vi.mock("src/ts/process/modules", () => ({ getModuleMcps: vi.fn(() => []) }));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock(),
+);
 vi.mock("src/ts/process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: [] }));
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

@@ -174,7 +174,11 @@
                         .split("\n")
                         .filter((msg) => msg.startsWith("-"))
                         .map((msg) => msg.replace("-", "").trim());
-                    setChatMeta(requestChatRef, { suggestMessages: suggestMessagesNew });
+                    // An empty answer over no suggestions changes nothing: a write would move the
+                    // chat's revision, and with it every row's transform key.
+                    if (suggestMessagesNew.length > 0 || currentTargetChat.suggestMessages?.length) {
+                        setChatMeta(requestChatRef, { suggestMessages: suggestMessagesNew });
+                    }
                     suggestMessages = suggestMessagesNew;
                 }
             })
@@ -241,18 +245,30 @@
         }
     });
 
-    const translateSuggest = async (toggle, messages) => {
-        if (toggle && messages && messages.length > 0) {
-            suggestMessagesTranslated = [];
-            for (let i = 0; i < suggestMessages.length; i++) {
-                let msg = suggestMessages[i];
-                let translated = await translate(msg, false);
-                suggestMessagesTranslated[i] = translated;
-            }
+    let translationRun = 0;
+    const translateSuggest = async (toggle: boolean, messages: readonly string[] | undefined) => {
+        const run = ++translationRun;
+        const snapshot = [...(messages ?? [])];
+        const ref = currentChatRef();
+        const chatKey = ref ? chatKeyOf(ref) : null;
+        const isCurrent = () => {
+            const current = currentChatRef();
+            return translationRun === run && (current ? chatKeyOf(current) : null) === chatKey;
+        };
+        suggestMessagesTranslated = [];
+        if (!toggle || snapshot.length === 0 || chatKey === null) return;
+
+        const translated: string[] = [];
+        for (const message of snapshot) {
+            const result = await translate(message, false);
+            if (!isCurrent()) return;
+            translated.push(result);
         }
+        if (isCurrent()) suggestMessagesTranslated = translated;
     };
 
     onDestroy(() => {
+        translationRun += 1;
         cancelSuggestionRequest();
         unsub();
     });
@@ -294,7 +310,10 @@
         }
     });
     $effect.pre(() => {
-        translateSuggest(toggleTranslate, suggestMessages);
+        void translateSuggest(toggleTranslate, suggestMessages);
+        return () => {
+            translationRun += 1;
+        };
     });
 </script>
 
@@ -323,8 +342,10 @@
             <button
                 class="bg-textcolor2 hover:bg-darkbutton font-bold py-2 px-4 rounded-sm text-textcolor"
                 onclick={() => {
+                    const ref = currentChatRef();
+                    if (!ref) return;
                     alertConfirm(language.askReRollAutoSuggestions).then((result) => {
-                        if (result) {
+                        if (result && isSelectedChat(ref)) {
                             suggestMessages = [];
                             cancelSuggestionRequest();
                             requestSuggestions();

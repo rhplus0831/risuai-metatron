@@ -20,26 +20,29 @@ import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
  *   (`McpIo`), which only that call's own work holds (a handshake until it settles). Concurrent
  *   callers share one handshake; when the caller that started it is aborted, the next one starts its
  *   own;
- * - what it reads is bounded: one SSE event or JSON body (`MAX_MCP_MESSAGE_BYTES`), a whole tool
- *   list (`MAX_TOOL_LIST_*`), every OAuth answer (`MAX_OAUTH_BODY_BYTES`, `MCP_OAUTH_TIMEOUT_MS`),
- *   and the time the legacy session stream may take to connect and name its endpoint;
+ * - what it reads is bounded: one SSE event or JSON body (`MAX_MCP_MESSAGE_BYTES`), every OAuth
+ *   answer (`MAX_OAUTH_BODY_BYTES`, `MCP_OAUTH_TIMEOUT_MS`), and the time the legacy session stream
+ *   may take to connect and name its endpoint (a whole tool list is bounded on both sides,
+ *   `MAX_TOOL_LIST_*`, which the tab client mirrors);
  * - a session that ended while its handshake was still running is not taken as initialized (the
  *   session generation), and a client closed while an owner's question is open settles its callers;
- * - OAuth refresh uses a 200 answer's token (the tab client read it only from a failed answer), the
- *   endpoints a server names must be `http:` or `https:`, and one handshake logs in at most once.
+ * - all OAuth endpoints a server names must be `http:` or `https:`, and one handshake logs in at
+ *   most once (the tab checks only the authorization endpoint's protocol).
  *
  * Events are framed by `shared/mcp/sse.ts` (CRLF, LF, or CR line ends; `data:` with or without the
  * space), a session id is taken from an `initialize` answer in JSON or as an event stream, and a
- * refresh answer's new refresh token replaces the stored one (the tab client does the same). Kept
- * as the tab client has it: a 404 with a session or a 401 with a token resets the session and
- * repeats the request once without them. Prompts, the custom transport, and `debug` are not ported
- * (no server caller).
+ * refresh answer's new refresh token is saved even after caller cancellation. Rotation writes
+ * check the original store epoch and grant, while access-token publication stays fenced.
+ * Over streamable HTTP only, a 404 with a session or a 401 with a token resets the session and
+ * retries at most once; the tab can retry again when concurrent work restores a session or token.
+ * Prompts, the custom transport, and `debug` are not ported (no server caller).
  */
 
 export const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
 export const MCP_OAUTH_TIMEOUT_MS = 30_000;
 /** How long the client's own answer to a server `ping` may take. */
 const MCP_PING_TIMEOUT_MS = 30_000;
+const MAX_PENDING_PING_REPLIES = 4;
 /** The longest SSE event or JSON body, in bytes. */
 export const MAX_MCP_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_OAUTH_BODY_BYTES = 1024 * 1024;
@@ -72,7 +75,9 @@ export type McpIo = {
     /** Asks the owner for the authorization code; `cancel` aborting withdraws the question. */
     askCode(cancel: AbortSignal): Promise<string>;
     /** Stores the refresh record of a completed login. */
-    writeRefresh(entry: McpRefresh): void;
+    writeRefresh(entry: McpRefresh, previous?: McpRefresh): void;
+    /** Preserves remote token rotation after cancellation, conditional on the previous stored record. */
+    writeRotatedRefresh?(entry: McpRefresh, previous: McpRefresh): void;
 };
 
 export type McpClientDeps = {
@@ -176,6 +181,7 @@ export class McpClient {
     /** The handshake in progress: `aborted` when the caller that started it was aborted. */
     private handshaking: Promise<{ ok: true } | { ok: false; error: unknown; aborted: boolean }> | null = null;
     private cachedTools: ToolDescriptor[] = [];
+    private pendingPingReplies = 0;
 
     constructor(url: string, deps: McpClientDeps) {
         this.url = url;
@@ -331,10 +337,18 @@ export class McpClient {
 
     /** A server `ping` is the session's, not a job's: answered with the client's own bounded request. */
     private answerPing(id: string | number): void {
+        // Drop excess pings so a slow peer cannot accumulate outbound requests.
+        if (this.closed || this.pendingPingReplies >= MAX_PENDING_PING_REPLIES) {
+            return;
+        }
+        this.pendingPingReplies++;
         const signal = AbortSignal.any([this.closing.signal, AbortSignal.timeout(MCP_PING_TIMEOUT_MS)]);
         this.post({ jsonrpc: "2.0", id, result: {} }, signal)
             .then(discard)
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+                this.pendingPingReplies--;
+            });
     }
 
     private post(body: unknown, signal: AbortSignal): Promise<Response> {
@@ -664,8 +678,12 @@ export class McpClient {
     }
 
     /** One bounded OAuth exchange: the status and the JSON body (undefined when it is not JSON). */
-    private async oauthFetch(url: string, init: RequestInit, io: McpIo): Promise<{ status: number; json: any }> {
-        const signal = AbortSignal.any([io.signal, this.closing.signal, AbortSignal.timeout(MCP_OAUTH_TIMEOUT_MS)]);
+    private async oauthFetch(
+        url: string,
+        init: RequestInit,
+        io: McpIo,
+        signal = AbortSignal.any([io.signal, this.closing.signal, AbortSignal.timeout(MCP_OAUTH_TIMEOUT_MS)]),
+    ): Promise<{ status: number; json: any }> {
         let response: Response;
         let text: string;
         try {
@@ -686,10 +704,13 @@ export class McpClient {
         return { status: response.status, json };
     }
 
-    /** `oauthLogin`: the stored refresh token first, else registration, PKCE, and the owner's code. */
+    /**
+     * Refresh is tried only for a stored non-empty string refresh token, else registration, PKCE,
+     * and the owner's code. Full login stores a refresh token only when the server issued a non-empty string.
+     */
     private async oauthLogin(io: McpIo): Promise<void> {
         const stored = this.deps.readRefresh();
-        if (stored && isHttpUrl(stored.tokenUrl)) {
+        if (typeof stored?.refreshToken === "string" && stored.refreshToken !== "" && isHttpUrl(stored.tokenUrl)) {
             const answer = await this.oauthFetch(
                 stored.tokenUrl,
                 {
@@ -697,26 +718,33 @@ export class McpClient {
                     headers: { "Content-Type": "application/x-www-form-urlencoded" },
                     body: new URLSearchParams({
                         grant_type: "refresh_token",
-                        refresh_token: stored.refreshToken ?? "",
+                        refresh_token: stored.refreshToken,
                         client_id: stored.clientId ?? "",
                         client_secret: stored.clientSecret ?? "",
                     }).toString(),
                 },
                 io,
+                // The remote grant may spend the old token even after this caller leaves.
+                AbortSignal.timeout(MCP_OAUTH_TIMEOUT_MS),
             );
             const token = answer.status === 200 ? answer.json?.access_token : undefined;
             if (typeof token === "string" && token !== "") {
                 // A rotated refresh token replaces the stored one (the old one may be spent).
                 const rotated = answer.json?.refresh_token;
                 if (typeof rotated === "string" && rotated !== "") {
-                    this.fenceIo(io);
-                    io.writeRefresh({
+                    const entry = {
                         ...(stored.clientId !== undefined ? { clientId: stored.clientId } : {}),
                         ...(stored.clientSecret !== undefined ? { clientSecret: stored.clientSecret } : {}),
                         refreshToken: rotated,
                         tokenUrl: stored.tokenUrl,
-                    });
+                    };
+                    if (io.writeRotatedRefresh) {
+                        io.writeRotatedRefresh(entry, stored);
+                    } else {
+                        io.writeRefresh(entry);
+                    }
                 }
+                this.fenceIo(io);
                 this.publishToken(token);
                 return;
             }
@@ -817,7 +845,7 @@ export class McpClient {
         io.writeRefresh({
             clientId,
             clientSecret,
-            ...(typeof refreshToken === "string" ? { refreshToken } : {}),
+            ...(typeof refreshToken === "string" && refreshToken !== "" ? { refreshToken } : {}),
             tokenUrl: token_endpoint,
         });
         this.publishToken(token);
@@ -861,9 +889,14 @@ export class McpClient {
                 throw new Error("The MCP server's tool list has too many pages");
             }
             const response = await this.request("tools/list", cursor ? { cursor } : {}, io.signal);
-            const listed = response.rpc.result?.tools;
-            if (!Array.isArray(listed)) {
-                break;
+            const listed = response.rpc?.result?.tools;
+            if (
+                response.rpc?.error ||
+                response.http.status < 200 ||
+                response.http.status > 299 ||
+                !Array.isArray(listed)
+            ) {
+                throw new Error("Failed to list MCP tools");
             }
             for (const entry of listed) {
                 if (!isPlainObject(entry) || typeof entry.name !== "string" || entry.name === "") {

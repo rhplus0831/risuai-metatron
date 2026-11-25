@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "@playwright/test", "wicg-file-system-access"],
+    "paths": {
+      "/src/*": ["src/*"],
+      "/shared/*": ["shared/*"],
+      "/util/*": ["util/*"]
+    }
+  },
+  "include": ["**/*.ts", "../src/**/*.d.ts"]
+}

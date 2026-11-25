@@ -51,7 +51,9 @@ function response(chunks: (string | Uint8Array)[]) {
 }
 
 type Options = {
-    arg?: Partial<RequestArgs> & { saveSignatures?: boolean };
+    arg?: Partial<RequestArgs>;
+    genTime?: number;
+    saveSignatures?: boolean;
     profile?: Record<string, unknown>;
     tools?: ToolDescriptor[];
     controller?: AbortController;
@@ -60,7 +62,13 @@ type Options = {
 
 async function start(modelId: string, upstream: (round: number) => Response, options: Options = {}) {
     const records: Record<string, unknown> = {
-        providers: normalizeProviders({ useStreaming: true, requestRetrys: 0, streamGeminiThoughts: false }),
+        providers: normalizeProviders({
+            useStreaming: true,
+            genTime: options.genTime ?? 1,
+            requestRetrys: 0,
+            streamGeminiThoughts: false,
+            saveSignatures: options.saveSignatures ?? false,
+        }),
         llmSecrets: normalizeLlmSecrets({
             openAIKey: "fake-openai",
             claudeAPIKey: "fake-claude",
@@ -253,6 +261,59 @@ describe.each(providers)("$name SSE", ({ modelId, event }) => {
 });
 
 describe("OpenAI deltas and tool metadata", () => {
+    it("preserves every multi-generation choice as cumulative text through the stream wrapper", async () => {
+        const run = await start(
+            "gpt4o",
+            () =>
+                response([
+                    frame({
+                        choices: [
+                            { index: 0, delta: { content: "First" } },
+                            { index: 1, delta: { content: "Second" } },
+                            { index: 2, delta: { content: "Third" } },
+                        ],
+                    }),
+                    frame({
+                        choices: [
+                            { index: 2, delta: { content: " answer." } },
+                            { index: 0, delta: { content: " candidate." } },
+                            { index: 1, delta: { content: " alternative." } },
+                        ],
+                    }),
+                ]),
+            { genTime: 3 },
+        );
+
+        expect(run.requests).toEqual([expect.objectContaining({ n: 3, stream: true })]);
+        expect(await drain(run.stream)).toEqual([
+            { "0": "First", "1": "Second", "2": "Third" },
+            { "0": "First candidate.", "1": "Second alternative.", "2": "Third answer." },
+        ]);
+    });
+
+    it.each([
+        {
+            name: "an error-only event",
+            before: [],
+            event: { error: { message: "Provider refused the request" } },
+        },
+        {
+            name: "an OpenRouter error with choices after partial text",
+            before: [frame(openai("Partial answer"))],
+            event: {
+                error: { message: "Provider refused the request" },
+                choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+            },
+        },
+    ])(
+        "fails with the provider message for $name instead of accepting an incomplete answer",
+        async ({ before, event }) => {
+            const run = await start("gpt4o", () => response([...before, frame(event), "data: [DONE]\n\n"]));
+
+            await expect(drain(run.stream)).rejects.toThrow("Provider refused the request");
+        },
+    );
+
     it.each(["reasoning", "reasoning_content"])(
         "concatenates overlapping content, %s, and tool arguments",
         async (reasoningKey) => {
@@ -367,6 +428,148 @@ describe("OpenAI deltas and tool metadata", () => {
 });
 
 describe("Gemini final state", () => {
+    it("stores streaming thought and empty-text signature tokens only with provider saving enabled", async () => {
+        for (const saveSignatures of [true, false]) {
+            const run = await start(
+                "gemini-2.5-flash",
+                () =>
+                    response([
+                        frame({
+                            candidates: [
+                                {
+                                    content: {
+                                        parts: [
+                                            {
+                                                text: "Consider the question",
+                                                thought: true,
+                                                thoughtSignature: "thought-token+/=",
+                                            },
+                                        ],
+                                    },
+                                },
+                            ],
+                        }),
+                        frame({
+                            candidates: [{ content: { parts: [{ text: "", thoughtSignature: "empty-token+/=" }] } }],
+                        }),
+                        frame(gemini("Answer")),
+                    ]),
+                { saveSignatures },
+            );
+            const chunks = await drain(run.stream);
+            expect(run.signatures.map(([, signature]) => signature)).toEqual(
+                saveSignatures
+                    ? [
+                          {
+                              source: "gemini-2.5-flash",
+                              sourceFormat: LLMFormat.GoogleCloud,
+                              signatures: [{ type: "text", content: "thought-token+/=" }],
+                          },
+                          {
+                              source: "gemini-2.5-flash",
+                              sourceFormat: LLMFormat.GoogleCloud,
+                              signatures: [{ type: "text", content: "empty-token+/=" }],
+                          },
+                      ]
+                    : [],
+            );
+            const markers = run.signatures.map(([id]) => `{{inlayeddata::${id}}}`);
+            const thought = "<Thoughts>\n\nConsider the question\n\n</Thoughts>\n\n";
+            expect(chunks).toEqual([
+                { "0": thought + (markers[0] ?? "") },
+                { "0": thought + markers.join("") },
+                { "0": thought + markers.join("") + "Answer" },
+            ]);
+        }
+    });
+
+    it("extracts streamed JSON before appending signature markers in their original order", async () => {
+        const run = await start(
+            "gemini-2.5-flash",
+            () =>
+                response([
+                    frame({
+                        candidates: [
+                            { content: { parts: [{ text: '{"answer":"', thoughtSignature: "first-token+/=" }] } },
+                        ],
+                    }),
+                    frame({
+                        candidates: [{ content: { parts: [{ text: "", thoughtSignature: "empty-token+/=" }] } }],
+                    }),
+                    frame(gemini('visible"}')),
+                ]),
+            {
+                saveSignatures: true,
+                arg: { schema: '{"type":"object","properties":{"answer":{"type":"string"}}}', extractJson: "answer" },
+            },
+        );
+        const chunks = await drain(run.stream);
+        expect(run.signatures.map(([, signature]) => signature.signatures)).toEqual([
+            [{ type: "text", content: "first-token+/=" }],
+            [{ type: "text", content: "empty-token+/=" }],
+        ]);
+        const markers = run.signatures.map(([id]) => `{{inlayeddata::${id}}}`);
+        expect(chunks.at(-1)).toEqual({ "0": "visible" + markers.join("") });
+    });
+
+    it("keeps raw text and function tokens in the streaming tool follow-up without inlay markers in its text", async () => {
+        const run = await start(
+            "gemini-2.5-flash",
+            (round) =>
+                response(
+                    round === 1
+                        ? [
+                              frame({
+                                  candidates: [
+                                      {
+                                          content: {
+                                              parts: [
+                                                  { text: "Checking", thoughtSignature: "text-token+/=" },
+                                                  {
+                                                      functionCall: { name: "echo", args: { value: "one" } },
+                                                      thoughtSignature: "function-token+/=",
+                                                  },
+                                                  { functionCall: { name: "echo", args: { value: "two" } } },
+                                              ],
+                                          },
+                                      },
+                                  ],
+                              }),
+                          ]
+                        : [frame(gemini("Done"))],
+                ),
+            { saveSignatures: true, tools: [echo] },
+        );
+        const chunks = await drain(run.stream);
+        expect(run.signatures.map(([, signature]) => signature)).toEqual([
+            {
+                source: "gemini-2.5-flash",
+                sourceFormat: LLMFormat.GoogleCloud,
+                signatures: [{ type: "text", content: "text-token+/=" }],
+            },
+            {
+                source: "gemini-2.5-flash",
+                sourceFormat: LLMFormat.GoogleCloud,
+                signatures: [{ type: "function", content: "function-token+/=" }],
+            },
+        ]);
+        expect(run.requests).toHaveLength(2);
+        expect(run.requests[1].contents.at(-2)).toEqual({
+            role: "model",
+            parts: [
+                { text: "Checking", thoughtSignature: "text-token+/=" },
+                { functionCall: { name: "echo", args: { value: "one" } }, thoughtSignature: "function-token+/=" },
+                { functionCall: { name: "echo", args: { value: "two" } } },
+            ],
+        });
+        expect(run.call.mock.calls).toEqual([
+            ["echo", { value: "one" }],
+            ["echo", { value: "two" }],
+        ]);
+        for (const [id] of run.signatures) expect(chunks.at(-1)?.["0"]).toContain(`{{inlayeddata::${id}}}`);
+        expect(chunks.at(-1)?.["0"]).toMatch(/Done$/);
+    });
+
     it("preserves a signed function call through the tool round trip", async () => {
         const run = await start(
             "gemini-2.5-flash",
@@ -393,7 +596,7 @@ describe("Gemini final state", () => {
                           ]
                         : [frame(gemini("done"))],
                 ),
-            { tools: [echo], arg: { saveSignatures: true } },
+            { tools: [echo], saveSignatures: true },
         );
         const chunks = await drain(run.stream);
         expect(run.signatures).toHaveLength(1);
@@ -401,13 +604,14 @@ describe("Gemini final state", () => {
         expect(run.signatures[0][1]).toEqual({
             source: "gemini-2.5-flash",
             sourceFormat: LLMFormat.GoogleCloud,
-            signatures: [{ type: "function", content: 'echo({"value":"kept"})' }],
+            signatures: [{ type: "function", content: "function-sign" }],
         });
         expect(run.requests).toHaveLength(2);
         expect(run.requests[1].contents.at(-2)).toEqual({
             role: "model",
             parts: [
-                { text: marker },
+                // The follow-up's text carries no signature marker.
+                { text: "" },
                 { functionCall: { name: "echo", args: { value: "kept" } }, thoughtSignature: "function-sign" },
             ],
         });
@@ -449,7 +653,7 @@ describe("Gemini final state", () => {
                         frame(gemini("B")),
                     ]),
                 {
-                    arg: { saveSignatures: true },
+                    saveSignatures: true,
                     saveSignature: async (id) => {
                         if (outcome === "rejected") throw new Error("signature store unavailable");
                         return id;
@@ -471,12 +675,12 @@ describe("Gemini final state", () => {
                 {
                     source: "gemini-2.5-flash",
                     sourceFormat: LLMFormat.GoogleCloud,
-                    signatures: [{ type: "text", content: "think" }],
+                    signatures: [{ type: "text", content: "thought-sign" }],
                 },
                 {
                     source: "gemini-2.5-flash",
                     sourceFormat: LLMFormat.GoogleCloud,
-                    signatures: [{ type: "text", content: "A" }],
+                    signatures: [{ type: "text", content: "answer-sign" }],
                 },
             ]);
             expect(run.intercept.mock.calls).toEqual([

@@ -1,6 +1,15 @@
+import { isArchivedGroup } from "src/ts/storage/archivedGroup";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
 import type { ChatListEntry } from "src/ts/storage/chatStore.svelte";
 
+/**
+ * The pinned-chat projection, shared by the sidebar rail (`src/lib/SideBars/PinnedChatsRail.svelte`, from
+ * `src/lib/SideBars/Sidebar.svelte`) and the home cards (`src/lib/UI/MainMenu.svelte`), so both list the same pins
+ * in the same order. Both open a pin through `openPinnedChat` (`src/ts/globalApi.svelte.ts`), which selects the
+ * chat before the character.
+ */
+
+/** How many pinned cards the home page shows before its show-all toggle. */
 export const HOME_PINNED_CHAT_COLLAPSED_LIMIT = 6;
 
 export interface PinnedChatItem {
@@ -11,7 +20,10 @@ export interface PinnedChatItem {
     characterImage: string;
 }
 
-/** Collects pins from list metadata only, expanding folders in place before unordered characters. */
+/**
+ * Collects pins from list metadata only, expanding folders in place before unordered characters.
+ * Skips trashed characters and archived groups.
+ */
 export function collectPinnedChats(
     characters: readonly AnyClientCharacter[],
     characterOrder: readonly (string | { data: readonly string[] })[] | null | undefined,
@@ -36,11 +48,11 @@ export function collectPinnedChats(
     const pinned: PinnedChatItem[] = [];
     for (const chaId of orderedIds) {
         const character = charactersById.get(chaId);
-        if (!character || !chaId || character.trashTime) {
+        if (!character || !chaId || character.trashTime || isArchivedGroup(character)) {
             continue;
         }
         for (const chat of chatListOf(chaId)) {
-            if (chat.pinned === true) {
+            if (chat.trashedAt === undefined && chat.pinned === true) {
                 pinned.push({
                     chaId,
                     chatId: chat.id,

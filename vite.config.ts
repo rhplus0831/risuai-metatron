@@ -3,9 +3,12 @@ import { svelte, vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 import wasm from "vite-plugin-wasm";
 import strip from "@rollup/plugin-strip";
 import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath } from "node:url";
+import { resolveBuildInfo } from "./server/src/buildInfo.ts";
 
 // The dev server stands in for the self-host server's index route and forwards its API routes to a
-// running `pnpm runserver`. Set RISU_DEV_SERVER when the server uses HTTPS or another port.
+// running `pnpm server`. Set RISU_DEV_SERVER when the server uses HTTPS or another port;
+// `util/agentDev.mjs` sets it under `pnpm dev:agent` and `pnpm dev:human`.
 const devServerTarget = process.env.RISU_DEV_SERVER ?? "http://localhost:6001";
 // `pnpm dev:agent` gives its Vite a cache of its own (`util/agentDev.mjs`), so it can optimize
 // dependencies beside another dev server; unset keeps Vite's `node_modules/.vite`.
@@ -13,8 +16,14 @@ const cacheDir = process.env.RISU_VITE_CACHE_DIR || undefined;
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command, mode }) => {
+    // The build id the menu and the diagnostics show (`shared/buildInfo.ts`), resolved once per start.
+    const buildInfo = resolveBuildInfo(fileURLToPath(new URL(".", import.meta.url)));
     return {
         cacheDir,
+        // The only define; `src/ts/buildInfo.ts` reads it.
+        define: {
+            __RISU_BUILD__: JSON.stringify(buildInfo),
+        },
         plugins: [
             svelte({
                 preprocess: vitePreprocess(),
@@ -32,11 +41,36 @@ export default defineConfig(({ command, mode }) => {
                   })
                 : null,
             {
+                // The server reads it to report the build it serves (`server/src/buildInfo.ts`).
+                name: "risu-build-info",
+                apply: "build",
+                generateBundle() {
+                    this.emitFile({
+                        type: "asset",
+                        fileName: "build-info.json",
+                        source: `${JSON.stringify(buildInfo)}\n`,
+                    });
+                },
+            },
+            {
+                // Dev only (`apply: "serve"`), so `dist/index.html` never carries the flags: in production
+                // the self-host server injects them (`server/src/http/staticCache.ts` `serveCachedIndex`).
+                // `src/ts/platform.ts` reads them: `isNodeServer` from `__NODE__`, `aiDisclosureEnabled`
+                // from `__RISU_AI_DISCLOSURE__`, which follows the shell's `RISU_AI_DISCLOSURE` by the
+                // server's rule (`1` or `true`, trimmed and in any case, is on; anything else is off).
                 name: "risu-node-flag",
                 apply: "serve",
-                transformIndexHtml: () => [
-                    { tag: "script", children: "globalThis.__NODE__ = true", injectTo: "head-prepend" },
-                ],
+                transformIndexHtml: () => {
+                    const raw = process.env.RISU_AI_DISCLOSURE?.trim().toLowerCase();
+                    const aiDisclosure = raw === "1" || raw === "true";
+                    return [
+                        {
+                            tag: "script",
+                            children: `globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = ${aiDisclosure}`,
+                            injectTo: "head-prepend",
+                        },
+                    ];
+                },
             },
         ],
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// `pluginWorkIdle` / `onPluginWorkChange` (`plugins-mcp.md` Flows step 6): the idle definition a
+// `pluginWorkIdle` / `onPluginWorkChange` (`plugin-sandbox.md` Deferred reload): the idle definition a
 // deferred reload waits for, collected over the tab's sends (`localSends`), the jobs' plugin work
 // (`generationJobs.ts`), the host-side hook invocations still running (a wrapped hook; a provider
 // from before its permission prompt), and each loaded sandbox's `isIdle`. The sandbox is mocked
@@ -43,16 +43,7 @@ vi.mock("src/ts/storage/database.svelte", () => ({
     getCurrentChat: vi.fn(),
     setCurrentChat: vi.fn(),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: harness.confirm,
@@ -63,21 +54,34 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
     risuUnescape: (text: string) => text,
 }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => false,
-    getLastGrantTime: () => undefined,
-    recordPermissionGrants: vi.fn(async () => undefined),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => false,
+        getLastGrantTime: () => undefined,
+        recordPermissionGrants: vi.fn(async () => undefined),
+    }),
+);
 
-import { executePluginV3, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./v3.svelte";
+import {
+    executePluginV3,
+    loadV3Plugins,
+    onPluginActivity,
+    onPluginWorkChange,
+    pluginBusy,
+    pluginWorkIdle,
+} from "./v3.svelte";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
 import { beginLocalSend } from "src/ts/process/localSends";
 import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+import * as chatStore from "src/ts/storage/chatStore.svelte";
+import type { Chat } from "../../../../shared/database";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
+import { pluginHooks, type EditFunction, type PluginProviderArgument } from "../pluginHooks";
 import { invokeHook } from "./pluginContext";
+import { bodyIntercepterStore } from "src/ts/stores.svelte";
 
 installFlatDatabase({ characters: [], plugins: [] });
 
@@ -146,6 +150,55 @@ afterEach(async () => {
 });
 
 describe("pluginWorkIdle", () => {
+    it.each(["addRisuReplacer", "addRisuChatListener", "registerBodyIntercepter"] as const)(
+        "refuses %s when a granted permission's continuation resumes after unload begins",
+        async (method) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            try {
+                const { api } = await makeApi();
+                const prime = vi.fn<() => Promise<[]>>().mockResolvedValue([]);
+                await api.addRisuReplacer("beforeRequest", prime);
+                api.removeRisuReplacer("beforeRequest", prime);
+                const callback = vi.fn<(...args: unknown[]) => Promise<[]>>().mockResolvedValue([]);
+                const pending =
+                    method === "registerBodyIntercepter"
+                        ? api[method](callback)
+                        : api[method](method === "addRisuReplacer" ? "beforeRequest" : "output", callback);
+                // Consent is already granted, but each API still yields at its permission await.
+                const unloading = loadV3Plugins([]);
+                await Promise.all([pending, unloading]);
+                expect(pluginHooks.replacerbeforeRequest.size).toBe(0);
+                expect(pluginHooks.chatOutput.size).toBe(0);
+                expect(bodyIntercepterStore).toEqual([]);
+                expect(callback).not.toHaveBeenCalled();
+                expect(pluginWorkIdle()).toBe(true);
+
+                const consent = deferred<boolean>();
+                const prompted = deferred<void>();
+                harness.confirm.mockImplementationOnce(() => {
+                    prompted.resolve();
+                    return consent.promise;
+                });
+                const replacement = await makeApi();
+                const awaitingConsent =
+                    method === "registerBodyIntercepter"
+                        ? replacement.api[method](callback)
+                        : replacement.api[method](method === "addRisuReplacer" ? "beforeRequest" : "output", callback);
+                await prompted.promise;
+                const unloadingDuringPrompt = loadV3Plugins([]);
+                consent.resolve(true);
+                await Promise.all([awaitingConsent, unloadingDuringPrompt]);
+                expect(pluginHooks.replacerbeforeRequest.size).toBe(0);
+                expect(pluginHooks.chatOutput.size).toBe(0);
+                expect(bodyIntercepterStore).toEqual([]);
+                expect(callback).not.toHaveBeenCalled();
+            } finally {
+                vi.clearAllTimers();
+                vi.useRealTimers();
+            }
+        },
+    );
+
     it("is false while a provider awaits its permission prompt, before any guest callback exists", async () => {
         const consent = deferred<boolean>();
         harness.confirm.mockReturnValueOnce(consent.promise);
@@ -199,7 +252,7 @@ describe("pluginWorkIdle", () => {
         const name = `channel-provider-${plugin.name}`;
         api.addProvider(name, func);
         const send = vi.fn(() => true);
-        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+        const flush = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
         const jobId = `job-${plugin.name}`;
         try {
             handleChannelEvent(
@@ -293,5 +346,203 @@ describe("pluginWorkIdle", () => {
         releaseB();
         expect(pluginWorkIdle()).toBe(true);
         expect(observed.at(-1)).toBe(true);
+    });
+});
+
+describe("activity by plugin", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+    afterEach(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    it("tracks each plugin's sandbox and overlapping host hooks independently while the total keeps work busy", async () => {
+        const a = await makeApi();
+        const b = await makeApi();
+        const [hostA, hostB] = harness.hosts;
+        expect(pluginBusy("not-installed")).toBe(false);
+        expect(pluginBusy(a.plugin.name)).toBe(false);
+        expect(pluginBusy(b.plugin.name)).toBe(false);
+
+        hostA.idle = false;
+        expect(pluginBusy(a.plugin.name)).toBe(true);
+        expect(pluginBusy(b.plugin.name)).toBe(false);
+        expect(pluginWorkIdle()).toBe(false);
+        hostA.idle = true;
+        hostB.idle = false;
+        expect(pluginBusy(a.plugin.name)).toBe(false);
+        expect(pluginBusy(b.plugin.name)).toBe(true);
+        hostB.idle = true;
+        expect(pluginWorkIdle()).toBe(true);
+
+        const first = deferred<string>();
+        const second = deferred<string>();
+        const other = deferred<string>();
+        a.api.addRisuScriptHandler(
+            "input",
+            vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),
+        );
+        b.api.addRisuScriptHandler("output", () => other.promise);
+        const [input] = pluginHooks.editinput;
+        const [output] = pluginHooks.editoutput;
+        const runningFirst = input("first");
+        const runningSecond = input("second");
+        let runningOther: ReturnType<typeof output> | undefined;
+        try {
+            expect(pluginBusy(a.plugin.name)).toBe(true);
+            expect(pluginBusy(b.plugin.name)).toBe(false);
+            expect(pluginWorkIdle()).toBe(false);
+            first.resolve("first done");
+            await runningFirst;
+            expect(pluginBusy(a.plugin.name)).toBe(true);
+            expect(pluginWorkIdle()).toBe(false);
+
+            runningOther = output("other");
+            second.resolve("second done");
+            await runningSecond;
+            expect(pluginBusy(a.plugin.name)).toBe(false);
+            expect(pluginBusy(b.plugin.name)).toBe(true);
+            expect(pluginWorkIdle()).toBe(false);
+
+            // An unloaded name is not busy, but its unsettled host hook still holds the total.
+            await loadV3Plugins([]);
+            expect(pluginBusy(a.plugin.name)).toBe(false);
+            expect(pluginBusy(b.plugin.name)).toBe(false);
+            expect(pluginWorkIdle()).toBe(false);
+            other.resolve("other done");
+            await runningOther;
+            expect(pluginWorkIdle()).toBe(true);
+        } finally {
+            first.resolve("cleanup");
+            second.resolve("cleanup");
+            other.resolve("cleanup");
+            await Promise.all([runningFirst, runningSecond, runningOther]);
+        }
+    });
+
+    it("reports the plugin name on every sandbox report, host-hook settlement, and unload", async () => {
+        const a = await makeApi();
+        const b = await makeApi();
+        const [hostA, hostB] = harness.hosts;
+        const activity = vi.fn<(name: string) => void>();
+        const off = onPluginActivity(activity);
+        const gate = deferred<string>();
+        let running: ReturnType<EditFunction>;
+        try {
+            changed.mockClear();
+            hostA.listener!();
+            hostA.listener!();
+            hostB.listener!();
+            expect(activity.mock.calls).toEqual([[a.plugin.name], [a.plugin.name], [b.plugin.name]]);
+            expect(changed).toHaveBeenCalledTimes(3);
+
+            a.api.addRisuScriptHandler("input", () => gate.promise);
+            const [handler] = pluginHooks.editinput;
+            activity.mockClear();
+            changed.mockClear();
+            running = handler("text");
+            expect(activity).not.toHaveBeenCalled();
+            gate.resolve("done");
+            await running;
+            expect(activity.mock.calls).toEqual([[a.plugin.name]]);
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            activity.mockClear();
+            changed.mockClear();
+            await loadV3Plugins([]);
+            expect(activity.mock.calls.map(([name]) => name).sort()).toEqual([a.plugin.name, b.plugin.name].sort());
+            expect(changed).toHaveBeenCalledTimes(2);
+        } finally {
+            off();
+            gate.resolve("cleanup");
+            await running;
+        }
+    });
+});
+
+describe("plugin read baseline lifetime", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        localStorage.clear();
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "a",
+                    type: "character",
+                    name: "A",
+                    chats: [
+                        {
+                            id: "a0",
+                            name: "Chat",
+                            note: "",
+                            localLore: [],
+                            message: [{ chatId: "m", role: "user", data: "original" }],
+                        },
+                    ],
+                },
+            ],
+            plugins: [],
+        });
+        chatStore.initializeChats();
+        selectCharacter("a");
+    });
+
+    afterEach(async () => {
+        await loadV3Plugins([]);
+        selectCharacter(null);
+        installFlatDatabase({ characters: [], plugins: [] });
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    it("clears the old instance's retained read on unload and gives its replacement a fresh cache", async () => {
+        const { api, plugin } = await makeApi();
+        const copy: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(chatA, "m", "user first");
+        copy.note = "plugin first";
+        await api.setChatToIndex(0, 0, copy);
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("user first");
+        const oldRead: Chat = await api.getChatFromIndex(0, 0);
+        await loadV3Plugins([plugin]);
+        const replacement = harness.captured.api!;
+        expect(replacement).not.toBe(api);
+        chatStore.setMessageText(chatA, "m", "after unload");
+        await api.setChatToIndex(0, 0, oldRead);
+        // Old host continuations have no retained read after unload: comparison is at write time.
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("user first");
+        chatStore.setMessageText(chatA, "m", "replacement unread");
+        await replacement.setChatToIndex(0, 0, oldRead);
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("user first");
+        const fresh: Chat = await replacement.getChatFromIndex(0, 0);
+        chatStore.setMessageText(chatA, "m", "replacement user edit");
+        fresh.note = "replacement plugin edit";
+        await replacement.setChatToIndex(0, 0, fresh);
+        expect(chatStore.findChat(chatA)!).toMatchObject({
+            note: "replacement plugin edit",
+            message: [{ data: "replacement user edit" }],
+        });
+    });
+
+    it("does not recreate an unloaded instance's cache when its pending getter completes", async () => {
+        const { api, plugin } = await makeApi();
+        const prime: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(chatA, "m", "before pending read");
+        prime.note = "prime";
+        await api.setChatToIndex(0, 0, prime);
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("before pending read");
+        const gate = deferred<ReturnType<typeof chatStore.findChat>>();
+        vi.spyOn(chatStore, "ensureChatLoaded").mockReturnValueOnce(gate.promise);
+        const pending = api.getChatFromIndex(0, 0);
+        await loadV3Plugins([plugin]);
+        gate.resolve(chatStore.findChat(chatA));
+        const late: Chat = await pending;
+        chatStore.setMessageText(chatA, "m", "after late getter");
+        late.note = "late plugin edit";
+        await api.setChatToIndex(0, 0, late);
+        expect(chatStore.findChat(chatA)!).toMatchObject({
+            note: "late plugin edit",
+            message: [{ data: "before pending read" }],
+        });
+        expect(chatStore.isChatPinned("a")).toBe(false);
     });
 });

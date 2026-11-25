@@ -25,10 +25,12 @@ import {
     readFileAt,
     serveFileImport,
 } from "../http/fileImport.ts";
+import { ASSET_LEASE_MS } from "../../../shared/assetLifecycle.ts";
+import { contentNameHash, holdsVerifiedAsset } from "../http/assetVerification.ts";
 import { ndjsonLine } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
-import { storageFileExists, writeStorageFile } from "./storage.ts";
+import { claimAssetKey, isAssetStorageKey, storageFileExists } from "./storage.ts";
 
 export { MODULE_IMPORT_PATH };
 
@@ -49,15 +51,18 @@ type ModuleFilePlan = { module: RisuModule; recordsStart: number; records: numbe
  * read; no epoch (only content-addressed files are written, and the client adds the module record
  * itself). The request lifecycle is `serveFileImport`'s (`http/fileImport.ts`): refused before the
  * body is read for a declared length over `maxImportBytes` (413), another import holding the shared
- * slot (409; the CharX import shares it), maintenance (503 with `Retry-After`), no body (400); the
+ * slot (409; the CharX import shares it), maintenance (503 with `Retry-After: 5`), no body (400); the
  * body spooled to `save/.tmp/module-<uuid>/` under `maxImportBytes` (exempt from the global body
  * limit). The whole file is validated from the file before anything is written: a malformed or
  * truncated file is a 400 `Invalid module file`, a record over `MAX_MODULE_ASSET_BYTES` a 413. Then
  * the answer is NDJSON (`ModuleImportLine`): each record is read, rpack-decoded, and stored under
- * `assets/<sha256 hex>.png` (skipped when that file exists; each write under the maintenance gate),
- * with throttled `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }`, or one
- * `{ error }` line at the first failure (nothing more is written). Memory holds the main record and
- * one asset record at a time.
+ * `assets/<sha256 hex>.png` (skipped when that file already holds those bytes, replaced when it does not; each write
+ * under the maintenance gate),
+ * with throttled `{ done, total }` lines, then `{ module, assetsWritten, assetsSkipped }` with each
+ * imported key in `module.assets[i][1]`, or one `{ error }` line at the first failure (nothing more
+ * is written). Before the result every filled asset key is claimed again, replaying its source
+ * record when missing. Metadata-only keys renew a lease when present and remain unchanged when
+ * missing. Memory holds one asset at a time.
  */
 export function registerModuleImportRoutes(
     app: Hono<AppEnv>,
@@ -102,6 +107,7 @@ export function registerModuleImportRoutes(
             const header = new Uint8Array(RECORD_HEADER_BYTES);
             const view = new DataView(header.buffer);
             let position = recordsStart;
+            const replay = new Map<string, { position: number; length: number; hashHex: string }>();
             // A writable copy filled as the records stream, assigned once (the module type is readonly);
             // an absent or null list stays as it was.
             const filled = Array.isArray(module.assets)
@@ -113,22 +119,28 @@ export function registerModuleImportRoutes(
                 }
                 await readAt(file, header, position);
                 const length = view.getUint32(1, true);
-                const bytes = await readAt(file, new Uint8Array(length), position + RECORD_HEADER_BYTES);
+                const assetPosition = position + RECORD_HEADER_BYTES;
+                const bytes = await readAt(file, new Uint8Array(length), assetPosition);
                 position += RECORD_HEADER_BYTES + length;
                 decodeRPackInPlace(bytes);
-                // The client's key (`saveAsset` with its default extension).
-                const key = `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
-                if (await storageFileExists(savePath, key)) {
-                    assetsSkipped += 1;
-                } else {
-                    const leave = snapshots.gate.enter();
-                    try {
-                        await writeStorageFile(savePath, key, bytes);
-                    } finally {
-                        leave();
-                    }
-                    assetsWritten += 1;
+                // The client's key (`saveAsset` with its default extension). A file there that does
+                // not hold these bytes (empty, truncated, wrong) is replaced.
+                const hashHex = createHash("sha256").update(bytes).digest("hex");
+                const key = `assets/${hashHex}.png`;
+                const leave = snapshots.gate.enter();
+                try {
+                    const claimed = await claimAssetKey(savePath, key, {
+                        verify: (fullPath) => holdsVerifiedAsset(fullPath, hashHex),
+                        bytes,
+                        hashHex,
+                        signal,
+                    });
+                    if (claimed === "present") assetsSkipped++;
+                    else assetsWritten++;
+                } finally {
+                    leave();
                 }
+                replay.set(key, { position: assetPosition, length, hashHex });
                 filled![index][1] = key;
                 const now = performance.now();
                 if (index + 1 === total || now - lastLine >= PROGRESS_INTERVAL_MS) {
@@ -136,12 +148,44 @@ export function registerModuleImportRoutes(
                     yield ndjsonLine({ done: index + 1, total } satisfies ModuleImportProgress);
                 }
             }
+            // Replay offsets retain no asset bytes. Only supplied records are required here;
+            // metadata-only keys remain portable when absent, and renew their lease when present.
+            const claimStart = performance.now();
+            for (const key of new Set(filled?.map((asset) => asset[1]).filter(isAssetStorageKey) ?? [])) {
+                const source = replay.get(key);
+                const hashHex = source?.hashHex ?? contentNameHash(key);
+                const leave = snapshots.gate.enter();
+                try {
+                    const status = await claimAssetKey(savePath, key, {
+                        signal,
+                        verify: (fullPath) =>
+                            hashHex ? holdsVerifiedAsset(fullPath, hashHex) : storageFileExists(savePath, key),
+                        hashHex: hashHex ?? undefined,
+                        bytes: source
+                            ? async () => {
+                                  const bytes = await readAt(file, new Uint8Array(source.length), source.position);
+                                  decodeRPackInPlace(bytes);
+                                  if (createHash("sha256").update(bytes).digest("hex") !== source.hashHex)
+                                      throw new Error("Module asset changed during replay");
+                                  return bytes;
+                              }
+                            : undefined,
+                    });
+                    if (source && status === "missing") throw new Error(`Module asset is missing: ${key}`);
+                } finally {
+                    leave();
+                }
+            }
+            if (performance.now() - claimStart >= ASSET_LEASE_MS)
+                throw new Error("Module asset claims expired before completion");
             if (filled) {
                 module.assets = filled;
             }
             const result = ndjsonLine({ module, assetsWritten, assetsSkipped } satisfies ModuleImportResult);
             recordSafely(diagnostics, { kind: "lifecycle", phase: "moduleImport" });
             await finalize();
+            if (performance.now() - claimStart >= ASSET_LEASE_MS)
+                throw new Error("Module asset claims expired before completion");
             yield result;
         } catch (error) {
             if (!(error instanceof MaintenanceError)) {

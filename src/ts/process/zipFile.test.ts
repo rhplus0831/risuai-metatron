@@ -4,13 +4,11 @@ import { CharxFileError } from "../../../shared/charxImport.ts";
 import { readZipEntry, readZipIndex } from "./zipFile";
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("src/ts/globalApi.svelte", () => ({
-    loadAsset: vi.fn(),
-    saveAsset: vi.fn(),
-    loadAssets: vi.fn(),
-    assetKey: vi.fn(async (data: Uint8Array) => `assets/${data.length}-${data[0]}.png`),
-    saveAssetBatch: vi.fn(async () => {}),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        assetKey: vi.fn(async (data: Uint8Array) => `assets/${data.length}-${data[0]}.png`),
+    }),
+);
 vi.mock("src/ts/util", () => ({ selectSingleFileHandle: vi.fn(), asBuffer: vi.fn() }));
 
 afterEach(() => {

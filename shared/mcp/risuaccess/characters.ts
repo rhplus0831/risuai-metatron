@@ -1002,6 +1002,7 @@ export class CharacterHandler extends MCPToolHandler {
 
         const characters = this.host
             .characters()
+            .filter((char) => char.type !== "group")
             .slice(offset, offset + count)
             .map((char) => ({
                 id: char.chaId,

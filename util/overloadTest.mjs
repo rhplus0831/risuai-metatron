@@ -3,7 +3,7 @@
 // under the reference overload.
 //
 // Picks one CPU this process may use (the last one `taskset -pc` lists, or `--cpu`), pins eight
-// busy-loop burners to it, and runs `util/agentTest.mjs --force --no-rerun <args> --maxWorkers=3`
+// busy-loop burners to it, and runs `util/agentTest.mjs --force --no-rerun --no-lock <args> --maxWorkers=3`
 // pinned to the same CPU, `--runs` times (default 3). The test run gets about 1/9 of a CPU with deschedules of
 // seconds, which is what a test that depends on real time fails under (`STRUCTURE.md` V3). No
 // `--testTimeout` is passed unless given: the gate's own timeout (`vitest.config.ts`) is a hang
@@ -18,7 +18,7 @@
 // autogroup, and reports the run's result over IPC. This process then kills that whole group, which
 // also takes a Vitest left behind by a wrapper that died. It does the same on exit, error, SIGINT and
 // SIGTERM. A supervisor whose parent is gone kills its group, and a burner whose supervisor is gone
-// exits. See `docs/structure/build-test-platforms.md` `Tests`.
+// exits. See `docs/structure/test-harness.md` `Tests`.
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,7 @@ const self = fileURLToPath(import.meta.url);
 const root = resolve(dirname(self), "..");
 const agentTest = join(root, "util", "agentTest.mjs");
 const BURNERS = 8;
+/** Fixed reference worker count; user `--maxWorkers` overrides are refused. */
 const MAX_WORKERS = 3;
 // Supervisor exit codes besides the run's 0 (passed) and 1 (failed).
 const BROKEN = 3;
@@ -147,7 +148,7 @@ async function main() {
 
     // `--no-rerun`: a failure under the overload is what this run looks for, so it must not be cleared
     // by the wrapper's rerun of failed files alone.
-    const wrapperArgs = ["--force", "--no-rerun", ...args, `--maxWorkers=${MAX_WORKERS}`];
+    const wrapperArgs = ["--force", "--no-rerun", "--no-lock", ...args, `--maxWorkers=${MAX_WORKERS}`];
     if (testTimeout !== undefined) wrapperArgs.push(`--testTimeout=${testTimeout}`);
 
     let supervisor = null;
@@ -172,7 +173,8 @@ async function main() {
             stopping = true;
             log(`${signal}: stopping the run and the burners`);
             if (!running()) process.exit(code);
-            // Let Vitest end on SIGTERM; the exit handler sends SIGKILL to whatever is left.
+            // Let the group end on SIGTERM; exit when the supervisor closes or after 3 s at the latest,
+            // and let the exit handler SIGKILL whatever is left.
             killGroup("SIGTERM");
             const timer = setTimeout(() => process.exit(code), 3000);
             supervisor.once("close", () => {
@@ -186,6 +188,7 @@ async function main() {
         process.exit(2);
     });
 
+    /** A supervisor that ends without an IPC result counts as a broken overload, not a test result. */
     function runOnce() {
         return new Promise((done) => {
             supervisor = spawn(

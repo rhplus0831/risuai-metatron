@@ -1,5 +1,10 @@
 <script module lang="ts">
-    import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import {
+        characterList,
+        selectedCharacter,
+        findCharacter,
+        type AnyClientCharacter,
+    } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
@@ -12,6 +17,17 @@
 </script>
 
 <script lang="ts">
+    import { chatEntry } from "src/ts/storage/chatStore.svelte";
+    import {
+        closeMessageEditorDraft,
+        findMessageEditorDraft,
+        messageEditorReplyKey,
+        openCachedTranslationDraft,
+        openMessageEditorDraft,
+        type MessageEditorDraft,
+    } from "src/ts/storage/messageEditorDrafts.svelte";
+    import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { tick } from "svelte";
     import {
         ArrowLeft,
@@ -35,7 +51,14 @@
         Scissors,
         XIcon,
     } from "@lucide/svelte";
-    import { rerenderMessage } from "src/ts/parser/transformClient";
+    import { type CapturedTransform, rerenderMessage } from "src/ts/parser/transformClient";
+    import { escapeHtml } from "src/ts/parser/safeHtml";
+    import {
+        displayTransformMessageKey,
+        displayTransformRetryRound,
+        releaseDisplayTransformSource,
+        showDisplayTransformSource,
+    } from "src/ts/parser/displayTransformRecovery.svelte";
     import {
         aiLawApplies,
         changeChatTo,
@@ -47,9 +70,19 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { longpress } from "src/ts/gui/longtouch";
     import { getModelInfo } from "src/ts/model/modellist";
+    import { createInheritingChat } from "src/ts/process/chatMemoryInherit.svelte";
     import { runServerButton, runServerJob, runServerManualTrigger } from "src/ts/process/serverCommands";
     import { sayTTS } from "src/ts/process/tts";
-    import { ReloadChatPointer, CurrentTriggerIdStore, popupStore, reloadChatKey } from "src/ts/stores.svelte";
+    import {
+        ReloadChatPointer,
+        CurrentTriggerIdStore,
+        popupStore,
+        reloadChatKey,
+        closePopupEditorSession,
+        isPopupEditorSessionCurrent,
+        openPopupEditorSession,
+        popUpEditorStore,
+    } from "src/ts/stores.svelte";
     import { capitalize, getUserIcon, getUserName, sleep } from "src/ts/util";
     import { onDestroy, onMount, untrack } from "svelte";
     import { type Unsubscriber } from "svelte/store";
@@ -79,13 +112,14 @@
     import {
         type ChatRef,
         chatSaveVersion,
-        createChat,
         chatOwnerToken,
         chatSelectionVersion,
         currentChatRef,
         ensureChatLoaded,
         findChat,
+        isChatGenerating,
         isMessageLocked,
+        isMessageStreamed,
         isStreamingMessage,
         patchMessage,
         removeMessages,
@@ -95,7 +129,10 @@
     } from "../../ts/storage/chatStore.svelte";
     import { alertStore, HideIconStore, ReloadGUIPointer, SafeModeStore } from "../../ts/stores.svelte";
     import AutoresizeArea from "../UI/GUI/TextAreaResizable.svelte";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import ChatBody from "./ChatBody.svelte";
+    import MemoryReceiptLine from "./MemoryReceiptLine.svelte";
+    import { waitForSettledRender } from "./settledRender.svelte";
     import PopupButton from "../UI/PopupButton.svelte";
     import PartialEditController from "./PartialEditController.svelte";
     import { chatFolderOf } from "../SideBars/chatFolders";
@@ -114,27 +151,62 @@
     } from "../../ts/translator/storedTranslation.svelte";
     import { chatAutoTranslate, chatTranslationSettings } from "../../ts/translator/chatTranslation.svelte";
     import type { BilingualInterleaveOptions } from "../../ts/translator/bilingualInterleave";
+    import {
+        shouldAutoPopupMessageEditor,
+        shouldAutoPopupTranslationEditor,
+        shouldUseStableMessageEditor,
+    } from "./messageEditPopup";
+
+    /**
+     * One message row: the transcript's rows (`Chats.svelte`), the greeting, and bookmark previews. The row's
+     * look follows `settings.ui.theme`: `mobilechat`, `cardboard`, `customHTML` (the GUI HTML through
+     * `renderGuiHtmlPart`, the classic row in safe mode), and classic for every other theme. The body is
+     * `ChatBody.svelte`.
+     *
+     * The row addresses its own chat (`chatRef`, captured from `Chats.svelte` or from the selection at mount):
+     * message actions, Lua buttons, manual triggers, and forms write to that chat, never to the selection at the
+     * event. A Lua button, a trigger, or a form reloads its row only when its job started (or replayed), so a
+     * refused one keeps the values typed beside it.
+     *
+     * Branching (the branch button) copies the chat up to this message without `pinned`, `oocLog`, or `oocSegment`.
+     * With `createFolderOnBranch`, a source chat that `chatFolderOf` lists under no folder (none, or a dangling
+     * `folderId`) first goes into a new "Branches of" folder, which the branch inherits.
+     */
 
     let translating = $state(false);
-    let editMode = $state(false);
-    // A cancelled long press keeps the draft available, without changing the rendered/stored message.
-    let draft: string | null = $state(null);
+    /** Both original-message editors share the tab's draft; cancel closes it but retains changed text for reopening. */
+    let messageDraft = $state<MessageEditorDraft>();
+    const editMode = $derived(messageDraft?.open ?? false);
+    let draft = $derived(messageDraft?.text ?? null);
+    /**
+     * An original or translation editor is open (or loading): `Chats.svelte` neither trims this row away nor
+     * contains it meanwhile.
+     */
     export function isEditing() {
         return editMode || editTranslationMode || loadingTranslationEdit;
     }
     let statusMessage: string = $state("");
     let retranslate = $state(false);
-    let editTranslationMode = $state(false);
     let loadingTranslationEdit = $state(false);
-    let editTranslationText = $state("");
+    let translationDraft = $state<MessageEditorDraft>();
+    let editTranslationText = $derived(translationDraft?.text ?? "");
+    let observedCacheText = $state<string | null>(null);
     /** What the open translation editor writes back to: a rendered translation's cache key, or a stored translation. */
-    let editTranslationTarget: { kind: "cache"; key: string } | { kind: "stored"; edit: StoredTranslationEdit } | null =
-        null;
+    let editTranslationTarget = $state.raw<
+        | { kind: "cache"; key: string; reply: string | null; session?: ReturnType<typeof openCachedTranslationDraft> }
+        | { kind: "stored"; edit: StoredTranslationEdit }
+        | null
+    >(null);
+    /** Renders the body again in place (`ChatBody`'s `renderRevision`), without remounting it. */
     let chatBodyRevision = $state(0);
     /** Whether this message was locked when last seen (the server transform skips a locked message). */
     let wasLocked = false;
     let bodyRoot: HTMLElement | null = $state(null);
     let parsedBody: { whenRendered: () => Promise<void> } | undefined = $state();
+    /**
+     * Settles once the row's body has rendered its current text. `ChatBody` is keyed only by the reload pointer,
+     * so the wait loops until the bound body stays the same across its render wait and the DOM flush.
+     */
     export async function whenRendered() {
         await tick();
         while (true) {
@@ -149,17 +221,31 @@
         message?: string;
         name?: string;
         largePortrait?: boolean;
-        isLastMemory: boolean;
+        /** Overrides the memory limit line; an explicit false (bookmark previews, the greeting) never draws it. */
+        isLastMemory?: boolean;
         img?: string | Promise<string>;
         idx?: number;
-        /** The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. */
+        /**
+         * The message's id (`Message.chatId`); handlers address the message by it, not by `idx`. A bookmark
+         * preview passes none.
+         */
         messageId?: string;
+        /** Identifies the preview's editors while its display and row menu keep their preview behavior. */
+        bookmarkMessageId?: string;
         chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
-        rerollIcon?: boolean | "dynamic";
+        rerollIcon?: boolean;
+        rerollBusy?: boolean;
+        candidateCount?: number;
+        candidateIndex?: number;
+        candidateCarrier?: boolean;
         role?: string;
         onReroll?: () => void;
         unReroll?: () => void;
+        onOpenInlineEditor?: () => void;
+        onCloseInlineEditor?: () => void;
+        /** Called when an editor opens, through every path (the automatic popup included), before it renders. */
+        onEditing?: () => void;
         character?: simpleCharacterArgument | string | null;
         firstMessage?: boolean;
         altGreeting?: boolean;
@@ -168,9 +254,11 @@
         isComment?: boolean;
         disabled?: boolean | "allBefore";
         isOptimizedStreamingMessage?: boolean;
+        /** Whether the message streams, for a row without a `messageId` to look it up (a bookmark preview). */
         streamingOverride?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
         rawStreamingText?: string;
+        /** Hides the whole row by visibility, keeping its layout (the greeting while the opening reveals). */
         pendingReveal?: boolean;
     }
 
@@ -182,12 +270,20 @@
         img = "",
         idx = -1,
         messageId = undefined,
+        bookmarkMessageId,
         chatRef = untrack(currentChatRef),
         rerollIcon = false,
+        rerollBusy,
+        candidateCount = 1,
+        candidateIndex = 0,
+        candidateCarrier = false,
         messageGenerationInfo = null,
         role = null,
         onReroll = () => {},
         unReroll = () => {},
+        onOpenInlineEditor,
+        onCloseInlineEditor,
+        onEditing,
         character = null,
         firstMessage = false,
         altGreeting = false,
@@ -202,18 +298,113 @@
         pendingReveal = false,
     }: Props = $props();
 
+    const editorMessageId = $derived(messageId ?? bookmarkMessageId);
+    const editorReply = $derived(messageEditorReplyKey(chatRef, editorMessageId));
+    const editTranslationMode = $derived(
+        !!translationDraft?.open &&
+            (editTranslationTarget?.kind !== "cache" || editTranslationTarget.reply === editorReply),
+    );
+    untrack(() => {
+        if (!chatRef || !editorMessageId) return;
+        const original = findMessageEditorDraft(chatRef, editorMessageId, "message");
+        if (original?.open) messageDraft = original;
+        if (!messageId) return;
+        translationDraft = findMessageEditorDraft(chatRef, messageId, "translation");
+        if (translationDraft?.open && translationDraft.translation) {
+            editTranslationTarget = { kind: "stored", edit: translationDraft.translation };
+        }
+    });
+
+    $effect.pre(() => {
+        if (onEditing && isEditing()) untrack(onEditing);
+    });
+
+    const editedMessage = $derived(chatRef && editorMessageId ? heldMessage(chatRef, editorMessageId) : undefined);
+    const messageChangedElsewhere = $derived(
+        !!messageDraft && !!editedMessage && editedMessage.data !== messageDraft.base,
+    );
+    const translationChangedElsewhere = $derived(
+        !!translationDraft &&
+            (editTranslationTarget?.kind === "cache"
+                ? JSON.stringify(observedCacheText) !== translationDraft.base
+                : JSON.stringify(editedMessage?.translation) !== translationDraft.base),
+    );
+
+    let autoPopupMessageEditorAttempted = false;
+    let autoPopupTranslationEditorAttempted = false;
+    let autoPopupMessageEditorRun = 0;
+    let autoPopupTranslationEditorRun = 0;
+    let activeAutoPopupMessageSessionId: number | null = null;
+    let activeAutoPopupTranslationSessionId: number | null = null;
+    let retainPopupMessageDraft: (() => void) | undefined;
+    let retainPopupTranslationDraft: (() => void) | undefined;
+    let popupEditorsDestroyed = false;
+    let suppressAutoPopupTranslationEditor = $state(false);
+    const autoPopupMessageEditor = $derived(
+        shouldAutoPopupMessageEditor({
+            editMode,
+            index: idx,
+            disableAutoPopupMessageEditor: settings.ui.disableAutoPopupMessageEditor,
+        }),
+    );
+    const autoPopupTranslationEditor = $derived(
+        shouldAutoPopupTranslationEditor({
+            editTranslationMode,
+            index: idx,
+            disableAutoPopupMessageEditor: settings.ui.disableAutoPopupMessageEditor,
+            suppressAutoPopupTranslationEditor,
+        }),
+    );
+    const useStableMessageEditor = $derived(
+        shouldUseStableMessageEditor({
+            editMode,
+            index: idx,
+            message: draft ?? message,
+            theme: settings.ui.theme,
+        }),
+    );
+    const useStableTranslationEditor = $derived(
+        shouldUseStableMessageEditor({
+            editMode: editTranslationMode,
+            index: idx,
+            message: editTranslationText,
+            theme: settings.ui.theme,
+        }),
+    );
+
     let msgDisplay = $state("");
     let translated = $state(false);
     let partialEditEnabled = $state(true);
     let translationViewControlsDisabled = $derived(editMode || editTranslationMode || loadingTranslationEdit);
     /** The chat this message is shown in (a branched or copied chat shares its source's message ids). */
     let displayedChat = $derived(chatRef);
+    /**
+     * The memory limit line (`showMemoryLimit`, a `memoryLimitThickness` top border): on the row whose message is
+     * its chat's stored `lastMemory`. The no-memory trim in `server/src/prompt/assemble.ts` sets it to the first
+     * history entry it kept, before the final token recheck (which can remove more); SupaMemory writes its own
+     * marker, and the other memory kinds leave it as it was.
+     */
+    let memoryBoundary = $derived(
+        isLastMemory ??
+            (settings.ui.showMemoryLimit &&
+                !!messageId &&
+                !!displayedChat &&
+                findChat(displayedChat)?.lastMemory === messageId),
+    );
     let streaming = $derived(streamingOverride ?? isStreamingMessage(displayedChat, messageId));
     /**
      * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
      * off): while it streams and until the job releases it, and also a previous group speaker's reply.
      */
-    let locked = $derived(isMessageLocked(displayedChat, messageId));
+    let locked = $derived(isMessageLocked(displayedChat, editorMessageId));
+    /**
+     * The body keeps its last finished render (`ChatBody`'s `held`): the message is locked by a generation that sent
+     * it no stream chunk, so its text arrived whole (Response Streaming off, Half Streaming, a continue or reroll of
+     * either) and has not been through the display transform, which skips a locked message. Showing it would flash
+     * the raw text for the rest of the job's tail. An empty row (a stream before its first chunk) renders as usual.
+     */
+    let held = $derived(locked && message !== "" && !isMessageStreamed(displayedChat, editorMessageId));
+    const rerollsDisabled = $derived(rerollBusy ?? (displayedChat !== null && isChatGenerating(displayedChat)));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
 
     // The stored translation: the LLM translator on `llmTranslationTarget: "message"`, for a row of a
@@ -265,19 +456,37 @@
     let bilingualDisplay = $state<{ source: string; options: BilingualInterleaveOptions } | null>(null);
     /** The translation view is on: shown, or asked for and being requested (the toggle's highlight). */
     let translationViewOn = $derived(storedPath ? storedShown || (storedWanted && storedPending) : translated);
+    const translationEditLocked = $derived(
+        locked && (editTranslationMode ? editTranslationTarget?.kind === "stored" : storedPath),
+    );
+    const retranslationDisabled = $derived(
+        translationViewControlsDisabled || (storedPath && (storedPending || locked)),
+    );
+    const translationToggleDisabled = $derived(
+        translationViewControlsDisabled ||
+            (storedPath && locked && !translationViewOn && !storedPending && storedFresh === null),
+    );
     let translationEditControlDisabled = $derived(
-        editMode ||
+        translationEditLocked ||
+            translationDraft?.saving ||
+            editMode ||
             loadingTranslationEdit ||
             (storedPath && !editTranslationMode && (storedFresh === null || storedPending)),
     );
 
     /**
      * `Chats` keys a row by its message id and passes these here instead of mounting the row again: a
-     * new position (a message before it was added or removed), the text while it streams, and
+     * new position (a message before it was added or removed), the text while it streams, the comment flag, and
      * display-only name/image changes. Only the fields given change; name/image never reset ChatBody.
      */
     export function updateRow(update: {
         message?: string;
+        isComment?: boolean;
+        messageGenerationInfo?: MessageGenerationInfo | null;
+        candidateCount?: number;
+        candidateIndex?: number;
+        candidateCarrier?: boolean;
+        rerollIcon?: boolean;
         idx?: number;
         isOptimizedStreamingMessage?: boolean;
         streamingOptimizationMode?: StreamingDisplayOptimizationMode;
@@ -286,6 +495,12 @@
         img?: string | Promise<string>;
     }) {
         if ("message" in update) message = update.message;
+        if ("isComment" in update) isComment = update.isComment;
+        if ("messageGenerationInfo" in update) messageGenerationInfo = update.messageGenerationInfo;
+        if ("candidateCount" in update) candidateCount = update.candidateCount;
+        if ("candidateIndex" in update) candidateIndex = update.candidateIndex;
+        if ("candidateCarrier" in update) candidateCarrier = update.candidateCarrier;
+        if ("rerollIcon" in update) rerollIcon = update.rerollIcon;
         if ("idx" in update) idx = update.idx;
         if ("isOptimizedStreamingMessage" in update) isOptimizedStreamingMessage = update.isOptimizedStreamingMessage;
         if ("streamingOptimizationMode" in update) streamingOptimizationMode = update.streamingOptimizationMode;
@@ -309,7 +524,39 @@
         seenSave = { chat: key, version };
     });
 
-    // The server transform shows a locked (streaming) message raw: it renders again once the lock ends.
+    let disposeSettledRender: (() => void) | undefined;
+    let settledRenderTarget: { ref: ChatRef; id: string } | null = null;
+
+    function clearSettledRender() {
+        disposeSettledRender?.();
+        disposeSettledRender = undefined;
+        settledRenderTarget = null;
+    }
+
+    function renderSettledRow() {
+        const target = settledRenderTarget;
+        clearSettledRender();
+        if (target && isCurrentMessageTarget(target)) chatBodyRevision += 1;
+    }
+
+    function onMixedRender(capture: CapturedTransform) {
+        const target = { ref: capture.chatRef, id: capture.messageId };
+        // Previews without a message id, and answers for a previously displayed chat, do not register.
+        if (!target.id || !isCurrentMessageTarget(target)) return;
+        if (disposeSettledRender) return;
+        settledRenderTarget = target;
+        disposeSettledRender = waitForSettledRender(target.ref, renderSettledRow);
+    }
+
+    $effect(() => {
+        displayedChat?.chaId;
+        displayedChat?.chatId;
+        messageId;
+        return clearSettledRender;
+    });
+
+    // The server transform shows a locked (streaming) message raw, and a held one keeps its body: it renders again
+    // once the lock ends.
     $effect(() => {
         const now = locked;
         if (wasLocked && !now) {
@@ -320,11 +567,203 @@
         wasLocked = now;
     });
 
+    // Each mounted row retries in place once per round that includes its message.
+    let seenRetryRound = untrack(() => displayTransformRetryRound.version);
+    $effect(() => {
+        const { version, keys } = displayTransformRetryRound;
+        if (seenRetryRound === version) return;
+        seenRetryRound = version;
+        untrack(() => {
+            const ref = displayedChat;
+            if (ref && messageId && keys.has(displayTransformMessageKey(ref, messageId))) {
+                rerenderMessage(ref, messageId);
+                chatBodyRevision += 1;
+            }
+        });
+    });
+
     /** The chat this message belongs to, captured before any await (a later chat switch cannot redirect a write). */
-    function messageTarget(): { ref: ChatRef; id: string } | null {
+    function messageTarget(id = messageId): { ref: ChatRef; id: string } | null {
         const ref = displayedChat;
-        return ref && messageId ? { ref, id: messageId } : null;
+        return ref && id ? { ref, id } : null;
     }
+
+    function isCurrentMessageTarget(target: { ref: ChatRef; id: string }): boolean {
+        const current = messageTarget();
+        return (
+            current !== null &&
+            current.id === target.id &&
+            current.ref.chaId === target.ref.chaId &&
+            current.ref.chatId === target.ref.chatId
+        );
+    }
+
+    /**
+     * The popup editor a stored row's original edit opens by itself, once per edit-mode entry
+     * (`shouldAutoPopupMessageEditor`, off with `disableAutoPopupMessageEditor`). Closing the popup writes its
+     * text to the draft and saves through `edit()`; a refused write keeps the inline editor open with the draft,
+     * and the popup does not open again until edit mode is left. A changed message target (chat or message id), a
+     * changed draft, ended edit mode, or a superseded popup session discards the popup's text. Unmounting keeps
+     * an owned popup's current text in the draft and closes only this popup's own session.
+     */
+    async function openAutoPopupMessageEditor() {
+        if (activeAutoPopupMessageSessionId !== null || popUpEditorStore.open) return;
+        const target = messageTarget();
+        if (!target) return;
+
+        const run = ++autoPopupMessageEditorRun;
+        const initialDraft = messageDraft;
+        const initialValue = draft ?? message;
+        const sessionId = openPopupEditorSession(initialValue, undefined, undefined, () => locked);
+        activeAutoPopupMessageSessionId = sessionId;
+        const editorIsCurrent = () =>
+            !popupEditorsDestroyed &&
+            run === autoPopupMessageEditorRun &&
+            editMode &&
+            messageDraft === initialDraft &&
+            (draft ?? message) === initialValue &&
+            isCurrentMessageTarget(target);
+        retainPopupMessageDraft = () => {
+            if (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId)) {
+                setOriginalDraft(popUpEditorStore.value);
+            }
+        };
+
+        try {
+            while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
+                await sleep(100);
+            }
+
+            if (!editorIsCurrent()) {
+                closePopupEditorSession(sessionId);
+                return;
+            }
+            if (!isPopupEditorSessionCurrent(sessionId)) return;
+
+            setOriginalDraft(popUpEditorStore.value);
+            if (!locked) edit();
+        } finally {
+            if (activeAutoPopupMessageSessionId === sessionId) {
+                activeAutoPopupMessageSessionId = null;
+                retainPopupMessageDraft = undefined;
+            }
+        }
+    }
+
+    /**
+     * The translation edit's popup, by the same rules as `openAutoPopupMessageEditor`, saving through
+     * `saveTranslationEdit()`; a changed translation target discards it too. After its save no other automatic
+     * popup opens until translation edit mode is left.
+     */
+    async function openAutoPopupTranslationEditor() {
+        if (activeAutoPopupTranslationSessionId !== null || popUpEditorStore.open) return;
+        const target = editTranslationTarget;
+        const rowTarget = messageTarget();
+        if (!target || !rowTarget) return;
+
+        const run = ++autoPopupTranslationEditorRun;
+        const initialValue = editTranslationText;
+        const sessionId = openPopupEditorSession(initialValue, undefined, undefined, () => translationEditLocked);
+        activeAutoPopupTranslationSessionId = sessionId;
+        const editorIsCurrent = () =>
+            !popupEditorsDestroyed &&
+            run === autoPopupTranslationEditorRun &&
+            translationDraft?.open &&
+            editTranslationText === initialValue &&
+            editTranslationTarget === target &&
+            isCurrentMessageTarget(rowTarget);
+        retainPopupTranslationDraft = () => {
+            if (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId)) {
+                setTranslationDraft(popUpEditorStore.value);
+            }
+        };
+
+        try {
+            while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
+                await sleep(100);
+            }
+
+            if (!editorIsCurrent()) {
+                closePopupEditorSession(sessionId);
+                return;
+            }
+            if (!isPopupEditorSessionCurrent(sessionId)) return;
+
+            suppressAutoPopupTranslationEditor = true;
+            setTranslationDraft(popUpEditorStore.value);
+            if (!translationEditLocked) await saveTranslationEdit();
+        } finally {
+            if (activeAutoPopupTranslationSessionId === sessionId) {
+                activeAutoPopupTranslationSessionId = null;
+                retainPopupTranslationDraft = undefined;
+            }
+        }
+    }
+
+    $effect.pre(() => {
+        if (!chatRef || !editorMessageId) return;
+        const current = findMessageEditorDraft(chatRef, editorMessageId, "message");
+        untrack(() => {
+            const next = current?.open ? current : undefined;
+            if (messageDraft === next) return;
+            // A candidate switch can keep the row mounted. Its popup still belongs to the leaving draft.
+            retainPopupMessageDraft?.();
+            if (activeAutoPopupMessageSessionId !== null) {
+                closePopupEditorSession(activeAutoPopupMessageSessionId);
+                activeAutoPopupMessageSessionId = null;
+                retainPopupMessageDraft = undefined;
+            }
+            if (messageDraft?.open && !next) onCloseInlineEditor?.();
+            messageDraft = next;
+        });
+    });
+
+    $effect(() => {
+        if (!editMode) {
+            autoPopupMessageEditorAttempted = false;
+            autoPopupMessageEditorRun += 1;
+            if (activeAutoPopupMessageSessionId !== null) {
+                closePopupEditorSession(activeAutoPopupMessageSessionId);
+                activeAutoPopupMessageSessionId = null;
+            }
+            return;
+        }
+        if (autoPopupMessageEditor) {
+            untrack(() => {
+                if (autoPopupMessageEditorAttempted) return;
+                autoPopupMessageEditorAttempted = true;
+                void openAutoPopupMessageEditor();
+            });
+        }
+    });
+
+    $effect(() => {
+        if (!editTranslationMode) {
+            const target = editTranslationTarget;
+            if (target?.kind === "cache" && target.reply !== editorReply) {
+                // Equal-text candidates can switch without remounting this row. Keep the leaving popup's text.
+                untrack(() => retainPopupTranslationDraft?.());
+                target.session?.release();
+                translationDraft = undefined;
+                editTranslationTarget = null;
+            }
+            autoPopupTranslationEditorAttempted = false;
+            autoPopupTranslationEditorRun += 1;
+            suppressAutoPopupTranslationEditor = false;
+            if (activeAutoPopupTranslationSessionId !== null) {
+                closePopupEditorSession(activeAutoPopupTranslationSessionId);
+                activeAutoPopupTranslationSessionId = null;
+            }
+            return;
+        }
+        if (autoPopupTranslationEditor) {
+            untrack(() => {
+                if (autoPopupTranslationEditorAttempted) return;
+                autoPopupTranslationEditorAttempted = true;
+                void openAutoPopupTranslationEditor();
+            });
+        }
+    });
 
     /**
      * Alerts and returns true when a generation locks any of `ids` (checked when the write is made:
@@ -375,24 +814,47 @@
         }
     }
 
-    /** Saves the edited text; false (the editor stays open) when a generation locked the message meanwhile. */
-    function edit(): boolean {
-        const target = messageTarget();
-        if (target && refuseLocked(target.ref, [target.id])) {
-            return false;
+    /** A generation can lock the message after editing began. A refused save leaves its draft open. */
+    function edit() {
+        const target = messageTarget(editorMessageId);
+        if (
+            target &&
+            (findMessageEditorDraft(target.ref, target.id, "message") !== messageDraft ||
+                refuseLocked(target.ref, [target.id]))
+        ) {
+            return;
         }
         if (target) {
             setMessageText(target.ref, target.id, draft ?? message);
         }
         message = draft ?? message;
-        draft = null;
-        return true;
+        if (target) closeMessageEditorDraft(target.ref, target.id, "message", messageDraft);
+        messageDraft = undefined;
+        onCloseInlineEditor?.();
     }
 
     function startOriginalEdit() {
         if (originalEditControlDisabled) return;
-        draft ??= message;
-        editMode = true;
+        const target = messageTarget(editorMessageId);
+        const initial = { text: message, base: message };
+        messageDraft = target
+            ? openMessageEditorDraft(target.ref, target.id, "message", initial)
+            : (messageDraft ?? { ...initial, open: true });
+        messageDraft.open = true;
+        if (!autoPopupMessageEditor) onOpenInlineEditor?.();
+    }
+
+    function setOriginalDraft(value: string | null) {
+        if (messageDraft) messageDraft.text = value ?? "";
+    }
+
+    function cancelOriginalEdit() {
+        const target = messageTarget(editorMessageId);
+        if (messageDraft) messageDraft.open = false;
+        const discard = !!bookmarkMessageId || draft === (editedMessage?.data ?? message);
+        if (target && discard) closeMessageEditorDraft(target.ref, target.id, "message", messageDraft);
+        if (target || discard) messageDraft = undefined;
+        onCloseInlineEditor?.();
     }
 
     // Lua forms and interactive controls keep body clicks from opening the message editor.
@@ -408,16 +870,14 @@
         if (originalEditControlDisabled) return;
 
         if (editMode) {
-            if (edit()) {
-                editMode = false;
-            }
+            edit();
         } else {
             startOriginalEdit();
         }
     }
 
     function toggleTranslation() {
-        if (translationViewControlsDisabled) return;
+        if (translationToggleDisabled) return;
         if (storedPath) {
             toggleStoredTranslation();
             return;
@@ -448,7 +908,7 @@
     }
 
     async function requestRetranslation() {
-        if (translationViewControlsDisabled) return;
+        if (retranslationDisabled) return;
         if (!storedPath) {
             retranslate = true;
             return;
@@ -488,6 +948,8 @@
             alertError(language.translationEditStale);
             return false;
         }
+        const target = messageTarget(editorMessageId);
+        if (target && refuseLocked(target.ref, [target.id])) return false;
         await updateTranslationCache(key, newData);
         return true;
     }
@@ -504,8 +966,9 @@
             return;
         }
 
-        const target = messageTarget();
+        const target = messageTarget(editorMessageId);
         if (target && refuseLocked(target.ref, [target.id])) {
+            e.preventDefault();
             return;
         }
         message = e.detail.newData;
@@ -517,7 +980,6 @@
 
     async function updateTranslationCache(key: string, data: string) {
         await writeLLMCacheEntry(key, data);
-        editTranslationText = data;
         chatBodyRevision += 1;
     }
 
@@ -535,7 +997,11 @@
             const key = `stored:${++storedPartialEditSeq}`;
             storedPartialEdits.clear();
             storedPartialEdits.set(key, edit);
-            return { key, data: edit.base.text };
+            return {
+                key,
+                data: edit.base.text,
+                draftKey: JSON.stringify(["stored", edit.sourceHash, edit.base.targetLanguage, edit.base.presetId]),
+            };
         }
         if (!translated || settings.memoryTranslateMedia.translatorType !== "llm") {
             return null;
@@ -583,25 +1049,44 @@
     }
 
     async function loadTranslationForEdit() {
-        if (translationViewControlsDisabled) return;
+        if (translationEditControlDisabled || editTranslationMode) return;
 
         if (storedPath) {
             // Only a fresh stored translation is edited (the button is off without one).
             const edit = displayedChat && messageId ? beginStoredTranslationEdit(displayedChat, messageId) : null;
             if (!edit) return;
+            translationDraft = openMessageEditorDraft(edit.ref, edit.messageId, "translation", {
+                text: edit.base.text,
+                base: JSON.stringify(edit.base),
+                translation: edit,
+            });
             editTranslationTarget = { kind: "stored", edit };
-            editTranslationText = edit.base.text;
-            editTranslationMode = true;
+            if (!autoPopupTranslationEditor) onOpenInlineEditor?.();
             return;
         }
 
         loadingTranslationEdit = true;
+        const ref = displayedChat;
+        const id = editorMessageId;
+        const reply = editorReply;
         try {
             const key = await getTranslationCacheKey();
             const cached = await readLLMCacheEntry(key);
-            editTranslationTarget = { kind: "cache", key };
-            editTranslationText = cached ?? "";
-            editTranslationMode = true;
+            if (
+                popupEditorsDestroyed ||
+                ref?.chaId !== displayedChat?.chaId ||
+                ref?.chatId !== displayedChat?.chatId ||
+                id !== editorMessageId ||
+                reply !== editorReply
+            ) {
+                return;
+            }
+            const session = ref ? openCachedTranslationDraft(ref, id, key, reply, cached) : undefined;
+            translationDraft = session?.draft ?? { text: cached ?? "", base: JSON.stringify(cached), open: true };
+            observedCacheText = cached;
+            editTranslationTarget = { kind: "cache", key, reply, session };
+            suppressAutoPopupTranslationEditor = translationChangedElsewhere;
+            if (!autoPopupTranslationEditor) onOpenInlineEditor?.();
         } catch (error) {
             editTranslationTarget = null;
             throw error;
@@ -612,22 +1097,55 @@
 
     /** Closes the translation editor without writing. */
     function cancelTranslationEdit() {
+        const edit = translationDraft?.translation;
+        if (edit) closeMessageEditorDraft(edit.ref, edit.messageId, "translation", translationDraft);
+        const target = editTranslationTarget;
+        if (target?.kind === "cache") target.session?.close();
+        translationDraft = undefined;
         editTranslationTarget = null;
-        editTranslationMode = false;
+        onCloseInlineEditor?.();
+    }
+
+    function setTranslationDraft(value: string) {
+        if (editTranslationTarget?.kind === "cache" && editTranslationTarget.session) {
+            editTranslationTarget.session.setText(value);
+        } else if (translationDraft) {
+            translationDraft.text = value;
+        }
     }
 
     async function saveTranslationEdit() {
         const target = editTranslationTarget;
-        if (target === null) return;
+        const draft = translationDraft;
+        if (!target || !draft || !editTranslationMode || draft.saving) return;
 
         if (target.kind === "stored") {
             // A refused write keeps the editor open with the draft.
             if (!saveStoredTranslationEdit(target.edit, editTranslationText)) return;
         } else {
-            await updateTranslationCache(target.key, editTranslationText);
+            const text = editTranslationText;
+            draft.saving = true;
+            try {
+                const cached = await readLLMCacheEntry(target.key);
+                if (
+                    popupEditorsDestroyed ||
+                    !editTranslationMode ||
+                    target !== editTranslationTarget ||
+                    text !== editTranslationText
+                ) {
+                    return;
+                }
+                if (cached !== observedCacheText) {
+                    observedCacheText = cached;
+                    if (translationChangedElsewhere) return;
+                }
+                await updateTranslationCache(target.key, text);
+                if (target !== editTranslationTarget || text !== editTranslationText) return;
+            } finally {
+                draft.saving = false;
+            }
         }
-        editTranslationTarget = null;
-        editTranslationMode = false;
+        cancelTranslationEdit();
     }
 
     /** The display CBS pre-pass of the row (`displaya`). */
@@ -650,9 +1168,23 @@
             : null;
     }
 
+    /** This row's entry in the display transform recovery, so a failure of another source is not retried over it. */
+    const shownOwner = {};
+    let shownTarget: { ref: ChatRef; id: string } | null = null;
     function displaya(message: string) {
         msgDisplay = displayPrePass(message);
         updateBilingualDisplay();
+        untrack(() => {
+            const target = messageTarget();
+            if (shownTarget) releaseDisplayTransformSource(shownTarget.ref, shownTarget.id, shownOwner);
+            shownTarget = target;
+            if (target) {
+                showDisplayTransformSource(target.ref, target.id, shownOwner, {
+                    display: msgDisplay,
+                    bilingual: bilingualDisplay?.source,
+                });
+            }
+        });
     }
 
     const setStatusMessage = (message: string, timeout: number = 0) => {
@@ -697,6 +1229,23 @@
     });
 
     onDestroy(() => {
+        clearSettledRender();
+        if (shownTarget) releaseDisplayTransformSource(shownTarget.ref, shownTarget.id, shownOwner);
+        retainPopupMessageDraft?.();
+        retainPopupTranslationDraft?.();
+        if (editTranslationTarget?.kind === "cache" && editTranslationTarget.session) {
+            // The manually expanded textarea hands its value back during this same teardown.
+            queueMicrotask(editTranslationTarget.session.release);
+        }
+        popupEditorsDestroyed = true;
+        if (activeAutoPopupMessageSessionId !== null) {
+            closePopupEditorSession(activeAutoPopupMessageSessionId);
+            activeAutoPopupMessageSessionId = null;
+        }
+        if (activeAutoPopupTranslationSessionId !== null) {
+            closePopupEditorSession(activeAutoPopupTranslationSessionId);
+            activeAutoPopupTranslationSessionId = null;
+        }
         unsubscribers.forEach((u) => u());
     });
 
@@ -704,7 +1253,7 @@
         try {
             const parser = new DOMParser();
             const doc = parser.parseFromString(
-                risuChatParser(html ?? "", { cbsConditions: getCbsCondition() }),
+                risuChatParser(html ?? "", { cbsConditions: getCbsCondition(), renderMode: "gui" }),
                 "text/html",
             );
             return doc.body;
@@ -745,7 +1294,7 @@
                         CurrentTriggerIdStore.set(triggerId || null);
                     },
                 });
-                if (outcome === "started") {
+                if (outcome === "started" || outcome === "replayed") {
                     ReloadChatPointer.update((v) => {
                         v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                         return v;
@@ -765,7 +1314,7 @@
         }
         if (btnEvent) {
             const outcome = await runServerButton(currentChar, btnEvent, ref);
-            if (outcome === "started") {
+            if (outcome === "started" || outcome === "replayed") {
                 ReloadChatPointer.update((v) => {
                     v[reloadChatKey(messageId, idx)] = (v[reloadChatKey(messageId, idx)] ?? 0) + 1;
                     return v;
@@ -777,7 +1326,7 @@
     /**
      * Submissions never navigate. The chat is captured before any await and must hold the row's
      * message when `messageId` is present. Only string values are sent, with repeated names as arrays,
-     * for the server to run Lua `onFormSubmit`. Only a started job remounts the row, so a refused
+     * for the server to run Lua `onFormSubmit`. Only a started (or replayed) job remounts the row, so a refused
      * submit keeps the typed values.
      */
     async function handleFormTriggerWithin(event: SubmitEvent) {
@@ -830,7 +1379,7 @@
             label: "button",
             context: { mode: "form" },
         });
-        if (outcome === "started") {
+        if (outcome === "started" || outcome === "replayed") {
             ReloadChatPointer.update((v) => {
                 v[reloadKey] = (v[reloadKey] ?? 0) + 1;
                 return v;
@@ -917,9 +1466,16 @@
     }
 </script>
 
+{#snippet memoryReceipt()}
+    {@const owner = displayedChat ? findCharacter(displayedChat.chaId) : undefined}
+    {#if chatMemoryAlgorithm(chatMemorySettings(), displayedChat ? chatEntry(displayedChat) : undefined) === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && owner && chatMemoryEnabled(chatEntry(displayedChat), owner, chatMemorySettings())}
+        <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={owner as AnyClientCharacter} />
+    {/if}
+{/snippet}
+
 {#snippet genInfo()}
     <div class="flex flex-col items-end">
-        {#if messageGenerationInfo && (settings.ui.requestInfoInsideChat || aiLawApplies())}
+        {#if messageGenerationInfo?.model && (settings.ui.requestInfoInsideChat || aiLawApplies())}
             <button
                 class="text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1
                     hover:ring-darkbutton hover:ring-3 rounded-md hover:text-textcolor transition-all flex justify-center items-center"
@@ -942,6 +1498,7 @@
                 </span>
             </button>
         {/if}
+        {@render memoryReceipt()}
         <!-- An open translation editor keeps its Save and Cancel whatever the settings do meanwhile (it writes to its captured target). -->
         {#if editTranslationMode || (settings.memoryTranslateMedia.translatorType === "llm" && (storedPath ? storedWanted : translated))}
             {#if editTranslationMode}
@@ -958,10 +1515,10 @@
             {#if !isOptimizedStreamingMessage && !streaming}
                 <button
                     class={"text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
-                        (translationViewControlsDisabled || (storedPath && storedPending)
+                        (retranslationDisabled
                             ? "opacity-50 cursor-not-allowed"
                             : "hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
-                    disabled={translationViewControlsDisabled || (storedPath && storedPending)}
+                    disabled={retranslationDisabled}
                     onclick={requestRetranslation}
                 >
                     <RefreshCcwIcon size={20} />
@@ -972,10 +1529,10 @@
             {/if}
             <button
                 class={"text-sm p-1 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
-                    (editTranslationMode
-                        ? "text-blue-400 hover:ring-darkbutton hover:ring-3 hover:text-textcolor"
-                        : translationEditControlDisabled
-                          ? "text-textcolor2 opacity-50 cursor-not-allowed"
+                    (translationEditControlDisabled
+                        ? "text-textcolor2 opacity-50 cursor-not-allowed"
+                        : editTranslationMode
+                          ? "text-blue-400 hover:ring-darkbutton hover:ring-3 hover:text-textcolor"
                           : "text-textcolor2 hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
                 disabled={translationEditControlDisabled}
                 onclick={() => {
@@ -997,20 +1554,39 @@
 
 {#snippet textBox()}
     {#if editTranslationMode}
+        {#if translationChangedElsewhere}
+            <div class="text-sm text-textcolor2 mb-2" role="status">{language.translationEditorChangedElsewhere}</div>
+        {/if}
         <AutoresizeArea
-            bind:value={editTranslationText}
+            bind:value={() => editTranslationText, setTranslationDraft}
+            readonly={translationEditLocked}
+            retainPopupDraftOnUnmount
+            popupEditor
+            ariaLabel={language.editTranslation}
+            stableHeight={useStableTranslationEditor}
             handleLongPress={() => {
                 saveTranslationEdit();
             }}
         />
     {/if}
     {#if editMode}
-        <AutoresizeArea
-            bind:value={draft}
-            handleLongPress={() => {
-                editMode = false;
-            }}
-        />
+        {@render messageEditorNotice()}
+        {#each messageDraft ? [messageDraft] : [] as original (original)}
+            <AutoresizeArea
+                bind:value={
+                    () => original.text,
+                    (text) => {
+                        original.text = text ?? "";
+                    }
+                }
+                readonly={locked}
+                retainPopupDraftOnUnmount
+                popupEditor
+                ariaLabel={language.input}
+                stableHeight={useStableMessageEditor}
+                handleLongPress={cancelOriginalEdit}
+            />
+        {/each}
     {:else if isComment}
         <div class="w-full flex justify-center text-textcolor2 italic mb-12">
             {#if msgDisplay.startsWith("{{specialcomment")}
@@ -1070,12 +1646,13 @@
                     {name}
                     {bodyRoot}
                     renderRevision={chatBodyRevision}
-                    modelShortName={messageGenerationInfo ? getModelInfo(messageGenerationInfo?.model).shortName : ""}
+                    {onMixedRender}
                     role={role ?? null}
                     bind:translated
                     bind:translating
                     bind:retranslate
                     {streaming}
+                    {held}
                     {renderRawStreaming}
                     {rawStreamingText}
                     {storedPath}
@@ -1087,18 +1664,28 @@
             {/key}
         </span>
         {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && storedBilingual === null && (settings.ui.enableBlockPartialEdit || settings.ui.enableDragPartialEdit)}
-            <PartialEditController
-                messageData={message}
-                chatIndex={idx}
-                {bodyRoot}
-                blockEditEnabled={settings.ui.enableBlockPartialEdit}
-                dragEditEnabled={settings.ui.enableDragPartialEdit}
-                translatedView={storedPath ? storedShown : translated}
-                getTranslationEditContext={getTranslationPartialEditContext}
-                saveTranslation={savePartialTranslation}
-                on:save={handlePartialEditSave}
-            />
+            {#key [editorReply, storedShown ? storedFresh?.text : message]}
+                <PartialEditController
+                    messageData={message}
+                    chatRef={displayedChat}
+                    messageId={editorMessageId}
+                    chatIndex={idx}
+                    {bodyRoot}
+                    blockEditEnabled={settings.ui.enableBlockPartialEdit}
+                    dragEditEnabled={settings.ui.enableDragPartialEdit}
+                    translatedView={storedPath ? storedShown : translated}
+                    getTranslationEditContext={getTranslationPartialEditContext}
+                    saveTranslation={savePartialTranslation}
+                    on:save={handlePartialEditSave}
+                />
+            {/key}
         {/if}
+    {/if}
+{/snippet}
+
+{#snippet messageEditorNotice()}
+    {#if messageChangedElsewhere}
+        <div class="text-sm text-textcolor2 mb-2" role="status">{language.messageEditorChangedElsewhere}</div>
     {/if}
 {/snippet}
 
@@ -1145,11 +1732,12 @@
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-copy"
             onclick={async () => {
-                // The persona this message's chat shows, read before the awaits below (the selected
-                // chat can change meanwhile).
+                // Capture the row's persona and character avatar before parsing: navigation can
+                // change the selected chat while this copy is waiting.
                 const copyChat = displayedChat;
                 const copyUserName = getUserName(copyChat);
                 const copyUserIcon = getUserIcon(copyChat);
+                const copyCharacterIcon = (copyChat ? findCharacter(copyChat.chaId) : selectedCharacter())?.image ?? "";
                 const copyText = renderRawStreaming ? displayPrePass(rawStreamingText) : msgDisplay;
                 if (window.navigator.clipboard.write) {
                     let copyStatus: alertData | null = null;
@@ -1274,7 +1862,7 @@
                         let hasValidImage = false;
 
                         try {
-                            const iconImage = (await getFileSrc(currentCharacter.image ?? "")) ?? "";
+                            const iconImage = (await getFileSrc(copyCharacterIcon)) ?? "";
 
                             if (
                                 iconImage &&
@@ -1329,7 +1917,7 @@
 
                         const isUserMessage = role === "user";
                         const displayName = isUserMessage ? copyUserName : name;
-                        const modelInfo = messageGenerationInfo
+                        const modelInfo = messageGenerationInfo?.model
                             ? capitalize(getModelInfo(messageGenerationInfo.model).shortName)
                             : isUserMessage
                               ? "User"
@@ -1401,8 +1989,8 @@
 <div style="padding: 20px;">
 <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 1rem; text-align: center;">
     ${finalHasValidImage ? `<img style="width: 80px; height: 80px; border-radius: 50%; border: 3px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")}; margin-bottom: 0.75rem; object-fit: cover;" src="${finalIconDataUrl}" alt="profile">` : ""}
-    <h3 style="color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; font-weight: 600; font-size: 1.5rem; margin: 0 0 0.5rem 0;">${displayName}</h3>
-    ${!isUserMessage ? `<span style="display: inline-block; border-radius: 16px; font-size: 0.8rem; padding: 0.25rem 0.75rem; background: ${root.style.getPropertyValue("--risu-theme-darkbg")}; color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; border: 1px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")};">${modelInfo}</span>` : ""}
+    <h3 style="color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; font-weight: 600; font-size: 1.5rem; margin: 0 0 0.5rem 0;">${escapeHtml(displayName)}</h3>
+    ${!isUserMessage ? `<span style="display: inline-block; border-radius: 16px; font-size: 0.8rem; padding: 0.25rem 0.75rem; background: ${root.style.getPropertyValue("--risu-theme-darkbg")}; color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; border: 1px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")};">${escapeHtml(modelInfo)}</span>` : ""}
 </div>
 <div style="border-top: 1px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")}; padding-top: 1rem;">
     ${doc.body.innerHTML}
@@ -1473,12 +2061,10 @@
     {#if settings.memoryTranslateMedia.translator !== "" && !blankMessage && !isOptimizedStreamingMessage && !streaming}
         <button
             class={"flex items-center transition-colors button-icon-translate " +
-                (translationViewControlsDisabled
-                    ? "opacity-50 cursor-not-allowed"
-                    : "cursor-pointer hover:text-blue-500") +
+                (translationToggleDisabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:text-blue-500") +
                 (translationViewOn ? " text-blue-400" : "")}
             class:translating={storedPath ? storedPending : translating}
-            disabled={translationViewControlsDisabled}
+            disabled={translationToggleDisabled}
             onclick={toggleTranslation}
         >
             <LanguagesIcon />
@@ -1490,10 +2076,10 @@
     {#if idx > -1 && !isOptimizedStreamingMessage}
         <button
             class={"flex items-center transition-colors button-icon-edit " +
-                (editMode
-                    ? "text-blue-400 hover:text-blue-500"
-                    : originalEditControlDisabled
-                      ? "opacity-50 cursor-not-allowed"
+                (originalEditControlDisabled
+                    ? "opacity-50 cursor-not-allowed"
+                    : editMode
+                      ? "text-blue-400 hover:text-blue-500"
                       : "hover:text-blue-500")}
             disabled={originalEditControlDisabled}
             onclick={toggleOriginalEdit}
@@ -1507,36 +2093,46 @@
     {/if}
 {/snippet}
 
+{#snippet candidateCounter()}
+    <span
+        class="flex items-center text-xs text-textcolor2"
+        aria-label={language.rerollCandidateCounter
+            .replace("{index}", String(candidateIndex + 1))
+            .replace("{count}", String(candidateCount))}>{candidateIndex + 1}/{candidateCount}</span
+    >
+{/snippet}
+
 {#snippet rerolls()}
-    {#if rerollIcon || altGreeting}
-        {#if settings.ui.swipe || altGreeting}
+    {#if candidateCount >= 2 && !candidateCarrier && !rerollIcon}
+        {@render candidateCounter()}
+    {:else if rerollIcon || altGreeting || candidateCarrier}
+        {#if settings.ui.swipe || altGreeting || (candidateCarrier && candidateCount >= 2)}
             <button
-                class="flex items-center hover:text-blue-500 transition-colors button-icon-unreroll"
-                class:dyna-icon={rerollIcon === "dynamic"}
-                class:opacity-50={locked}
-                disabled={locked}
+                class="flex items-center enabled:hover:text-blue-500 disabled:cursor-not-allowed transition-colors button-icon-unreroll"
+                class:opacity-50={rerollsDisabled}
+                disabled={rerollsDisabled}
                 onclick={unReroll}
             >
                 <ArrowLeft size={22} />
             </button>
-            {#if firstMessage && settings.ui.swipe && settings.ui.showFirstMessagePages}
+            {#if candidateCarrier && candidateCount >= 2}
+                {@render candidateCounter()}
+            {:else if firstMessage && settings.ui.swipe && settings.ui.showFirstMessagePages}
                 <span class="flex items-center text-xs text-textcolor2">{currentPage}/{totalPages}</span>
             {/if}
             <button
-                class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
-                class:dyna-icon={rerollIcon === "dynamic"}
-                class:opacity-50={locked}
-                disabled={locked}
+                class="flex items-center enabled:hover:text-blue-500 disabled:cursor-not-allowed transition-colors button-icon-reroll"
+                class:opacity-50={rerollsDisabled}
+                disabled={rerollsDisabled}
                 onclick={onReroll}
             >
                 <ArrowRight size={22} />
             </button>
         {:else}
             <button
-                class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
-                class:dyna-icon={rerollIcon === "dynamic"}
-                class:opacity-50={locked}
-                disabled={locked}
+                class="flex items-center enabled:hover:text-blue-500 disabled:cursor-not-allowed transition-colors button-icon-reroll"
+                class:opacity-50={rerollsDisabled}
+                disabled={rerollsDisabled}
                 onclick={onReroll}
             >
                 <RefreshCcwIcon size={20} />
@@ -1587,7 +2183,9 @@
     {/if}
 
     <button
-        class="flex items-center hover:text-blue-500 transition-colors"
+        class={"flex items-center transition-colors " +
+            (locked ? "opacity-50 cursor-not-allowed" : "hover:text-blue-500")}
+        disabled={locked}
         onclick={async () => {
             const target = messageTarget();
             // Captured with the target: its owner (a replacement of the character's chats meanwhile
@@ -1605,7 +2203,8 @@
                 !currentChat ||
                 !owner ||
                 chatOwnerToken(target.ref.chaId) !== ownerToken ||
-                branchIndex === -1
+                branchIndex === -1 ||
+                isMessageLocked(target.ref, target.id)
             ) {
                 return;
             }
@@ -1644,10 +2243,12 @@
                 message: [...source.message.slice(0, branchIndex + 1), branchComment],
             };
             delete newChat.pinned;
+            delete newChat.oocLog;
+            delete newChat.oocSegment;
 
             // Selected by id in its own character (the selection of another character is not changed),
             // unless that character's selection changed while the branch was made.
-            createChat(target.ref.chaId, newChat, {
+            createInheritingChat(target.ref, newChat, {
                 index: 0,
                 select: chatSelectionVersion(target.ref.chaId) === selectedVersion,
             });
@@ -1906,7 +2507,7 @@
     class:chat-row-pending={pendingReveal}
     data-chat-index={idx}
     data-chat-id={currentChat?.message?.[idx]?.chatId ?? ""}
-    style={isLastMemory ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
+    style={memoryBoundary ? `border-top:${settings.ui.memoryLimitThickness}px solid rgba(98, 114, 164, 0.7);` : ""}
     onclickcapture={handleButtonTriggerWithin}
     onsubmitcapture={handleFormTriggerWithin}
 >
@@ -1936,6 +2537,7 @@
                             }).format(currentChat.message[idx].time)}
                         </span>
                     {/if}
+                    {@render memoryReceipt()}
                 </div>
                 {#if role === "user"}
                     {@render senderIcon({ rounded: true })}
@@ -1956,15 +2558,18 @@
                             </h2>
                         </div>
                         {#if editMode}
+                            {@render messageEditorNotice()}
                             <textarea
                                 class="grow h-138 sm:h-96 overflow-y-auto bg-transparent text-black p-2 mb-2 resize-none message-edit-area"
-                                bind:value={draft}></textarea>
+                                readonly={locked}
+                                bind:value={() => draft, setOriginalDraft}></textarea>
                         {:else}
                             <div class="grow h-138 sm:h-96 overflow-y-auto p-2 mb-2 sm:mb-0">
                                 {@render textBox()}
                             </div>
                         {/if}
                     </div>
+                    {@render memoryReceipt()}
                 </div>
                 <div
                     class="absolute bottom-0 right-0 bg-linear-to-b from-gray-200 to-gray-300 p-2 rounded-md border border-gray-400 text-gray-400"

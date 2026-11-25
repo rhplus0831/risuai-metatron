@@ -11,9 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { deps } = vi.hoisted(() => ({
     deps: {
         authFetch: vi.fn(),
-        awaitSecretWrites: vi.fn(),
-        flushResources: vi.fn(),
-        assertSaveAdmission: vi.fn(),
+        awaitSecretWrites: vi.fn<typeof import("../storage/resourceSync.svelte").awaitSecretWrites>(),
+        flushResources: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
+        assertSaveAdmission: vi.fn<typeof import("../storage/resourceSync.svelte").assertSaveAdmission>(),
         addFetchLog: vi.fn(),
         interceptors: [] as { id: string; callback: (body: any, type: string) => Promise<any> }[],
     },
@@ -22,14 +22,18 @@ const { deps } = vi.hoisted(() => ({
 vi.mock("../storage/serverAuth", () => ({
     authFetch: (...args: unknown[]) => deps.authFetch(...args),
 }));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    awaitSecretWrites: () => deps.awaitSecretWrites(),
-    flushResources: () => deps.flushResources(),
-    assertSaveAdmission: () => deps.assertSaveAdmission(),
-}));
-vi.mock("../globalApi.svelte", () => ({
-    addFetchLog: (entry: unknown) => deps.addFetchLog(entry),
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        awaitSecretWrites: () => deps.awaitSecretWrites(),
+        flushResources: () => deps.flushResources(),
+        assertSaveAdmission: () => deps.assertSaveAdmission(),
+    }),
+);
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        addFetchLog: (entry: unknown) => deps.addFetchLog(entry),
+    }),
+);
 vi.mock("../stores.svelte", async () =>
     (await import("src/ts/tests/storesMock")).createStoresMock({
         bodyIntercepterStore: deps.interceptors,
@@ -446,7 +450,7 @@ describe("auxFetch", () => {
 
 describe("auxFetch profile binding", () => {
     it("flushes profiles and keys before secret writes and sends the profile only in the outer header", async () => {
-        const resources = deferred();
+        const resources = deferred<Awaited<ReturnType<typeof deps.flushResources>>>();
         const secrets = deferred();
         deps.flushResources.mockReturnValue(resources.promise);
         deps.awaitSecretWrites.mockReturnValue(secrets.promise);
@@ -458,7 +462,7 @@ describe("auxFetch profile binding", () => {
         expect(deps.flushResources).toHaveBeenCalledTimes(1);
         expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
         expect(deps.authFetch).not.toHaveBeenCalled();
-        resources.resolve();
+        resources.resolve(undefined);
         await settle();
         expect(deps.awaitSecretWrites).toHaveBeenCalledTimes(1);
         expect(deps.authFetch).not.toHaveBeenCalled();
@@ -475,6 +479,37 @@ describe("auxFetch profile binding", () => {
                 profileId: "edited-profile",
             }),
         ).rejects.toThrow("Profile could not be saved");
+        expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
+        expect(deps.authFetch).not.toHaveBeenCalled();
+    });
+    it("rejects a profile request at the save deadline and never sends it after a late response", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const resources = deferred<Awaited<ReturnType<typeof deps.flushResources>>>();
+        deps.flushResources.mockReturnValue(resources.promise);
+        const fulfilled = vi.fn();
+        const rejected = vi.fn();
+        const call = auxFetch("openrouter-models", "https://openrouter.ai/api/v1/models", {
+            method: "GET",
+            profileId: "edited-profile",
+        }).then(fulfilled, rejected);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(deps.flushResources).toHaveBeenCalledOnce();
+            expect(fulfilled).not.toHaveBeenCalled();
+            expect(rejected).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(rejected).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    message: "The server has not answered the save request. Please try again shortly.",
+                }),
+            );
+        } finally {
+            resources.resolve({ discarded: [], refused: [] });
+            vi.useRealTimers();
+            await call;
+        }
+        expect(fulfilled).not.toHaveBeenCalled();
         expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
         expect(deps.authFetch).not.toHaveBeenCalled();
     });

@@ -1,8 +1,8 @@
-// Port of `src/ts/process/request/openAI/responses.ts` (the client's dependencies are `arg.ctx`'s).
+// Port of the former `src/ts/process/request/openAI/responses.ts` (the client's dependencies are `arg.ctx`'s).
 import { messages as language } from "../messages.ts";
 import { LLMFlags } from "../../../../shared/llm.ts";
 import { textifyReadableStream } from "../transport.ts";
-import { simplifySchema } from "../util.ts";
+import { simplifySchema, sleep, toolRetryDelay } from "../util.ts";
 import { NANOGPT_RESPONSES_ENDPOINT } from "../../../../shared/llm/providers/nanogpt.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../jsonSchema.ts";
@@ -337,7 +337,7 @@ async function buildResponsesBody(arg: RequestDataArgumentExtended): Promise<Rec
             })),
         );
     }
-    if (db.modelTools.includes("search")) {
+    if ((arg.tools?.length !== 0 || arg.allowConfiguredTools === true) && db.modelTools.includes("search")) {
         tools.push({ type: "web_search_preview" });
     }
 
@@ -584,9 +584,16 @@ async function requestHTTPResponsesAPI(
         let attempt = 0;
         do {
             attempt++;
+            if (attempt > 1) arg.ctx.reportRetry?.();
             resRec = await requestHTTPResponsesAPI(requestURL, body, headers, arg, networkOptions);
             if (resRec.type !== "fail") {
                 break;
+            }
+            if (attempt <= db.requestRetrys) {
+                await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                if (arg.abortSignal?.aborted) {
+                    break;
+                }
             }
         } while (attempt <= db.requestRetrys);
 
@@ -802,6 +809,7 @@ function wrapResponsesToolStream(
                 let ok = false;
                 do {
                     attempt++;
+                    if (attempt > 1) arg.ctx.reportRetry?.();
                     resRec = await arg.ctx.transport.fetchStream(requestURL, {
                         body: JSON.stringify(toExternalResponsesBody(body)),
                         method: "POST",
@@ -813,6 +821,12 @@ function wrapResponsesToolStream(
                         requestTimeoutMs: networkOptions.requestTimeoutMs,
                     });
                     ok = resRec.status === 200 && !!resRec.headers.get("Content-Type")?.includes("text/event-stream");
+                    if (!ok && attempt <= db.requestRetrys) {
+                        await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                        if (arg.abortSignal?.aborted) {
+                            break;
+                        }
+                    }
                 } while (!ok && attempt <= db.requestRetrys);
 
                 if (!ok) {

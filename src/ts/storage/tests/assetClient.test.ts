@@ -1,27 +1,38 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The asset client (`assetClient.ts`, the asset half of the removed storage client) against a fake
 // of the server's `/api/read` and `/api/write` routes, reached through `authFetch` (mocked: the
 // authentication is `serverAuth.test.ts`'s). The wire contract is the old one: the key travels
 // hex-encoded in the `file-path` header, a write is an octet-stream `POST`, a non-2xx answer throws
-// the old error strings, a 2xx answer carrying `error` throws it, and a missing or empty file reads
-// as `null`.
+// a status-bearing Error for reads or the old error string for writes, a 2xx answer carrying
+// `error` throws it, and a missing or empty file reads as `null`.
 
 const { calls, answer } = vi.hoisted(() => ({
     calls: [] as { path: string; init: RequestInit }[],
     answer: { current: null as null | ((path: string, init: RequestInit) => Response | Promise<Response>) },
 }));
 
-vi.mock("../serverAuth", () => ({
-    authFetch: vi.fn(async (path: string, init: RequestInit = {}, options?: { beforeDispatch?: () => void }) => {
-        calls.push({ path, init });
-        options?.beforeDispatch?.();
-        return answer.current!(path, init);
+vi.mock("../serverAuth", async () =>
+    (await import("./serverAuthMock")).createServerAuthMock({
+        authFetch: vi.fn(async (path: string, init: RequestInit = {}, options?: { beforeDispatch?: () => void }) => {
+            calls.push({ path, init });
+            options?.beforeDispatch?.();
+            return answer.current!(path, init);
+        }),
     }),
-}));
+);
 
 import { AssetRecordParser, encodeAssetRecordHeader } from "../../../../shared/assetBatch.ts";
-import { ASSET_BATCH_CLIENT_BYTES, readAsset, readAssets, writeAsset, writeAssets } from "../assetClient";
+import {
+    ASSET_BATCH_CLIENT_BYTES,
+    MISSING_CHECK_DEADLINE_MS,
+    missingAssets,
+    readAsset,
+    readAssets,
+    writeAsset,
+    writeAssets,
+} from "../assetClient";
 import { authFetch } from "../serverAuth";
 
 const KEY = "assets/abc.png";
@@ -37,13 +48,22 @@ afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.clearAllMocks();
+    vi.restoreAllMocks();
 });
 
 // Run the shared transport contract through both public operations. All waits below are virtual.
 const operations = [
-    { run: (signal?: AbortSignal) => writeAsset(KEY, BYTES, { signal }), error: "setItem Error" },
-    { run: (signal?: AbortSignal) => readAsset(KEY, { signal }), error: "getItem Error" },
+    {
+        run: (signal?: AbortSignal) => writeAsset(KEY, BYTES, { signal }),
+        expectError: (error: unknown, status: number) =>
+            expect(error).toMatchObject({ name: "AssetWriteError", message: "setItem Error", status }),
+    },
+    { run: (signal?: AbortSignal) => readAsset(KEY, { signal }), expectError: expectReadError },
 ];
+function expectReadError(error: unknown, status: number) {
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ name: "AssetReadError", message: "getItem Error", status });
+}
 const success = () => new Response("{}", { status: 200 });
 
 describe("asset request retries", () => {
@@ -73,8 +93,8 @@ describe("asset request retries", () => {
         }
     });
 
-    it("backs off 503 at 1, 2, 4, 8, 16, 30, 30 seconds and stops at eight attempts with the old error", async () => {
-        for (const { run, error } of operations) {
+    it("backs off 503 at 1, 2, 4, 8, 16, 30, 30 seconds and stops at eight attempts with the operation's error", async () => {
+        for (const { run, expectError } of operations) {
             calls.length = 0;
             answer.current = () => new Response(null, { status: 503 });
             const failure = run().then(
@@ -87,7 +107,7 @@ describe("asset request retries", () => {
                 await vi.advanceTimersByTimeAsync(1);
                 expect(calls).toHaveLength(index + 2);
             }
-            expect(await failure).toBe(error);
+            expectError(await failure, 503);
             await vi.advanceTimersByTimeAsync(60_000);
             expect(calls).toHaveLength(8);
         }
@@ -116,13 +136,13 @@ describe("asset request retries", () => {
     });
 
     it("does not retry 500, 403, or 404", async () => {
-        for (const { run, error } of operations) {
+        for (const { run, expectError } of operations) {
             for (const status of [500, 403, 404]) {
                 calls.length = 0;
                 answer.current = () => new Response(null, { status });
-                const rejected = expect(run()).rejects.toBe(error);
+                const rejected = run().catch((error: unknown) => error);
                 await vi.runAllTimersAsync();
-                await rejected;
+                expectError(await rejected, status);
                 expect(calls).toHaveLength(1);
             }
         }
@@ -183,11 +203,13 @@ describe("writeAsset", () => {
         expect(init.body).toBe(BYTES);
     });
 
-    it('throws "setItem Error" for a non-2xx answer, before reading its body', async () => {
+    it("throws an AssetWriteError with the status for a non-2xx answer, before reading its body", async () => {
         answer.current = () => new Response("nope", { status: 500 });
-        await expect(writeAsset(KEY, BYTES)).rejects.toBe("setItem Error");
+        await expect(writeAsset(KEY, BYTES)).rejects.toMatchObject({ message: "setItem Error", status: 500 });
         answer.current = () => Response.json({ error: "ignored" }, { status: 403 });
-        await expect(writeAsset(KEY, BYTES)).rejects.toBe("setItem Error");
+        await expect(writeAsset(KEY, BYTES)).rejects.toMatchObject({ message: "setItem Error", status: 403 });
+        answer.current = () => new Response("<html>Request too large</html>", { status: 413 });
+        await expect(writeAsset(KEY, BYTES)).rejects.toMatchObject({ name: "AssetWriteError", status: 413 });
     });
 
     it("throws the answer's `error` for a refused 2xx write", async () => {
@@ -215,11 +237,11 @@ describe("readAsset", () => {
         await expect(readAsset("assets/missing.png")).resolves.toBeNull();
     });
 
-    it('throws "getItem Error" for a non-2xx answer', async () => {
+    it('throws an AssetReadError with "getItem Error" and the HTTP status for a non-2xx answer', async () => {
         answer.current = () => new Response("nope", { status: 404 });
-        await expect(readAsset(KEY)).rejects.toBe("getItem Error");
+        expectReadError(await readAsset(KEY).catch((error: unknown) => error), 404);
         answer.current = () => new Response(BYTES, { status: 500 });
-        await expect(readAsset(KEY)).rejects.toBe("getItem Error");
+        expectReadError(await readAsset(KEY).catch((error: unknown) => error), 500);
     });
 });
 
@@ -381,7 +403,10 @@ describe("batch assets", () => {
         ]) {
             calls.length = 0;
             answer.current = response;
-            await expect(writeAssets(items)).rejects.toBe(response().ok ? "write refused" : "setItem Error");
+            const rejected = expect(writeAssets(items)).rejects;
+            await (response().ok
+                ? rejected.toBe("write refused")
+                : rejected.toMatchObject({ name: "AssetWriteError", status: 500 }));
             expect(calls).toHaveLength(1);
         }
         calls.length = 0;
@@ -438,4 +463,286 @@ describe("batch assets", () => {
             expect(calls).toHaveLength(1);
         }
     });
+});
+
+const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+function content(text: string, inlay = false) {
+    const bytes = new TextEncoder().encode(text);
+    const sha256 = digest(bytes);
+    return { key: `assets/${inlay ? "inlay_" : ""}${sha256}.png`, bytes, sha256 };
+}
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+const uploads = () =>
+    calls.filter(({ path }) => path === "/api/assets/write").flatMap(({ init }) => postedRecords(init));
+const recordsOf = (items: readonly { key: string; bytes: Uint8Array }[]) =>
+    items.map(({ key, bytes }) => ({ key, bytes }));
+
+describe("missing asset transport", () => {
+    beforeEach(() => {
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    it("checks 513 names in requests of 512 and one and combines their missing answers", async () => {
+        const names = Array.from({ length: 513 }, (_, i) => content(`asset-${i}`).key);
+        answer.current = (_path, init) => {
+            const { names: batch } = JSON.parse(init.body as string);
+            return Response.json({ missing: [batch[0], batch.at(-1)] });
+        };
+        expect(await missingAssets(names)).toEqual(new Set([names[0], names[511], names[512]]));
+        expect(
+            calls.map(({ path, init }) => ({ path, method: init.method, body: JSON.parse(init.body as string) })),
+        ).toEqual([
+            { path: "/api/assets/missing", method: "POST", body: { names: names.slice(0, 512) } },
+            { path: "/api/assets/missing", method: "POST", body: { names: names.slice(512) } },
+        ]);
+    });
+
+    it("rejects malformed missing answers including names it did not ask about", async () => {
+        const name = content("asked").key;
+        for (const value of [null, {}, { missing: "all" }, { missing: [42] }, { missing: [content("unasked").key] }]) {
+            answer.current = () => Response.json(value);
+            await expect(missingAssets([name])).rejects.toThrow();
+        }
+    });
+
+    it("skips only present canonical items with matching digests and sends missing or unattested bytes", async () => {
+        const present = content("present");
+        const inlay = content("present inlay", true);
+        const missing = content("missing");
+        const mismatch = { ...content("claimed"), bytes: BYTES, sha256: digest(BYTES) };
+        const raw = { key: content("raw claimed").key, bytes: BYTES };
+        const custom = { key: "assets/custom.png", bytes: BYTES, sha256: digest(BYTES) };
+        const items = [present, mismatch, inlay, missing, raw, custom];
+        answer.current = (path) =>
+            Response.json(path === "/api/assets/missing" ? { missing: [missing.key] } : { success: true });
+        await writeAssets(items);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({ names: [present.key, inlay.key, missing.key] });
+        expect(uploads()).toEqual(recordsOf([mismatch, missing, raw, custom]));
+    });
+
+    it("keeps every write of a key in order when the call also contains a raw overwrite", async () => {
+        const canonical = content("original");
+        const raw = { key: canonical.key, bytes: BYTES };
+        const unrelated = content("already present");
+        answer.current = (path) => Response.json(path === "/api/assets/missing" ? { missing: [] } : { success: true });
+        for (const pair of [
+            [canonical, raw],
+            [raw, canonical],
+        ]) {
+            calls.length = 0;
+            await writeAssets([...pair, unrelated]);
+            expect(JSON.parse(calls[0].init.body as string)).toEqual({ names: [unrelated.key] });
+            expect(uploads()).toEqual(recordsOf(pair));
+        }
+    });
+
+    it.each(["non-2xx", "network", "malformed"])("uploads everything when the check fails: %s", async (failure) => {
+        vi.useFakeTimers();
+        const items = [content("one"), content("two")];
+        answer.current = (path) => {
+            if (path !== "/api/assets/missing") return Response.json({ success: true });
+            if (failure === "network") throw new TypeError("network unavailable");
+            return failure === "non-2xx" ? new Response(null, { status: 500 }) : Response.json({ missing: "invalid" });
+        };
+        const pending = writeAssets(items).then(
+            () => ({ ok: true }),
+            (error) => ({ error }),
+        );
+        await vi.runAllTimersAsync();
+        expect(await pending).toEqual({ ok: true });
+        expect(uploads()).toEqual(recordsOf(items));
+        // Network retries stop at the check's deadline: attempts at 0, 1, 3, 7, and 15 s, then a 16 s wait past it.
+        expect(calls.filter(({ path }) => path === "/api/assets/missing")).toHaveLength(failure === "network" ? 5 : 1);
+    });
+
+    it("rejects an abort during the check with the signal reason and sends no upload", async () => {
+        // Safari before 17.4 has no `AbortSignal.any`.
+        vi.spyOn(AbortSignal, "any").mockImplementation(() => {
+            throw new TypeError("AbortSignal.any is not a function");
+        });
+        const response = deferred<Response>();
+        const started = deferred<void>();
+        answer.current = () => {
+            started.resolve();
+            return response.promise;
+        };
+        const controller = new AbortController();
+        const reason = new Error("cancel asset import");
+        const pending = expect(writeAssets([content("present")], { signal: controller.signal })).rejects.toBe(reason);
+        await started.promise;
+        controller.abort(reason);
+        response.resolve(Response.json({ missing: [] }));
+        await pending;
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing"]);
+        expect(calls[0].init.signal?.aborted).toBe(true);
+        expect(calls[0].init.signal?.reason).toBe(reason);
+    });
+
+    it("uploads everything when the check has not answered by its deadline, and cancels the check", async () => {
+        vi.useFakeTimers();
+        const items = [content("one"), content("two")];
+        const held = deferred<Response>();
+        answer.current = (path) => (path === "/api/assets/missing" ? held.promise : Response.json({ success: true }));
+        let settled = false;
+        const pending = writeAssets(items).finally(() => {
+            settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(MISSING_CHECK_DEADLINE_MS - 1);
+        expect(settled).toBe(false);
+        expect(uploads()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        await pending;
+        expect(uploads()).toEqual(recordsOf(items));
+        expect(calls[0].init.signal?.aborted).toBe(true);
+        // A late answer changes nothing.
+        held.resolve(Response.json({ missing: [] }));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing", "/api/assets/write"]);
+    });
+
+    it("resolves without a write request when all items are present", async () => {
+        answer.current = () => Response.json({ missing: [] });
+        await expect(writeAssets([content("one"), content("two", true)])).resolves.toBeUndefined();
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing"]);
+    });
+});
+
+describe("saving content-addressed assets", () => {
+    let api: typeof import("../../globalApi.svelte");
+    let queue: typeof import("../assetQueue");
+    beforeAll(async () => {
+        api = await import("../../globalApi.svelte");
+        queue = await import("../assetQueue");
+    });
+    beforeEach(() => {
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    it.each(["present", "missing", "failed"])(
+        "saveAsset checks canonical content and handles a %s answer",
+        async (state) => {
+            const item = content("single portrait");
+            answer.current = (path) => {
+                if (path === "/api/assets/missing") {
+                    return state === "failed"
+                        ? new Response(null, { status: 500 })
+                        : Response.json({ missing: state === "missing" ? [item.key] : [] });
+                }
+                return Response.json({ success: true });
+            };
+            await expect(api.saveAsset(item.bytes)).resolves.toBe(item.key);
+            expect(calls.map(({ path }) => path)).toEqual(
+                state === "present" ? ["/api/assets/missing"] : ["/api/assets/missing", "/api/write"],
+            );
+            expect(JSON.parse(calls[0].init.body as string)).toEqual({ names: [item.key] });
+            if (state !== "present") {
+                expect(calls[1].init.body).toEqual(item.bytes);
+                expect(Buffer.from(new Headers(calls[1].init.headers).get("file-path")!, "hex").toString()).toBe(
+                    item.key,
+                );
+            }
+        },
+    );
+
+    it("saveAsset always writes a custom id without a check even when it equals the content digest", async () => {
+        const item = content("custom portrait");
+        answer.current = () => Response.json({ success: true });
+        await expect(api.saveAsset(item.bytes, item.sha256)).resolves.toBe(item.key);
+        expect(calls.map(({ path }) => path)).toEqual(["/api/write"]);
+        expect(calls[0].init.body).toEqual(item.bytes);
+    });
+
+    it("saveAsset preserves an abort during the check without writing", async () => {
+        const started = deferred<void>();
+        const response = deferred<Response>();
+        answer.current = () => {
+            started.resolve();
+            return response.promise;
+        };
+        const controller = new AbortController();
+        const reason = new Error("cancel single save");
+        const pending = expect(
+            api.saveAsset(content("portrait").bytes, "", "", { signal: controller.signal }),
+        ).rejects.toBe(reason);
+        await started.promise;
+        controller.abort(reason);
+        response.resolve(Response.json({ missing: [] }));
+        await pending;
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing"]);
+    });
+
+    it("saveAssets returns keys in input order while skipping present content and uploading digest-shaped custom ids", async () => {
+        const present = content("present portrait");
+        const missing = content("new portrait");
+        const custom = content("custom portrait");
+        // The server holds the missing key once its upload lands: the batch's check answers it
+        // missing, the check after the queue drains answers it present.
+        let checks = 0;
+        answer.current = (path) =>
+            Response.json(
+                path === "/api/assets/missing" ? { missing: checks++ === 0 ? [missing.key] : [] } : { success: true },
+            );
+        const first = deferred<Uint8Array>();
+        const secondLoaded = deferred<void>();
+        const pending = queue.saveAssets([
+            { load: () => first.promise },
+            {
+                load: () => {
+                    secondLoaded.resolve();
+                    return missing.bytes;
+                },
+            },
+            { load: () => custom.bytes, customId: custom.sha256 },
+        ]);
+        await secondLoaded.promise;
+        first.resolve(present.bytes);
+        expect(await pending).toEqual([present.key, missing.key, custom.key]);
+        const checked = calls
+            .filter(({ path }) => path === "/api/assets/missing")
+            .flatMap(({ init }) => JSON.parse(init.body as string).names);
+        expect(new Set(checked)).toEqual(new Set([present.key, missing.key]));
+        expect(uploads()).toHaveLength(2);
+        expect(uploads()).toEqual(expect.arrayContaining(recordsOf([missing, custom])));
+    });
+
+    it("savePickedFiles reimports present files without uploading bytes and retains their ordered keys", async () => {
+        const items = [content("picked one"), content("picked two")];
+        answer.current = () => Response.json({ missing: [] });
+        const files = items.map(({ bytes }, index) => new File([bytes], `${index}.png`));
+        expect(await queue.savePickedFiles(files, (file) => file.name)).toEqual(items.map(({ key }) => key));
+        // The batch's check, then the check after the queue drains; neither uploads a byte.
+        expect(calls.map(({ path }) => path)).toEqual(["/api/assets/missing", "/api/assets/missing"]);
+        for (const call of calls) {
+            expect(new Set(JSON.parse(call.init.body as string).names)).toEqual(new Set(items.map(({ key }) => key)));
+        }
+    });
+});
+
+it("checks presence separately beside each of two write batches", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const items = Array.from({ length: 501 }, (_, i) => content(`lease-batch-${i}`));
+    const events: { path: string; keys: string[] }[] = [];
+    answer.current = (url, init) => {
+        if (url === "/api/assets/missing") {
+            const { names } = JSON.parse(init.body as string);
+            events.push({ path: url, keys: names });
+            return Response.json({ missing: names });
+        }
+        events.push({ path: url, keys: postedRecords(init).map((r) => r.key) });
+        return Response.json({ success: true });
+    };
+    await writeAssets(items);
+    expect(events).toEqual([
+        { path: "/api/assets/missing", keys: items.slice(0, 500).map((x) => x.key) },
+        { path: "/api/assets/write", keys: items.slice(0, 500).map((x) => x.key) },
+        { path: "/api/assets/missing", keys: [items[500].key] },
+        { path: "/api/assets/write", keys: [items[500].key] },
+    ]);
+    expect(uploads()).toEqual(recordsOf(items));
 });

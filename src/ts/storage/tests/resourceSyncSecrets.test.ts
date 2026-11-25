@@ -3,6 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { SecretPath } from "../../../../shared/llmSecrets.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { settleFlush } from "./flushRetry";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { materialize, serverNormalizer } from "./serverKinds";
 
@@ -49,7 +50,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -271,12 +272,16 @@ describe("a queued credential write", () => {
         fake.requests.length = 0;
         conflict(3);
         secrets.setSecret(flat("mistralKey"), "m2");
-        await expect(sync.flushResources()).rejects.toBeInstanceOf(client.ResourceConflictError);
+        const flushing = sync.flushResources();
+        // The first cycle gives up after its bounded rereads; the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
         expect(requestLog(fake).filter((entry) => entry.startsWith("PUT"))).toHaveLength(3);
         expect(requestLog(fake).filter((entry) => entry.startsWith("GET"))).toHaveLength(2);
         expect(secrets.secretStatus(flat("mistralKey"))).toEqual({ set: true, hint: "", pending: true });
         expect(fake.data("llmSecrets", "main").mistralKey).toBe("m1");
-        await sync.flushResources();
+        // The next cycle, the flush's retry, writes it.
+        await settleFlush(flushing);
+        expect(requestLog(fake).filter((entry) => entry.startsWith("PUT"))).toHaveLength(4);
         expect(fake.data("llmSecrets", "main").mistralKey).toBe("m2");
         expect(secrets.llmSecretState.queue).toEqual([]);
         expect(alerts.error).not.toHaveBeenCalled();
@@ -312,10 +317,13 @@ describe("a queued credential write", () => {
         const { fake, sync, secrets } = await boot();
         fake.failNext = { status: 503, times: 1, match: onSecretRoutes };
         secrets.setSecret(flat("nanogptKey"), "n1");
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
+        const flushing = sync.flushResources();
+        // The write stays queued while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
         expect(secrets.secretStatus(flat("nanogptKey"))).toEqual({ set: true, hint: "", pending: true });
         expect(fake.data("llmSecrets", "main").nanogptKey ?? "").toBe("");
-        await sync.flushResources();
+        await settleFlush(flushing);
         expect(fake.data("llmSecrets", "main").nanogptKey).toBe("n1");
         expect(secrets.secretStatus(flat("nanogptKey"))).toEqual({ set: true, hint: "", pending: false });
 
@@ -439,9 +447,12 @@ describe("adopting the server's record after a write or a reread", () => {
         const { fake, sync, secrets, settings } = await boot();
         fake.dropNextBatchResponse = true;
         settings.llmSecrets.vertexClientEmail = "lost-ack";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the flush waits out its backoff before the conflict reread.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.data("llmSecrets", "main")).toMatchObject({ vertexClientEmail: "lost-ack", openAIKey: STORED_KEY });
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual([]);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(settings.llmSecrets.vertexClientEmail).toBe("lost-ack");
@@ -476,20 +487,20 @@ describe("the cleanup of a deleted owner's entry", () => {
 
     it("is dropped without a request when a conflict restored the owner, while an explicit clear of a live owner still goes", async () => {
         const { fake, sync, secrets, settings } = await boot();
-        // Another tab renamed c1: this client's deletion of c2 conflicts and is discarded.
+        // Another tab renamed c2: this client's deletion of c2 conflicts (edit against delete) and is discarded.
         const credentials = fake.data("credentials", "main");
         fake.set(
             "credentials",
             "main",
-            credentials.map((c: { id: string }) => (c.id === "c1" ? { ...c, name: "renamed" } : c)),
+            credentials.map((c: { id: string }) => (c.id === "c2" ? { ...c, name: "renamed" } : c)),
         );
         removeCredential(settings.credentials, "c2");
         secrets.deleteEntrySecret("credentials", "c2");
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["credentials/main"]);
         expect(settings.credentials.map((c) => [c.id, c.name])).toEqual([
-            ["c1", "renamed"],
-            ["c2", "C2"],
+            ["c1", "C1"],
+            ["c2", "renamed"],
         ]);
         expect(secretRequests(fake)).toEqual([]);
         expect(fake.data("llmSecrets", "main").credentials.c2).toEqual({ key: "ck-2" });
@@ -502,6 +513,52 @@ describe("the cleanup of a deleted owner's entry", () => {
             "PUT /api/llm-secrets/credentials/~c2/key",
         ]);
         expect(fake.data("llmSecrets", "main").credentials).toEqual({ c1: { key: "ck-1" } });
+    });
+
+    it("saves a credential deletion merged with another credential's rename before sending its cleanup once", async () => {
+        const { fake, sync, secrets, settings } = await boot();
+        const base = fake.get("credentials", "main")!.revision;
+        const credentials = fake.data("credentials", "main");
+        const theirs = fake.set(
+            "credentials",
+            "main",
+            credentials.map((c: { id: string }) => (c.id === "c1" ? { ...c, name: "renamed" } : c)),
+        );
+        removeCredential(settings.credentials, "c2");
+        secrets.deleteEntrySecret("credentials", "c2");
+
+        expect((await sync.flushResources()).discarded).toEqual([]);
+        const merged = [{ id: "c1", name: "renamed", type: "openai" }];
+        expect(JSON.parse(JSON.stringify(settings.credentials))).toEqual(merged);
+        expect(fake.data("credentials", "main")).toEqual(merged);
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [{ kind: "credentials", id: "main", baseRevision: base, data: [{ id: "c1", name: "C1", type: "openai" }] }],
+            [
+                {
+                    kind: "credentials",
+                    id: "main",
+                    baseRevision: theirs,
+                    patch: { items: [], changes: [], order: ["c1"] },
+                },
+            ],
+        ]);
+        // The rejected deletion must not release cleanup; only the merged save does.
+        expect(requestLog(fake)).toEqual([
+            "POST /api/resources/batch",
+            "POST /api/resources/read",
+            "POST /api/resources/batch",
+            "PUT /api/llm-secrets/credentials/~c2/key",
+        ]);
+        expect(secretRequests(fake)).toHaveLength(1);
+        expect(secretRequests(fake)[0].body).toMatchObject({ value: "" });
+        expect(fake.data("llmSecrets", "main").credentials).toEqual({ c1: { key: "ck-1" } });
+        expect(secrets.llmSecretState.queue).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fake.batchCount()).toBe(2);
+        expect(secretRequests(fake)).toHaveLength(1);
     });
 
     it("waits behind a quarantined deletion without keeping the loop running, the barrier names the refusal, and goes once the deletion is saved", async () => {

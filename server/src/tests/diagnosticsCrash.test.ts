@@ -8,10 +8,10 @@ import { afterAll, describe, expect, it } from "vitest";
 
 // The process hook `main.ts` installs, in a fresh plain `node` process (Vitest's own
 // `uncaughtException` and `unhandledRejection` listeners would change what reaches the monitor). An
-// `uncaughtExceptionMonitor` bound to the journal records the fault (its origin and class name, never
-// its message) and writes `state.json` synchronously before Node ends the process as it would without
-// the monitor: an uncaught exception and, with no `unhandledRejection` listener in the process, an
-// unhandled rejection too, both with exit code 1.
+// `uncaughtExceptionMonitor` bound to the journal hands the fault (its origin and class name, never
+// its message) to `recordFatal`, which appends it and publishes `state.json` synchronously before Node
+// ends the process as it would without the monitor: an uncaught exception and, with no
+// `unhandledRejection` listener in the process, an unhandled rejection too, both with exit code 1.
 
 const SERVER_SRC = path.resolve(import.meta.dirname, "..");
 const roots: string[] = [];
@@ -30,18 +30,34 @@ function writeScript(root: string): string {
         `
 import { createDiagnosticsJournal } from ${JSON.stringify(path.join(SERVER_SRC, "diagnostics/journal.ts"))};
 import { errorFields } from ${JSON.stringify(path.join(SERVER_SRC, "diagnostics/log.ts"))};
+import fs from "node:fs/promises";
 const [dir, mode] = process.argv.slice(2);
-const journal = createDiagnosticsJournal({ dir });
+const appendEntered = Promise.withResolvers();
+const stateEntered = Promise.withResolvers();
+const forever = new Promise(() => {});
+const journal = createDiagnosticsJournal({ dir, ...(mode === "stalled" ? {
+    maxBytes: 80,
+    fs: { ...fs, async open(file, flags, permissions) {
+        if (file.endsWith(".jsonl")) { appendEntered.resolve(); await forever; }
+        const handle = await fs.open(file, flags, permissions);
+        return Object.assign(handle, { sync: async () => { stateEntered.resolve(); await forever; } });
+    } },
+} : {}) });
 journal.start();
 process.on("uncaughtExceptionMonitor", (error, origin) => {
     try {
-        journal.record({ kind: "runtime", origin, ...errorFields(error) });
-        journal.writeState();
+        journal.recordFatal({ kind: "runtime", origin, ...errorFields(error) });
     } catch {}
 });
 // Without the fault the process would end here with 3.
 setTimeout(() => process.exit(3), 3000);
-if (mode === "throw") {
+if (mode === "stalled") {
+    void journal.writeState();
+    journal.record({ kind: "lifecycle", phase: "boot" });
+    await Promise.all([appendEntered.promise, stateEntered.promise]);
+    journal.record({ kind: "lifecycle", phase: "shutdown" });
+    queueMicrotask(() => { throw new TypeError("the secret message"); });
+} else if (mode === "throw") {
     setTimeout(() => {
         throw new TypeError("the secret message");
     }, 10);
@@ -54,7 +70,7 @@ if (mode === "throw") {
 }
 
 /** Runs the script with plain `node` (no flags, no `NODE_OPTIONS`): the default rejection mode. */
-async function crash(mode: "throw" | "reject") {
+async function crash(mode: "throw" | "reject" | "stalled") {
     const root = mkdtempSync(path.join(os.tmpdir(), "risu-diagnostics-crash-"));
     roots.push(root);
     const dir = path.join(root, "diag");
@@ -105,4 +121,16 @@ describe.concurrent("a fatal fault in a plain Node process", () => {
         expect(text).not.toContain("secret");
         expect(state).toMatchObject({ version: 1, journal: { writeFailures: 0 } });
     });
+});
+
+it("leaves queued lines, the fault, and final state on disk when the asynchronous writer cannot finish", async () => {
+    const { code, stderr, text, events, state } = await crash("stalled");
+    expect(code).toBe(1);
+    expect(stderr).toContain("TypeError: the secret message");
+    expect(events).toEqual([
+        { at: expect.any(Number), kind: "lifecycle", phase: "boot" },
+        { at: expect.any(Number), kind: "lifecycle", phase: "shutdown" },
+        { at: expect.any(Number), kind: "runtime", origin: "uncaughtException", name: "TypeError", stack: [] },
+    ]);
+    expect(state).toMatchObject({ journal: { eventBytes: Buffer.byteLength(text), writeFailures: 0, dropped: 0 } });
 });

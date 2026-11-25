@@ -13,7 +13,8 @@ export { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH };
  * admission middleware refuses both during shutdown and makes every answer `no-store`.
  *
  * - `GET /api/diagnostics` answers `{ events, state }`: the journal's ring (the last 300 events,
- *   oldest first) and its state (`state.json`'s fields, built now). Both are in memory and
+ *   oldest first, refilled from the day files at creation, so a restart keeps them) and its state
+ *   (`state.json`'s fields, built now). Both are in memory and
  *   content-free, so the answer works during a maintenance and when the folder cannot be written;
  *   nothing is written by a read.
  * - `POST /api/diagnostics/report` saves the panel's report (a `text/plain` body of at most 1 MiB, its
@@ -52,10 +53,6 @@ export function registerDiagnosticsRoutes(
             text = await c.req.text();
         } catch {
             return c.json({ error: "Could not read the report" }, 400);
-        }
-        // The limiter trusts a declared length; the body read is measured again.
-        if (Buffer.byteLength(text, "utf8") > MAX_DIAGNOSTIC_REPORT_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
         }
         const report = canonicalDiagnosticReport(text);
         if (report === null) {

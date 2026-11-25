@@ -9,6 +9,13 @@
     import CheckInput from "../UI/GUI/CheckInput.svelte";
     import { tokenize } from "src/ts/tokenizer";
 
+    /**
+     * Text translation through `src/ts/translator/translator.ts` `runTranslator`,
+     * using the global translator preset. Bulk accepts JSON text entries or paragraphs,
+     * optionally carrying previous translations as context; the cache can be cleared.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 11.
+     */
+
     const userPreferedLang = navigator.language.split("-")[0];
 
     let r = $state("");

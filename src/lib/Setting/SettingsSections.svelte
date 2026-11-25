@@ -1,10 +1,19 @@
 <script lang="ts">
+    import { editedScope } from "src/ts/storage/settingsViews.svelte";
     import type { SettingContext, SettingSection } from "src/ts/setting/types";
     import { getModelInfoForMode } from "src/ts/model/modellist";
     import { languageText, sectionHasVisibleItems, settingContext } from "src/ts/setting/utils";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import SettingRenderer from "./SettingRenderer.svelte";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
+
+    /**
+     * `SettingSection[]` groups rendered by `src/lib/Setting/SettingRenderer.svelte`, using the same
+     * context and `sectionHasVisibleItems` from `src/ts/setting/utils.ts`; all-hidden groups vanish.
+     * Ordinary groups use `<section>`; collapsible groups use a div and a closed styled
+     * `src/lib/UI/Accordion.svelte`. Both carry `data-settings-section`; an available `currentJump()`
+     * captured at mount starts its collapsible group open while that jump remains pending.
+     */
 
     interface Props {
         sections: SettingSection[];
@@ -14,8 +23,8 @@
     const uid = $props.id();
 
     // The same context `SettingRenderer` builds, so a section whose items all hide renders nothing.
-    let modelInfo = $derived(getModelInfoForMode("model"));
-    let subModelInfo = $derived(getModelInfoForMode("submodel"));
+    let modelInfo = $derived(getModelInfoForMode("model", editedScope()));
+    let subModelInfo = $derived(getModelInfoForMode("submodel", editedScope()));
     let ctx: SettingContext = $derived(settingContext({ modelInfo, subModelInfo }));
     // Capture the jump at mount; an Accordion starts open only while that jump is still pending,
     // so a later tab round trip cannot reopen its section after the jump finishes.

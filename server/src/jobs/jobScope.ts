@@ -1,7 +1,9 @@
+import { chatHypaV3Preset, chatMemoryAlgorithm, chatMemoryProfileId } from "../../../shared/chatMemory.ts";
 import { createHash } from "node:crypto";
 import type {
     Chat,
     Database,
+    Message,
     ModelPreset,
     ModelProfile,
     RisuPersona,
@@ -11,10 +13,17 @@ import type {
 } from "../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { GenerationContext, MemoryTokenPolicy } from "../../../shared/jobs.ts";
-import type { ChatGroupResult, ChatOp } from "../../../shared/chats.ts";
+import type { ChatGroupResult, ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
+import type { HypaV3Preset } from "../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
+import {
+    STRUCTURED_MEMORY_ALGORITHM,
+    structuredMemoryInstructionsOverride,
+    structuredMemoryLanguageOverride,
+} from "../../../shared/structuredMemory.ts";
+import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import {
     characterShell,
     forwardPersonaRoots,
@@ -42,30 +51,39 @@ import {
 import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
 
 /**
- * What a job reads (the prompt runner's `PromptScope` builds on it), loaded at the job's
- * start and kept apart in two parts:
+ * What a job reads, loaded at the job's start and kept apart in two parts:
  *
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
- *   activation read, assembled as the client's `assembleDatabase` and forwarding layer serve it for
- *   the job's prompt and model presets and personas, with every credential field `""` as in the
- *   client's mirror), the two presets, the profiles and the personas, and `request` (the request
- *   layer's own settings, credentials included).
+ *   activation read, assembled for the chat's memory preset and the job's prompt and model presets
+ *   and personas, with every credential field `""` as in the client's mirror), the two presets,
+ *   the profiles and personas, `memoryProfileId` (the chat's memory connection), and `request` (the request layer's
+ *   own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
- *   read again after the job's own writes and after a callback that may have written.
+ *   read again after the job's own writes and after a callback that may have written. After the
+ *   job's own write of its chat, `refreshChatAfterWrite` lays the write's stored change onto the chat
+ *   instead, and reads the chat whole only when that change cannot be adopted. A detached scope
+ *   keeps its own chat copy throughout the job; chat edits stay local and character/persona setters refuse.
  *
+ * Prompt readers can derive a history view without a reroll's carrier; write readers always keep it.
  * Both stay on the main thread: neither the projection nor `request` is ever sent to Lua or a tab.
  */
 export type JobScope = {
+    /** The job owns its chat copy: refreshes leave it alone and chat/character edits never persist. */
+    detached?: boolean;
+    /** While assembling an in-place reroll, prompt readers omit this stored carrier. */
+    rerollHistoryMessageId?: string;
+
     db: Database;
     characterId: string;
     chatId: string;
-    /** The chat's revision as last read. */
+    /** The revision of the projection's chat: as last read, or as the adopted own change left it. */
     chatRevision: string;
     /**
      * The chat's source generation (`ResourceStore.readChatSource`), read in the same synchronous
      * call as the chat snapshot the projection holds: a whole-chat `replace` or a delete since then
-     * shows as another value. A `meta` write keeps it.
+     * shows as another value. A by-id write (`meta`, a message op) keeps it, so an adopted own
+     * change keeps the value read with the snapshot it was laid onto.
      */
     chatSourceGeneration?: number;
     /** The job's prompt preset (`context.presetId`). */
@@ -74,6 +92,8 @@ export type JobScope = {
     modelPreset: ModelPreset;
     /** Captured model profiles, shared by the job's main and auxiliary requests. */
     modelProfiles: ModelProfile[];
+    /** The chat's named memory connection, captured at load and unchanged by live chat refreshes. */
+    readonly memoryProfileId?: string;
     /**
      * The job's persona (`context.personaId`): the chat's bound persona (a transform's is its display
      * persona), also the forwarded `db.username` and `db.personaPrompt`. A chat job has no separate
@@ -128,9 +148,10 @@ export function jobScopeKinds(kinds: ResourceKindRegistry): ResourceKind[] {
 /**
  * The characters a job reads besides its chat's owner: a group's members, the speaker the job names
  * (`speakerChaId`), and every message's speaker (`saying`: the prompt's and lore's speaker names,
- * CBS's group speaker). No job reads another one, so the load parses none of them.
+ * CBS's group speaker). No job reads another one, so the load parses none of them. The display
+ * scope (`displayScope.ts`) reads the same set, so its keys and memos match a job's reads.
  */
-function chatCharacters(chat: Chat, owner: character | groupChat, context: GenerationContext): string[] {
+export function chatCharacters(chat: Chat, owner: character | groupChat, context: GenerationContext): string[] {
     const ids = owner.type === "group" ? [...(owner.characters ?? [])] : [];
     if (context.speakerChaId) {
         ids.push(context.speakerChaId);
@@ -143,20 +164,24 @@ function chatCharacters(chat: Chat, owner: character | groupChat, context: Gener
     return ids;
 }
 
+/** A character read as stored (`remember` of `readCharacters`): a missing one too, with a null revision. */
+export type CharacterRead = ReturnType<ResourceStore["readRefs"]>["items"][number];
+
 /**
  * The chat's owner, then the characters of `chatCharacters` and of `extra`, read by id (a missing
- * one left out); none when the chat or its owner is gone (the load then fails on the owner).
+ * one left out of the records but passed to `remember`); none when the chat or its owner is gone
+ * (the load then fails on the owner). `remember` sees every read as stored, before any projection.
  */
-function readCharacters(
+export function readCharacters(
     store: ResourceStore,
     charactersKind: ResourceKind,
     context: GenerationContext,
     chat: unknown,
     extra: ((chat: Chat, owner: character | groupChat) => Iterable<string>) | undefined,
-    revisions: Map<string, string | null>,
+    remember: (record: CharacterRead) => void,
 ): StoredResource<unknown>[] {
     const ownerRead = store.readRefs([{ kind: charactersKind, id: context.characterId }]).items[0];
-    revisions.set(context.characterId, ownerRead.revision);
+    remember(ownerRead);
     if (!chat || ownerRead.data === null || ownerRead.revision === null) {
         return [];
     }
@@ -173,7 +198,7 @@ function readCharacters(
     }
     const others = store.readRefs([...ids].map((id) => ({ kind: charactersKind, id }))).items;
     for (const item of others) {
-        revisions.set(item.id, item.revision);
+        remember(item);
         if (item.data !== null && item.revision !== null) {
             records.push({ id: item.id, revision: item.revision, data: item.data });
         }
@@ -191,6 +216,8 @@ function readCharacters(
  * Of the characters, only the chat's owner and those `chatCharacters` names are read, plus the ids
  * `characters` returns for the chat and the owner's record (a transform's target sources); a
  * character read later (`refreshCharacter`) joins the projection then.
+ * `metadataOnly` reads `chatMeta` with an empty message list, for read-only checks of bound settings
+ * and modules that need no history. It keeps the chat's module selections and persona intact.
  */
 export function loadJobScope(
     store: ResourceStore,
@@ -199,11 +226,23 @@ export function loadJobScope(
     options: {
         binding?: ChatBindingMode;
         characters?: (chat: Chat, owner: character | groupChat) => Iterable<string>;
+        metadataOnly?: boolean;
+        /** A `chatMeta` read from this synchronous operation, reused only with `metadataOnly`. */
+        chatMetadata?: ChatRecord;
     } = {},
 ): JobScope {
     const charactersKind = kindOf(kinds, RESOURCE_KIND.characters);
     const read = store.readKinds(jobScopeKinds(kinds).filter((kind) => kind !== charactersKind));
-    const chatRecord = store.readChatSource(context.characterId, context.chatId);
+    const chatRecord = options.metadataOnly
+        ? {
+              ...(options.chatMetadata ??
+                  store.chatMeta(context.characterId, context.chatId) ?? {
+                      data: null,
+                      revision: null,
+                  }),
+              sourceGeneration: store.chatSourceGeneration(context.characterId, context.chatId),
+          }
+        : store.readChatSource(context.characterId, context.chatId);
     const characterRevisions = new Map<string, string | null>();
     read.kinds[RESOURCE_KIND.characters] = readCharacters(
         store,
@@ -211,7 +250,7 @@ export function loadJobScope(
         context,
         chatRecord.data,
         options.characters,
-        characterRevisions,
+        (record) => characterRevisions.set(record.id, record.revision),
     );
     const single = (name: string): any => read.kinds[name]?.find((record) => record.id === SINGLETON_RESOURCE_ID)?.data;
 
@@ -262,6 +301,17 @@ export function loadJobScope(
     // job persona's fields, and the selection indexes.
     forwardSelectedPreset(db, presets, preset, modelPreset, modelProfiles);
     forwardPersonaRoots(db, effectivePersona, personas);
+    // Only this scope's projection changes; the stored default selection stays untouched.
+    const memoryPreset = chatHypaV3Preset(
+        db.hypaV3Presets as HypaV3Preset[],
+        db.hypaV3PresetId as string | undefined,
+        chatRecord.data as Chat,
+    );
+    if (memoryPreset && memoryPreset.id === (chatRecord.data as Chat).memoryPresetId) {
+        db.hypaV3PresetId = memoryPreset.id;
+    }
+
+    const memoryProfileId = chatMemoryProfileId(chatRecord.data as Chat);
 
     const characters = (read.kinds[RESOURCE_KIND.characters] ?? []).map((record) => characterShell(record.data));
     db.characters = characters;
@@ -305,6 +355,7 @@ export function loadJobScope(
         promptPreset: preset,
         modelPreset,
         modelProfiles,
+        memoryProfileId,
         effectivePersona,
         request,
     };
@@ -358,17 +409,43 @@ export function memoryTokenPolicy(scope: JobScope, chatAdditionalTokens: number)
 }
 
 /**
+ * The scope's chat memory preset as `memorySettingsFingerprint` hashes it: without `settings.structured`,
+ * which only the Structured Memory part of the digest reads, so a change to it leaves another
+ * algorithm's tasks current. The remaining keys keep their order.
+ */
+function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
+    if (!preset?.settings) {
+        return preset ?? null;
+    }
+    const { structured: _structured, ...settings } = preset.settings;
+    return { ...preset, settings };
+}
+
+/** Resolve the scope's captured memory connection, or its model preset's memory slot when unset. */
+export function resolveScopeMemoryModel(scope: JobScope) {
+    return resolveJobRequestModel(
+        scope.request.db,
+        "memory",
+        scope.memoryProfileId !== undefined ? { profileId: scope.memoryProfileId } : {},
+    );
+}
+
+/**
  * A digest of the memory-relevant settings of `scope` (`MemoryTaskInput.settingsFingerprint`): the
- * selected HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
+ * chat's HypaV3 preset, its memory connection as a job's request resolves it (the model, its profile,
  * which names a credential but holds none, the descriptor's format and wire id, a custom model's
- * definition, and the request's temperature and response size, or the refusal), and the embedding model with its custom endpoint and model (never its key). Equal for
- * two scopes read from the same settings.
+ * definition, and the request's temperature and response size, or the refusal), and the embedding
+ * model with its custom endpoint and model (never its key). When this chat selects Structured Memory
+ * alone it also covers the writer: the preset's `structured` settings, the owner's and the chat's
+ * language overrides, and `db.language`, which an empty language follows. The key is absent otherwise,
+ * so no other algorithm's digest depends on them. Equal for two scopes read from the same settings.
  */
 export function memorySettingsFingerprint(scope: JobScope): string {
     const db = scope.db;
-    const memory = resolveJobRequestModel(scope.request.db, "memory");
+    const memory = resolveScopeMemoryModel(scope);
+    const preset = selectedHypaV3Preset(db);
     const projection = {
-        hypaV3Preset: selectedHypaV3Preset(db) ?? null,
+        hypaV3Preset: fingerprintedHypaV3Preset(preset),
         memoryModel:
             memory.kind === "refused"
                 ? { refused: memory.result }
@@ -384,8 +461,41 @@ export function memorySettingsFingerprint(scope: JobScope): string {
                   },
         hypaModel: db.hypaModel ?? null,
         hypaCustom: { url: db.hypaCustomSettings?.url ?? "", model: db.hypaCustomSettings?.model ?? "" },
+        ...(chatMemoryAlgorithm(db, scopeChat(scope)) === STRUCTURED_MEMORY_ALGORITHM
+            ? { structuredMemory: structuredMemoryFingerprint(scope, preset) }
+            : {}),
     };
     return createHash("sha256").update(JSON.stringify(projection)).digest("base64url");
+}
+
+/**
+ * What Structured Memory's writer adds to `memorySettingsFingerprint`. Highlights mark commit history,
+ * `eventsPerGroup` sizes Timeline groups and chapters, and `chapterAuto` applies after recording.
+ * Edits to these settings keep queued runs current because the writer's input stays the same.
+ */
+function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | undefined): unknown {
+    const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
+    const chat = scopeChat(scope);
+    const structured = preset?.settings?.structured;
+    const settings = structured
+        ? (({
+              highlightMode: _mode,
+              highlightKinds: _kinds,
+              highlightChangeGrade: _grade,
+              eventsPerGroup: _eventsPerGroup,
+              chapterAuto: _chapterAuto,
+              ...rest
+          }) => rest)(structured)
+        : null;
+    const ownerInstructions = structuredMemoryInstructionsOverride(owner);
+    return {
+        settings,
+        ownerLanguage: structuredMemoryLanguageOverride(owner) ?? null,
+        chatLanguage: structuredMemoryLanguageOverride(chat) ?? null,
+        uiLanguage: scope.db.language ?? null,
+        // Present only while set, so an owner without instructions keeps the digest its queued tasks hold.
+        ...(ownerInstructions === undefined ? {} : { ownerInstructions }),
+    };
 }
 
 /** A projection character's chats (a group's are typed read-only; the projection is the job's own copy). */
@@ -397,6 +507,40 @@ function setChats(owner: character | groupChat, chats: Chat[]): void {
 export function scopeChat(scope: JobScope): Chat | undefined {
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
     return owner?.chats.find((chat) => chat.id === scope.chatId) as Chat | undefined;
+}
+
+/** Replace both view-cache identities without changing the stored revision; message edits need a new list too. */
+export function replaceScopeChat(scope: JobScope, chat: Chat): void {
+    const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
+    if (owner) {
+        setChats(owner, [{ ...chat }]);
+    }
+}
+
+const historyMessages = new WeakMap<JobScope, { source: Message[]; hidden: string; filtered: Message[] }>();
+
+/** Read-only history list, cached until the stored list or hidden carrier changes. */
+export function scopeHistoryMessages(scope: JobScope, chat: Chat): Message[] {
+    const hidden = scope.rerollHistoryMessageId;
+    if (!hidden) {
+        return chat.message;
+    }
+    let cached = historyMessages.get(scope);
+    if (!cached || cached.source !== chat.message || cached.hidden !== hidden) {
+        cached = {
+            source: chat.message,
+            hidden,
+            filtered: chat.message.filter((message) => message.chatId !== hidden),
+        };
+        historyMessages.set(scope, cached);
+    }
+    return cached.filtered;
+}
+
+/** Fresh metadata around the cached history list; stored chat stays intact for writes and adoption. */
+export function scopeHistoryChat(scope: JobScope): Chat | undefined {
+    const chat = scopeChat(scope);
+    return chat && scope.rerollHistoryMessageId ? { ...chat, message: scopeHistoryMessages(scope, chat) } : chat;
 }
 
 type PendingChatMeta = { scriptstate?: Record<string, string>; note?: string };
@@ -421,6 +565,7 @@ function overlayChatMeta(scope: JobScope, chat: Chat): void {
  * One metadata batch per job, bound only to its live chat scope. Setters replace the variable map:
  * display copies may share the old map. The microtask runs before another request or abort timer;
  * job output and writes flush synchronously through the registered hook.
+ * Detached scopes apply setters only to their copy, register no flush, and discard any pending flush.
  */
 function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope: JobScope) {
     let scope = initialScope;
@@ -438,6 +583,10 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
         }
     };
     const flush = () => {
+        if (scope.detached) {
+            clear();
+            return;
+        }
         check();
         const pending = pendingMeta.get(scope);
         if (!pending) {
@@ -466,7 +615,7 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
                     { characterId: scope.characterId, chatId: scope.chatId, baseRevision: scope.chatRevision, ops },
                 ],
             }));
-            refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+            refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
             job.emitRecords({ chats: [{ characterId: scope.characterId, id: scope.chatId }] });
         } catch (error) {
             clear();
@@ -500,6 +649,9 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
             if (patch.note !== undefined) {
                 pending.note = patch.note;
                 chat.note = patch.note;
+            }
+            if (scope.detached) {
+                return;
             }
             pendingMeta.set(scope, pending);
             job.setPendingFlush?.(flush);
@@ -546,12 +698,16 @@ export function bindChatMetadata(job: RunningJob, scope: JobScope): void {
 }
 
 /**
- * Reads the job's chat again with its revision (after a write of the job or a callback that may
- * have written): stored data and revision come together, with the pending metadata laid over that
- * snapshot. Pending values carry no stored revision until their own flush commits.
- * Returns false when the chat is gone.
+ * Reads the job's chat again with its revision (before a write of the job, after a callback that
+ * may have written, and after an own write whose change `refreshChatAfterWrite` cannot adopt):
+ * stored data and revision come together, with the pending metadata laid over that snapshot.
+ * Pending values carry no stored revision until their own flush commits.
+ * A detached scope never reads the store or replaces its copy. Returns false when the chat is gone.
  */
 export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
+    if (scope.detached) {
+        return !!scopeChat(scope);
+    }
     if (store.chatRevision(scope.characterId, scope.chatId) === scope.chatRevision && scopeChat(scope)) {
         return true;
     }
@@ -569,30 +725,53 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
     scope.chatSourceGeneration = record.sourceGeneration;
     overlayChatMeta(scope, record.data as Chat);
     if (scope.charactersKind) {
-        addSpeakers(store, scope.charactersKind, scope, record.data as Chat);
+        addSpeakers(store, scope.charactersKind, scope, (record.data as Chat).message ?? []);
     }
     return true;
 }
 
 /**
- * Adopt an own metadata write without reading unchanged messages. A stale write or a subsequent
- * change needs a full refresh: the stored transcript may no longer be the scope's copy.
+ * After the job's own write of its chat: lays the change that write stored (`change`, the write's
+ * `written` entry of the group whose result is `result`) onto the scope's copy instead of reading
+ * the chat again. Only while the copy is exactly the change's base and nothing wrote the chat
+ * since: the group applied on the current revision (not `stale`), the scope held the change's base
+ * revision, and the stored revision is still the change's (a feed listener runs inside the
+ * publishing write and may write the chat again before the write returns). The copy then equals a
+ * fresh read at that revision (`adoptChange`), with the pending metadata laid over it and the
+ * speakers of the changed rows read; `chatSourceGeneration` stays (a by-id change never moves it).
+ * Anything else (no change: a whole-chat write, a remove and reappend of one id, a group that
+ * applied nothing; a stale group; a copy the change does not fit) reads the chat whole
+ * (`refreshChat`). A detached scope keeps its copy without reading or adopting stored data.
+ * Returns false when the chat is gone.
  */
 export function refreshChatAfterWrite(
     store: ResourceStore,
     scope: JobScope,
-    ops: readonly ChatOp[],
     result: ChatGroupResult | undefined,
+    change: ChatWriteChange | undefined,
 ): boolean {
+    if (scope.detached) {
+        return !!scopeChat(scope);
+    }
     const current = scopeChat(scope);
-    if (current && result?.revision && !result.stale && ops.every((op) => op.op === "meta")) {
-        const record = store.chatMeta(scope.characterId, scope.chatId);
-        if (record?.revision === result.revision) {
+    if (
+        current &&
+        change &&
+        result?.revision &&
+        !result.stale &&
+        scope.chatRevision === change.baseRevision &&
+        result.revision === change.revision &&
+        store.chatRevision(scope.characterId, scope.chatId) === change.revision
+    ) {
+        const adopted = adoptChange(current, change);
+        if (adopted) {
             const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId)!;
-            const chat = { ...(record.data as Chat), message: current.message };
-            overlayChatMeta(scope, chat);
-            setChats(owner, [chat]);
-            scope.chatRevision = record.revision;
+            setChats(owner, [adopted.chat]);
+            scope.chatRevision = change.revision;
+            overlayChatMeta(scope, adopted.chat);
+            if (scope.charactersKind) {
+                addSpeakers(store, scope.charactersKind, scope, adopted.rows);
+            }
             return true;
         }
     }
@@ -600,14 +779,68 @@ export function refreshChatAfterWrite(
 }
 
 /**
+ * `chat` (the scope's copy at `change.baseRevision`) with `change` laid onto it, as a fresh read at
+ * `change.revision` has it, and the rows it parsed; null when the change does not fit the copy
+ * (`messageOrderAfterChange`: unique message ids holding every removed id, placeable rows, and
+ * `change.count` messages after it).
+ *
+ * The rows the group left alone keep their order and their objects (a by-id group never moves
+ * one); the changed and new rows are parsed from their stored `data` and placed after their
+ * anchors, in the change's order (final position order). The metadata is the stored `meta` when
+ * the group changed it, else the copy's. Nothing of `chat` is changed: the chat object is new and
+ * so is its message list (scripts may hold the previous ones), except that a change without rows or
+ * removals (metadata only, or a `begin`) keeps the list, since nothing in it changed.
+ */
+function adoptChange(chat: Chat, change: ChatWriteChange): { chat: Chat; rows: Message[] } | null {
+    const before = chat.message;
+    if (!Array.isArray(before)) {
+        return null;
+    }
+    let rows: Message[] = [];
+    let message = before;
+    if (change.rows.length > 0 || change.removed.length > 0) {
+        const ids = before.map((entry) => entry?.chatId);
+        const order = messageOrderAfterChange(ids, change);
+        if (!order) {
+            return null;
+        }
+        rows = change.rows.map((row) => JSON.parse(row.data) as Message);
+        // The kept messages come in their order in `before` (their ids are its unique ids).
+        let next = 0;
+        message = order.map((entry) => {
+            if (typeof entry === "number") {
+                return rows[entry];
+            }
+            while (ids[next] !== entry) {
+                next += 1;
+            }
+            return before[next++];
+        });
+    }
+    if (message.length !== change.count) {
+        return null;
+    }
+    const data: Chat =
+        change.meta !== undefined ? { ...(JSON.parse(change.meta) as Chat), message } : { ...chat, message };
+    return { chat: data, rows };
+}
+
+/**
  * Reads into the projection the message speakers (`saying`) it lacks: a message written since the
  * load (by the job, a script, or another tab) may name a character the load did not read.
+ * `messages` are the ones to look through: a whole read's list, or the rows an adopted change
+ * parsed (the copy's other messages were looked through when they were read).
  */
-function addSpeakers(store: ResourceStore, charactersKind: ResourceKind, scope: JobScope, chat: Chat): void {
+function addSpeakers(
+    store: ResourceStore,
+    charactersKind: ResourceKind,
+    scope: JobScope,
+    messages: readonly Message[],
+): void {
     const revisions = (scope.characterRevisions ??= new Map());
     const known = new Set(scope.db.characters.map((entry) => entry?.chaId));
     const missing = new Set<string>();
-    for (const message of chat.message ?? []) {
+    for (const message of messages) {
         if (
             message.saying &&
             !known.has(message.saying) &&

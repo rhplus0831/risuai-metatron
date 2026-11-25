@@ -28,15 +28,17 @@ vi.mock("../../../storage/serverAuth", () => ({
     },
 }));
 
-vi.mock("../../../storage/assetClient", () => ({
-    writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
-        assets.set(key, new Uint8Array(value));
+vi.mock("../../../storage/assetClient", async () =>
+    (await import("../../../storage/tests/assetClientMock")).createAssetClientMock({
+        writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
+            assets.set(key, new Uint8Array(value));
+        }),
+        readAsset: vi.fn(async (key: string) => {
+            const bytes = assets.get(key);
+            return bytes ? Buffer.from(bytes) : null;
+        }),
     }),
-    readAsset: vi.fn(async (key: string) => {
-        const bytes = assets.get(key);
-        return bytes ? Buffer.from(bytes) : null;
-    }),
-}));
+);
 
 vi.mock("uuid", () => ({ v4: vi.fn(() => "test-uuid-1234") }));
 vi.mock(import("src/ts/media"), () => ({ getImageType: vi.fn() }));
@@ -144,15 +146,16 @@ describe("setInlayAsset", () => {
         expect(assets.get(meta.asset!)).toEqual(new TextEncoder().encode("hello"));
     });
 
-    test("writes the same bytes once for two ids and skips the metadata write when nothing changed", async () => {
+    test("writes the same bytes once for two ids and rewrites unchanged metadata on reuse", async () => {
         await I.setInlayAsset("one", image(blobOf("same")));
         await I.setInlayAsset("two", image(blobOf("same")));
         expect(assets.size).toBe(1);
         const revision = fake.get("inlays", "one")!.revision;
         const puts = fake.requests.filter((r) => r.method === "PUT").length;
         await I.setInlayAsset("one", image(blobOf("same")));
-        expect(fake.get("inlays", "one")!.revision).toBe(revision);
-        expect(fake.requests.filter((r) => r.method === "PUT").length).toBe(puts);
+        expect(assets.size).toBe(1);
+        expect(fake.get("inlays", "one")!.revision).not.toBe(revision);
+        expect(fake.requests.filter((r) => r.method === "PUT").length).toBe(puts + 1);
     });
 
     test("stores a signature's JSON in the metadata, without an asset", async () => {
@@ -226,7 +229,7 @@ describe("reads", () => {
         expect(await I.getInlayAsset("nodims")).not.toHaveProperty("width");
     });
 
-    test("getInlayMedia gives the type and asset key without reading bytes; null for a signature or a miss", async () => {
+    test("getInlayMedia gives the type and asset key without reading bytes, a signature without an asset, and null for a miss", async () => {
         // Bytes this tab has not cached: any read would reach the asset store.
         assets.set("assets/elsewhere.png", new TextEncoder().encode("hello"));
         fake.set("inlays", "img", { name: "i", ext: "png", type: "image", asset: "assets/elsewhere.png" });
@@ -234,7 +237,7 @@ describe("reads", () => {
         const { readAsset } = await import("../../../storage/assetClient");
         expect(await I.getInlayMedia("img")).toEqual({ type: "image", asset: "assets/elsewhere.png" });
         expect(readAsset).not.toHaveBeenCalled();
-        expect(await I.getInlayMedia("sig")).toBeNull();
+        expect(await I.getInlayMedia("sig")).toEqual({ type: "signature" });
         expect(await I.getInlayMedia("missing")).toBeNull();
     });
 
@@ -755,4 +758,31 @@ describe("live updates", () => {
         expect((await reading)?.text).toBe("two");
         expect((await I.getInlayMetadata("a"))?.text).toBe("two");
     });
+});
+
+test.each(["present", "swept"])("checks a cached inlay's %s media before writing a new record", async (presence) => {
+    const assetClient = await import("../../../storage/assetClient");
+    await I.setInlayAsset("old", image(blobOf("cached media")));
+    const key = fake.data<InlayResource>("inlays", "old")!.asset!;
+    if (presence === "swept") assets.delete(key);
+    vi.mocked(assetClient.writeAsset).mockClear();
+    vi.mocked(assetClient.missingAssets).mockImplementation(async (names) => {
+        expect(names).toEqual([key]);
+        expect(fake.data("inlays", "new")).toBeNull();
+        return new Set(names.filter((name) => !assets.has(name)));
+    });
+    const fetch = fake.fetch.bind(fake);
+    const write = vi.spyOn(fake, "fetch").mockImplementation(async (url, init) => {
+        if (url.includes("/inlays/new") && init?.method === "PUT")
+            expect(assets.get(key)).toEqual(new TextEncoder().encode("cached media"));
+        return fetch(url, init);
+    });
+    try {
+        await I.setInlayAsset("new", image(blobOf("cached media")));
+        expect(assetClient.missingAssets).toHaveBeenCalledWith([key]);
+        expect(assetClient.writeAsset).toHaveBeenCalledTimes(presence === "swept" ? 1 : 0);
+        expect(fake.data<InlayResource>("inlays", "new")!.asset).toBe(key);
+    } finally {
+        write.mockRestore();
+    }
 });

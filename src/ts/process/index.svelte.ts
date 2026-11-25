@@ -1,14 +1,24 @@
 import { type ChatRef, chatEntry, currentChatRef } from "../storage/chatStore.svelte";
+import { type ContextReport, parseContextReport } from "../../../shared/contextReport.ts";
+import type { GenerationPreviewResult } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import { sendChatOnServer, type ServerSendArg } from "./serverGeneration";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { sendChatOnServer, type ServerSendArg, type ServerSendResult } from "./serverGeneration";
 import { beginLocalSend } from "./localSends";
+import { remoteSendEligible, sendChatRemotely } from "../network/remoteSend";
 
+/**
+ * The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
+ * `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
+ * local send registry (`localSends.ts`), so different chats send at the same time and one chat runs
+ * one send; a preview returns its result to its caller (`previewChat`). Eligible composer sends
+ * can use a remote host; the same reservation covers that wait and any local fallback.
+ * `sendChat` returns success; `previewChat` returns formatted messages or a request body, or null
+ * without a usable preview result. This module neither assembles prompts nor calls providers.
+ */
+
+/** Re-exports the shared prompt message and media shapes. */
 export type { OpenAIChat, MultiModal } from "../../../shared/openai.ts";
-
-// The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
-// `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
-// local send registry (`localSends.ts`), so different chats send at the same time and one chat runs
-// one send; a preview returns its result to its caller (`previewChat`).
 
 type SendChatArg = ServerSendArg & {
     /**
@@ -16,6 +26,22 @@ type SendChatArg = ServerSendArg & {
      * may have been appended under `userMessageId`).
      */
     onServerRefused?: (ambiguous: boolean) => void;
+    /**
+     * Called when the send ended without throwing: `settled` when nothing of it writes to the chat any
+     * more (it did not run, or its job ended; not after a create without an answer or a lost follow),
+     * with the chats a flush refused for a generation waited on. `loreStop` is present when the job
+     * stopped over the lore budget as `stopOverLoreBudget` asked and the caller is to show it
+     * (`ServerSendResult.loreStop`).
+     */
+    onEnd?: (end: {
+        settled: boolean;
+        blockedChats: readonly ChatRef[];
+        outcome: ServerSendResult["outcome"];
+        requestUncertain: boolean;
+        reconciled?: boolean;
+        loreStop?: ServerSendResult["loreStop"];
+        reportShownElsewhere?: true;
+    }) => void;
 };
 
 /**
@@ -38,7 +64,9 @@ export async function sendChat(chatProcessIndex = -1, arg: SendChatArg = {}): Pr
  * stopped).
  */
 export async function previewChat(kind: "preview", target?: ChatRef): Promise<OpenAIChat[] | null>;
+/** Returns the preview request body, or null when no usable result arrived. */
 export async function previewChat(kind: "previewPrompt", target?: ChatRef): Promise<string | null>;
+/** Dispatches the requested preview kind through the same send admission and server-job boundary. */
 export async function previewChat(
     kind: "preview" | "previewPrompt",
     target?: ChatRef,
@@ -50,28 +78,88 @@ export async function previewChat(
         return null;
     }
     if (kind === "preview") {
-        return Array.isArray(result) ? (result as OpenAIChat[]) : null;
+        return previewResult(result)?.messages ?? null;
     }
     return typeof result === "string" ? result : null;
 }
 
+/**
+ * A preview's messages, the context report a send of them would store, and the job's `memoryBlock` as it
+ * came (`memoryBlockEntries` reads it).
+ */
+export type ChatPreviewReport = { messages: OpenAIChat[]; report: ContextReport | null; memoryBlock?: unknown };
+
+/**
+ * `previewChat("preview")` with the job's context report, for a caller that reads what the prompt was
+ * built from. The report is null when it does not parse (`parseContextReport`).
+ */
+export async function previewChatReport(target?: ChatRef): Promise<ChatPreviewReport | null> {
+    const { ok, result } = await runSend({ preview: true, target });
+    const preview = ok ? previewResult(result) : null;
+    return (
+        preview && {
+            messages: preview.messages,
+            report: parseContextReport(preview.context),
+            memoryBlock: preview.memoryBlock,
+        }
+    );
+}
+
+/** A `preview` job's `done.result`, or null for one of another shape. */
+function previewResult(result: unknown): GenerationPreviewResult | null {
+    return isPlainObject(result) && Array.isArray(result.messages) ? (result as GenerationPreviewResult) : null;
+}
+
 async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknown }> {
     if (arg.target && !chatEntry(arg.target)) {
-        arg.onServerRefused?.(false);
+        arg.onServerRefused?.(arg.requestUncertain === true);
+        arg.onEnd?.({
+            settled: !arg.requestUncertain,
+            blockedChats: [],
+            outcome: "refused",
+            requestUncertain: arg.requestUncertain === true,
+        });
         return { ok: false };
     }
     const target = arg.target ?? currentChatRef();
     // The registry itself refuses a second send of the chat (read synchronously, never a derived view).
     const release = beginLocalSend(target);
     if (!release) {
-        arg.onServerRefused?.(false);
+        arg.onServerRefused?.(arg.requestUncertain === true);
+        arg.onEnd?.({
+            settled: !arg.requestUncertain,
+            blockedChats: [],
+            outcome: "refused",
+            requestUncertain: arg.requestUncertain === true,
+        });
         return { ok: false };
     }
     try {
-        const { ok, result, refusal } = await sendChatOnServer(target ? { ...arg, target } : arg);
+        const sendArg = target ? { ...arg, target } : arg;
+        const {
+            ok,
+            result,
+            refusal,
+            settled,
+            blockedChats,
+            outcome,
+            requestUncertain,
+            reconciled,
+            loreStop,
+            reportShownElsewhere,
+        } = await (remoteSendEligible(sendArg) ? sendChatRemotely(sendArg) : sendChatOnServer(sendArg));
         if (refusal) {
             arg.onServerRefused?.(refusal === "ambiguous");
         }
+        arg.onEnd?.({
+            settled,
+            blockedChats: blockedChats ?? [],
+            outcome,
+            requestUncertain: requestUncertain ?? !settled,
+            ...(reconciled !== undefined ? { reconciled } : {}),
+            ...(loreStop ? { loreStop } : {}),
+            ...(reportShownElsewhere ? { reportShownElsewhere } : {}),
+        });
         return { ok, result };
     } finally {
         release();

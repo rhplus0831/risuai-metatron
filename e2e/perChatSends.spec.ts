@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "./fixtures";
 import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { openApp, openCharacterChat } from "../util/playwright/stack.mjs";
 
@@ -11,10 +11,7 @@ import { openApp, openCharacterChat } from "../util/playwright/stack.mjs";
 // - each selected chat's circle shows its own server stage: generating in A while a separate
 //   SupaMemory chat is held at memory, including switches between them;
 // - suggestions per chat: each chat's end requests its own (B's at once, A's when it is selected),
-//   none is requested for a chat while its send runs, and each chat stores only its own;
-// - auto mode in a group chat runs rounds in the chat it started in, ends after the current round
-//   when another chat is selected (the other chat is not sent to), and Stop ends it; its circle
-//   keeps autoload and its green color over the server stage color.
+//   none is requested for a chat while its send runs, and each chat stores only its own.
 // The provider is a local mock that tells the chats apart by their seeded messages; no plugin
 // callback is involved. The characters are deleted and the changed records restored at the end.
 
@@ -22,8 +19,6 @@ import { openApp, openCharacterChat } from "../util/playwright/stack.mjs";
 const MARKERS = {
     a: "alpha seed",
     b: "bravo seed",
-    g1: "gamma one seed",
-    g2: "gamma two seed",
     m: "memory seed",
 } as const;
 type ChatName = keyof typeof MARKERS;
@@ -90,10 +85,7 @@ test.beforeAll(async () => {
         } else if (chat === "m") {
             write("Memory reply.");
         } else {
-            write("Round ");
-            await sleep(300);
-            if (res.destroyed) return;
-            write("reply.");
+            write("Other reply.");
         }
         res.write("data: [DONE]\n\n");
         res.end();
@@ -187,17 +179,20 @@ const blank = (chaId: string, name: string, extra: Record<string, unknown> = {})
     ...extra,
 });
 
-/** What the seed changes besides the characters, to be restored at the end (the specs after this one share the store). */
-let restore: {
-    ui: any;
-    modelPresets: any;
-    modelProfiles: any;
-    providers: any;
-    presets: any;
-    memoryTranslateMedia: any;
-} | null = null;
+/** Undoes the seed; set once it is stored. */
+let undoSeed: (() => Promise<void>) | null = null;
 
-/** Seeds chats A/B, group chats G1/G2, a separate SupaMemory character and prompt preset, and the mock provider. */
+// The specs after this one share the store, also when the test failed: its auto suggestions left on
+// would write to every chat they open.
+test.afterEach(async () => {
+    // A failed test can leave jobs running, and the store refuses to delete a generating character:
+    // ending their provider requests ends them, soon after.
+    provider.closeAllConnections();
+    await expect(async () => undoSeed?.()).toPass({ timeout: 20_000 });
+    undoSeed = null;
+});
+
+/** Seeds chats A/B, a separate SupaMemory character and prompt preset, and the mock provider. */
 async function seed(s: Session) {
     await s.open();
     // Settle boot's writes and leave the app so its save loop cannot race the API seed revisions.
@@ -215,7 +210,7 @@ async function seed(s: Session) {
     const personas = (await s.api("/api/resources/personas/main")).body;
     const providers = (await s.api("/api/resources/providers/main")).body;
     const memoryTranslateMedia = (await s.api("/api/resources/memoryTranslateMedia/main")).body;
-    restore = {
+    const restore = {
         ui: ui.data,
         modelPresets: modelPresets.data,
         modelProfiles: modelProfiles.data,
@@ -224,36 +219,12 @@ async function seed(s: Session) {
         memoryTranslateMedia: memoryTranslateMedia.data,
     };
     const chaId = randomUUID();
-    const memberA = randomUUID();
-    const memberB = randomUUID();
-    const groupId = randomUUID();
     const memoryId = randomUUID();
     const memoryPromptId = randomUUID();
     const characters = [
         blank(chaId, `Pair ${chaId.slice(0, 6)}`),
-        blank(memberA, "Member Ann"),
-        blank(memberB, "Member Bo"),
         blank(memoryId, `Memory ${memoryId.slice(0, 6)}`, { supaMemory: true }),
     ];
-    const group = {
-        chaId: groupId,
-        type: "group",
-        name: `Crew ${groupId.slice(0, 6)}`,
-        firstMessage: "",
-        characters: [memberA, memberB],
-        characterTalks: [1, 1],
-        characterActive: [true, true],
-        orderByOrder: true,
-        image: "",
-        desc: "",
-        globalLore: [],
-        emotionImages: [],
-        customscript: [],
-        viewScreen: "none",
-        chatFolders: [],
-        alternateGreetings: [],
-        tags: [],
-    };
     // A profile on the mock provider, named by the first model preset's main and sub slots (the
     // suggestions use the sub slot).
     const model = { aiModel: "reverse_proxy", forceReplaceUrl: providerUrl, customProxyRequestModel: "mock" };
@@ -273,12 +244,7 @@ async function seed(s: Session) {
                     ...binding,
                     message: [
                         { role: "user", data: `${MARKERS[id]} question`, chatId: `${id}-m0` },
-                        {
-                            role: "char",
-                            data: `${MARKERS[id]} answer`,
-                            chatId: `${id}-m1`,
-                            ...(characterId === groupId ? { saying: memberA } : {}),
-                        },
+                        { role: "char", data: `${MARKERS[id]} answer`, chatId: `${id}-m1` },
                     ],
                     ...extra,
                 },
@@ -334,19 +300,16 @@ async function seed(s: Session) {
                     data: { ...providers.data, useStreaming: true, customTokenizer: "tik" },
                 },
                 ...characters.map((c) => ({ kind: "characters", id: c.chaId, baseRevision: null, data: c })),
-                { kind: "characters", id: groupId, baseRevision: null, data: group },
                 {
                     kind: "characterOrder",
                     id: "main",
                     baseRevision: order.revision,
-                    data: [...(Array.isArray(order.data) ? order.data : []), chaId, groupId, memoryId],
+                    data: [...(Array.isArray(order.data) ? order.data : []), chaId, memoryId],
                 },
             ],
             chats: [
                 chat(chaId, "a"),
                 chat(chaId, "b"),
-                chat(groupId, "g1"),
-                chat(groupId, "g2"),
                 // Only this chat uses the smaller context; the existing chats keep their prompt bindings.
                 chat(memoryId, "m", {
                     promptPresetId: memoryPromptId,
@@ -362,7 +325,29 @@ async function seed(s: Session) {
         }),
     });
     expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
-    return { chaId, groupId, memoryId, members: [memberA, memberB] };
+    // The characters (their chats and order go with them), and the records the seed changed as they
+    // were before it.
+    undoSeed = async () => {
+        const ops: unknown[] = [];
+        for (const id of [chaId, memoryId]) {
+            const record = (await s.api(`/api/resources/characters/${id}`)).body;
+            ops.push({ kind: "characters", id, baseRevision: record.revision, delete: true });
+        }
+        for (const kind of [
+            "ui",
+            "modelPresets",
+            "modelProfiles",
+            "providers",
+            "presets",
+            "memoryTranslateMedia",
+        ] as const) {
+            const now = (await s.api(`/api/resources/${kind}/main`)).body;
+            ops.push({ kind, id: "main", baseRevision: now.revision, data: restore[kind] });
+        }
+        const removed = await s.api("/api/resources/batch", { method: "POST", body: JSON.stringify({ ops }) });
+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    };
+    return { chaId, memoryId };
 }
 
 const selectChat = (page: Page, chatId: string) =>
@@ -384,12 +369,9 @@ async function stored(s: Session, characterId: string, id: string): Promise<{ me
     };
 }
 
-test("two chats of one tab send at once: per-chat Stop, replies, suggestions, and auto mode", async ({
-    context,
-    baseURL,
-}) => {
+test("two chats of one tab send at once: per-chat Stop, replies, and suggestions", async ({ context, baseURL }) => {
     const s = await session(context, baseURL!);
-    const { chaId, groupId, memoryId, members } = await seed(s);
+    const { chaId, memoryId } = await seed(s);
     await s.open();
     const page = s.page;
     const stop = page.locator('button[aria-labelledby="cancel"]');
@@ -489,81 +471,5 @@ test("two chats of one tab send at once: per-chat Stop, replies, suggestions, an
     expect(a.messages.some((text) => text.includes("Bravo"))).toBe(false);
     expect(b.messages.some((text) => text.includes("Alpha"))).toBe(false);
 
-    // Auto mode in group chat G1: rounds of one reply per member, in G1 only.
-    await openCharacterChat(page, groupId);
-    await page.locator(".default-chat-screen").waitFor({ timeout: 20_000 });
-    await selectChat(page, "g1");
-    await expect(page.locator(".risu-chat[data-chat-id='g1-m1']")).toBeVisible({ timeout: 20_000 });
-    // The composer's menu toggles; it stays open after its item is clicked.
-    const menu = composer.locator("xpath=following-sibling::button[.//*[contains(@class, 'lucide-menu')]]");
-    const autoMode = page.getByText("Auto Mode", { exact: true });
-    const toggleAutoMode = async () => {
-        if (!(await autoMode.isVisible())) await menu.click();
-        await autoMode.click();
-    };
-    await toggleAutoMode();
-    await expect.poll(() => sends("g1").length, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
-    await expect(circle).toHaveClass(/\bautoload\b/);
-    await expect(circle).toHaveClass(/\bchat-process-stage-[1-4]\b/);
-    await expect
-        .poll(() =>
-            circle.evaluate((element) => ({
-                autoload: element.classList.contains("autoload"),
-                activeStage: /\bchat-process-stage-[1-4]\b/.test(element.className),
-                borderTopColor: getComputedStyle(element).borderTopColor,
-            })),
-        )
-        .toEqual({ autoload: true, activeStage: true, borderTopColor: "rgb(16, 185, 129)" });
-
-    // Switching to G2 ends the run after the current round; G2 is not sent to and shows no Stop.
-    await selectChat(page, "g2");
-    await expect(page.locator(".risu-chat[data-chat-id='g2-m1']")).toBeVisible({ timeout: 20_000 });
-    await expect(stop).toHaveCount(0);
-    // One member's stream can close before the next member's request in the same round starts.
-    await expect.poll(() => sends("g1").length % members.length, { timeout: 30_000 }).toBe(0);
-    await expect.poll(() => sends("g1").every((entry) => entry.closed), { timeout: 30_000 }).toBe(true);
-    const roundsEnded = sends("g1").length;
-    expect(roundsEnded % members.length).toBe(0);
-    await page.waitForTimeout(3000);
-    expect(sends("g1").length).toBe(roundsEnded);
-    expect(sends("g2").length).toBe(0);
-
-    // Back in G1 the run does not resume; a new run is ended by Stop.
-    await selectChat(page, "g1");
-    await expect(page.locator(".risu-chat[data-chat-id='g1-m1']")).toBeVisible({ timeout: 20_000 });
-    await expect(stop).toHaveCount(0);
-    await page.waitForTimeout(1500);
-    expect(sends("g1").length).toBe(roundsEnded);
-    await toggleAutoMode();
-    await expect.poll(() => sends("g1").length, { timeout: 30_000 }).toBeGreaterThan(roundsEnded);
-    await stop.click();
-    await expect(stop).toHaveCount(0, { timeout: 20_000 });
-    await expect.poll(() => sends("g1").every((entry) => entry.closed), { timeout: 30_000 }).toBe(true);
-    const stopped = sends("g1").length;
-    await page.waitForTimeout(3000);
-    expect(sends("g1").length).toBe(stopped);
-    expect(sends("g2").length).toBe(0);
-
     expect(s.errors).toEqual([]);
-
-    // Cleanup: the characters (their chats and order go with them), and the records the seed changed
-    // as they were before it (the specs after this one share the store).
-    const ops: unknown[] = [];
-    for (const id of [chaId, groupId, memoryId, ...members]) {
-        const record = (await s.api(`/api/resources/characters/${id}`)).body;
-        ops.push({ kind: "characters", id, baseRevision: record.revision, delete: true });
-    }
-    for (const kind of [
-        "ui",
-        "modelPresets",
-        "modelProfiles",
-        "providers",
-        "presets",
-        "memoryTranslateMedia",
-    ] as const) {
-        const now = (await s.api(`/api/resources/${kind}/main`)).body;
-        ops.push({ kind, id: "main", baseRevision: now.revision, data: restore![kind] });
-    }
-    const removed = await s.api("/api/resources/batch", { method: "POST", body: JSON.stringify({ ops }) });
-    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
 });

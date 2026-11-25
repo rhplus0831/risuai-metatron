@@ -15,6 +15,14 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import sendSound from "../../etc/send.mp3";
 
+    /**
+     * Creates subtitles from an LLM's audio/video input, OpenAI Whisper via
+     * `src/ts/network/auxFetch.ts`, or local Transformers Whisper. Whisper output then
+     * passes through an LLM translation request; the result supports WebVTT preview
+     * and WebVTT/SRT download.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 9.
+     */
+
     let LLMModePrompt =
         "Transcribe and create a caption and timestamp of it, according to the user's audio or video input. inside a markdown code block. (prefix ```webvtt / postfix ```)\n\nFormat\n```\n[TIME] CONTENT\n```\n\nExample\n```\n[00:00] Hildy!\n[00:01] How are you?\n[00:03] Tell me, is the lord of the universe in?\n[00:07] Somebody must've stolen the crown jewels\n```\n\nStep 2. Generate another subtitle, this time, as a translation to {{slot}}, with same format with Step 1., using step 1 as ref.\n\n The translation must be in natural {{slot}}.\n\n Now, start (Hint: media length is {{slot::time}})";
     let WhisperModePrompt =

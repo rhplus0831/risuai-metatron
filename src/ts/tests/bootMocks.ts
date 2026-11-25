@@ -11,6 +11,8 @@ import {
     ClaudeParameters,
 } from "../model/types";
 import { createAlertMock } from "./alertMock";
+import type { ChatRef } from "../storage/chatStore.svelte";
+import { createAssetClientMock } from "../storage/tests/assetClientMock";
 import { createServerAuthMock } from "../storage/tests/serverAuthMock";
 import { createServerCommandsMock } from "../process/tests/serverCommandsMock";
 
@@ -48,20 +50,18 @@ export function createBootMock<K extends keyof BootModules>(
         serverAuth: createServerAuthMock(),
         alert: createAlertMock(),
         serverCommands: createServerCommandsMock(),
-        assetClient: {
-            writeAsset: vi.fn<BootModules["assetClient"]["writeAsset"]>(),
+        assetClient: createAssetClientMock({
             readAsset: vi.fn<BootModules["assetClient"]["readAsset"]>(async () => Buffer.from([137, 80, 78, 71])),
-            writeAssets: vi.fn<BootModules["assetClient"]["writeAssets"]>(),
-            readAssets: vi.fn<BootModules["assetClient"]["readAssets"]>(),
-            MAX_ASSET_ATTEMPTS: 8,
-            BASE_RETRY_DELAY_MS: 1000,
-            MAX_BACKOFF_MS: 30000,
-            MAX_RETRY_AFTER_MS: 60000,
-            ASSET_BATCH_CLIENT_BYTES: 64 * 1024 * 1024,
-            ASSET_BATCH_CLIENT_RECORDS: 500,
-        },
+        }),
         resourceSync: {
             seedResources: vi.fn<BootModules["resourceSync"]["seedResources"]>(),
+            heldRecordSnapshot: vi.fn<BootModules["resourceSync"]["heldRecordSnapshot"]>(),
+            watchRecoverySave: vi.fn<BootModules["resourceSync"]["watchRecoverySave"]>(),
+            adoptRecoveredRecord: vi.fn<BootModules["resourceSync"]["adoptRecoveredRecord"]>(),
+            adoptRecoveredChat: vi.fn<BootModules["resourceSync"]["adoptRecoveredChat"]>(),
+            MAX_BATCH_OPERATIONS: 5000,
+            sameJson: vi.fn<BootModules["resourceSync"]["sameJson"]>(),
+            stopResourceSync: vi.fn<BootModules["resourceSync"]["stopResourceSync"]>(),
             onRemoteRecordApplied: vi.fn<BootModules["resourceSync"]["onRemoteRecordApplied"]>(),
             onPluginStorageDiscarded: vi.fn<BootModules["resourceSync"]["onPluginStorageDiscarded"]>(),
             refusedItems: vi.fn<BootModules["resourceSync"]["refusedItems"]>(),
@@ -85,9 +85,16 @@ export function createBootMock<K extends keyof BootModules>(
             beginMutationScope: vi.fn<BootModules["resourceSync"]["beginMutationScope"]>(),
             generatingNoticeCount: vi.fn<BootModules["resourceSync"]["generatingNoticeCount"]>(),
             flushResources: vi.fn<BootModules["resourceSync"]["flushResources"]>(),
+            holdUnloadWarning: vi.fn<BootModules["resourceSync"]["holdUnloadWarning"]>(() => () => {}),
+            resourceSyncIdle: vi.fn<BootModules["resourceSync"]["resourceSyncIdle"]>(() => true),
             startResourceSync: vi.fn<BootModules["resourceSync"]["startResourceSync"]>(),
             saving: { state: false },
-            GenerationBlockedError: class extends Error {},
+            unconfirmedSave: { state: false },
+            GenerationBlockedError: class extends Error {
+                constructor(readonly chats: readonly ChatRef[] = []) {
+                    super();
+                }
+            },
         },
         characterCards: {
             importCharacter: vi.fn<BootModules["characterCards"]["importCharacter"]>(),
@@ -95,6 +102,7 @@ export function createBootMock<K extends keyof BootModules>(
                 BootModules["characterCards"]["importCharacterProcess"]
             >() as BootModules["characterCards"]["importCharacterProcess"],
             characterURLImport: vi.fn<BootModules["characterCards"]["characterURLImport"]>(),
+            importDroppedFile: vi.fn<BootModules["characterCards"]["importDroppedFile"]>(),
             exportChar: vi.fn<BootModules["characterCards"]["exportChar"]>(),
             exportCharacterCard: vi.fn<BootModules["characterCards"]["exportCharacterCard"]>(),
             createBaseV3: vi.fn<BootModules["characterCards"]["createBaseV3"]>(),
@@ -113,20 +121,30 @@ export function createBootMock<K extends keyof BootModules>(
             updatePlugin: vi.fn<BootModules["plugins"]["updatePlugin"]>(),
             importPlugin: vi.fn<BootModules["plugins"]["importPlugin"]>(),
             loadPlugins: vi.fn<BootModules["plugins"]["loadPlugins"]>(),
+            pluginsStarted: vi.fn<BootModules["plugins"]["pluginsStarted"]>(async () => {}),
             loadPluginsForBoot: vi.fn<BootModules["plugins"]["loadPluginsForBoot"]>(async () => ({
                 guestsStarted: Promise.resolve(true),
                 stopFollowingGuests: vi.fn(),
             })),
             handlePluginInstallViaPlugin: vi.fn<BootModules["plugins"]["handlePluginInstallViaPlugin"]>(),
             checkPluginUpdate: vi.fn<BootModules["plugins"]["checkPluginUpdate"]>(),
+            reloadPluginsWhenIdle: vi.fn<BootModules["plugins"]["reloadPluginsWhenIdle"]>(async () => "applied"),
+            bootPluginLoadOutcome: Promise.resolve("applied"),
             allowedDbKeys: [],
         },
         permissionStore: {
+            seedPluginPermissions: vi.fn<BootModules["permissionStore"]["seedPluginPermissions"]>(),
             loadPluginPermissions: vi.fn<BootModules["permissionStore"]["loadPluginPermissions"]>(),
             hasPermissionGrant: vi.fn<BootModules["permissionStore"]["hasPermissionGrant"]>(),
+            hasStandingGrant: vi.fn<BootModules["permissionStore"]["hasStandingGrant"]>(),
             getLastGrantTime: vi.fn<BootModules["permissionStore"]["getLastGrantTime"]>(),
+            getPermissionResetCount: vi.fn<BootModules["permissionStore"]["getPermissionResetCount"]>(),
+            StalePermissionListError: class StalePermissionListError extends Error {},
             recordPermissionGrants: vi.fn<BootModules["permissionStore"]["recordPermissionGrants"]>(),
             refreshPluginPermissions: vi.fn<BootModules["permissionStore"]["refreshPluginPermissions"]>(),
+            revokePermissionGrants: vi.fn<BootModules["permissionStore"]["revokePermissionGrants"]>(),
+            setStandingPermissionGrants: vi.fn<BootModules["permissionStore"]["setStandingPermissionGrants"]>(),
+            onPermissionGrantsRemoved: vi.fn<BootModules["permissionStore"]["onPermissionGrantsRemoved"]>(),
         },
         router: {
             browserHistory: vi.fn<BootModules["router"]["browserHistory"]>(),
@@ -144,6 +162,7 @@ export function createBootMock<K extends keyof BootModules>(
             exportModuleLegacy: vi.fn<BootModules["modules"]["exportModuleLegacy"]>(),
             readModule: vi.fn<BootModules["modules"]["readModule"]>(),
             prepareModuleImport: vi.fn<BootModules["modules"]["prepareModuleImport"]>(),
+            stripImportedModuleMcp: vi.fn<BootModules["modules"]["stripImportedModuleMcp"]>(),
             importModuleFile: vi.fn<BootModules["modules"]["importModuleFile"]>(),
             serverImportErrorMessage: vi.fn<BootModules["modules"]["serverImportErrorMessage"]>(),
             addImportedModule: vi.fn<BootModules["modules"]["addImportedModule"]>(),
@@ -160,11 +179,11 @@ export function createBootMock<K extends keyof BootModules>(
         },
         parser: {
             resetAssetsCache: vi.fn<BootModules["parser"]["resetAssetsCache"]>(),
+            invalidateFileSrcCache: vi.fn<BootModules["parser"]["invalidateFileSrcCache"]>(),
             getDistance: vi.fn<BootModules["parser"]["getDistance"]>(),
             ParseMarkdown: vi.fn<BootModules["parser"]["ParseMarkdown"]>(),
             trimMarkdown: vi.fn<BootModules["parser"]["trimMarkdown"]>(),
             trimMarkdownSharingStyles: vi.fn<BootModules["parser"]["trimMarkdownSharingStyles"]>(),
-            addMetadataToElement: vi.fn<BootModules["parser"]["addMetadataToElement"]>(),
             postTranslationParse: vi.fn<BootModules["parser"]["postTranslationParse"]>(),
             parseMarkdownSafe: vi.fn<BootModules["parser"]["parseMarkdownSafe"]>(),
             hasher: vi.fn<BootModules["parser"]["hasher"]>(),
@@ -232,8 +251,14 @@ export function createBootMock<K extends keyof BootModules>(
             LLMModels: [],
         },
         eventFeed: {
+            serverRerollsInPlace: vi.fn(() => false),
+            awaitServerRerollsInPlace: vi.fn(async () => false),
+            REROLL_HELLO_WAIT_MS: 5_000,
             startEventFeed: vi.fn<BootModules["eventFeed"]["startEventFeed"]>(),
             stopEventFeed: vi.fn<BootModules["eventFeed"]["stopEventFeed"]>(),
+            liveFeedCurrent: vi.fn<BootModules["eventFeed"]["liveFeedCurrent"]>(() => false),
+            RECONCILE_DEADLINE_MS: 30_000,
+            feedConnected: writable(false),
         },
         pushNotifications: {
             reconcilePush: vi.fn<BootModules["pushNotifications"]["reconcilePush"]>(),

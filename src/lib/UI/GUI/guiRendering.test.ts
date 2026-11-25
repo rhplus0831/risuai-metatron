@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { get } from "svelte/store";
 import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
+import Alert from "./Alert.svelte";
 import Button from "./Button.svelte";
 import CheckInput from "./CheckInput.svelte";
 import IconButton from "./IconButton.svelte";
@@ -15,6 +16,7 @@ import SegmentedControl from "./SegmentedControl.svelte";
 import SelectInput from "./SelectInput.svelte";
 import SliderInput from "./SliderInput.svelte";
 import TextInput from "./TextInput.svelte";
+import { reactiveProps } from "../tests/reactiveProps.svelte";
 
 type GuiComponent = Parameters<typeof mount>[0];
 type GuiProps = Record<string, unknown>;
@@ -69,6 +71,22 @@ afterEach(async () => {
 });
 
 describe("GUI rendering without a browser session", () => {
+    it("marks TextInput as plugin-secret only when requested, with visible or hidden text", async () => {
+        const inputs = [false, true].flatMap((hideText) =>
+            [undefined, true].map((secret) => renderGui(TextInput, { value: "credential", hideText, secret })),
+        );
+        await tick();
+        expect(
+            inputs.map((view) => view.getBySelector<HTMLInputElement>("input").hasAttribute("data-plugin-secret")),
+        ).toEqual([false, true, false, true]);
+        expect(inputs.map((view) => view.getBySelector<HTMLInputElement>("input").type)).toEqual([
+            "text",
+            "text",
+            "password",
+            "password",
+        ]);
+    });
+
     it("inverts multilingual prose in dark mode and removes the inversion in light mode", async () => {
         const originalScheme = get(ColorSchemeTypeStore);
         try {
@@ -90,6 +108,45 @@ describe("GUI rendering without a browser session", () => {
         } finally {
             ColorSchemeTypeStore.set(originalScheme);
         }
+    });
+
+    it("renders Alert with its status tone, live-region role, title, body, and actions", () => {
+        const warning = renderGui(Alert, {
+            status: "warning",
+            title: "Check the template",
+            children: htmlSnippet("<span>Main prompt is missing</span>"),
+            actions: htmlSnippet("<button>Fix</button>"),
+        });
+        const error = renderGui(Alert, { status: "error", children: htmlSnippet("<span>Failed</span>") });
+        const note = renderGui(Alert, {
+            status: "error",
+            role: "note",
+            showIcon: false,
+            size: "sm",
+            className: "my-3",
+            children: htmlSnippet("<span>Static</span>"),
+        });
+
+        const warningBox = warning.getBySelector('[data-risu-alert="warning"]');
+        expect(warningBox.getAttribute("role")).toBe("status");
+        expect(warningBox.classList.contains("border-warning-500/50")).toBe(true);
+        expect(warningBox.classList.contains("p-3")).toBe(true);
+        expect(warningBox.querySelector("svg")?.classList.contains("text-warning-500")).toBe(true);
+        expect(warningBox.textContent?.replace(/\s+/g, " ").trim()).toBe(
+            "Check the template Main prompt is missing Fix",
+        );
+        expect(warning.getBySelector("button").textContent).toBe("Fix");
+
+        const errorBox = error.getBySelector('[data-risu-alert="error"]');
+        expect(errorBox.getAttribute("role")).toBe("alert");
+        expect(errorBox.classList.contains("border-danger-500/50")).toBe(true);
+        expect(errorBox.querySelector("button")).toBeNull();
+
+        const noteBox = note.getBySelector('[data-risu-alert="error"]');
+        expect(noteBox.getAttribute("role")).toBe("note");
+        expect(noteBox.querySelector("svg")).toBeNull();
+        expect(noteBox.classList.contains("p-2")).toBe(true);
+        expect(noteBox.classList.contains("my-3")).toBe(true);
     });
 
     it("renders button primitives with snippet content, variants, and disabled behavior", async () => {
@@ -190,6 +247,144 @@ describe("GUI rendering without a browser session", () => {
         expect(textInput.value).toBe("changed value");
         expect(onNumberChange).toHaveBeenCalledTimes(1);
         expect(numberInput.value).toBe("7");
+    });
+
+    it("keeps a NumberInput entry its binding refuses until the box is committed or left", async () => {
+        // A function binding whose setter keeps only finite numbers, as the memory token fields do.
+        const record = reactiveProps({ stored: 39 });
+        const view = renderGui(NumberInput, {
+            id: "gui-render-refusing",
+            get value() {
+                return record.stored;
+            },
+            set value(next: number | null) {
+                if (typeof next === "number" && Number.isFinite(next)) record.stored = next;
+            },
+        });
+        const input = view.getBySelector<HTMLInputElement>("input#gui-render-refusing");
+        expect(input.value).toBe("39");
+
+        // Two backspaces: "3" is written, the empty box is refused but stays empty while focused.
+        input.focus();
+        await inputValue(input, "3");
+        expect(record.stored).toBe(3);
+        await inputValue(input, "");
+        await tick();
+        expect(record.stored).toBe(3);
+        expect(input.value).toBe("");
+
+        await inputValue(input, "5");
+        expect(record.stored).toBe(5);
+        expect(input.value).toBe("5");
+
+        // Committing a refused entry shows the stored value again.
+        await inputValue(input, "");
+        await changeValue(input, "");
+        expect(input.value).toBe("5");
+
+        // Leaving the box does too, and an outside change shows once the box is not being edited.
+        await inputValue(input, "");
+        input.blur();
+        await tick();
+        expect(input.value).toBe("5");
+        record.stored = 12;
+        await tick();
+        expect(input.value).toBe("12");
+    });
+
+    it("shows a NumberInput value changed from outside while the box has focus", async () => {
+        // A binding whose owner changes under a focused box, as a hotkey preset switch does.
+        const record = reactiveProps({ stored: 555 });
+        const view = renderGui(NumberInput, {
+            id: "gui-render-outside",
+            get value() {
+                return record.stored;
+            },
+            set value(next: number | null) {
+                if (typeof next === "number" && Number.isFinite(next)) record.stored = next;
+            },
+        });
+        const input = view.getBySelector<HTMLInputElement>("input#gui-render-outside");
+
+        input.focus();
+        await inputValue(input, "777");
+        expect(record.stored).toBe(777);
+        record.stored = 500;
+        await tick();
+        expect(input.value).toBe("500");
+
+        // The box is still being edited: a refused entry stays as typed, and an accepted one is written.
+        await inputValue(input, "");
+        await tick();
+        expect(record.stored).toBe(500);
+        expect(input.value).toBe("");
+        await inputValue(input, "6");
+        expect(record.stored).toBe(6);
+        expect(input.value).toBe("6");
+
+        // An outside change also replaces a refused entry.
+        await inputValue(input, "");
+        record.stored = 40;
+        await tick();
+        expect(input.value).toBe("40");
+    });
+
+    it("retires a refused NumberInput draft when outside updates return to the earlier number", async () => {
+        const record = reactiveProps({ stored: 39 });
+        const view = renderGui(NumberInput, {
+            get value() {
+                return record.stored;
+            },
+            set value(next: number | null) {
+                if (typeof next === "number" && Number.isFinite(next)) record.stored = next;
+            },
+        });
+        const input = view.getBySelector<HTMLInputElement>("input");
+        input.focus();
+        await inputValue(input, "");
+        expect(record.stored).toBe(39);
+        expect(input.value).toBe("");
+
+        for (const outside of [500, 39]) {
+            record.stored = outside;
+            await tick();
+            expect(document.activeElement).toBe(input);
+            expect(input.value).toBe(String(outside));
+        }
+    });
+
+    it("mounts absent and explicit checkbox values without setting them, and writes once per click", async () => {
+        for (const initial of [undefined, false, true]) {
+            const record = reactiveProps({ stored: initial });
+            const write = vi.fn((next: boolean) => (record.stored = next));
+            const onChange = vi.fn();
+            const view = renderGui(CheckInput, {
+                get check() {
+                    return record.stored;
+                },
+                set check(next: boolean) {
+                    write(next);
+                },
+                onChange,
+            });
+            await tick();
+            const box = view.getBySelector<HTMLInputElement>('input[type="checkbox"]');
+            expect(box.checked).toBe(initial ?? false);
+            expect(record.stored).toBe(initial);
+            expect(write).not.toHaveBeenCalled();
+            expect(onChange).not.toHaveBeenCalled();
+
+            for (const [index, expected] of [!initial, !!initial].entries()) {
+                box.click();
+                await tick();
+                expect(box.checked).toBe(expected);
+                expect(record.stored).toBe(expected);
+                expect(write).toHaveBeenCalledTimes(index + 1);
+                expect(write).toHaveBeenLastCalledWith(expected);
+                expect(onChange).toHaveBeenCalledTimes(index + 1);
+                expect(onChange).toHaveBeenLastCalledWith(expected);
+            }
+        }
     });
 
     it("renders checkbox and optional input states without app bootstrapping", async () => {

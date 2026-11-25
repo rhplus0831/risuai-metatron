@@ -18,6 +18,8 @@ import {
  * it one top-level task at a time, plus the regex tasks that task's own host calls spawn; those
  * run while the Lua thread awaits, since the worker's event loop is free then.
  */
+
+/** The pool's startup data for one script worker, including its synchronous host channel and limits. */
 export type ScriptWorkerData = {
     jsonLuaPath: string;
     syncPort: MessagePort;

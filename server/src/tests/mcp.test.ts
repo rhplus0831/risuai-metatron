@@ -1,4 +1,10 @@
 // @vitest-environment node
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createSnapshotManager } from "../data/snapshots.ts";
+import { createGenerationLock } from "../jobs/generationLock.ts";
+import { installSnapshot } from "./stagedRestore.ts";
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,11 +15,12 @@ import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createChannelHub } from "../jobs/channel.ts";
-import type { RunningJob } from "../jobs/generationJobs.ts";
+import { createGenerationJobs, type RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope, type JobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings, LuaJobFatalError } from "../lua/bindings.ts";
 import {
     MAX_MCP_MESSAGE_BYTES,
+    MCP_OAUTH_TIMEOUT_MS,
     MAX_TOOL_LIST_PAGES,
     MAX_TOOL_LIST_TOOLS,
     McpClient,
@@ -278,6 +285,77 @@ afterEach(() => {
 });
 
 describe("McpClient over streamable HTTP", () => {
+    it("holds at most four ping replies per client across SSE transports and reuses settled slots", async () => {
+        for (const transport of ["streamable", "legacy"] as const) {
+            const held: { resolve(response: Response): void; reject(error: Error): void }[] = [];
+            let active = 0;
+            let peak = 0;
+            let wave = 0;
+            const remote = legacy();
+            const pings = () =>
+                Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: `ping-${wave}-${i}`, method: "ping" }));
+            const base = streamable({
+                onCall: (call) => {
+                    const stream = sseStream(call.signal);
+                    for (const ping of pings()) stream.event(ping);
+                    stream.event({ jsonrpc: "2.0", id: call.rpc.id, result: { content: [] } });
+                    stream.close();
+                    return stream.response;
+                },
+            });
+            const server = recorder((call, index) => {
+                if (call.rpc?.id !== undefined && !call.rpc.method) {
+                    expect(call.rpc).toEqual({ jsonrpc: "2.0", id: expect.stringMatching(/^ping-/), result: {} });
+                    active++;
+                    peak = Math.max(peak, active);
+                    return new Promise<Response>((resolve, reject) => {
+                        let settled = false;
+                        held.push({
+                            resolve: (response) => {
+                                if (!settled) active--;
+                                settled = true;
+                                resolve(response);
+                            },
+                            reject: (error) => {
+                                if (!settled) active--;
+                                settled = true;
+                                reject(error);
+                            },
+                        });
+                    });
+                }
+                if (transport === "legacy") {
+                    if (call.rpc?.method === "tools/call") {
+                        for (const ping of pings()) remote.session.event(ping);
+                    }
+                    return remote.handler(call, index);
+                }
+                return base(call, index);
+            });
+            const mcp = client(server.fetchImpl);
+            try {
+                await mcp.callTool("echo", {}, ioOf());
+                // The answer follows all eight pings; none of their fetches has settled.
+                expect(held).toHaveLength(4);
+                expect(active).toBe(4);
+                held[0].resolve(accepted());
+                held[1].reject(new Error("reply failed"));
+                // Only local promise continuations run: no clock or network polling.
+                for (let i = 0; i < 20; i++) await Promise.resolve();
+                expect(held).toHaveLength(4);
+                wave++;
+                await mcp.callTool("echo", {}, ioOf());
+                expect(held).toHaveLength(6);
+                expect(active).toBe(4);
+                expect(peak).toBe(4);
+                expect(mcp.isClosed).toBe(false);
+            } finally {
+                for (const reply of held) reply.resolve(accepted());
+                mcp.destroy();
+            }
+        }
+    });
+
     it("handshakes once with the tab client's bodies and headers, lists every page, caches the list, and calls a tool over JSON, an event stream, and an RPC error", async () => {
         const server = recorder(
             streamable({
@@ -465,6 +543,50 @@ describe("McpClient over streamable HTTP", () => {
             mcp.destroy();
         }
         expect(initializes).toBe(4);
+    });
+
+    it("rejects a failed later tool-list page and retries every page before caching a complete list", async () => {
+        const failures: ((call: Call) => Response)[] = [
+            (call) => rpcAnswer(call, { error: { code: -32603, message: "listing failed" } }),
+            (call) => rpcAnswer(call, { error: { code: -32603, message: "listing failed" }, result: { tools: [] } }),
+            (call) => json({ jsonrpc: "2.0", id: call.rpc.id, result: { tools: [] } }, 503),
+            (call) => rpcAnswer(call, { result: {} }),
+            (call) => rpcAnswer(call, { result: { tools: {} } }),
+        ];
+        for (const fail of failures) {
+            let healthy = false;
+            const pages: string[] = [];
+            const server = recorder((call) => {
+                if (call.rpc?.id === undefined) return accepted();
+                if (call.rpc.method === "initialize") return rpcAnswer(call, { result: INFO });
+                const cursor = call.rpc.params?.cursor ?? "first";
+                pages.push(cursor);
+                if (cursor === "first") {
+                    return rpcAnswer(call, { result: { tools: [tool("alpha")], nextCursor: "second" } });
+                }
+                return healthy ? rpcAnswer(call, { result: { tools: [tool("beta")] } }) : fail(call);
+            });
+            const mcp = client(server.fetchImpl);
+            try {
+                await expect(mcp.getToolList(ioOf())).rejects.toThrow("Failed to list MCP tools");
+                expect(pages).toEqual(["first", "second"]);
+                healthy = true;
+                expect(await mcp.getToolList(ioOf())).toEqual([tool("alpha"), tool("beta")]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+                expect(await mcp.getToolList(ioOf())).toEqual([tool("alpha"), tool("beta")]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+            } finally {
+                mcp.destroy();
+            }
+        }
+        const server = recorder(streamable({ pages: [[]] }));
+        const mcp = client(server.fetchImpl);
+        try {
+            expect(await mcp.getToolList(ioOf())).toEqual([]);
+            expect(methods(server.calls)).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+        } finally {
+            mcp.destroy();
+        }
     });
 
     it("bounds the tool list: a repeated cursor, too many pages, too many tools; a malformed descriptor is left out and a server without tools offers none", async () => {
@@ -659,6 +781,8 @@ describe("McpClient OAuth", () => {
     type OAuthOptions = {
         /** What the refresh grant answers. */
         refresh?: "ok" | "empty" | "html" | "denied" | "network";
+        /** The authorization-code exchange answer. */
+        exchange?: Record<string, unknown>;
         /** The server keeps answering 401 after the login. */
         stillUnauthorized?: boolean;
         /** Discovery answers these endpoints (404 when `discovery` is false). */
@@ -690,7 +814,7 @@ describe("McpClient OAuth", () => {
                     }
                 }
                 exchanges.push(form);
-                return json({ access_token: "logged-in", refresh_token: "rt-new" });
+                return json(options.exchange ?? { access_token: "logged-in", refresh_token: "rt-new" });
             }
             if (call.url === "http://mcp.test/.well-known/oauth-authorization-server") {
                 return options.discovery === false
@@ -741,6 +865,63 @@ describe("McpClient OAuth", () => {
         expect(askCode).not.toHaveBeenCalled();
         expect(priv(mcp).accessToken).toBe("refreshed");
         mcp.destroy();
+    });
+
+    it("logs in fully without a refresh request when the stored refresh token is missing or empty", async () => {
+        vi.useFakeTimers();
+        for (const refresh of [
+            { clientId: "c", clientSecret: "s", tokenUrl: stored.tokenUrl },
+            { ...stored, refreshToken: "" },
+        ]) {
+            const oauth = oauthServer({ refresh: "ok" });
+            const server = recorder(oauth.handler);
+            const mcp = client(server.fetchImpl, { refresh });
+            const askCode = vi.fn(async () => "user-code");
+            try {
+                expect((await mcp.checkHandshake(ioOf({ askCode }))).serverInfo.name).toBe("mock");
+                expect(oauth.refreshes).toEqual([]);
+                expect(server.calls[1]).toMatchObject({
+                    url: "http://mcp.test/.well-known/oauth-authorization-server",
+                    method: "GET",
+                });
+                expect(oauth.registrations).toHaveLength(1);
+                expect(oauth.exchanges).toHaveLength(1);
+                expect(askCode).toHaveBeenCalledTimes(1);
+            } finally {
+                mcp.destroy();
+            }
+        }
+    });
+
+    it("omits unusable refresh tokens from full-login records so a recreated client logs in fully again without refreshing", async () => {
+        vi.useFakeTimers();
+        for (const refreshToken of [undefined, "", 42, null]) {
+            const oauth = oauthServer({
+                refresh: "ok",
+                exchange: {
+                    access_token: "logged-in",
+                    ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
+                },
+            });
+            const server = recorder(oauth.handler);
+            const written: unknown[] = [];
+            const askCode = vi.fn(async () => "user-code");
+            const io = ioOf({ askCode, writeRefresh: (entry) => written.push(entry) });
+            for (let login = 0; login < 2; login++) {
+                const mcp = client(server.fetchImpl, { refresh: written.at(-1) });
+                try {
+                    expect((await mcp.checkHandshake(io)).serverInfo.name).toBe("mock");
+                } finally {
+                    mcp.destroy();
+                }
+            }
+            const expected = { clientId: "cid", clientSecret: "csec", tokenUrl: "http://mcp.test/token" };
+            expect(written).toStrictEqual([expected, expected]);
+            expect(oauth.refreshes).toEqual([]);
+            expect(oauth.registrations).toHaveLength(2);
+            expect(oauth.exchanges).toHaveLength(2);
+            expect(askCode).toHaveBeenCalledTimes(2);
+        }
     });
 
     it("logs in fully when the refresh answers without a token, with no JSON, or with an error, and when nothing is stored: discovery, registration, PKCE, the owner's code through the helper, the refresh record written", async () => {
@@ -1156,6 +1337,59 @@ describe("createMcpRegistry", () => {
         store.close();
     });
 
+    it("does not resurrect a removed grant or overwrite any newer grant field after cancellation", () => {
+        const store = memoryStore();
+        const registry = createMcpRegistry({ store, kinds });
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        const identifier = "http://mcp.test/mcp";
+        const previous = { clientId: "c", clientSecret: "s", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+        const rotated = { ...previous, refreshToken: "r2" };
+        const other = { url: "other", refreshToken: "keep" };
+        try {
+            for (const field of ["clientId", "clientSecret", "refreshToken", "tokenUrl"] as const) {
+                const newer = { url: identifier, ...previous, [field]: "new-value" };
+                store.put(refreshKind, "main", [newer, other], store.get(refreshKind, "main")!.revision);
+                registry.writeRotatedRefresh(identifier, rotated, previous, store.epoch());
+                expect(store.get(refreshKind, "main")!.data).toEqual([newer, other]);
+            }
+            store.put(refreshKind, "main", [other], store.get(refreshKind, "main")!.revision);
+            registry.writeRotatedRefresh(identifier, rotated, previous, store.epoch());
+            expect(store.get(refreshKind, "main")!.data).toEqual([other]);
+        } finally {
+            registry.dispose();
+            store.close();
+        }
+    });
+
+    it("refuses a late rotation from the epoch replaced by a restore even if the grant still matches", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-refresh-epoch-"));
+        const store = memoryStore();
+        const registry = createMcpRegistry({ store, kinds });
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        const identifier = "http://mcp.test/mcp";
+        const previous = { refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+        try {
+            store.put(
+                refreshKind,
+                "main",
+                [{ url: identifier, ...previous }],
+                store.get(refreshKind, "main")!.revision,
+            );
+            const epoch = store.epoch();
+            const backup = path.join(dir, "snapshot.sqlite");
+            await store.backupTo(backup);
+            await installSnapshot(store, backup, kinds);
+            registry.sync(store.epoch());
+            expect(store.epoch()).not.toBe(epoch);
+            registry.writeRotatedRefresh(identifier, { ...previous, refreshToken: "r2" }, previous, epoch);
+            expect(store.get(refreshKind, "main")!.data).toEqual([{ url: identifier, ...previous }]);
+        } finally {
+            registry.dispose();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it("replaces every authRefreshes entry of the identifier in place and keeps the others, appends a new one, and the client reads the stored entry", async () => {
         const store = memoryStore();
         const refreshKind = kind(RESOURCE_KIND.authRefreshes);
@@ -1321,6 +1555,167 @@ describe("createJobTools", () => {
         call.url.startsWith("http://second.test/")
             ? streamable({ pages: [[tool("echo"), tool("other")]] })(call, index)
             : streamable({ pages: [[tool("echo")]] })(call, index);
+
+    it("preserves a spent refresh grant after cancelling a real job and refreshes the next client with the replacement", async () => {
+        vi.useFakeTimers();
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-refresh-job-"));
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        const snapshots = createSnapshotManager({ store, dir });
+        const identifier = "http://mcp.test/mcp";
+        const stored = { clientId: "c1", clientSecret: "s1", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+        const other = { url: "http://other.test/mcp", refreshToken: "untouched" };
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        store.put(
+            refreshKind,
+            "main",
+            [{ url: identifier, ...stored }, other],
+            store.get(refreshKind, "main")!.revision,
+        );
+        const grants: string[] = [];
+        let release!: () => void;
+        let grantSignal: AbortSignal | undefined;
+        const server = recorder((call, index) => {
+            if (call.url === stored.tokenUrl) {
+                const refresh = new URLSearchParams(call.raw).get("refresh_token")!;
+                grants.push(refresh);
+                if (refresh === "r1") {
+                    grantSignal = call.signal;
+                    return new Promise<Response>((resolve) => {
+                        release = () => resolve(json({ access_token: "a1", refresh_token: "r2" }));
+                    });
+                }
+                expect(refresh).toBe("r2");
+                return json({ access_token: "a2", refresh_token: "r3" });
+            }
+            return call.headers.authorization === "Bearer a2" ? streamable()(call, index) : json({}, 401);
+        });
+        const registry = createMcpRegistry({ store, kinds, fetchImpl: server.fetchImpl });
+        let original!: McpClient;
+        await registry.use(identifier, identifier, async (client) => {
+            original = client;
+        });
+        let finished = false;
+        let failure: unknown;
+        const jobs = createGenerationJobs({
+            store,
+            kinds,
+            snapshots,
+            gate: snapshots.gate,
+            lock,
+            authorize: async () => true,
+            runner: async (job) => {
+                const tools = createJobTools({
+                    job,
+                    scope: fakeScope([identifier]),
+                    state: createJobToolState(),
+                    registry,
+                    store,
+                    kinds,
+                    services: fakeServices().services,
+                });
+                try {
+                    await tools.list(ctxOf(job.signal));
+                } catch (error) {
+                    failure = error;
+                    throw error;
+                } finally {
+                    finished = true;
+                }
+            },
+        });
+        const firstId = (name: string) => (store.get(kind(name), "main")!.data as { id: string }[])[0].id;
+        const ids = {
+            presetId: firstId("presets"),
+            modelPresetId: firstId("modelPresets"),
+            personaId: firstId("personas"),
+        };
+        store.applyChanges({
+            ops: [{ kind: kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: {
+                                name: "K",
+                                message: [],
+                                modelPresetId: ids.modelPresetId,
+                                promptPresetId: ids.presetId,
+                                bindedPersona: ids.personaId,
+                            } as never,
+                        },
+                    ],
+                },
+            ],
+        });
+        const wait = async (ready: () => boolean) => {
+            for (let i = 0; i < 1000 && !ready(); i++) await Promise.resolve();
+            expect(ready()).toBe(true);
+        };
+        try {
+            const created = jobs.create(
+                {
+                    kind: "send",
+                    clientId: "tab",
+                    context: {
+                        characterId: "c",
+                        chatId: "k",
+                        ...ids,
+                        mode: "normal",
+                        input: "",
+                        chatRevision: store.chatRevision("c", "k")!,
+                    },
+                },
+                store.epoch(),
+            );
+            expect(created.ok).toBe(true);
+            if (!created.ok) throw new Error(JSON.stringify(created));
+            await wait(() => grants.length === 1);
+            expect(
+                jobs.stop({ characterId: "c", chatId: "k", jobId: created.jobId, clientId: "tab" }, store.epoch()).ok,
+            ).toBe(true);
+            await wait(() => finished);
+            expect(failure).toBe("aborted");
+            expect(grantSignal?.aborted).toBe(false);
+            release();
+            await wait(
+                () => (store.get(refreshKind, "main")!.data as { refreshToken: string }[])[0].refreshToken === "r2",
+            );
+            expect(store.get(refreshKind, "main")!.data).toEqual([
+                { url: identifier, ...stored, refreshToken: "r2" },
+                other,
+            ]);
+            expect(priv(original).accessToken).toBeNull();
+            original.destroy();
+            await registry.use(identifier, identifier, (client) =>
+                client.checkHandshake(
+                    ioOf({
+                        writeRefresh(entry, previous) {
+                            store.applyChanges(registry.refreshChanges(identifier, entry, previous));
+                        },
+                    }),
+                ),
+            );
+            expect(grants).toEqual(["r1", "r2"]);
+            expect(store.get(refreshKind, "main")!.data).toEqual([
+                { url: identifier, ...stored, refreshToken: "r3" },
+                other,
+            ]);
+        } finally {
+            release?.();
+            jobs.beginShutdown();
+            await jobs.drain();
+            jobs.dispose();
+            registry.dispose();
+            await snapshots.stop();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
 
     it("offers dice, the remotes, and a stdio URL in module order, each identifier once, routes a name to its first MCP, and warns for what it does not serve", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -2237,7 +2632,69 @@ describe("McpClient: event framing, the session id, and refresh token rotation",
         }
     });
 
-    it("writes no rotated token and publishes no access token when the job ends or the client closes while the refresh answer is out", async () => {
+    it("keeps a dispatched refresh alive after caller abort but aborts it at the OAuth deadline", async () => {
+        vi.useFakeTimers();
+        vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(new DOMException("OAuth deadline", "TimeoutError")), ms);
+            return controller.signal;
+        });
+        const server = recorder((call) => (call.url === stored.tokenUrl ? withheld(call) : json({}, 401)));
+        const mcp = client(server.fetchImpl, { refresh: stored });
+        const controller = new AbortController();
+        const writeRefresh = vi.fn<McpIo["writeRefresh"]>();
+        const handshake = mcp.checkHandshake(ioOf({ writeRefresh }, controller.signal));
+        const rejected = expect(handshake).rejects.toThrow("caller ended");
+        try {
+            for (let i = 0; i < 1000 && !server.calls.some((call) => call.url === stored.tokenUrl); i++)
+                await Promise.resolve();
+            const grant = server.calls.find((call) => call.url === stored.tokenUrl)!;
+            expect(grant).toBeDefined();
+            controller.abort(new Error("caller ended"));
+            await rejected;
+            expect(grant.signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(MCP_OAUTH_TIMEOUT_MS - 1);
+            expect(grant.signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(grant.signal.aborted).toBe(true);
+            expect(writeRefresh).not.toHaveBeenCalled();
+            expect(priv(mcp).accessToken).toBeNull();
+        } finally {
+            mcp.destroy();
+        }
+    });
+
+    it("does not persist missing or invalid rotations from a refresh completed after client close", async () => {
+        for (const rotation of [undefined, "", 4]) {
+            let release!: () => void;
+            const server = refreshServer(
+                () =>
+                    new Promise<Response>((resolve) => {
+                        release = () => resolve(json({ access_token: "late", refresh_token: rotation }));
+                    }),
+            );
+            const mcp = client(server.fetchImpl, { refresh: stored });
+            const writeRefresh = vi.fn<McpIo["writeRefresh"]>();
+            const handshake = mcp.checkHandshake(ioOf({ writeRefresh }));
+            const rejected = expect(handshake).rejects.toBeInstanceOf(McpClientClosedError);
+            try {
+                for (let i = 0; i < 1000 && server.refreshes.length === 0; i++) await Promise.resolve();
+                expect(server.refreshes).toHaveLength(1);
+                mcp.destroy();
+                await rejected;
+                expect(server.calls.find((call) => call.url === stored.tokenUrl)!.signal.aborted).toBe(false);
+                release();
+                for (let i = 0; i < 1000; i++) await Promise.resolve();
+                expect(writeRefresh).not.toHaveBeenCalled();
+                expect(priv(mcp).accessToken).toBeNull();
+            } finally {
+                release?.();
+                mcp.destroy();
+            }
+        }
+    });
+
+    it("stores a rotated token and publishes no access token when the job ends or the client closes while the refresh answer is out", async () => {
         for (const end of ["abort", "close"] as const) {
             let release!: () => void;
             const server = refreshServer(
@@ -2263,7 +2720,7 @@ describe("McpClient: event framing, the session id, and refresh token rotation",
                 await expect(handshake).rejects.toBeInstanceOf(McpClientClosedError);
             }
             await sleep(20);
-            expect(writeRefresh).not.toHaveBeenCalled();
+            expect(writeRefresh).toHaveBeenCalledExactlyOnceWith({ ...stored, refreshToken: "r2" });
             expect(priv(mcp).accessToken).toBeNull();
             mcp.destroy();
         }

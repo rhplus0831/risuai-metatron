@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { Chat, RisuPersona, character, groupChat } from "../../../shared/database.ts";
 import type { RisuModule } from "../../../shared/modules.ts";
-import { jobModules } from "../jobs/cbsHost.ts";
+import { jobModules, jobModuleLorebooks } from "../jobs/cbsHost.ts";
 import type { JobScope } from "../jobs/jobScope.ts";
 
 // `jobModules` (`server/src/jobs/cbsHost.ts`), the server's `getModules`: the persona module links
@@ -84,6 +84,67 @@ const ids = (scope: JobScope, ref?: { chaId: string; chatId: string }) =>
     jobModules(scope, ref).map((module) => module.id);
 
 describe("jobModules with persona module links", () => {
+    it("appends an unstored embedded module once after namespace matches and lets the stored id take precedence", () => {
+        const scope = scopeOf({ characterId: "c", chatId: "k" });
+        const embedded: RisuModule = {
+            id: "shared-ns",
+            name: "Embedded",
+            description: "",
+            lorebook: [
+                {
+                    key: "key",
+                    secondkey: "",
+                    comment: "Embedded lore",
+                    content: "embedded lore",
+                    mode: "normal",
+                    insertorder: 0,
+                    alwaysActive: false,
+                    selective: false,
+                },
+            ],
+        };
+        scope.db.personas = [{ ...mina, embeddedModule: embedded }];
+        scope.db.enabledModules = ["global", "shared-ns", "shared-ns"];
+        expect(ids(scope)).toEqual(["global", "plain", "nsmod", "shared-ns"]);
+        expect(jobModules(scope).map((module) => module.name)).toEqual(["Global", "Plain", "Namespaced", "Embedded"]);
+        expect(jobModuleLorebooks(scope)).toEqual(embedded.lorebook);
+        scope.db.modules = [...modules, { id: "shared-ns", name: "Stored wins", description: "" }];
+        expect(jobModules(scope).map((module) => module.name)).toEqual([
+            "Global",
+            "Plain",
+            "Namespaced",
+            "Stored wins",
+        ]);
+        expect(jobModuleLorebooks(scope)).toEqual([]);
+    });
+
+    it("resolves the current embedded object of the ref's own persona when personas share an embedded id", () => {
+        const scope = scopeOf({ characterId: "c", chatId: "k" });
+        const embedded = (name: string): RisuModule => ({ id: "shared-embedded", name, description: "" });
+        scope.db.personas = [
+            { ...mina, modules: [], embeddedModule: embedded("Mina first") },
+            { ...mina, id: "other", modules: [], embeddedModule: embedded("Other persona") },
+        ];
+        const bind = (id: string) => {
+            const owner = scope.db.characters[0];
+            scope.db.characters[0] = {
+                ...owner,
+                chats: owner.chats.map((chat) =>
+                    chat.id === id ? { ...chat, modules: [], bindedPersona: "other" } : chat,
+                ),
+            };
+        };
+        bind("j");
+        const names = (ref?: { chaId: string; chatId: string }) => jobModules(scope, ref).map((module) => module.name);
+        expect(names()).toEqual(["Global", "Mina first"]);
+        scope.db.personas[0].embeddedModule = embedded("Mina replaced");
+        expect(names()).toEqual(["Global", "Mina replaced"]);
+        expect(names({ chaId: "c", chatId: "j" })).toEqual(["Global", "Other persona"]);
+        expect(names({ chaId: "c", chatId: "k" })).toEqual(["Global", "Mina replaced"]);
+        bind("k");
+        expect(names()).toEqual(["Global", "Other persona"]);
+    });
+
     it("adds the bound persona's links by id only, once each, in stored order, MCP modules excepted", () => {
         const scope = scopeOf({ characterId: "c", chatId: "k" });
         // Stored order (`global` before `plain`), not the link order; `shared-ns`, `mcpmod`, and
@@ -134,7 +195,7 @@ describe("jobModules with persona module links", () => {
         const scope = scopeOf({ characterId: "c", chatId: "k" });
         (scope.db as { modules: RisuModule[] }).modules = [
             ...modules,
-            // A second module with the id `plain` (`addModule` does not refuse duplicates): first wins.
+            // Defensive handling of duplicate ids in legacy stored data: first wins.
             { id: "plain", name: "Plain copy", description: "" },
         ];
         const out = jobModules(scope);

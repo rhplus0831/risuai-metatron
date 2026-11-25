@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { serve } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeRPack } from "../../../shared/rpack.ts";
@@ -17,6 +18,7 @@ afterEach(async () => {
     // Also release a suspended generator if an assertion (or a mutation) failed.
     await Promise.all(responses.splice(0).map((res) => res.body?.cancel().catch(() => {})));
     vi.restoreAllMocks();
+    vi.useRealTimers();
     await Promise.all(servers.splice(0).map((s) => s.close()));
 });
 
@@ -138,15 +140,14 @@ function firstRecordClock(s: ResourceTestClient) {
 }
 
 describe("POST /api/import/module", () => {
-    it("stores decoded bytes at browser keys, preserves metadata, skips existing files and accepts legacy empty tails", async () => {
+    it("stores decoded bytes at browser keys, preserves metadata, repairs damaged files, skips held ones and accepts legacy empty tails", async () => {
         const s = await server();
         const jpeg = Buffer.from([255, 216, 255, 224, 0, 16, 74, 70, 73, 70]);
         const records = [jpeg, Buffer.from(Array.from({ length: 256 }, (_, i) => i)), Buffer.alloc(0), jpeg];
         const module = moduleOf(records.length + 1);
         const keys = records.map(keyOf);
         mkdirSync(assetDir(s), { recursive: true });
-        // Existing content is deliberately different: checking bytes catches an overwrite
-        // even if the importer lies about its skipped count.
+        // A damaged file under the content key is replaced by the record's bytes.
         writeFileSync(path.join(s.savePath, keys[0]), "pre-existing content");
         const body = Buffer.concat([risum(module, records), Buffer.from([255, 1, 99])]);
         const expectedModule = {
@@ -155,10 +156,10 @@ describe("POST /api/import/module", () => {
         };
         const first = await lines(await post(s, body));
         expect(first.at(-2)).toEqual({ done: records.length, total: records.length });
-        expect(first.at(-1)).toEqual({ module: expectedModule, assetsWritten: 2, assetsSkipped: 2 });
+        expect(first.at(-1)).toEqual({ module: expectedModule, assetsWritten: 3, assetsSkipped: 1 });
         expect(assetFiles(s)).toEqual([...new Set(keys)].map((key) => path.basename(key)).sort());
-        expect(readFileSync(path.join(s.savePath, keys[0]), "utf8")).toBe("pre-existing content");
-        for (const index of [1, 2]) expect(readFileSync(path.join(s.savePath, keys[index]))).toEqual(records[index]);
+        for (const index of [0, 1, 2]) expect(readFileSync(path.join(s.savePath, keys[index]))).toEqual(records[index]);
+        const inodes = keys.map((key) => statSync(path.join(s.savePath, key)).ino);
         expect(staged(s)).toEqual([]);
         expect(s.context.diagnostics.recent()).toEqual(
             expect.arrayContaining([expect.objectContaining({ kind: "lifecycle", phase: "moduleImport" })]),
@@ -166,7 +167,8 @@ describe("POST /api/import/module", () => {
 
         const second = await lines(await post(s, body));
         expect(second.at(-1)).toEqual({ module: expectedModule, assetsWritten: 0, assetsSkipped: records.length });
-        expect(readFileSync(path.join(s.savePath, keys[0]), "utf8")).toBe("pre-existing content");
+        // Files that hold their bytes, the empty asset included, are left in place.
+        expect(keys.map((key) => statSync(path.join(s.savePath, key)).ino)).toEqual(inodes);
         for (const module of [{ name: "absent" }, { name: "null", assets: null }]) {
             expect(await lines(await post(s, risum(module)))).toEqual([{ module, assetsWritten: 0, assetsSkipped: 0 }]);
         }
@@ -504,4 +506,59 @@ describe("POST /api/import/module", () => {
             }
         },
     );
+});
+
+it("reclaims every filled module key before the result and republishes a skipped file lost during progress", async () => {
+    vi.useFakeTimers({ toFake: ["performance"] });
+    const clock = sweepClock();
+    const s = await server({ assetLifecycle: clock.options });
+    const bytes = Buffer.from("module replay bytes");
+    const second = Buffer.from("module second bytes");
+    const key = keyOf(bytes);
+    const target = seedSweepAsset(s, key, bytes.toString());
+    const metadata = "assets/metadata-only";
+    seedSweepAsset(s, metadata);
+    await matureSweep(s, clock);
+    const module = moduleOf(4);
+    module.assets[2][1] = metadata;
+    module.assets[3][1] = "assets/portable-missing";
+    const held = deferred(),
+        release = deferred();
+    const rename = fs.rename;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        if (String(to) === path.join(s.savePath, keyOf(second))) {
+            held.resolve();
+            await release.promise;
+        }
+        return rename(from, to);
+    });
+    const response = await post(s, risum(module, [bytes, second]));
+    const reading = lines(response);
+    try {
+        await held.promise;
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false, keys: [key] })).skipped).toEqual([
+            { key, reason: "leased" },
+        ]);
+        // A later upload is latched: the first skip is complete, the final claims have not begun.
+        rmSync(target);
+        await vi.advanceTimersByTimeAsync(3_600_000);
+        release.resolve();
+        const result = (await reading).at(-1) as { module: { assets: string[][] } };
+        expect(result.module.assets.map((entry) => entry[1])).toEqual([
+            key,
+            keyOf(second),
+            metadata,
+            "assets/portable-missing",
+        ]);
+        expect(readFileSync(target)).toEqual(bytes);
+        expect(existsSync(path.join(s.savePath, "assets", "portable-missing"))).toBe(false);
+        await fs.utimes(target, 1, 1);
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false, keys: [key, metadata] })).skipped).toEqual([
+            { key, reason: "leased" },
+            { key: metadata, reason: "leased" },
+        ]);
+    } finally {
+        release.resolve();
+        await reading;
+    }
 });

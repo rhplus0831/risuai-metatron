@@ -20,6 +20,17 @@ import type { LlmRequests } from "../llm/requests.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
+/**
+ * HTTP validation and SSE delivery for tab-initiated LLM requests and their callback answers. Both endpoints apply
+ * the limiter and authenticate before reading JSON; only request creation checks the resource epoch. Arguments are
+ * allowlisted so credential-bearing or server-only fields cannot enter through `arg`.
+ *
+ * Admission, chat-binding checks, callback ownership, redaction, and request lifetime belong to
+ * server/src/llm/requests.ts. Accepted requests stream its events with caching/proxy buffering disabled, without
+ * acquiring a chat lock or persisting a generation. Callback answers are scoped by request id and body client id;
+ * recognized repeats are ignored, while unknown requests/callbacks return 404.
+ */
+
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
 const optionalBoolean = (value: unknown) => value === undefined || typeof value === "boolean";
 const optionalNumber = (value: unknown) => value === undefined || typeof value === "number";
@@ -36,6 +47,7 @@ const BOOLEAN_ARGS = [
     "imageResponse",
     "previewBody",
     "rememberToolUsage",
+    "allowConfiguredTools",
 ] as const;
 const NUMBER_ARGS = ["temperature", "maxTokens", "PresensePenalty", "frequencyPenalty"] as const;
 const STRING_ARGS = ["chatId", "schema", "extractJson", "staticModel"] as const;
@@ -228,12 +240,14 @@ function parseAnswer(body: unknown): (LlmCallbackAnswer & { clientId: string }) 
 /**
  * `POST /api/llm/request`: runs one provider request on the server with the stored settings and
  * credentials (JWT only; `x-resource-epoch`, 412 for another epoch; 503 during maintenance and
- * shutdown; 429 past the per-client cap; 409 for a `channelCall` that is not running; 409
- * `chatBindingIncomplete` with `problems` or `chatBindingMismatch` for an `arg.chatRef` whose ids
- * are not the chat's binding; 404 for an `arg.chatRef` naming a chat that does not exist) and
- * answers with an SSE stream of `LlmRequestEvent`s. Not a job: no chat lock, no persistence.
+ * shutdown; 429 past the per-client cap `MAX_REQUESTS_PER_CLIENT` (32); 409 for a `channelCall` that
+ * is not running; 409 `chatBindingIncomplete` with `problems` or `chatBindingMismatch` for an
+ * `arg.chatRef` whose ids are not the chat's binding; 404 for an `arg.chatRef` naming a chat that
+ * does not exist) and answers with an SSE stream of `LlmRequestEvent`s.
+ * Not a job: no chat lock, no persistence.
  * `POST /api/llm/request/:id/answer` answers one of its callbacks (`{ accepted }`, `{ ignored }` for
- * a repeat or a late answer, 404 for an unknown request).
+ * a repeat or late answer on a live request; 404 for an unknown or ended request, another client's
+ * request, or a callback id the request never registered).
  */
 export function registerLlmRoutes(
     app: Hono<AppEnv>,

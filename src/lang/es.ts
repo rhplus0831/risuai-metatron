@@ -1,3 +1,4 @@
+/** Spanish `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageSpanish = {
     formating: {
         main: "Prompt Principal",
@@ -119,7 +120,7 @@ export const languageSpanish = {
             "Fuerte muestra el texto en streaming sin procesar, sin renderizarlo, y renderiza el mensaje normalmente cuando termina el stream. Es el modo que más reduce la carga y puede ayudar en dispositivos móviles o de gama baja.\n\n" +
             "Esta es una función experimental, por lo que algunas funciones pueden comportarse de forma inesperada.",
         imageCompression:
-            "Si está habilitado, comprimirá las imágenes al exportar el personaje. Si las imágenes animadas no funcionan, intenta desactivar esta opción.",
+            "Si está habilitado, comprimirá las imágenes al exportar personajes y módulos. Si las imágenes animadas no funcionan, intenta desactivar esta opción.",
         useExperimental: "Si está habilitado, mostrará algunas características experimentales.",
         forcePlainFetch:
             "Si está habilitado, usará la API de fetch del navegador en lugar de la solicitud HTTP nativa. Esto puede causar errores de CORS.",
@@ -194,9 +195,6 @@ export const languageSpanish = {
             'Si no está en blanco, extraerá datos JSON específicos de la respuesta. Por ejemplo, si deseas extraer `response.text[0]` en la respuesta `{"response": {"text": ["hello"]}}`, puedes poner `response.text.0`.',
         translatorNote:
             "Aquí puedes agregar un prompt de traducción único para cada personaje. Esta opción solo se aplica al usar el modelo Ax. para traducción. Para aplicarlo, incluye `{{slot::tnote}}` en la configuración de idioma. No funciona en chats grupales.",
-        groupInnerFormat:
-            "Esto define un formato que se usa en el chat grupal para personajes que no son el hablante. Si no está en blanco, usará este formato en lugar del formato predeterminado. Si `Rol de Otro Bot en Grupo` es `assistant`, también se aplicará al hablante.",
-        groupOtherBotRole: "Esto define un rol que se usa en el chat grupal para personajes que no son el hablante.",
         chatHTML:
             "Un HTML que se insertará como cada chat.\n\nPuedes usar CBS y etiquetas especiales.\n- `<risutextbox>`: un cuadro de texto que se usaría para renderizar texto\n- `<risuicon>`: un icono para usuario o asistente\n- `<risubuttons>`: botones de icono para editar chat, traducciones, etc.\n- `<risugeninfo>`: botón de información de generación.",
         systemContentReplacement:
@@ -658,7 +656,6 @@ export const languageSpanish = {
     autoTranslation: "Traducción Automática",
     playMessage: "Reproducir Audio del Mensaje",
     iconSize: "Tamaño del Icono",
-    createGroup: "Crear Chat de Grupo",
     groupIcon: "Icono del Grupo",
     single: "Único",
     multiple: "Múltiple",
@@ -733,7 +730,6 @@ export const languageSpanish = {
     creator: "Creador",
     CharVersion: "Versión del Personaje",
     Speech: "Habla",
-    ToggleSuperMemory: "Alternar SupaMemoria",
     SuperMemory: "SupaMemoria",
     useExperimental: "Habilitar Funciones Experimentales",
     showMemoryLimit: "Mostrar Límite de Memoria",
@@ -836,7 +832,6 @@ export const languageSpanish = {
     customInnerFormat: "Formato Interno Personalizado",
     innerFormat: "Formato Interno",
     HypaMemory: "HypaMemoria",
-    ToggleHypaMemory: "Alternar HypaMemoria",
     resetPromptTemplateConfirm: "¿Realmente deseas restablecer la plantilla de prompt?",
     emotionMethod: "Método de Emoción",
     continueResponse: "Continuar Respuesta",
@@ -851,8 +846,7 @@ export const languageSpanish = {
     importPersona: "Importar Persona",
     export: "Exportar",
     import: "Importar",
-    supporterThanks: "Agradecimiento a los Soportes",
-    supporterThanksDesc: "¡Gracias por tu apoyo!",
+    supporterThanks: "Patrocinadores de RisuAI",
     donatorPatreonDesc:
         "Por defecto, no se mostrará en la lista por privacidad. Si deseas mostrar tu apodo, ve a la página de patreon de Risuai y presiona el botón de enlace.",
     useNamePrefix: "Usar Prefijo de Nombre",
@@ -1005,8 +999,10 @@ export const languageSpanish = {
     select: "Seleccionar",
     options: "Opciones",
     alertContent: "Contenido de Alerta",
-    lowLevelAccessConfirm:
-        "Este contenido usa Acceso de Bajo Nivel. lo que significa que este contenido puede acceder al modelo de IA y a tu almacenamiento directamente. ¿Realmente deseas importar este contenido?",
+    lowLevelAccessImportQuestion:
+        "Este contenido usa Acceso de Bajo Nivel, lo que significa que puede acceder al modelo de IA y a tu almacenamiento directamente. ¿Importarlo con Acceso de Bajo Nivel o sin él? Sin él, las partes que lo necesitan no funcionarán; puedes activarlo más tarde en su configuración.",
+    lowLevelAccessImportWith: "Importar con Acceso de Bajo Nivel",
+    lowLevelAccessImportWithout: "Importar sin Acceso de Bajo Nivel",
     extractRegex: "Extraer Texto con Regex",
     runImgGen: "Ejecutar Generación de Imágenes",
     cutChat: "Cortar Chat",
@@ -1036,7 +1032,6 @@ export const languageSpanish = {
     blockMode: "Modo Bloque",
     helpBlock: "Ayuda",
     hideChatIcon: "Ocultar Icono de UI",
-    loadInternalBackup: "Cargar Respaldo Interno",
     createCopy: "Crear una Copia",
     chatOptions: "Opciones de Chat",
     parameters: "Parámetros",
@@ -1068,8 +1063,6 @@ export const languageSpanish = {
     trailingDoubleQuote: "Cita Doble Final",
     translatorNote: "Nota del Traductor",
     formatGroupInSingle: "Formatear Grupo en Único",
-    groupInnerFormat: "Formato Interno de No Hablante",
-    groupOtherBotRole: "Rol de No Hablante en Grupo",
     chatHTML: "HTML del Chat",
     logShare: "Mostrar Botón de Compartir Registro",
     preview: "Vista Previa",
@@ -1272,7 +1265,7 @@ export const languageSpanish = {
     useTokenizerCaching: "Caché de Tokenizador",
     hypaMemoryV2Modal: "Modal Hypa V2",
     hypaMemoryV3Modal: "Modal Hypa V3",
-    showMenuHypaMemoryModal: "Mostrar Menú Modal Hypa",
+    showMenuHypaMemoryModal: "Mostrar Menú Modal HypaV2",
     promptInfoInsideChat: "Agregar Info de Prompt al Chat",
     promptTextInfoInsideChat: "Agregar Texto de Prompt al Chat",
     promptInfoEmptyMessage: "No hay información de prompt disponible para este mensaje.",
@@ -1320,8 +1313,6 @@ export const languageSpanish = {
     translate: "Traducir dirección de código",
     apply: "Aplicar",
     add: "Agregar",
-    nightlyWarning:
-        "## Builds Nightly\n\nTe estás conectando a una build nightly del software. Esta versión está destinada a pruebas y muy probablemente contiene errores. **En esta versión, incluso si encuentras problemas, no admitimos resolverlos directamente.**",
     generatedByAIDisclaimer: "Este contenido fue generado por IA y puede contener inexactitudes o sesgos.",
     aiGenerationWarning: "El contenido será generado por IA y puede contener inexactitudes o sesgos.",
     loadMore: "Cargar más",

@@ -23,10 +23,26 @@ type ServerCommandsModule = typeof import("../serverCommands");
 export function createServerCommandsMock(overrides: Partial<ServerCommandsModule> = {}): ServerCommandsModule {
     const defaults = {
         followedJobs: writable<ReadonlyMap<string, string>>(new Map()),
+        loadingJobChats: writable<ReadonlyMap<string, string>>(new Map()),
+        viewingJobs: writable<ReadonlySet<string>>(new Set()),
         followedJobsOf: vi.fn<ServerCommandsModule["followedJobsOf"]>(() => []),
+        stopChatJob: vi.fn<ServerCommandsModule["stopChatJob"]>(async () => {}),
         followJobToEnd: vi.fn<ServerCommandsModule["followJobToEnd"]>(async () => "lost"),
+        readChatAgain: vi.fn<ServerCommandsModule["readChatAgain"]>(),
+        readRecoveringChat: vi.fn<ServerCommandsModule["readRecoveringChat"]>(async () => false),
+        checkServerJobBinding: vi.fn<ServerCommandsModule["checkServerJobBinding"]>(() => null),
+        prepareServerJob: vi.fn<ServerCommandsModule["prepareServerJob"]>(async () => ({
+            outcome: "refused",
+            terminal: null,
+            requestUncertain: false,
+        })),
+        refreshChatAfterPush: vi.fn<ServerCommandsModule["refreshChatAfterPush"]>(),
         resumeServerJobs: vi.fn<ServerCommandsModule["resumeServerJobs"]>(async () => {}),
-        runServerJob: vi.fn<ServerCommandsModule["runServerJob"]>(async () => ({ outcome: "refused", terminal: null })),
+        runServerJob: vi.fn<ServerCommandsModule["runServerJob"]>(async () => ({
+            outcome: "refused",
+            terminal: null,
+            requestUncertain: false,
+        })),
         runServerButton: vi.fn<ServerCommandsModule["runServerButton"]>(async () => "refused"),
         runServerManualTrigger: vi.fn<ServerCommandsModule["runServerManualTrigger"]>(async () => "refused"),
     } satisfies ServerCommandsModule;

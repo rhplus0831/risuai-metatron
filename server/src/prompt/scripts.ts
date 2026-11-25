@@ -1,7 +1,7 @@
 import type { CbsConditions } from "../../../shared/cbs/types.ts";
 import type { character, customscript, groupChat } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
-import type { CallbackResult } from "../../../shared/jobs.ts";
+import type { CallbackResult, SkippedHook } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import {
     createScriptCache,
@@ -190,7 +190,10 @@ export async function runScriptTail(
     const chatRef = { chaId: scope.characterId, chatId: scope.chatId };
     const parse = (text: string) => evaluator.risuChatParser(text, { chatID, cbsConditions, chatRef });
     let data = parse(input);
-    const scripts = (scope.db.presetRegex ?? []).concat(char.customscript ?? []).concat(moduleRegexScripts(setup));
+    const scripts = (scope.db.presetRegex ?? [])
+        .concat(char.customscript ?? [])
+        .concat(moduleRegexScripts(setup))
+        .filter((script) => script.type === mode);
     const hash = regexScriptCacheKey(scripts, data, mode, chatID, `${chatRef.chaId}/${chatRef.chatId}`, parse);
     const cached = cache.get(hash);
     // The client's `if (cached)`: an empty result is computed again (its effects run again).
@@ -260,7 +263,10 @@ export async function runScriptTail(
  *
  * Failures: as `runLuaEdit` and `runScriptTail`. A plugin hook that failed ends the send, as the
  * client's unguarded `invokeHook` does; a hook no longer registered keeps the text, any other refusal
- * ends the job.
+ * ends the job. An `editoutput` hook nobody could answer (`disconnected`: no owner tab before the
+ * deadline) keeps the text too and is recorded in `skipped`, since the reply is already stored raw
+ * and failing would only drop the scripts after it; `editinput` and `editprocess` still end the job,
+ * so no request goes out with a prompt the plugin did not see.
  */
 export function createScriptProcessor(deps: {
     job: RunningJob;
@@ -273,6 +279,8 @@ export function createScriptProcessor(deps: {
     assetMatches: Map<string, string>;
     /** `@@emo`: the emotion shown (`showEmotion` of the job: its history and the notice). */
     showEmotion(chaId: string, name: string, image: string): void;
+    /** Where a skipped `editoutput` hook is recorded (`JobRunState.skippedHooks`). */
+    skipped: SkippedHook[];
 }): ScriptProcessor {
     const { job, setup, lock } = deps;
     const { bindings, nativeCtx, scope } = setup;
@@ -294,6 +302,12 @@ export function createScriptProcessor(deps: {
         switch (result.outcome) {
             case "answered":
                 return result.value === null || result.value === undefined ? text : String(result.value);
+            case "disconnected":
+                if (mode === "editoutput") {
+                    deps.skipped.push({ name: "editoutput" });
+                    return text;
+                }
+                throw services.latch(new LuaJobFatalError(`The ${mode} callback ended: ${result.outcome}`));
             case "refused":
                 // Only a hook no longer registered keeps the text; a queue or nesting refusal would skip
                 // a transformation the tab runs.

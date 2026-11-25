@@ -16,12 +16,12 @@ const deps = vi.hoisted(() => ({
     alert: vi.fn(),
     clickResult: vi.fn(),
 }));
-vi.mock("../globalApi.svelte", () => ({
-    globalFetch: deps.globalFetch,
-    fetchNative: deps.fetchNative,
-    readImage: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: deps.globalFetch,
+        fetchNative: deps.fetchNative,
+    }),
+);
 vi.mock("../network/auxFetch", () => ({ auxFetchJson: deps.auxFetchJson }));
 vi.mock("./request/request", () => ({ requestChatData: deps.request }));
 vi.mock("./processzip", () => ({ processZip: deps.zip }));
@@ -122,7 +122,7 @@ beforeEach(() => {
     deps.request.mockResolvedValue({ type: "success", result: "a quiet garden" });
     deps.auxFetchJson.mockResolvedValue(imagen);
     CharEmotion.set(structuredClone(original));
-    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.stubGlobal("fetch", deps.fetch);
 });
@@ -139,14 +139,16 @@ describe("generated image delivery", () => {
         settings.memoryTranslateMedia.sdProvider = "stability";
         const pending = deferred<Response>();
         const error = new Error("Image provider unavailable");
-        deps.fetch.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
+        deps.fetchNative
+            .mockReturnValueOnce(pending.promise)
+            .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
         deps.clickResult.mockImplementation((result: Promise<void>) => result.catch(() => {}));
         const target = document.createElement("div");
         document.body.appendChild(target);
         const component = mount(PlaygroundImageGen, { target });
         try {
             flushSync();
-            const button = target.querySelector("button")!;
+            const button = [...target.querySelectorAll("button")].find((b) => b.textContent.trim() === "Generate")!;
             button.click();
             flushSync();
             expect(button.textContent.trim()).toBe("");
@@ -160,7 +162,7 @@ describe("generated image delivery", () => {
             button.click();
             await deps.clickResult.mock.lastCall![0];
             flushSync();
-            expect(deps.fetch).toHaveBeenCalledTimes(2);
+            expect(deps.fetchNative).toHaveBeenCalledTimes(2);
             expect(target.querySelector("img")?.getAttribute("src")).toBe(uri);
         } finally {
             await unmount(component);
@@ -297,7 +299,6 @@ describe("generated image delivery", () => {
             deps.auxFetchJson.mockImplementation(() =>
                 delayed(provider === "Imagen" ? imagen : { ok: true, data: { data: [{ b64_json: "AQID" }] } }),
             );
-            deps.fetch.mockImplementation(() => delayed(bytes()));
             deps.fetchNative.mockImplementation(async (url: string) =>
                 new URL(url).pathname === "/history/generated"
                     ? Response.json({
@@ -467,7 +468,7 @@ describe("cancellable image generation", () => {
         for (const delivery of ["", "inlay"]) {
             deps.alert.mockClear();
             // A successful HTTP status still does not make a JSON body an image.
-            deps.fetch.mockResolvedValueOnce(
+            deps.fetchNative.mockResolvedValueOnce(
                 new Response(errorBody, {
                     status: 200,
                     headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -479,6 +480,25 @@ describe("cancellable image generation", () => {
             expect(deps.alert).toHaveBeenCalledOnce();
             expect(get(CharEmotion)).toBe(before);
         }
+    });
+
+    it("sends Stability's form as multipart bytes with the boundary they were encoded with", async () => {
+        settings.memoryTranslateMedia.sdProvider = "stability";
+        deps.fetchNative.mockResolvedValueOnce(
+            new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" } }),
+        );
+
+        await expect(generateAIImage("garden", char, "blurry", "inlay")).resolves.toBe(uri);
+        const [url, init] = deps.fetchNative.mock.calls[0];
+        expect(url).toBe("https://api.stability.ai/v2beta/stable-image/generate/core");
+        expect(init.method).toBe("POST");
+        expect(init.headers).toMatchObject({ authorization: "Bearer test", accept: "image/*" });
+        expect(init.body).toBeInstanceOf(Uint8Array);
+        // The bytes read back as the form only under the boundary in the header sent with them.
+        const form = await new Response(init.body, {
+            headers: { "content-type": init.headers["content-type"] },
+        }).formData();
+        expect([...form.entries()]).toEqual([["prompt", "garden"]]);
     });
 
     describe("NovelAI character reference decoding", () => {
@@ -552,7 +572,7 @@ describe("cancellable image generation", () => {
         ["webui", deps.globalFetch, "abortSignal", 1],
         ["novelai", deps.globalFetch, "abortSignal", 1],
         ["dalle", deps.auxFetchJson, "signal", 1],
-        ["stability", deps.fetch, "signal", 1],
+        ["stability", deps.fetchNative, "signal", 1],
         ["comfy", deps.globalFetch, "abortSignal", 1],
         ["comfyui", deps.globalFetch, "abortSignal", 1],
         ["fal", deps.globalFetch, "abortSignal", 1],
@@ -591,8 +611,8 @@ describe("cancellable image generation", () => {
         deps.auxFetchJson.mockResolvedValue(
             provider === "Imagen" ? imagen : { ok: true, data: { data: [{ b64_json: "AQID" }] } },
         );
-        deps.fetch.mockResolvedValue(bytes());
-        deps.fetchNative.mockResolvedValueOnce(Response.json(completedHistory)).mockResolvedValueOnce(bytes());
+        if (provider === "stability") deps.fetchNative.mockResolvedValue(bytes());
+        else deps.fetchNative.mockResolvedValueOnce(Response.json(completedHistory)).mockResolvedValueOnce(bytes());
 
         await expect(generateAIImage("garden", char, "blurry", "inlay", { signal })).resolves.toBe(
             provider === "fal" ? "https://images.test/result.png" : uri,

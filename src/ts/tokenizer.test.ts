@@ -6,6 +6,7 @@ import type { TabTokenScope } from "../../shared/tokenizerChoice";
 import { getModelInfo } from "./model/modellist";
 import { pluginHooks } from "./plugins/pluginHooks";
 import type { character, Chat } from "./storage/database.svelte";
+import { selectCharacter } from "./storage/selection.svelte";
 import { activeMainProfile, settings } from "./storage/settingsViews.svelte";
 import { installFlatDatabase } from "./storage/tests/installFlatDatabase";
 import {
@@ -277,6 +278,12 @@ describe("server token counts", () => {
 
         expect(await total).toBe((51 * 52) / 2);
         expect(countBodies().map(({ texts }) => texts)).toEqual([texts]);
+    });
+
+    it("resolves zero character tokens with no argument and no selected character", async () => {
+        selectCharacter(null);
+
+        await expect(getCharToken()).resolves.toEqual({ persistant: 0, dynamic: 0 });
     });
 
     it("counts character fields and filtered lore together while preserving their separate totals", async () => {

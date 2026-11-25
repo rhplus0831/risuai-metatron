@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat as ChatRecord, MessageTranslation } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 
-// A chat row on the stored-translation path (`media-aux.md`): the LLM translator on
+// A chat row on the stored-translation path (`translation.md`): the LLM translator on
 // `llmTranslationTarget: "message"` shows the held message's fresh stored translation through the
 // normal display path, re-deriving it when the chat's refresh brings one (no remount), keeps the
 // row's show/hide choice across a remount, requests a translation only when none is fresh, and edits
@@ -40,7 +40,6 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuChatParserForDisplay: vi.fn((text: string) => text),
     ParseMarkdown: vi.fn(async (text: string) => `<p>${text}</p>`),
     trimMarkdown: vi.fn((html: string) => html),
-    addMetadataToElement: vi.fn((html: string) => html),
     postTranslationParse: vi.fn(async (html: string) => html),
     getDistance: vi.fn(() => 0),
     parseMarkdownSafe: vi.fn((text: string) => text),
@@ -50,15 +49,9 @@ vi.mock("src/ts/parser/transformClient", () => ({
     rerenderMessage: vi.fn(),
     resetTransformEffects: vi.fn(),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    aiLawApplies: vi.fn(() => false),
-    changeChatTo: vi.fn(),
-    foldChatToMessage: vi.fn(),
-    getFileSrc: vi.fn(async (path: string) => path),
-    createChatCopyName: vi.fn(() => "copy"),
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ createChatCopyName: vi.fn(() => "copy") }),
+);
 vi.mock("src/ts/model/modellist", () => ({ getModelInfo: vi.fn(() => ({ shortName: "model" })) }));
 vi.mock("src/ts/process/serverCommands", async () =>
     (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock(),
@@ -87,15 +80,19 @@ vi.mock("src/ts/translator/translator", () => ({
     clearLLMCache: vi.fn(),
 }));
 vi.mock("src/ts/storage/serverAuth", () => ({
+    ensureAuth: async () => {},
     authFetch: (path: string, init: RequestInit) => hoisted.auth.fetch!(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("src/ts/storage/resourceSync.svelte", () => {
-    class GenerationBlockedError extends Error {}
-    return { flushResources: async () => ({ discarded: [] }), GenerationBlockedError };
-});
+vi.mock("src/ts/storage/resourceSync.svelte", async () =>
+    (await import("src/ts/tests/bootMocks")).createBootMock("resourceSync", {
+        beginMutationScope: () => ({ resource: 0, chat: 0 }),
+        flushResources: async () => ({ discarded: [], refused: [] }),
+    }),
+);
 
 import { language } from "src/lang";
+import * as popupEditorMode from "src/ts/gui/popupEditorMode";
 import { runServerJob } from "src/ts/process/serverCommands";
 import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
@@ -105,8 +102,11 @@ import {
     createChat,
     findChat,
     hydrateChat,
+    noteRemoteStreaming,
+    patchMessage,
     removeMessages,
     seedChats,
+    selectCandidate,
     selectChat,
     setChatMeta,
     setMessageText,
@@ -114,10 +114,13 @@ import {
     takeChatWork,
 } from "src/ts/storage/chatStore.svelte";
 import { setResourceEpoch } from "src/ts/storage/resourceClient";
+import { messageEditorReplyKey, openCachedTranslationDraft } from "src/ts/storage/messageEditorDrafts.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { createSimpleCharacter, popupStore, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
+import { readLLMCacheEntry, writeLLMCacheEntry } from "src/ts/translator/translator";
+import PopupEditor from "../Others/PopupEditor.svelte";
 import PopupList from "../UI/PopupList.svelte";
 import Chat from "./Chat.svelte";
 
@@ -211,7 +214,7 @@ function boot(
         ],
     } as unknown as ChatRecord;
     revision = 1;
-    const listed = [{ characterId: "c", id: chatId, revision: rev(revision), data }];
+    const listed = [{ characterId: "c", id: chatId, revision: rev(revision), trashedAt: null, data }];
     const orders = [{ characterId: "c", revision: rev(1), ids: [chatId] }];
     seedChats(listed, orders);
     assembleChats([selectedCharacter() ?? { chaId: "c" }] as never, listed, orders);
@@ -242,7 +245,14 @@ function boot(
 
 const mounted: ReturnType<typeof mount>[] = [];
 
-function render(props: { message?: string; messageId?: string | undefined; idx?: number } = {}) {
+function render(
+    props: Partial<
+        Pick<
+            Parameters<typeof Chat>[1],
+            "message" | "messageId" | "idx" | "rerollIcon" | "altGreeting" | "onReroll" | "unReroll"
+        >
+    > = {},
+) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     const instance = mount(Chat, {
@@ -256,6 +266,7 @@ function render(props: { message?: string; messageId?: string | undefined; idx?:
             name: "C",
             role: "char",
             img: "",
+            ...props,
         },
     });
     mounted.push(instance);
@@ -290,6 +301,17 @@ function render(props: { message?: string; messageId?: string | undefined; idx?:
             return render(props);
         },
     };
+}
+
+function setReplyLock(ref: { chaId: string; chatId: string }, messageId?: string) {
+    noteRemoteStreaming([
+        {
+            characterId: ref.chaId,
+            id: ref.chatId,
+            streaming: messageId ? [{ messageId, generationId: "reply", seq: 0 }] : [],
+        },
+    ]);
+    flushSync();
 }
 
 beforeEach(() => {
@@ -455,7 +477,7 @@ describe("chat row form submissions", () => {
         expect(runServerJob).toHaveBeenCalledTimes(1);
     });
 
-    it("prevents navigation without sending unmarked forms, stale rows, or group forms", async () => {
+    it("prevents navigation without sending unmarked forms or stale rows", async () => {
         boot("form-refusals");
         const unmarked = await renderForm('<form><input name="answer" value="typed"></form>');
         submit(unmarked.form);
@@ -463,12 +485,6 @@ describe("chat row form submissions", () => {
 
         const stale = await renderForm(markup, "message-in-another-chat");
         submit(stale.form);
-        expect(runServerJob).not.toHaveBeenCalled();
-
-        characterList().find((entry) => entry.chaId === "c")!.type = "group";
-        flushSync();
-        const group = await renderForm();
-        submit(group.form);
         await tick();
         expect(runServerJob).not.toHaveBeenCalled();
         expect(get(ReloadChatPointer)).toEqual({});
@@ -518,23 +534,73 @@ function answerWith(answer: (body: Record<string, unknown>) => Promise<Response>
 }
 
 describe("branching a pinned chat", () => {
-    it("creates an unpinned branch while preserving the source pin", async () => {
-        const { ref } = boot("pinned-source");
-        setChatMeta(ref, { pinned: true });
+    it("drops the OOC log and segment from a branch while keeping its OOC toggles", async () => {
+        vi.useFakeTimers();
+        const { ref } = boot("ooc-source");
+        answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+        const ooc = {
+            oocLog: {
+                q: { id: "q", segment: "s", anchorMessageId: "a", question: "Why?", answer: "Because.", time: 1 },
+            },
+            oocSegment: { id: "s", anchorMessageId: "a" },
+            oocToggles: { mode: "ooc", detail: "0" },
+        };
+        setChatMeta(ref, ooc);
         const ui = render();
         ui.click(ui.target.querySelector(".button-icon-menu"));
-        await vi.waitFor(() => expect(popupStore.children).not.toBeNull());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(popupStore.children).not.toBeNull();
         const popupTarget = document.createElement("div");
         ui.target.appendChild(popupTarget);
         mounted.push(mount(PopupList, { target: popupTarget }));
         flushSync();
         ui.click(ui.button(language.branch));
-        await vi.waitFor(() => expect(chatList("c")).toHaveLength(2));
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(chatList("c")).toHaveLength(2);
         const branch = chatList("c").find((entry) => entry.id !== ref.chatId)!;
         const branchedChat = findChat({ chaId: "c", chatId: branch.id })!;
-        expect(branch).not.toHaveProperty("pinned");
-        expect(branchedChat).not.toHaveProperty("pinned");
-        expect(findChat(ref)).toHaveProperty("pinned", true);
+        expect(branchedChat).not.toHaveProperty("oocLog");
+        expect(branchedChat).not.toHaveProperty("oocSegment");
+        expect(branchedChat.oocToggles).toEqual(ooc.oocToggles);
+        expect(findChat(ref)).toMatchObject(ooc);
+    });
+
+    it("creates an unpinned branch of the surviving messages and requests memory from its source", async () => {
+        vi.useFakeTimers();
+        try {
+            const { ref } = boot("pinned-source");
+            answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+            setChatMeta(ref, { pinned: true });
+            const ui = render();
+            ui.click(ui.target.querySelector(".button-icon-menu"));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(popupStore.children).not.toBeNull();
+            const popupTarget = document.createElement("div");
+            ui.target.appendChild(popupTarget);
+            mounted.push(mount(PopupList, { target: popupTarget }));
+            flushSync();
+            ui.click(ui.button(language.branch));
+            await vi.advanceTimersByTimeAsync(1);
+            expect(chatList("c")).toHaveLength(2);
+            const branch = chatList("c").find((entry) => entry.id !== ref.chatId)!;
+            const branchedChat = findChat({ chaId: "c", chatId: branch.id })!;
+            expect(branch).not.toHaveProperty("pinned");
+            expect(branchedChat).not.toHaveProperty("pinned");
+            expect(findChat(ref)).toHaveProperty("pinned", true);
+            expect(branchedChat.message.filter(({ isComment }) => !isComment)).toEqual([
+                { chatId: "a", role: "char", data: "A" },
+            ]);
+            expect(findChat(ref)?.message.map(({ chatId }) => chatId)).toEqual(["a", "b"]);
+            expect(fetchCalls).toEqual([
+                {
+                    path: `/api/memory/structured/c/${encodeURIComponent(branch.id)}/inherit`,
+                    body: { sourceChatId: ref.chatId },
+                },
+            ]);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -581,6 +647,57 @@ describe("branching with Create Folder on Branch", () => {
     });
 });
 
+describe("branching while a reply generates", () => {
+    async function branchButton(row: ReturnType<typeof render>) {
+        row.click(row.target.querySelector(".button-icon-menu"));
+        await vi.advanceTimersByTimeAsync(0);
+        const popupTarget = document.createElement("div");
+        row.target.appendChild(popupTarget);
+        mounted.push(mount(PopupList, { target: popupTarget }));
+        flushSync();
+        return row.button(language.branch)!;
+    }
+
+    it.each(["before the menu opens", "after the click"])(
+        "leaves the chat and its folders alone when the reply locks %s",
+        async (when) => {
+            vi.useFakeTimers();
+            const lockedBeforeClick = when === "before the menu opens";
+            const { ref } = boot(lockedBeforeClick ? "locked-branch" : "branch-lock-race");
+            settings.ui.createFolderOnBranch = true;
+            answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+            if (lockedBeforeClick) setReplyLock(ref, "b");
+            const branch = await branchButton(render({ message: "B", messageId: "b", idx: 1 }));
+            expect(branch.disabled).toBe(lockedBeforeClick);
+            branch.click();
+            if (!lockedBeforeClick) setReplyLock(ref, "b");
+            await vi.advanceTimersByTimeAsync(1);
+
+            expect(chatList("c").map(({ id }) => id)).toEqual([ref.chatId]);
+            expect(selectedCharacter()?.chatFolders ?? []).toEqual([]);
+            expect(findChat(ref)?.folderId).toBeUndefined();
+        },
+    );
+
+    it("copies through the preceding finished reply while the later reply generates", async () => {
+        vi.useFakeTimers();
+        const { ref } = boot("earlier-branch");
+        settings.ui.createFolderOnBranch = true;
+        answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+        setReplyLock(ref, "b");
+        const branch = await branchButton(render());
+        expect(branch.disabled).toBe(false);
+        branch.click();
+        await vi.advanceTimersByTimeAsync(1);
+
+        const copy = chatList("c").find(({ id }) => id !== ref.chatId)!;
+        expect(findChat({ ...ref, chatId: copy.id })?.message.filter(({ isComment }) => !isComment)).toEqual([
+            { chatId: "a", role: "char", data: "A" },
+        ]);
+        expect((selectedCharacter()?.chatFolders ?? []).map(({ id }) => id)).toEqual([copy.folderId]);
+    });
+});
+
 describe("the Disable toggles", () => {
     it("Disable Message and Cut Messages for AI queue a patch of the one `disabled` field, never the row", async () => {
         const { ref, held } = boot("toggles");
@@ -622,6 +739,46 @@ describe("the Disable toggles", () => {
         expect(queued()).toEqual([{ op: "patchMessage", id: "a", set: { disabled: false } }]);
         expect(held()).toEqual({ role: "char", data: "A", chatId: "a", disabled: false });
     });
+});
+
+it.each([
+    { row: "older reply", props: { rerollIcon: true } },
+    { row: "alternate greeting", props: { altGreeting: true, idx: -1, messageId: undefined } },
+])("disables both reroll arrows on an $row while another reply generates", ({ row, props }) => {
+    const { ref } = boot(`reroll-${row}`);
+    settings.ui.swipe = true;
+    const onReroll = vi.fn();
+    const unReroll = vi.fn();
+    const ui = render({ ...props, onReroll, unReroll });
+    const arrows = [
+        {
+            direction: "previous",
+            button: ui.target.querySelector<HTMLButtonElement>(".button-icon-unreroll")!,
+            action: unReroll,
+        },
+        {
+            direction: "next",
+            button: ui.target.querySelector<HTMLButtonElement>(".button-icon-reroll")!,
+            action: onReroll,
+        },
+    ];
+    for (const { button } of arrows) expect(button.disabled).toBe(false);
+    setReplyLock(ref, "b");
+    try {
+        for (const { direction, button, action } of arrows) {
+            expect.soft(button.disabled, direction).toBe(true);
+            ui.click(button);
+            expect.soft(action, direction).not.toHaveBeenCalled();
+            action.mockClear();
+        }
+    } finally {
+        setReplyLock(ref);
+    }
+    for (const { button, action } of arrows) {
+        expect(button.disabled).toBe(false);
+        ui.click(button);
+        expect(action).toHaveBeenCalledTimes(1);
+    }
 });
 
 describe("the stored path: display", () => {
@@ -866,6 +1023,52 @@ describe("the stored path: requests", () => {
 });
 
 describe("the stored path: the full editor", () => {
+    it("keeps a stored translation draft selectable and disables Save and Retranslate until the reply unlocks", async () => {
+        const { ref, held } = boot("locked-translation", { autoTranslate: true, translation: tr("Stored", "A") });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const ui = render();
+        await ui.instance.whenRendered();
+        const retranslate = ui.button(language.retranslate)!;
+        expect(retranslate.disabled).toBe(false);
+        hoisted.alerts.confirm.mockResolvedValue(false);
+        setReplyLock(ref, "a");
+        try {
+            expect.soft(retranslate.disabled).toBe(true);
+            ui.click(retranslate);
+            expect.soft(hoisted.alerts.confirm).not.toHaveBeenCalled();
+            expect(fetchCalls).toEqual([]);
+        } finally {
+            setReplyLock(ref);
+        }
+        expect(retranslate.disabled).toBe(false);
+
+        ui.click(ui.button(language.editTranslation));
+        const draft = ui.textarea()!;
+        draft.value = "My translation";
+        draft.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+
+        const save = ui.button(language.editTranslationSave)!;
+        expect(save.disabled).toBe(false);
+        expect(draft.readOnly).toBe(false);
+        setReplyLock(ref, "a");
+        try {
+            expect.soft(save.disabled).toBe(true);
+            ui.click(save);
+            expect(held()!.translation?.text).toBe("Stored");
+            expect.soft(draft.readOnly).toBe(true);
+            draft.select();
+            expect(draft.value.slice(draft.selectionStart, draft.selectionEnd)).toBe("My translation");
+        } finally {
+            setReplyLock(ref);
+        }
+        expect(draft.readOnly).toBe(false);
+        expect(save.disabled).toBe(false);
+        ui.click(save);
+        await tick();
+        expect(held()!.translation).toMatchObject({ text: "My translation", edited: true });
+    });
+
     it("opens on the fresh translation, keeps the draft when the text changed since, cancels without writing, and writes `edited: true` on save", async () => {
         const { ref, held } = boot("k7", { autoTranslate: true, translation: tr("ㄱ", "A", { presetId: "tp" }) });
         const ui = render();
@@ -915,6 +1118,43 @@ describe("the stored path: the full editor", () => {
         });
         await ui.expectText("ㄷ");
         expect(hoisted.alerts.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains a stored translation draft across remounts and warns before overwriting an outside change", async () => {
+        const { held, hydrate } = boot("translation-draft", { autoTranslate: true, translation: tr("Stored", "A") });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        let ui = render();
+        await ui.expectText("Stored");
+        ui.click(ui.button(language.editTranslation));
+        ui.textarea()!.value = "My translation";
+        ui.textarea()!.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        ui = ui.remount();
+        expect(ui.textarea()?.value).toBe("My translation");
+        hydrate("a", tr("Changed elsewhere", "A"));
+        flushSync();
+        expect(ui.textarea()!.value).toBe("My translation");
+        expect(ui.target.textContent).toContain(language.translationEditorChangedElsewhere);
+        ui = ui.remount();
+        expect(ui.textarea()?.value).toBe("My translation");
+        expect(ui.target.textContent).toContain(language.translationEditorChangedElsewhere);
+        ui.click(ui.button(language.editTranslationSave));
+        await tick();
+        flushSync();
+        expect(held()!.translation).toMatchObject({ text: "My translation", edited: true });
+        expect(ui.textarea()).toBeNull();
+        expect(ui.target.textContent).not.toContain(language.translationEditorChangedElsewhere);
+        await ui.expectText("My translation");
+        ui.click(ui.button(language.editTranslation));
+        ui.textarea()!.value = "Discard this";
+        ui.textarea()!.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        ui.click(ui.button(language.cancel));
+        ui = ui.remount();
+        await ui.expectText("My translation");
+        expect(ui.textarea()).toBeNull();
+        ui.click(ui.button(language.editTranslation));
+        expect(ui.textarea()!.value).toBe("My translation");
     });
 
     it("an open editor keeps its Save and Cancel when the settings switch to the rendered path meanwhile, and saves to the target it opened on", async () => {
@@ -993,5 +1233,181 @@ describe("the rendered path is unchanged", () => {
         ui.click(ui.toggle());
         await ui.expectText("Hello");
         expect(fetchCalls).toEqual([]);
+    });
+});
+
+describe("cached translation drafts", () => {
+    async function renderTranslatedRow() {
+        const row = render();
+        await vi.advanceTimersByTimeAsync(20);
+        await row.instance.whenRendered();
+        expect(row.text()).toBe("[T]A");
+        return row;
+    }
+
+    async function openTranslation(row: ReturnType<typeof render>) {
+        row.click(row.button(language.editTranslation));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(row.textarea()).not.toBeNull();
+        return row.textarea()!;
+    }
+
+    const type = (field: HTMLTextAreaElement, value: string) => {
+        field.value = value;
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    };
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.mocked(readLLMCacheEntry).mockReset().mockResolvedValue("Cached reply");
+    });
+    afterEach(() => {
+        vi.mocked(readLLMCacheEntry).mockReset().mockResolvedValue(null);
+        vi.mocked(writeLLMCacheEntry).mockReset().mockResolvedValue(undefined);
+        vi.restoreAllMocks();
+    });
+
+    it.each(["inline", "expanded"])("recovers the %s draft after the row remounts", async (mode) => {
+        boot(`cache-remount-${mode}`, { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const row = await renderTranslatedRow();
+        let field = await openTranslation(row);
+        expect(field.value).toBe("Cached reply");
+        if (mode === "expanded") {
+            vi.spyOn(popupEditorMode, "readPopupEditorMonaco").mockReturnValue(false);
+            row.click(row.target.querySelector(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`));
+            const popupTarget = document.createElement("div");
+            document.body.append(popupTarget);
+            mounted.push(mount(PopupEditor, { target: popupTarget }));
+            flushSync();
+            field = popupTarget.querySelector("textarea")!;
+        }
+        type(field, "My translation draft");
+
+        const replacement = row.remount();
+        await vi.advanceTimersByTimeAsync(20);
+        await replacement.instance.whenRendered();
+        expect((await openTranslation(replacement)).value).toBe("My translation draft");
+    });
+
+    it.each(["candidate", "generation"])(
+        "keeps drafts separate for each %s with the same rendered text",
+        async (kind) => {
+            const { ref } = boot(`same-rendered-text-${kind}`, { autoTranslate: true, target: "rendered" });
+            settings.ui.disableAutoPopupMessageEditor = true;
+            if (kind === "candidate") {
+                patchMessage(ref, "a", {
+                    candidates: [
+                        { id: "first", data: "A" },
+                        { id: "second", data: "A" },
+                    ],
+                    selected: 0,
+                });
+            }
+            const select = async (id: string) => {
+                if (kind === "candidate") selectCandidate(ref, "a", id);
+                else patchMessage(ref, "a", { generationInfo: { generationId: id } });
+                flushSync();
+                await vi.advanceTimersByTimeAsync(0);
+            };
+            await select("first");
+            const row = await renderTranslatedRow();
+            type(await openTranslation(row), "First reply draft");
+
+            await select("second");
+            expect(row.textarea()).toBeNull();
+            const second = await openTranslation(row);
+            expect(second.value).toBe("Cached reply");
+            type(second, "Second reply draft");
+            await select("first");
+            expect((await openTranslation(row)).value).toBe("First reply draft");
+        },
+    );
+
+    it("requires a fresh Save after a pending cache read discovers an outside edit", async () => {
+        boot("cache-save-conflict", { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const row = await renderTranslatedRow();
+        type(await openTranslation(row), "My translation draft");
+        let cached = "A newer translation from another tab";
+        const read = deferred<string>();
+        vi.mocked(readLLMCacheEntry).mockReturnValue(read.promise);
+        vi.mocked(writeLLMCacheEntry).mockImplementation(async (_key, text) => {
+            cached = text;
+        });
+
+        const save = row.button(language.editTranslationSave)!;
+        row.click(save);
+        const disabledWhileReading = save.disabled;
+        row.click(save);
+        read.resolve(cached);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cached).toBe("A newer translation from another tab");
+        expect(disabledWhileReading).toBe(true);
+        expect(row.target.querySelector('[role="status"]')?.textContent).toBe(
+            language.translationEditorChangedElsewhere,
+        );
+        expect(row.textarea()?.value).toBe("My translation draft");
+        row.click(row.button(language.editTranslationSave));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cached).toBe("My translation draft");
+        expect(row.textarea()).toBeNull();
+    });
+
+    it("keeps Save disabled through a pending cache write", async () => {
+        boot("cache-write-pending", { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const row = await renderTranslatedRow();
+        type(await openTranslation(row), "My translation draft");
+        const write = deferred<void>();
+        vi.mocked(writeLLMCacheEntry).mockReturnValue(write.promise);
+
+        const save = row.button(language.editTranslationSave)!;
+        row.click(save);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(writeLLMCacheEntry).toHaveBeenCalledOnce();
+        expect(save.disabled).toBe(true);
+        row.click(save);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(writeLLMCacheEntry).toHaveBeenCalledOnce();
+
+        write.resolve(undefined);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(row.textarea()).toBeNull();
+    });
+
+    it.each(["gains", "loses"])("reopens the same cache draft after the reply %s a candidate ID", async (change) => {
+        const { ref } = boot(`cache-candidate-id-${change}`, { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const generationInfo = { generationId: "reply-generation" };
+        const withCandidate = () =>
+            patchMessage(ref, "a", {
+                generationInfo,
+                candidates: [
+                    { id: "first", data: "A", generationInfo },
+                    { id: "second", data: "B" },
+                ],
+                selected: 0,
+            });
+        const standalone = () => patchMessage(ref, "a", { generationInfo }, ["candidates", "selected"]);
+        const gainsId = change === "gains";
+        if (gainsId) standalone();
+        else withCandidate();
+        const row = await renderTranslatedRow();
+        type(await openTranslation(row), "My translation draft");
+        const [key] = vi.mocked(readLLMCacheEntry).mock.lastCall!;
+        const hold = () => openCachedTranslationDraft(ref, "a", key, messageEditorReplyKey(ref, "a"), "Cached reply");
+        const original = hold();
+        original.release();
+
+        if (gainsId) withCandidate();
+        else standalone();
+        flushSync();
+        expect((await openTranslation(row)).value).toBe("My translation draft");
+        const reopened = hold();
+        expect(reopened.draft).toBe(original.draft);
+        reopened.release();
     });
 });

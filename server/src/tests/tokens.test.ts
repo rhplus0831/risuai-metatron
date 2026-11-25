@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { Tiktoken } from "@dqbd/tiktoken";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,6 +44,37 @@ describe("the fixture", () => {
             expect(Object.keys(fixture.families[family]).sort()).toEqual([...TEXT_NAMES].sort());
         }
     });
+});
+
+describe("native tiktoken patterns", () => {
+    it.each(["cl100k_base", "o200k_base"] as const)(
+        "%s loads a package-valid pattern JavaScript cannot compile and keeps package ids",
+        async (family) => {
+            const require = createRequire(import.meta.url);
+            const data = require(`@dqbd/tiktoken/encoders/${family}.json`) as {
+                bpe_ranks: string;
+                special_tokens: Record<string, number>;
+                pat_str: string;
+            };
+            const pattern = "\\p{L}++|\\p{N}{1,3}|[^\\p{L}\\p{N}]+";
+            expect(() => new RegExp(pattern, "gu")).toThrow(SyntaxError);
+            const native = new Tiktoken(data.bpe_ranks, data.special_tokens, pattern);
+            const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+            const original = data.pat_str;
+            try {
+                data.pat_str = pattern;
+                await expect(tokenizers.load(family)).resolves.toBeUndefined();
+                const text = "hello world 123, Ελληνικά " + "a".repeat(1100);
+                const expected = native.encode(text);
+                expect(Array.from(await tokenizers.encode(family, text))).toEqual(Array.from(expected));
+                expect(await tokenizers.count(family, text)).toBe(expected.length);
+            } finally {
+                data.pat_str = original;
+                native.free();
+                await tokenizers.dispose();
+            }
+        },
+    );
 });
 
 describe("the dispose contract", () => {
@@ -193,16 +225,24 @@ function stubTokenizers() {
     return { tokenizers, calls };
 }
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
 const family = (name: string): TokenizerChoice => ({ kind: "family", family: name as TokenizerFamily });
 
 describe("selectTokenizer (the shared routing)", () => {
     const base = { aiModel: "gpt-5.5", customTokenizer: "tik", pluginTokenizer: "none", googleClaudeTokenizing: false };
 
-    it("routes openrouter and reverse_proxy by customTokenizer, llama3 to the llama model, unknown names to o200k_base", () => {
+    it("routes openrouter and reverse_proxy by customTokenizer, llama3 to its own family, unknown names to o200k_base", () => {
         const byName: Record<string, string> = {
             mistral: "mistral",
             llama: "llama",
-            llama3: "llama",
+            llama3: "llama3",
             novelai: "novelai",
             claude: "claude",
             novellist: "novellist",
@@ -239,7 +279,7 @@ describe("selectTokenizer (the shared routing)", () => {
         expect(custom("none")).toEqual(family("o200k_base"));
         expect(custom("o200k_base")).toEqual(family("o200k_base"));
         expect(custom("cl100k_base")).toEqual(family("cl100k_base"));
-        expect(custom("llama3")).toEqual(family("llama"));
+        expect(custom("llama3")).toEqual(family("llama3"));
         expect(custom("claude")).toEqual(family("claude"));
         expect(custom("deepseek-v4")).toEqual(family("DeepSeekV4"));
         expect(custom("whatever")).toEqual(family("o200k_base"));
@@ -255,6 +295,22 @@ describe("selectTokenizer (the shared routing)", () => {
                 modelTokenizer: LLMTokenizer.Unknown,
             }),
         ).toEqual(family("cl100k_base"));
+    });
+
+    it("switches custom and legacy plugin overrides between Llama 3 and Llama without changing catalogue defaults", () => {
+        for (const aiModel of ["reverse_proxy", "openrouter", "custom"]) {
+            const override = (name: string) =>
+                selectTokenizer({
+                    ...base,
+                    aiModel,
+                    customTokenizer: name,
+                    pluginTokenizer: name,
+                    modelTokenizer: LLMTokenizer.Claude,
+                });
+            expect(override("llama3")).toEqual(family("llama3"));
+            expect(override("llama")).toEqual(family("llama"));
+        }
+        expect(selectTokenizer({ ...base, modelTokenizer: LLMTokenizer.Llama3 })).toEqual(family("cl100k_base"));
     });
 
     it("routes every catalogue family; GoogleCloud counts remotely only with googleClaudeTokenizing", () => {
@@ -289,6 +345,52 @@ describe("selectTokenizer (the shared routing)", () => {
     });
 });
 describe("createTokenCounter", () => {
+    it("counts Google scopes locally with Gemma SentencePiece without fetching or reading or filling the encode cache", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            const { tokenizers, calls } = stubTokenizers();
+            const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ totalTokens: 7 })));
+            const counter = createTokenCounter({ tokenizers, fetchImpl });
+            const google = scope({
+                model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "gemini-3-flash-preview" },
+                googleClaudeTokenizing: true,
+                useTokenizerCaching: true,
+            });
+            expect(await counter.countLocal("reply", google)).toBe(2);
+            expect(await counter.countLocal("reply", google)).toBe(2);
+            expect(fetchImpl).not.toHaveBeenCalled();
+            // A local result must not become the next remote encode's cached answer.
+            expect(await counter.count("reply", google)).toBe(7);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+            // The remote result is now cached, but the local count still uses its own tokenizer.
+            expect(await counter.countLocal("reply", google)).toBe(2);
+            expect(calls).toEqual([
+                ["gemmaSentencePiece", "reply"],
+                ["gemmaSentencePiece", "reply"],
+                ["gemmaSentencePiece", "reply"],
+            ]);
+            expect(await counter.count("reply", google)).toBe(7);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("counts family scopes like count while bypassing the encode cache in both directions", async () => {
+        const { tokenizers, calls } = stubTokenizers();
+        const counter = createTokenCounter({ tokenizers });
+        const selected = scope({ aiModel: "reverse_proxy", customTokenizer: "glm5", useTokenizerCaching: true });
+        expect(await counter.countLocal("reply", selected)).toBe(2);
+        expect(await counter.count("reply", selected)).toBe(2);
+        expect(await counter.count("reply", selected)).toBe(2);
+        expect(await counter.countLocal("reply", selected)).toBe(2);
+        expect(calls).toEqual([
+            ["GLM5", "reply"],
+            ["GLM5", "reply"],
+            ["GLM5", "reply"],
+        ]);
+    });
+
     it("encodes with the routed family and counts the ids; caching off asks the tokenizers every time", async () => {
         const { tokenizers, calls } = stubTokenizers();
         const counter = createTokenCounter({ tokenizers });
@@ -326,6 +428,34 @@ describe("createTokenCounter", () => {
     });
 
     describe("with useTokenizerCaching", () => {
+        it("calls the set with two arguments and rejects an aborted cache hit", async () => {
+            const { tokenizers } = stubTokenizers();
+            const counter = createTokenCounter({ tokenizers });
+            const cached = scope({ useTokenizerCaching: true });
+            await counter.count("cached", cached);
+            await counter.count("cached", cached);
+            const reason = new Error("caller already left");
+            await expect(counter.count("cached", cached, AbortSignal.abort(reason))).rejects.toBe(reason);
+            expect(tokenizers.encode).toHaveBeenCalledExactlyOnceWith("o200k_base", "cached");
+        });
+
+        it("forwards a family count's signal and discards ids that arrive after abort", async () => {
+            const { tokenizers } = stubTokenizers();
+            const ids = deferred<number[]>();
+            const encode = vi.mocked(tokenizers.encode).mockReturnValueOnce(ids.promise);
+            const counter = createTokenCounter({ tokenizers });
+            const cached = scope({ useTokenizerCaching: true });
+            const caller = new AbortController();
+            const pending = counter.count("retry", cached, caller.signal);
+            expect(encode.mock.calls[0][2]).toBe(caller.signal);
+            caller.abort(new Error("count no longer needed"));
+            ids.resolve([11]);
+            await expect(pending).rejects.toBe(caller.signal.reason);
+
+            await expect(counter.count("retry", cached)).resolves.toBe(2);
+            expect(encode).toHaveBeenCalledTimes(2);
+        });
+
         it("answers a repeated text of the same scope from the cache and separates the scopes by every field", async () => {
             const { tokenizers, calls } = stubTokenizers();
             const counter = createTokenCounter({ tokenizers });
@@ -472,6 +602,45 @@ describe("createTokenCounter", () => {
                 );
                 return { requests, fetchImpl };
             }
+
+            it.each(["finishes", "leaves"] as const)(
+                "shares the fallback until the remaining caller %s",
+                async (last) => {
+                    const { tokenizers } = stubTokenizers();
+                    const started = deferred<AbortSignal | undefined>();
+                    const ids = deferred<number[]>();
+                    const encode = vi.mocked(tokenizers.encode).mockImplementation((_family, _text, signal) => {
+                        started.resolve(signal);
+                        return ids.promise;
+                    });
+                    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("quota", { status: 429 }));
+                    const counter = createTokenCounter({ tokenizers, fetchImpl });
+                    const left = new AbortController();
+                    const right = new AbortController();
+                    const withdrawn = counter.count("shared", google(), left.signal);
+                    const remaining = counter.count("shared", google(), right.signal);
+                    const settled = Promise.allSettled([withdrawn, remaining]);
+                    try {
+                        const fallbackSignal = await started.promise;
+                        expect(fallbackSignal).toBe(fetchImpl.mock.calls[0][1]?.signal);
+                        left.abort(new Error("first caller left"));
+                        await expect(withdrawn).rejects.toBe(left.signal.reason);
+                        expect(fallbackSignal?.aborted).toBe(false);
+                        if (last === "leaves") {
+                            right.abort(new Error("last caller left"));
+                            await expect(remaining).rejects.toBe(right.signal.reason);
+                            expect(fallbackSignal?.reason).toBe(right.signal.reason);
+                        } else {
+                            ids.resolve([1, 2, 3]);
+                            await expect(remaining).resolves.toBe(3);
+                        }
+                        expect(encode).toHaveBeenCalledExactlyOnceWith("gemmaSentencePiece", "shared", fallbackSignal);
+                    } finally {
+                        ids.resolve([]);
+                        await settled;
+                    }
+                },
+            );
 
             it("shares in-flight counts by text and model and aborts the request only when its last caller aborts", async () => {
                 const { tokenizers } = stubTokenizers();
@@ -693,6 +862,23 @@ describe("createTokenCounter", () => {
             expect(await counter.count("same text", a)).toBe(7);
             expect(await counter.count("same text", { ...a, useTokenizerCaching: true })).toBe(7);
             expect(fetchImpl).toHaveBeenCalledTimes(1);
+        });
+
+        it("keeps ab with model c separate from a with model bc in both in-flight counts and cached counts", async () => {
+            const { tokenizers } = stubTokenizers();
+            const fetchImpl = vi.fn<typeof fetch>(async (url) =>
+                ok(new URL(String(url)).pathname === "/v1beta/models/c:countTokens" ? 7 : 19),
+            );
+            const counter = createTokenCounter({ tokenizers, fetchImpl });
+            const c = google({ model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "c" } });
+            const bc = google({ model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "bc" } });
+
+            await expect(Promise.all([counter.count("ab", c), counter.count("a", bc)])).resolves.toEqual([7, 19]);
+            expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+            expect(await counter.count("ab", c)).toBe(7);
+            expect(await counter.count("a", bc)).toBe(19);
+            expect(fetchImpl).toHaveBeenCalledTimes(2);
         });
 
         it("two scopes that resolve one aiModel to different models count separately, cached or not", async () => {

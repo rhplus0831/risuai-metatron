@@ -41,7 +41,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -225,7 +225,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
         expect(h.chat.hasChatWork()).toBe(false);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(warns()).toBe(false);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.fake.batchCount()).toBe(batches);
     }
 
@@ -242,7 +242,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
             expect(h.characterStore.removeCharacter("c")).toBe(true);
             // The deletion goes out and is acknowledged while the unload answer is still in transit;
             // the retired group does not hold the flush barrier.
-            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             expect(h.fake.record("characters", "c")).toBeNull();
             expect(h.fake.chat("c", "k")).toBeNull();
             expect(h.chat.heldChatRevision(refK)).toBeNull();
@@ -272,7 +272,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
         await vi.advanceTimersByTimeAsync(700);
         // The in-flight group counts as discarded (the request may still answer); its answer then
         // changes nothing.
-        expect(await h.sync.flushResources({ scope })).toEqual({ discarded: ["chats/c/k"] });
+        expect(await h.sync.flushResources({ scope })).toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(h.characters()).toEqual([]);
         expect(h.chat.heldChatRevision(refK)).toBeNull();
@@ -300,7 +300,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
         // The acknowledged deletion retires the old `k`'s unload group with the deleted chats, so the
         // replacement's `k` is created with the character in the follow-up cycle (before the fix its
         // create waited for the group in flight under the same key).
-        expect(await deleting).toEqual({ discarded: [] });
+        expect(await deleting).toEqual({ discarded: [], refused: [] });
         expect(h.fake.record("characters", "c")!.data.name).toBe("Replacement");
         expect(h.fake.order("c")!.ids).toEqual(["k"]);
         expect(h.fake.texts("c", "k")).toEqual(["Rewritten transcript"]);
@@ -314,7 +314,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
         expect(h.chat.hasChatWork()).toBe(false);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(warns()).toBe(false);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(h.fake.batchCount()).toBe(batches);
         expect(h.fake.texts("c", "k")).toEqual(["Rewritten transcript"]);
         expect(h.mirrorIds()).toEqual(["k"]);
@@ -322,23 +322,26 @@ describe("a late unload answer after the chat's character or work is gone", () =
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("ignores the answer when an authoritative list discarded the chat's in-flight work meanwhile (another tab deleted the chat, and a reorder's conflict read the list): the deleted chat's revision is not held again", async () => {
+    it("applies no list over a chat's in-flight unload work (another tab deleted the chat, and a reorder's conflict read the list): the flush waits for the unload answer, the next list read removes the chat, and its revision is not held again", async () => {
         const h = await bootStore();
         const scope = h.sync.beginMutationScope();
         await holdUnloadAnswer(h);
-        h.fake.chatBatch([
-            { characterId: "c", chatId: "k", baseRevision: h.fake.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        h.fake.deleteChatForever("c", "k");
         h.chat.reorderChats("c", ["j", "k"]);
-        // The server's order (`[j]`) differs from the sent reorder, so the reorder is reported too.
-        expect(await h.sync.flushResources({ scope })).toEqual({ discarded: ["chats/c", "chats/c/k"] });
+        // The list read answered while the unload request is out is not applied: the chat stays.
+        const flushing = h.sync.flushResources({ scope });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.mirrorIds()).toContain("k");
+        // Once the unload work is answered (acknowledged, so not discarded), a fresh list read removes
+        // the chat. The server's order (`[j]`) differs from the sent reorder: that is reported.
+        await releaseUnloadAnswer(h);
+        expect(await flushing).toEqual({ discarded: ["chats/c"], refused: [] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(h.mirrorIds()).toEqual(["j"]);
         expect(h.chat.heldChatRevision(refK)).toBeNull();
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         const batches = h.fake.batchCount();
 
-        await releaseUnloadAnswer(h);
         await expectNothingLeft(h, batches);
         expect(h.mirrorIds()).toEqual(["j"]);
     });

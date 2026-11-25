@@ -1,0 +1,183 @@
+# Structured Memory Page Tools: Trash, Merge, Split, Lorebook Export, Package Import
+
+## Scope
+
+- Owns what a person does to a `structuredMemory` page as a whole: the trash, merge, split, rename, the alias list, a
+  person's own note, the lorebook export, and importing a Markdown package.
+- Page and section edits and the Markdown renderers are in [records](records.md). See
+  [the panel](read.md#pages-timeline-and-threads) for page navigation and [rebuild](rebuild.md#what-a-rebuild-keeps) for
+  the lifetime of personal changes.
+
+## Files
+
+Read the named contract with its code; the shared modules also serve other structured-memory guides.
+
+- `shared/structuredMemory.ts`: page-tool and import contracts; `MemoryPage.trashedAt`, `reshaped`, `namedByUser`,
+  `StructuredMemoryContents.trash`, `MEMORY_HISTORY_CHANGE_KINDS`, `StructuredMemoryPageTool`,
+  `StructuredMemoryPageToolAnswer`, `MEMORY_PACKAGE_VERSION`, `StructuredMemoryImportFile`, `MEMORY_IMPORT_REFUSALS`,
+  `StructuredMemoryImportRefusal`, `StructuredMemoryImportAnswer`.
+- `server/src/prompt/memory/structured/pages.ts`: pure page tools; `MemoryPageToolRefusal`, `parseMemoryPageTool`,
+  `pageToolIds`, `PageToolRecords`, `PageToolResult`, `applyPageTool`, `mergedPages`, `joinedSection`, `withAliases`,
+  `remappedEvent`, `splitPages`, `renamedPage`, `aliasedPage`, `toolEntry`, `withHistory`.
+- `server/src/prompt/memory/structured/importPackage.ts`: pure package grammar and admission; `parseMemoryPackage`,
+  `Reader.metadata`, `readPage`, `fencedEntry`, `readTimeline`, `packageVersion`, `admitted`.
+- `server/src/data/memoryStore.ts`: trash column and listing boundary; `TRASHED_PAGE_COLUMN`, `recordRow`, `listing`.
+- `server/src/routes/structuredMemory.ts`: page-tool and import HTTP boundary; `registerStructuredMemoryRoutes`,
+  `holdsRows`, `fenced`.
+- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page-tool controls and lore export; `runTool`, `exportToLore`,
+  `importPackage`, `LORE_INACTIVE`.
+- `src/ts/process/structuredMemory.svelte.ts`: tab's tool and package client; `structuredMemoryPageTool`,
+  `packageFiles`, `importStructuredMemoryPackage`, `renderMemoryThreads`.
+
+## Flows
+
+### The page tools route
+
+`runTool` calls `structuredMemoryPageTool` through `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/page-tools`. The
+route calls `applyPageTool`, checks the flagged pages with `flagUnsupportedSections`, and writes one change set at the
+tab's revision. The tab selects the answered page and rereads contents. Checks and order follow
+[the edit route](records.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`.
+
+### A person's note
+
+`createNote` posts `create` using the contents revision because a new note has no page revision of its own. The route
+checks `chatAdoptionHold` in the same step as the write so the first note cannot silently settle a pending adoption
+choice. `applyPageTool` creates a personally named note with one unlocked, user-corrected section and empty evidence.
+The tab opens the returned page in Manage. Add another section with [the edit route](records.md#the-edit-route).
+
+The personal name and section survive [a rebuild](rebuild.md#what-a-rebuild-keeps). The writer can still patch an
+unlocked, corrected section. Empty provenance alone never makes it unsupported.
+
+### Rename and aliases
+
+`renamedPage` and `aliasedPage` enforce name uniqueness among live pages of the same type. A rename normally keeps the
+old title as an alias. A merge can leave more aliases than the editor admits, so a rename may keep that list and the
+editor can replace it with a shorter one. Both edits set `namedByUser` without adding a history entry. The tab closes a
+naming draft when a reread shows a different stored title or list. [Rebuild](rebuild.md#what-a-rebuild-keeps) uses the
+mark to keep the person's naming.
+
+### The trash
+
+`/records/pages/:id` still reads a trashed page for the panel; `/edits` page edits and `/revert` refuse it 400. Trash
+preserves reference ids, so a restore reconnects them. A `purge` leaves dangling references, which readers tolerate. The
+store also refuses a trashed scene independently of the tool. A writer may have reused the trashed name. Restore allows
+the collision and the merge tool can resolve it.
+
+### What a merge or split does to history
+
+`mergedPages` and `splitPages` leave heading blockers without an `eventId`. The
+[revert route](records.md#the-revert-route) calls `revertChange`, which refuses older entries `superseded`; the tool
+entries themselves cannot be reverted. The bounded history drops oldest first, so a blocker outlives what it blocks.
+
+`reshaped` outlives history on a merge target and both split pages. [Rebuild](rebuild.md) seeds all their sections and
+history; a [branch](lifecycle.md) keeps their text and flags sections citing behind events. Without `reshaped`, a
+rebuild keeps only what `seededPage` keeps for another reason, such as a lock or a person's grade, and an unseeded page
+can disappear at the swap; a branch could lose the source's half of a join or the whole page.
+
+### Lorebook export
+
+`exportToLore` appends chat `localLore` through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`. The next writer's
+`aliasSeeds` reads its title and alias keys; `shared/lore/activation.ts` calls `CCardLib.decorator.parse` to read its
+inactive decorator. This chat write is outside the memory revision and fence.
+
+### The import route
+
+1. `importPackage` captures the chat and contents revision before the file picker, retaining both through confirmation
+   and `importStructuredMemoryPackage`. `packageFiles` unzips with fflate in the tab and caps the sum of the Markdown
+   entries’ declared unpacked sizes at `MEMORY_RESTORE_BODY_BYTES`. The client sends Markdown to
+   `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, where the server applies its configured `restoreBodyBytes`
+   to the JSON request, including escaping and file paths.
+2. The route calls `parseMemoryPackage`, which reads the renderers' grammar, drops `trashedAt` so every page imports
+   live, and validates each record through `parseRestoredRecords` in `restore.ts`. File and event refusals return in
+   `StructuredMemoryImportAnswer`.
+3. After parsing, the route checks the epoch, fence, and emptiness, then commits what stands in one `store.memory.write`
+   at the tab's revision, without yielding. Only a chat with no rows, trash and runs included, and no `chatAdoptionHold`
+   can import; any other answers `imported: false` and writes nothing. The route contract holds why add-only import
+   cannot bind records safely.
+
+## State
+
+- `trashedAt` is on the record. The `type` column of a trashed row says `trashed` and the record keeps its true type, so
+  `listing` splits rows with no statement reading `data`, and `MEMORY_PAGE_TYPES` does not grow.
+- `contents.trash` rows hold `id`, `title`, and `bytes`, with no type: the column holds none.
+- The tab holds a tool's form state per selected page, and the import report until another chat.
+
+## Coupling
+
+- Trash is kept deliberately. A checkpoint, snapshot, and backup keep it, walking rows through `recordRow`. A rebuild
+  leaves it live, since `rebuildChanges` removes only ids of `contents.pages`. A copy, branch, chat file, and package
+  leave it behind, each built from `contents.pages`, and events keep its id, which [a restore](lifecycle.md) calls
+  legal. The projection reads events.
+- `/inherit`, `/restore`, and `/import` count `contents.trash` as a row, so no write reaches a trashed row by id.
+  `/adopt` does not, matching `adoptionHold`, so a chat with only trash can still be adopted.
+- A trashed name is unknown to the writer, which may create that name again.
+- `restore.ts` checks `trashedAt`, `reshaped`, and `namedByUser`, so a record type's new field cannot go unchecked.
+
+## Invariants
+
+- Every decision about trash reads the record's `trashedAt`. The column only lists: an older build can rewrite a row's
+  column ([Limitations](#limitations)).
+- A reader of pages starts from `contents.pages`. A new reader by id must refuse or show a trashed page on purpose.
+- The scene page takes no tool but export. `recordRow` refuses a trashed scene, a snapshot's included.
+- A tool's `merge`, `split`, and `create` entries never carry an `eventId`. A rename and an alias edit write no history
+  entry, and a person's note and added section reuse the `create` and `edit` kinds, since an older build checks the
+  closed list of kinds.
+- A rename or an alias edit never gives a page a new name another live page of its type goes by, and cuts no alias.
+- A merge writes reference changes in events, threads, and live pages in one change set, so no partial remapping is
+  visible.
+- A tool or import that would not fit is refused, never cut.
+- Purge, merge, and split capture the chat before confirmation and carry it through `runTool`/`sendChange`; navigation
+  never redirects the request to another chat.
+
+## Recipes
+
+- A new page tool: add it to `StructuredMemoryPageTool`, `parseMemoryPageTool`, `pageToolIds`, and `applyPageTool`, and
+  give the tab a control that calls `runTool`.
+- A new field holding a page id: add it to `remappedEvent` in `pages.ts`, or a merge leaves it on the trashed source.
+- A new package file: render it, read it in `parseMemoryPackage`, bump `MEMORY_PACKAGE_VERSION`, and keep the older
+  version importing.
+
+## Tests
+
+- `server/src/tests/structuredMemoryRoutes.test.ts` drives both routes on a real app: the tools, a revert across them,
+  and the fence, the revision, and the shared step, the last with a microtask queued from the fence's own read.
+- `structured/importPackage.test.ts` reads `server/src/tests/fixtures/memoryPackage.json`, literal rendered files with
+  bodies that hold the grammar's own delimiters. A server test cannot import the tab's renderers, so
+  `src/ts/process/structuredMemory.test.ts` keeps the fixture true to them and reads their output back through
+  `parseMemoryPackage`. `structured/pages.test.ts` unit-tests the page tools.
+- `structured/rebuild.test.ts` and `structured/inherit.test.ts` drive a `reshaped` page through a seed and a branch.
+- `memoryStore.test.ts` and `restoreStage.test.ts` drive trash through a checkpoint, a snapshot, and a swap.
+- `src/ts/process/structuredMemory.test.ts` drives the client with `authFetch` scripted, and
+  `StructuredMemoryPanel.test.ts` the controls, with `activateLore` proving the exported entry stays inactive.
+- Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage structured/`. No `slow` or `e2e`
+  membership of its own.
+- Not tested: real file picking and the zip dialog in a browser.
+
+## Known Hazards
+
+### Limitations
+
+Decisions: Structured Memory slice 7d, archive, unless an entry names another.
+
+- A rollback brings trash back quietly. An older build lists a `trashed` row in `contents.pages` and takes the true type
+  from the record, so a trashed page reaches its sends and writer again, while its panel tree, which groups by known
+  types, hides the row. A write there sets the column to the true type and keeps `trashedAt`; after rolling forward that
+  page reads as live until a tool writes it, and its detail shows Restore.
+- A receipt keeps the title of its time, so after a rename an older receipt names the old title.
+- A person can add a section and cannot delete one; only the writer's patches and a merge or split move sections.
+- A note's whole-page `create` entry has no heading, so a rebuild, which keeps the history of marked headings, drops it.
+- An older build's rebuild does not read `namedByUser`, so a renamed page with nothing else of a person's on it is
+  written anew there; the field itself survives the older build's restore, which keeps unknown fields.
+- An older build refuses a chat file holding a `merge` or `split` history entry whole, since its `restore.ts` checks the
+  closed list.
+- Trash has no size limit or expiry: a page stays until a person deletes it forever or a
+  [fresh rebuild](rebuild.md#what-a-rebuild-keeps) commits its swap.
+- After a rebuild or a merge, a restored page can cite events that no longer exist. An id naming no event is not
+  retracted, so nothing flags it.
+- What a person took back on a merge's source stays on the trashed source, so the writer can propose it on the target.
+- A branch keeps a reshaped page's text from past the branch point, flagged `unsupported` where a section names a behind
+  event, and a send shows that text.
+- The lorebook entry can be lost to a stale whole-array write of `localLore` from another tab, as any lore edit can.
+- A package past `MEMORY_RESTORE_BODY_BYTES` cannot be imported, though rounds can export it.
+- Hand edits have no round-trip guarantee: a mismatched body line count refuses the file. Decision: Structured Memory
+  D5, archive.

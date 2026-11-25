@@ -6,6 +6,12 @@ import { AssetSaveQueue } from "../storage/assetQueue";
 // The entry cap both CharX readers share (50MB; the server's is `POST /api/import/charx`).
 import { MAX_CHARX_ENTRY_BYTES as MAX_ASSET_SIZE_BYTES } from "../../../shared/charxImport.ts";
 
+/**
+ * The in-tab CharX zip codec: `CharXImporter` reads one (bytes and streams only; a CharX file goes to the server's
+ * import, `src/ts/storage/charxImportClient.ts`) by the entry rules of `shared/charxImport.ts`, and `CharXWriter`
+ * writes one for the card export. `processZip` returns the first image of any zip as a data URL.
+ */
+
 // Chunk size constant
 const CHUNK_SIZE_BYTES = 1024 * 1024; // 1MB
 // The CharX importer pushes zip input in slices this small, waiting for a free save slot before each,
@@ -42,6 +48,13 @@ export async function processZip(dataArray: Uint8Array): Promise<string> {
     }
 }
 
+/**
+ * Writes a CharX zip to a stream as it goes (`exportCharacterCard`). `write` sanitizes the member name (characters
+ * Windows refuses, reserved device names, trailing dots and spaces), renames a name already written (`name_1.ext`),
+ * and returns the name it wrote: an `embeded://` reference is built from that return value. A zip callback error is
+ * kept and rethrown by the `write` that caused it or the next `write` or `end`. `writeJpeg` writes the portrait as a
+ * JPEG ahead of the zip (a CharX-JPEG).
+ */
 export class CharXWriter {
     zip: fflate.Zip;
     writeEnd: boolean = false;
@@ -167,8 +180,14 @@ export class CharXWriter {
  * - Processing ZIP streams incrementally to handle large files efficiently
  * - Parsing metadata (card.json, module.risum) synchronously
  * - Saving assets to storage concurrently through the asset save queue (`AssetSaveQueue`,
- *   MAX_CONCURRENT_ASSET_SAVES at once). The feed loop waits for a free save slot before pushing
+ *   MAX_CONCURRENT_ASSET_SAVES, 10, at once). The feed loop waits for a free save slot before pushing
  *   more input, so only about MAX_CONCURRENT_ASSET_SAVES decoded, not yet saved assets are held.
+ *
+ * It is the in-tab reader, for bytes and streams only (tests); a CharX file goes to the server. The feed loop pushes
+ * 64 KiB slices (`UNZIP_PUSH_BYTES`), each after `whenReady()`. A ZIP callback or input-read failure cancels the
+ * input, aborts and drains the queued uploads, clears the partial results (`assets`, `cardData`, `moduleData`,
+ * `excludedFiles`), and rejects both `parse()` and `done()` with the original error. An upload failure does not
+ * reject `parse()`; it rejects `done()` once every save settled (several as an `AggregateError`).
  */
 export class CharXImporter {
     // ZIP streaming parser

@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page } from "./fixtures";
 import { newPersonaId, normalizeModelPreset, normalizeModelProfile, normalizePreset } from "../shared/presets.ts";
 import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
@@ -374,6 +374,12 @@ async function openChatRow(page: Page, name: string) {
 
 const sendButton = (page: Page) => page.locator(".button-icon-send");
 const composer = (page: Page) => page.locator("textarea.text-input-area");
+/** The text of a draft from before the chat became incomplete: the composer cannot be typed into now. */
+const keptDraft = (page: Page, text: string) =>
+    composer(page).evaluate((input: HTMLTextAreaElement, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, text);
 const dialog = (page: Page) => page.getByRole("dialog");
 const row = (scope: Locator, field: "modelPresetId" | "promptPresetId" | "personaId") =>
     scope.locator(`[data-chat-binding-field="${field}"]`);
@@ -429,12 +435,24 @@ test("an unbound chat refuses to send and opens the binding dialog; its rows bin
     await expect(chatRow(page, "Unbound").locator("[data-chat-binding-incomplete]")).toHaveCount(1);
     await expect(chatRow(page, "Bound A").locator("[data-chat-binding-incomplete]")).toHaveCount(0);
 
-    // The send button reads "Set up this chat"; Enter opens the dialog and consumes nothing.
+    // The send button reads "Set up this chat", the composer is locked with the placeholder saying so;
+    // Enter opens the dialog and consumes nothing.
     await openChatRow(page, "Unbound");
     const ref = { chaId, chatId: chats.unbound };
     await expect(sendButton(page)).toHaveText("Set up this chat");
+    await expect(composer(page)).toHaveAttribute("placeholder", "Setup required");
+    // A custom CSS size on the composer reaches its placeholder too.
+    expect(
+        await composer(page).evaluate((input) => {
+            input.style.fontSize = "33px";
+            const size = getComputedStyle(input, "::placeholder").fontSize;
+            input.style.fontSize = "";
+            return size;
+        }),
+    ).toBe("33px");
+    await expect(composer(page)).not.toBeEditable();
     const bodiesBefore = providerBodies.length;
-    await composer(page).fill("Hello there");
+    await keptDraft(page, "Hello there");
     await composer(page).press("Enter");
     await expect(dialog(page)).toBeVisible();
     await expect(dialog(page)).toContainText("Unbound");
@@ -467,6 +485,7 @@ test("an unbound chat refuses to send and opens the binding dialog; its rows bin
     await dialog(page).getByRole("button", { name: "Close" }).click();
     await expect(dialog(page)).toHaveCount(0);
     await expect(sendButton(page)).not.toHaveText("Set up this chat");
+    await expect(composer(page)).toBeEditable();
     const sidePanel = page.locator("[data-chat-binding-panel]");
     await expect(row(sidePanel, "modelPresetId")).toContainText(NAMES.modelA);
     await expect(row(sidePanel, "personaId")).toContainText(NAMES.personaA);
@@ -624,7 +643,7 @@ test("an imported chat keeps the ids that exist here, drops the others, and need
     // the dialog, the text stays, and no job is created.
     await expect(sendButton(page)).toHaveText("Set up this chat");
     const bodiesBefore = providerBodies.length;
-    await composer(page).fill("Imported send");
+    await keptDraft(page, "Imported send");
     await composer(page).press("Enter");
     await expect(dialog(page)).toBeVisible();
     await expect(composer(page)).toHaveValue("Imported send");
@@ -713,4 +732,78 @@ test("two tabs showing two bound chats send with their own presets: the provider
     expect(sa.errors).toEqual([]);
     expect(sb.errors).toEqual([]);
     await context.close();
+});
+
+test("a settings pick shows the tab's prompt while the chat and its next request keep their binding; a second pick switches back", async ({
+    context,
+    baseURL,
+}) => {
+    const s = await session(context, baseURL!);
+    const { chaId, chats, a, b } = await seed(s);
+    const { page } = s;
+    await openCharacter(page, chaId);
+    await openChatRow(page, "Unbound");
+    const ref = { chaId, chatId: chats.unbound };
+    await sendButton(page).click();
+    for (const [field, heading, name] of [
+        ["modelPresetId", "Model Presets", NAMES.modelA],
+        ["promptPresetId", "Prompt Presets", NAMES.promptA],
+        ["personaId", "Persona", NAMES.personaA],
+    ] as const) {
+        await row(dialog(page), field).click();
+        await pick(page, heading, name);
+    }
+    await dialog(page).getByRole("button", { name: "Close" }).click();
+    expect(await entryOf(page, ref)).toMatchObject(a);
+
+    const openPromptSettings = () =>
+        page.evaluate(async () => {
+            const stores = await import("/src/ts/stores.svelte.ts");
+            stores.SettingsMenuIndex.set(stores.PROMPT_SETTINGS_MENU);
+            stores.settingsOpen.set(true);
+        });
+    await openPromptSettings();
+    const header = page
+        .getByRole("heading", { name: "Prompt", exact: true })
+        .locator("xpath=following-sibling::div[1]");
+    await header
+        .locator("button")
+        .filter({ has: page.locator(".lucide-list") })
+        .click();
+    await expect(picker(page, "Prompt Presets")).not.toContainText("For this chat");
+    await pick(page, "Prompt Presets", NAMES.promptB);
+    expect((await tabSelection(page)).presetId).toBe(b.promptPresetId);
+    expect(await entryOf(page, ref)).toMatchObject(a);
+    await expect(header).toContainText(NAMES.promptB);
+    const responseSize = page
+        .locator(
+            'xpath=//span[starts-with(normalize-space(.), "Max Response Size")]/following-sibling::*[1]/descendant-or-self::input',
+        )
+        .first();
+    await expect(responseSize).toHaveValue("222");
+
+    // Send while B is still selected for settings: the provider must receive A's limit.
+    await page.evaluate(async () => (await import("/src/ts/stores.svelte.ts")).settingsOpen.set(false));
+    await send(page, "Send after settings pick");
+    const body = requestWith("Send after settings pick");
+    expect(body?.model).toBe("mock-a");
+    expect(body?.max_tokens).toBe(111);
+    expect(contains(body, "Persona prompt A.")).toBe(true);
+    expect(contains(body, "Persona prompt B.")).toBe(false);
+    expect(await entryOf(page, ref)).toMatchObject(a);
+    expect((await tabSelection(page)).presetId).toBe(b.promptPresetId);
+
+    await openPromptSettings();
+    await expect(header).toContainText(NAMES.promptB);
+    await header
+        .locator("button")
+        .filter({ has: page.locator(".lucide-list") })
+        .click();
+    await pick(page, "Prompt Presets", NAMES.promptA);
+    await expect(header).toContainText(NAMES.promptA);
+    await expect(responseSize).toHaveValue("111");
+    expect((await tabSelection(page)).presetId).toBe(a.promptPresetId);
+    expect(await entryOf(page, ref)).toMatchObject(a);
+    await flush(page);
+    expect(s.errors).toEqual([]);
 });

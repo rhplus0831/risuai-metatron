@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { untrack } from "svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { getCustomBackground, getEmotion } from "../../ts/util";
@@ -12,6 +13,13 @@
     import BackgroundDom from "./BackgroundDom.svelte";
     import SideBarArrow from "../UI/GUI/SideBarArrow.svelte";
     import ModuleChatMenu from "../Setting/Pages/Module/ModuleChatMenu.svelte";
+
+    /**
+     * The chat screen's layout around `DefaultChatScreen.svelte`: the `waifu` theme puts the selected character's
+     * emotion image (unless its `viewScreen` is "none") beside the chat column, both widths from the settings;
+     * every other theme keeps the classic layout. A custom background that finishes loading after a newer one was
+     * chosen is dropped, so the newest choice always wins.
+     */
 
     const currentCharacter = $derived(selectedCharacter());
     let openChatList = $state(false);
@@ -28,14 +36,15 @@
         (settings.ui.textScreenRounded ? "border-radius: 2rem; padding: 1rem;" : "") +
         (settings.ui.textScreenBorder ? `border: 0.3rem solid ${settings.ui.textScreenBorder};` : "");
     let bgImg = $state("");
-    let lastBg = $state("");
     $effect.pre(() => {
-        (async () => {
-            if (settings.ui.customBackground !== lastBg) {
-                lastBg = settings.ui.customBackground;
-                bgImg = await getCustomBackground(settings.ui.customBackground);
-            }
-        })();
+        const background = settings.ui.customBackground;
+        let current = true;
+        void untrack(() => getCustomBackground(background)).then((result) => {
+            if (current) bgImg = result;
+        });
+        return () => {
+            current = false;
+        };
     });
 </script>
 

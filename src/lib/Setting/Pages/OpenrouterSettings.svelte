@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activeMainProfile, settings, type ModelProfileView } from "src/ts/storage/settingsViews.svelte";
+    import { editedMainProfile, settings, type ModelProfileView } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
@@ -12,7 +12,7 @@
     interface Props {
         profile?: ModelProfileView;
     }
-    let { profile = activeMainProfile }: Props = $props();
+    let { profile = editedMainProfile }: Props = $props();
     const record = $derived(settings.modelProfiles.find((entry) => entry.id === profile.id));
     const key = $derived(credentialStatusFor(record, { kind: "flat", field: "openrouterKey" }));
     const provider = $derived(profile.openrouterProvider ?? { order: [], only: [], ignore: [] });

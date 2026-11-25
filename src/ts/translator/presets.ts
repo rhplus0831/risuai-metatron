@@ -13,6 +13,14 @@ import {
 } from "../../../shared/translatorPresets.ts";
 import { selectedTranslatorPreset } from "../../../shared/translation/chatSettings.ts";
 
+/**
+ * Cross-user `.risutl` codec: RPack wraps compressed msgpack with type `translator-preset`, version
+ * 1 or 2, and an encrypted msgpack preset payload. Preserve old readers by writing version 1 only
+ * when `fitsVersion1` can represent the normalized preset without loss; richer presets use version 2.
+ * Creation and normalization share `shared/translatorPresets.ts` with the server. Version 2
+ * decoding refuses invalid output-key definitions before normalization could silently drop them.
+ */
+
 export type { TranslatorPreset } from "../../../shared/settings.ts";
 export { createTranslatorPreset, defaultTranslatorPrompt };
 
@@ -28,7 +36,9 @@ interface EncryptedTranslatorPresetFile {
     preset: Uint8Array | ArrayBuffer;
 }
 
+/** Cross-user translator preset suffix; changing it breaks the paired import/export file selection. */
 export const translatorPresetFileExtension = "risutl";
+/** File-picker suffixes for this codec; generic JSON/prompt preset imports are not accepted here. */
 export const translatorPresetImportExtensions = [translatorPresetFileExtension];
 const translatorPresetEncryptionKey = "risutl";
 
@@ -256,8 +266,8 @@ function importedName(name: string): string {
 
 /**
  * Whether version 1 (`{ name, prompt, maxResponse }`) holds the preset without loss: Send Text As-Is
- * and Exclude Chain-of-Thought off, and one step on the `translate` slot, enabled, without an output key, and with the name a
- * version 1 import gives it.
+ * and Exclude Chain-of-Thought off, and one enabled step on the `translate` slot, without an output
+ * key, and with the name a version 1 import gives it.
  */
 function fitsVersion1(preset: TranslatorPreset): boolean {
     const [step, ...rest] = preset.steps;
@@ -314,10 +324,19 @@ export async function encodeTranslatorPresetFile(preset: TranslatorPreset): Prom
     return await encodeRPack(fflate.compressSync(encodeMsgpack(payload)));
 }
 
+/**
+ * Imports with fresh preset and step ids; profile references retain their ids for installations
+ * where those profiles exist. Version 1 expands to one inherited step and tolerates unrelated extra
+ * payload keys, but refuses either As-Is or exclude-thoughts field even when false. Version 2
+ * requires the exact payload/step/model shapes, valid output keys and no duplicate output key.
+ * The outer container tolerates extra keys in either version. Invalid encoding, encryption or
+ * payload rejects with "Invalid translator preset file."; blank names become "Imported Preset".
+ */
 export async function decodeTranslatorPresetFile(data: Uint8Array): Promise<TranslatorPreset> {
     return await decodeEncryptedTranslatorPresetFile(data);
 }
 
+/** Keeps the `.risutl` suffix; forbidden name characters become `_`, whitespace is trimmed, blank uses `preset`. */
 export function getTranslatorPresetDownloadName(name: string): string {
     return `translator_preset_${sanitizeFileNamePart(name)}.${translatorPresetFileExtension}`;
 }

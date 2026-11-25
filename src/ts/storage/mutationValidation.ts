@@ -1,2 +1,7 @@
-// The mutation checks live in `shared/` (the server's MCP tools validate with them too); the client's mutation modules import them from here.
+/**
+ * Client entrypoint for validation errors, JSON checks, detached copies, and field writes from
+ * `shared/mutationValidation.ts`. `server/src/mcp/internal.ts` imports those helpers directly,
+ * keeping client mutations and the server's MCP tools on the same validation rules.
+ */
+
 export * from "../../../shared/mutationValidation.ts";

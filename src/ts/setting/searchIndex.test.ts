@@ -9,7 +9,7 @@ await vi.hoisted(async () => {
     (globalThis as any).Buffer = BufferPolyfill;
 });
 
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../alert", () => ({
     alertNormal: vi.fn(),
     alertError: vi.fn(),
@@ -33,6 +33,7 @@ vi.mock("../translator/translator", () => ({
 
 import { changeLanguage } from "src/lang";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import { SETTINGS_PAGES } from "../router/routes";
 import { MODEL_PROFILES_SETTINGS_MENU } from "../settingsMenu";
 import { deleteModelProfile } from "../storage/collectionStore.svelte";
@@ -46,12 +47,14 @@ import {
 } from "../storage/settingsViews.svelte";
 import { accessibilitySettingsSections } from "./accessibilitySettingsData";
 import { advancedSettingsSections } from "./advancedSettingsData";
+import { deviceLinkSettingsSections } from "./deviceLinkSettingsData";
 import { displaySettingsSections } from "./displaySettingsData.svelte";
 import { interactionSettingsSections } from "./interactionSettingsData";
 import { memorySettingsSections } from "./memorySettingsData";
 import { modelSettingsSections } from "./modelSettingsData";
 import { promptSettingsSections } from "./promptSettingsData";
 import { searchSettings, SETTING_HIT_LIMIT, SETTING_LOCATIONS, settingLocation, type SettingHit } from "./searchIndex";
+import { storageSettingsSections } from "./storageSettingsData";
 import { translationSettingsSections } from "./translationSettingsData";
 import type { SettingContext } from "./types";
 import { getFullSettingsData } from "./utils";
@@ -59,7 +62,9 @@ import { getFullSettingsData } from "./utils";
 const ALL_SECTIONS = [
     ...accessibilitySettingsSections,
     ...interactionSettingsSections,
+    ...deviceLinkSettingsSections,
     ...advancedSettingsSections,
+    ...storageSettingsSections,
     ...translationSettingsSections,
     ...displaySettingsSections,
     ...modelSettingsSections,
@@ -135,6 +140,68 @@ describe("SETTING_LOCATIONS", () => {
 });
 
 describe("searchSettings", () => {
+    it("finds the plugin completion wait time limit by its label words", () => {
+        changeLanguage("en");
+        expect(hit("plugin wait time limit", "display.completionWaitMaxSeconds")).toMatchObject({
+            kind: "item",
+            available: true,
+        });
+    });
+
+    it("finds Input Hooks by its page title", () => {
+        changeLanguage("en");
+        expect(searchSettings("Input Hooks", ctx())).toContainEqual(
+            expect.objectContaining({
+                kind: "page",
+                label: "Input Hooks",
+                target: { menu: 24 },
+                available: true,
+            }),
+        );
+    });
+
+    it("finds Request Rules by its page title at menu 26", () => {
+        changeLanguage("en");
+        expect(searchSettings("Request Rules", ctx())).toContainEqual(
+            expect.objectContaining({
+                kind: "page",
+                label: "Request Rules",
+                target: { menu: 26 },
+                available: true,
+            }),
+        );
+    });
+
+    it("routes storage and snapshot searches to Storage instead of Advanced", () => {
+        changeLanguage("ko");
+        for (const query of ["snapshot", "스냅샷"]) {
+            const hits = searchSettings(query, ctx());
+            expect(hits).toContainEqual(
+                expect.objectContaining({
+                    target: { menu: 23, sectionId: "storage.snapshots" },
+                    available: true,
+                }),
+            );
+            expect(hits.filter((entry) => entry.target.menu === 6)).toEqual([]);
+        }
+        const hits = searchSettings("storage", ctx());
+        expect(hits).toContainEqual(expect.objectContaining({ kind: "page", target: { menu: 23 }, available: true }));
+        expect(hits.filter((entry) => entry.target.menu === 6)).toEqual([]);
+    });
+
+    it("resolves dotted section titles in Korean and matches their English titles too", () => {
+        changeLanguage("ko");
+        for (const query of ["소유자별 사용량", "Usage by owner"]) {
+            expect(searchSettings(query, ctx())).toContainEqual(
+                expect.objectContaining({
+                    kind: "section",
+                    label: "소유자별 사용량",
+                    target: { menu: 23, sectionId: "storage.owners" },
+                }),
+            );
+        }
+    });
+
     it("finds the context size by its keyword, on Connections", () => {
         expect(hit("context", "params.maxContext")).toMatchObject({
             target: { menu: MODEL_PROFILES_SETTINGS_MENU },
@@ -176,6 +243,20 @@ describe("searchSettings", () => {
         expect(remPunc()).toBe(true);
         media.supaModelType = "none";
         expect(remPunc()).toBe(false);
+    });
+
+    it("lists adv.remPunc as unavailable when Structured Memory takes precedence over SupaMemory", () => {
+        settings.ui.memoryAlgorithmType = STRUCTURED_MEMORY_ALGORITHM;
+        Object.assign(settings.memoryTranslateMedia, {
+            hanuraiEnable: false,
+            hypav2: false,
+            hypaV3: false,
+            supaModelType: "subModel",
+        });
+        expect(hit("Memory Punctuation Removal", "adv.remPunc")).toMatchObject({
+            available: false,
+            reason: "hidden",
+        });
     });
 
     it("lists a Connections item as unavailable when the main slot's profile was deleted", () => {

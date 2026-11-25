@@ -1,4 +1,5 @@
-// The rate limiter is shared with the server's memory code.
+/** The rate limiter, shared with the server's memory code (`shared/taskRateLimiter.ts`). */
+
 export {
     TaskRateLimiter,
     TaskCanceledError,

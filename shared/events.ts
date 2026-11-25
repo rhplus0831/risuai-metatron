@@ -1,8 +1,20 @@
-import type { MemoryTaskStatus, StreamingMessage } from "./jobs.ts";
+import type { GenerationKind, GenerationStage, MemoryTaskStatus, StreamingMessage } from "./jobs.ts";
 import type { ChangeSet } from "./resources.ts";
+import type { RemoteCommandFrameState } from "./remoteCommands.ts";
 
-/** The path of the live-update socket (`/api/events/ws?risu-auth=<JWT>`). */
+/**
+ * The path of the live-update socket (`/api/events/ws?risu-auth=<JWT>`). Optional `proto` is a finite
+ * non-negative integer recorded per socket and logged (invalid or absent: none), never enforced.
+ */
 export const EVENT_FEED_PATH = "/api/events/ws";
+
+/** Presence names are capped in UTF-16 code units, on both the tab and server. */
+export const MAX_FEED_CLIENT_NAME = 64;
+export const MAX_FEED_CLIENTS = 64;
+
+/** A registered live-update socket's tab identity, worker preference, and optional command-host mode. */
+export type FeedClient = { clientId: string; name: string; worker: boolean; host?: boolean };
+export type EventFeedClientMessage = { type: "register" } & FeedClient;
 
 /**
  * A chat's generation locks after a job's write or end: every message of the chat a generation job
@@ -18,30 +30,91 @@ export type ChatStreaming = { characterId: string; id: string; streaming: Stream
 export type ChatStreamingSnapshot = ChatStreaming & { revision: string | null };
 
 /**
- * A chat's HypaV3 memory task status on the live-update socket: the running task, else the queued
- * one, else the last terminal (kept 10 minutes). A terminal carries `terminalRevision`, the chat's
- * revision when the task's writes closed (null: the chat is gone).
+ * A chat's memory task status (HypaV3 summaries or the Structured Memory writer) on the live-update
+ * socket: the running task, else the queued one, else the last terminal (kept 10 minutes).
+ * A terminal carries `terminalRevision`, the chat's revision when the task's writes closed (null:
+ * the chat is gone).
  */
 export type MemoryTaskEntry = { characterId: string; chatId: string; status: MemoryTaskStatus };
+
+/** An offer contains only job identity and routing, never chat content. */
+export type HandoffOffer = {
+    epoch: string;
+    jobId: string;
+    characterId: string;
+    chatId: string;
+    state: "open" | "closed";
+    reason: "absent" | "preferred" | "requested";
+    target?: string;
+};
+
+/** A running job's content-free progress, sampled from the process-local generation registry. */
+export type GenerationProgressEntry = {
+    jobId: string;
+    characterId: string;
+    chatId: string;
+    kind: GenerationKind;
+    /** The immutable creating client, also used by GenerationCurrent.owned. */
+    clientId: string;
+    /** Admission time and sampling time, in server-clock milliseconds. */
+    startedAt: number;
+    at: number;
+    stage?: GenerationStage;
+    retry?: number;
+    /**
+     * Approximate local token count of the reply being generated now. `since` is when its first
+     * counted text was noted and `at` when this count was taken, in server-clock milliseconds.
+     */
+    output?: { tokens: number; since: number; at: number };
+};
 
 /**
  * A frame of the live-update socket, server to client:
  * - `hello`: sent once on every connection with the database epoch, current generation locks
- *   (`streaming`), and every chat's memory task status (`memoryTasks`); both snapshots replace the
- *   client's whole sets. The client reconciles its revisions against `GET /api/resources/revisions`
- *   (nothing is replayed);
+ *   (`streaming`), every chat's memory task status (`memoryTasks`), and optional open handoff offers
+ *   (`handoffs`), running job progress (`generations`), and connected clients (`clients`); these
+ *   snapshots replace the client's whole sets. The optional `digest` fingerprints the revision listing
+ *   sampled with those snapshots. A matching advertised map reconciles locally; otherwise the client reads
+ *   `GET /api/resources/revisions`, as a digest-checked log replay up to the optional `cursor`
+ *   (the change log's high-water mark) or as the whole listing;
  * - `change`: one committed write's refs and revisions, optionally with record or by-id chat patches;
  *   `streaming` lists the locks of every chat a generation job's write touched, or whose locks the
- *   job's end released (then `changes` may be empty);
- * - `memoryTask`: a chat's memory task status changed (in `epoch`); a task's summary write reaches
+ *   job's end released (then `changes` may be empty); the optional `cursor` is the newest log row
+ *   of its refs, absent from a lock-only frame and on older servers;
+ * - `memoryTask`: a chat's memory task status changed (in `epoch`); a memory task's write reaches
  *   the client as its `change` frame first;
+ * - `handoff`: a content-free job handoff offer opened or closed;
+ * - `generation`: a content-free running job's progress or its end, process-local like `memoryTask` and `handoff`;
+ * - `clients`: the whole registered-client list; presence is process-local and has no epoch;
+ * - `remoteCommand`: a content-free pickup or stop notice to one command target;
+ * - `remoteCommandState`: a content-free state change to one command sender;
  * - `epoch`: a restore or import replaced the database; the client reloads;
  * - `ping`: the heartbeat.
  */
 export type EventFeedFrame =
-    | { type: "hello"; epoch: string; streaming: ChatStreamingSnapshot[]; memoryTasks: MemoryTaskEntry[] }
-    | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[] }
+    | {
+          type: "hello";
+          rerollInPlace?: true;
+          epoch: string;
+          streaming: ChatStreamingSnapshot[];
+          memoryTasks: MemoryTaskEntry[];
+          digest?: string;
+          /** Optional on older servers; the log high-water cursor sampled with the digest. */
+          cursor?: number;
+          handoffs?: HandoffOffer[];
+          generations?: GenerationProgressEntry[];
+          clients?: FeedClient[];
+      }
+    | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[]; cursor?: number }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
+    | ({ type: "handoff" } & HandoffOffer)
+    | ({ type: "generation"; epoch: string } & (
+          | ({ state: "running" } & GenerationProgressEntry)
+          | { state: "ended"; jobId: string; characterId: string; chatId: string }
+      ))
+    | { type: "clients"; clients: FeedClient[] }
+    | { type: "remoteCommand"; epoch: string; commandId: string; stop?: true }
+    | { type: "remoteCommandState"; epoch: string; commandId: string; state: RemoteCommandFrameState; code?: string }
     | { type: "epoch"; epoch: string }
     | { type: "ping"; ts: number };
 

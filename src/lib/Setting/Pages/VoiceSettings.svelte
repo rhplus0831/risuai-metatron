@@ -9,6 +9,8 @@
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { voiceSettingsItems } from "src/ts/setting/voiceSettingsData";
 
+    /** TTS and Emotion Images settings controls. */
+
     const uid = $props.id();
 </script>
 
@@ -19,7 +21,7 @@
     <CheckInput bind:check={settings.memoryTranslateMedia.ttsAutoSpeech} name="Auto Speech" className="mt-2" />
 
     <span class="text-textcolor mt-2">ElevenLabs API key</span>
-    <TextInput size="sm" marginBottom bind:value={settings.secrets.elevenLabKey} />
+    <TextInput secret size="sm" marginBottom bind:value={settings.secrets.elevenLabKey} />
 
     <span class="text-textcolor mt-2">VOICEVOX URL</span>
     <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.voicevoxUrl} />
@@ -29,10 +31,10 @@
     <CredentialStatusLink credential="NAIApiKey" label="NovelAI API key" />
 
     <span class="text-textcolor">Huggingface Key</span>
-    <TextInput size="sm" marginBottom bind:value={settings.secrets.huggingfaceKey} placeholder="hf_..." />
+    <TextInput secret size="sm" marginBottom bind:value={settings.secrets.huggingfaceKey} placeholder="hf_..." />
 
     <span class="text-textcolor">fish-speech API Key</span>
-    <TextInput size="sm" marginBottom bind:value={settings.secrets.fishSpeechKey} />
+    <TextInput secret size="sm" marginBottom bind:value={settings.secrets.fishSpeechKey} />
 </section>
 
 <section class="mt-6 flex flex-col" aria-labelledby="{uid}-voice.emotion" data-settings-section="voice.emotion">

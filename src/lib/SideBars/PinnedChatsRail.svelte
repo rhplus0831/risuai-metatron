@@ -2,8 +2,15 @@
     import { language } from "src/lang";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import ChatStatusBadge from "./ChatStatusBadge.svelte";
+    import type { MemoryHealthState } from "../../../shared/structuredMemory.ts";
     import { chatStatusLabel, type ChatStatus, type MemoryCount } from "./chatStatus";
     import type { PinnedChatItem } from "./pinnedChats";
+
+    /**
+     * The sidebar's rail of pinned chats, the `collectPinnedChats` projection of `src/lib/SideBars/pinnedChats.ts`.
+     * Each pin's badge is its own chat's status (keyed by chat status key), not its character's; opening is the
+     * caller's (`onOpen`).
+     */
 
     interface Props {
         items: readonly PinnedChatItem[];
@@ -14,6 +21,8 @@
         statuses?: ReadonlyMap<string, ChatStatus>;
         /** The summarizing chats' counts (`summarizingChats`), keyed like `statuses`. */
         memoryCounts?: ReadonlyMap<string, MemoryCount | null>;
+        /** The memory health states (`memoryHealthStates`), keyed like `statuses`. */
+        healthStates?: ReadonlyMap<string, MemoryHealthState>;
     }
 
     let {
@@ -24,6 +33,7 @@
         onOpen,
         statuses = new Map(),
         memoryCounts = new Map(),
+        healthStates = new Map(),
     }: Props = $props();
 </script>
 
@@ -38,7 +48,8 @@
             {@const statusKey = `${item.chaId}\u0000${item.chatId}`}
             {@const status = statuses.get(statusKey)}
             {@const statusCount = status === "memory" ? (memoryCounts.get(statusKey) ?? null) : null}
-            {@const statusLabel = status ? chatStatusLabel(status, item.chatName, statusCount) : ""}
+            {@const statusHealth = status === "health" ? (healthStates.get(statusKey) ?? null) : null}
+            {@const statusLabel = status ? chatStatusLabel(status, item.chatName, statusCount, statusHealth) : ""}
             {@const label =
                 language.openPinnedChat(item.chatName, item.characterName) + (status ? ` · ${statusLabel}` : "")}
             <div
@@ -81,7 +92,7 @@
                             />
                         {/await}
                         {#if status}
-                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
+                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} health={statusHealth} />
                         {/if}
                     {/snippet}
                 </LazyCharImage>

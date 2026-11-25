@@ -482,7 +482,6 @@ export class ModuleHandler extends MCPToolHandler {
 
         const obj: any = {};
         for (const field of targetFields) {
-            // TODO: Guard against field
             if (!allowedFields.has(field)) continue;
 
             if (field === "enabled") {

@@ -41,8 +41,9 @@ vi.mock("./router/router.svelte", async () =>
 vi.mock("./storage/browserLocalImport", async () =>
     (await import("./tests/bootMocks")).createBootMock("browserLocalImport"),
 );
-vi.mock("./process/modules", async () => (await import("./tests/bootMocks")).createBootMock("modules"));
-vi.mock("./parser/parser.svelte", async () => (await import("./tests/bootMocks")).createBootMock("parser"));
+vi.mock("./process/modules", async () =>
+    (await import("./tests/bootMocks")).createBootMock("modules", { getModuleAssets: vi.fn(() => []) }),
+);
 vi.mock("./parser/transformClient", async () => (await import("./tests/bootMocks")).createBootMock("transformClient"));
 vi.mock("./process/files/inlays", async () => (await import("./tests/bootMocks")).createBootMock("inlays"));
 vi.mock("./gui/animation", async () => (await import("./tests/bootMocks")).createBootMock("animation"));
@@ -150,6 +151,8 @@ async function expectFallback(current: Awaited<ReturnType<typeof app>>, phase: s
 
 describe("loadData on a store's first boot", () => {
     async function firstBoot(browserLanguage: string) {
+        // main.ts installs these globals before boot; teardown removes the setup's global stubs.
+        await import("./polyfill");
         const current = await app({ firstBoot: true });
         vi.spyOn(navigator, "language", "get").mockReturnValue(browserLanguage);
         await current.loadData();
@@ -166,6 +169,15 @@ describe("loadData on a store's first boot", () => {
         expect(mocks.importShare).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+        { browserLanguage: "zh-CN", uiLanguage: "cn" },
+        { browserLanguage: "zh-TW", uiLanguage: "zh-Hant" },
+    ])("matches $browserLanguage to the $uiLanguage UI language", async ({ browserLanguage, uiLanguage }) => {
+        const { current, settings } = await firstBoot(browserLanguage);
+        expect(get(current.stores.loadedStore)).toBe(true);
+        expect(settings.ui).toMatchObject({ didFirstSetup: true, language: uiLanguage });
+    });
+
     it("keeps the default language for a browser language the UI lacks", async () => {
         const { settings } = await firstBoot("fr-FR");
         expect(settings.ui).toMatchObject({ didFirstSetup: true, language: "en" });
@@ -173,6 +185,42 @@ describe("loadData on a store's first boot", () => {
 });
 
 describe("loadData with a controlling service worker", () => {
+    it("replaces cached worker URLs in file sources and Markdown after controllerchange loses the controller", async () => {
+        const current = await app();
+        const worker = Object.assign(new EventTarget(), {
+            register: current.register,
+            controller: {} as object | null,
+        });
+        Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: worker });
+        await current.loadData();
+        const { ParseMarkdown } = await import("./parser/parser.svelte");
+        const char = {
+            type: "simple" as const,
+            chaId: "c",
+            customscript: [],
+            additionalAssets: [["picture", asset, "png"]] as const,
+        };
+        const renderSource = async () => {
+            const html = await ParseMarkdown("{{img::picture}}", char, "normal", -1, {}, null);
+            const output = document.createElement("div");
+            output.innerHTML = html;
+            return output.querySelector("img")?.getAttribute("src");
+        };
+        expect(await current.globalApi.getFileSrc(asset)).toBe(`/sw/img/${hex}`);
+        expect(await renderSource()).toBe(`/sw/img/${hex}`);
+
+        worker.controller = null;
+        worker.dispatchEvent(new Event("controllerchange"));
+        const src = await current.globalApi.getFileSrc(asset);
+        try {
+            expect(src).toMatch(/^blob:/);
+            expect(await renderSource()).toBe(src);
+            expect(mocks.readAsset).toHaveBeenCalledExactlyOnceWith(asset);
+        } finally {
+            if (src.startsWith("blob:")) URL.revokeObjectURL(src);
+        }
+    });
+
     it.each([
         { body: '{"directAssets":true}', direct: true, behavior: "enables direct URLs from the JSON capability" },
         { body: "v2", direct: false, behavior: "leaves direct URLs off for the older worker's text response" },
@@ -249,6 +297,11 @@ describe("loadData with service worker failures", () => {
 
     it("clears the reload marker and enables worker asset URLs after a 200 init", async () => {
         const current = await app();
+        // Worker URLs need a controlling worker.
+        Object.defineProperty(navigator, "serviceWorker", {
+            configurable: true,
+            value: { register: current.register, controller: {} },
+        });
         current.globalApi.setUsingSw(false);
         sessionStorage.setItem(marker, "1");
         await current.loadData();

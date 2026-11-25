@@ -1,3 +1,4 @@
+import { ensureFreeSpace, liveDatabaseBytes, type DiskStatfs } from "../http/diskSpace.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -34,11 +35,90 @@ import { resolveStorageKey } from "./storage.ts";
  * Upstream-compatible exports: copy the store and inventory assets on the serving thread, stage the
  * database in a heap-capped worker, then keep it under a token until download, cancel, or expiry.
  * A disconnect or shutdown terminates a running prepare's worker before its folder is removed.
+ * The shared asset hold registry covers the copy, preparation, staging, and download through finalization;
+ * a taken download keeps its hold even when staging closes.
  */
+
+/**
+ * Export roots from the instant a database copy starts until its operation finishes. Pending holds
+ * have not learned their keys yet; waiters wake when all are settled, on timeout, or on abort.
+ * Register inside the exclusive copy callback so a queued export cannot block its lock holder.
+ */
+export function createExportHolds() {
+    const holds = new Map<object, Set<string> | null>();
+    const waiters = new Set<() => void>();
+    const pending = () => [...holds.values()].some((keys) => keys === null);
+    const wake = () => {
+        for (const waiter of [...waiters]) {
+            waiter();
+        }
+    };
+    return {
+        hasPending: pending,
+        heldAssetKeys(): Set<string> {
+            const keys = new Set<string>();
+            for (const held of holds.values()) {
+                for (const key of held ?? []) {
+                    keys.add(key);
+                }
+            }
+            return keys;
+        },
+        hold() {
+            const identity = {};
+            holds.set(identity, null);
+            return {
+                setKeys(keys: Iterable<string>) {
+                    if (holds.has(identity)) {
+                        holds.set(identity, new Set(keys));
+                        wake();
+                    }
+                },
+                release() {
+                    holds.delete(identity);
+                    wake();
+                },
+            };
+        },
+        keySetsSettled(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
+            signal?.throwIfAborted();
+            if (!pending()) {
+                return Promise.resolve(true);
+            }
+            return new Promise((resolve, reject) => {
+                const finish = (settled: boolean, aborted = false) => {
+                    clearTimeout(timer);
+                    waiters.delete(check);
+                    signal?.removeEventListener("abort", abort);
+                    if (aborted) {
+                        reject(signal?.reason);
+                    } else {
+                        resolve(settled);
+                    }
+                };
+                const check = () => {
+                    if (!pending()) {
+                        finish(true);
+                    }
+                };
+                const abort = () => finish(false, true);
+                const timer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+                timer.unref?.();
+                waiters.add(check);
+                signal?.addEventListener("abort", abort, { once: true });
+                check();
+            });
+        },
+    };
+}
+export type ExportHolds = ReturnType<typeof createExportHolds>;
+export type ExportHold = ReturnType<ExportHolds["hold"]>;
 
 /** A prepared export waiting for its download: its staging folder, the encoded database, and the asset files. */
 type StagedUpstreamExport = {
     staging: string;
+    /** Kept through take until the download finalizes. */
+    hold?: ExportHold;
     /** `database.risudat` as written into the backup. */
     databaseFile: string;
     /** The existing referenced assets: each record's name (the key without `assets/`) and its file. */
@@ -57,12 +137,14 @@ type StagedUpstreamExport = {
 export type UpstreamExportStaging = ReturnType<typeof createUpstreamExportStaging>;
 
 export function createUpstreamExportStaging(options: { ttlMs?: number } = {}) {
+    const holds = createExportHolds();
     const ttlMs = options.ttlMs ?? UPSTREAM_EXPORT_STAGED_TTL_MS;
     const waiting = new Map<string, StagedUpstreamExport & { timer: ReturnType<typeof setTimeout> }>();
     const removals = new Set<Promise<void>>();
     const controller = new AbortController();
     let closing: Promise<void> | null = null;
     const remove = (staged: StagedUpstreamExport): Promise<void> => {
+        staged.hold?.release();
         const removal = fs.rm(staged.staging, { recursive: true, force: true }).catch(() => {});
         removals.add(removal);
         void removal.then(() => removals.delete(removal));
@@ -83,6 +165,7 @@ export function createUpstreamExportStaging(options: { ttlMs?: number } = {}) {
         }
     };
     return {
+        ...holds,
         /** Aborted at close: a running prepare's worker is terminated. */
         signal: controller.signal,
         /** Whether `close` was called: no export is added any more. */
@@ -173,7 +256,8 @@ function parseExportRequest(body: unknown): UpstreamExportRequest | null {
  *
  * `POST /api/backups/export-upstream/prepare` `UpstreamExportRequest`: auth; 400 for an invalid body;
  * 409 `UPSTREAM_EXPORT_TOO_MANY_STAGED` while that many prepared exports wait or are being prepared;
- * 503 once shutdown began. Tracked by `snapshots.track` up to the token's hand-over, so shutdown waits for it. One consistent copy of the store
+ * 503 once shutdown began. Tracked by `snapshots.track` up to the token's hand-over, so shutdown
+ * waits for it. One consistent copy of the store
  * (`snapshots.exclusive(() => store.backupTo(...))` into `save/.tmp/export-upstream-<uuid>/`), the
  * asset inventory listed after it (a blob is written before the record naming it), then a heap-capped
  * worker reads the copy, projects it with `buildUpstreamDatabase`, encodes it, checks its size, and
@@ -190,12 +274,14 @@ function parseExportRequest(body: unknown): UpstreamExportRequest | null {
  * lifetime (`backups.ts`): tracked until the stream ends, is cancelled, or the client leaves, and the
  * folder removed then.
  *
- * `POST /api/backups/export-upstream/cancel` `{ token }`: removes the waiting export; 204 either way.
+ * `POST /api/backups/export-upstream/cancel` `{ token }`: removes the waiting export; 204 either way,
+ * 400 for a malformed body or token.
  */
 export function registerUpstreamExportRoutes(
     app: Hono<AppEnv>,
     arg: {
         savePath: string;
+        statfs?: DiskStatfs;
         store: ResourceStore;
         snapshots: SnapshotManager;
         auth: AuthStore;
@@ -220,11 +306,17 @@ export function registerUpstreamExportRoutes(
         request: UpstreamExportRequest,
         signal: AbortSignal,
     ): Promise<{ staged: StagedUpstreamExport; report: UpstreamExportReport } | null> {
+        // Database copy and encoded save remain to be allocated; 507 precedes staging creation.
+        await ensureFreeSpace(savePath, 2 * (await liveDatabaseBytes(savePath)), { statfs: arg.statfs });
         const folder = await makeStaging(tmpPath, "export-upstream");
         let kept = false;
+        let hold: ExportHold | undefined;
         try {
             const copy = path.join(folder, "resources.sqlite");
-            await snapshots.exclusive(() => store.backupTo(copy));
+            await snapshots.exclusive(() => {
+                hold = staging.hold();
+                return store.backupTo(copy);
+            });
             if (signal.aborted) {
                 return null;
             }
@@ -261,6 +353,7 @@ export function registerUpstreamExportRoutes(
                 return null;
             }
             const { assetKeys, report } = result;
+            hold!.setKeys(assetKeys.filter((reference) => onDisk.has(reference.key)).map((reference) => reference.key));
             for (const reference of assetKeys) {
                 if (!onDisk.has(reference.key)) {
                     report.missing.push(reference);
@@ -292,9 +385,10 @@ export function registerUpstreamExportRoutes(
                 return null;
             }
             kept = true;
-            return { staged: { staging: folder, databaseFile, assets }, report };
+            return { staged: { staging: folder, databaseFile, assets, hold }, report };
         } finally {
             if (!kept) {
+                hold?.release();
                 await fs.rm(folder, { recursive: true, force: true }).catch(() => {});
             }
         }
@@ -341,6 +435,7 @@ export function registerUpstreamExportRoutes(
                 }
                 const token = staging.add(prepared.staged);
                 if (token === null) {
+                    prepared.staged.hold?.release();
                     await fs.rm(prepared.staged.staging, { recursive: true, force: true }).catch(() => {});
                     return "refused";
                 }
@@ -364,6 +459,11 @@ export function registerUpstreamExportRoutes(
         return c.json(outcome satisfies UpstreamExportPrepared);
     });
 
+    /**
+     * GET /api/backups/export-upstream/download?token= consumes the token, then streams referenced
+     * assets as basename records and database.risudat last. Authenticated, no epoch; 400 malformed
+     * token, 404 "Export expired"; tracked admission can refuse shutdown with 503 before taking it.
+     */
     app.get(UPSTREAM_EXPORT_DOWNLOAD_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -389,6 +489,7 @@ export function registerUpstreamExportRoutes(
         const finalize = () =>
             (finalized ??= (async () => {
                 await fs.rm(staged.staging, { recursive: true, force: true }).catch(() => {});
+                staged.hold?.release();
                 release();
             })());
         const signal = c.req.raw.signal;

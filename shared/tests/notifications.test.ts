@@ -12,6 +12,7 @@ import {
     MAX_NOTIFICATION_BODY_BYTES,
     MAX_PUSH_PAYLOAD_BYTES,
     NOTIFICATION_ICON,
+    parseChatRoutePath,
     truncateGraphemes,
 } from "../notifications.ts";
 
@@ -104,6 +105,32 @@ describe("chatRoutePath", () => {
     });
 });
 
+describe("parseChatRoutePath", () => {
+    it("reads back the chat `chatRoutePath` wrote, both ids decoded", () => {
+        expect(parseChatRoutePath("/chat/c1/k")).toEqual({ chaId: "c1", chatId: "k" });
+        expect(parseChatRoutePath(chatRoutePath("§playground", "a/b"))).toEqual({
+            chaId: "§playground",
+            chatId: "a/b",
+        });
+        expect(parseChatRoutePath(chatRoutePath("a b", "c?d#e"))).toEqual({ chaId: "a b", chatId: "c?d#e" });
+    });
+
+    it("answers null for any other path: no chat route, a missing id, a trailing part, a query or hash, or a bad escape", () => {
+        for (const path of [
+            "/",
+            "/settings",
+            "/chat/c1",
+            "/chat/c1/k/x",
+            "/chat/c1/k?x=1",
+            "/chat/c1/k#h",
+            "/chat/%E0%A4%A/k",
+            "chat/c1/k",
+        ]) {
+            expect(parseChatRoutePath(path), path).toBeNull();
+        }
+    });
+});
+
 describe("completionNotification", () => {
     const base = { name: "Ann", customMessage: "", language: "en", chaId: "c1", chatId: "k" };
 
@@ -180,6 +207,12 @@ describe("completionNotification", () => {
 
 describe("completionNotificationTag", () => {
     const base = { name: "Ann", customMessage: "", language: "en" };
+
+    it("preserves exact unpadded base-36 tags for fixed chat ids", () => {
+        // Computed with the original completionNotificationTag/hash53 at HEAD.
+        expect(completionNotificationTag("c1", "k")).toBe("risuai-chat-completion:v1wmkbx1gd");
+        expect(completionNotificationTag("캐릭터😀", "대화/一")).toBe("risuai-chat-completion:cu4blmji6t");
+    });
 
     it("gives each chat its own tag under the prefix and the same chat the same tag", () => {
         const a = completionNotification({ ...base, chaId: "c1", chatId: "a" }).tag;

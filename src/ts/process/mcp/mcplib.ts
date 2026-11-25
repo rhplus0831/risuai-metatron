@@ -3,6 +3,51 @@ import { fetchNative, openURL } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
 import { type MCPTool, MCPToolHandler } from "../../../../shared/mcp/risuaccess/host.ts";
 import { parseSseEvent, SseFramer } from "../../../../shared/mcp/sse.ts";
+import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
+import { ensureAuth } from "../../storage/serverAuth";
+
+/**
+ * Remote MCP JSON-RPC over streamable HTTP or legacy SSE, with OAuth, sessions, and paginated
+ * prompt/tool lists. Events are framed by `shared/mcp/sse.ts`, as in `server/src/mcp/client.ts`.
+ * An initialize response's `Mcp-Session-Id` is taken from either JSON or event-stream responses.
+ * Requests accept caller cancellation and use the server client's five-minute request timeout.
+ * Retirement and waiter cleanup are governed by `closed`, `destroy`, and `waitFor`.
+ */
+
+/** Mirrors `server/src/mcp/client.ts` MCP_REQUEST_TIMEOUT_MS. */
+const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const MCP_OAUTH_TIMEOUT_MS = 30_000;
+const MCP_HANDSHAKE_FAILED = "MCP Handshake Failed";
+const MAX_PENDING_PING_REPLIES = 4;
+
+// Mirrors MAX_TOOL_LIST_PAGES, MAX_TOOL_LIST_TOOLS and MAX_TOOL_LIST_BYTES in server/src/mcp/client.ts.
+const MAX_LIST_PAGES = 32;
+const MAX_LIST_ENTRIES = 512;
+const MAX_LIST_BYTES = 1024 * 1024;
+
+/** A caller may leave while the client's OAuth prompt is still open. */
+function waitWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return work;
+    return new Promise<T>((resolve, reject) => {
+        const cleanup = () => signal.removeEventListener("abort", aborted);
+        const aborted = () => {
+            cleanup();
+            reject(signal.reason);
+        };
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted();
+        work.then(
+            (value) => {
+                cleanup();
+                resolve(value);
+            },
+            (error) => {
+                cleanup();
+                reject(error);
+            },
+        );
+    });
+}
 
 export { type MCPTool, MCPToolHandler };
 
@@ -84,6 +129,7 @@ export class MCPClient {
         stream: ReadableStream;
         abortController?: AbortController;
     }[] = [];
+    /** No app caller uses this transport; its in-flight callbacks bypass retirement and SSE cleanup. */
     customTransport?: {
         send: (message: JsonRPC) => void | Promise<void>;
         addListener: (callback: (message: JsonRPC) => void | Promise<void>) => void;
@@ -91,10 +137,13 @@ export class MCPClient {
     };
     onDestroy: (() => void) | null = null;
     /**
-     * Set by `destroy()`: the client starts no request, handshake, or login step, and an answer that
-     * arrives later publishes nothing (`assertOpen`).
+     * Set by `destroy()`: the client starts no request, handshake, login step, or stream reader.
+     * Late HTTP/SSE answers, lists, and tokens are refused by `assertOpen` with
+     * `The MCP client was closed`; a settled waiter is checked too. `reset` does not set this flag.
      */
     private closed = false;
+    private oauthAttempt: AbortController | null = null;
+    private pendingPingReplies = 0;
     /** Only the current legacy GET stream may reset the session when it ends. */
     private legacy: AbortController | null = null;
     /** Pending answers, including the legacy handshake's `"connected"` event. */
@@ -117,17 +166,21 @@ export class MCPClient {
         prompts: [],
         tools: [],
     };
+    /** `src/ts/process/mcp/mcp.ts` installs this hook to write `authRefreshes` under the original MCP identifier. */
     registerRefreshToken:
         ((arg: { clientId: string; clientSecret: string; refreshToken: string; tokenUrl: string }) => void) | null =
         null;
 
     getRefreshToken:
-        | (() => Promise<{
-              clientId: string;
-              clientSecret: string;
-              refreshToken: string;
-              tokenUrl: string;
-          }>)
+        | (() => Promise<
+              | {
+                    clientId: string;
+                    clientSecret: string;
+                    refreshToken?: string;
+                    tokenUrl: string;
+                }
+              | undefined
+          >)
         | null = null;
 
     constructor(
@@ -143,8 +196,18 @@ export class MCPClient {
         }
     }
 
-    /** Registers once; every settlement removes both the document listener and the pending entry. */
-    private waitFor(id: string | number, http: RPCRequestResult["http"] = { status: 200, headers: {} }) {
+    /**
+     * Registers once; the matching answer, its stream's EOF/failure, or `reset` settles it and removes
+     * both the document listener and pending entry. Stream/session failures use JSON-RPC -32000:
+     * `The MCP stream ended without an answer`, the read error's message (fallback:
+     * `The MCP stream failed`), or `The MCP session ended` for reset/current legacy EOF.
+     * A failed legacy POST also removes its waiter; `request` refuses a settled answer after destroy.
+     */
+    private waitFor(
+        id: string | number,
+        http: RPCRequestResult["http"] = { status: 200, headers: {} },
+        signal?: AbortSignal,
+    ) {
         // A replacement waiter must not strand the previous listener for the same id.
         this.pending.get(id)?.({ jsonrpc: "2.0", id, error: { code: -32000, message: "The MCP session ended" } });
         let resolve!: (answer: RPCRequestResult) => void;
@@ -156,6 +219,7 @@ export class MCPClient {
             if (settled) return;
             settled = true;
             document.removeEventListener("mcp-sse", listener);
+            signal?.removeEventListener("abort", onAbort);
             if (this.pending.get(id) === settle) {
                 this.pending.delete(id);
             }
@@ -166,8 +230,12 @@ export class MCPClient {
                 settle(event.detail.data);
             }
         };
+        const onAbort = () =>
+            settle({ jsonrpc: "2.0", id, error: { code: -32000, message: "The MCP stream ended without an answer" } });
         this.pending.set(id, settle);
         document.addEventListener("mcp-sse", listener);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
         return {
             answer,
             settle,
@@ -181,7 +249,11 @@ export class MCPClient {
         }
     }
 
-    /** Resolves at EOF, rejects on a read failure, and always releases its reader and tracked entry. */
+    /**
+     * Resolves at EOF or cancellation and rejects on read failure. Every acquired reader is cancelled
+     * and released, and its `sses` entry removed, in `finally`. An answered streamable request aborts
+     * its stream even if the server leaves it open.
+     */
     async connectSSE(stream: ReadableStream, abortController = new AbortController()): Promise<void> {
         if (this.closed) {
             // A retired client reads no stream (its `destroy()` could not abort this one).
@@ -259,8 +331,12 @@ export class MCPClient {
 
             //@ts-expect-error JsonRPC type doesn't have method property, but JsonPing does
             if (jsonData.method === "ping") {
-                // Sending a ping reply must not prevent the reader from observing EOF or failure
-                // while the POST is still out.
+                // Drop excess pings so a slow peer cannot accumulate outbound requests.
+                if (this.closed || this.pendingPingReplies >= MAX_PENDING_PING_REPLIES) {
+                    return;
+                }
+                this.pendingPingReplies++;
+                // Do not await the ping reply: this reader must still observe EOF or failure while its POST is out.
                 void this.request(
                     "response",
                     {},
@@ -269,10 +345,14 @@ export class MCPClient {
                         initMethod: "none",
                         id: jsonData.id,
                     },
-                ).then(
-                    () => this.sseIdDone.add(jsonData.id),
-                    () => {},
-                );
+                )
+                    .then(
+                        () => this.sseIdDone.add(jsonData.id),
+                        () => {},
+                    )
+                    .finally(() => {
+                        this.pendingPingReplies--;
+                    });
                 return;
             }
 
@@ -289,6 +369,17 @@ export class MCPClient {
         } catch (error) {}
     }
 
+    /**
+     * Over streamable HTTP, a 404 with a current session or 401 with a current token resets both
+     * and repeats the request. There is no retry flag: concurrent work restoring either field can
+     * make it retry again, unlike `server/src/mcp/client.ts`'s at-most-once retry.
+     *
+     * A legacy answer or session end can settle its waiter while the POST is still out. For an
+     * unanswered legacy RPC, a POST response above 299 settles the waiter with that status as its
+     * RPC error code; the waiter's HTTP metadata stays 200. While the client stays open, a fetch
+     * rejection that wins the race removes the waiter and returns `Internal Error` (RPC and HTTP
+     * code 500); a late rejection does not replace a settled answer. Notifications have no waiter.
+     */
     async request(
         method: string,
         params?: any,
@@ -296,10 +387,12 @@ export class MCPClient {
             notifications?: boolean;
             initMethod?: "init" | "none";
             id?: string | number;
+            signal?: AbortSignal;
         } = {},
     ): Promise<RPCRequestResult> {
         this.assertOpen();
         options ??= {};
+        options.signal?.throwIfAborted();
         const initMethod = options.initMethod || "none";
         let httpStatus = 500;
         const url = this.sseEndpoint ?? this.url;
@@ -328,29 +421,48 @@ export class MCPClient {
             }
         }
 
-        if (this.customTransport) {
-            return new Promise<RPCRequestResult>((resolve) => {
-                const func = (message: JsonRPC) => {
-                    if (message.id === body.id) {
-                        resolve({
-                            rpc: message,
-                            http: {
-                                status: 200,
-                                headers: {},
-                            },
-                        });
-                        this.customTransport.removeListener(func);
-                    }
-                };
-                Promise.resolve(this.customTransport.addListener(func))
-                    .then(() => this.customTransport.send(body as JsonRPC))
-                    // TODO: handle send errors properly (e.g. timeout, reject with RPC error)
-                    .catch(() => {});
-            });
-        }
-
+        const abortController = new AbortController();
+        let timedOut = false;
+        const throwIfCancelled = () => {
+            if (options.signal?.aborted || timedOut) throw abortController.signal.reason;
+        };
+        const onAbort = () => abortController.abort(options.signal.reason);
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        const timer = setTimeout(() => {
+            timedOut = true;
+            abortController.abort(new Error("The MCP request timed out"));
+        }, MCP_REQUEST_TIMEOUT_MS);
         let responseWaiter: ReturnType<MCPClient["waitFor"]> | null = null;
         try {
+            const transport = this.customTransport;
+            if (transport) {
+                return await new Promise<RPCRequestResult>((resolve, reject) => {
+                    const cleanup = () => {
+                        abortController.signal.removeEventListener("abort", aborted);
+                        transport.removeListener(listener);
+                    };
+                    const aborted = () => {
+                        cleanup();
+                        reject(abortController.signal.reason);
+                    };
+                    const listener = (message: JsonRPC) => {
+                        if (message.id === body.id) {
+                            cleanup();
+                            resolve({ rpc: message, http: { status: 200, headers: {} } });
+                        }
+                    };
+                    abortController.signal.addEventListener("abort", aborted, { once: true });
+                    Promise.resolve(transport.addListener(listener))
+                        .then(() => {
+                            throwIfCancelled();
+                            return transport.send(body as JsonRPC);
+                        })
+                        .catch((error) => {
+                            cleanup();
+                            reject(error);
+                        });
+                });
+            }
             const headers: Record<string, string> = !this.sseEndpoint
                 ? {
                       "Content-Type": "application/json",
@@ -369,7 +481,6 @@ export class MCPClient {
                 headers["Authorization"] = `Bearer ${this.accessToken}`;
             }
 
-            const abortController = new AbortController();
             const requestParams = {
                 body: JSON.stringify(body),
                 method: "POST",
@@ -387,13 +498,12 @@ export class MCPClient {
             }
 
             if (legacy && !options.notifications) {
-                responseWaiter = this.waitFor(body.id);
+                responseWaiter = this.waitFor(body.id, undefined, abortController.signal);
             }
 
             const fetching = fetchNative(url, requestParams);
-            // The legacy session can answer or end while its POST is still out. Neither leaves
-            // this request waiting for a POST response after its waiter has already settled.
             const response = responseWaiter ? await Promise.race([fetching, responseWaiter.answer]) : await fetching;
+            throwIfCancelled();
             if ("rpc" in response) {
                 abortController.abort();
                 void fetching.then(
@@ -441,7 +551,8 @@ export class MCPClient {
                     });
                 }
                 // An answer that arrives after the client was retired is not taken.
-                return responseWaiter.answer.then((answer) => {
+                return await responseWaiter.answer.then((answer) => {
+                    throwIfCancelled();
                     this.assertOpen();
                     return answer;
                 });
@@ -450,7 +561,7 @@ export class MCPClient {
             if ((this.sessionId && response.status === 404) || (this.accessToken && response.status === 401)) {
                 response.body?.cancel().catch(() => {});
                 this.reset();
-                return this.request(method, params, options);
+                return await this.request(method, params, { ...options, signal: abortController.signal });
             }
 
             const contentType = response.headers.get("Content-Type") || "";
@@ -459,21 +570,26 @@ export class MCPClient {
                 if (response.headers.has("Mcp-Session-Id") && initMethod !== "none") {
                     this.sessionId = response.headers.get("Mcp-Session-Id");
                 }
-                const waiting = this.waitFor(body.id, {
-                    status: response.status,
-                    headers: Object.fromEntries(response.headers.entries()),
-                });
+                const waiting = this.waitFor(
+                    body.id,
+                    {
+                        status: response.status,
+                        headers: Object.fromEntries(response.headers.entries()),
+                    },
+                    abortController.signal,
+                );
                 void this.connectSSE(response.body, abortController).then(
                     () => waiting.fail("The MCP stream ended without an answer"),
                     (error) =>
                         waiting.fail(error instanceof Error && error.message ? error.message : "The MCP stream failed"),
                 );
-                return waiting.answer
-                    .finally(() => abortController.abort())
+                return await waiting.answer
                     .then((answer) => {
+                        throwIfCancelled();
                         this.assertOpen();
                         return answer;
-                    });
+                    })
+                    .finally(() => abortController.abort());
             }
 
             if (!contentType.includes("application/json")) {
@@ -500,6 +616,7 @@ export class MCPClient {
                 this.sessionId = response.headers.get("Mcp-Session-Id");
             }
             const rpc = await response.json();
+            throwIfCancelled();
             this.assertOpen();
             return {
                 rpc,
@@ -510,9 +627,8 @@ export class MCPClient {
             };
         } catch (error) {
             responseWaiter?.fail("Internal Error", httpStatus);
-            if (this.closed) {
-                throw error;
-            }
+            this.assertOpen();
+            throwIfCancelled();
             return {
                 rpc: {
                     jsonrpc: "2.0",
@@ -527,6 +643,9 @@ export class MCPClient {
                     headers: {},
                 },
             };
+        } finally {
+            clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
         }
     }
 
@@ -544,21 +663,31 @@ export class MCPClient {
         return d;
     }
 
-    checkHandshake() {
+    checkHandshake(signal?: AbortSignal) {
+        signal?.throwIfAborted();
         this.assertOpen();
         if (this.initialized) {
             return this.serverInfo;
         } else {
-            return this.handshake();
+            return this.handshake(signal);
         }
     }
 
-    /** The legacy GET belongs to its session, including the wait for the endpoint event. */
-    private async connectLegacy(headers: Record<string, string>): Promise<AbortController> {
+    /**
+     * The legacy GET owns an AbortController and an endpoint waiter that settles on connection,
+     * failure, or reset. Only this session's current legacy stream may reset the client when it ends;
+     * cleanup from an older stream must not retire its replacement.
+     */
+    private async connectLegacy(headers: Record<string, string>, signal?: AbortSignal): Promise<AbortController> {
         const session = new AbortController();
         this.legacy?.abort();
         this.legacy = session;
-        const connected = this.waitFor("connected");
+        const timeout = AbortSignal.timeout(MCP_REQUEST_TIMEOUT_MS);
+        const connecting = signal ? AbortSignal.any([signal, timeout]) : timeout;
+        const onAbort = () => session.abort(connecting.reason);
+        connecting.addEventListener("abort", onAbort, { once: true });
+        if (connecting.aborted) onAbort();
+        const connected = this.waitFor("connected", undefined, connecting);
         try {
             const fetching = fetchNative(this.url, { method: "GET", headers, signal: session.signal });
             const connection = await Promise.race([fetching, connected.answer]);
@@ -590,6 +719,7 @@ export class MCPClient {
                 (error) => ended(error instanceof Error && error.message ? error.message : "The MCP stream failed"),
             );
             const connectionResult = await connected.answer;
+            connecting.throwIfAborted();
             this.assertOpen();
             const endpoint = connectionResult.rpc.result?.endpoint;
             if (!endpoint) {
@@ -603,10 +733,18 @@ export class MCPClient {
             if (this.legacy === session) this.reset();
             session.abort();
             throw error;
+        } finally {
+            connecting.removeEventListener("abort", onAbort);
         }
     }
 
-    async handshake() {
+    /**
+     * A legacy session opened by this handshake's 404 fallback is checked for its end before
+     * initialization completes, including after the initialized notification; a legacy session
+     * an earlier handshake opened is not.
+     */
+    async handshake(signal?: AbortSignal) {
+        signal?.throwIfAborted();
         this.assertOpen();
         let legacySession: AbortController | null = null;
         console.log("MCP Handshake", this.url, this.mcpClientObjectId);
@@ -623,6 +761,7 @@ export class MCPClient {
             },
             {
                 initMethod: "init",
+                signal,
             },
         );
 
@@ -643,7 +782,7 @@ export class MCPClient {
                 headers["Authorization"] = `Bearer ${this.accessToken}`;
             }
 
-            legacySession = await this.connectLegacy(headers);
+            legacySession = await this.connectLegacy(headers, signal);
             this.assertOpen();
             if (this.legacy !== legacySession) throw new Error("The MCP session ended");
 
@@ -659,6 +798,7 @@ export class MCPClient {
                 },
                 {
                     initMethod: "init",
+                    signal,
                 },
             );
 
@@ -669,8 +809,9 @@ export class MCPClient {
         this.assertOpen();
         if (legacySession && this.legacy !== legacySession) throw new Error("The MCP session ended");
         if (http.status === 401) {
-            await this.oauthLogin();
-            return this.handshake();
+            await waitWithSignal(this.oauthLogin(signal), signal);
+            signal?.throwIfAborted();
+            return this.handshake(signal);
         }
 
         if (d?.result?.serverInfo) {
@@ -678,6 +819,7 @@ export class MCPClient {
 
             await this.request("notifications/initialized", null, {
                 notifications: true,
+                signal,
             });
             this.assertOpen();
             if (legacySession && this.legacy !== legacySession) throw new Error("The MCP session ended");
@@ -693,97 +835,152 @@ export class MCPClient {
 
             return this.serverInfo;
         } else {
-            throw "MCP Handshake Failed";
+            throw MCP_HANDSHAKE_FAILED;
         }
     }
 
-    async oauthLogin() {
-        // A retired client starts no login step: a refresh would spend the token a newer client holds.
+    async oauthLogin(signal?: AbortSignal) {
         this.assertOpen();
-        if (this.getRefreshToken) {
-            const refreshTokenData = await this.getRefreshToken();
+        signal?.throwIfAborted();
+        // A second login on this client can supersede the first without closing the client.
+        const previous = this.oauthAttempt;
+        const attempt = new AbortController();
+        this.oauthAttempt = attempt;
+        previous?.abort(new Error(MCP_HANDSHAKE_FAILED));
+        const abandon = () => attempt.abort(signal.reason);
+        signal?.addEventListener("abort", abandon, { once: true });
+        if (signal?.aborted) abandon();
+        try {
+            await this.runOAuthLogin(attempt.signal);
+        } finally {
+            signal?.removeEventListener("abort", abandon);
+            if (this.oauthAttempt === attempt) this.oauthAttempt = null;
+        }
+    }
+
+    /**
+     * Refresh is tried only for a stored non-empty string refresh token: only HTTP 200 with a
+     * non-empty string `access_token` completes refresh; a non-empty new `refresh_token` replaces
+     * the stored one through `registerRefreshToken`. Other statuses or unusable bodies proceed to
+     * full login; a rejected refresh fetch rejects login instead. Full login stores a refresh token
+     * only when the server issued a non-empty string. The server's authorization endpoint must use
+     * `http:` or `https:` before `openURL` may open it.
+     */
+    private async runOAuthLogin(attempt: AbortSignal) {
+        const assertAttempt = () => {
             this.assertOpen();
-            if (refreshTokenData) {
-                //get access token using refresh token
-                const tokenResponse = await fetchNative(refreshTokenData.tokenUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    body: new URLSearchParams({
-                        grant_type: "refresh_token",
-                        refresh_token: refreshTokenData.refreshToken,
-                        client_id: refreshTokenData.clientId,
-                        client_secret: refreshTokenData.clientSecret,
-                    }).toString(),
-                });
-                // A successful refresh gives the token (the check used to be inverted); anything else
-                // goes on to a full login.
-                if (tokenResponse.status === 200) {
-                    const tokenData = await tokenResponse.json().catch((): null => null);
-                    if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
-                        // A rotated refresh token replaces the stored one (the old one may be spent).
-                        const rotated = tokenData.refresh_token;
-                        this.assertOpen();
-                        if (typeof rotated === "string" && rotated !== "" && this.registerRefreshToken) {
-                            this.registerRefreshToken({
-                                clientId: refreshTokenData.clientId,
-                                clientSecret: refreshTokenData.clientSecret,
-                                refreshToken: rotated,
-                                tokenUrl: refreshTokenData.tokenUrl,
-                            });
-                        }
-                        this.accessToken = tokenData.access_token;
-                        return;
+            attempt.throwIfAborted();
+        };
+        const exchange = async (
+            url: string,
+            init: Parameters<typeof fetchNative>[1],
+            { readStatus, ignoreInvalidJson }: { readStatus?: number; ignoreInvalidJson?: boolean } = {},
+        ) => {
+            assertAttempt();
+            await waitWithSignal(ensureAuth(), attempt); // Sign-in may be waiting for the user.
+            assertAttempt();
+            const request = new AbortController();
+            const abandon = () => request.abort(attempt.reason);
+            attempt.addEventListener("abort", abandon, { once: true });
+            const timer = setTimeout(() => request.abort(new Error(MCP_HANDSHAKE_FAILED)), MCP_OAUTH_TIMEOUT_MS);
+            try {
+                const work = fetchNative(url, { ...init, signal: request.signal }).then(async (response) => {
+                    if (request.signal.aborted) {
+                        void response.body?.cancel().catch(() => {});
+                        request.signal.throwIfAborted();
                     }
+                    const { status } = response;
+                    if (readStatus !== undefined && status !== readStatus) return { status };
+                    const body = response.json();
+                    return { status, data: await (ignoreInvalidJson ? body.catch(() => null) : body) };
+                });
+                const answer = await waitWithSignal(work, request.signal);
+                request.signal.throwIfAborted();
+                return answer;
+            } finally {
+                clearTimeout(timer);
+                attempt.removeEventListener("abort", abandon);
+            }
+        };
+
+        if (this.getRefreshToken) {
+            const refreshTokenData = await waitWithSignal(this.getRefreshToken(), attempt);
+            assertAttempt();
+            if (typeof refreshTokenData?.refreshToken === "string" && refreshTokenData.refreshToken !== "") {
+                const { data: tokenData } = await exchange(
+                    refreshTokenData.tokenUrl,
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/x-www-form-urlencoded",
+                        },
+                        body: new URLSearchParams({
+                            grant_type: "refresh_token",
+                            refresh_token: refreshTokenData.refreshToken,
+                            client_id: refreshTokenData.clientId,
+                            client_secret: refreshTokenData.clientSecret,
+                        }).toString(),
+                    },
+                    { readStatus: 200, ignoreInvalidJson: true },
+                );
+                if (typeof tokenData?.access_token === "string" && tokenData.access_token !== "") {
+                    const rotated = tokenData.refresh_token;
+                    assertAttempt();
+                    if (typeof rotated === "string" && rotated !== "" && this.registerRefreshToken) {
+                        this.registerRefreshToken({
+                            clientId: refreshTokenData.clientId,
+                            clientSecret: refreshTokenData.clientSecret,
+                            refreshToken: rotated,
+                            tokenUrl: refreshTokenData.tokenUrl,
+                        });
+                    }
+                    assertAttempt();
+                    this.accessToken = tokenData.access_token;
+                    return;
                 }
             }
         }
 
-        this.assertOpen();
         const OauthDiscovery = new URL(this.url);
         OauthDiscovery.pathname = "/.well-known/oauth-authorization-server";
-        const oauthResponse = await fetchNative(OauthDiscovery.toString(), {
-            method: "GET",
-            headers: {
-                Accept: "application/json",
-            },
-        });
-
-        //default discovery URLS
-        let discoveryURLS = {
-            authorization_endpoint: OauthDiscovery.origin + "/authorize",
-            token_endpoint: OauthDiscovery.origin + "/token",
-            registration_endpoint: OauthDiscovery.origin + "/register",
-        };
-
-        if (oauthResponse.status === 200) {
-            discoveryURLS = await oauthResponse.json();
-        }
+        const oauthResponse = await exchange(
+            OauthDiscovery.toString(),
+            { method: "GET", headers: { Accept: "application/json" } },
+            { readStatus: 200 },
+        );
+        const discoveryURLS =
+            oauthResponse.status === 200
+                ? oauthResponse.data
+                : {
+                      authorization_endpoint: OauthDiscovery.origin + "/authorize",
+                      token_endpoint: OauthDiscovery.origin + "/token",
+                      registration_endpoint: OauthDiscovery.origin + "/register",
+                  };
 
         const redirectURL = "https://account.sionyw.com/oauthhelper"; //Just a placeholder, should be replaced with actual redirect URL
 
-        this.assertOpen();
-        const registerResponse = await fetchNative(discoveryURLS.registration_endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Accept: "application/json",
+        const registerResponse = await exchange(
+            discoveryURLS.registration_endpoint,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Accept: "application/json",
+                },
+                body: JSON.stringify({
+                    client_name: "RS-MCP-CLIENT",
+                    redirect_uris: [redirectURL],
+                    response_types: ["code"],
+                    grant_types: ["authorization_code"],
+                    token_endpoint_auth_method: "client_secret_basic",
+                }),
             },
-            body: JSON.stringify({
-                client_name: "RS-MCP-CLIENT",
-                redirect_uris: [redirectURL],
-                response_types: ["code"],
-                grant_types: ["authorization_code"],
-                token_endpoint_auth_method: "client_secret_basic",
-            }),
-        });
-
+            { readStatus: 201 },
+        );
         if (registerResponse.status !== 201) {
             throw new Error("Failed to register client with OAuth server");
         }
-
-        const clientData = await registerResponse.json();
+        const clientData = registerResponse.data;
 
         const code_verifier = (v4() + v4()).replace(/-/g, "");
         const sha256 = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code_verifier));
@@ -794,7 +991,6 @@ export class MCPClient {
             .replace(/\//g, "_");
 
         const authUrl = new URL(discoveryURLS.authorization_endpoint);
-        // The server names this address, and it is opened in a window: only a web address may be.
         if (authUrl.protocol !== "http:" && authUrl.protocol !== "https:") {
             throw new Error("The OAuth authorization endpoint is not a web address");
         }
@@ -806,12 +1002,14 @@ export class MCPClient {
         authUrl.searchParams.set("code_challenge", code_challenge);
         authUrl.searchParams.set("code_challenge_method", "S256");
 
-        this.assertOpen();
+        assertAttempt();
         openURL(authUrl.toString());
-        const code = await alertInput("Input Authorization Code");
-        this.assertOpen();
+        const code = await waitWithSignal(
+            alertInput("Input Authorization Code", undefined, undefined, { secret: true }),
+            attempt,
+        );
 
-        const authHelperResponse = await fetchNative("https://account.sionyw.com/oauthhelper/api", {
+        const { data: authHelperResponseJson } = await exchange("https://account.sionyw.com/oauthhelper/api", {
             method: "POST",
             body: JSON.stringify({
                 code: code,
@@ -820,40 +1018,40 @@ export class MCPClient {
                 Accept: "application/json",
             },
         });
-
-        const authHelperResponseJson = await authHelperResponse.json();
-
         if (authHelperResponseJson.success !== true) {
             throw new Error("Failed to get authorization code from helper");
         }
 
         const payload = authHelperResponseJson.payload;
-
-        this.assertOpen();
-
-        const tokenResponse = await fetchNative(discoveryURLS.token_endpoint, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
+        const tokenResponse = await exchange(
+            discoveryURLS.token_endpoint,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: new URLSearchParams({
+                    grant_type: "authorization_code",
+                    code: payload.code || "",
+                    redirect_uri: redirectURL,
+                    client_id: clientData.client_id,
+                    client_secret: clientData.client_secret,
+                    code_verifier: code_verifier,
+                }).toString(),
             },
-            body: new URLSearchParams({
-                grant_type: "authorization_code",
-                code: payload.code || "",
-                redirect_uri: redirectURL,
-                client_id: clientData.client_id,
-                client_secret: clientData.client_secret,
-                code_verifier: code_verifier,
-            }).toString(),
-        });
-
+            { readStatus: 200 },
+        );
         if (tokenResponse.status !== 200) {
             throw new Error("Failed to exchange authorization code for access token");
         }
+        const tokenData = tokenResponse.data;
 
-        const tokenData = await tokenResponse.json();
-
-        this.assertOpen();
-        if (this.registerRefreshToken) {
+        assertAttempt();
+        if (
+            typeof tokenData.refresh_token === "string" &&
+            tokenData.refresh_token !== "" &&
+            this.registerRefreshToken
+        ) {
             this.registerRefreshToken({
                 clientId: clientData.client_id,
                 clientSecret: clientData.client_secret,
@@ -861,6 +1059,7 @@ export class MCPClient {
                 tokenUrl: discoveryURLS.token_endpoint,
             });
         }
+        assertAttempt();
         this.accessToken = tokenData.access_token;
     }
 
@@ -873,38 +1072,16 @@ export class MCPClient {
         if (this.cached.prompts.length > 0) {
             return this.cached.prompts;
         }
-        let prompts: MCPPrompt[] = [];
-        let cursor: string | null = null;
-        while (true) {
-            const args = {
-                cursor: cursor,
-            } as Record<string, any>;
-
-            if (!args.cursor) {
-                delete args.cursor;
-            }
-
-            const response = await this.request("prompts/list", args);
-            if (response.rpc.result?.prompts) {
-                prompts.push(...response.rpc.result.prompts);
-                if (response.rpc.result.nextCursor) {
-                    cursor = response.rpc.result.nextCursor;
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
+        const prompts = await this.listEntries<MCPPrompt>("prompts");
         this.assertOpen();
         this.cached.prompts = prompts;
 
         return prompts;
     }
 
-    async getToolList(): Promise<MCPTool[]> {
-        await this.checkHandshake();
+    async getToolList(_context?: PluginCallContext, signal?: AbortSignal): Promise<MCPTool[]> {
+        await this.checkHandshake(signal);
+        signal?.throwIfAborted();
         this.assertOpen();
         if (!this.serverInfo.capabilities?.tools) {
             return [];
@@ -912,48 +1089,78 @@ export class MCPClient {
         if (this.cached.tools.length > 0) {
             return this.cached.tools;
         }
-        let tools: MCPTool[] = [];
-        let cursor: string | null = null;
-        while (true) {
-            const args = {
-                cursor: cursor,
-            } as Record<string, any>;
-
-            if (!args.cursor) {
-                delete args.cursor;
-            }
-
-            const response = await this.request("tools/list", args);
-            console.log("MCP Tools List Response", response);
-            if (response.rpc.result?.tools) {
-                tools.push(...response.rpc.result.tools);
-                if (response.rpc.result.nextCursor) {
-                    cursor = response.rpc.result.nextCursor;
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
+        const tools = await this.listEntries<MCPTool>("tools", signal);
+        signal?.throwIfAborted();
         this.assertOpen();
         this.cached.tools = tools;
 
         return tools;
     }
 
-    async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
-        await this.checkHandshake();
+    private async listEntries<T>(kind: "prompts" | "tools", signal?: AbortSignal): Promise<T[]> {
+        const entries: T[] = [];
+        const seen = new Set<string>();
+        const encoder = new TextEncoder();
+        const listName = kind === "tools" ? "tool list" : "prompt list";
+        let bytes = 0;
+        let cursor: string | undefined;
+
+        for (let page = 0; page < MAX_LIST_PAGES; page++) {
+            const response = await this.request(`${kind}/list`, cursor ? { cursor } : {}, { signal });
+            const listed = response.rpc?.result?.[kind];
+            if (
+                kind === "tools" &&
+                (response.rpc?.error ||
+                    response.http.status < 200 ||
+                    response.http.status > 299 ||
+                    !Array.isArray(listed))
+            ) {
+                throw new Error("Failed to list MCP tools");
+            }
+            if (!listed) {
+                return entries;
+            }
+            for (const entry of listed) {
+                bytes += encoder.encode(JSON.stringify(entry)).byteLength;
+                if (entries.length >= MAX_LIST_ENTRIES || bytes > MAX_LIST_BYTES) {
+                    throw new Error(`The MCP server's ${listName} is too large`);
+                }
+                entries.push(entry);
+            }
+            const next: unknown = response.rpc.result.nextCursor;
+            if (typeof next !== "string" || next === "") {
+                return entries;
+            }
+            if (seen.has(next)) {
+                throw new Error(`The MCP server's ${listName} repeats a cursor`);
+            }
+            seen.add(next);
+            cursor = next;
+        }
+        throw new Error(`The MCP server's ${listName} has too many pages`);
+    }
+
+    async callTool(
+        toolName: string,
+        args: any,
+        _context?: PluginCallContext,
+        signal?: AbortSignal,
+    ): Promise<RPCToolCallContent[]> {
+        await this.checkHandshake(signal);
+        signal?.throwIfAborted();
         this.assertOpen();
         if (!this.serverInfo.capabilities?.tools) {
             throw new Error("MCP Server does not support tools");
         }
 
-        const response = await this.request("tools/call", {
-            name: toolName,
-            arguments: args,
-        });
+        const response = await this.request(
+            "tools/call",
+            {
+                name: toolName,
+                arguments: args,
+            },
+            { signal },
+        );
 
         if (response.rpc.error) {
             return [
@@ -970,10 +1177,12 @@ export class MCPClient {
     /**
      * Retires the client (the registry dropped it): it starts nothing afterwards, and requests, logins,
      * and lists it started refuse their late answers. Pending SSE answers settle, and running readers
-     * are cancelled and released. The custom transport is not fenced.
+     * are cancelled and released. Requests already sent are not generally aborted, so an in-flight
+     * refresh may still spend the stored token. The custom transport is not fenced.
      */
     destroy() {
         this.closed = true;
+        this.oauthAttempt?.abort(new Error("The MCP client was closed"));
         this.reset();
     }
 

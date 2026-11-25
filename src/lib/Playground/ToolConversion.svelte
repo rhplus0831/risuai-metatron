@@ -4,6 +4,13 @@
     import { selectMultipleFile } from "src/ts/util";
     import { detectPromptJSONType, promptConvertion } from "src/ts/process/prompt";
 
+    /**
+     * Imports JSON prompt files, classifies them with `detectPromptJSONType`, and
+     * passes them to `src/ts/process/prompt.ts` `promptConvertion` to create presets
+     * from supported SillyTavern chat/instruct/context and parameter files.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 101.
+     */
+
     let files: { name: string; content: string; type: string }[] = $state([]);
 
     const addFile = async () => {

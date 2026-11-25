@@ -15,10 +15,9 @@ vi.mock(
             defaultSdDataFunc: () => [],
         }) as unknown as typeof import("../../../storage/database.svelte"),
 );
-vi.mock(import("../../../globalApi.svelte"), () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: () => Promise.resolve(""),
-}));
+vi.mock(import("../../../globalApi.svelte"), async () =>
+    (await import("../../../tests/globalApiMock")).createGlobalApiMock({ getFileSrc: () => Promise.resolve("") }),
+);
 
 import { getGlobalChatVar, getGlobalChatVarOf } from "../../chatVar.svelte";
 import { risuChatParser, risuChatParserScoped } from "../../parser.svelte";

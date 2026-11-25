@@ -13,13 +13,14 @@ const stubs = vi.hoisted(() => ({
 }));
 
 vi.mock("src/ts/storage/serverAuth", () => ({ authFetch: vi.fn(), getNodeServerProxyAuth: async () => "" }));
-vi.mock("src/ts/storage/resourceClient", () => ({
-    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
-    getResourceEpoch: () => "epoch-1",
-    epochMismatch: (epoch: string) => new Error(`replaced ${epoch}`),
-}));
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        readRefs: (...args: unknown[]) => stubs.readRefs(...args),
+        getResourceEpoch: () => "epoch-1",
+    }),
+);
 vi.mock("src/ts/process/request/transport", () => ({ requestServer: vi.fn() }));
-vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: vi.fn(async () => []) }));
+vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: vi.fn<typeof import("../../mcp/mcp").getTools>(async () => []) }));
 vi.mock("src/ts/plugins/pluginHooks", () => ({
     pluginHooks: new Proxy({}, { get: () => new Set() }),
 }));
@@ -59,7 +60,9 @@ import {
     seedChats,
     trimLoadedChats,
 } from "src/ts/storage/chatStore.svelte";
-import { requestChatHeld, withRequestChat } from "../request";
+import { getTools } from "../../mcp/mcp";
+import { requestServer } from "../transport";
+import { requestChatData, requestChatHeld, withRequestChat } from "../request";
 import type { requestDataResponse } from "../request";
 
 /** A parsable revision token (the trim evicts saved chats only; a load compares revisions). */
@@ -84,7 +87,13 @@ function install() {
     forgetCharacter("a");
     const chats = [
         { characterId: "a", id: "a1", revision: REVISION, name: "A1", fmIndex: -1 },
-        ...OTHERS.map((id) => ({ characterId: "a", id, revision: REVISION, data: chatOf(id) as never })),
+        ...OTHERS.map((id) => ({
+            characterId: "a",
+            id,
+            revision: REVISION,
+            trashedAt: null,
+            data: chatOf(id) as never,
+        })),
     ];
     const orders = [{ characterId: "a", revision: REVISION, ids: ["a1", ...OTHERS] }];
     seedChats(chats, orders);
@@ -261,4 +270,21 @@ describe("the guarded stream", () => {
         await expect(failingReader.read()).rejects.toThrow("boom");
         expect(await pinned()).toBe(false);
     });
+});
+
+it("returns Aborted when discovery is cancelled and forwards the exact request signal", async () => {
+    const controller = new AbortController();
+    let started = false;
+    vi.mocked(getTools).mockImplementationOnce(async (_target, _context, signal) => {
+        started = true;
+        expect(signal).toBe(controller.signal);
+        controller.abort(new Error("discovery stopped"));
+        throw controller.signal.reason;
+    });
+    expect(await requestChatData({ formated: [], bias: {} }, "model", controller.signal)).toEqual({
+        type: "fail",
+        result: "Aborted",
+    });
+    expect(started).toBe(true);
+    expect(requestServer).not.toHaveBeenCalled();
 });

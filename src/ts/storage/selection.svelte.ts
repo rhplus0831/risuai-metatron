@@ -1,6 +1,16 @@
 import { untrack } from "svelte";
 import { writable } from "svelte/store";
+import { isArchivedGroup } from "./archivedGroup";
 import { characterData, characterIndex, setCharacterMembershipHook } from "./records.svelte";
+
+/**
+ * Per-tab selection state and character selection notifications. Prompt preset, model preset,
+ * and persona ids and the lorebook page load from sessionStorage, falling back to localStorage;
+ * storage failures are ignored. `src/ts/storage/settingsViews.svelte.ts` resolves ids against the
+ * current records, and `src/ts/router/router.svelte.ts` handles character/chat URLs. Membership
+ * notifications from `src/ts/storage/records.svelte.ts` return to home when the selected character
+ * disappears or becomes an archived group, without dispatching the explicit selection listeners.
+ */
 
 /**
  * The per-client selection: which prompt preset, model preset, and persona this browser uses, which
@@ -23,7 +33,7 @@ export interface Selection {
     /**
      * The selected character's `chaId`, `null` for home. Per tab and never stored here: the URL holds it,
      * so a reload restores it (the router, `router/router.svelte.ts`). It always names a character in
-     * the list (a removed one makes it `null`).
+     * the list that the tab can open.
      */
     characterId: string | null;
     /**
@@ -37,6 +47,7 @@ export interface Selection {
 
 const STORAGE_KEY = "risu-selection";
 
+/** The tab's reactive selection; use the selection functions to persist choices and notify listeners. */
 export const selection: Selection = $state({
     presetId: "",
     modelPresetId: "",
@@ -87,16 +98,20 @@ function read(storage: () => Storage): Partial<Record<keyof Selection, unknown>>
     }
 }
 
+function normalizeLoreBookPage(page: unknown): number {
+    return typeof page === "number" && Number.isInteger(page) && page >= 0 ? page : 0;
+}
+
 /** Reads this tab's stored selection, else the browser's last one. Runs before the database is installed; ids are checked lazily. */
 export function loadSelection() {
     const stored = read(() => sessionStorage) ?? read(() => localStorage);
     selection.presetId = typeof stored?.presetId === "string" ? stored.presetId : "";
     selection.modelPresetId = typeof stored?.modelPresetId === "string" ? stored.modelPresetId : "";
     selection.personaId = typeof stored?.personaId === "string" ? stored.personaId : "";
-    const page = stored?.loreBookPage;
-    selection.loreBookPage = Number.isInteger(page) && (page as number) >= 0 ? (page as number) : 0;
+    selection.loreBookPage = normalizeLoreBookPage(stored?.loreBookPage);
 }
 
+/** Selects a prompt preset id without checking it exists and persists the selection when it changes. */
 export function selectPreset(id: string) {
     if (selection.presetId !== id) {
         selection.presetId = id;
@@ -104,6 +119,7 @@ export function selectPreset(id: string) {
     }
 }
 
+/** Selects a model preset id without checking it exists and persists the selection when it changes. */
 export function selectModelPreset(id: string) {
     if (selection.modelPresetId !== id) {
         selection.modelPresetId = id;
@@ -111,6 +127,7 @@ export function selectModelPreset(id: string) {
     }
 }
 
+/** Selects a persona id without checking it exists and persists the selection when it changes. */
 export function selectPersona(id: string) {
     if (selection.personaId !== id) {
         selection.personaId = id;
@@ -118,9 +135,11 @@ export function selectPersona(id: string) {
     }
 }
 
+/** Stores a nonnegative integer lorebook page, or 0 for invalid input, and persists the selection when it changes. */
 export function selectLoreBookPage(page: number) {
-    if (selection.loreBookPage !== page) {
-        selection.loreBookPage = page;
+    const nextPage = normalizeLoreBookPage(page);
+    if (selection.loreBookPage !== nextPage) {
+        selection.loreBookPage = nextPage;
         save();
     }
 }
@@ -130,16 +149,7 @@ export function selectLoreBookPage(page: number) {
 // `selectedIndex()` is its index in the character list, tracked; a completed membership change of
 // the list that removes the selected character selects home (the records' hook below).
 
-const selectedListeners = new Set<(chaId: string) => void>();
 const changeListeners = new Set<() => void>();
-
-/** Registers a listener called when a tab selects a character (not home, not a reconciliation). */
-export function onCharacterSelected(listener: (chaId: string) => void): () => void {
-    selectedListeners.add(listener);
-    return () => {
-        selectedListeners.delete(listener);
-    };
-}
 
 /** Registers a listener called after every change of the selected character by `selectCharacter`, home included. */
 export function onCharacterSelectionChanged(listener: () => void): () => void {
@@ -149,10 +159,16 @@ export function onCharacterSelectionChanged(listener: () => void): () => void {
     };
 }
 
-/** Selects the character with `chaId` (`null`, or an id no character has: home). */
+/** Whether this id names a stored character the tab can open. */
+export function canSelectCharacter(chaId: string): boolean {
+    const index = characterIndex(chaId);
+    return index !== -1 && !isArchivedGroup(characterData()[index]);
+}
+
+/** Selects the character with `chaId`; a missing or archived character selects home. */
 export function selectCharacter(chaId: string | null) {
     untrack(() => {
-        const id = chaId !== null && characterIndex(chaId) !== -1 ? chaId : null;
+        const id = chaId !== null && canSelectCharacter(chaId) ? chaId : null;
         const changed = selection.characterId !== id;
         selection.characterId = id;
         if (changed) {
@@ -163,16 +179,6 @@ export function selectCharacter(chaId: string | null) {
                 listener();
             }
         }
-        if (!changed || id === null) {
-            return;
-        }
-        for (const listener of [...selectedListeners]) {
-            // A subscriber or an earlier listener selected again: this selection is no longer news.
-            if (selection.characterId !== id) {
-                return;
-            }
-            listener(id);
-        }
     });
 }
 
@@ -181,9 +187,9 @@ export function setChatOpen(open: boolean) {
     selection.chatOpen = open && untrack(() => selection.characterId) !== null;
 }
 
-/** Selects the character at `index` of the list (-1 or no character there: home). */
+/** Selects by index among non-group characters (-1 or no character there: home). */
 export function selectCharacterAt(index: number) {
-    const list = characterData();
+    const list = characterData().filter((character) => !isArchivedGroup(character));
     const chaId = Number.isInteger(index) && index >= 0 && index < list.length ? list[index]?.chaId : undefined;
     selectCharacter(typeof chaId === "string" ? chaId : null);
 }
@@ -198,9 +204,9 @@ class SelectedIndexState {
 }
 const selectedIndexState = new SelectedIndexState();
 
-// After every completed membership change: a selected character that left the list selects home.
+// Reconciliation goes home without notifying the explicit selection listeners.
 setCharacterMembershipHook(() => {
-    if (selection.characterId !== null && untrack(() => characterIndex(selection.characterId)) === -1) {
+    if (selection.characterId !== null && !canSelectCharacter(selection.characterId)) {
         selection.characterId = null;
         selection.chatOpen = false;
     }

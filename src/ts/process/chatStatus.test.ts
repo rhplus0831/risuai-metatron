@@ -1,6 +1,6 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type { GenerationCurrent, GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
@@ -30,61 +30,63 @@ const error: GenerationTerminalEvent = {
     reason: "failed",
 };
 
-type Follow = { jobId: string; end: (terminal: GenerationTerminalEvent | null) => void };
+type Follow = {
+    jobId: string;
+    end: (terminal: GenerationTerminalEvent | null) => void;
+    event: (event: GenerationEvent) => void;
+};
 const stubs = vi.hoisted(() => ({
     follows: [] as Follow[],
+    attached: undefined as (() => void) | undefined,
     closeWithoutTerminal: false,
     read: vi.fn(),
-    /** The sends `sendChat` handed to the server (a command job's follow-ups). */
-    serverSends: [] as { target?: ChatRef }[],
+    healthFetch: vi.fn<typeof import("../storage/serverAuth").authFetch>(),
 }));
 
-vi.mock("src/lang", () => ({ language: { serverJob: { lost: "job lost" } } }));
+vi.mock("../storage/serverAuth", async () =>
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: stubs.healthFetch }),
+);
+
+vi.mock("src/lang", () => ({
+    language: { serverJob: { lost: "job lost", endedAway: "ended away" } },
+}));
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("../network/generationJobs", () => ({
-    abortGenerationJob: vi.fn(),
-    applyGenerationEvent: vi.fn(),
-    createGenerationJob: vi.fn(),
-    followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
-        let end!: Follow["end"];
-        const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
-            end = (terminal) => {
+vi.mock("../network/generationJobs", async () => {
+    const { createGenerationJobsMock, createFollowStub } = await import("../network/tests/generationJobsMock");
+    return createGenerationJobsMock({
+        followGenerationJob: (jobId, onEvent, options) => {
+            const stub = createFollowStub(jobId);
+            const end: Follow["end"] = (terminal) => {
                 if (terminal) onEvent(terminal);
-                resolve({ terminal });
+                stub.end(terminal);
             };
-        });
-        stubs.follows.push({ jobId, end });
-        if (stubs.closeWithoutTerminal) end(null);
-        return { closed, send: () => true, close() {} };
-    },
-    ChatBindingRefusedError: class extends Error {},
-    ChatLoreOverrideOrphanedError: class extends Error {},
-    GenerationBusyError: class extends Error {},
-    readGenerationJob: stubs.read,
-    releaseGenerationJob: vi.fn(),
-    savedGenerationJobIds: () => [],
-}));
-vi.mock("../storage/resourceClient", () => ({
-    getResourceEpoch: () => EPOCH,
-    readRefs: vi.fn(),
-    ResourceRequestError: class extends Error {},
-}));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: vi.fn(),
-    refreshStaleChat: vi.fn(),
-    GenerationBlockedError: class extends Error {},
-    generatingNoticeCount: () => 0,
-    watchForRestore: vi.fn(),
-}));
-vi.mock("../util", () => ({ sleep: async () => {} }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: vi.fn() }));
-// A command job's follow-ups reach the real `runMultisend` and `sendChat`; only the server send and
-// the command module's unrelated services (TTS, the parser, lore) are stand-ins.
-vi.mock("./serverGeneration", () => ({
-    sendChatOnServer: vi.fn(async (arg: { target?: ChatRef }) => {
-        stubs.serverSends.push({ target: arg.target });
-        return { ok: true, outcome: "started" };
+            stubs.follows.push({ jobId, end, event: onEvent });
+            stubs.attached?.();
+            if (stubs.closeWithoutTerminal) end(null);
+            return stub.follow;
+        },
+        readGenerationJob: stubs.read,
+    });
+});
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        getResourceEpoch: () => EPOCH,
     }),
+);
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        /** The chat read after a lost follow takes at once: no retry listener outlives a test. */
+        refreshStaleChat: vi.fn<typeof import("../storage/resourceSync.svelte").refreshStaleChat>(async () => true),
+        generatingNoticeCount: () => 0,
+    }),
+);
+vi.mock("../util", () => ({ sleep: async () => {} }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),
+);
+// The server send and the command module's unrelated services (TTS, the parser, lore) are stand-ins.
+vi.mock("./serverGeneration", () => ({
+    sendChatOnServer: vi.fn(async () => ({ ok: true, outcome: "started" })),
 }));
 vi.mock("./tts", () => ({ sayTTS: vi.fn() }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
@@ -98,6 +100,7 @@ vi.mock("./modules", () => ({
 
 let status: typeof import("./chatStatus.svelte");
 let commands: typeof import("./serverCommands");
+let generationJobs: typeof import("../network/generationJobs");
 let chat: typeof import("../storage/chatStore.svelte");
 let selection: typeof import("../storage/selection.svelte");
 let flushSync: (typeof import("svelte"))["flushSync"];
@@ -115,6 +118,13 @@ function view(ref: ChatRef) {
     chat.selectChat(ref.chaId, ref.chatId);
     selection.PlaygroundStore.set(ref.chaId === "§playground" ? 2 : 0);
     selection.setChatOpen(true);
+}
+
+async function settleForeignRead() {
+    flushSync();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
 }
 
 async function attach(jobId: string, ref: ChatRef) {
@@ -155,8 +165,9 @@ beforeEach(async () => {
     ({ flushSync } = await import("svelte"));
     localStorage.clear();
     sessionStorage.clear();
+    stubs.healthFetch.mockReset();
     stubs.follows.length = 0;
-    stubs.serverSends.length = 0;
+    stubs.attached = undefined;
     stubs.closeWithoutTerminal = false;
     stubs.read.mockReset().mockResolvedValue({ characterId: "c", chatId: "k", epoch: EPOCH, state: "running" });
     chat = await import("../storage/chatStore.svelte");
@@ -183,6 +194,8 @@ beforeEach(async () => {
     selection.selectCharacter(null);
     selection.PlaygroundStore.set(0);
     commands = await import("./serverCommands");
+    generationJobs = await import("../network/generationJobs");
+    vi.mocked(generationJobs.readChatGeneration).mockReset().mockResolvedValue(null);
     status = await import("./chatStatus.svelte");
     status.resetChatStatusForTests();
 });
@@ -194,9 +207,69 @@ afterEach(() => {
     chat.endServerJob("lock-other-2");
     status.resetChatStatusForTests();
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 describe("chat status sources", () => {
+    it.each([
+        "settings",
+        "grid",
+        "bookmarks",
+        "message search",
+        "HypaV3 memory",
+        "popup editor",
+        "hidden page",
+        "unloaded chat",
+    ])("keeps completion and recovery marks behind %s until the transcript is shown", async (obstruction) => {
+        vi.useFakeTimers();
+        const { settingsOpen, gridOpenStore, bookmarkListOpen, hypaV3ModalOpen } = await import("../screenVisibility");
+        const { messageSearchPanel } = await import("../messageSearch.svelte");
+        const { popUpEditorStore } = await import("../popupEditorSession.svelte");
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        const showPage = (visible: boolean) => {
+            visibility.mockReturnValue(visible ? "visible" : "hidden");
+            document.dispatchEvent(new Event("visibilitychange"));
+        };
+        view(a);
+        watch();
+        const saved = JSON.parse(JSON.stringify(chat.findChat(a)!));
+        const record = { characterId: a.chaId, id: a.chatId, revision: "r1", trashedAt: null };
+        const orders = [{ characterId: a.chaId, revision: "o1", ids: [a.chatId] }];
+        if (obstruction === "settings") settingsOpen.set(true);
+        if (obstruction === "grid") gridOpenStore.set(true);
+        if (obstruction === "bookmarks") bookmarkListOpen.set(true);
+        if (obstruction === "message search") messageSearchPanel.open = true;
+        if (obstruction === "HypaV3 memory") hypaV3ModalOpen.set(true);
+        if (obstruction === "popup editor") popUpEditorStore.open = true;
+        if (obstruction === "hidden page") showPage(false);
+        if (obstruction === "unloaded chat") {
+            chat.assembleChats([{ chaId: a.chaId }], [{ ...record, name: saved.name, fmIndex: -1 }], orders);
+            expect(chat.currentChatRef()).toEqual(a);
+            expect(chat.findChat(a)).toBeUndefined();
+        }
+        flushSync();
+        status.noteJobDone(a, done({ messageId: "reply" }));
+        expect(get(status.unseenChatKeys)).toEqual(new Set([keyA]));
+        status.noteJobLost(a, "lost-behind-screen");
+        flushSync();
+        expectMarks([keyA]);
+
+        settingsOpen.set(false);
+        gridOpenStore.set(false);
+        bookmarkListOpen.set(false);
+        messageSearchPanel.open = false;
+        hypaV3ModalOpen.set(false);
+        popUpEditorStore.open = false;
+        showPage(true);
+        if (obstruction === "unloaded chat") {
+            chat.assembleChats([{ chaId: a.chaId }], [{ ...record, data: saved }], orders);
+        }
+        flushSync();
+        expectMarks([]);
+        status.noteJobDone(a, done({ messageId: "visible-reply" }));
+        expect(get(status.unseenChatKeys)).toEqual(new Set());
+    });
+
     it("generating reacts to the union of followed chats and real server locks", async () => {
         expect(status.chatStatusKey(a)).toBe(keyA);
         expect(status.chatStatusKey(other)).toBe(keyOther);
@@ -234,6 +307,434 @@ describe("chat status sources", () => {
         chat.endServerJob("lock-other-2");
         expect(chat.lockedChatKeys()).toEqual(new Set());
         expectGenerating([]);
+    });
+
+    it("the badge set adds the feed's running jobs from admission, previews excluded, and leaves busy checks alone", async () => {
+        const progress = await import("./generationProgress.svelte");
+        const { createProbe } = await import("../storage/tests/reactiveProbe.svelte");
+        const probe = createProbe(() => status.generatingBadgeKeys());
+        disposers.push(probe.dispose);
+        const expectBadges = (keys: string[]) => {
+            flushSync();
+            expect(status.generatingBadgeKeys()).toEqual(new Set(keys));
+            expect(probe.seen.at(-1)).toEqual(new Set(keys));
+        };
+        const frame = (state: "running" | "ended", jobId: string, ref: ChatRef, kind = "send") =>
+            progress.noteGenerationFrame({
+                type: "generation",
+                epoch: EPOCH,
+                state,
+                jobId,
+                characterId: ref.chaId,
+                chatId: ref.chatId,
+                ...(state === "running" ? { kind, clientId: "another-device", startedAt: 1, at: 2 } : {}),
+            });
+        expectBadges([]);
+
+        // Another device's send before its first `begin`: no lock, no follow.
+        frame("running", "remote-send", other);
+        frame("running", "remote-preview", b, "preview");
+        frame("running", "remote-prompt-preview", b, "previewPrompt");
+        expectBadges([keyOther]);
+        expect(status.generatingChatKeys()).toEqual(new Set());
+        expect(status.isChatBusy(other)).toBe(false);
+
+        const followed = await attach("follow-a", a);
+        expectBadges([keyA, keyOther]);
+
+        frame("ended", "remote-send", other);
+        expectBadges([keyA]);
+        followed.socket.end(done());
+        await followed.end;
+        expectBadges([]);
+    });
+
+    it("clears a foreign mark when its server lock is released and retains a lockless chat's mark", () => {
+        vi.useFakeTimers();
+        watch();
+        status.noteForeignJob(a, "foreign-reply");
+        status.noteForeignJob(b, "lockless-command");
+        chat.noteRemoteStreaming([
+            { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        flushSync();
+        expect(get(status.foreignJobs)).toEqual(
+            new Map([
+                [keyA, "foreign-reply"],
+                [keyB, "lockless-command"],
+            ]),
+        );
+
+        chat.releaseFeedLocks();
+        flushSync();
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyB, "lockless-command"]]));
+    });
+
+    it("clears an idle command's foreign mark on its next transcript visibility without rereading while visible", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const { settingsOpen } = await import("../screenVisibility");
+        view(a);
+        watch();
+        await settleForeignRead();
+        // Showing a chat asks once whether another client's job runs in it; a later mark does not ask again.
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        read.mockClear();
+        status.noteForeignJob(a, "command");
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+
+        settingsOpen.set(true);
+        await settleForeignRead();
+        expect(status.visibleChatKey()).toBeNull();
+        expect(read).not.toHaveBeenCalled();
+        settingsOpen.set(false);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+        // This is the screen's source for offering its extra Stop button.
+        expect(status.foreignJobChatKeys()).toEqual(new Set());
+
+        status.noteForeignJob(a, "next-command");
+        chat.setMessageText(a, "m2", "updated transcript");
+        await settleForeignRead();
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "next-command"]]));
+        expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it("reconciles foreign and owned answers once per page return or visible online event", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        const showPage = (visible: boolean) => {
+            visibility.mockReturnValue(visible ? "visible" : "hidden");
+            document.dispatchEvent(new Event("visibilitychange"));
+        };
+        showPage(true);
+        view(a);
+        watch();
+        status.noteForeignJob(a, "command");
+        read.mockResolvedValue({ jobId: "command", kind: "command", owned: false });
+        showPage(false);
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+
+        showPage(true);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "command"]]));
+        showPage(true);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(1);
+
+        read.mockResolvedValue({ jobId: "replacement", kind: "command", owned: false });
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "replacement"]]));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(2);
+
+        read.mockResolvedValue({ jobId: "owned", kind: "command", owned: true });
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(3);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+        expect(read.mock.calls).toEqual([[a], [a], [a]]);
+    });
+
+    it("silently keeps a foreign mark after a failed read until the next online event", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const alerts = await import("../alert");
+        vi.mocked(alerts.alertError).mockClear();
+        vi.mocked(alerts.alertToast).mockClear();
+        status.noteForeignJob(a, "command");
+        read.mockRejectedValueOnce(new Error("offline"));
+        watch();
+        view(a);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "command"]]));
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        expect(alerts.alertToast).not.toHaveBeenCalled();
+
+        chat.setMessageText(a, "m2", "still visible");
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "command"]]));
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+    });
+
+    it("keeps a newer foreign mark when a late read would clear or replace the old mark", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        watch();
+        const answers: (GenerationCurrent | null)[] = [
+            null,
+            { jobId: "owned", kind: "command", owned: true },
+            { jobId: "replacement", kind: "command", owned: false },
+        ];
+        for (const [index, answer] of answers.entries()) {
+            selection.setChatOpen(false);
+            await settleForeignRead();
+            status.noteForeignJob(a, `old-${index}`);
+            let resolve!: (current: GenerationCurrent | null) => void;
+            read.mockImplementationOnce(
+                () =>
+                    new Promise((settle) => {
+                        resolve = settle;
+                    }),
+            );
+            view(a);
+            await settleForeignRead();
+            expect(read).toHaveBeenCalledTimes(index + 1);
+            status.noteForeignJob(a, `new-${index}`);
+            resolve(answer);
+            await settleForeignRead();
+            expect(get(status.foreignJobs)).toEqual(new Map([[keyA, `new-${index}`]]));
+            expect(read).toHaveBeenCalledTimes(index + 1);
+        }
+    });
+
+    it("skips locked and followed chats and reads only on a later visibility event after they end", async () => {
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        chat.noteRemoteStreaming([
+            { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        commands.followedJobs.set(new Map([["followed", keyB]]));
+        watch();
+        status.noteForeignJob(a, "locked");
+        status.noteForeignJob(b, "followed");
+        view(a);
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        expect(get(status.foreignJobs).get(keyA)).toBe("locked");
+        chat.releaseFeedLocks();
+        await settleForeignRead();
+        expect(get(status.foreignJobs).has(keyA)).toBe(false);
+        expect(read).not.toHaveBeenCalled();
+
+        view(b);
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        commands.followedJobs.set(new Map());
+        status.noteForeignJob(b, "ended-command");
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        view(a);
+        await settleForeignRead();
+        view(b);
+        await settleForeignRead();
+        // Each show reads its chat once: the now unlocked chat first, then the one whose follow ended.
+        expect(read.mock.calls).toEqual([[a], [b]]);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+    });
+
+    it("discovers an unmarked lockless job on show, page return, and online recovery without blocking sends", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        const showPage = (visible: boolean) => {
+            visibility.mockReturnValue(visible ? "visible" : "hidden");
+            document.dispatchEvent(new Event("visibilitychange"));
+        };
+        showPage(true);
+        read.mockResolvedValue({ jobId: "before-reply", kind: "send", owned: false });
+        view(a);
+        watch();
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "before-reply"]]));
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+        expect(chat.lockedChatKeys()).toEqual(new Set());
+        expect(status.isChatBusy(a)).toBe(false);
+
+        status.clearForeignJob(a);
+        showPage(false);
+        await settleForeignRead();
+        read.mockClear();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        read.mockResolvedValue({ jobId: "while-away", kind: "send", owned: false });
+        showPage(true);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "while-away"]]));
+
+        status.clearForeignJob(a);
+        read.mockClear();
+        read.mockResolvedValue({ jobId: "while-offline", kind: "send", owned: false });
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "while-offline"]]));
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+        expect(status.isChatBusy(a)).toBe(false);
+    });
+
+    it("discovers jobs from feed frames naming the visible chat with empty locks, after applying the frame's locks", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        view(a);
+        watch();
+        await settleForeignRead();
+        read.mockClear();
+        read.mockResolvedValue({ jobId: "first-write", kind: "send", owned: false });
+        chat.noteRemoteStreaming([{ characterId: other.chaId, id: other.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "first-write"]]));
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+
+        read.mockClear();
+        chat.noteRemoteStreaming([
+            { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        await settleForeignRead();
+        expect(chat.lockedChatKeys()).toEqual(new Set([keyA]));
+        expect(read).not.toHaveBeenCalled();
+
+        read.mockResolvedValue({ jobId: "next-lockless-job", kind: "send", owned: false });
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "next-lockless-job"]]));
+
+        commands.followedJobs.set(new Map([["followed", keyA]]));
+        await settleForeignRead();
+        read.mockClear();
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    it("rechecks a visible lockless mark every interval, preserves it on failure, and stops when the job ends", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        read.mockResolvedValue({ jobId: "slow-request", kind: "send", owned: false });
+        view(a);
+        watch();
+        await settleForeignRead();
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "slow-request"]]));
+
+        read.mockClear();
+        await vi.advanceTimersByTimeAsync(status.FOREIGN_JOB_RECHECK_MS - 1);
+        expect(read).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "slow-request"]]));
+
+        read.mockClear();
+        read.mockRejectedValueOnce(new Error("offline"));
+        await vi.advanceTimersByTimeAsync(status.FOREIGN_JOB_RECHECK_MS);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "slow-request"]]));
+
+        read.mockClear();
+        read.mockResolvedValue(null);
+        await vi.advanceTimersByTimeAsync(status.FOREIGN_JOB_RECHECK_MS);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+        expect(status.foreignJobChatKeys()).toEqual(new Set());
+        read.mockClear();
+        await vi.advanceTimersByTimeAsync(2 * status.FOREIGN_JOB_RECHECK_MS);
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    it("skips sending chats and stops rechecking on a lock, follow, send, hidden chat, or disposal", async () => {
+        vi.useFakeTimers();
+        const { beginLocalSend } = await import("./localSends");
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const sending = beginLocalSend(a)!;
+        disposers.push(sending);
+        view(a);
+        const dispose = watch();
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        sending();
+
+        const stops: Record<string, () => () => void> = {
+            locked: () => {
+                chat.noteRemoteStreaming([
+                    { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+                ]);
+                return () => chat.releaseFeedLocks();
+            },
+            followed: () => {
+                commands.followedJobs.set(new Map([["followed", keyA]]));
+                return () => commands.followedJobs.set(new Map());
+            },
+            sending: () => beginLocalSend(a)!,
+            hidden: () => {
+                selection.setChatOpen(false);
+                return () => view(a);
+            },
+            disposed: () => {
+                dispose();
+                return () => {};
+            },
+        };
+        for (const [reason, stop] of Object.entries(stops)) {
+            read.mockResolvedValue({ jobId: "lockless-job", kind: "send", owned: false });
+            window.dispatchEvent(new Event("online"));
+            await settleForeignRead();
+            expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "lockless-job"]]));
+            const resume = stop();
+            disposers.push(resume);
+            await settleForeignRead();
+            read.mockClear();
+            await vi.advanceTimersByTimeAsync(2 * status.FOREIGN_JOB_RECHECK_MS);
+            expect(read, `while ${reason}`).not.toHaveBeenCalled();
+            resume();
+            await settleForeignRead();
+            status.clearForeignJob(a);
+            await settleForeignRead();
+        }
+    });
+
+    it("skips overlapping discovery reads and preserves a mark added while an unmarked read was in flight", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        watch();
+        const answers: (GenerationCurrent | null)[] = [null, { jobId: "stale-answer", kind: "send", owned: false }];
+        for (const answer of answers) {
+            selection.setChatOpen(false);
+            status.clearForeignJob(a);
+            await settleForeignRead();
+            let resolve!: (current: GenerationCurrent | null) => void;
+            read.mockImplementationOnce(() => new Promise((settle) => (resolve = settle)));
+            view(a);
+            await settleForeignRead();
+            expect(read).toHaveBeenCalledWith(a);
+            read.mockClear();
+            window.dispatchEvent(new Event("online"));
+            chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+            await settleForeignRead();
+            expect(read).not.toHaveBeenCalled();
+
+            status.noteForeignJob(a, "new-observation");
+            resolve(answer);
+            await settleForeignRead();
+            expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "new-observation"]]));
+        }
     });
 
     it("only a done reply outside the chat visible at completion becomes unseen", async () => {
@@ -336,6 +837,30 @@ describe("chat status sources", () => {
         expectMarks([]);
     });
 
+    it("viewing a lost chat reads it again (`readChatAgain`): the chat is marked stale and refreshed, once per cleared recovery mark, and an unseen-only chat is not read", async () => {
+        const { refreshStaleChat } = await import("../storage/resourceSync.svelte");
+        const refresh = vi.mocked(refreshStaleChat);
+        refresh.mockClear();
+        // The fixture chats hold no server revision: the stale mark is taken as given.
+        const stale = vi.spyOn(chat, "markChatStale").mockReturnValue(true);
+        status.noteJobLost(a, "lost");
+        status.noteJobDone(b, done({ messageId: "reply" }));
+        watch();
+        view(a);
+        flushSync();
+        expect(get(status.recoveryChatKeys)).toEqual(new Map());
+        expect(get(status.unseenChatKeys)).toEqual(new Set([keyB]));
+        await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+        expect(refresh).toHaveBeenCalledWith(a);
+        expect(stale).toHaveBeenCalledWith(a);
+        view(b);
+        flushSync();
+        expect(get(status.unseenChatKeys)).toEqual(new Set());
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(refresh).toHaveBeenCalledTimes(1);
+    });
+
     it("marks added for an already visible chat are cleared without another selection change", () => {
         view(a);
         watch();
@@ -349,6 +874,10 @@ describe("chat status sources", () => {
     });
 
     it("a new follow immediately clears that chat's recovery while keeping its unseen reply", async () => {
+        vi.useFakeTimers();
+        const { settingsOpen } = await import("../screenVisibility");
+        view(a);
+        settingsOpen.set(true);
         watch();
         status.noteJobLost(a, "old-a");
         status.noteJobLost(b, "old-b");
@@ -358,7 +887,8 @@ describe("chat status sources", () => {
         // The follow's registration clears the recovery mark, before the job ends.
         expect(get(status.recoveryChatKeys)).toEqual(new Map([[keyB, "old-b"]]));
         expect(get(status.unseenChatKeys)).toEqual(new Set([keyA]));
-        await vi.waitFor(() => expect(stubs.follows).toHaveLength(1));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stubs.follows).toHaveLength(1);
         stubs.follows[0].end(done());
         await end;
         flushSync();
@@ -396,6 +926,28 @@ describe("chat status sources", () => {
 });
 
 describe("isChatBusy", () => {
+    it("keeps a pending worker foreign, moves it to followed only as owner, and clears both at its end", async () => {
+        vi.useFakeTimers();
+        status.noteForeignJob(a, "taken-over");
+        const ready = new Promise<void>((resolve) => {
+            stubs.attached = resolve;
+        });
+        const end = commands.followJobToEnd("taken-over", a, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const socket = stubs.follows[0];
+        socket.event({ type: "handoff", epoch: EPOCH, owner: "other", pending: true });
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "taken-over"]]));
+        expect(get(commands.followedJobs).size).toBe(0);
+        socket.event({ type: "handoff", epoch: EPOCH, owner: "self" });
+        expect(get(status.foreignJobs).size).toBe(0);
+        expect(get(commands.followedJobs)).toEqual(new Map([["taken-over", keyA]]));
+        const terminal = done();
+        socket.end(terminal);
+        expect(await end).toEqual(terminal);
+        expect(get(status.foreignJobs).size).toBe(0);
+        expect(get(commands.followedJobs).size).toBe(0);
+    });
+
     it("is true for a chat with a local send, a followed job, or a lock (this tab's or the feed's), for that chat only", async () => {
         const { beginLocalSend } = await import("./localSends");
         expect(status.isChatBusy(a)).toBe(false);
@@ -436,16 +988,515 @@ describe("isChatBusy", () => {
     });
 });
 
-describe("a command job's follow-ups", () => {
-    it("pass isChatBusy once the job's own follow has ended: each part is appended to the job's chat and sent there", async () => {
-        const follow = await attach("command", a);
-        const terminal = done({ followUps: [{ clear: false, parts: ["first", "second"] }] });
-        follow.socket.end(terminal);
-        expect(await follow.end).toEqual(terminal);
-        await vi.waitFor(() => expect(stubs.serverSends).toHaveLength(2));
-        expect(stubs.serverSends).toEqual([{ target: a }, { target: a }]);
-        expect(chat.findChat(a)!.message.map((message) => message.data)).toEqual(["one", "two", "first", "second"]);
-        expect(status.isChatBusy(a)).toBe(false);
-        expect(status.generatingChatKeys()).toEqual(new Set());
+const healthy = {
+    paused: false,
+    lastRunFailed: false,
+    storedStale: 0,
+    pendingRepairs: 0,
+    unsupportedSections: 0,
+    overBudgetSections: 0,
+};
+async function enableMemory() {
+    const { settings } = await import("../storage/settingsViews.svelte");
+    const { characterList } = await import("../storage/characterStore.svelte");
+    const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    settings.hypaV3Presets.items = [
+        createHypaV3Preset("Memory", { gapConfirmTokens: 10, structured: { fineTuning: true } }, "memory"),
+    ];
+    settings.hypaV3Presets.selectedId = "memory";
+    for (const character of characterList()) character.supaMemory = true;
+    return settings;
+}
+async function settleHealth() {
+    for (let i = 0; i < 50; i++) {
+        await Promise.resolve();
+        flushSync();
+    }
+}
+
+it("shares one walk of the characters' chats across reactive memory health readers", async () => {
+    await enableMemory();
+    view(a);
+    status.noteJobDone(b, { ...error, code: "memoryRequiredOverCap" });
+    const characters = await import("../storage/characterStore.svelte");
+    const { createProbe } = await import("../storage/tests/reactiveProbe.svelte");
+    const walk = vi.spyOn(characters, "characterList");
+    const readers = Array.from({ length: 3 }, () => {
+        const probe = createProbe(() => status.memoryHealthStates());
+        disposers.push(probe.dispose);
+        return probe;
     });
+    for (const reader of readers) expect(reader.seen).toEqual([new Map()]);
+
+    walk.mockClear();
+    chat.setChatMeta(b, { pinned: true });
+    flushSync();
+    expect(walk).toHaveBeenCalledTimes(1);
+    for (const reader of readers) {
+        expect(reader.seen).toEqual([new Map(), new Map([[keyB, "requiredOverCap"]])]);
+    }
+});
+
+it("reads the open chat's health again when a memory task it saw running ends, and answers the facts it holds", async () => {
+    await enableMemory();
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    let lastRunFailed = true;
+    const requests: { characterId: string; chatId: string }[][] = [];
+    stubs.healthFetch.mockImplementation(async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)).chats);
+        return Response.json({ health: [{ ...healthy, lastRunFailed }] });
+    });
+    watch();
+    await settleHealth();
+    expect(requests).toEqual([[{ characterId: "c", chatId: "k" }]]);
+    expect(status.memoryHealthFacts(a)).toEqual({ ...healthy, lastRunFailed: true });
+    expect(status.memoryHealthFacts(b)).toBeNull();
+    const tasks = await import("./memoryTasks.svelte");
+    const frame = (state: "running" | "done") =>
+        tasks.noteMemoryTaskFrame({
+            type: "memoryTask",
+            epoch: EPOCH,
+            characterId: "c",
+            chatId: "k",
+            status: {
+                kind: "structuredMemory",
+                taskId: "fill-gaps",
+                state,
+                done: state === "done" ? 1 : 0,
+                total: 1,
+                ...(state === "done" ? { terminalRevision: null } : {}),
+            },
+        });
+    frame("running");
+    await settleHealth();
+    expect(requests).toHaveLength(1);
+    // The task's runs are what changed: the context meter's last report cannot say a later run made good a failure.
+    lastRunFailed = false;
+    frame("done");
+    await settleHealth();
+    expect(requests).toEqual([[{ characterId: "c", chatId: "k" }], [{ characterId: "c", chatId: "k" }]]);
+    expect(status.memoryHealthFacts(a)).toEqual({ ...healthy, lastRunFailed: false });
+});
+
+it("keeps newer health answers when a delayed boot read returns, applying request order per chat", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(100_000);
+    await enableMemory();
+    chat.setChatMeta(b, { pinned: true });
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    const replies: ((response: Response) => void)[] = [];
+    stubs.healthFetch.mockImplementation((url) => {
+        expect(url).toBe("/api/memory/structured/health");
+        return new Promise((resolve) => replies.push(resolve));
+    });
+    const closePanel = async () => {
+        hypaV3ModalOpen.set(true);
+        await settleHealth();
+        hypaV3ModalOpen.set(false);
+        await settleHealth();
+    };
+    watch();
+    await settleHealth();
+    expect(replies).toHaveLength(1);
+    expect(JSON.parse(String(stubs.healthFetch.mock.calls[0][1]?.body))).toEqual({
+        chats: [
+            { characterId: "c", chatId: "k" },
+            { characterId: "c", chatId: "j" },
+        ],
+    });
+    await closePanel();
+    expect(replies).toHaveLength(2);
+    expect(JSON.parse(String(stubs.healthFetch.mock.calls[1][1]?.body))).toEqual({
+        chats: [{ characterId: "c", chatId: "k" }],
+    });
+    replies[1](Response.json({ health: [healthy] }));
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(new Map());
+    const stale = { ...healthy, storedStale: 1 };
+    replies[0](Response.json({ health: [stale, stale] }));
+    await settleHealth();
+    // Only the open chat has a newer answer; the pinned chat still takes its boot facts.
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "staleEvents"]]));
+
+    // Starting a newer request must not discard an answer before the newer one has applied.
+    await closePanel();
+    await closePanel();
+    expect(replies).toHaveLength(4);
+    replies[2](Response.json({ health: [stale] }));
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(
+        new Map([
+            [keyA, "staleEvents"],
+            [keyB, "staleEvents"],
+        ]),
+    );
+    replies[3](Response.json({ health: [healthy] }));
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "staleEvents"]]));
+});
+
+it("shows unavailable health below the open report's gap and the tab's required-over-cap mark", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(100_000);
+    await enableMemory();
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    stubs.healthFetch.mockResolvedValue(Response.json({ health: ["unavailable"] }));
+    watch();
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "unavailable"]]));
+
+    chat.patchMessage(a, "m2", {
+        generationInfo: {
+            context: {
+                v: 1,
+                maxContext: 1000,
+                maxResponse: 100,
+                input: 300,
+                sections: [],
+                adjustment: 300,
+                attributionExact: true,
+                history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 20 },
+                lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+                tokenScope: "scope",
+                historyDigest: "digest",
+                memory: { kind: "structuredMemory", tokens: 0, coverage: "gap", gapTokens: 11 },
+            },
+        },
+    });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "gap"]]));
+    chat.patchMessage(a, "m2", { generationInfo: {} });
+    status.noteJobDone(a, { ...error, code: "memoryRequiredOverCap" });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+    status.noteJobDone(a, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "unavailable"]]));
+});
+
+it("requests structured memory health for a pinned character chat and skips a pinned group chat", async () => {
+    vi.useFakeTimers();
+    await enableMemory();
+    const { patchRawCharacter } = await import("../storage/records.svelte");
+    patchRawCharacter(other.chaId, [["type", "group"]]);
+    chat.setChatMeta(b, { pinned: true });
+    chat.setChatMeta(other, { pinned: true });
+    const requested: { characterId: string; chatId: string }[] = [];
+    stubs.healthFetch.mockImplementation(async (_url, init) => {
+        const { chats } = JSON.parse(String(init?.body));
+        requested.push(...chats);
+        return Response.json({ health: chats.map(() => healthy) });
+    });
+    watch();
+    await settleHealth();
+    expect(requested).toEqual([{ characterId: "c", chatId: "j" }]);
+});
+
+it("reads only pinned and open health on visibility triggers, resumes prefixes and keeps facts on failure", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(100_000);
+    const settings = await enableMemory();
+    settings.ui.memoryAlgorithmType = "none";
+    chat.setChatMeta(b, { pinned: true });
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    const requests: { characterId: string; chatId: string }[][] = [];
+    let release!: (response: Response) => void;
+    stubs.healthFetch.mockImplementation(async (url, init) => {
+        expect(url).toBe("/api/memory/structured/health");
+        const refs = JSON.parse(String(init?.body)).chats;
+        requests.push(refs);
+        if (requests.length === 1)
+            return new Promise((resolve) => {
+                release = resolve;
+            });
+        return Response.json({
+            health: refs.map((ref: { characterId: string; chatId: string }) =>
+                ref.characterId === "c" && ref.chatId === "k" ? { ...healthy, storedStale: 1 } : healthy,
+            ),
+        });
+    });
+    watch();
+    await settleHealth();
+    expect(requests).toEqual([]);
+    expect(status.memoryHealthStates().size).toBe(0);
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    await settleHealth();
+    expect(requests).toEqual([
+        [
+            { characterId: "c", chatId: "k" },
+            { characterId: "c", chatId: "j" },
+        ],
+    ]);
+    // The open chat remains usable while the boot read is unanswered, and a custom writer prompt is no state.
+    expect(chat.currentChatRef()).toEqual(a);
+    expect(status.memoryHealthStates().size).toBe(0);
+    release(Response.json({ health: [{ ...healthy, storedStale: 1 }] }));
+    await settleHealth();
+    expect(requests[1]).toEqual([{ characterId: "c", chatId: "j" }]);
+    expect(status.memoryHealthStates().get(keyA)).toBe("staleEvents");
+    chat.setChatMeta(other, { pinned: true });
+    await settleHealth();
+    expect(requests.at(-1)).toEqual([{ characterId: "d", chatId: "k" }]);
+    const count = requests.length;
+    const { beginLocalSend } = await import("./localSends");
+    const endSend = beginLocalSend(a)!;
+    commands.followedJobs.set(new Map([["stream", keyA]]));
+    chat.setMessageText(a, "m2", "Streaming reply");
+    const tasks = await import("./memoryTasks.svelte");
+    tasks.noteMemoryTaskFrame({
+        type: "memoryTask",
+        epoch: EPOCH,
+        characterId: "c",
+        chatId: "k",
+        status: {
+            kind: "structuredMemory",
+            taskId: "memory",
+            state: "done",
+            done: 1,
+            total: 1,
+            terminalRevision: null,
+        },
+    });
+    await settleHealth();
+    expect(tasks.memoryTaskStatus(a)?.state).toBe("done");
+    endSend();
+    commands.followedJobs.set(new Map());
+    status.noteJobDone(a, done({ messageId: "m2" }));
+    await settleHealth();
+    expect(requests).toHaveLength(count);
+    view(b);
+    await settleHealth();
+    expect(requests.at(-1)).toEqual([{ characterId: "c", chatId: "j" }]);
+    hypaV3ModalOpen.set(true);
+    await settleHealth();
+    const beforeClose = requests.length;
+    hypaV3ModalOpen.set(false);
+    await settleHealth();
+    expect(requests).toHaveLength(beforeClose + 1);
+    expect(requests.at(-1)).toEqual([{ characterId: "c", chatId: "j" }]);
+    const returnPage = async () => {
+        visibility.mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+    };
+    vi.setSystemTime(159_999);
+    await returnPage();
+    expect(requests).toHaveLength(beforeClose + 1);
+    vi.setSystemTime(160_000);
+    await returnPage();
+    expect(requests.at(-1)).toEqual([
+        { characterId: "c", chatId: "j" },
+        { characterId: "d", chatId: "k" },
+    ]);
+    const afterMinute = requests.length;
+    await returnPage();
+    expect(requests).toHaveLength(afterMinute);
+    view(a);
+    await settleHealth();
+    stubs.healthFetch.mockRejectedValue(new Error("offline"));
+    const held = new Map(status.memoryHealthStates());
+    hypaV3ModalOpen.set(true);
+    await settleHealth();
+    hypaV3ModalOpen.set(false);
+    await settleHealth();
+    expect(status.memoryHealthStates()).toEqual(held);
+    settings.ui.memoryAlgorithmType = "hypaV3";
+    const calls = stubs.healthFetch.mock.calls.length;
+    vi.setSystemTime(220_000);
+    await returnPage();
+    expect(stubs.healthFetch).toHaveBeenCalledTimes(calls);
+    expect(status.memoryHealthStates().size).toBe(0);
+    tasks.resetMemoryTasks();
+});
+
+it("marks required overflow and clears successful sends strictly by character and chat", async () => {
+    await enableMemory();
+    view(a);
+    chat.setChatMeta(b, { pinned: true });
+    chat.setChatMeta(other, { pinned: true });
+    const overflow = { ...error, code: "memoryRequiredOverCap" as const };
+    status.noteJobDone(a, overflow);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+    status.noteJobDone(b, error);
+    status.noteJobDone(a, error);
+    status.noteJobDone(other, done({ messageId: "reply" }));
+    status.noteJobDone(a, done());
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+    status.noteJobDone(other, overflow);
+    status.noteJobDone(b, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates()).toEqual(
+        new Map([
+            [keyA, "requiredOverCap"],
+            [keyOther, "requiredOverCap"],
+        ]),
+    );
+    status.noteJobDone(a, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyOther, "requiredOverCap"]]));
+    status.noteJobDone(other, done({ messageId: "reply" }));
+    expect(status.memoryHealthStates().size).toBe(0);
+    expect(stubs.healthFetch).not.toHaveBeenCalled();
+});
+
+it("uses the newest report's strict gap threshold only for memory-enabled chats, with no custom-prompt state", async () => {
+    const settings = await enableMemory();
+    view(a);
+    chat.setChatMeta(b, { pinned: true });
+    const report = (gapTokens?: number) => ({
+        v: 1 as const,
+        maxContext: 1000,
+        maxResponse: 100,
+        input: 300,
+        sections: [],
+        adjustment: 300,
+        attributionExact: true,
+        history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 20 },
+        lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+        tokenScope: "scope",
+        historyDigest: "digest",
+        memory: {
+            kind: "structuredMemory" as const,
+            tokens: 0,
+            coverage: "gap" as const,
+            ...(gapTokens === undefined ? {} : { gapTokens }),
+        },
+    });
+    chat.patchMessage(a, "m1", { generationInfo: { context: report(99) } });
+    for (const [tokens, expected] of [
+        [11, new Map([[keyA, "gap"]])],
+        [10, new Map()],
+        [undefined, new Map()],
+    ] as const) {
+        chat.patchMessage(a, "m2", { generationInfo: { context: report(tokens) } });
+        expect(status.memoryHealthStates()).toEqual(expected);
+    }
+    chat.patchMessage(a, "m2", { generationInfo: { context: report(11) } });
+    expect(status.memoryHealthStates().size).toBe(1);
+    const { findCharacter } = await import("../storage/characterStore.svelte");
+    Object.assign(findCharacter("c")!, { supaMemory: false });
+    expect(status.memoryHealthStates().size).toBe(0);
+    Object.assign(findCharacter("c")!, { supaMemory: true });
+    settings.ui.memoryAlgorithmType = "none";
+    expect(status.memoryHealthStates().size).toBe(0);
+    expect(stubs.healthFetch).not.toHaveBeenCalled();
+});
+
+it("shows memory health for the chat switch independently of the owner's default", async () => {
+    await enableMemory();
+    const { findCharacter } = await import("../storage/characterStore.svelte");
+    view(a);
+    chat.setChatMeta(a, { memoryEnabled: false });
+    chat.setChatMeta(b, { memoryEnabled: true, pinned: true });
+    status.noteJobDone(a, { ...error, code: "memoryRequiredOverCap" });
+    status.noteJobDone(b, { ...error, code: "memoryRequiredOverCap" });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "requiredOverCap"]]));
+    Object.assign(findCharacter("c")!, { supaMemory: false });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "requiredOverCap"]]));
+    chat.setChatMeta(a, { memoryEnabled: true });
+    chat.setChatMeta(b, { memoryEnabled: false });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+});
+
+it.each(["hypaV3", "structuredMemory"])(
+    "reads and shows health only for Structured chats under global %s, including panel close",
+    async (globalMode) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(100_000);
+        const settings = await enableMemory();
+        settings.ui.memoryAlgorithmType = globalMode;
+        Object.assign(settings.memoryTranslateMedia, {
+            hypaV3: true,
+            hypav2: false,
+            hanuraiEnable: false,
+            supaModelType: "none",
+        });
+        chat.setChatMeta(a, { memoryMode: "structuredMemory" });
+        chat.setChatMeta(b, { memoryMode: "hypaV3", pinned: true });
+        view(a);
+        const { hypaV3ModalOpen } = await import("../screenVisibility");
+        hypaV3ModalOpen.set(false);
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        stubs.healthFetch.mockImplementation(async () => Response.json({ health: [{ ...healthy, storedStale: 1 }] }));
+        watch();
+        await settleHealth();
+        const requests = () => stubs.healthFetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).chats);
+        expect(requests()).toEqual([[{ characterId: "c", chatId: "k" }]]);
+        status.noteJobDone(b, { ...error, code: "memoryRequiredOverCap" });
+        expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "staleEvents"]]));
+
+        hypaV3ModalOpen.set(true);
+        await settleHealth();
+        hypaV3ModalOpen.set(false);
+        await settleHealth();
+        expect(requests()).toEqual([[{ characterId: "c", chatId: "k" }], [{ characterId: "c", chatId: "k" }]]);
+        chat.setChatMeta(a, { pinned: true });
+        view(b);
+        await settleHealth();
+        hypaV3ModalOpen.set(true);
+        await settleHealth();
+        hypaV3ModalOpen.set(false);
+        await settleHealth();
+        expect(stubs.healthFetch).toHaveBeenCalledTimes(2);
+        visibility.mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+        vi.setSystemTime(160_000);
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+        expect(requests()).toHaveLength(3);
+        expect(requests().at(-1)).toEqual([{ characterId: "c", chatId: "k" }]);
+        expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "staleEvents"]]));
+    },
+);
+
+it("judges each open chat's gap against its own preset threshold and falls back without changing deleted ids", async () => {
+    const settings = await enableMemory();
+    const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
+    settings.hypaV3Presets.items.push(
+        createHypaV3Preset("Low", { gapConfirmTokens: 5 }, "low"),
+        createHypaV3Preset("High", { gapConfirmTokens: 20 }, "high"),
+    );
+    chat.setChatMeta(a, { memoryPresetId: "low", pinned: true });
+    chat.setChatMeta(b, { memoryPresetId: "high", pinned: true });
+    const context = {
+        v: 1 as const,
+        maxContext: 1000,
+        maxResponse: 100,
+        input: 300,
+        sections: [],
+        adjustment: 300,
+        attributionExact: true,
+        history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 20 },
+        lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+        tokenScope: "scope",
+        historyDigest: "digest",
+        memory: { kind: "structuredMemory" as const, tokens: 0, coverage: "gap" as const, gapTokens: 10 },
+    };
+    for (const ref of [a, b]) chat.patchMessage(ref, "m2", { generationInfo: { context } });
+    view(a);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "gap"]]));
+    view(b);
+    expect(status.memoryHealthStates()).toEqual(new Map());
+    // A default edit cannot change either explicit chat's threshold.
+    settings.hypaV3Presets.items[0].settings.gapConfirmTokens = 0;
+    expect(status.memoryHealthStates()).toEqual(new Map());
+    view(a);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "gap"]]));
+    settings.hypaV3Presets.items = settings.hypaV3Presets.items.filter(({ id }) => id !== "high");
+    view(b);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "gap"]]));
+    expect(chat.chatEntry(b)).toHaveProperty("memoryPresetId", "high");
+    expect(settings.hypaV3Presets.selectedId).toBe("memory");
 });

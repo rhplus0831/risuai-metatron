@@ -6,6 +6,13 @@ import { type DeepReadonly, type Message } from "src/ts/storage/database.svelte"
 import { alertConfirm } from "src/ts/alert";
 import { language } from "src/lang";
 
+/**
+ * Helpers of the HypaV3 modal and its children: confirmations, the click/double-tap action, the
+ * selected chat's greeting, message regex processing, categories, filters, and the bulk selection
+ * input. They read the selected character and chat; none writes memory data.
+ */
+
+/** Both confirmations, the second asked only after the first. */
 export async function alertConfirmTwice(firstMessage: string, secondMessage: string): Promise<boolean> {
     return (await alertConfirm(firstMessage)) && (await alertConfirm(secondMessage));
 }
@@ -15,6 +22,10 @@ export type DualActionParams = {
     onAlternativeAction?: () => void;
 };
 
+/**
+ * A Svelte action: a click runs `onMainAction`, a Shift-click `onAlternativeAction`; on a touch device a
+ * tap runs the main action after 300 ms and a double tap the alternative instead.
+ */
 export function handleDualAction(element: HTMLElement, params: DualActionParams = {}) {
     const DOUBLE_TAP_DELAY = 300;
 
@@ -77,6 +88,7 @@ export function handleDualAction(element: HTMLElement, params: DualActionParams 
     };
 }
 
+/** The selected chat's greeting (`fmIndex`), or null while the chat loads or when it has none. */
 export function getFirstMessage(): string | null {
     const char = selectedCharacter();
     const chat = selectedChat();
@@ -92,6 +104,12 @@ export function getFirstMessage(): string | null {
           : null;
 }
 
+/**
+ * `msg` as a summary request sees it: CBS-parsed with `risuChatParser`, then the server transform's
+ * `editprocess` scripts (`serverProcessScript`, `src/ts/parser/transformClient.ts`) at `msgIndex`
+ * (-1 for the greeting). Without a transform context (`captureTransform`: no chat, or one not saved
+ * on the server yet) the CBS-parsed text stays.
+ */
 export async function processRegexScript(
     msg: DeepReadonly<Message>,
     msgIndex: number = -1,
@@ -155,6 +173,7 @@ export function isGuidLike(str: string): boolean {
     return /^[0-9a-f]{4,12}(-[0-9a-f]{4,12}){0,4}-?$/i.test(strTrimed);
 }
 
+/** The 0-based indices a bulk selection input names (`1, 3-5`: 1-based numbers and ranges), within `totalCount`. */
 export function parseSelectionInput(input: string, totalCount: number): Set<number> {
     const newSelection = new Set<number>();
     const parts = input

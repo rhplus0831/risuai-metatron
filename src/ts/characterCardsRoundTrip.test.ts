@@ -1,7 +1,5 @@
 import crc32 from "crc/crc32";
 import * as fflate from "fflate";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cardV2, cardV3, charx } from "./storage/tests/importFixtures";
 import { bootMutations, warmMutationGraph } from "./storage/tests/mutationStoresHarness";
@@ -55,17 +53,6 @@ vi.mock("./process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-vi.mock("./rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "./rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const GIF = new Uint8Array([71, 73, 70, 56, 57, 97]);
@@ -455,6 +442,51 @@ describe("a card's depth prompt survives import", () => {
         await app.cards.importCharacterProcess({ name: "bad-depth.json", data: encode(card) });
         expect((await app.saved(before)).depth_prompt).toEqual({ depth: 0, prompt: "" });
     });
+});
+
+it("preserves current lore text through V3 PNG/JSON and V2 PNG, while unversioned cards still migrate", async () => {
+    const app = await boot();
+    vi.spyOn(app.globalApi, "readImage").mockResolvedValue(portrait([]));
+    vi.spyOn(app.globalApi, "saveAssetBatch").mockImplementation(async (items) => {
+        for (const { bytes } of items) assets.saved.push(bytes);
+    });
+    const download = vi.spyOn(app.globalApi, "downloadFile").mockResolvedValue(undefined);
+    const content = "Keep literal <user> and <char> tags.\n@@end";
+    const lore = {
+        bookVersion: 2,
+        key: "example",
+        secondkey: "",
+        insertorder: 100,
+        comment: "Literal tags",
+        content,
+        mode: "normal",
+        alwaysActive: true,
+        selective: false,
+    };
+    for (const [spec, type] of [
+        ["v3", "png"],
+        ["v3", "json"],
+        ["v2", "png"],
+    ] as const) {
+        const writer = new app.globalApi.VirtualWriter();
+        await app.cards.exportCharacterCard(fixtureCharacter({ globalLore: [{ ...lore }] }), type, { spec, writer });
+        const data = type === "json" ? (download.mock.calls.at(-1)![1] as Uint8Array) : writer.buf.buffer;
+        const before = app.ids();
+        await app.cards.importCharacterProcess({ name: `lore-${spec}.${type}`, data });
+        expect((await app.saved(before)).globalLore, `${spec} ${type}`).toEqual([
+            expect.objectContaining({ content, bookVersion: 2 }),
+        ]);
+    }
+
+    // Older cards lack the native version extension and still need the creation migration.
+    const legacy = JSON.parse(new TextDecoder().decode(download.mock.calls[0][1] as Uint8Array));
+    delete legacy.data.character_book.entries[0].extensions.risu_bookVersion;
+    const before = app.ids();
+    await app.cards.importCharacterProcess({ name: "legacy-lore.json", data: encode(legacy) });
+    expect((await app.saved(before)).globalLore).toEqual([
+        expect.objectContaining({ content: "Keep literal {{user}} and {{char}} tags.\n@@depth 0", bookVersion: 2 }),
+    ]);
+    expect(alerts.error).not.toHaveBeenCalled();
 });
 
 describe("PNG export from a portrait with other text chunks", () => {

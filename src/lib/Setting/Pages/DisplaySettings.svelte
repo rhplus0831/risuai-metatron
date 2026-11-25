@@ -9,8 +9,12 @@
         takeRequestedDisplayTab,
     } from "src/ts/setting/displaySettingsData.svelte";
 
-    // The legacy GUI stacks every tab's sections, in tab order, with no tab bar (-1). Otherwise the tab
-    // another page asked for, else Theme; the request is used up either way.
+    /**
+     * Heading/tab bar and the selected tab's sections. At mount, consume `takeRequestedDisplayTab`
+     * from `src/ts/setting/displaySettingsData.svelte.ts`, defaulting to Theme. `useLegacyGUI`, also
+     * read at mount, removes the tab bar and stacks `displaySettingsSections` in tab order (-1).
+     */
+
     const requestedTab = takeRequestedDisplayTab();
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : requestedTab);
 </script>

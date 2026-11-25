@@ -12,12 +12,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // 28 s / 23 s.
 
 type Reply = { status?: number; body: unknown };
-type Handler = (path: string, body: any) => Reply | Promise<Reply>;
+type Handler = (path: string, body: any, signal?: AbortSignal) => Reply | Promise<Reply>;
 
 const state = vi.hoisted(() => ({
     current: null as { chaId: string; chatId: string } | null,
     chats: new Map<string, { message: { chatId: string }[]; bindedPersona?: string }>(),
     held: new Set<string>(),
+    /** The chats with a change the server has not acknowledged (`chatHasUnackedWork`). */
+    unacked: new Set<string>(),
     locked: new Set<string>(),
     preset: "preset-1" as string | undefined,
     modelPreset: "model-1" as string | undefined,
@@ -32,8 +34,8 @@ const state = vi.hoisted(() => ({
         modelPresets: [{ id: "model-1" }, { id: "model-bound" }],
         personas: [{ id: "persona-1" }, { id: "persona-bound" }],
     } as Record<string, { id: string }[]>,
-    handler: null as unknown as (path: string, body: any) => unknown,
-    calls: [] as { path: string; body: any; headers: Record<string, string> }[],
+    handler: null as unknown as Handler,
+    calls: [] as { path: string; body: any; headers: Record<string, string>; signal: AbortSignal }[],
     hookContexts: [] as unknown[],
     toasts: [] as string[],
     epochs: [] as string[],
@@ -50,7 +52,11 @@ vi.mock("../../alert", async () =>
         alertToast: (text: string) => state.toasts.push(text),
     }),
 );
-vi.mock("../../network/generationJobs", () => ({ generationClientId: () => "client-1" }));
+vi.mock("../../network/generationJobs", async () =>
+    (await import("src/ts/network/tests/generationJobsMock")).createGenerationJobsMock({
+        generationClientId: () => "client-1",
+    }),
+);
 vi.mock("../../plugins/apiV3/pluginContext", () => ({
     capturePluginContext: (ref: { chaId: string; chatId: string } | null) =>
         ref
@@ -69,7 +75,7 @@ vi.mock("../../plugins/apiV3/pluginContext", () => ({
 vi.mock("../../plugins/pluginHooks", () => ({ pluginHooks: state.hooks }));
 vi.mock("../../storage/chatStore.svelte", async () => {
     const { lockSource } = await import("./transformReactive.svelte");
-    return {
+    return (await import("../../storage/tests/chatStoreMock")).createChatStoreMock({
         currentChatRef: () => state.current,
         // The list entry: the binding fields the display rule reads.
         chatEntry: (ref: { chaId: string; chatId: string }) =>
@@ -78,11 +84,12 @@ vi.mock("../../storage/chatStore.svelte", async () => {
                 : undefined,
         findChat: (ref: { chaId: string; chatId: string }) => state.chats.get(key(ref)),
         heldChatRevision: (ref: { chaId: string; chatId: string }) => (state.held.has(key(ref)) ? "rev-1" : null),
+        chatHasUnackedWork: (ref: { chaId: string; chatId: string }) => state.unacked.has(key(ref)),
         isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) => {
             void lockSource.version;
             return ref !== null && messageId !== undefined && state.locked.has(`${key(ref)}/${messageId}`);
         },
-    };
+    });
 });
 vi.mock("../../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
@@ -97,17 +104,21 @@ vi.mock("../../storage/settingsViews.svelte", () => ({
         personaId: state.persona ?? "",
     }),
 }));
-vi.mock("../../storage/serverAuth", () => ({
-    authFetch: async (path: string, init: { body: string; headers: Record<string, string> }) => {
-        const body = JSON.parse(init.body);
-        state.calls.push({ path, body, headers: init.headers });
-        const reply = (await state.handler(path, body)) as Reply;
-        const status = reply.status ?? 200;
-        return { status, ok: status < 400, json: async () => reply.body };
-    },
-}));
-vi.mock("../../storage/resourceClient", () => ({
-    getResourceEpoch: () => "epoch-1",
+vi.mock("../../storage/serverAuth", async () =>
+    (await import("../../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: async (path, init) => {
+            const body = JSON.parse(init!.body as string);
+            const signal = init!.signal!;
+            state.calls.push({ path, body, headers: init!.headers as Record<string, string>, signal });
+            const reply = await state.handler(path, body, signal);
+            return Response.json(reply.body, { status: reply.status ?? 200 });
+        },
+    }),
+);
+// The pre-existing HTTP refusal tests isolate toast handling from the restore lifecycle.
+// Cache-fence tests below call the real resource client hooks directly.
+vi.mock("../../storage/resourceClient", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../storage/resourceClient")>()),
     epochMismatch: (epoch: string) => {
         state.epochs.push(epoch);
         return new Error(`EpochMismatch ${epoch}`);
@@ -116,6 +127,9 @@ vi.mock("../../storage/resourceClient", () => ({
 vi.mock("../../storage/records.svelte", () => ({ trackedRecord: (kind: string) => state.records[kind] }));
 
 import { CharEmotion } from "../../stores.svelte";
+import * as diagnostics from "../../diagnostics/collector";
+import * as recovery from "../displayTransformRecovery.svelte";
+import * as transformResults from "../transformResults";
 import {
     captureTransform,
     rerenderMessage,
@@ -125,6 +139,8 @@ import {
 } from "../transformClient";
 import { createProbe } from "../../storage/tests/reactiveProbe.svelte";
 import { lockSource } from "./transformReactive.svelte";
+const { epochMismatch, setEpochMismatchListener, setResourceEpoch } =
+    await vi.importActual<typeof import("../../storage/resourceClient")>("../../storage/resourceClient");
 
 const ok = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
     id,
@@ -184,6 +200,8 @@ const settledFlag = <T>(promise: Promise<T>) => {
 const flush = () => vi.advanceTimersByTimeAsync(20);
 
 let frames: FrameRequestCallback[] = [];
+const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -193,10 +211,13 @@ beforeEach(() => {
     state.boundPreset = undefined;
     state.boundModel = undefined;
     state.locked.clear();
+    state.unacked.clear();
     state.calls.length = 0;
     state.hookContexts.length = 0;
     state.toasts.length = 0;
     state.epochs.length = 0;
+    setResourceEpoch("epoch-1");
+    setEpochMismatchListener((epoch) => state.epochs.push(epoch));
     state.hooks.editdisplay.clear();
     state.hooks.editprocess.clear();
     state.handler = defaultHandler;
@@ -209,8 +230,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    setEpochMismatchListener(null);
+    vi.restoreAllMocks();
     vi.useRealTimers();
-    vi.unstubAllGlobals();
+    vi.stubGlobal("requestAnimationFrame", originalRequestAnimationFrame);
+    vi.stubGlobal("cancelAnimationFrame", originalCancelAnimationFrame);
 });
 
 describe("captureTransform", () => {
@@ -325,7 +349,368 @@ describe("captureTransform", () => {
     });
 });
 
+describe("shared transform subscribers", () => {
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        let reject!: (reason: unknown) => void;
+        const promise = new Promise<T>((yes, no) => {
+            resolve = yes;
+            reject = no;
+        });
+        return { promise, resolve, reject };
+    }
+
+    const send = (
+        ref: { chaId: string },
+        source: string,
+        signal?: AbortSignal,
+        captured = captureTransform(0)!,
+        type = "simple",
+    ) => serverProcessScript(char(ref.chaId, type), source, "editdisplay", 0, {}, captured, "message", signal);
+
+    it("withdraws queued targets only after their last subscriber leaves, including an empty batch", async () => {
+        const ref = newChat();
+        const leaving = new AbortController();
+        const removed = [new AbortController(), new AbortController()];
+        const first = settledFlag(send(ref, "kept", leaving.signal));
+        const kept = send(ref, "kept");
+        const withdrawn = removed.map((controller) => settledFlag(send(ref, "removed", controller.signal)));
+        leaving.abort();
+        removed.forEach((controller) => controller.abort());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(first).toEqual({ done: true, value: { data: "kept", emoChanged: false } });
+        expect(withdrawn.map((call) => call.value)).toEqual([
+            { data: "removed", emoChanged: false },
+            { data: "removed", emoChanged: false },
+        ]);
+        expect(state.calls).toHaveLength(0);
+
+        frames.forEach((frame) => frame(0));
+        await flush();
+        expect(await kept).toEqual({ data: "<kept>", emoChanged: false });
+        expect(transformPosts()).toHaveLength(1);
+        expect(transformPosts()[0].body.targets.map((target: any) => target.source)).toEqual(["kept"]);
+
+        const last = new AbortController();
+        const empty = settledFlag(send(ref, "empty batch", last.signal));
+        last.abort();
+        await flush();
+        expect(empty).toEqual({ done: true, value: { data: "empty batch", emoChanged: false } });
+        expect(transformPosts()).toHaveLength(1);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("keeps a dispatched operation joinable and delivers its answer to a subscriber without a signal", async () => {
+        const ref = newChat();
+        const answer = deferred<Reply>();
+        state.handler = () => answer.promise;
+        const controller = new AbortController();
+        const leaving = settledFlag(send(ref, "shared", controller.signal, captureTransform(0)!, "character"));
+        await flush();
+        const remaining = settledFlag(send(ref, "shared"));
+        await flush();
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(leaving).toEqual({ done: true, value: { data: "shared", emoChanged: false } });
+        expect(remaining.done).toBe(false);
+        expect(transformPosts()).toHaveLength(1);
+        expect(transformPosts()[0].signal.aborted).toBe(false);
+
+        answer.resolve({
+            body: {
+                results: [
+                    ok(transformPosts()[0].body.targets[0].id, "real answer", {
+                        emotions: [{ name: "happy", image: "happy.png" }],
+                    }),
+                ],
+            },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(remaining).toEqual({ done: true, value: { data: "real answer", emoChanged: false } });
+        // Only the departed character caller could have applied this emotion.
+        expect(get(CharEmotion)).toEqual({});
+        expect(state.toasts).toEqual([]);
+    });
+
+    it.each([
+        { joiner: false, observed: [63], label: "only the surviving caller" },
+        { joiner: true, observed: [0, 63], label: "the survivor and a returning subscriber" },
+    ])("runs hooks and uploads text for $label after 63 of 64 callers abort", async ({ joiner, observed }) => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const firstAnswer = deferred<Reply>();
+        const hook = vi.fn((text: string) => `${text}+plugin`);
+        state.hooks.editdisplay.add(hook);
+        state.handler = (path, body) =>
+            path === "/api/transform"
+                ? firstAnswer.promise
+                : {
+                      body: {
+                          results: body.texts
+                              .filter((entry: any) => "text" in entry)
+                              .map((entry: any) => ok(entry.id, `post(${entry.text})`)),
+                      },
+                  };
+        const controllers = Array.from({ length: 64 }, () => new AbortController());
+        const callers = controllers.map((controller, i) =>
+            settledFlag(send(ref, `row${i}`, controller.signal, captured)),
+        );
+        await flush();
+        expect(transformPosts()).toHaveLength(1);
+        const first = transformPosts()[0];
+        expect(first.body.targets.map((target: any) => target.source)).toEqual(
+            Array.from({ length: 64 }, (_, i) => `row${i}`),
+        );
+        const aborted = vi.fn();
+        first.signal.addEventListener("abort", aborted);
+        controllers.slice(0, 63).forEach((controller) => controller.abort());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callers.slice(0, 63)).toEqual(
+            Array.from({ length: 63 }, (_, i) => ({ done: true, value: { data: `row${i}`, emoChanged: false } })),
+        );
+        expect(callers[63].done).toBe(false);
+        expect(first.signal.aborted).toBe(false);
+        expect(hook).not.toHaveBeenCalled();
+        const returning = joiner ? settledFlag(send(ref, "row0", undefined, captured)) : undefined;
+
+        firstAnswer.resolve({
+            body: {
+                results: [],
+                snapshotId: "departures",
+                pending: first.body.targets.map((target: any) => ({ id: target.id, text: `pre(${target.source})` })),
+            },
+        });
+        await flush();
+        expect(transformPosts()).toHaveLength(1);
+        expect(hook).toHaveBeenCalledTimes(observed.length);
+        expect(hook.mock.calls).toEqual(expect.arrayContaining(observed.map((i) => [`pre(row${i})`])));
+        expect(continuePosts()).toHaveLength(1);
+        expect(continuePosts()[0].body).toEqual({
+            clientId: "client-1",
+            snapshotId: "departures",
+            texts: expect.arrayContaining(
+                first.body.targets.map((target: any, i: number) =>
+                    observed.includes(i)
+                        ? { id: target.id, text: `pre(row${i})+plugin` }
+                        : { id: target.id, cancelled: true },
+                ),
+            ),
+        });
+        expect(continuePosts()[0].body.texts).toHaveLength(64);
+        expect(callers[63]).toEqual({ done: true, value: { data: "post(pre(row63)+plugin)", emoChanged: false } });
+        if (joiner) {
+            expect(returning).toEqual({ done: true, value: { data: "post(pre(row0)+plugin)", emoChanged: false } });
+        }
+        expect(state.calls.every((call) => !call.signal.aborted)).toBe(true);
+        expect(aborted).not.toHaveBeenCalled();
+        expect(state.toasts).toEqual([]);
+    });
+
+    it.each(["request", "plugin handler"] as const)(
+        "cancels a chunk waiting for its %s only when all open targets lose their subscribers, without failure effects",
+        async (waitingFor) => {
+            const ref = newChat();
+            const read = vi.spyOn(transformResults, "getTransformResult");
+            const failed = vi.spyOn(recovery, "markDisplayTransformFailed");
+            const event = vi.spyOn(diagnostics, "recordClientEvent");
+            const hook = vi.fn((text: string): unknown => text);
+            state.hooks.editdisplay.add(hook);
+            const seeded = [send(ref, "a"), send(ref, "b")];
+            await flush();
+            await Promise.all(seeded);
+            const identities = read.mock.calls.map(([identity, source]) => ({ identity, source }));
+            const cached = identities.map(({ identity, source }) =>
+                transformResults.getTransformResult(identity, source),
+            );
+            expect(cached.map((entry) => entry?.text)).toEqual(["post(pre(a))", "post(pre(b))"]);
+            state.calls.length = 0;
+            hook.mockClear();
+            const held = deferred<string>();
+            if (waitingFor === "request") {
+                state.handler = (_path, _body, signal) =>
+                    new Promise((_resolve, reject) => {
+                        signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+                    });
+            } else {
+                hook.mockImplementation(() => held.promise);
+            }
+            const controllers = [new AbortController(), new AbortController()];
+            const calls = controllers.map((controller, index) =>
+                settledFlag(send(ref, index ? "b" : "a", controller.signal)),
+            );
+            await flush();
+            expect(transformPosts()).toHaveLength(1);
+            expect(transformPosts()[0].body.targets).toHaveLength(2);
+            const signal = transformPosts()[0].signal;
+            controllers[0].abort();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(calls[0]).toEqual({ done: true, value: { data: "a", emoChanged: false } });
+            expect(calls[1].done).toBe(false);
+            expect(signal.aborted).toBe(false);
+            controllers[1].abort();
+            expect(signal.aborted).toBe(true);
+            held.resolve("late plugin answer");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(calls[1]).toEqual({ done: true, value: { data: "b", emoChanged: false } });
+            expect(hook).toHaveBeenCalledTimes(waitingFor === "request" ? 0 : 2);
+            // A first call that never answered left no snapshot; an answered one is released, every target cancelled.
+            expect(continuePosts().map((call) => call.body.texts)).toEqual(
+                waitingFor === "request"
+                    ? []
+                    : [transformPosts()[0].body.targets.map((target: any) => ({ id: target.id, cancelled: true }))],
+            );
+            expect(state.toasts).toEqual([]);
+            expect(failed).not.toHaveBeenCalled();
+            expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ notice: "transformFailed" }));
+            expect(
+                identities.map(({ identity, source }) => transformResults.getTransformResult(identity, source)),
+            ).toEqual(cached);
+            const round = recovery.displayTransformRetryRound.version;
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(recovery.displayTransformRetryRound.version).toBe(round);
+            expect(state.toasts).toEqual([]);
+        },
+    );
+
+    it("lets a replacement stay joinable when the cancelled request settles later", async () => {
+        const ref = newChat();
+        const old = deferred<Reply>();
+        const replacement = deferred<Reply>();
+        state.handler = () => (transformPosts().length === 1 ? old.promise : replacement.promise);
+        const controllers = [new AbortController(), new AbortController()];
+        const abandoned = controllers.map((controller) => settledFlag(send(ref, "same input", controller.signal)));
+        await flush();
+        controllers.forEach((controller) => controller.abort());
+        await vi.advanceTimersByTimeAsync(0);
+        expect(abandoned.map((call) => call.value)).toEqual([
+            { data: "same input", emoChanged: false },
+            { data: "same input", emoChanged: false },
+        ]);
+        expect(transformPosts()[0].signal.aborted).toBe(true);
+        const third = settledFlag(send(ref, "same input"));
+        await flush();
+        expect(transformPosts()).toHaveLength(2);
+        // Model the aborted transport's rejection being delivered after its replacement was dispatched.
+        old.reject(transformPosts()[0].signal.reason);
+        await vi.advanceTimersByTimeAsync(0);
+        const fourth = settledFlag(send(ref, "same input"));
+        await flush();
+        expect(transformPosts()).toHaveLength(2);
+        replacement.resolve({ body: { results: [ok(transformPosts()[1].body.targets[0].id, "replacement answer")] } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect([third.value, fourth.value]).toEqual([
+            { data: "replacement answer", emoChanged: false },
+            { data: "replacement answer", emoChanged: false },
+        ]);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("makes separate requests for identical inputs captured under different plugin contexts", async () => {
+        const ref = newChat();
+        const held = deferred<void>();
+        state.handler = async (path, body) => {
+            await held.promise;
+            return defaultHandler(path, body);
+        };
+        const first = captureTransform(0)!;
+        const other = captureTransform(0, { pluginContext: { ...first.pluginContext!, owner: "other plugin owner" } })!;
+        expect(other.context).toEqual(first.context);
+        const calls = [send(ref, "same input", undefined, first)];
+        await flush();
+        calls.push(send(ref, "same input", undefined, other));
+        await flush();
+        expect(transformPosts()).toHaveLength(2);
+        expect(transformPosts().map((call) => call.body.targets.length)).toEqual([1, 1]);
+        held.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(await Promise.all(calls)).toEqual([
+            { data: "<same input>", emoChanged: false },
+            { data: "<same input>", emoChanged: false },
+        ]);
+    });
+});
+
 describe("batching and splitting", () => {
+    it.each([400, 413])("splits a %s refusal of an escaped JSON body and sends both halves", async (status) => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const sources = ["left", "right"].map((name) => "\u0000".repeat(200) + name);
+        state.handler = (path, body) =>
+            Buffer.byteLength(JSON.stringify(body)) > 2_000
+                ? { status, body: { error: "Request body too large" } }
+                : defaultHandler(path, body);
+        const calls = sources.map((source) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual(sources.map((source) => `<${source}>`));
+        expect(transformPosts().map(({ body }) => body.targets.map((target: any) => target.source))).toEqual([
+            sources,
+            [sources[0]],
+            [sources[1]],
+        ]);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("bisects repeated refusals down to permanent singletons with one toast", async () => {
+        const ref = newChat(4);
+        const failed = vi.spyOn(recovery, "markDisplayTransformFailed");
+        const sources = ["a", "b", "c", "d"];
+        state.handler = () => ({ status: 413, body: { error: "Still too large" } });
+        const calls = sources.map((source, i) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", i, {}, captureTransform(i)!, "message"),
+        );
+        await flush();
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual(sources);
+        expect(
+            transformPosts()
+                .map(({ body }) => body.targets.length)
+                .sort(),
+        ).toEqual([1, 1, 1, 1, 2, 2, 4]);
+        expect(
+            transformPosts()
+                .filter(({ body }) => body.targets.length === 1)
+                .map(({ body }) => body.targets[0].source)
+                .sort(),
+        ).toEqual(sources);
+        expect(failed).not.toHaveBeenCalled();
+        expect(state.toasts).toEqual(["Render failed: Still too large"]);
+    });
+
+    it("separates transient scope failures while retaining the batch's cached success", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const reason = "The render's texts are over the limit of one request";
+        state.handler = (path, body) => {
+            if (body.targets.length === 3)
+                return {
+                    body: {
+                        results: body.targets.map((target: any) =>
+                            target.source === "cached"
+                                ? ok(target.id, "cached answer", { cached: true })
+                                : { id: target.id, ok: false, error: reason },
+                        ),
+                    },
+                };
+            if (body.targets[0].source === "large")
+                return {
+                    body: { results: [{ id: body.targets[0].id, ok: false, error: reason, permanent: true }] },
+                };
+            return defaultHandler(path, body);
+        };
+        const calls = ["normal", "large", "cached"].map((source) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual(["<normal>", "large", "cached answer"]);
+        expect(transformPosts().map(({ body }) => body.targets.map((target: any) => target.source))).toEqual([
+            ["normal", "large", "cached"],
+            ["normal"],
+            ["large"],
+        ]);
+        expect(state.toasts).toEqual([`Render failed: ${reason}`]);
+    });
+
     it("batches a frame's calls into one request, shares identical targets, and maps the target kinds", async () => {
         const ref = newChat();
         const captured = captureTransform(1)!;
@@ -499,6 +884,65 @@ describe("batching and splitting", () => {
         expect(state.epochs).toEqual([]);
     });
 
+    it("resends a render the server refused for the binding once the chat's own unsaved change is acknowledged", async () => {
+        // The tab bound the chat and rendered before its save went out: the server still holds the older ids.
+        const ref = newChat();
+        state.unacked.add(key(ref));
+        const event = vi.spyOn(diagnostics, "recordClientEvent");
+        const failed = vi.spyOn(recovery, "markDisplayTransformFailed");
+        // A greeting (no message id): nothing retries it later.
+        const captured = captureTransform(-1)!;
+        state.handler = (path, body) =>
+            state.unacked.has(key(ref))
+                ? { status: 409, body: { error: "chatBindingMismatch" } }
+                : defaultHandler(path, body);
+        const call = serverProcessScript(char(ref.chaId), "G", "editdisplay", -1, {}, captured, "message");
+        const view = settledFlag(call);
+        await flush();
+        expect(transformPosts()).toHaveLength(1);
+        expect(view.done).toBe(false);
+        await vi.advanceTimersByTimeAsync(400);
+        expect(transformPosts()).toHaveLength(1);
+        state.unacked.delete(key(ref));
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await call).data).toBe("<G>");
+        expect(transformPosts()).toHaveLength(2);
+        expect(transformPosts()[1].body).toEqual(transformPosts()[0].body);
+        expect(state.toasts).toEqual([]);
+        expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ notice: "transformFailed" }));
+        expect(failed).not.toHaveBeenCalled();
+    });
+
+    it("reports the binding refusal when the resent render is refused again, without a third request", async () => {
+        const ref = newChat();
+        state.unacked.add(key(ref));
+        const captured = captureTransform(0)!;
+        state.handler = () => ({ status: 409, body: { error: "chatBindingMismatch" } });
+        const call = serverProcessScript(char(ref.chaId), "M2", "editdisplay", 0, {}, captured, "message");
+        await flush();
+        state.unacked.delete(key(ref));
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await call).data).toBe("M2");
+        expect(transformPosts()).toHaveLength(2);
+        expect(state.toasts).toEqual(["Render failed: binding changed"]);
+    });
+
+    it("stops waiting for the chat's save at the render's deadline and reports the binding refusal", async () => {
+        const ref = newChat();
+        state.unacked.add(key(ref));
+        const captured = captureTransform(0)!;
+        state.handler = () => ({ status: 409, body: { error: "chatBindingMismatch" } });
+        const call = serverProcessScript(char(ref.chaId), "M3", "editdisplay", 0, {}, captured, "message");
+        const view = settledFlag(call);
+        await flush();
+        await vi.advanceTimersByTimeAsync(27_000);
+        expect(view.done).toBe(false);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect((await call).data).toBe("M3");
+        expect(transformPosts()).toHaveLength(1);
+        expect(state.toasts).toEqual(["Render failed: binding changed"]);
+    });
+
     it("hands a 412 EpochMismatch to the epoch handler and answers raw", async () => {
         const ref = newChat();
         const captured = captureTransform(0)!;
@@ -536,6 +980,133 @@ describe("batching and splitting", () => {
 });
 
 describe("plugin handlers (the two calls)", () => {
+    it("releases a refused continuation's snapshot before restarting both smaller requests", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const hook = vi.fn<(text: string) => string>((text) => `${text}+plugin`);
+        state.hooks.editdisplay.add(hook);
+        let releaseCleanup!: (reply: Reply) => void;
+        const cleanup = new Promise<Reply>((resolve) => {
+            releaseCleanup = resolve;
+        });
+        state.handler = (path, body) => {
+            if (path === "/api/transform")
+                return {
+                    body: {
+                        results: [],
+                        snapshotId: body.targets.length === 2 ? "original" : body.targets[0].source,
+                        pending: body.targets.map((target: any) => ({ id: target.id, text: `pre(${target.source})` })),
+                    },
+                };
+            if (body.snapshotId === "original")
+                return body.texts.every((text: any) => text.cancelled)
+                    ? cleanup
+                    : { status: 400, body: { error: "Continuation texts too large" } };
+            return defaultHandler(path, body);
+        };
+        const calls = ["left", "right"].map((source) =>
+            serverProcessScript(char(ref.chaId), source, "editdisplay", 0, {}, captured, "message"),
+        );
+        await flush();
+        expect(continuePosts().map(({ body }) => body)).toEqual([
+            {
+                clientId: "client-1",
+                snapshotId: "original",
+                texts: transformPosts()[0].body.targets.map((target: any) => ({
+                    id: target.id,
+                    text: `pre(${target.source})+plugin`,
+                })),
+            },
+            {
+                clientId: "client-1",
+                snapshotId: "original",
+                texts: transformPosts()[0].body.targets.map((target: any) => ({ id: target.id, cancelled: true })),
+            },
+        ]);
+        expect(transformPosts()).toHaveLength(1);
+        releaseCleanup({ body: { results: [] } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect((await Promise.all(calls)).map(({ data }) => data)).toEqual([
+            "post(pre(left)+plugin)",
+            "post(pre(right)+plugin)",
+        ]);
+        expect(transformPosts().map(({ body }) => body.targets.map((target: any) => target.source))).toEqual([
+            ["left", "right"],
+            ["left"],
+            ["right"],
+        ]);
+        expect(hook.mock.calls.map(([text]) => text)).toEqual(["pre(left)", "pre(right)", "pre(left)", "pre(right)"]);
+        expect(state.toasts).toEqual([]);
+    });
+
+    it("transforms all 320 targets without evicting snapshots while plugin hooks hold five chunks", async () => {
+        const ref = newChat();
+        const captured = captureTransform(0)!;
+        const snapshots = new Map<string, string>();
+        const evicted: string[] = [];
+        const expired: string[] = [];
+        let nextSnapshot = 0;
+        let releaseHooks!: () => void;
+        const held = new Promise<void>((resolve) => (releaseHooks = resolve));
+        const hook = vi.fn(async (text: string) => {
+            await held;
+            return `${text}+plugin`;
+        });
+        state.hooks.editdisplay.add(hook);
+        state.handler = (path, body) => {
+            if (path === "/api/transform") {
+                const snapshotId = `snapshot-${++nextSnapshot}`;
+                snapshots.set(snapshotId, body.clientId);
+                const own = [...snapshots].filter(([, clientId]) => clientId === body.clientId);
+                if (own.length > 4) {
+                    snapshots.delete(own[0][0]);
+                    evicted.push(own[0][0]);
+                }
+                return {
+                    body: {
+                        results: [],
+                        snapshotId,
+                        pending: body.targets.map((target: any) => ({ id: target.id, text: `pre(${target.source})` })),
+                    },
+                };
+            }
+            if (snapshots.get(body.snapshotId) !== body.clientId) {
+                expired.push(body.snapshotId);
+                return { status: 409, body: { error: "SnapshotExpired" } };
+            }
+            snapshots.delete(body.snapshotId);
+            return defaultHandler(path, body);
+        };
+        const callers = Array.from({ length: 320 }, (_, i) =>
+            settledFlag(serverProcessScript(char(ref.chaId), `row${i}`, "editdisplay", 0, {}, captured, "message")),
+        );
+        await flush();
+        try {
+            const admitted = transformPosts().length;
+            expect(admitted).toBeGreaterThan(0);
+            expect(admitted).toBeLessThanOrEqual(4);
+            expect(hook).toHaveBeenCalledTimes(admitted * 64);
+            expect(continuePosts()).toHaveLength(0);
+            expect(callers.every((caller) => !caller.done)).toBe(true);
+        } finally {
+            releaseHooks();
+            await flush();
+        }
+        expect(transformPosts().map((call) => call.body.targets.length)).toEqual([64, 64, 64, 64, 64]);
+        expect(continuePosts()).toHaveLength(5);
+        expect(hook).toHaveBeenCalledTimes(320);
+        expect(callers).toEqual(
+            Array.from({ length: 320 }, (_, i) => ({
+                done: true,
+                value: { data: `post(pre(row${i})+plugin)`, emoChanged: false },
+            })),
+        );
+        expect(evicted).toEqual([]);
+        expect(expired).toEqual([]);
+        expect(snapshots.size).toBe(0);
+        expect(state.toasts).toEqual([]);
+    });
+
     it("sends a bounded handler-set id that changes with the ordered hook list", async () => {
         const ref = newChat();
         const ids: string[] = [];
@@ -588,7 +1159,9 @@ describe("plugin handlers (the two calls)", () => {
             snapshotId: "snap-1",
             texts: [{ id: transformPosts()[0].body.targets[0].id, text: "pre(S)+1+2" }],
         });
-        expect(state.hookContexts).toEqual([captured.pluginContext, captured.pluginContext, captured.pluginContext]);
+        // The continuation is read-only: the captured context with the transform purpose.
+        const context = { ...captured.pluginContext, purpose: "transform" };
+        expect(state.hookContexts).toEqual([context, context, context]);
     });
 
     it("keeps a handler result that is the word `expired`, and fails only the target whose handler threw", async () => {
@@ -679,7 +1252,7 @@ describe("plugin handlers (the two calls)", () => {
         expect(state.toasts).toEqual(["Render failed: A plugin handler took too long"]);
     });
 
-    it("runs no handler and sends no second call when the first call answers after the handler deadline", async () => {
+    it("runs no handler when the first call answers after the handler deadline, and releases its snapshot", async () => {
         const ref = newChat();
         const captured = captureTransform(0)!;
         let hookCalls = 0;
@@ -688,19 +1261,21 @@ describe("plugin handlers (the two calls)", () => {
             return text;
         });
         state.handler = (path, body) =>
-            new Promise((resolve) =>
-                setTimeout(
-                    () =>
-                        resolve({
-                            body: {
-                                results: [ok(body.targets[0].id, "cached", { cached: true })],
-                                snapshotId: "snap-1",
-                                pending: [{ id: body.targets[1].id, text: "pre" }],
-                            },
-                        }),
-                    24_000,
-                ),
-            );
+            path !== "/api/transform"
+                ? { body: { results: [] } }
+                : new Promise((resolve) =>
+                      setTimeout(
+                          () =>
+                              resolve({
+                                  body: {
+                                      results: [ok(body.targets[0].id, "cached", { cached: true })],
+                                      snapshotId: "snap-1",
+                                      pending: [{ id: body.targets[1].id, text: "pre" }],
+                                  },
+                              }),
+                          24_000,
+                      ),
+                  );
         const cached = serverProcessScript(char(ref.chaId), "c", "editdisplay", 0, {}, captured, "message");
         const pending = serverProcessScript(char(ref.chaId), "p", "editdisplay", 0, {}, captured, "message");
         await flush();
@@ -708,14 +1283,23 @@ describe("plugin handlers (the two calls)", () => {
         expect((await cached).data).toBe("cached");
         expect((await pending).data).toBe("p");
         expect(hookCalls).toBe(0);
-        expect(continuePosts()).toHaveLength(0);
+        expect(continuePosts().map((call) => call.body)).toEqual([
+            {
+                clientId: "client-1",
+                snapshotId: "snap-1",
+                texts: [{ id: transformPosts()[0].body.targets[1].id, cancelled: true }],
+            },
+        ]);
         expect(state.toasts).toEqual(["Render failed: The render took too long"]);
     });
 
     it("settles every caller within the chunk's 28 s when the request never answers (authentication or body stalled)", async () => {
         const ref = newChat();
         const captured = captureTransform(0)!;
-        state.handler = () => new Promise(() => {});
+        state.handler = (_path, _body, signal) =>
+            new Promise((_resolve, reject) => {
+                signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+            });
         const calls = ["a", "b"].map((text) =>
             settledFlag(serverProcessScript(char(ref.chaId), text, "editdisplay", 0, {}, captured, "message")),
         );
@@ -724,6 +1308,7 @@ describe("plugin handlers (the two calls)", () => {
         expect(calls.map((c) => c.done)).toEqual([false, false]);
         await vi.advanceTimersByTimeAsync(200);
         expect(calls.map((c) => c.value?.data)).toEqual(["a", "b"]);
+        expect(transformPosts()[0].signal.aborted).toBe(true);
         expect(state.toasts).toEqual(["Render failed: The render took too long"]);
     });
 });
@@ -778,6 +1363,152 @@ describe("Re-render (the cache bypass)", () => {
         await Promise.all([pretranslate, translation]);
         expect(transformPosts()[0].body.targets.map((t: any) => t.noCache)).toEqual([true, true]);
         expect(captured.noCache).toBe(true);
+    });
+});
+
+describe("confirmed display results", () => {
+    const full =
+        (text: string, resultKey = text): Handler =>
+        (_path, body) => ({
+            body: { results: body.targets.map((target: any) => ok(target.id, text, { key: resultKey })) },
+        });
+    const same: Handler = (_path, body) => ({
+        body: { results: [], same: body.targets.map((target: any) => ({ id: target.id, key: target.knownKey })) },
+    });
+    const send = (ref: { chaId: string }, captured = captureTransform(0)!, source = "raw") =>
+        serverProcessScript(char(ref.chaId, "simple"), source, "editdisplay", 0, {}, captured, "message");
+    async function complete(ref: { chaId: string }, source = "raw") {
+        const pending = send(ref, captureTransform(0)!, source);
+        await flush();
+        return pending;
+    }
+    const lastTarget = () => transformPosts().at(-1)!.body.targets[0];
+
+    it("Re-render discards the message's source variants, bypasses both caches, and retains the new answer", async () => {
+        const ref = newChat();
+        state.handler = full("confirmed", "original-key");
+        await complete(ref);
+        await complete(ref, "earlier edit");
+        state.handler = same;
+        expect((await complete(ref)).data).toBe("confirmed");
+        expect(lastTarget().knownKey).toBe("original-key");
+
+        rerenderMessage(ref, "m0");
+        state.handler = full("rerendered", "replacement-key");
+        const replaced = settledFlag(send(ref));
+        expect(replaced.done).toBe(false);
+        await flush();
+        expect(lastTarget()).toMatchObject({ noCache: true });
+        expect(lastTarget().knownKey).toBeUndefined();
+        expect(replaced.value?.data).toBe("rerendered");
+
+        state.handler = same;
+        expect((await complete(ref)).data).toBe("rerendered");
+        expect(lastTarget().knownKey).toBe("replacement-key");
+        expect(lastTarget().noCache).toBeUndefined();
+        state.handler = full("other edit");
+        await complete(ref, "earlier edit");
+        expect(lastTarget().knownKey).toBeUndefined();
+    });
+
+    const fences = ["Re-render", "GUI reset", "epoch change", "live restore"] as const;
+    for (const fence of fences) {
+        it.each(["same", "full"] as const)(`ignores a late %s answer after ${fence}`, async (answer) => {
+            const ref = newChat();
+            state.handler = full("confirmed", "original-key");
+            await complete(ref);
+            // Setting the already loaded epoch must keep a remount's confirmed text.
+            setResourceEpoch("epoch-1");
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => (release = resolve));
+            state.handler = async (path, body) => {
+                await held;
+                return (answer === "same" ? same : full("obsolete", "obsolete-key"))(path, body);
+            };
+            const captured = captureTransform(0)!;
+            captured.onProvisional = vi.fn();
+            const provisional = settledFlag(send(ref, captured));
+            await vi.advanceTimersByTimeAsync(0);
+            expect(provisional).toEqual({ done: true, value: { data: "confirmed", emoChanged: false } });
+            await flush();
+            expect(lastTarget().knownKey).toBe("original-key");
+
+            if (fence === "Re-render") rerenderMessage(ref, "m0");
+            else if (fence === "GUI reset") resetTransformEffects();
+            else if (fence === "epoch change") setResourceEpoch("epoch-2");
+            else {
+                epochMismatch("restored-epoch");
+                expect(state.epochs).toEqual(["restored-epoch"]);
+            }
+            release();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(captured.onProvisional).not.toHaveBeenCalled();
+
+            // A GUI reset keeps the confirmed entry; the other fences drop it.
+            state.handler = full("fresh", "fresh-key");
+            await complete(ref);
+            expect(lastTarget().knownKey).toBe(fence === "GUI reset" ? "original-key" : undefined);
+            expect(lastTarget().noCache).toBe(fence === "Re-render" ? true : undefined);
+            state.handler = same;
+            expect((await complete(ref)).data).toBe("fresh");
+            expect(lastTarget().knownKey).toBe("fresh-key");
+        });
+    }
+
+    it("waits for a full answer's emotions after a simple render and applies them once per key", async () => {
+        const ref = newChat();
+        const emotional: Handler = (_path, body) => ({
+            body: {
+                results: body.targets.map((target: any) =>
+                    ok(target.id, "confirmed", {
+                        key: "emotional-key",
+                        emotions: [{ name: "happy", image: "happy.png" }],
+                    }),
+                ),
+            },
+        });
+        state.handler = emotional;
+        await complete(ref);
+        expect(get(CharEmotion)).toEqual({});
+
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        state.handler = async (path, body) => {
+            await held;
+            return emotional(path, body);
+        };
+        const captured = captureTransform(0)!;
+        captured.onProvisional = vi.fn();
+        const provisional = settledFlag(
+            serverProcessScript(char(ref.chaId), "raw", "editdisplay", 0, {}, captured, "message"),
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(provisional).toEqual({ done: true, value: { data: "confirmed", emoChanged: false } });
+        await flush();
+        expect(lastTarget().knownKey).toBeUndefined();
+        expect(get(CharEmotion)).toEqual({});
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+        const emotions = () => get(CharEmotion)[ref.chaId]?.map(([name, image]) => [name, image]);
+        expect(emotions()).toEqual([["happy", "happy.png"]]);
+
+        // Both a textless confirmation and a repeated full result leave the effects alone.
+        for (const handler of [same, emotional]) {
+            state.handler = handler;
+            const pending = serverProcessScript(
+                char(ref.chaId),
+                "raw",
+                "editdisplay",
+                0,
+                {},
+                captureTransform(0)!,
+                "message",
+            );
+            await flush();
+            expect(lastTarget().knownKey).toBe("emotional-key");
+            expect(await pending).toEqual({ data: "confirmed", emoChanged: false });
+            expect(emotions()).toEqual([["happy", "happy.png"]]);
+        }
     });
 });
 

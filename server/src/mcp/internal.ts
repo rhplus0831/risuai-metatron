@@ -108,7 +108,8 @@ function entryPatch(entries: readonly (readonly [string, unknown])[]) {
  *   is the job's chat. Another character's history is the chat the owner's tab has selected for it
  *   (`selectedChat`), read from the store.
  * - `internal:graphmem` keeps its graph in the job chat's variable `graphmem_graph` and searches
- *   with the job's embeddings.
+ *   with the job's embeddings; `setChatVar` in `server/src/lua/bindings.ts` queues a metadata write
+ *   to the chat's `scriptstate` under `$graphmem_graph`.
  */
 export function createInternalMcps(deps: InternalToolDeps): Record<string, InternalMcp> {
     const { job, scope, store, kinds, services } = deps;
@@ -147,7 +148,7 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
     /**
      * One job write of resource records. The ops carry the revisions the handler's patch was computed
      * from (read in the same tick), so a record changed in between conflicts again on the write's retry
-     * and is refused, never rebased; a refused value is an answer too.
+     * and is refused, never rebased; a refused value is an answer too. Detached scopes refuse writes.
      */
     const write = (
         ctx: HostContext,
@@ -155,6 +156,9 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
         emit: { kind: string; id: string }[],
     ): RisuAccessWrite => {
         services.fence(ctx);
+        if (scope.detached) {
+            return { ok: false, error: "A detached job cannot write resource records" };
+        }
         if (ops.length === 0) {
             return { ok: true };
         }

@@ -5,7 +5,14 @@
     import type { Category, CategoryManagerState, SearchState, FilterState } from "./types";
     import { createCategoryId } from "./utils";
 
+    /**
+     * The category manager: adds, renames, and deletes the copy's `categories` (the modal saves the
+     * copy). Deleting a category moves its summaries to unclassified and resets a filter that named
+     * it; the unclassified category (id `""`) is never deleted.
+     */
+
     interface Props {
+        readOnly: boolean;
         /** The modal's editing copy of the memory data (its changes are saved by the modal). */
         hypaV3Data: SerializableHypaV3Data;
         categoryManagerState: CategoryManagerState;
@@ -15,6 +22,7 @@
     }
 
     let {
+        readOnly,
         hypaV3Data,
         categoryManagerState = $bindable(),
         searchState = $bindable(),
@@ -122,7 +130,11 @@
                 <h2 class="text-lg font-semibold text-zinc-300">{language.hypaV3Modal.categoryManager}</h2>
                 <div class="flex items-center gap-2">
                     <!-- Add Category Button -->
-                    <button class="p-2 text-zinc-400 hover:text-green-400 transition-colors" onclick={startAddCategory}>
+                    <button
+                        disabled={readOnly}
+                        class="disabled:opacity-50 disabled:cursor-not-allowed p-2 text-zinc-400 hover:text-green-400 transition-colors"
+                        onclick={startAddCategory}
+                    >
                         <PlusIcon class="w-5 h-5" />
                     </button>
                     <!-- Close Button -->
@@ -167,11 +179,13 @@
                             <input
                                 type="text"
                                 class="flex-1 px-3 py-1.5 text-sm rounded-sm border border-zinc-600 bg-zinc-900 text-zinc-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                                readonly={readOnly}
                                 bind:value={categoryManagerState.editingCategory.name}
                                 placeholder={language.hypaV3Modal.categoryName}
                             />
                             <button
-                                class="p-1.5 text-green-400 hover:text-green-300 transition-colors"
+                                disabled={readOnly}
+                                class="disabled:opacity-50 disabled:cursor-not-allowed p-1.5 text-green-400 hover:text-green-300 transition-colors"
                                 onclick={saveEditingCategory}
                             >
                                 <CheckIcon class="w-4 h-4" />
@@ -188,13 +202,15 @@
                             </button>
                             {#if category.id !== ""}
                                 <button
-                                    class="p-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
+                                    disabled={readOnly}
+                                    class="disabled:opacity-50 disabled:cursor-not-allowed p-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
                                     onclick={() => startEditCategory(category)}
                                 >
                                     <SquarePenIcon class="w-4 h-4" />
                                 </button>
                                 <button
-                                    class="p-1.5 text-red-400 hover:text-red-300 transition-colors"
+                                    disabled={readOnly}
+                                    class="disabled:opacity-50 disabled:cursor-not-allowed p-1.5 text-red-400 hover:text-red-300 transition-colors"
                                     onclick={() => deleteCategory(category.id)}
                                 >
                                     <Trash2Icon class="w-4 h-4" />

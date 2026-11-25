@@ -1,8 +1,10 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes, matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import sharp from "sharp";
@@ -14,11 +16,13 @@ import type {
     BackupArchiveManifest,
     ResourceBatchConflictBody,
     ResourceBatchResult,
+    ResourceReadRefsResult,
 } from "../../../shared/resources.ts";
 import { MAX_ARCHIVE_RECORDS } from "../data/archive.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
+import { createResourceStore, ResourceValidationError, type ResourceStore } from "../data/resourceStore.ts";
+import { createGenerationLock, type GenerationLock } from "../jobs/generationLock.ts";
 import {
     buildArchive,
     createResourceTestClient,
@@ -26,11 +30,15 @@ import {
     hex,
     parseArchive,
     type ResourceTestClient,
-    sleep,
     TEST_INDEX_HTML,
+    testRestoreRunner,
     type TestServerOptions,
     waitFor,
 } from "./testSupport.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { installSnapshot } from "./stagedRestore.ts";
+import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
 
 const servers: ResourceTestClient[] = [];
 
@@ -42,6 +50,7 @@ afterAll(() => {
     vi.restoreAllMocks();
 });
 afterEach(async () => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -142,8 +151,10 @@ describe("GET /api/backups", () => {
     it("lists the completed snapshots newest first and requires auth", async () => {
         const s = await defaultServer();
         expect(await listBackups(s)).toEqual([]);
+        // A snapshot's name and `createdAt` come from the clock: the second one is taken a second later.
+        vi.useFakeTimers({ toFake: ["Date"] });
         const first = await s.context.snapshots.snapshotNow();
-        await sleep(2);
+        vi.setSystemTime(Date.now() + 1_000);
         const second = await s.context.snapshots.snapshotNow();
         writeFileSync(path.join(backupsDir(s), ".resources-20300101T000000000Z-01234567.sqlite.tmp"), "x");
         writeFileSync(path.join(backupsDir(s), "resources.sqlite"), "x");
@@ -154,13 +165,91 @@ describe("GET /api/backups", () => {
     });
 });
 
+describe("snapshot controls", () => {
+    it("takes labeled unpinned snapshots and refuses a manual snapshot on short disk", async () => {
+        let free = Number.MAX_SAFE_INTEGER;
+        const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2030-01-01"));
+        const taken = await s.json("/api/backups/snapshot", { label: "Before import" });
+        expect(taken.status).toBe(200);
+        const { snapshot } = (await taken.json()) as { snapshot: Snapshot };
+        expect(snapshot).toMatchObject({ pinned: false, label: "Before import" });
+        expect(await listBackups(s)).toEqual([
+            expect.objectContaining({ id: snapshot.id, pinned: false, label: "Before import" }),
+        ]);
+        const files = readdirSync(backupsDir(s));
+        vi.setSystemTime(new Date("2030-01-02"));
+        free = 0;
+        expect((await s.json("/api/backups/snapshot", { label: "Cannot fit" })).status).toBe(507);
+        expect(readdirSync(backupsDir(s))).toEqual(files);
+        expect((await listBackups(s)).map(({ id }) => id)).toEqual([snapshot.id]);
+    });
+
+    it("patches only supplied metadata, rejects invalid bodies, and protects pinned snapshots from deletion", async () => {
+        const s = await defaultServer();
+        const snapshot = await s.context.snapshots.snapshotNow({ label: "Original" });
+        const url = `/api/backups/${snapshot.id}`;
+        const patch = (body: unknown) => s.json(url, body, { method: "PATCH" });
+        expect((await patch({ pinned: true })).status).toBe(200);
+        expect(await listBackups(s)).toEqual([
+            expect.objectContaining({ id: snapshot.id, pinned: true, label: "Original" }),
+        ]);
+        const renamed = await patch({ label: "Renamed" });
+        expect(renamed.status).toBe(200);
+        expect(await renamed.json()).toMatchObject({ snapshot: { id: snapshot.id, pinned: true, label: "Renamed" } });
+        expect((await s.request(url, { method: "DELETE" })).status).toBe(409);
+        expect(readdirSync(backupsDir(s))).toContain(`${snapshot.id}.sqlite`);
+        for (const body of [null, [], { pinned: "true" }, { label: 7 }, { unknown: true }]) {
+            expect((await patch(body)).status, JSON.stringify(body)).toBe(400);
+        }
+        expect(await listBackups(s)).toEqual([
+            expect.objectContaining({ id: snapshot.id, pinned: true, label: "Renamed" }),
+        ]);
+        expect((await s.json("/api/backups/missing", { label: "Unknown" }, { method: "PATCH" })).status).toBe(404);
+        const unpinned = await patch({ pinned: false });
+        expect(unpinned.status).toBe(200);
+        expect(await unpinned.json()).toMatchObject({ snapshot: { pinned: false, label: "Renamed" } });
+        expect((await s.request(url, { method: "DELETE" })).status).toBe(200);
+        expect(await listBackups(s)).toEqual([]);
+        expect((await s.request(url, { method: "DELETE" })).status).toBe(404);
+    });
+
+    it("refuses the twenty-first pin with 409 and permits it after another snapshot is unpinned", async () => {
+        const s = await defaultServer();
+        // Metadata controls only need listed files; no database copies or restore validation are involved.
+        const ids = Array.from(
+            { length: 21 },
+            (_, i) => `resources-20300101T000000000Z-${i.toString(16).padStart(8, "0")}`,
+        );
+        for (const id of ids) writeFileSync(path.join(backupsDir(s), `${id}.sqlite`), "snapshot");
+        const patch = (id: string, pinned: boolean) => s.json(`/api/backups/${id}`, { pinned }, { method: "PATCH" });
+        for (const id of ids.slice(0, 20)) expect((await patch(id, true)).status).toBe(200);
+        expect((await patch(ids[20], true)).status).toBe(409);
+        expect(await listBackups(s)).toContainEqual(expect.objectContaining({ id: ids[20], pinned: false }));
+        expect((await patch(ids[0], false)).status).toBe(200);
+        expect((await patch(ids[20], true)).status).toBe(200);
+        expect(await listBackups(s)).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ id: ids[0], pinned: false }),
+                ...ids.slice(1).map((id) => expect.objectContaining({ id, pinned: true })),
+            ]),
+        );
+    });
+});
+
 describe("POST /api/backups/:id/restore", () => {
     it("replaces every resource with the snapshot under a new epoch, after a safety snapshot", async () => {
         const s = await defaultServer();
         const a = await s.create("characters", "a", character("a"));
         // `pluginStorage`: a singleton the store does not materialize, so the test's own write is a create.
         await s.create("pluginStorage", "main", { note: "before" });
-        const snapshot = await s.context.snapshots.snapshotNow();
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2030-01-01"));
+        const snapshot = await s.context.snapshots.snapshotNow({ label: "At snapshot time" });
+        await s.context.snapshots.setPinned(snapshot.id, { pinned: true, label: "Keep after restore" });
+        const pinsBefore = readFileSync(path.join(backupsDir(s), "pins.json"), "utf8");
+        vi.setSystemTime(new Date("2030-01-02"));
         await s.put("characters", "a", { baseRevision: a, data: character("a", { name: "changed" }) });
         await s.create("characters", "b", character("b"));
         const oldEpoch = s.epoch;
@@ -172,7 +261,8 @@ describe("POST /api/backups/:id/restore", () => {
         expect(await s.readEpoch()).toBe(epoch);
         const backups = await listBackups(s);
         expect(backups).toHaveLength(2);
-        expect(backups[1]).toEqual(snapshot);
+        expect(backups[1]).toEqual({ ...snapshot, pinned: true, label: "Keep after restore" });
+        expect(readFileSync(path.join(backupsDir(s), "pins.json"), "utf8")).toBe(pinsBefore);
         // The safety snapshot holds the state from just before the restore.
         expect(
             writtenRows(reader.readSnapshot(path.join(backupsDir(s), `${backups[0].id}.sqlite`)).rows).map(
@@ -334,13 +424,15 @@ describe("maintenance", () => {
         expect(await readAsset(s, "assets/x.png")).toBe("png");
         expect((await s.request("/api/list")).status).toBe(200);
         expect((await s.request("/api/backups")).status).toBe(200);
-        // A restore or an export arriving meanwhile queues behind the lock instead.
+        // A restore or an export arriving meanwhile queues behind the lock instead: the restore's
+        // `stageCopy` takes the lock, so once it is called the restore waits there.
+        const staged = vi.spyOn(s.context.snapshots, "stageCopy");
         let queuedRestore: Response | null = null;
         const queuedExport = s.json("/api/backups/export", {});
         const queuedRestoring = restore(s, "resources-20300101T000000000Z-01234567").then(
             (res) => (queuedRestore = res),
         );
-        await sleep(20);
+        await waitFor(() => staged.mock.calls.length === 1);
         expect(queuedRestore).toBeNull();
 
         release.resolve();
@@ -418,6 +510,53 @@ describe("maintenance", () => {
 });
 
 describe("POST /api/backups/export", () => {
+    it("exports a readable partial archive without running VACUUM on the serving thread", async () => {
+        const s = await defaultServer();
+        await s.create("characters", "alice", character("alice", { image: "assets/alice.png" }));
+        await writeAsset(s, "assets/alice.png", "ALICE");
+        await writeAsset(s, "assets/unreferenced.png", "UNREFERENCED");
+        // Worker threads have their own DatabaseSync prototype; these call-through spies observe the serving thread.
+        const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+        const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+
+        const records = parseArchive(await exportArchive(s, { partial: true }));
+        const statements = [...exec.mock.calls, ...prepare.mock.calls].map(([sql]) => sql);
+        expect(statements.filter((sql) => /\bVACUUM\b/i.test(sql))).toEqual([]);
+        expect(records.map((r) => r.name)).toEqual(["manifest.json", "resources.sqlite", "assets/alice.png"]);
+        expect(JSON.parse(records[0].data.toString("utf-8"))).toMatchObject({
+            version: 2,
+            partial: true,
+            assets: ["assets/alice.png"],
+            missing: [],
+        });
+        expect(records[2].data).toEqual(Buffer.from("ALICE"));
+        const extracted = path.join(s.rootDir, "partial.sqlite");
+        writeFileSync(extracted, records[1].data);
+        const alice = reader.readSnapshot(extracted).rows.find((r) => r.kind === "characters" && r.id === "alice")!;
+        expect(JSON.parse(alice.text).image).toBe("assets/alice.png");
+    });
+
+    it("preflights the staging copy and vacuum output before creating an export directory", async () => {
+        let free = Number.MAX_SAFE_INTEGER;
+        const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+        await s.create("characters", "alice", character("alice"));
+        const needed = diskNeeded(2 * liveBytes(s.savePath));
+        const mkdir = vi.spyOn(fs, "mkdir");
+        free = 0;
+
+        const response = await s.json("/api/backups/export", {});
+        expect(response.status).toBe(507);
+        expect(await response.json()).toEqual({ error: "Insufficient Storage", needed, free: 0 });
+        // Cleanup could hide an allocation; the call history also catches a directory created and then removed.
+        expect(
+            mkdir.mock.calls.filter(
+                ([target]) =>
+                    path.dirname(String(target)) === tmpDir(s) && path.basename(String(target)).startsWith("export-"),
+            ),
+        ).toEqual([]);
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+
     it("streams the manifest, a fresh snapshot, and every asset of the assets namespace under its logical key", async () => {
         const s = await defaultServer();
         await s.create("characters", "a", character("a"));
@@ -609,8 +748,9 @@ describe("POST /api/backups/export", () => {
         const reader = res.body!.getReader();
         expect((await reader.read()).done).toBe(false);
         await reader.cancel();
-        await waitFor(() => readdirSync(tmpDir(s)).length === 0);
-        await sleep(20);
+        // The export's tracked operation ends with its finalizer, so every removal has run once this settles.
+        await s.context.snapshots.stop();
+        expect(readdirSync(tmpDir(s))).toEqual([]);
         expect(rm.mock.calls.filter(([target]) => path.basename(String(target)).startsWith("export-"))).toHaveLength(1);
     });
 
@@ -707,7 +847,7 @@ describe("POST /api/backups/export", () => {
         controller.abort();
         let stopped = false;
         const stopping = s.context.snapshots.stop().then(() => (stopped = true));
-        await sleep(20);
+        await nextTurn();
         expect(stopped).toBe(false);
         release.resolve();
         const res = await pending;
@@ -756,6 +896,32 @@ describe("POST /api/backups/import", () => {
             (await target.put("characters", "q", { baseRevision: null, data: character("q") }, oldEpoch)).status,
         ).toBe(412);
         expect((await target.put("characters", "q", { baseRevision: null, data: character("q") })).status).toBe(200);
+    });
+
+    it("replaces a content-named asset that does not hold its bytes when the archive's copy does, and keeps every other existing file", async () => {
+        const named = (text: string) => `assets/${createHash("sha256").update(text).digest("hex")}.png`;
+        const [damaged, healthy, wrongBoth] = [named("REPAIRED"), named("HEALTHY"), named("EXPECTED")];
+        const source = await defaultServer();
+        await writeAsset(source, damaged, "REPAIRED");
+        await writeAsset(source, healthy, "HEALTHY");
+        // The archive's copy under this name is wrong too, so it cannot repair the target's.
+        await writeAsset(source, wrongBoth, "ARCHIVE COPY");
+        await writeAsset(source, "assets/shared.png", "SOURCE");
+        const archive = await exportArchive(source);
+
+        const target = await defaultServer();
+        await writeAsset(target, damaged, "BROKEN");
+        await writeAsset(target, healthy, "HEALTHY");
+        await writeAsset(target, wrongBoth, "TARGET COPY");
+        await writeAsset(target, "assets/shared.png", "TARGET");
+        const res = await importArchive(target, archive);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ epoch: expect.any(String), assetsWritten: 1, assetsSkipped: 3 });
+        expect(await readAsset(target, damaged)).toBe("REPAIRED");
+        expect(await readAsset(target, healthy)).toBe("HEALTHY");
+        expect(await readAsset(target, wrongBoth)).toBe("TARGET COPY");
+        expect(await readAsset(target, "assets/shared.png")).toBe("TARGET");
+        expect(readdirSync(tmpDir(target))).toEqual([]);
     });
 
     it("refuses malformed or foreign archives with 400 and writes nothing", async () => {
@@ -957,8 +1123,9 @@ describe("POST /api/backups/import", () => {
     });
 
     it("caps the upload at maxImportBytes, by the declared length and by the bytes received", async () => {
-        const s = await defaultServer({ maxImportBytes: 256 * 1024 });
-        const big = new Uint8Array(300 * 1024);
+        // The cap leaves room for an empty store's database, which grows with every table the schema adds.
+        const s = await defaultServer({ maxImportBytes: 512 * 1024 });
+        const big = new Uint8Array(600 * 1024);
         const declared = await s.request("/api/backups/import", {
             method: "POST",
             headers: { "content-type": "application/octet-stream", "content-length": String(big.length) },
@@ -1120,21 +1287,207 @@ describe("chats in snapshots and archives", () => {
         };
     }
 
+    it("restores a live group record and its active chat from a backup", async () => {
+        const s = await defaultServer();
+        const owner = { chaId: "g", name: "Group at backup", type: "group", characters: [], trashTime: 0 };
+        const saved = m("m", "Group history at backup");
+        const ownerRevision = await s.create("characters", "g", owner);
+        const created = await batch(s, {
+            chats: [group("gk", null, [{ op: "create", chat: { name: "Group chat", message: [saved] } }], "g")],
+        });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        await batch(s, {
+            ops: [{ kind: "characters", id: "g", baseRevision: ownerRevision, data: { ...owner, name: "Renamed" } }],
+            chats: [group("gk", created.chats[0].revision!, [{ op: "setText", id: "m", text: "Edited" }], "g")],
+        });
+
+        expect((await restore(s, snapshot.id)).status).toBe(200);
+        const restored = await s.get("characters", "g");
+        expect(restored.status).toBe(200);
+        expect(await restored.json()).toMatchObject({ data: owner });
+        expect((await readAll(s)).chats).toMatchObject([
+            { characterId: "g", id: "gk", trashedAt: null, data: { name: "Group chat", message: [saved] } },
+        ]);
+    });
+
+    it("restores chats from a snapshot made before the trash column as active", async () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
+        const s = await defaultServer();
+        const tokens = await seedChats(s);
+        const before = await readAll(s);
+        const snapshot = await s.context.snapshots.snapshotNow();
+        const db = new DatabaseSync(path.join(backupsDir(s), `${snapshot.id}.sqlite`));
+        try {
+            db.exec("ALTER TABLE chats DROP COLUMN trashedAt");
+        } finally {
+            db.close();
+        }
+        expect((await s.chatTrash("trash", { characterId: "c", chatId: "k", revision: tokens.chat })).status).toBe(200);
+        expect((await restore(s, snapshot.id)).status).toBe(200);
+        const installed = await readAll(s);
+        expect(content(installed)).toEqual(content(before));
+        expect(installed.chats.map(({ id, trashedAt }) => [id, trashedAt])).toEqual([
+            ["k", null],
+            ["k2", null],
+        ]);
+    });
+
+    it("restores the most recently trashed chat of an all-trashed character and restamps trash on snapshot and archive installs", async () => {
+        const s = await defaultServer();
+        const savedAt = Date.UTC(2025, 0, 1);
+        vi.useFakeTimers({ toFake: ["Date"], now: savedAt });
+        const tokens = await seedChats(s);
+        expect((await s.chatTrash("trash", { characterId: "c", chatId: "k2", revision: tokens.chat2 })).status).toBe(
+            200,
+        );
+        await batch(s, {
+            ops: [{ kind: "characters", id: "d", baseRevision: null, data: character("d") }],
+            chats: ["older", "newest", "oldest"].map((id) =>
+                group(id, null, [{ op: "create", chat: { name: id } }], "d"),
+            ),
+        });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        // Only a foreign file can have no active chat. Put the newest mark in the middle of its order.
+        const db = new DatabaseSync(path.join(backupsDir(s), `${snapshot.id}.sqlite`));
+        try {
+            const mark = db.prepare("UPDATE chats SET trashedAt = ? WHERE characterId = 'd' AND id = ?");
+            mark.run(savedAt + 2, "older");
+            mark.run(savedAt + 3, "newest");
+            mark.run(savedAt + 1, "oldest");
+        } finally {
+            db.close();
+        }
+        async function expectInstalled(target: ResourceTestClient, installedAt: number) {
+            const expected = {
+                c: { k: null, k2: installedAt },
+                d: { older: installedAt, newest: null, oldest: installedAt },
+            };
+            const all = await readAll(target);
+            const listings = (await (
+                await target.json("/api/resources/read", { chatSummaryCollections: ["c", "d"] })
+            ).json()) as ResourceReadRefsResult;
+            for (const [characterId, marks] of Object.entries(expected)) {
+                const chats = all.chats.filter((chat) => chat.characterId === characterId);
+                expect(Object.fromEntries(chats.map((chat) => [chat.id, chat.trashedAt]))).toEqual(marks);
+                const summaries = listings.chatSummaryCollections!.find(
+                    (collection) => collection.characterId === characterId,
+                )!.chats;
+                expect(Object.fromEntries(summaries.map((chat) => [chat.id, chat.trashedAt ?? null]))).toEqual(marks);
+            }
+        }
+
+        const installTime = Date.UTC(2026, 0, 1);
+        vi.setSystemTime(installTime);
+        expect((await restore(s, snapshot.id)).status).toBe(200);
+        await s.readEpoch();
+        await expectInstalled(s, installTime);
+        const archive = await exportArchive(s);
+        const target = await defaultServer();
+        const importTime = Date.UTC(2026, 5, 1);
+        vi.setSystemTime(importTime);
+        expect((await importArchive(target, archive)).status).toBe(200);
+        await target.readEpoch();
+        await expectInstalled(target, importTime);
+    });
+
+    it("validates snapshots with projections and restores fresh rows at new chat seqs without trusting snapshot text", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-summary-snapshot-"));
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const file = path.join(dir, "live.sqlite");
+        const copy = path.join(dir, "snapshot.sqlite");
+        const store = createResourceStore({ file, kinds });
+        const db = new DatabaseSync(file);
+        try {
+            store.put(kinds.get("characters")!, "c", character("c"), null);
+            store.applyChanges({
+                chats: ["k", "j"].map((id) =>
+                    group(id, null, [
+                        {
+                            op: "create",
+                            chat: { id, name: `Saved ${id}`, fmIndex: 4, pinned: true, message: [m(`${id}-message`)] },
+                        },
+                    ]),
+                ),
+            });
+            store.applyChanges({
+                chats: [group("k", store.chatRevision("c", "k"), [{ op: "meta", set: { note: "saved note" } }])],
+            });
+            const originals = db.prepare("SELECT seq, id, revision FROM chats ORDER BY seq").all() as {
+                seq: number;
+                id: string;
+                revision: number;
+            }[];
+            await store.backupTo(copy);
+            const snapshotDb = new DatabaseSync(copy);
+            try {
+                expect(snapshotDb.prepare("SELECT COUNT(*) AS count FROM chatSummaries").get()).toEqual({ count: 2 });
+                snapshotDb
+                    .prepare("UPDATE chatSummaries SET text = ?")
+                    .run(JSON.stringify({ name: "Untrusted snapshot projection", fmIndex: -1 }));
+            } finally {
+                snapshotDb.close();
+            }
+            const validated = store.readSnapshot(copy);
+            expect(validated.chats).toHaveLength(2);
+            store.applyChanges({
+                chats: [group("k", store.chatRevision("c", "k"), [{ op: "meta", set: { name: "Live edit" } }])],
+            });
+            await installSnapshot(store, copy, kinds);
+            const restored = db
+                .prepare(
+                    "SELECT c.seq, c.id, c.revision, s.chatSeq, s.revision AS summaryRevision, s.text FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq ORDER BY c.seq",
+                )
+                .all() as {
+                seq: number;
+                id: string;
+                revision: number;
+                chatSeq: number;
+                summaryRevision: number;
+                text: string;
+            }[];
+            expect(restored).toHaveLength(2);
+            for (const [index, row] of restored.entries()) {
+                expect(originals.map((chat) => chat.seq)).not.toContain(row.seq);
+                expect(row).toEqual({
+                    seq: row.seq,
+                    id: originals[index].id,
+                    revision: originals[index].revision,
+                    chatSeq: row.seq,
+                    summaryRevision: originals[index].revision,
+                    text: JSON.stringify({ name: `Saved ${row.id}`, fmIndex: 4, pinned: true }),
+                });
+                expect(store.chatSummary("c", row.id)).toEqual({
+                    characterId: "c",
+                    id: row.id,
+                    revision: store.chatRevision("c", row.id),
+                    name: `Saved ${row.id}`,
+                    fmIndex: 4,
+                    pinned: true,
+                });
+            }
+            expect(db.prepare("SELECT COUNT(*) AS count FROM chatSummaries").get()).toEqual({ count: 2 });
+        } finally {
+            db.close();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it("restores chats, messages, order, and fences from a snapshot under a new epoch, and refuses old-epoch and old-token writes", async () => {
         const s = await defaultServer();
         const tokens = await seedChats(s);
         const before = await readAll(s);
         const snapshot = await s.context.snapshots.snapshotNow();
-        // Move on: remove and append in `k`, delete `k2`.
+        // Move on: remove and append in `k`, delete `k2` through the trash.
         const edited = await batch(s, {
             chats: [
                 group("k", tokens.chat, [
                     { op: "remove", ids: ["a"] },
                     { op: "append", messages: [m("n", "N")], anchor: { end: true } },
                 ]),
-                group("k2", tokens.chat2, [{ op: "delete" }]),
             ],
         });
+        await s.deleteChat("c", "k2", tokens.chat2);
         expect((await readAll(s)).chats.map((c) => c.id)).toEqual(["k"]);
         const oldEpoch = s.epoch;
 
@@ -1336,10 +1689,10 @@ describe("chats in snapshots and archives", () => {
     });
 });
 
-describe("checkpoints in backups", () => {
+describe("checkpoints and memory in backups", () => {
     async function checkpointServer(
         label = "Saved",
-        beforeStart?: (store: ResourceStore, savePath: string) => Promise<void>,
+        beforeStart?: (store: ResourceStore, savePath: string, lock: GenerationLock) => void | Promise<void>,
     ) {
         const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-checkpoint-backups-"));
         const savePath = path.join(rootDir, "save");
@@ -1348,7 +1701,12 @@ describe("checkpoints in backups", () => {
         mkdirSync(path.join(savePath, "server"), { recursive: true });
         writeFileSync(path.join(savePath, "server", "password"), "pw");
         const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
-        const store = createResourceStore({ file: path.join(savePath, "data", "resources.sqlite"), kinds });
+        const lock = createGenerationLock();
+        const store = createResourceStore({
+            file: path.join(savePath, "data", "resources.sqlite"),
+            kinds,
+            guard: lock,
+        });
         try {
             store.put(kinds.get("characters")!, "c", character("c", { image: "assets/profile.png" }), null);
             const chat: Chat = {
@@ -1369,18 +1727,10 @@ describe("checkpoints in backups", () => {
                 ],
             });
             store.applyChanges({
-                chats: [
-                    {
-                        characterId: "c",
-                        chatId: "discarded",
-                        baseRevision: store.chatRevision("c", "discarded"),
-                        ops: [{ op: "delete" }],
-                    },
-                ],
-            });
-            store.applyChanges({
                 chats: [{ characterId: "c", chatId: "k", baseRevision: null, ops: [{ op: "create", chat }] }],
             });
+            // Deleted once `k` exists: the gap stays before `k`'s seq.
+            deleteChatThroughTrash(store, "c", "discarded");
             const checkpoint = store.checkpoints.save("c", "k", label, "manual")!;
             const policy = { autoEvery: 3, autoKeep: 4, lastAutoTurns: 11 };
             store.checkpoints.writePolicy("c", "k", policy);
@@ -1400,7 +1750,7 @@ describe("checkpoints in backups", () => {
                 ],
             });
             const expected = { chat, checkpoint, policy };
-            await beforeStart?.(store, savePath);
+            await beforeStart?.(store, savePath, lock);
             store.close();
             return { s: await defaultServer({ rootDir }), expected };
         } catch (error) {
@@ -1419,6 +1769,151 @@ describe("checkpoints in backups", () => {
         expect(composed).toEqual(expected.chat);
         expect(store.checkpoints.readPolicy("c", "k")).toEqual(expected.policy);
     }
+
+    async function expectSavedMemory(s: ResourceTestClient, expected: ReturnType<typeof memoryRecords>) {
+        await s.context.dispose();
+        const store = createResourceStore({
+            file: path.join(s.savePath, "data", "resources.sqlite"),
+            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+        });
+        try {
+            const contents = store.memory.readContents("c", "k")!;
+            expect(contents.revision).toMatch(/:1$/);
+            for (const kind of memoryKinds) {
+                expect(contents[kind].map((record) => record.id)).toEqual(expected[kind].map((record) => record.id));
+                for (const record of expected[kind]) {
+                    expect(store.memory.readRecord("c", "k", kind, record.id)).toEqual({
+                        revision: contents.revision,
+                        data: kind === "events" ? { ...record, createdRevision: 1 } : record,
+                    });
+                }
+            }
+        } finally {
+            store.close();
+        }
+    }
+
+    it("restores the stored summary through a version-2 archive and starts a new memory write history", async () => {
+        const target = { characterId: "c", chatId: "k" };
+        let baseRevision!: string;
+        const { s } = await checkpointServer("Saved", (store, _savePath, lock) => {
+            baseRevision = store.chatRevision("c", "k")!;
+            lock.addToken("summary-job");
+            store.applyChanges(
+                {
+                    chats: [{ ...target, baseRevision, ops: [{ op: "meta", set: { supaMemoryData: "Job summary" } }] }],
+                },
+                { jobToken: "summary-job" },
+            );
+            lock.endJob("summary-job");
+        });
+        const edit = (baseRevision: string) => ({
+            chats: [{ ...target, baseRevision, ops: [{ op: "meta", set: { supaMemoryData: "Manual summary" } }] }],
+        });
+        const refused = await s.json("/api/resources/batch", edit(baseRevision));
+        expect(refused.status).toBe(200);
+        expect(await refused.json()).toMatchObject({ chats: [{ memoryRefused: true }] });
+
+        const stampedFields = () => {
+            const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+            try {
+                return db.prepare("SELECT field FROM chatMemoryWrites").all();
+            } finally {
+                db.close();
+            }
+        };
+        expect(stampedFields()).toEqual([{ field: "supaMemoryData" }]);
+        const archive = await exportArchive(s);
+        const epoch = s.epoch;
+        expect((await importArchive(s, archive)).status).toBe(200);
+        expect(await s.readEpoch()).not.toBe(epoch);
+        expect(stampedFields()).toEqual([]);
+        const read = async () => {
+            const response = await s.json("/api/resources/read", { chats: [{ characterId: "c", id: "k" }] });
+            expect(response.status).toBe(200);
+            return ((await response.json()) as { chats: ChatRecord[] }).chats[0];
+        };
+        const restored = await read();
+        expect(restored.data?.supaMemoryData).toBe("Job summary");
+        expect(
+            (
+                await s.json("/api/resources/batch", {
+                    chats: [
+                        {
+                            ...target,
+                            baseRevision: restored.revision,
+                            ops: [{ op: "meta", set: { note: "Newer note" } }],
+                        },
+                    ],
+                })
+            ).status,
+        ).toBe(200);
+        expect((await s.json("/api/resources/batch", edit(baseRevision), {}, epoch)).status).toBe(412);
+        const written = await s.json("/api/resources/batch", edit(restored.revision!));
+        expect(written.status).toBe(200);
+        expect((await read()).data).toMatchObject({ note: "Newer note", supaMemoryData: "Manual summary" });
+    });
+
+    it("restores structured memory rows through the snapshot restore route", async () => {
+        const snapshotId = "resources-20260101T000000000Z-12345678";
+        const saved = memoryRecords(["z", "a"]);
+        const { s } = await checkpointServer("Saved", async (store, savePath) => {
+            writeMemory(store, "c", "k", saved);
+            mkdirSync(path.join(savePath, "backups"));
+            await store.backupTo(path.join(savePath, "backups", `${snapshotId}.sqlite`));
+            writeMemory(store, "c", "k", memoryRecords(["z", "live-only"], "After snapshot"));
+        });
+        const result = await restore(s, snapshotId);
+        expect(result.status, await result.clone().text()).toBe(200);
+        await expectSavedMemory(s, saved);
+    });
+
+    it("carries structured memory rows through archive export and version-2 import routes", async () => {
+        const saved = memoryRecords(["z", "a"]);
+        const { s: source } = await checkpointServer("Source", async (store) => {
+            writeMemory(store, "c", "k", saved);
+        });
+        const archive = await exportArchive(source);
+        const manifest = parseArchive(archive).find((record) => record.name === "manifest.json")!;
+        expect(JSON.parse(manifest.data.toString("utf8"))).toMatchObject({ version: 2 });
+        const { s: target } = await checkpointServer("Target", async (store) => {
+            writeMemory(store, "c", "k", memoryRecords(["live-only"]));
+        });
+        const result = await importArchive(target, archive);
+        expect(result.status, await result.clone().text()).toBe(200);
+        await expectSavedMemory(target, saved);
+    });
+
+    it.each(["snapshot", "archive"])(
+        "refuses crafted memory with 400 through the %s route without replacing live rows",
+        async (mode) => {
+            const snapshotId = "resources-20260101T000000000Z-12345678";
+            const saved = memoryRecords(["z", "a"]);
+            const { s } = await checkpointServer("Saved", async (store, savePath) => {
+                writeMemory(store, "c", "k", saved);
+                mkdirSync(path.join(savePath, "backups"));
+                const file = path.join(savePath, "backups", `${snapshotId}.sqlite`);
+                await store.backupTo(file);
+                const db = new DatabaseSync(file);
+                try {
+                    // The distinct physical ids conceal a duplicate record id until validation parses data.
+                    db.exec("UPDATE memory_events SET data = json_set(data, '$.id', 'z') WHERE id = 'a'");
+                } finally {
+                    db.close();
+                }
+            });
+            const epoch = s.epoch;
+            const result =
+                mode === "snapshot"
+                    ? await restore(s, snapshotId)
+                    : await importArchive(s, archiveOf(readFileSync(path.join(backupsDir(s), `${snapshotId}.sqlite`))));
+            expect(result.status, await result.clone().text()).toBe(400);
+            expect(((await result.json()) as { error: string }).error).toMatch(/memory_events|duplicate/);
+            expect(await s.readEpoch()).toBe(epoch);
+            expect((await listBackups(s)).map((item) => item.id)).toEqual([snapshotId]);
+            await expectSavedMemory(s, saved);
+        },
+    );
 
     it.each(["full", "partial"])(
         "round-trips checkpoints and policies through a %s archive with the selected assets",
@@ -1532,7 +2027,6 @@ describe("shutdown admission", () => {
             expect(res.headers.get("retry-after"), res.url).toBe("5");
             expect(await res.json(), res.url).toEqual({ error: "The server is shutting down" });
         }
-        await sleep(20);
         expect(readdirSync(tmpDir(s))).toEqual([]);
         expect(assetFiles(s)).toEqual([]);
         // New resource requests, reads included, are refused too; the store stays open only for
@@ -1545,5 +2039,472 @@ describe("shutdown admission", () => {
         expect(before.map((b) => b.id)).toContain(snapshot.id);
         holding.resolve();
         await disposing;
+        // Dispose waited for every admitted operation: none of the refused ones started work meanwhile.
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+        expect(assetFiles(s)).toEqual([]);
     });
+});
+
+describe("staged restore admission", () => {
+    it.each(["size", "mtime", "inode", "hash"] as const)(
+        "refuses a changed staged %s before maintenance and removes its staging",
+        async (changed) => {
+            vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+            const runner = testRestoreRunner();
+            const s = await defaultServer({
+                snapshotIntervalMs: 30,
+                restore: {
+                    runner: async (input, options) => {
+                        const report = await runner(input, options);
+                        if (changed === "size") {
+                            await fs.appendFile(input.output, "x");
+                            report.sha256 = createHash("sha256")
+                                .update(await fs.readFile(input.output))
+                                .digest("hex");
+                            report.mtimeMs = (await fs.lstat(input.output)).mtimeMs;
+                        } else if (changed === "mtime") {
+                            await fs.utimes(input.output, new Date(0), new Date(report.mtimeMs + 5000));
+                        } else if (changed === "inode") {
+                            await fs.copyFile(input.output, `${input.output}.replacement`);
+                            await fs.rename(`${input.output}.replacement`, input.output);
+                            report.mtimeMs = (await fs.lstat(input.output)).mtimeMs;
+                        } else {
+                            const bytes = await fs.readFile(input.output);
+                            const offset = bytes.indexOf(Buffer.from("before"));
+                            expect(offset).toBeGreaterThan(-1);
+                            bytes.write("forged", offset);
+                            await fs.writeFile(input.output, bytes);
+                            report.mtimeMs = (await fs.lstat(input.output)).mtimeMs;
+                        }
+                        return report;
+                    },
+                },
+            });
+            try {
+                await s.create("characters", "before", character("before"));
+                const snapshot = await s.context.snapshots.snapshotNow();
+                await s.create("characters", "live", character("live"));
+                // Establish the periodic snapshot's write-count baseline after the live write.
+                await s.context.snapshots.snapshotNow();
+                const before = await (await s.list("characters")).json();
+                const epoch = s.epoch;
+                const backups = await listBackups(s);
+                let maintenance = 0;
+                s.context.snapshots.onMaintenance(async () => {
+                    maintenance++;
+                });
+                const res = await restore(s, snapshot.id);
+                expect(res.status).toBe(400);
+                expect(await res.json()).toEqual({ error: "Not a resource database" });
+                expect(await (await s.list("characters")).json()).toEqual(before);
+                expect(await s.readEpoch()).toBe(epoch);
+                expect(maintenance).toBe(0);
+                vi.advanceTimersByTime(30);
+                await s.context.snapshots.exclusive(async () => {});
+                expect(await listBackups(s)).toEqual(backups);
+                expect(readdirSync(tmpDir(s))).toEqual([]);
+            } finally {
+                vi.useRealTimers();
+            }
+        },
+    );
+
+    it.each([false, true])(
+        "queues a second validation until the first ends (first refuses: %s)",
+        async (refuseFirst) => {
+            const entered = defer();
+            const release = defer();
+            const queued = defer();
+            const runner = testRestoreRunner();
+            let calls = 0;
+            const s = await defaultServer({
+                restore: {
+                    runner: async (input, options) => {
+                        calls++;
+                        if (calls === 1) {
+                            entered.resolve();
+                            await release.promise;
+                            if (refuseFirst) throw new ResourceValidationError("refused first source");
+                        }
+                        return runner(input, options);
+                    },
+                },
+            });
+            await s.create("characters", "saved", character("saved"));
+            const snapshot = await s.context.snapshots.snapshotNow();
+            const first = restore(s, snapshot.id);
+            await entered.promise;
+            expect(s.context.snapshots.gate.active).toBe(false);
+            // Observe admission without changing the queue or its result.
+            const track = s.context.snapshots.track.bind(s.context.snapshots);
+            function observe<T>(start: () => Promise<T>): Promise<T> {
+                const result = track(start);
+                queued.resolve();
+                return result;
+            }
+            const observed = vi.spyOn(s.context.snapshots, "track").mockImplementation(observe);
+            const second = restore(s, snapshot.id);
+            await queued.promise;
+            observed.mockRestore();
+            try {
+                expect(calls).toBe(1);
+                expect(await listBackups(s)).toHaveLength(1);
+            } finally {
+                release.resolve();
+            }
+            expect((await first).status).toBe(refuseFirst ? 400 : 200);
+            const result = await second;
+            expect(result.status).toBe(refuseFirst ? 200 : 412);
+            if (!refuseFirst)
+                expect(await result.json()).toEqual({ error: "EpochMismatch", epoch: await s.readEpoch() });
+            expect(calls).toBe(refuseFirst ? 2 : 1);
+            expect(await listBackups(s)).toHaveLength(2);
+            expect(readdirSync(tmpDir(s))).toEqual([]);
+        },
+    );
+
+    it("runs version-2 validation through the injected runner outside maintenance", async () => {
+        const entered = defer();
+        const release = defer();
+        let calls = 0;
+        const runner = testRestoreRunner();
+        const s = await defaultServer({
+            restore: {
+                runner: async (input, options) => {
+                    calls++;
+                    entered.resolve();
+                    await release.promise;
+                    return runner(input, options);
+                },
+            },
+        });
+        await s.create("characters", "saved", character("saved"));
+        const bytes = buildArchive([
+            ["manifest.json", manifestOf([])],
+            ["resources.sqlite", await databaseBytes(s)],
+        ]);
+        const importing = importArchive(s, bytes);
+        await entered.promise;
+        try {
+            expect(calls).toBe(1);
+            expect(s.context.snapshots.gate.active).toBe(false);
+            await s.create("characters", "during", character("during"));
+        } finally {
+            release.resolve();
+        }
+        expect((await importing).status).toBe(200);
+        await s.readEpoch();
+        expect((await s.get("characters", "saved")).status).toBe(200);
+        expect((await s.get("characters", "during")).status).toBe(404);
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+    });
+});
+
+it("retains version-2 export assets from the database copy through the end of its stream", async () => {
+    const now = Date.UTC(2030, 0, 20);
+    const s = await defaultServer({ assetLifecycle: { wallClock: () => now, monoClock: () => 0, exportWaitMs: 4321 } });
+    const revision = await s.create("characters", "a", character("a", { image: "assets/export-only" }));
+    // Placed on disk, not uploaded: an upload's one-hour lease would keep the key past the export.
+    const file = resolveStorageKey(s.savePath, "assets/export-only")!;
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "export bytes");
+    await fs.utimes(file, 0, 0);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copied = defer();
+    const resume = defer();
+    const waiting = defer();
+    const stat = fs.stat;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+        if (String(args[0]).includes(`${path.sep}export-`) && String(args[0]).endsWith("resources.sqlite")) {
+            copied.resolve();
+            await resume.promise;
+        }
+        return stat(...args);
+    });
+    const setTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...values: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+    ) => {
+        const timer = setTimeout(callback, delay, ...args);
+        if (delay === 4321) waiting.resolve();
+        return timer;
+    }) as unknown as typeof globalThis.setTimeout);
+    const request = s.json("/api/backups/export", { partial: true });
+    let response: Response | undefined;
+    try {
+        await copied.promise;
+        expect((await s.put("characters", "a", { baseRevision: revision, data: character("a") })).status).toBe(200);
+        const scan = s.context.assetLifecycle.scan();
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), scan.then(() => "finished")])).toBe(
+            "waiting",
+        );
+        resume.resolve();
+        response = await request;
+        expect(response.status).toBe(200);
+        expect((await scan).referenced).toMatchObject({ count: 1, dedupedBytes: 12 });
+        const streaming = await s.context.assetLifecycle.scan();
+        expect(streaming.complete, streaming.reasons.join("\n")).toBe(true);
+        expect(streaming.unreferenced.count).toBe(0);
+        const records = parseArchive(new Uint8Array(await response.arrayBuffer()));
+        expect(records.find((record) => record.name === "assets/export-only")?.data.toString()).toBe("export bytes");
+        expect((await s.context.assetLifecycle.scan()).unreferenced).toMatchObject({ count: 1, bytes: 12 });
+    } finally {
+        resume.resolve();
+        response ??= await request;
+        if (!response.bodyUsed) await response.body?.cancel();
+    }
+});
+
+it.each(["initial", "fallback copy"])(
+    "preflights restore %s including the live safety snapshot before allocating",
+    async (step) => {
+        let free = Number.MAX_SAFE_INTEGER;
+        const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        await s.create("characters", "large-live", { chaId: "large-live", desc: "x".repeat(1024 * 1024) });
+        const live = liveBytes(s.savePath);
+        expect(live).toBeGreaterThan(snapshot.size);
+        free = step === "initial" ? diskNeeded(2 * snapshot.size) : diskNeeded(2 * snapshot.size + live);
+        const allocations: string[] = [];
+        const mkdir = fs.mkdir;
+        vi.spyOn(fs, "mkdir").mockImplementation(async (...args) => {
+            allocations.push(String(args[0]));
+            return mkdir(...args);
+        });
+        const copy = vi.spyOn(fs, "copyFile");
+        const link = vi.spyOn(fs, "link");
+        if (step === "fallback copy")
+            link.mockRejectedValue(Object.assign(new Error("cross-device"), { code: "EXDEV" }));
+        const response = await restore(s, snapshot.id);
+        expect(response.status).toBe(507);
+        expect(await response.json()).toEqual({
+            error: "Insufficient Storage",
+            needed: diskNeeded((step === "initial" ? 2 : 3) * snapshot.size + live),
+            free,
+        });
+        expect(copy).not.toHaveBeenCalled();
+        if (step === "initial") {
+            expect(link).not.toHaveBeenCalled();
+            expect(allocations).toEqual([]);
+        }
+        expect(readdirSync(tmpDir(s))).toEqual([]);
+        expect((await listBackups(s)).map((x) => x.id)).toEqual([snapshot.id]);
+        expect((await s.get("characters", "large-live")).status).toBe(200);
+    },
+);
+
+it.each(["declared upload", "database extraction"])("preflights version-2 import before %s writes", async (step) => {
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { "assets/new": "asset" });
+    const live = liveBytes(s.savePath);
+    // The second shortage covers staging + install + safety + assets, but not source extraction.
+    free =
+        step === "declared upload" ? diskNeeded(bytes.byteLength) - 1 : diskNeeded(2 * database.byteLength + live + 5);
+    const outputs: string[] = [];
+    const open = fs.open;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        if (String(args[1]).includes("w")) outputs.push(String(args[0]));
+        return open(...args);
+    });
+    const response = await s.request("/api/backups/import", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream", "content-length": String(bytes.byteLength) },
+        body: bytes as RequestInit["body"],
+    });
+    expect(response.status).toBe(507);
+    expect(await response.json()).toEqual({
+        error: "Insufficient Storage",
+        needed: diskNeeded(step === "declared upload" ? bytes.byteLength : 3 * database.byteLength + live + 5),
+        free,
+    });
+    expect(outputs.map((x) => path.basename(x))).toEqual(step === "declared upload" ? [] : ["archive.bin"]);
+    expect(readdirSync(tmpDir(s))).toEqual([]);
+    expect(assetFiles(s)).toEqual([]);
+});
+
+it("imports a verified content-named 8 MiB asset with only the database disk allowance", async () => {
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    const asset = "x".repeat(8 * 1024 * 1024);
+    const key = `assets/${createHash("sha256").update(asset).digest("hex")}.png`;
+    const file = seedSweepAsset(s, key, asset);
+    const inode = (await fs.stat(file)).ino;
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { [key]: asset });
+    free = diskNeeded(3 * database.byteLength + liveBytes(s.savePath));
+
+    const response = await importArchive(s, bytes);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ epoch: expect.any(String), assetsWritten: 0, assetsSkipped: 1 });
+    expect(await fs.readFile(file, "utf8")).toBe(asset);
+    expect((await fs.stat(file)).ino).toBe(inode);
+});
+
+it("charges an absent 8 MiB asset in the version-2 import disk preflight", async () => {
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await defaultServer({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    const asset = "x".repeat(8 * 1024 * 1024);
+    const key = `assets/${createHash("sha256").update(asset).digest("hex")}.png`;
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { [key]: asset });
+    const databaseEstimate = 3 * database.byteLength + liveBytes(s.savePath);
+    free = diskNeeded(databaseEstimate);
+
+    const response = await importArchive(s, bytes);
+
+    expect(response.status).toBe(507);
+    expect(await response.json()).toEqual({
+        error: "Insufficient Storage",
+        needed: diskNeeded(databaseEstimate + Buffer.byteLength(asset)),
+        free,
+    });
+    expect(assetFiles(s)).toEqual([]);
+});
+
+it("rechecks disk space for an asset removed after preflight before replacing resources", async () => {
+    let free = Number.MAX_SAFE_INTEGER;
+    let file = "";
+    let removed = false;
+    const runner = testRestoreRunner();
+    const s = await defaultServer({
+        assetLifecycle: { statfs: async () => diskWithFree(free) },
+        restore: {
+            runner: async (input, options) => {
+                const report = await runner(input, options);
+                // Validation follows the disk preflight and finishes before maintenance admission.
+                await fs.unlink(file);
+                removed = true;
+                return report;
+            },
+        },
+    });
+    const asset = "x".repeat(8 * 1024 * 1024);
+    const key = `assets/${createHash("sha256").update(asset).digest("hex")}.png`;
+    file = seedSweepAsset(s, key, asset);
+    const revision = await s.create("pluginStorage", "main", { note: "archived" });
+    const database = await databaseBytes(s);
+    const bytes = archiveOf(database, { [key]: asset });
+    expect((await s.put("pluginStorage", "main", { baseRevision: revision, data: { note: "live" } })).status).toBe(200);
+    const before = await (await s.get("pluginStorage", "main")).json();
+    const epoch = s.epoch;
+    free = diskNeeded(3 * database.byteLength + liveBytes(s.savePath));
+    expect(free).toBeLessThan(diskNeeded(Buffer.byteLength(asset)));
+
+    const response = await importArchive(s, bytes);
+
+    expect(removed).toBe(true);
+    expect(response.status).toBe(507);
+    expect(await response.json()).toMatchObject({ error: "Insufficient Storage", free });
+    expect(await s.readEpoch()).toBe(epoch);
+    expect(await (await s.get("pluginStorage", "main")).json()).toEqual(before);
+    expect(assetFiles(s)).toEqual([]);
+});
+
+it("retains the restore source as a listed root through rotation and staging cleanup", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-01"));
+    const held = defer();
+    const resume = defer();
+    const runner = testRestoreRunner();
+    const s = await defaultServer({
+        restore: {
+            runner: async (input, options) => {
+                held.resolve();
+                await resume.promise;
+                return runner(input, options);
+            },
+        },
+    });
+    const source = await s.context.snapshots.snapshotNow();
+    const restoring = restore(s, source.id);
+    try {
+        await held.promise;
+        expect((await s.request(`/api/backups/${source.id}`, { method: "DELETE" })).status).toBe(409);
+        const newer: string[] = [];
+        for (let i = 1; i <= 21; i++) {
+            vi.setSystemTime(Date.UTC(2030, 0, 1, 0, 0, i));
+            newer.push((await s.context.snapshots.snapshotNow()).id);
+        }
+        expect((await listBackups(s)).map((x) => x.id)).toEqual([...newer.slice(-20).reverse(), source.id]);
+        const rm = fs.rm;
+        let cleanupSawRoot = false;
+        vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+            if (String(args[0]).includes("/restore-") && args[1]?.recursive)
+                cleanupSawRoot = s.context.snapshots.list().some((x) => x.id === source.id);
+            return rm(...args);
+        });
+        resume.resolve();
+        expect((await restoring).status).toBe(200);
+        expect(cleanupSawRoot).toBe(true);
+        vi.setSystemTime(new Date("2030-01-02"));
+        await s.context.snapshots.snapshotNow();
+        expect(s.context.snapshots.list().map((x) => x.id)).not.toContain(source.id);
+    } finally {
+        resume.resolve();
+        await restoring;
+    }
+});
+
+it("holds a version-2 export candidate from its copied database until stream finalization", async () => {
+    const clock = sweepClock();
+    const s = await defaultServer({ assetLifecycle: { ...clock.options, exportWaitMs: 4321 } });
+    const key = "assets/version-two-held";
+    seedSweepAsset(s, key, "version two bytes");
+    await matureSweep(s, clock);
+    const revision = await s.create("characters", "held", character("held", { image: key }));
+    const entered = defer(),
+        resume = defer(),
+        waiting = defer();
+    const stat = fs.stat;
+    vi.spyOn(fs, "stat").mockImplementation(async (...args) => {
+        if (String(args[0]).includes("/export-") && String(args[0]).endsWith("resources.sqlite")) {
+            entered.resolve();
+            await resume.promise;
+        }
+        return stat(...args);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const timeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+        callback: (...args: unknown[]) => void,
+        delay?: number,
+        ...args: unknown[]
+    ) => {
+        const handle = timeout(callback, delay, ...args);
+        if (delay === 4321) waiting.resolve();
+        return handle;
+    }) as typeof setTimeout);
+    const exporting = s.json("/api/backups/export", { partial: true });
+    let response: Response | undefined;
+    let sweeping: ReturnType<typeof s.context.assetLifecycle.sweep> | undefined;
+    try {
+        await entered.promise;
+        expect((await s.put("characters", "held", { baseRevision: revision, data: character("held") })).status).toBe(
+            200,
+        );
+        sweeping = s.context.assetLifecycle.sweep({ dryRun: false });
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), sweeping.then(() => "deleted early")])).toBe(
+            "waiting",
+        );
+        resume.resolve();
+        response = await exporting;
+        expect(await sweeping).toMatchObject({ deleted: [], skipped: [{ key, reason: "held by export" }] });
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false })).deleted).toEqual([]);
+        expect(
+            parseArchive(new Uint8Array(await response.arrayBuffer()))
+                .find((r) => r.name === key)
+                ?.data.toString(),
+        ).toBe("version two bytes");
+        expect((await s.context.assetLifecycle.sweep({ dryRun: false })).deleted).toEqual([key]);
+    } finally {
+        resume.resolve();
+        await sweeping;
+        response ??= await exporting;
+        if (!response.bodyUsed) await response.body?.cancel();
+    }
 });

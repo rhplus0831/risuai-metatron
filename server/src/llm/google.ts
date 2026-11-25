@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/google.ts` (the client's dependencies are `arg.ctx`'s). The
+// Port of the former `src/ts/process/request/google.ts` (the client's dependencies are `arg.ctx`'s). The
 // Vertex access token comes from the server's cache (`ctx.vertexAccessToken`), and the inlays it
 // writes are written in the client's tab (`ctx.inlays`).
 import { randomUUID } from "node:crypto";
@@ -6,11 +6,29 @@ import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { InlaySignature } from "../../../shared/llm/request.ts";
 import { defaultCredentialKey } from "./credentials.ts";
 import { textifyReadableStream } from "./transport.ts";
-import { simplifySchema, sleep } from "./util.ts";
+import { simplifySchema, sleep, toolRetryDelay } from "./util.ts";
 import { SseLines } from "./sseLines.ts";
 import { extractJSON, getGeneralJSONSchema } from "./jsonSchema.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type LLMParameter } from "./shared.ts";
+
+/**
+ * Builds Gemini generateContent/streamGenerateContent requests for Google API-key or Vertex bearer authentication:
+ * user/model `contents` with text, inline media, and function parts; separate `systemInstruction`, generation config,
+ * safety settings, and tool declarations. Media output forces buffered generation. Selected global-only Vertex model
+ * ids override the configured region; Vertex access tokens come from `server/src/llm/vertexToken.ts` via the context.
+ *
+ * Each response body gets a fresh SSE parser. It emits whole-text snapshots plus accumulated thought, signature, tool,
+ * usage, and model-status metadata, skips malformed lines, and stops parsing at `[DONE]` (the stream closes at EOF).
+ * The tool wrapper exposes cumulative text at key `"0"`, adds thought markup and prior tool turns, and continues with
+ * fresh provider requests for function calls. Metadata is sent to the interceptor on the final tool-free completion.
+ * EOF flushes an unterminated final line and emits an empty state if the parser never emitted a snapshot.
+ *
+ * `server/src/llm/messages.ts` supplies dispatch/credential refusals; this adapter's failures use provider bodies/status
+ * or its own literals. Missing Vertex auth both alerts and fails. `RESOURCE_EXHAUSTED` may retry up to `requestRetrys`
+ * with `antiServerOverloads`, except on Vertex. Exhausted tool follow-ups alert and return the answer collected so far
+ * (buffered success or stream close), while body read failures propagate to the reader.
+ */
 
 type GeminiFunctionCall = {
     id?: string;
@@ -42,14 +60,12 @@ interface GeminiChat {
 }
 
 /**
- * The wait in ms before retry `retry` (1-based) of the request that follows a tool call: 1, 2, 4, then
- * 8 s for every later retry, so a 429 or 524 is not re-sent at once. The loops wait with the request's
- * abort signal, so Stop ends the wait and sends nothing more.
+ * Builds, previews, or sends a Gemini request with media/tool follow-ups. Consumes a leading system entry from
+ * `arg.formated` when present and omits a blank system instruction. Provider signature tokens are saved only when
+ * `arg.saveSignatures` is set; buffered markers are appended after text processing and do not make an empty reply
+ * succeed. Replay uses `db.saveSignatures` and reads raw JSON inlays for the matching model, skipping malformed
+ * signatures. Signature-only parts are saved without changing another part's text.
  */
-function toolRetryDelay(retry: number): number {
-    return Math.min(1000 * 2 ** (retry - 1), 8000);
-}
-
 export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;
@@ -58,7 +74,7 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
     let reformatedChat: GeminiChat[] = [];
     let systemPrompt = "";
 
-    if (formated[0].role === "system") {
+    if (formated[0]?.role === "system") {
         systemPrompt = formated[0].content;
         formated.shift();
     }
@@ -95,8 +111,16 @@ export async function requestGoogleCloudVertex(arg: RequestDataArgumentExtended)
                 }
 
                 if (modal.type === "signature" && db.saveSignatures) {
-                    const sig: InlaySignature = JSON.parse(Buffer.from(modal.base64, "base64").toString("utf-8"));
-                    if (sig.source === arg.modelInfo.internalID || sig.source === arg.modelInfo.id) {
+                    let sig: InlaySignature;
+                    try {
+                        sig = JSON.parse(modal.base64);
+                    } catch {
+                        continue;
+                    }
+                    if (
+                        typeof sig?.signatures?.[0]?.content === "string" &&
+                        (sig.source === arg.modelInfo.internalID || sig.source === arg.modelInfo.id)
+                    ) {
                         geminiParts.push({
                             thought: true,
                             thoughtSignature: sig.signatures[0].content,
@@ -522,34 +546,39 @@ async function requestGoogle(
     body: any,
     headers: { [key: string]: string },
     arg: RequestDataArgumentExtended,
+    overloadRetry = 0,
 ): Promise<requestDataResponse> {
     const db = arg.ctx.db;
 
+    /**
+     * The `antiServerOverloads` re-request of a `RESOURCE_EXHAUSTED` answer (not for Vertex), bounded like a
+     * tool-call retry: at most `requestRetrys` re-requests, each after `toolRetryDelay` waited with the abort signal,
+     * then the original failure.
+     */
     const fallBackGemini = async (originalError: string): Promise<requestDataResponse> => {
-        if (!db.antiServerOverloads) {
-            return {
-                type: "fail",
-                result: originalError,
-                failByServerError: true,
-            };
+        const failure: requestDataResponse = {
+            type: "fail",
+            result: originalError,
+            failByServerError: true,
+        };
+        const retry = overloadRetry + 1;
+        const retryLimit = Number.isFinite(db.requestRetrys) ? db.requestRetrys : 0;
+        if (
+            !db.antiServerOverloads ||
+            arg.abortSignal?.aborted ||
+            arg.modelInfo.format === LLMFormat.VertexAIGemini ||
+            retry > retryLimit
+        ) {
+            return failure;
         }
 
-        if (arg?.abortSignal?.aborted) {
-            return {
-                type: "fail",
-                result: originalError,
-                failByServerError: true,
-            };
-        }
-        if (arg.modelInfo.format === LLMFormat.VertexAIGemini) {
-            return {
-                type: "fail",
-                result: originalError,
-                failByServerError: true,
-            };
+        await sleep(toolRetryDelay(retry), arg.abortSignal);
+        if (arg.abortSignal?.aborted) {
+            return failure;
         }
 
-        return requestGoogle(url, body, headers, arg);
+        arg.ctx.reportRetry?.();
+        return requestGoogle(url, body, headers, arg, retry);
     };
 
     // process the text parts into a single text response
@@ -647,6 +676,7 @@ async function requestGoogle(
     }
 
     let rDatas: { text: string; thought?: boolean }[] = [];
+    const signatureMarkers: string[] = [];
     const processDataItem = async (data: any): Promise<GeminiPart[]> => {
         const parts = data?.candidates?.[0]?.content?.parts as GeminiPart[];
 
@@ -668,12 +698,12 @@ async function requestGoogle(
                         sourceFormat: arg.modelInfo.format,
                         signatures: [
                             {
-                                type: "text",
-                                content: part.text as string,
+                                type: part.functionCall ? "function" : "text",
+                                content: part.thoughtSignature,
                             },
                         ],
                     });
-                    rDatas[rDatas.length - 1].text = `{{inlayeddata::${sigId}}}\n\n` + rDatas[rDatas.length - 1].text;
+                    signatureMarkers.push(`{{inlayeddata::${sigId}}}`);
                 }
 
                 if (part.inlineData) {
@@ -853,6 +883,7 @@ async function requestGoogle(
         let attempt = 0;
         do {
             attempt++;
+            if (attempt > 1) arg.ctx.reportRetry?.();
             resRec = await requestGoogle(url, body, headers, arg);
 
             if (resRec.type != "fail") {
@@ -868,7 +899,9 @@ async function requestGoogle(
 
         // Does not include the text response if simplifiedToolUse is enabled
         const result =
-            (db.simplifiedToolUse ? "" : (await processTextResponse(rDatas)) + "\n\n") + callCodes.join("\n\n");
+            (db.simplifiedToolUse ? "" : (await processTextResponse(rDatas)) + "\n\n") +
+            callCodes.join("\n\n") +
+            signatureMarkers.join("");
 
         // If the next request fails, only the responses so far are returned
         if (resRec.type === "fail") {
@@ -899,7 +932,7 @@ async function requestGoogle(
 
     return {
         type: "success",
-        result: result,
+        result: result + signatureMarkers.join(""),
     };
 }
 
@@ -923,6 +956,15 @@ function initStreamState(state?: { [key: string]: string }): { [key: string]: st
     return state;
 }
 
+/**
+ * The Gemini (Google/Vertex) stream parser, one per response body (a tool follow-up builds a fresh one). Each `data:`
+ * event is applied once; a malformed line is skipped on its own, and `[DONE]` ends the parse. At most one cumulative
+ * `StreamResponseChunk` snapshot is emitted per read that applied an event (the flush emits one if none was): text at
+ * key `"0"`, and the tool calls, thoughts, signatures, usage, and model status as metadata keys that survive to the
+ * final snapshot. Provider signature tokens from text, function-call, and signature-only parts are saved in inlays
+ * when enabled. Each save is started (not awaited) before its marker is appended to the text; signature-only parts
+ * leave the raw text/function signature metadata unchanged.
+ */
 function getTranStream(args: {
     modelInfo: LLMModel;
     saveSignature: boolean;
@@ -961,7 +1003,7 @@ function getTranStream(args: {
                         }
                         if (part.thoughtSignature) {
                             readed["__sign_text"] = part.thoughtSignature;
-                            signatures.push({ type: "text", content: part.text });
+                            signatures.push({ type: "text", content: part.thoughtSignature });
                         }
                     }
                     if (part.functionCall) {
@@ -970,9 +1012,12 @@ function getTranStream(args: {
                             readed["__sign_function"] = part.thoughtSignature;
                             signatures.push({
                                 type: "function",
-                                content: `${part.functionCall.name}(${JSON.stringify(part.functionCall.args)})`,
+                                content: part.thoughtSignature,
                             });
                         }
+                    }
+                    if (!part.text && !part.functionCall && part.thoughtSignature) {
+                        signatures.push({ type: "text", content: part.thoughtSignature });
                     }
                     if (saveSignature && signatures.length > 0) {
                         const sigId = randomUUID();
@@ -1041,7 +1086,12 @@ function wrapToolStream(
                 value = initStreamState(value);
 
                 if (arg.extractJson && (db.jsonSchemaEnabled || arg.schema)) {
-                    value["0"] = await extractJSON(value["0"], arg.extractJson, arg.ctx);
+                    const markers: string[] = [];
+                    const text = value["0"].replace(/\{\{inlayeddata::[^}]+\}\}/g, (marker) => {
+                        markers.push(marker);
+                        return "";
+                    });
+                    value["0"] = (await extractJSON(text, arg.extractJson, arg.ctx)) + markers.join("");
                 }
 
                 let content = value["0"];
@@ -1085,7 +1135,7 @@ function wrapToolStream(
                                 role: "model",
                                 parts: [
                                     {
-                                        text: content,
+                                        text: content.replace(/{{inlayeddata::.*?}}/g, ""),
                                         ...(signText ? { thoughtSignature: signText } : {}),
                                     } as GeminiPart,
                                 ].concat(
@@ -1188,6 +1238,7 @@ function wrapToolStream(
 
                         do {
                             attempt++;
+                            if (attempt > 1) arg.ctx.reportRetry?.();
                             resRec = await arg.ctx.transport.fetchStream(url, {
                                 headers: headers,
                                 body: JSON.stringify(body),

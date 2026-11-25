@@ -3,6 +3,11 @@
     import { sleep } from "src/ts/util";
     import { onDestroy, onMount } from "svelte";
 
+    /**
+     * The fixed-position menu host mounted by `src/App.svelte`. The next document click clears both `children`
+     * and `openId`; the listener is deferred so the opening click does not close the menu.
+     */
+
     let styleString = $derived.by(() => {
         let styleString = "";
         const windowWidth = window.innerWidth;
@@ -25,6 +30,7 @@
 
     const close = () => {
         popupStore.children = null;
+        popupStore.openId = 0;
     };
 
     onMount(async () => {

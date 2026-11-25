@@ -1,9 +1,14 @@
-import { settings, activePreset, activePersona } from "../storage/settingsViews.svelte";
+import { activePreset, activePersona } from "../storage/settingsViews.svelte";
 import type { OpenAIChat } from "./index.svelte";
 import { getUserName } from "../util";
 
-export function multiChatReplacer() {}
+/**
+ * Serializes plain-text prompt messages and trims generated plain-text and AIN output at speaker
+ * markers. Defaults read the active preset/persona through `src/ts/storage/settingsViews.svelte.ts`
+ * and `getUserName` in `src/ts/util.ts`; request-bound callers must pass names where supported.
+ */
 
+/** Joins plain-text messages, skipping inlay-image memos and adding the speaker prefix unless continuing. */
 export function stringlizeChat(formated: OpenAIChat[], char: string, continued: boolean) {
     let resultString: string[] = [];
     for (const form of formated) {
@@ -26,81 +31,11 @@ export function stringlizeChat(formated: OpenAIChat[], char: string, continued: 
     return res;
 }
 
-function appendWhitespace(prefix: string, seperator: string = " ") {
-    if (!prefix) {
-        return "";
-    }
-    if (prefix && !"> \n".includes(prefix[prefix.length - 1])) {
-        prefix += seperator.includes("\n\n") ? "\n" : " ";
-    }
-    return prefix;
-}
-export function stringlizeChatOba(
-    formated: OpenAIChat[],
-    characterName: string,
-    suggesting: boolean,
-    continued: boolean,
-) {
-    let resultString: string[] = [];
-    let { systemPrefix, userPrefix, assistantPrefix, seperator } = activePreset.ooba.formating;
-    systemPrefix = systemPrefix ?? "";
-    userPrefix = userPrefix ?? "";
-    assistantPrefix = assistantPrefix ?? "";
-    seperator = seperator ?? "\n";
-
-    for (const form of formated) {
-        if (form.content === "[Start a new chat]") {
-            resultString.push("<START>");
-            continue;
-        }
-        let prefix = "";
-        let name = form.name;
-        if (form.role === "user") {
-            prefix = appendWhitespace(suggesting ? assistantPrefix : userPrefix, seperator);
-            name ??= `${getUserName()}`;
-            name += ": ";
-        } else if (form.role === "assistant") {
-            prefix = appendWhitespace(suggesting ? userPrefix : assistantPrefix, seperator);
-            name ??= `${characterName}`;
-            name += ": ";
-        } else if (form.role === "system") {
-            prefix = appendWhitespace(systemPrefix, seperator);
-            name = "";
-        }
-        if (activePreset.ooba.formating.useName) {
-            console.log(name);
-            resultString.push(prefix + name + form.content);
-        } else {
-            resultString.push(prefix + form.content);
-        }
-    }
-    if (!continued) {
-        if (activePreset.ooba.formating.useName) {
-            if (suggesting) {
-                resultString.push(
-                    appendWhitespace(assistantPrefix, seperator) +
-                        `${getUserName()}:\n` +
-                        settings.ui.autoSuggestPrefix,
-                );
-            } else {
-                resultString.push(assistantPrefix + `${characterName}:`);
-            }
-        } else {
-            if (suggesting) {
-                resultString.push(appendWhitespace(assistantPrefix, seperator) + `\n` + settings.ui.autoSuggestPrefix);
-            } else {
-                resultString.push(assistantPrefix);
-            }
-        }
-    }
-    console.log(resultString);
-    return resultString.join(seperator).trim();
-}
-
 const userStrings = ["user", "human", "input", "inst", "instruction"];
 function toTitleCase(s: string) {
     return s[0].toUpperCase() + s.slice(1).toLowerCase();
 }
+/** Builds deduplicated stop markers from the active preset and persona; suggestions add a blank-line stop. */
 export function getStopStrings(suggesting: boolean = false) {
     let { userPrefix, seperator } = activePreset.ooba.formating;
     if (!seperator) {
@@ -144,6 +79,7 @@ export function unstringlizeChat(text: string, formated: OpenAIChat[], char: str
     return text;
 }
 
+/** Builds system and speaker boundary markers for normal or AIN output, plus their bare-name variants. */
 export function getUnstringlizerChunks(
     formated: OpenAIChat[],
     char: string,
@@ -198,34 +134,6 @@ export function getUnstringlizerChunks(
     return { chunks, extChunk: charNames.concat(chunks) };
 }
 
-export function stringlizeAINChat(formated: OpenAIChat[], char: string, continued: boolean) {
-    let resultString: string[] = [];
-
-    for (const form of formated) {
-        console.log(form);
-        if ((form.memo && form.memo.startsWith("newChat")) || form.content === "[Start a new chat]") {
-            resultString.push("[新しいチャットの始まり]");
-            continue;
-        }
-        if (form.role === "system") {
-            resultString.push(form.content);
-        } else if (form.role === "user") {
-            resultString.push(...formatToAIN(getUserName(), form.content));
-        } else if (form.name || form.role === "assistant") {
-            resultString.push(...formatToAIN(form.name ?? char, form.content));
-        } else {
-            resultString.push(form.content);
-        }
-    }
-    let res = resultString.join("\n\n");
-    if (!continued) {
-        res += +`\n\n${char} 「`;
-    } else {
-        res += " 「";
-    }
-    return res;
-}
-
 function extractAINOutputStrings(inputString: string, characters: string[]) {
     let results: {
         content: string;
@@ -273,6 +181,7 @@ function extractAINOutputStrings(inputString: string, characters: string[]) {
     return results;
 }
 
+/** Parses AIN output into speaker turns, attaching narration to character turns and trimming trailing markers. */
 export function unstringlizeAIN(data: string, formated: OpenAIChat[], char: string = "") {
     const chunksResult = getUnstringlizerChunks(formated, char, "ain");
     const chunks = chunksResult.chunks;
@@ -301,68 +210,4 @@ export function unstringlizeAIN(data: string, formated: OpenAIChat[], char: stri
     }
 
     return result;
-}
-
-function formatToAIN(name: string, content: string) {
-    function extractContent(str: string) {
-        let result: {
-            type: "outside" | "inside";
-            content: string;
-        }[] = [];
-        let lastEndIndex = 0;
-        let regex = /「(.*?)」/g;
-        let match: RegExpExecArray | null = null;
-
-        while ((match = regex.exec(str)) !== null) {
-            let start = match.index;
-            let end = start + match[0].length;
-            let inside = match[1];
-
-            if (start != lastEndIndex) {
-                let outside = str.slice(lastEndIndex, start);
-                result.push({
-                    type: "outside",
-                    content: outside,
-                });
-            }
-
-            result.push({
-                type: "inside",
-                content: inside,
-            });
-
-            lastEndIndex = end;
-        }
-
-        if (lastEndIndex < str.length) {
-            let outside = str.slice(lastEndIndex);
-            result.push({
-                type: "outside",
-                content: outside,
-            });
-        }
-
-        return result;
-    }
-
-    let quoteCounter = 0;
-    content = content.replace(/"/g, () => {
-        quoteCounter++;
-        if (quoteCounter % 2 !== 0) {
-            return "「";
-        } else {
-            return "」";
-        }
-    });
-
-    const conts = extractContent(content);
-    let strs: string[] = [];
-    for (const cont of conts) {
-        if (cont.type === "inside") {
-            strs.push(`${name} 「${cont.content}」`);
-        } else {
-            strs.push(cont.content);
-        }
-    }
-    return strs;
 }

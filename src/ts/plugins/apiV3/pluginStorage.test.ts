@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Cold storage was removed. v3 `pluginStorage` used to keep its values in cold
 // storage behind a `pluginCustomStorage._coldplugin` key -> uuid map; it now keeps
-// them inline under the reserved `pluginCustomStorage._pluginStorage` sub-object.
+// them inline under the reserved `pluginCustomStorage._ownedPluginStorage` sub-object,
+// keyed `<plugin name>\u0000<key>`.
 // These tests pin the replacement contract:
 // - values are isolated from the top level of `pluginCustomStorage`, where the
 //   `setDatabase`/`setDatabaseLite` APIs route custom (non-`allowedDbKeys`)
@@ -32,16 +33,7 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
@@ -59,14 +51,23 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { executePluginV3 } from "./v3.svelte";
+import * as pluginStorageStore from "src/ts/storage/pluginStorageStore.svelte";
+import { MutationValidationError } from "src/ts/storage/mutationValidation";
 
 /** The `pluginStorage` record (the legacy `pluginCustomStorage`), through its view. */
 const stored = () => settings.pluginStorage as Record<string, any> | undefined;
 
+/** The loaded plugin's name, the owner of its `pluginStorage` keys. */
+let pluginName = "";
+const ownKey = (key: string) => `${pluginName}\u0000${key}`;
+
 async function makeApi(): Promise<CapturedApi> {
     captured.api = null;
+    pluginName = `pluginStorage-test-${Math.random().toString(36).slice(2)}`;
+    // Owned writes need the owner installed (`setOwnedPluginStorageItem`).
+    settings.plugins = [{ name: pluginName, script: "", version: "3.0" }] as any;
     await executePluginV3({
-        name: `pluginStorage-test-${Math.random().toString(36).slice(2)}`,
+        name: pluginName,
         script: "",
         version: "3.0",
     } as any);
@@ -81,7 +82,94 @@ describe("v3 pluginStorage without cold storage", () => {
         installFlatDatabase({ pluginCustomStorage: undefined });
     });
 
-    it("stores values inline under pluginCustomStorage._pluginStorage and reads them back", async () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("enumerates an owner's keys with one owned-dictionary pass and at most one key-list copy", async () => {
+        const api = await makeApi();
+        const expected = Array.from({ length: 10 }, (_, i) => `key-${i}`);
+        const owners = [pluginName, ...Array.from({ length: 9 }, (_, i) => `other-${i}`)];
+        settings.pluginStorage = {
+            _ownedPluginStorage: Object.fromEntries(
+                owners.flatMap((owner) => expected.map((key) => [`${owner}\u0000${key}`, 1])),
+            ),
+        };
+        const owned = stored()!._ownedPluginStorage;
+        const objectKeys = Object.keys;
+        let visits = 0;
+        vi.spyOn(Object, "keys").mockImplementation((value) => {
+            const keys = objectKeys(value);
+            if (value === owned) visits += keys.length;
+            return keys;
+        });
+        const keysForOwner = pluginStorageStore.ownedPluginStorageKeys;
+        let copiedKeys = 0;
+        vi.spyOn(pluginStorageStore, "ownedPluginStorageKeys").mockImplementation((owner) => {
+            const keys = keysForOwner(owner);
+            copiedKeys += keys.length;
+            return keys;
+        });
+
+        expect(await api._lengthPluginStorage()).toBe(expected.length);
+        const actual = [];
+        for (let i = 0; i < expected.length; i++) actual.push(await api._keyPluginStorage(i));
+
+        expect(actual).toEqual(expected);
+        expect(visits).toBe(owners.length * expected.length);
+        expect(copiedKeys).toBeLessThanOrEqual(expected.length);
+    });
+
+    it("refreshes enumeration after local writes and clear, preserving visible order and detached key arrays", async () => {
+        const api = await makeApi();
+        settings.pluginStorage = {
+            _ownedPluginStorage: { [ownKey("own")]: 1, [ownKey("shadow")]: null, "other\u0000private": 2 },
+            _pluginStorage: { legacy: 1, shadow: 2, tail: 3 },
+        };
+        const first = await api._keysPluginStorage();
+        expect(first).toEqual(["own", "shadow", "legacy", "tail"]);
+        first.splice(0, first.length, "phantom");
+        expect(await api._lengthPluginStorage()).toBe(4);
+        expect(await api._keyPluginStorage(0)).toBe("own");
+        expect(await api._keysPluginStorage()).toEqual(["own", "shadow", "legacy", "tail"]);
+
+        await api._setPluginStorage("next", 1);
+        expect(await api._keyPluginStorage(2)).toBe("next");
+        expect(await api._lengthPluginStorage()).toBe(5);
+        expect(await api._keysPluginStorage()).toEqual(["own", "shadow", "next", "legacy", "tail"]);
+
+        await api._removePluginStorage("shadow");
+        expect(await api._lengthPluginStorage()).toBe(4);
+        expect(await api._keysPluginStorage()).toEqual(["own", "next", "legacy", "tail"]);
+        expect(await api._keyPluginStorage(4)).toBeNull();
+
+        await api._clearPluginStorage();
+        expect(await api._keysPluginStorage()).toEqual([]);
+        expect(await api._lengthPluginStorage()).toBe(0);
+        expect(await api._keyPluginStorage(0)).toBeNull();
+        await api._setPluginStorage("after", 1);
+        expect(await api._lengthPluginStorage()).toBe(1);
+        expect(await api._keyPluginStorage(0)).toBe("after");
+        expect(await api._keysPluginStorage()).toEqual(["after"]);
+    });
+
+    it("refreshes enumeration when setDatabase replaces pluginCustomStorage and its clear marker", async () => {
+        const api = await makeApi();
+        await api._clearPluginStorage();
+        await api._setPluginStorage("before", 1);
+        expect(await api._keysPluginStorage()).toEqual(["before"]);
+
+        await api.setDatabase({
+            pluginCustomStorage: {
+                _ownedPluginStorage: { [ownKey("replacement")]: 1 },
+                _pluginStorage: { freshLegacy: 2 },
+            },
+        });
+
+        expect(await api._keyPluginStorage(0)).toBe("replacement");
+        expect(await api._lengthPluginStorage()).toBe(2);
+        expect(await api._keysPluginStorage()).toEqual(["replacement", "freshLegacy"]);
+    });
+
+    it("stores values inline under pluginCustomStorage._ownedPluginStorage, keyed by the plugin, and reads them back", async () => {
         const api = await makeApi();
 
         await api._setPluginStorage("theme", "dark");
@@ -89,10 +177,10 @@ describe("v3 pluginStorage without cold storage", () => {
         await api._setPluginStorage("prefs", { nested: { list: [1, "two", null] } });
 
         expect(stored()).toEqual({
-            _pluginStorage: {
-                theme: "dark",
-                count: 3,
-                prefs: { nested: { list: [1, "two", null] } },
+            _ownedPluginStorage: {
+                [ownKey("theme")]: "dark",
+                [ownKey("count")]: 3,
+                [ownKey("prefs")]: { nested: { list: [1, "two", null] } },
             },
         });
         expect(stored()!._coldplugin).toBeUndefined();
@@ -138,7 +226,7 @@ describe("v3 pluginStorage without cold storage", () => {
 
         expect(stored()!.settings).toBe("legacy");
         expect(stored()!.characters).toBe("legacy-list");
-        expect(Object.keys(stored()!).sort()).toEqual(["_pluginStorage", "characters", "settings"]);
+        expect(Object.keys(stored()!).sort()).toEqual(["_ownedPluginStorage", "characters", "settings"]);
         expect(await api._keysPluginStorage()).toEqual(["settings", "characters"]);
 
         await api._removePluginStorage("settings");
@@ -149,7 +237,7 @@ describe("v3 pluginStorage without cold storage", () => {
         expect(stored()).toEqual({
             settings: "legacy",
             characters: "legacy-list",
-            _pluginStorage: {},
+            _ownedPluginStorage: { [pluginName]: { legacyHidden: true } },
         });
         expect(await api._lengthPluginStorage()).toBe(0);
     });
@@ -164,7 +252,7 @@ describe("v3 pluginStorage without cold storage", () => {
         expect(await api._getPluginStorage("undef")).toBeNull();
         expect(await api._getPluginStorage("fn")).toBeNull();
         expect(await api._getPluginStorage("holes")).toEqual({ keep: 1, when: "1970-01-01T00:00:00.000Z" });
-        expect("drop" in stored()!._pluginStorage.holes).toBe(false);
+        expect("drop" in stored()!._ownedPluginStorage[ownKey("holes")]).toBe(false);
     });
 
     it("rejects a BigInt before touching the database so saving cannot break", async () => {
@@ -175,7 +263,7 @@ describe("v3 pluginStorage without cold storage", () => {
 
         await api._setPluginStorage("ok", 1);
         await expect(api._setPluginStorage("counter", { big: 2n })).rejects.toThrow(TypeError);
-        expect(stored()).toEqual({ _pluginStorage: { ok: 1 } });
+        expect(stored()).toEqual({ _ownedPluginStorage: { [ownKey("ok")]: 1 } });
         expect(() => JSON.stringify(stored())).not.toThrow();
     });
 
@@ -187,6 +275,43 @@ describe("v3 pluginStorage without cold storage", () => {
         read.a = 2;
         read.injected = true;
 
-        expect(stored()!._pluginStorage.prefs).toEqual({ a: 1 });
+        expect(stored()!._ownedPluginStorage[ownKey("prefs")]).toEqual({ a: 1 });
+    });
+});
+
+describe("v3 pluginStorage installation", () => {
+    it.each([
+        { enabled: true, state: "enabled" },
+        { enabled: false, state: "disabled" },
+    ])("stores values while $state and rejects late writes after uninstall", async ({ enabled }) => {
+        const plugin = {
+            name: `installed-storage-${enabled ? "enabled" : "disabled"}`,
+            script: "",
+            version: "3.0" as const,
+            enabled,
+            arguments: {},
+            realArg: {},
+            customLink: [],
+            argMeta: {},
+        };
+        installFlatDatabase({ plugins: [plugin], pluginCustomStorage: undefined });
+        captured.api = null;
+        await executePluginV3(plugin);
+        expect(captured.api).not.toBeNull();
+        const api = captured.api!;
+
+        await api._setPluginStorage("prefs", { theme: "dark" });
+        expect(await api._getPluginStorage("prefs")).toEqual({ theme: "dark" });
+        expect(stored()).toEqual({
+            _ownedPluginStorage: { [`${plugin.name}\u0000prefs`]: { theme: "dark" } },
+        });
+
+        settings.plugins = [];
+        await api._removePluginStorage("prefs");
+        expect(stored()).toEqual({ _ownedPluginStorage: {} });
+
+        await expect(api._setPluginStorage("prefs", { theme: "late" })).rejects.toThrow(MutationValidationError);
+        expect(await api._getPluginStorage("prefs")).toBeNull();
+        expect(stored()).toEqual({ _ownedPluginStorage: {} });
     });
 });

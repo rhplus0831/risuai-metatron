@@ -6,13 +6,38 @@
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
-    import { matchesAny, prepareQuery, type PreparedQuery } from "src/ts/util/koreanSearch";
-    import type { RisuModule } from "src/ts/process/modules";
+    import { prepareQuery } from "src/ts/util/koreanSearch";
+    import { tooltip } from "src/ts/gui/tooltip";
+    import { isFolderFolded, setFolderFolded } from "src/ts/gui/itemFolderFold.svelte";
+    import ModuleFolderRow from "./ModuleFolderRow.svelte";
+    import {
+        allTargetsInChat,
+        catalogRows,
+        chatOnCount,
+        chatSwitchTargets,
+        moduleCatalog,
+        switchAllForChat,
+        switchAllGlobally,
+    } from "./moduleCatalog";
 
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
     import { SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
     import { checkPersonaBinded } from "src/ts/util";
     import { personaLinksModule, personaModuleIdSet } from "../../../../../shared/personas.ts";
+
+    /**
+     * The chat's module toggles, or with `alertMode` the module picker of `alertModuleSelect` (closing with the picked
+     * id). A click toggles the selected chat's `modules` (nothing while the chat loads), a right click the character's;
+     * a globally enabled module is not toggled here. It writes only the chat's or the character's list. `getModules`
+     * matches those tokens by id or namespace (persona links by id only) and keeps the first module of an id, so
+     * toggling a module already active through another source usually leaves the effective set as it was, but can
+     * change it when ids and namespaces collide.
+     *
+     * The rows follow `moduleCatalog.ts` (module folders by name with their modules, then the root modules; fold state
+     * is this device's), with no folder editing. A folder row counts its modules on (globally or in the chat's
+     * `modules`) and, while the chat is loaded, switches its modules that are not globally enabled for this chat in
+     * one write; the character's `modules` stay per module.
+     */
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
@@ -27,13 +52,34 @@
     let moduleSearch = $state("");
     const moduleQuery = $derived(prepareQuery(moduleSearch));
 
-    function sortModules(modules: RisuModule[], query: PreparedQuery | null) {
-        return modules
-            .filter((v) => !query || matchesAny([v.name], query))
-            .sort((a, b) => {
-                let score = (a.name ?? "").toLowerCase().localeCompare((b.name ?? "").toLowerCase());
-                return score;
-            });
+    const moduleFolders = $derived(settings.moduleFolders ?? []);
+    const catalog = $derived(moduleCatalog(settings.modules, moduleFolders, moduleQuery));
+    const rows = $derived(catalogRows(catalog, (folderId) => isFolderFolded("moduleFolders", folderId)));
+
+    function toggleFolder(folderId: string) {
+        // A search shows every listed folder open; its fold state waits for the search to clear.
+        if (catalog.searching) return;
+        setFolderFolded(
+            "moduleFolders",
+            folderId,
+            !isFolderFolded("moduleFolders", folderId),
+            moduleFolders.map((folder) => folder.id),
+        );
+    }
+
+    function folderCount(memberIds: string[]) {
+        const { on, total } = chatOnCount(memberIds, settings.enabledModules ?? [], currentChat?.modules ?? []);
+        return `${on} / ${total}`;
+    }
+
+    function switchFolderForChat(memberIds: string[]) {
+        if (!currentChat) {
+            // The selected chat is loading.
+            return;
+        }
+        const enabled = settings.enabledModules ?? [];
+        if (chatSwitchTargets(memberIds, enabled).length === 0) return;
+        setCurrentChatMeta({ modules: switchAllForChat(memberIds, enabled, currentChat.modules ?? []) });
     }
 </script>
 
@@ -60,12 +106,14 @@
         <div class="contain w-full max-w-full mt-4 flex flex-col border-selected border-1 rounded-md">
             {#if settings.modules.length === 0}
                 <div class="text-textcolor2 p-3">{language.noModules}</div>
-            {:else}
-                {#each sortModules(settings.modules, moduleQuery) as rmodule, i}
-                    {#if i !== 0}
-                        <div class="border-t-1 border-selected"></div>
-                    {/if}
-                    <div class="pl-3 py-3 text-left flex items-center">
+            {/if}
+            {#each rows as row, i}
+                {#if i !== 0 || settings.modules.length === 0}
+                    <div class="border-t-1 border-selected"></div>
+                {/if}
+                {#if row.type === "module"}
+                    {@const rmodule = row.module}
+                    <div class="{row.folderId !== null ? 'pl-8' : 'pl-3'} py-3 text-left flex items-center">
                         {#if rmodule.mcp}
                             <Waypoints size={18} class="mr-2" />
                         {/if}
@@ -115,17 +163,10 @@
                                     oncontextmenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        if (!currentCharacter.modules) {
-                                            currentCharacter.modules = [];
-                                        }
-                                        if (currentCharacter.modules.includes(rmodule.id)) {
-                                            currentCharacter.modules.splice(
-                                                currentCharacter.modules.indexOf(rmodule.id),
-                                                1,
-                                            );
-                                        } else {
-                                            currentCharacter.modules.push(rmodule.id);
-                                        }
+                                        currentCharacter.modules = switchAllGlobally(
+                                            [rmodule.id],
+                                            currentCharacter.modules ?? [],
+                                        );
                                     }}
                                 >
                                     <CircleCheckIcon size={18} />
@@ -133,8 +174,37 @@
                             {/if}
                         </div>
                     </div>
-                {/each}
-            {/if}
+                {:else}
+                    {@const folderId = row.folder.id}
+                    <ModuleFolderRow
+                        name={row.folder.name}
+                        count={folderCount(row.memberIds)}
+                        open={row.open}
+                        ontoggle={() => toggleFolder(folderId)}
+                    >
+                        {#snippet buttons()}
+                            {#if !alertMode && currentChat && chatSwitchTargets(row.memberIds, settings.enabledModules ?? []).length > 0}
+                                <button
+                                    class={allTargetsInChat(
+                                        row.memberIds,
+                                        settings.enabledModules ?? [],
+                                        currentChat.modules ?? [],
+                                    )
+                                        ? "mr-2 cursor-pointer text-blue-500"
+                                        : "text-textcolor2 hover:text-blue-400 mr-2 cursor-pointer"}
+                                    use:tooltip={language.itemFolders.switchAllForChat}
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        switchFolderForChat(row.memberIds);
+                                    }}
+                                >
+                                    <CircleCheckIcon size={18} />
+                                </button>
+                            {/if}
+                        {/snippet}
+                    </ModuleFolderRow>
+                {/if}
+            {/each}
         </div>
         <div>
             <Button

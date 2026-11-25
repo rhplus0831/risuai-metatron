@@ -3,13 +3,41 @@
     import { textAreaSize, textAreaTextSize } from "src/ts/gui/guisize";
     import { highlighter, getNewHighlightId, removeHighlight, AllCBS } from "src/ts/gui/highlight";
     import { sleep } from "src/ts/util";
-    import { onDestroy, onMount } from "svelte";
-    import { disableHighlight, popUpEditorStore } from "src/ts/stores.svelte";
+    import { onDestroy, onMount, tick, untrack } from "svelte";
+    import {
+        closePopupEditorSession,
+        disableHighlight,
+        isPopupEditorSessionCurrent,
+        openPopupEditorSession,
+        popUpEditorStore,
+    } from "src/ts/stores.svelte";
     import { isMobile } from "src/ts/platform";
     import { hotkeyMatches } from "src/ts/hotkey";
+    import { isImeComposing } from "src/ts/ime";
+    import { language } from "src/lang";
+    import { Maximize2Icon } from "@lucide/svelte";
+    /**
+     * A text field: a textarea, or with `highlight` (unless `disableHighlight` is set) a contenteditable with CBS
+     * highlighting and, off mobile, `{{` autocomplete.
+     *
+     * The popup editor opens from the `popupEditor` hotkey, and from contextmenu or long-press while
+     * `settings.ui.longPressToPopupEditor` is on, at every field height unless `popupEditor={false}`. `"auto"` shows
+     * the expand button only for heights `32`, `36`, and `full`, or `default` while `$textAreaSize >= -2`; `true`
+     * always shows it.
+     *
+     * Closing the popup writes its text to the binding, then, after the DOM flush, calls `onInput` and `onchange` and
+     * refreshes the highlighting. A change of the value, of `popupEditorContext`, of the open run, or of the session,
+     * or the field's unmount, drops the write-back; a value or context change while the popup is open also closes it.
+     * With `onPopupUnsaved`, a read-only close skips write-back. The callback receives changed text once on a
+     * read-only close, a value or context change, or an unmount while the session still belongs to this field.
+     * A field tied to a selected record passes the record's id as `popupEditorContext`: equal text alone cannot tell
+     * which record the popup was opened for. Repeated rows also include a transient row identity in that context.
+     */
+
     interface Props {
         size?: "xs" | "sm" | "md" | "lg" | "xl" | "default";
         autocomplete?: "on" | "off";
+        readonly?: boolean;
         placeholder?: string;
         value: string;
         id?: string;
@@ -23,11 +51,23 @@
         highlight?: boolean;
         onchange?: (e: { currentTarget: HTMLTextAreaElement | HTMLDivElement }) => void;
         popupLanguage?: string;
+        popupMode?: typeof popUpEditorStore.mode;
+        popupEditor?: boolean | "auto";
+        popupEditorContext?: unknown;
+        onPopupUnsaved?: (text: string) => void;
+        ariaLabel?: string;
+    }
+
+    interface PopupSession {
+        id: number;
+        initialValue: string;
+        handled: boolean;
     }
 
     let {
         size = "default",
         autocomplete = "off",
+        readonly = false,
         placeholder = "",
         value = $bindable(),
         id = undefined,
@@ -41,17 +81,131 @@
         highlight = false,
         onchange = () => {},
         popupLanguage = "markdown",
+        popupMode,
+        popupEditor = "auto",
+        popupEditorContext = undefined,
+        onPopupUnsaved,
+        ariaLabel = undefined,
     }: Props = $props();
     let selectingAutoComplete = $state(0);
     // TODO: Review if highlight prop can change dynamically - if so, this needs to be reactive
     // svelte-ignore state_referenced_locally
-    let highlightId = highlight ? getNewHighlightId() : 0;
+    let highlightId = highlight ? getNewHighlightId() : null;
+    let destroyed = false;
     let inpa = $state(0);
     let highlightDom: HTMLDivElement = $state();
     let optiValue = $state(value);
     let autoCompleteDom: HTMLDivElement = $state();
     let autocompleteContents: string[] = $state([]);
     let inputDom: HTMLDivElement = $state();
+    let textareaDom: HTMLTextAreaElement = $state();
+    let popupEditorRun = 0;
+    let popupEditorContextRevision = 0;
+    // svelte-ignore state_referenced_locally
+    let lastPopupEditorContext = popupEditorContext;
+    let activePopupEditorSession: PopupSession | null = null;
+
+    const isPopupEditorButtonVisible = () =>
+        popupEditor === true ||
+        (popupEditor === "auto" &&
+            (["32", "36", "full"].includes(height) || (height === "default" && $textAreaSize >= -2)));
+
+    function reportPopupUnsaved(session: PopupSession) {
+        if (!onPopupUnsaved || session.handled || !isPopupEditorSessionCurrent(session.id)) return;
+        // A teardown can see the previous session's reactive values if this one has yet to render.
+        if (popUpEditorStore.sessionId !== session.id) return;
+        const text = popUpEditorStore.value;
+        session.handled = true;
+        if (text !== session.initialValue) onPopupUnsaved(text);
+    }
+
+    // Observe a read-only close in its own flush, before a fence release or another open can reach the poll.
+    $effect.pre(() => {
+        if (!onPopupUnsaved || popUpEditorStore.open) return;
+        untrack(() => {
+            if (readonly && activePopupEditorSession) reportPopupUnsaved(activePopupEditorSession);
+        });
+    });
+
+    async function openPopupEditor() {
+        if (popupEditor === false) return;
+
+        const run = ++popupEditorRun;
+        const initialValue = value;
+        const initialContext = popupEditorContext;
+        const initialContextRevision = popupEditorContextRevision;
+        hideAutoComplete();
+        const sessionId = openPopupEditorSession(initialValue, popupLanguage, popupMode, () => readonly);
+        const session: PopupSession = { id: sessionId, initialValue, handled: false };
+        activePopupEditorSession = session;
+
+        const fieldIsCurrent = () =>
+            run === popupEditorRun &&
+            value === initialValue &&
+            popupEditorContext === initialContext &&
+            popupEditorContextRevision === initialContextRevision;
+
+        try {
+            while (fieldIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
+                await sleep(100);
+            }
+
+            if (!fieldIsCurrent()) {
+                reportPopupUnsaved(session);
+                closePopupEditorSession(sessionId);
+                return;
+            }
+            if (!isPopupEditorSessionCurrent(sessionId) || session.handled) return;
+            if (onPopupUnsaved && readonly) {
+                reportPopupUnsaved(session);
+                return;
+            }
+
+            const popupValue = popUpEditorStore.value;
+            session.handled = true;
+            value = popupValue;
+            // Flush the binding before change consumers read currentTarget's text.
+            await tick();
+            if (
+                run !== popupEditorRun ||
+                !isPopupEditorSessionCurrent(sessionId) ||
+                value !== popupValue ||
+                popupEditorContext !== initialContext ||
+                popupEditorContextRevision !== initialContextRevision
+            )
+                return;
+            onInput();
+            const currentTarget = inputDom ?? textareaDom;
+            if (currentTarget) onchange({ currentTarget });
+            if (inputDom && highlightId !== null) void highlightChange(value, highlightId);
+        } finally {
+            if (activePopupEditorSession === session) activePopupEditorSession = null;
+        }
+    }
+
+    function handlePopupEditorKeyDown(e: KeyboardEvent): boolean {
+        if (
+            popupEditor !== false &&
+            !isImeComposing(e) &&
+            (e.ctrlKey || e.shiftKey || e.altKey) &&
+            hotkeyMatches(
+                settings.hotkeys.find((hk) => hk.action === "popupEditor"),
+                e,
+            )
+        ) {
+            e.preventDefault();
+            void openPopupEditor();
+            return true;
+        }
+        return false;
+    }
+
+    function handlePopupEditorContextMenu(e: MouseEvent) {
+        if (popupEditor !== false && settings.ui.longPressToPopupEditor) {
+            e.preventDefault();
+            void openPopupEditor();
+        }
+    }
 
     const autoComplete = () => {
         if (isMobile) {
@@ -97,6 +251,7 @@
     };
 
     const insertContent = (insertContent: string, type: "autoComplete" | "paste" = "autoComplete") => {
+        if (readonly) return;
         console.log(insertContent);
         const sel = window.getSelection();
         if (sel) {
@@ -138,15 +293,23 @@
     };
 
     onMount(() => {
-        highlighter(highlightDom, highlightId);
+        if (highlightId !== null) highlighter(highlightDom, highlightId);
     });
 
     onDestroy(() => {
-        removeHighlight(highlightId);
+        destroyed = true;
+        popupEditorRun += 1;
+        if (activePopupEditorSession) {
+            reportPopupUnsaved(activePopupEditorSession);
+            closePopupEditorSession(activePopupEditorSession.id);
+            activePopupEditorSession = null;
+        }
+        if (highlightId !== null) removeHighlight(highlightId);
     });
 
     const highlightChange = async (value: string, highlightId: number) => {
         await sleep(1);
+        if (destroyed) return;
         highlighter(highlightDom, highlightId);
     };
 
@@ -200,11 +363,18 @@
         } catch (error) {}
     }
 
+    // A real change of context, not a rerun with the same one (a refreshed record list), so a switch
+    // away and back still discards.
+    $effect.pre(() => {
+        if (popupEditorContext === lastPopupEditorContext) return;
+        lastPopupEditorContext = popupEditorContext;
+        popupEditorContextRevision += 1;
+    });
     $effect.pre(() => {
         optiValue = value;
     });
     $effect.pre(() => {
-        highlightChange(value, highlightId);
+        if (highlightId !== null) highlightChange(value, highlightId);
     });
 </script>
 
@@ -249,14 +419,18 @@
         hideAutoComplete();
     }}
 >
-    {#if !highlight || $disableHighlight}
+    {#if !highlight || $disableHighlight || readonly}
         <textarea
             class="w-full h-full bg-transparent focus-within:outline-hidden resize-none absolute top-0 left-0 z-50 overflow-y-auto"
             class:px-4={padding}
             class:py-2={padding}
+            class:pr-10={isPopupEditorButtonVisible()}
+            aria-label={ariaLabel}
+            {readonly}
             {autocomplete}
             {placeholder}
             {id}
+            bind:this={textareaDom}
             bind:value
             oninput={(e) => {
                 if (optimaizedInput) {
@@ -277,56 +451,20 @@
                 }
                 onchange(e);
             }}
-            onkeydown={async (e) => {
-                if (
-                    (e.ctrlKey || e.shiftKey || e.altKey) &&
-                    hotkeyMatches(
-                        settings.hotkeys.find((hk) => hk.action === "popupEditor"),
-                        e,
-                    )
-                ) {
-                    e.preventDefault();
-                    popUpEditorStore.value = value;
-                    popUpEditorStore.mode = "default";
-                    popUpEditorStore.language = popupLanguage;
-                    popUpEditorStore.open = true;
-
-                    //lazy wait
-                    while (popUpEditorStore.open) {
-                        await sleep(100);
-                    }
-
-                    value = popUpEditorStore.value;
-                    onInput();
-                }
-            }}
-            oncontextmenu={(e) => {
-                if (settings.ui.longPressToPopupEditor) {
-                    e.preventDefault();
-                    popUpEditorStore.value = value;
-                    popUpEditorStore.mode = "default";
-                    popUpEditorStore.language = popupLanguage;
-                    popUpEditorStore.open = true;
-
-                    //lazy wait
-                    const checkInterval = setInterval(() => {
-                        if (!popUpEditorStore.open) {
-                            value = popUpEditorStore.value;
-                            onInput();
-                            clearInterval(checkInterval);
-                        }
-                    }, 100);
-                }
-            }}></textarea>
+            onkeydown={handlePopupEditorKeyDown}
+            oncontextmenu={handlePopupEditorContextMenu}></textarea>
     {:else}
         <div
             class="w-full h-full bg-transparent focus-within:outline-hidden resize-none absolute top-0 left-0 z-50 overflow-y-auto px-4 py-2 wrap-break-word whitespace-pre-wrap"
+            class:pr-10={isPopupEditorButtonVisible()}
+            aria-label={ariaLabel}
             contenteditable="true"
             bind:textContent={value}
             onkeydown={(e) => {
-                handleKeyDown(e);
+                if (!handlePopupEditorKeyDown(e)) handleKeyDown(e);
                 onInput();
             }}
+            oncontextmenu={handlePopupEditorContextMenu}
             role="textbox"
             tabindex="0"
             oninput={(e) => {
@@ -340,6 +478,17 @@
         >
             {value ?? ""}
         </div>
+    {/if}
+    {#if isPopupEditorButtonVisible()}
+        <button
+            type="button"
+            class="absolute right-1 top-1 z-60 flex h-7 w-7 items-center justify-center rounded-md text-textcolor2 transition-colors hover:bg-darkbutton hover:text-textcolor focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-borderc"
+            aria-label={language.hotkeyDesc.popupEditor}
+            title={language.hotkeyDesc.popupEditor}
+            onclick={() => void openPopupEditor()}
+        >
+            <Maximize2Icon size={16} />
+        </button>
     {/if}
     <div class="hidden absolute z-100 bg-bgcolor border border-darkborderc p-2 flex-col" bind:this={autoCompleteDom}>
         {#each autocompleteContents as content, i}

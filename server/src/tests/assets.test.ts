@@ -1,9 +1,19 @@
 // @vitest-environment node
+import syncFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { withAssetLocks } from "../http/assetLeases.ts";
+import { createHash } from "node:crypto";
+import { writeContentAsset, publishStagedContentAsset } from "../http/contentAsset.ts";
+import { serve } from "@hono/node-server";
+import { once } from "node:events";
+import http from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    allowListenerOrigin,
     buildArchive,
     createResourceTestClient,
     hex,
@@ -20,6 +30,8 @@ beforeEach(async () => {
 afterEach(async () => {
     await s?.close();
     vi.restoreAllMocks();
+    syncBuiltinESMExports();
+    vi.useRealTimers();
 });
 
 const file = (name: string) => path.join(s.savePath, "assets", name);
@@ -195,6 +207,166 @@ describe("batch asset routes", () => {
         expect(readFileSync(file("before.bin"), "utf8")).toBe("kept");
         expect(readdirSync(path.join(s.savePath, "assets"))).toEqual(["before.bin"]);
         expect(stagedFiles()).toEqual([]);
+    });
+
+    it("publishes while counting a chunked batch, removes its staged overflow, and drains the source", async () => {
+        const first = buildArchive([["assets/kept.bin", "kept"]]);
+        const second = buildArchive([["assets/partial.bin", "unfinished"]]);
+        const cut = second.length - 3;
+        const chunks = [first, second.subarray(0, cut), second.subarray(cut), new Uint8Array(4), new Uint8Array(4)];
+        await s.close();
+        s = await createResourceTestClient({ routeLimits: { bodyBytes: first.length + cut } });
+        let pulls = 0;
+        let ended = false;
+        let publishedBeforeOverflow = false;
+        let stagedBeforeOverflow: string[] = [];
+        const response = await writeBatch(
+            new ReadableStream<Uint8Array>(
+                {
+                    pull(controller) {
+                        if (pulls === 2) {
+                            publishedBeforeOverflow = existsSync(file("kept.bin"));
+                            stagedBeforeOverflow = stagedFiles().map((name) =>
+                                readFileSync(path.join(s.savePath, ".tmp", name), "utf8"),
+                            );
+                        }
+                        if (pulls < chunks.length) controller.enqueue(chunks[pulls++]);
+                        else {
+                            ended = true;
+                            controller.close();
+                        }
+                    },
+                },
+                { highWaterMark: 0 },
+            ),
+        );
+        expect(response.status).toBe(413);
+        expect(await response.json()).toEqual({ error: "Request body too large" });
+        expect(publishedBeforeOverflow).toBe(true);
+        expect(stagedBeforeOverflow).toEqual(["unfinis"]);
+        expect(pulls).toBe(chunks.length);
+        expect(ended).toBe(true);
+        expect(readdirSync(path.join(s.savePath, "assets"))).toEqual(["kept.bin"]);
+        expect(readFileSync(file("kept.bin"), "utf8")).toBe("kept");
+        expect(stagedFiles()).toEqual([]);
+    });
+
+    it("drains an overflowing upload before answering 413 and reuses its live connection", async () => {
+        const first = buildArchive([["assets/kept.bin", "kept"]]);
+        const second = buildArchive([["assets/refused.bin", "refused"]]);
+        const cap = first.length + second.length - 1;
+        await s.close();
+        s = await createResourceTestClient({ routeLimits: { bodyBytes: cap } });
+        const published = deferred();
+        const draining = deferred();
+        const releaseTail = deferred();
+        const handled = deferred();
+        const rename = fs.rename;
+        vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+            await rename(from, to);
+            if (String(to) === file("kept.bin")) published.resolve();
+        });
+        const node = serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request) {
+                if (new URL(request.url).pathname !== "/api/assets/write") return s.app.fetch(request);
+                // Hold the next adapter read after overflow until the client finishes its tail.
+                // A limiter that answers without draining instead settles the response race below.
+                const reader = request.body!.getReader();
+                let bytes = 0;
+                const body = new ReadableStream<Uint8Array>(
+                    {
+                        async pull(controller) {
+                            if (bytes > cap) {
+                                draining.resolve();
+                                await releaseTail.promise;
+                            }
+                            try {
+                                const next = await reader.read();
+                                if (next.done) controller.close();
+                                else {
+                                    bytes += next.value.byteLength;
+                                    controller.enqueue(next.value);
+                                }
+                            } catch (error) {
+                                controller.error(error);
+                            }
+                        },
+                        cancel(reason) {
+                            return reader.cancel(reason);
+                        },
+                    },
+                    { highWaterMark: 0 },
+                );
+                return Promise.resolve(
+                    s.app.fetch(new Request(request, { body, duplex: "half" } as RequestInit)),
+                ).finally(() => handled.resolve());
+            },
+        }) as http.Server;
+        const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+        let upload: http.ClientRequest | undefined;
+        try {
+            await once(node, "listening");
+            const origin = allowListenerOrigin(node);
+            upload = http.request(`${origin}/api/assets/write`, {
+                method: "POST",
+                agent,
+                headers: {
+                    ...(await s.headers()),
+                    "content-type": "application/octet-stream",
+                    "transfer-encoding": "chunked",
+                },
+            });
+            const received = once(upload, "response").then(([response]) => response as http.IncomingMessage);
+            const finished = once(upload, "finish");
+            let finishedSending = false;
+            let responseAfterFinish = false;
+            upload.once("finish", () => {
+                finishedSending = true;
+            });
+            upload.once("response", () => {
+                responseAfterFinish = finishedSending;
+            });
+            upload.write(first);
+            expect(
+                await Promise.race([published.promise.then(() => "published"), received.then(() => "response")]),
+            ).toBe("published");
+            const socket = upload.socket;
+            upload.write(second);
+            expect(await Promise.race([draining.promise.then(() => "draining"), received.then(() => "response")])).toBe(
+                "draining",
+            );
+            expect(finishedSending).toBe(false);
+            upload.end(buildArchive([["assets/tail.bin", "discarded"]]));
+            await finished;
+            releaseTail.resolve();
+            const response = await received;
+            const chunks: Buffer[] = [];
+            for await (const chunk of response) chunks.push(Buffer.from(chunk));
+            expect(response.statusCode).toBe(413);
+            expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({ error: "Request body too large" });
+            expect(responseAfterFinish).toBe(true);
+            expect(readFileSync(file("kept.bin"), "utf8")).toBe("kept");
+            expect(readdirSync(path.join(s.savePath, "assets"))).toEqual(["kept.bin"]);
+            expect(stagedFiles()).toEqual([]);
+
+            const next = http.get(`${origin}/api/test_auth`, { agent, headers: await s.headers() });
+            const [nextResponse] = (await once(next, "response")) as [http.IncomingMessage];
+            const nextChunks: Buffer[] = [];
+            for await (const chunk of nextResponse) nextChunks.push(Buffer.from(chunk));
+            expect(next.reusedSocket).toBe(true);
+            expect(next.socket).toBe(socket);
+            expect(nextResponse.statusCode).toBe(200);
+            expect(JSON.parse(Buffer.concat(nextChunks).toString())).toEqual({ status: "success" });
+        } finally {
+            releaseTail.resolve();
+            upload?.destroy();
+            agent.destroy();
+            node.closeAllConnections();
+            await new Promise<void>((resolve) => node.close(() => resolve()));
+            if (upload) await handled.promise;
+        }
     });
 
     it("returns 400 for malformed or truncated framing and removes unfinished staged files", async () => {
@@ -383,3 +555,140 @@ describe("batch asset routes", () => {
         );
     });
 });
+
+it.each(["single", "batch", "content bytes", "staged content", "missing check"])(
+    "claims reused keys through %s for the sweep and the next scan",
+    async (route) => {
+        await s.close();
+        vi.useFakeTimers({ toFake: ["performance"] });
+        const clock = sweepClock();
+        s = await createResourceTestClient({ assetLifecycle: clock.options });
+        const bytes = Buffer.from("lease bytes");
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const key = `assets/${hash}.png`;
+        const target = seedSweepAsset(s, key, bytes.toString());
+        await matureSweep(s, clock);
+        if (route === "single") expect((await write(key, bytes.toString())).status).toBe(200);
+        if (route === "batch") expect((await writeBatch(buildArchive([[key, bytes]]))).status).toBe(200);
+        if (route === "content bytes")
+            expect(await writeContentAsset(s.savePath, s.context.snapshots, bytes, new AbortController().signal)).toBe(
+                key,
+            );
+        if (route === "staged content") {
+            const staged = path.join(s.savePath, ".tmp", "content.png");
+            await fs.writeFile(staged, bytes);
+            expect(
+                await publishStagedContentAsset(
+                    s.savePath,
+                    s.context.snapshots,
+                    staged,
+                    hash,
+                    new AbortController().signal,
+                ),
+            ).toBe(key);
+        }
+        if (route === "missing check")
+            expect(await (await s.json("/api/assets/missing", { names: [key] })).json()).toEqual({ missing: [] });
+        // Remove youth as an alternative explanation: only the claim protects these bytes.
+        await fs.utimes(target, 1, 1);
+        expect(await s.context.assetLifecycle.sweep({ dryRun: false })).toMatchObject({
+            deleted: [],
+            skipped: [{ key, reason: "leased" }],
+        });
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(0);
+        await vi.advanceTimersByTimeAsync(3_600_000);
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(1);
+        expect(await fs.readFile(target)).toEqual(bytes);
+    },
+);
+
+it.each(["single", "batch", "content bytes", "staged content"])(
+    "publishes %s after a sweep holding the key lock deletes the old file",
+    async (route) => {
+        await s.close();
+        const clock = sweepClock();
+        s = await createResourceTestClient({ assetLifecycle: clock.options });
+        const bytes = Buffer.from("republished bytes");
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const key = `assets/${hash}.png`;
+        const target = seedSweepAsset(s, key, bytes.toString());
+        await matureSweep(s, clock);
+        const staged = path.join(s.savePath, ".tmp", "reimport.png");
+        await fs.writeFile(staged, bytes);
+        let publish: Promise<unknown> | undefined;
+        const deleted = deferred();
+        const unlink = syncFs.unlinkSync;
+        vi.spyOn(syncFs, "unlinkSync").mockImplementation((file) => {
+            if (String(file) === target) {
+                // The synchronous turn owns this key. Start the claim before unlink, without yielding.
+                publish =
+                    route === "single"
+                        ? write(key, bytes.toString())
+                        : route === "batch"
+                          ? writeBatch(buildArchive([[key, bytes]]))
+                          : route === "content bytes"
+                            ? writeContentAsset(s.savePath, s.context.snapshots, bytes, new AbortController().signal)
+                            : publishStagedContentAsset(
+                                  s.savePath,
+                                  s.context.snapshots,
+                                  staged,
+                                  hash,
+                                  new AbortController().signal,
+                              );
+                unlink(file);
+                expect(syncFs.existsSync(target)).toBe(false);
+                deleted.resolve();
+            } else unlink(file);
+        });
+        syncBuiltinESMExports();
+        const result = await s.context.assetLifecycle.sweep({ dryRun: false });
+        expect(result.deleted).toEqual([key]);
+        await deleted.promise;
+        const answer = await publish;
+        if (answer instanceof Response) expect(answer.status).toBe(200);
+        else expect(answer).toBe(key);
+        expect(await fs.readFile(target)).toEqual(bytes);
+    },
+);
+
+it.each(["content bytes", "staged content"])(
+    "defers %s reuse until a deletion releases the shared key lock",
+    async (route) => {
+        const bytes = Buffer.from("locked import");
+        const hash = createHash("sha256").update(bytes).digest("hex");
+        const key = `assets/${hash}.png`;
+        const target = seedSweepAsset(s, key, bytes.toString());
+        const staged = path.join(s.savePath, ".tmp", "locked.png");
+        await fs.writeFile(staged, bytes);
+        const entered = deferred(),
+            release = deferred();
+        const holding = withAssetLocks([target], async () => {
+            entered.resolve();
+            await release.promise;
+        });
+        await entered.promise;
+        const open = vi.spyOn(fs, "open");
+        const publish =
+            route === "content bytes"
+                ? writeContentAsset(s.savePath, s.context.snapshots, bytes, new AbortController().signal)
+                : publishStagedContentAsset(
+                      s.savePath,
+                      s.context.snapshots,
+                      staged,
+                      hash,
+                      new AbortController().signal,
+                  );
+        try {
+            // Both APIs enter claim synchronously; verification must not start outside the occupied lock.
+            expect(open.mock.calls.filter(([file]) => String(file) === target)).toEqual([]);
+            syncFs.unlinkSync(target);
+            release.resolve();
+            expect(await publish).toBe(key);
+            expect(await fs.readFile(target)).toEqual(bytes);
+        } finally {
+            release.resolve();
+            await holding;
+            await publish;
+        }
+    },
+);

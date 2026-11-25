@@ -1,4 +1,5 @@
 import { afterAll, afterEach, vi } from "vitest";
+import { installSelectiveModuleReset } from "./vitest.resetModules.ts";
 import { testNetwork } from "./vitest.testNetwork.ts";
 
 // Test-only shim for happy-dom's `Node.prototype.nodeName`.
@@ -16,7 +17,8 @@ import { testNetwork } from "./vitest.testNetwork.ts";
 // created at module evaluation; a setup import that pulls in dompurify would run before this
 // body, so this file must not import application code.
 //
-// Remove it once the installed happy-dom returns the element tag name from
+// The shim's contract is pinned by `vitest.setup.test.ts`; remove the shim and that test together once
+// the installed happy-dom returns the element tag name from
 // `Object.getOwnPropertyDescriptor(Node.prototype, "nodeName").get.call(document.createElement("div"))`;
 // the guard below then leaves the prototype untouched and this block is dead code.
 installHappyDomNodeNameShim(globalThis.window);
@@ -77,6 +79,9 @@ function installHappyDomNodeNameShim(win: (Window & typeof globalThis) | undefin
         },
     });
 }
+
+// `vi.resetModules()` keeps `node_modules` and `shared/` modules evaluated (see the file).
+installSelectiveModuleReset();
 
 await installTestNetworkGuard();
 
@@ -144,7 +149,7 @@ async function installTestNetworkGuard() {
     // happy-dom (`node` environment files have none). Every async request its windows send (fetch,
     // XHR, script, link, and iframe loads, each redirect hop) is a `Fetch` and every sync XHR a
     // `SyncFetch`; both are checked as `send` starts, so a refusal rejects (or throws) as a failed
-    // request would. Not through `settings.fetch.interceptor`: happy-dom 20.14.5 starts an async task
+    // request would. Not through `settings.fetch.interceptor`: happy-dom 21.0.4 starts an async task
     // before `beforeAsyncRequest` and ends it only when the hook returns, so a refusal thrown there
     // would leave `happyDOM.waitUntilComplete()` pending. The window Vitest installed was built
     // before this runs and gets the global guards above; a window built later (an iframe's, or

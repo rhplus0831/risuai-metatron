@@ -39,7 +39,11 @@ vi.mock("localforage", () => ({
         }),
     },
 }));
-vi.mock("src/ts/process/request/request", () => ({ requestChatData: request.requestChatData }));
+vi.mock("src/ts/process/request/request", async () =>
+    (await import("src/ts/process/request/tests/requestMock")).createRequestMock({
+        requestChatData: request.requestChatData,
+    }),
+);
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.alertError,
@@ -63,7 +67,7 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleRegexScripts: vi.fn(() => []),
 }));
 vi.mock("src/ts/model/modellist", () => ({ getModelInfoForMode: vi.fn(() => ({ id: "gpt-test" })) }));
-vi.mock("src/ts/globalApi.svelte", () => ({ globalFetch: vi.fn(), downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/util", () => ({
     getNodetextToSentence: vi.fn(),
     sleep: vi.fn(async () => undefined),
@@ -85,6 +89,7 @@ import {
     getCurrentTranslatorPreset,
     getLLMCache,
     llmTranslationCacheKey,
+    LLMCacheStorage,
     runTranslator,
     searchLLMCache,
     translate,
@@ -224,7 +229,194 @@ describe("llmTranslationCacheKey", () => {
     });
 });
 
+describe("rendered LLM request sharing", () => {
+    type Answer = { type: "success"; result: string };
+    const pending: { signal: AbortSignal | undefined; resolve: (answer: Answer) => void }[] = [];
+    const observed: Promise<unknown>[] = [];
+
+    function render(source: string, regenerate = false, signal?: AbortSignal) {
+        const view: { value?: string; error?: unknown } = {};
+        observed.push(
+            translateHTML(source, false, "", -1, regenerate, null, signal).then(
+                (value) => {
+                    view.value = value;
+                },
+                (error) => {
+                    view.error = error;
+                },
+            ),
+        );
+        return view;
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        settings.translatorPresets.selectedId = "one";
+        pending.length = 0;
+        observed.length = 0;
+        request.requestChatData.mockReset().mockImplementation(
+            (_arg, _mode, signal?: AbortSignal) =>
+                new Promise<Answer>((resolve, reject) => {
+                    pending.push({ signal, resolve });
+                    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+                }),
+        );
+    });
+
+    afterEach(async () => {
+        pending.forEach(({ resolve }) => resolve({ type: "success", result: "cleanup" }));
+        await vi.advanceTimersByTimeAsync(0);
+        await Promise.all(observed);
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+    });
+
+    it("shares one request and cache write while an aborted caller leaves the other subscribed", async () => {
+        const write = vi.spyOn(LLMCacheStorage, "setItem");
+        const controllers = [new AbortController(), new AbortController()];
+        const first = render("Shared translation", false, controllers[0].signal);
+        const second = render("Shared translation", false, controllers[1].signal);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        controllers[0].abort();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(first).toEqual({ error: controllers[0].signal.reason });
+        expect(second).toEqual({});
+        expect(pending[0].signal!.aborted).toBe(false);
+        expect(write).not.toHaveBeenCalled();
+
+        pending[0].resolve({ type: "success", result: "Shared answer" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(second).toEqual({ value: "Shared answer" });
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(write).toHaveBeenCalledExactlyOnceWith(llmTranslationCacheKey("Shared translation"), "Shared answer");
+        expect(await LLMCacheStorage.getItem(llmTranslationCacheKey("Shared translation"))).toBe("Shared answer");
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("aborts the shared LLM request when both subscribers leave", async () => {
+        const write = vi.spyOn(LLMCacheStorage, "setItem");
+        const controllers = [new AbortController(), new AbortController()];
+        const callers = controllers.map((controller) => render("Abandoned translation", false, controller.signal));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        controllers[0].abort();
+        expect(pending[0].signal!.aborted).toBe(false);
+        controllers[1].abort();
+        expect(pending[0].signal!.aborted).toBe(true);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(callers).toEqual(controllers.map((controller) => ({ error: controller.signal.reason })));
+        expect(write).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
+    it("regenerates independently and keeps the new cached text when an older ordinary request finishes last", async () => {
+        const write = vi.spyOn(LLMCacheStorage, "setItem");
+        const ordinary = render("Retranslate this");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        const regenerated = render("Retranslate this", true);
+        const joiningOrdinary = render("Retranslate this");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        pending[1].resolve({ type: "success", result: "New translation" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(regenerated).toEqual({ value: "New translation" });
+        expect([ordinary, joiningOrdinary]).toEqual([{}, {}]);
+        const key = llmTranslationCacheKey("Retranslate this");
+        expect(await LLMCacheStorage.getItem(key)).toBe("New translation");
+
+        pending[0].resolve({ type: "success", result: "Older translation" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect([ordinary, joiningOrdinary]).toEqual([{ value: "Older translation" }, { value: "Older translation" }]);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        expect(write).toHaveBeenCalledExactlyOnceWith(key, "New translation");
+        expect(await LLMCacheStorage.getItem(key)).toBe("New translation");
+    });
+
+    it("starts its own ordinary request during a regeneration instead of joining it", async () => {
+        const regenerated = render("Regeneration already running", true);
+        await vi.advanceTimersByTimeAsync(0);
+        const ordinary = render("Regeneration already running");
+        await vi.advanceTimersByTimeAsync(0);
+        expect(request.requestChatData).toHaveBeenCalledTimes(2);
+        pending[0].resolve({ type: "success", result: "Regenerated answer" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(regenerated).toEqual({ value: "Regenerated answer" });
+        expect(ordinary).toEqual({});
+        pending[1].resolve({ type: "success", result: "Ordinary answer" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(ordinary).toEqual({ value: "Ordinary answer" });
+    });
+});
+
 describe("the LLM translation", () => {
+    const selectCharactersWithNotes = () => {
+        installFlatDatabase({
+            ...SELECTABLE,
+            characters: [
+                { chaId: "first", type: "character", name: "First", translatorNote: "formal" },
+                { chaId: "second", type: "character", name: "Second", translatorNote: "casual" },
+            ],
+            translatorPresets: [
+                createTranslatorPreset("Notes", {
+                    id: "notes",
+                    prompt: "Translate {{slot::content}} (note {{slot::tnote}})",
+                    maxResponse: 5,
+                }),
+            ],
+            translatorPresetId: "notes",
+            translatorType: "llm",
+        } as any);
+        selectPair(IDS_1);
+        selectCharacter("first");
+    };
+
+    it("captures the translator note once per call across a character switch during the first chunk", async () => {
+        selectCharactersWithNotes();
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => (release = resolve));
+        let started!: () => void;
+        const firstRequest = new Promise<void>((resolve) => (started = resolve));
+        request.requestChatData.mockImplementationOnce(async () => {
+            started();
+            await pending;
+            return { type: "success", result: "F1" };
+        });
+        succeed("F2");
+        const translating = runTranslator("first\n\nsecond", false, "ko", "en");
+        await firstRequest;
+        selectCharacter("second");
+        release();
+
+        await expect(translating).resolves.toBe("F1\n\nF2");
+        expect(requests()).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 5,
+                messages: [{ role: "system", content: "Translate first (note formal)" }],
+            },
+            {
+                mode: "translate",
+                maxTokens: 5,
+                messages: [{ role: "system", content: "Translate second (note formal)" }],
+            },
+        ]);
+    });
+
+    it("honors an explicit empty translator note instead of the selected character's note", async () => {
+        selectCharactersWithNotes();
+        succeed("Translated");
+        await expect(runTranslator("Hello", false, "ko", "en", { translatorNote: "" })).resolves.toBe("Translated");
+        expect(requests()).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 5,
+                messages: [{ role: "system", content: "Translate Hello (note )" }],
+            },
+        ]);
+    });
+
     it("runs every step through the pipeline on the translate slot and caches the result under the full key", async () => {
         succeed("<think>plan</think>\nDRAFT", "FINAL");
         await expect(runTranslator("Hello", false, "ko", "en", { translatorNote: "formal" })).resolves.toBe("FINAL");
@@ -312,6 +504,54 @@ describe("the LLM translation", () => {
         expect(alerts.alertError).toHaveBeenLastCalledWith("Unexpected response type");
     });
 
+    it("returns the source and alerts when a reply contains only reasoning", async () => {
+        settings.translatorPresets.selectedId = "one";
+        const source = "<p>The gate is open.</p>";
+        succeed("<think>Only reasoning.</think>");
+
+        await expect(translateHTML(source, false, "", -1)).resolves.toBe(source);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).toHaveBeenCalledExactlyOnceWith("Unexpected response type");
+        expect(await exportLLMCacheAsJSON()).toEqual({});
+    });
+
+    it("returns the source and alerts when an unknown style placeholder leaves the reply blank", async () => {
+        settings.translatorPresets.selectedId = "one";
+        const source = "<p>The gate is open.</p>";
+        succeed('<style-data style-index="7"></style-data>');
+
+        const result = await translateHTML(source, false, "", -1);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect({ result, alerts: alerts.alertError.mock.calls, cache: await exportLLMCacheAsJSON() }).toEqual({
+            result: source,
+            alerts: [["Unexpected response type"]],
+            cache: {},
+        });
+    });
+
+    it("retranslates a blank cache entry and caches the text beside an unknown style placeholder", async ({
+        onTestFinished,
+    }) => {
+        settings.translatorPresets.selectedId = "one";
+        const source = "<p>The gate is open.</p>";
+        const translated = "<p>문이 열려 있습니다.</p>";
+        await writeLLMCacheEntry(llmTranslationCacheKey(source), "");
+        const cached = await getLLMCache(source);
+        succeed(`<style-data style-index="7"></style-data>${translated}`);
+        onTestFinished(() => {
+            request.requestChatData.mockReset();
+        });
+
+        const result = await translateHTML(source, false, "", -1);
+        expect({ cached, result, saved: await getLLMCache(source) }).toEqual({
+            cached: null,
+            result: translated,
+            saved: translated,
+        });
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
     it("translates only from the cache while a chat is generating, with the context read once", async () => {
         let release = sending();
         await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("Hello");
@@ -376,7 +616,7 @@ describe("the preset per call", () => {
             message: [{ role: "user", data: "B", chatId: "b" }],
             ...fields,
         } as unknown as ChatRecord;
-        const listed = [{ characterId: "c", id: "k", revision: "e:1:1", data }];
+        const listed = [{ characterId: "c", id: "k", revision: "e:1:1", trashedAt: null, data }];
         const orders = [{ characterId: "c", revision: "e:1:1", ids: ["k"] }];
         seedChats(listed, orders);
         assembleChats([selectedCharacter() ?? { chaId: "c" }] as never, listed, orders);
@@ -630,7 +870,7 @@ describe("Send Text As-Is", () => {
         turnOff();
         succeed("D1", ' <style-data style-index="0"></style-data> 첫째 ', "D2", "둘째");
         await expect(runTranslator(SOURCE, false, "ko", "en")).resolves.toBe(
-            ".a{color:red} 첫째\n\n\n{{img::x}}\n둘째",
+            "<risu-style>.a{color:red}</risu-style> 첫째\n\n\n{{img::x}}\n둘째",
         );
         expect(
             requests()
@@ -652,7 +892,7 @@ describe("Send Text As-Is", () => {
         expect(requests()[0].messages[0].content).toBe(`Draft ${html} into ko from en`);
         turnOff();
         succeed("D", '<p>안녕</p><style-data style-index="0"></style-data>');
-        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p>.b{}");
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p><risu-style>.b{}</risu-style>");
         expect(requests()[2].messages[0].content).toBe(
             'Draft <p>Hi</p><style-data style-index="0"></style-data>\n\n<p>There</p> into ko from en',
         );
@@ -924,9 +1164,9 @@ describe("Exclude Chain-of-Thought", () => {
     it("translateHTML strips before the <risu-style> placeholders, so a style inside a removed block cannot come back from the style table; raw tags go, a rendered <details> stays", async () => {
         const html = "<think>secret <risu-style>.x{}</risu-style></think><p>Hi</p><risu-style>.b{}</risu-style>";
         succeed('<p>안녕</p><style-data style-index="0"></style-data><style-data style-index="1"></style-data>');
-        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p>.b{}");
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p><risu-style>.b{}</risu-style>");
         expect(contents()).toEqual(['Other <p>Hi</p><style-data style-index="0"></style-data>']);
-        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, html)]: "<p>안녕</p>.b{}" });
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, html)]: "<p>안녕</p><risu-style>.b{}</risu-style>" });
 
         // The accepted scope: the markdown step has already turned `<Thoughts>` into `<details>` on
         // the rendered path, which is kept; only raw tags (translateBeforeHTMLFormatting's text) go.
@@ -977,23 +1217,24 @@ describe("Exclude Chain-of-Thought", () => {
         expect(alerts.alertError).toHaveBeenCalledTimes(4);
     });
 
-    it('a text the strip leaves blank is an empty translation: cached as "" under the original key on the As-Is and direct paths (a regeneration replacing a manual entry, the next read a hit), returned without a request or an entry by the protected path', async () => {
+    it("returns an empty translation without a request for stripped input and treats the blank entry as a cache miss", async () => {
         const only = "<Thoughts>\nonly\n</Thoughts>";
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
         expect(request.requestChatData).not.toHaveBeenCalled();
         expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, only)]: "" });
-        expect(await getLLMCache(only)).toBe("");
+        expect(await getLLMCache(only)).toBeNull();
+        expect(await searchLLMCache(only)).toEqual([]);
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
         // A manual entry (the editors) is served until a regeneration replaces it with "".
         await writeLLMCacheEntry(llmTranslationCacheKey(only), "MANUAL");
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("MANUAL");
         await expect(translateHTML(only, false, "", -1, true)).resolves.toBe("");
-        expect(await getLLMCache(only)).toBe("");
+        expect(await getLLMCache(only)).toBeNull();
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
-        // While a chat generates, the entry is served; without one the html stays, nothing written.
+        // While a chat generates, a cache miss displays the original text.
         const release = sending();
         try {
-            await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+            await expect(translateHTML(only, false, "", -1)).resolves.toBe(only);
             await expect(translateHTML("<think>other</think>", false, "", -1)).resolves.toBe("<think>other</think>");
             expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(1);
         } finally {
@@ -1062,5 +1303,48 @@ describe("Exclude Chain-of-Thought", () => {
         expect(vi.mocked(globalFetch).mock.calls[0][1]).toMatchObject({ body: { text: ["<think>r</think>Hello"] } });
         expect(request.requestChatData).not.toHaveBeenCalled();
         expect(await exportLLMCacheAsJSON()).toEqual({});
+    });
+});
+
+describe.each([
+    ["translateHTML", (source: string) => translateHTML(source, false, "", -1, false, null)],
+    ["runTranslator", (source: string) => runTranslator(source, false, "ko", "en")],
+] as const)("%s style placeholders", (_name, translateSource) => {
+    beforeEach(() => {
+        settings.translatorPresets.items[0].steps = createTranslatorPreset("Echo", {
+            id: "echo",
+            prompt: "{{slot::content}}",
+            maxResponse: 64,
+        }).steps;
+        request.requestChatData.mockImplementationOnce(async (arg) => ({
+            type: "success",
+            result: arg.formated[0].content.replace("Hello", "Translated"),
+        }));
+    });
+
+    it.each([
+        ["media attributes", '<risu-style media="all">', "</risu-style>"],
+        [
+            "quoted greater-than signs and mixed tag case",
+            `<RiSu-StYle\nmedia="screen and (width > 1px)" data-note='a > b'>`,
+            "</rISU-style >",
+        ],
+    ])("protects and restores the entire block with %s", async (_case, open, close) => {
+        const hex = Buffer.from(".probe{color:red}").toString("hex");
+        const block = `${open}${hex}${close}`;
+        const result = await translateSource(`Hello ${block} world`);
+        expect(requests().map((entry) => entry.messages[0].content)).toEqual([
+            'Hello <style-data style-index="0"></style-data> world',
+        ]);
+        expect(result).toBe(`Translated ${block} world`);
+    });
+
+    it("gives adjacent empty and attributed blocks independent placeholders", async () => {
+        const blocks = '<risu-style></risu-style><risu-style media="all">6162</risu-style>';
+        const result = await translateSource(`Hello ${blocks} world`);
+        expect(requests().map((entry) => entry.messages[0].content)).toEqual([
+            'Hello <style-data style-index="0"></style-data><style-data style-index="1"></style-data> world',
+        ]);
+        expect(result).toBe(`Translated ${blocks} world`);
     });
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, settings } from "src/ts/storage/settingsViews.svelte";
     import {
         AccessibilityIcon,
         ActivityIcon,
@@ -11,16 +11,22 @@
         CodeIcon,
         ContactIcon,
         DatabaseBackupIcon,
+        HardDriveIcon,
+        HeartHandshakeIcon,
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
+        MonitorSmartphoneIcon,
         MousePointerClickIcon,
         CircleXIcon,
         KeyboardIcon,
         CpuIcon,
         ScrollTextIcon,
+        BetweenHorizontalStartIcon,
+        WebhookIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import { untrack, type Component } from "svelte";
     import type { Attachment } from "svelte/attachments";
     import { getModelInfoForMode } from "src/ts/model/modellist";
@@ -36,6 +42,7 @@
     } from "src/ts/setting/settingJump.svelte";
     import DisplaySettings from "./Pages/DisplaySettings.svelte";
     import UserSettings from "./Pages/UserSettings.svelte";
+    import StorageSettings from "./Pages/StorageSettings.svelte";
     import ModelSettings from "./Pages/ModelSettings.svelte";
     import ModelProfilesSettings from "./Pages/ModelProfilesSettings.svelte";
     import ApiKeysSettings from "./Pages/ApiKeysSettings.svelte";
@@ -52,30 +59,48 @@
         MODEL_PROFILES_SETTINGS_MENU,
         PROMPT_SETTINGS_MENU,
         TRANSLATION_SETTINGS_MENU,
+        INPUT_HOOKS_SETTINGS_MENU,
+        REQUEST_INTERCEPTION_SETTINGS_MENU,
+        DEVICE_LINK_SETTINGS_MENU,
         MEMORY_SETTINGS_MENU,
         IMAGE_GENERATION_SETTINGS_MENU,
         VOICE_SETTINGS_MENU,
         INTERACTION_SETTINGS_MENU,
+        STORAGE_SETTINGS_MENU,
+        CREDITS_SETTINGS_MENU,
         SettingsMenuIndex,
         settingsOpen,
     } from "src/ts/stores.svelte";
     import LanguageSettings from "./Pages/LanguageSettings.svelte";
     import TranslationSettings from "./Pages/TranslationSettings.svelte";
+    import InputHookSettings from "./Pages/InputHookSettings.svelte";
+    import RequestInterceptionSettings from "./Pages/RequestInterceptionSettings.svelte";
     import InteractionSettings from "./Pages/InteractionSettings.svelte";
+    import DeviceLinkSettings from "./Pages/DeviceLinkSettings.svelte";
     import AccessibilitySettings from "./Pages/AccessibilitySettings.svelte";
     import PersonaSettings from "./Pages/PersonaSettings.svelte";
     import PromptSettings from "./Pages/PromptSettings.svelte";
     import ThanksPage from "./Pages/ThanksPage.svelte";
+    import CreditsPage from "./Pages/CreditsPage.svelte";
     import ModuleSettings from "./Pages/Module/ModuleSettings.svelte";
     import HotkeySettings from "./Pages/HotkeySettings.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
 
     /**
      * The sidebar, in groups. An entry opens its first menu index and is highlighted on any of them:
-     * Model covers its three tabs (`Model/ModelMenuTabs.svelte`), Prompt its template editor (13).
-     * Labels are read at render, so a language switch shows in the next render. Plugin-added menus
-     * follow the last group.
+     * Model covers three tabs (`src/lib/Setting/Pages/Model/ModelMenuTabs.svelte`), Prompt its template
+     * editor (13). Labels are read at render, so a language switch shows in the next render.
+     * Plugin-added menus follow Chat setup, Features, Interface, Data, and Advanced & about.
+     *
+     * The `language.settingsSearch` field replaces groups with hit labels, breadcrumbs and unavailable
+     * reasons for a nonblank query. Click opens a hit; Enter opens the first, Escape clears (both ignore
+     * IME composition). The component owns the query across phone page round trips, until settings close.
+     *
+     * Pages key on menu and `jumpVersion()` from `src/ts/setting/settingJump.svelte.ts`, so every search
+     * jump remounts. The attachment scrolls/rings available item or section hits; unavailable hits show
+     * `hiddenNote`/`noMainProfileNote` without opening a section/row. Each jump then calls `finishJump`.
      */
+
     interface NavEntry {
         menus: number[];
         icon: Component;
@@ -107,8 +132,23 @@
                     icon: LanguagesIcon,
                     label: () => language.translationSettings,
                 },
+                {
+                    menus: [INPUT_HOOKS_SETTINGS_MENU],
+                    icon: WebhookIcon,
+                    label: () => language.inputHooks.navLabel,
+                },
+                {
+                    menus: [REQUEST_INTERCEPTION_SETTINGS_MENU],
+                    icon: BetweenHorizontalStartIcon,
+                    label: () => language.requestInterception.navLabel,
+                },
                 { menus: [14], icon: PackageIcon, label: () => language.modules },
                 { menus: [4], icon: CodeIcon, label: () => language.plugin },
+                {
+                    menus: [DEVICE_LINK_SETTINGS_MENU],
+                    icon: MonitorSmartphoneIcon,
+                    label: () => language.deviceLink.title,
+                },
             ],
         },
         {
@@ -129,7 +169,10 @@
         {
             id: "data",
             label: () => language.settingsNavGroupData,
-            entries: [{ menus: [0], icon: DatabaseBackupIcon, label: () => language.backups }],
+            entries: [
+                { menus: [0], icon: DatabaseBackupIcon, label: () => language.backups },
+                { menus: [STORAGE_SETTINGS_MENU], icon: HardDriveIcon, label: () => language.storagePage.navLabel },
+            ],
         },
         {
             id: "advanced",
@@ -137,6 +180,11 @@
             entries: [
                 { menus: [6], icon: ActivityIcon, label: () => language.advancedSettings },
                 { menus: [77], icon: BoxIcon, label: () => language.supporterThanks },
+                {
+                    menus: [CREDITS_SETTINGS_MENU],
+                    icon: HeartHandshakeIcon,
+                    label: () => language.creditsPage.navLabel,
+                },
             ],
         },
     ];
@@ -152,8 +200,8 @@
             : searchSettings(
                   query,
                   settingContext({
-                      modelInfo: getModelInfoForMode("model"),
-                      subModelInfo: getModelInfoForMode("submodel"),
+                      modelInfo: getModelInfoForMode("model", editedScope()),
+                      subModelInfo: getModelInfoForMode("submodel", editedScope()),
                   }),
               ),
     );
@@ -183,8 +231,9 @@
 
     /**
      * Runs on each mount of the keyed page, after the page initialized (its tab, its accordions'
-     * `startOpen`, the Connections selection): an available hit scrolls to and rings its row or section,
-     * an unavailable one shows the note; the jump then finishes. Untracked, so it runs once per mount.
+     * `startOpen`, the Connections selection): an available item/section hit scrolls and highlights;
+     * an unavailable hit shows a note; an available page/tab hit only navigates. The jump then finishes.
+     * Untracked, so it runs once per mount.
      */
     const runJump: Attachment<HTMLDivElement> = (page) => {
         let active = true;
@@ -314,14 +363,16 @@
                     {@attach runJump}
                 >
                     {#if jumpNotice}
-                        <p class="mb-4 rounded-md border border-darkborderc p-2 text-sm text-textcolor2" role="status">
+                        <Alert status="info" className="mb-4">
                             {jumpNotice === "noMainProfile"
                                 ? language.settingsSearch.noMainProfileNote
                                 : language.settingsSearch.hiddenNote}
-                        </p>
+                        </Alert>
                     {/if}
                     {#if $SettingsMenuIndex === 0}
                         <UserSettings />
+                    {:else if $SettingsMenuIndex === STORAGE_SETTINGS_MENU}
+                        <StorageSettings />
                     {:else if $SettingsMenuIndex === MODEL_SETTINGS_MENU}
                         <ModelSettings />
                     {:else if $SettingsMenuIndex === MODEL_PROFILES_SETTINGS_MENU}
@@ -350,8 +401,14 @@
                         <LanguageSettings />
                     {:else if $SettingsMenuIndex === TRANSLATION_SETTINGS_MENU}
                         <TranslationSettings />
+                    {:else if $SettingsMenuIndex === INPUT_HOOKS_SETTINGS_MENU}
+                        <InputHookSettings />
+                    {:else if $SettingsMenuIndex === REQUEST_INTERCEPTION_SETTINGS_MENU}
+                        <RequestInterceptionSettings />
                     {:else if $SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
                         <InteractionSettings />
+                    {:else if $SettingsMenuIndex === DEVICE_LINK_SETTINGS_MENU}
+                        <DeviceLinkSettings />
                     {:else if $SettingsMenuIndex === 11}
                         <AccessibilitySettings />
                     {:else if $SettingsMenuIndex === 12}
@@ -368,6 +425,8 @@
                         <HotkeySettings />
                     {:else if $SettingsMenuIndex === 77}
                         <ThanksPage />
+                    {:else if $SettingsMenuIndex === CREDITS_SETTINGS_MENU}
+                        <CreditsPage />
                     {/if}
                 </div>
             {/key}

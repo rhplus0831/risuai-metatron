@@ -14,12 +14,13 @@ import { alertError } from "../alert";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import {
     type ChatRef,
-    findChat,
     heldChatRevision,
+    heldMessageById,
     isMessageLocked,
     setMessageTranslation,
 } from "../storage/chatStore.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, GenerationBlockedError } from "../storage/resourceSync.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { settings } from "../storage/settingsViews.svelte";
@@ -82,7 +83,7 @@ export function freshTranslation(message: {
 
 /** The held message (tracked: the held chats are deep state). */
 export function heldMessage(ref: ChatRef, messageId: string) {
-    return findChat(ref)?.message.find((entry) => entry.chatId === messageId);
+    return heldMessageById(ref, messageId);
 }
 
 /** Whether a translation of the message is being requested in this tab. Tracked. */
@@ -95,6 +96,7 @@ export function storedTranslationChoice(ref: ChatRef, messageId: string): boolea
     return choices.get(messageKey(ref, messageId)) ?? null;
 }
 
+/** Tab-local override of chat auto-display, retained across row remounts; does not request or persist a translation. */
 export function setStoredTranslationChoice(ref: ChatRef, messageId: string, show: boolean) {
     choices.set(messageKey(ref, messageId), show);
 }
@@ -104,6 +106,12 @@ export function setStoredTranslationChoice(ref: ChatRef, messageId: string, show
  * stored). One request per message at a time in this tab: a second call returns the running one.
  * Alerts on failure; resolves true when the translation is stored (and held, unless the refresh is
  * still late).
+ *
+ * The exchange has one tab-only 21-minute bound, including authentication and the body.
+ * Authentication that finishes after the exchange deadline does not dispatch the request.
+ * It carries the resource epoch, and a 412 with
+ * `error: "EpochMismatch"` delegates to restore handling without another alert. Leaving the tab
+ * or timing out does not cancel `server/src/translation/runner.ts`'s detached run.
  *
  * `follow`: the server already runs it (a send's hand-off). The request joins that run (an unforced
  * request for a message in flight), so the tab gets its result or failure, reported through
@@ -172,9 +180,13 @@ async function runRequest(
         // The server translates its own copy: save this tab's changes first (the message may be new,
         // or its text edited). This saves every pending change, not only this chat's.
         try {
-            const { discarded } = await flushResources();
+            const { discarded, refused } = await waitForResourceFlush(flushResources());
             if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`)) {
                 alertError(language.translationSourceChanged);
+                return false;
+            }
+            if (refused.includes(`chats/${ref.chaId}/${ref.chatId}`) || refused.includes(`chats/${ref.chaId}`)) {
+                alertError(language.serverJob.refusedDraft);
                 return false;
             }
         } catch (error) {
@@ -347,7 +359,9 @@ export function beginStoredTranslationEdit(ref: ChatRef, messageId: string): Sto
 /**
  * Writes an edited translation (`edited: true`) for the text the editor opened. Alerts and returns
  * false when it is not taken (a generation locks the message, the message is gone, or its text
- * changed since); true means taken and queued, as `setMessageTranslation` says.
+ * changed since); true means taken and queued, as `setMessageTranslation` says in
+ * `src/ts/storage/chatStore.svelte.ts`. The captured source hash fences the write; presetId and
+ * targetLanguage stay the base translation's, with a new translatedAt and `edited: true`.
  */
 export function saveStoredTranslationEdit(edit: StoredTranslationEdit, text: string): boolean {
     if (isMessageLocked(edit.ref, edit.messageId)) {

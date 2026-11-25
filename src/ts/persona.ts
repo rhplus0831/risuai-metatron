@@ -1,4 +1,4 @@
-import { settings, activePersona } from "./storage/settingsViews.svelte";
+import { settings, editedPersona } from "./storage/settingsViews.svelte";
 import { saveImage } from "./storage/database.svelte";
 import { selectSingleFile, sleep } from "./util";
 import { alertError, alertNormal, alertStore } from "./alert";
@@ -17,7 +17,7 @@ import { addPersona } from "./storage/collectionStore.svelte";
  * icon is dropped if the persona was deleted meanwhile.
  */
 export async function selectUserImg() {
-    const personaId = activePersona.id;
+    const personaId = editedPersona.id;
     const selected = await selectSingleFile(["png"]);
     if (!selected || !personaId) {
         return;
@@ -30,12 +30,12 @@ export async function selectUserImg() {
 }
 
 /**
- * Picks persona `id` where the screen shows it: `target` names the chat, `null` the tab's selection,
- * and `undefined` the open chat now, else (home) the tab's selection. The persona fields are forwarded
- * to the shown persona, so nothing is copied. Returns false when nothing changed (the persona or the
- * chat is gone).
+ * Picks persona `id` through `pickBinding` (`src/ts/storage/chatBindingPick.ts`): the required `target`
+ * names the chat to bind, or `null` selects for the tab, also with a chat open. The persona fields are
+ * forwarded to the shown persona, so nothing is copied. Returns false, changing nothing, when the persona or the
+ * chat is gone; true otherwise, also when the persona was already picked there.
  */
-export function changeUserPersona(id: string, target?: ChatRef | null): boolean {
+export function changeUserPersona(id: string, target: ChatRef | null): boolean {
     return pickBinding("personaId", id, target);
 }
 
@@ -45,12 +45,16 @@ interface PersonaCard {
     note?: string;
 }
 
+/**
+ * Downloads the selected persona as a PNG with a `persona` tEXt chunk (base64 JSON of its name, prompt, and note): its
+ * icon re-encoded, or a plain square without one. The fields are read once, before the awaits.
+ */
 export async function exportUserPersona() {
     // The selected persona's fields, read once now: the selection can change during the awaits below.
-    const username = activePersona.name;
-    const personaPrompt = activePersona.personaPrompt;
-    const userIcon = activePersona.icon;
-    const userNote = activePersona.note;
+    const username = editedPersona.name;
+    const personaPrompt = editedPersona.personaPrompt;
+    const userIcon = editedPersona.icon;
+    const userNote = editedPersona.note;
     if (!username || !personaPrompt) {
         alertError("username or persona prompt is empty");
         return;
@@ -99,11 +103,17 @@ export async function exportUserPersona() {
     alertNormal(language.successExport);
 }
 
-export async function importUserPersona() {
+/**
+ * Imports a persona PNG (its `persona` tEXt chunk). It saves the PNG as the icon first, then adds the persona under a
+ * fresh id to the live list (`addPersona`), so a collection another client replaced meanwhile keeps both the new list
+ * and the icon. The imported persona is not picked. Returns the id `addPersona` gave it, or `null` when no persona was
+ * added: no file picked, no persona chunk, a missing name or prompt (reported as `noData`), or an error (reported).
+ */
+export async function importUserPersona(): Promise<string | null> {
     try {
         const v = await selectSingleFile(["png"]);
         if (!v) {
-            return;
+            return null;
         }
         const readGenerator = PngChunk.readGenerator(v.data);
         let decoded: string | undefined;
@@ -117,13 +127,13 @@ export async function importUserPersona() {
 
         if (!decoded) {
             alertError(language.errors.noData);
-            return;
+            return null;
         }
         const data: PersonaCard = JSON.parse(Buffer.from(decoded, "base64").toString("utf-8"));
         if (data.name && data.personaPrompt) {
             // The image first: the collection can be replaced meanwhile, so the add reads the live list.
             const icon = await saveImage(await reencodeImage(v.data));
-            addPersona({
+            const id = addPersona({
                 name: data.name,
                 icon,
                 personaPrompt: data.personaPrompt,
@@ -131,11 +141,12 @@ export async function importUserPersona() {
                 id: newPersonaId(),
             });
             alertNormal(language.successImport);
-        } else {
-            alertError(language.errors.noData);
+            return id;
         }
+        alertError(language.errors.noData);
+        return null;
     } catch (error) {
         alertError(error);
-        return;
+        return null;
     }
 }

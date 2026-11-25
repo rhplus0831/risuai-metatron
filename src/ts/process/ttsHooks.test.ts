@@ -9,6 +9,29 @@ const makeCtx = (overrides: Partial<BeforeTTSContext> = {}): BeforeTTSContext =>
 });
 
 describe("runHookPipeline", () => {
+    it("clears the callback timer after a result, skip, or rejection settles", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+            for (const outcome of ["result", "skip", "reject"] as const) {
+                const hook: TTSHookFn<BeforeTTSContext, BeforeTTSResult> = async () => {
+                    if (outcome === "reject") throw new Error("failed hook");
+                    return outcome === "skip" ? { skip: true } : { text: "changed" };
+                };
+                const result = await runHookPipeline([hook], makeCtx(), 1000);
+                expect(result).toEqual({
+                    ctx: makeCtx({ text: outcome === "result" ? "changed" : "hello" }),
+                    skip: outcome === "skip",
+                });
+                expect(vi.getTimerCount(), outcome).toBe(0);
+            }
+        } finally {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+            error.mockRestore();
+        }
+    });
+
     it("returns the original ctx when no hooks are registered", async () => {
         const ctx = makeCtx();
         const result = await runHookPipeline<BeforeTTSContext, BeforeTTSResult>([], ctx, 1000);

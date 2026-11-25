@@ -276,7 +276,7 @@ type ChatOutputListenerArg = {
     char: any;
     /** Current chat */
     chat: any;
-    /** Index of the character in the database. Use with `setCharacterToIndex`. */
+    /** Index of the chat owner among visible characters. Use with `setCharacterToIndex`. */
     characterIndex: number;
     /** Index of the chat within the character. Use with `setChatToIndex`. */
     chatIndex: number;
@@ -311,6 +311,10 @@ interface RisuPlugin {
     versionOfPlugin?: string;
     /** Update check URL */
     updateURL?: string;
+    /** Wait for this plugin before remote-host completion notifications; controlled by user settings and preserved on replacement */
+    completionWait?: boolean;
+    /** Required quiet time in seconds; controlled by user settings and preserved on replacement */
+    completionQuietSeconds?: number;
 }
 
 /**
@@ -372,7 +376,12 @@ interface Persona {
  * Plugins can only access these specific database properties for security.
  */
 interface DatabaseSubset {
-    /** Array of characters and group chats */
+    /**
+     * Characters in storage order. Archived group chats stay stored and are hidden from plugins.
+     * A group chaId is treated as missing. With getDatabase's chats: "summaries" option,
+     * each has chatSummaries: { id: string; name: string; lastMessageAt?: number }[] in chat
+     * order instead of chats and chatPage. Unknown times are omitted; there are no message counts.
+     */
     characters?: any[];
     /** Risuai modules */
     modules?: RisuModule[];
@@ -436,7 +445,7 @@ interface DatabaseSubset {
     colorSchemeName?: string;
     /** The index of this client's selected persona in `personas` (setting it selects on this client only) */
     selectedPersona?: number;
-    /** The character list's order: character ids and folders of character ids */
+    /** The character list's order: character ids and folders of character ids, excluding archived groups */
     characterOrder?: (string | CharacterFolder)[];
 }
 
@@ -835,6 +844,7 @@ interface SafeElement {
      *
      * Allowed events (with random delay for anti-fingerprinting):
      * - Keyboard: keydown, keyup, keypress
+     * Keyboard events originating in password or credential fields are never delivered.
      *
      * listener function receives trimmed event object with common properties only.
      * Listeners receive events that reach the element through normal DOM propagation
@@ -891,46 +901,46 @@ interface SafeElement {
  * 
  * @example
  * ```typescript
- * const doc = risuai.getRootDocument();
+ * const doc = await risuai.getRootDocument();
  *
  * // Create elements (whitelist only)
- * const div = doc.createElement('div');
- * const button = doc.createElement('button');
+ * const div = await doc.createElement('div');
+ * const button = await doc.createElement('button');
  *
  * // Create anchor with URL validation
- * const link = doc.createAnchorElement('https://example.com');
+ * const link = await doc.createAnchorElement('https://example.com');
  * ```
  */
 interface SafeDocument extends SafeElement {
     /**
      * Creates an element (limited to whitelisted tags)
      * @param tagName - HTML tag name
-     * @returns SafeElement
+     * @returns Promise resolving to SafeElement across the iframe bridge
      *
      * @note Non-whitelisted tags are replaced with 'div'
      *
      * @example
      * ```typescript
-     * const div = doc.createElement('div'); // ✅ Allowed
-     * const custom = doc.createElement('custom-element'); // Creates <div> instead
+     * const div = await doc.createElement('div'); // ✅ Allowed
+     * const custom = await doc.createElement('custom-element'); // Creates <div> instead
      * ```
      */
-    createElement(tagName: string): SafeElement;
+    createElement(tagName: string): Promise<SafeElement>;
 
     /**
      * Creates an anchor element with URL validation
      * @param href - URL for the anchor (only http/https allowed)
-     * @returns SafeElement (anchor)
+     * @returns Promise resolving to a SafeElement (anchor) across the iframe bridge
      *
      * @note Invalid URLs or non-http(s) protocols default to '#'
      *
      * @example
      * ```typescript
-     * const link = doc.createAnchorElement('https://example.com'); // ✅ Valid
-     * const bad = doc.createAnchorElement('javascript:alert()'); // href becomes '#'
+     * const link = await doc.createAnchorElement('https://example.com'); // ✅ Valid
+     * const bad = await doc.createAnchorElement('javascript:alert()'); // href becomes '#'
      * ```
      */
-    createAnchorElement(href: string): SafeElement;
+    createAnchorElement(href: string): Promise<SafeElement>;
 }
 
 // ============================================================================
@@ -993,10 +1003,12 @@ interface SafeClassArray<T> {
 interface SafeMutationRecord {
     /** Type of mutation */
     getType(): Promise<string>;
-    /** Target element of mutation */
+    /** Target element, or the parent element for a non-element target; parentless records are omitted. */
     getTarget(): Promise<SafeElement>;
     /** Added nodes in mutation */
     getAddedNodes(): Promise<SafeClassArray<SafeElement>>;
+    /** Removed nodes in mutation */
+    getRemovedNodes(): Promise<SafeClassArray<SafeElement>>;
 }
 
 /**
@@ -1032,7 +1044,7 @@ interface SafeMutationObserver {
  */
 interface StorageDiscardedEvent {
     type: "storageDiscarded";
-    /** Keys of `risuai.pluginStorage` */
+    /** This plugin's lost keys without owner prefixes, plus legacy lost keys or keys exposed by a discarded clear(). */
     pluginStorage: string[];
     /** Keys of `getLocalPluginStorage()` */
     localPluginStorage: string[];
@@ -1041,7 +1053,9 @@ interface StorageDiscardedEvent {
 }
 
 /**
- * Plugin-specific storage that syncs with save files
+ * Storage owned by the plugin's internal name that syncs with save files. Two plugins' same key stays separate.
+ * Legacy values remain readable until claimed on write; clear() stops reading them without deleting them for others.
+ * Names containing U+0000 retain shared legacy storage.
  *
  * **All methods return Promises** due to iframe message passing.
  *
@@ -1067,7 +1081,7 @@ interface PluginStorage {
     getItem(key: string): Promise<any | null>;
 
     /**
-     * Sets an item in storage
+     * Sets an owned item, moving a visible legacy value under this key into this plugin's storage
      * @param key - Storage key
      * @param value - Value to store (any JSON-serializable value)
      * @returns Promise that resolves when the write is queued for background saving, not when it is saved (see `onStorageDiscarded`)
@@ -1075,14 +1089,14 @@ interface PluginStorage {
     setItem(key: string, value: any): Promise<void>;
 
     /**
-     * Removes an item from storage
+     * Removes this plugin's item and any visible legacy value under this key
      * @param key - Storage key
      * @returns Promise that resolves when the removal is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     removeItem(key: string): Promise<void>;
 
     /**
-     * Clears all items from storage
+     * Clears only this plugin's items and stops reading legacy values; other plugins' data stays
      * @returns Promise that resolves when the clear is queued for background saving, not when it is saved (see `onStorageDiscarded`)
      */
     clear(): Promise<void>;
@@ -1330,7 +1344,7 @@ interface RisuaiPluginAPI {
     // ========== Character APIs ==========
 
     /**
-     * Gets the current character
+     * Gets the current character, retaining read baselines for its chats (up to 16 per plugin instance).
      * @returns Current character object
      *
      * @example
@@ -1342,7 +1356,7 @@ interface RisuaiPluginAPI {
     getCharacter(): Promise<any>;
 
     /**
-     * Sets the current character
+     * Sets the current character. Its chats use the same read-baseline rules as setChatToIndex.
      * @param character - Character object to set
      *
      * @example
@@ -1351,6 +1365,8 @@ interface RisuaiPluginAPI {
      * char.name = 'New Name';
      * await risuai.setCharacter(char);
      * ```
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setCharacter(character: any): Promise<void>;
 
@@ -1361,28 +1377,34 @@ interface RisuaiPluginAPI {
 
     /**
      * @deprecated Use setCharacter() instead
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setChar(character: any): Promise<void>;
 
-        /**
-     * Gets a character by index
+    /**
+     * Gets a character by index, retaining read baselines for its chats (up to 16 per plugin instance).
+     * Character indexes skip archived group chats. An index saved before groups were archived may
+     * now name another character. Re-resolve it by chaId before use.
      * @param index - Character index
      * @returns Character object or null if not found
      */
     getCharacterFromIndex(index: number): Promise<any|null>;
 
     /**
-     * Saves a character at a specific index. Its `chats` are applied as changes against the chats as
-     * they are now (your copy wins where it differs): new or missing ids create chats, chats left
-     * out are deleted (the last one is kept), and `chatPage` selects a chat in this tab only. A
+     * Saves a character at a specific index. Its `chats` use the same read-baseline rules as
+     * setChatToIndex: new or missing ids create chats. Omitted chats keep their slots. Plugins cannot
+     * delete chats. `chatPage` selects an active chat from the supplied list in this tab only. A
      * character that is generating a reply is not replaced by one with another `chaId`.
      * @param index - Character index
      * @param character - Character object to save
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setCharacterToIndex(index: number, character: any): Promise<void>;
 
     /**
-     * Gets a chat by index
+     * Gets a chat by index, retaining its read baseline (up to 16 chats per plugin instance).
      * @param characterIndex - Character index
      * @param chatIndex - Chat index
      * @returns Chat object or null if not found
@@ -1417,7 +1439,7 @@ interface RisuaiPluginAPI {
          * plugin handlers; skipped for a chat not yet saved on the server).
          */
         processRegex?: boolean;
-        /** Enable chat variable writes from CBS macros. */
+        /** Enable chat variable writes from CBS macros; forced off in read-only transform/display continuations. */
         runVar?: boolean;
         /** Remove unresolved variable macros. */
         rmVar?: boolean;
@@ -1432,13 +1454,17 @@ interface RisuaiPluginAPI {
     
 
     /**
-     * Saves a chat at a specific index. The chat is compared with the chat as it is when you call
-     * this, and every difference is saved (messages matched by `chatId`): a message someone else
-     * changed after you read the chat is overwritten by your copy. Read right before writing.
+     * Saves a chat at a specific index. Changes are compared with this plugin instance's latest
+     * retained read (messages matched by `chatId`), preserving fields and messages changed by others
+     * that your copy left alone. The baseline is consumed once; without one, comparison uses the
+     * current chat. Reads retain at most 16 chats, evicting the least recently read; unload clears them.
+     * Reordering messages after the chat changed drops the reorder with a console warning.
      * Skipped (with a console warning) when it changes the message a reply is being generated into.
      * @param characterIndex - Character index
      * @param chatIndex - Chat index
      * @param chat - Chat object to save
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setChatToIndex(characterIndex: number, chatIndex: number, chat: any): Promise<void>;
 
@@ -1455,7 +1481,7 @@ interface RisuaiPluginAPI {
     getCurrentChatIndex: () => Promise<number>;
 
     /**
-     * Gets raw lorebook entries for the current character or group, the
+     * Gets raw lorebook entries for the current character, the
      * current chat, and currently active modules.
      *
      * This does not apply lorebook activation or token budget filtering.
@@ -1499,7 +1525,7 @@ interface RisuaiPluginAPI {
     getArgument(key: string): Promise<string | number | undefined>;
 
     /**
-     * Sets a plugin argument value
+     * Sets this plugin's own argument value; allowed in read-only transform/display continuations.
      * @param key - Argument key
      * @param value - Value to set
      */
@@ -1512,6 +1538,8 @@ interface RisuaiPluginAPI {
 
     /**
      * @deprecated Use setArgument() instead
+     * Read-only transform/display continuations allow this plugin's own arguments; another plugin's
+     * argument warns and returns undefined without writing or throwing.
      */
     setArg(arg: string, value: string | number): void;
 
@@ -1520,7 +1548,11 @@ interface RisuaiPluginAPI {
     /**
      * Gets the database with limited access
      * @param includeOnly - Array of keys to include or 'all' for all allowed keys. defaults to 'all'.
+     * @param options - chats defaults to "full". "summaries" replaces characters' chats and chatPage
+     * with chatSummaries from this tab, without reading, flushing, pinning or loading chats, even
+     * inside hooks. Other fields, including derived lastInteraction and hook preset scoping, are unchanged.
      * @returns DatabaseSubset object (limited to allowed keys) or null if consent not given
+     * @throws Error for a non-object options value or an unsupported chats value.
      *
      * Allowed keys: characters, modules, enabledModules, moduleIntergration,
      * personas, plugins, pluginCustomStorage, temperature, askRemoval,
@@ -1528,17 +1560,33 @@ interface RisuaiPluginAPI {
      * textTheme, lineHeight, seperateModelsForAxModels, seperateModels,
      * customCSS, guiHTML, colorSchemeName, characterOrder, selectedPersona
      *
-     * Use includeOnly to limit which keys to retrieve for better performance.
+     * Prefer explicit keys with chats: "summaries", getChats() for a page, or getCharacter()
+     * for the current character. The default copies every active chat of every visible character; a chat
+     * in the Trash is left out.
      * 
      * @example
      * ```typescript
-     * const db = await risuai.getDatabase();
+     * const db = await risuai.getDatabase(["characters"], { chats: "summaries" });
      * if(db) {
      *   console.log(db.characters);
      * }
      * ```
      */
-    getDatabase(includeOnly?: string[]|'all'): Promise<DatabaseSubset|null>;
+    getDatabase(includeOnly?: string[]|'all', options?: { chats?: "full" | "summaries" }): Promise<DatabaseSubset|null>;
+
+    /**
+     * Gets a character's active chats in member order, in the same shape as getDatabase's full chats.
+     * Requires the same database access consent; returns null without it or when chaId is unknown
+     * (including an archived group or a character deleted during the call).
+     * @param chaId - Stable character id.
+     * @param options - offset defaults to 0, limit to all remaining chats. Both must be non-negative
+     * safe integers when supplied. An empty page does not read chats.
+     * @returns The page and total member count. Loaded chats reflect this tab; unloaded chats are
+     * detached server copies using the same reuse cache as getDatabase. Only the page's unloaded
+     * chats are read normally; hooks and fallback reads load the character's chats first.
+     * @throws Error for an invalid offset or limit.
+     */
+    getChats(chaId: string, options?: { offset?: number; limit?: number }): Promise<{ chats: any[]; total: number }|null>;
 
     /**
      * Sets the database (lightweight save)
@@ -1547,15 +1595,28 @@ interface RisuaiPluginAPI {
      * with an id and string name, icon, personaPrompt, and note).
      * Model roots follow the slot/profile rules in DatabaseSubset. Inside a hook they use its
      * captured model preset. A refused key warns and keeps its old value; other keys still apply.
-     * The `plugins` property is ignored; use setDatabase() to install plugins with user confirmation.
+     * The `plugins` property is ignored.
+     * Both database setters preserve archived groups. A group entry or a group chaId refuses the characters key.
+     * Existing characters with chats omitted or undefined keep their chats without loading them.
+     * chatSummaries is ignored by character setters and never saved in a character record.
      * @param db - DatabaseSubset object to save
+     * In a read-only transform/display continuation the entire call warns and returns undefined,
+     * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setDatabaseLite(db: Omit<DatabaseSubset, "plugins">): Promise<void>;
 
     /**
      * Sets the database (full save with sync)
      * Model roots and per-key refusals follow the same rules as setDatabaseLite().
+     * Omitted/undefined chats and chatSummaries follow the same rules as setDatabaseLite().
+     * In `plugins`, only API 3.0 plugins that are new or whose script changed are applied, each
+     * after the user confirms. Removing or reordering plugins and changes that only enable or
+     * disable them are ignored.
      * @param db - DatabaseSubset object to save
+     * In a read-only transform/display continuation the entire call warns and returns undefined,
+     * without writing or throwing, including custom keys. Use pluginStorage for plugin-private data.
+     * Requires the `dbWrite` permission; the write is skipped if the user declines.
      */
     setDatabase(db: DatabaseSubset): Promise<void>;
 
@@ -1565,12 +1626,14 @@ interface RisuaiPluginAPI {
      * Change to a preset color scheme by name.
      * Available presets: 'default', 'dark', 'light', 'cherry', 'galaxy', 'nature', 'realblack', 'monokai-light', 'monokai-black'
      * @param name - Preset color scheme name
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     changeColorScheme(name: string): Promise<void>;
 
     /**
      * Apply a custom color scheme. Automatically sets colorSchemeName to 'custom'.
      * @param scheme - ColorScheme object with all color values
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setColorScheme(scheme: ColorScheme): Promise<void>;
 
@@ -1585,12 +1648,14 @@ interface RisuaiPluginAPI {
     /**
      * Change to a preset text theme.
      * @param name - 'standard' | 'highcontrast'
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     changeTextTheme(name: string): Promise<void>;
 
     /**
      * Apply a custom text theme. Automatically sets textTheme to 'custom'.
      * @param theme - CustomTextTheme object with all font color values
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     setCustomTextTheme(theme: CustomTextTheme): Promise<void>;
 
@@ -1601,6 +1666,22 @@ interface RisuaiPluginAPI {
     getTextTheme(): Promise<{ name: string; customTheme: CustomTextTheme }>;
 
     // ========== Network APIs ==========
+
+    /** @deprecated Use nativeFetch. Returns the buffered globalFetch result, not a Response. */
+    risuFetch(url: string, options?: {
+        plainFetchForce?: boolean;
+        plainFetchDeforce?: boolean;
+        body?: any;
+        headers?: { [key: string]: string };
+        rawResponse?: boolean;
+        method?: 'POST' | 'GET';
+        abortSignal?: AbortSignal;
+        useRisuToken?: boolean;
+        chatId?: string;
+        interceptor?: string;
+        requestTimeoutMs?: number;
+        networkRoute?: 'auto' | 'local_network';
+    }): Promise<{ ok: boolean; data: any; headers: { [key: string]: string }; status: number }>;
 
     /**
      * Makes a native fetch request; omitted options or {} make a GET.
@@ -1616,14 +1697,10 @@ interface RisuaiPluginAPI {
     nativeFetch(url: string, options?: RequestInit): Promise<Response>;
 
     /**
-     * Saves a secret header for network requests, for protected Headers (like Authorization) that are stripped by Risuai for security.
-     * To use saved secret headers, use an object `{ secretHeader: 'Header-Name' }` in the `headers` field of `nativeFetch` options,
-     * Like `{ headers: {"Authorization":{ secretHeader: 'Authorization' }} }`
-     * @m This API is work in progress and may have breaking changes in the future.
-     * @param key - Header key (e.g., 'Authorization')
-     * @param value - Header value.
+     * Not implemented in this fork. The host only logs a warning and stores nothing.
+     * `nativeFetch` does not support `{ secretHeader }`, so the secret header is not sent.
      */
-    saveSecretHeader(key: string, prefix: string, value: string|string[]): Promise<void>;
+    saveSecretHeader(key: string, value: string|string[]): Promise<void>;
 
     // ========== UI Registration ==========
 
@@ -1710,6 +1787,15 @@ interface RisuaiPluginAPI {
      * @param id - UI part ID returned during registration
      */
     unregisterUIPart(id: string): Promise<void>;
+
+    /**
+     * Sets sanitized chat-panel HTML; null or an empty string removes the panel. HTML that carries a
+     * `style` element asks for the `globalStyle` permission first, since its rules reach the whole app:
+     * when it is declined the panel is shown without its `style` elements. Of calls for one panel id
+     * (a removal, or another plugin's call for that id, included), the latest wins, also over one
+     * still waiting for that answer.
+     */
+    setChatPanel(content: string | null, options?: { id?: string; className?: string }): Promise<UIPartResponse>;
 
     // ========== MCP APIs ==========
 
@@ -1814,11 +1900,8 @@ interface RisuaiPluginAPI {
      * receives the previous hook's output. If a hook throws, its result is
      * discarded and the next hook runs.
      *
-     * No timeout is enforced on hook execution (consistent with
-     * `addRisuScriptHandler` and `addRisuReplacer`), so a hook that hangs will
-     * stall TTS playback for that message. Plugins that call slow services
-     * (auxiliary LLMs, remote analysis) should implement their own
-     * `AbortController` + timer if cancellation is needed.
+     * Hooks use the shared 60-second callback allowance. A timed-out result is
+     * discarded and the next hook runs; the hook itself is not cancelled.
      *
      * Applies to all providers (including 'webspeech'). No permission prompt.
      * Auto-unregistered when the plugin unloads.
@@ -1840,9 +1923,8 @@ interface RisuaiPluginAPI {
      * The hook receives the raw encoded audio bytes and may return replacement
      * audio (with optional new mimeType) or `{ skip: true }` to suppress playback.
      *
-     * Sequential pipeline semantics identical to `addTTSPreprocessor`. No
-     * timeout is enforced on hook execution; plugins that perform long-running
-     * audio transforms should self-manage cancellation.
+     * Sequential pipeline and timeout semantics identical to `addTTSPreprocessor`.
+     * Timed-out hooks should self-manage cancellation of their audio work.
      *
      * Skipped for the 'webspeech' provider (browser-native synthesis does not
      * produce an audio buffer) and the 'vits' provider (uses a separate playback
@@ -1864,7 +1946,12 @@ interface RisuaiPluginAPI {
     // ========== Script Handlers ==========
 
     /**
-     * Adds a script handler for text processing
+     * Adds a script handler for text processing.
+     * Tab-side editdisplay/editprocess transform continuations are read-only: durable-data setters
+     * warn and return undefined without writing or throwing; sendChat returns false, saveAsset
+     * returns "", and parseRisuChat forces runVar off. Plugin storage and this plugin's own
+     * arguments remain writable. Job-callback hooks keep their normal write behavior, but an
+     * overlapping transform on the same plugin instance conservatively refuses their writes too.
      * @param mode - Handler mode
      * @param func - Handler function
      *
@@ -1963,6 +2050,7 @@ interface RisuaiPluginAPI {
      * changes saved by another listener, read the latest chat with `getChatFromIndex`
      * before saving.
      *
+     * Archived owners and speakers are skipped. Character indexes count only visible characters.
      * The `characterIndex` and `chatIndex` are the generated chat's positions right
      * before this listener is called (resolved from its ids, again for each
      * listener), so background work can locate
@@ -2076,7 +2164,7 @@ interface RisuaiPluginAPI {
     /**
      * Saves an asset
      * @param data - Asset data
-     * @returns Saved asset path
+     * @returns Saved asset path, or "" in a read-only transform/display continuation (warns, no write or throw).
      */
     saveAsset(data: any): Promise<string>;
 
@@ -2100,7 +2188,8 @@ interface RisuaiPluginAPI {
      * another tab or device saved a different value under the same key first, this browser's
      * unsaved values are replaced by the saved ones, and every listener is called once with the
      * keys whose value was lost. Writes of different keys from two tabs are both kept and raise
-     * nothing. The storage is shared by all plugins, so the keys may be another plugin's.
+     * nothing. All plugins share one record for merging, but pluginStorage lists only this plugin's
+     * own lost keys (without owner prefixes) and legacy lost keys, plus legacy keys exposed by a discarded clear().
      * The listener is removed when the plugin unloads.
      *
      * @example
@@ -2129,6 +2218,7 @@ interface RisuaiPluginAPI {
 
     /**
      * Checks and corrects character order in the database
+     * Read-only transform/display continuations warn and return undefined without writing or throwing.
      */
     checkCharOrder(): Promise<void>;
 
@@ -2144,7 +2234,8 @@ interface RisuaiPluginAPI {
 
     /**
      * Requests permission for a specific action
-     * @param permission - Permission string (e.g. 'fetchLogs'|'db'|'mainDom')
+     * @param permission - 'fetchLogs' | 'db' | 'dbWrite' | 'mainDom' | 'replacer' | 'provider' |
+     * 'sendChat' | 'inlay' | 'globalStyle'; any other name answers false without a prompt
      * @returns True if permission granted, false otherwise
      */
     requestPluginPermission(permission: string): Promise<boolean>;
@@ -2198,13 +2289,10 @@ interface RisuaiPluginAPI {
      * @param options.messages - Array of chat messages to send to the model
      * @param options.staticModel - Optional static model name to use (e.g., 'gpt-4')
      * @param options.mode - Request mode
-     * @param options.allowPlugins - If true, allow the call to resolve to a
-     *   plugin-provided model (`pluginmodel:::*`). Default is false: plugin
-     *   models are blocked to guard against accidental IPC loops between
-     *   provider plugins. Opt in when the plugin legitimately needs to use
-     *   the user's plugin-supplied main or auxiliary model (e.g. a TTS
-     *   preprocessor rewriting text with the configured otherAx model).
-     *   Loop avoidance becomes the opting-in plugin's responsibility.
+     * @param options.allowPlugins - If true, allow any model with the Plugin format:
+     *   plugin-provided `pluginmodel:::` models, the legacy `custom` model, and
+     *   reverse-proxy profiles using that format. Default is false to guard against
+     *   accidental IPC loops; opting in makes loop avoidance the plugin's responsibility.
      * @returns The model's response, which may be a string or a stream depending on the mode
      */
     runLLMModel(options: {
@@ -2216,6 +2304,7 @@ interface RisuaiPluginAPI {
 
     /**
      * Sends a chat message as if it were sent by the user, triggering the normal chat processing flow.
+     * Read-only transform/display continuations warn and return false without writing or throwing.
      * Inside a hook it sends in the hook's chat, else in the selected chat. Throws "A chat is already in
      * progress" while that chat generates or a job callback (a hook or a provider) runs in this tab.
      * @param message - The chat message to send, if string is a blank message, it will trigger the send action without adding a new message.

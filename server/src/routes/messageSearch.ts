@@ -169,7 +169,9 @@ function parseSearchQuery(body: Record<string, unknown>): ParsedQuery | string {
  * epoch header: it is a read. 400 for a bad body (query under 2 or over 200 code points after NFC and
  * trimming, NUL or ill-formed text, an unknown field, a bad cursor or id, `chatId` without
  * `characterId`, a non-positive `limit`; a larger one is clamped to 100) and for a request whose
- * client went away; 404 for a named character or chat that does not exist; 409 `{ reason: "epoch" }`
+ * client went away; 404 for a named character or chat that does not exist in an eligible scope.
+ * Every scope skips trashed and group-owned chats. Naming a group or a trashed chat returns an
+ * empty page. 409 `{ reason: "epoch" }`
  * when a restore replaced the data during the scan (search again); 429 past `maxConcurrent` running
  * searches; 503 with `Retry-After` during maintenance (checked at admission and between batches) and
  * once the store closed. The app tracks the handler like a resource handler, so shutdown waits for a
@@ -204,16 +206,6 @@ export function registerMessageSearchRoutes(
     const limitBody = limitedBody(MAX_SEARCH_BODY_BYTES);
 
     app.post(MESSAGE_SEARCH_PATH, noStore, limiter, authenticated, limitBody, async (c) => {
-        let size: number;
-        try {
-            size = (await c.req.arrayBuffer()).byteLength;
-        } catch {
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-        // The limiter trusts a declared length; measure the bytes that arrived.
-        if (size > MAX_SEARCH_BODY_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
-        }
         const read = await readJsonBody(c);
         if (!read.ok) {
             return read.response;

@@ -1,8 +1,9 @@
 import { MessageChannel as NodeMessageChannel, MessagePort as NodeMessagePort } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxHost } from "./factory";
+import { controlCollection } from "./tests/controlledCollection";
 
-// `SandboxHost` activity (`plugins-mcp.md`): `isIdle()` once the guest's
+// `SandboxHost` activity (`plugin-sandbox.md`): `isIdle()` once the guest's
 // script settled while no guest-to-host call, host-to-guest callback, or bridged stream is open, or
 // once terminated; `onActivityChanged` hears each change toward idle. A callback that cannot be
 // delivered, or whose result's streams cannot all be rebuilt, rejects and leaves nothing pending. The
@@ -32,19 +33,41 @@ const send = (data: unknown, ports: MessagePort[] = []) => {
     window.dispatchEvent(event);
 };
 const lastPosted = () => posted[posted.length - 1];
+
+async function callHost(data: { type: string; reqId: string; method: unknown; id?: string; args?: unknown[] }) {
+    const answered = deferred<{ type: string; reqId: string; result?: any; error?: string }>();
+    const postMessage = guestWindow!.postMessage;
+    const posting = vi.spyOn(guestWindow!, "postMessage").mockImplementation((response, origin, ports) => {
+        postMessage(response, origin, ports);
+        if (response.type === "RESPONSE" && response.reqId === data.reqId) answered.resolve(response);
+    });
+    try {
+        send(data);
+        return await answered.promise;
+    } finally {
+        posting.mockRestore();
+    }
+}
+
 const settledScript = () => {
     send({ type: "SCRIPT_SETTLED" });
     expect(host.isIdle()).toBe(true);
     changed.mockClear();
 };
 /** The guest hands the host a callback reference; the host returns the wrapper the API received. */
-async function callbackFromGuest(): Promise<(...args: unknown[]) => Promise<unknown>> {
+async function callbackFromGuest(sendCount = 1): Promise<(...args: unknown[]) => Promise<unknown>> {
     let wrapper!: (...args: unknown[]) => Promise<unknown>;
     api.keep = (fn: (...args: unknown[]) => Promise<unknown>) => {
         wrapper = fn;
     };
-    send({ type: "CALL_ROOT", reqId: "keep", method: "keep", args: [{ __type: "CALLBACK_REF", id: "cb-1" }] });
-    await vi.waitFor(() => expect(lastPosted().data).toMatchObject({ type: "RESPONSE", reqId: "keep" }));
+    expect(
+        await callHost({
+            type: "CALL_ROOT",
+            reqId: "keep",
+            method: "keep",
+            args: [{ __type: "CALLBACK_REF", id: "cb-1", sendCount }],
+        }),
+    ).toEqual({ type: "RESPONSE", reqId: "keep", result: undefined });
     expect(host.isIdle()).toBe(true);
     return wrapper;
 }
@@ -73,6 +96,265 @@ afterEach(() => {
     host.terminate();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("SandboxHost RPC method lookup", () => {
+    it("refuses inherited root functions and non-string names without calling them, while own API functions work", async () => {
+        const own = vi.fn(() => "own result");
+        const inherited = vi.fn(() => "inherited result");
+        api.own = own;
+        Object.setPrototypeOf(api, { inherited });
+        try {
+            for (const method of [
+                "missing",
+                "inherited",
+                "constructor",
+                "__defineGetter__",
+                "hasOwnProperty",
+                "valueOf",
+                "toString",
+                ["own"],
+                null,
+            ]) {
+                const response = await callHost({ type: "CALL_ROOT", reqId: "refused-root", method });
+                expect.soft(response).toEqual({
+                    type: "RESPONSE",
+                    reqId: "refused-root",
+                    error: expect.stringMatching(/^API method .+ not found$/),
+                });
+            }
+            expect(own).not.toHaveBeenCalled();
+            expect(inherited).not.toHaveBeenCalled();
+            expect(await callHost({ type: "CALL_ROOT", reqId: "own-root", method: "own" })).toEqual({
+                type: "RESPONSE",
+                reqId: "own-root",
+                result: "own result",
+            });
+            expect(own).toHaveBeenCalledTimes(1);
+        } finally {
+            Object.setPrototypeOf(api, Object.prototype);
+        }
+    });
+
+    it("refuses built-in and non-string instance names without effects and preserves own and base-class methods", async () => {
+        class BaseElement {
+            #value = "base value";
+            getValue() {
+                return this.#value;
+            }
+        }
+        class DocumentElement extends BaseElement {
+            __classType = "REMOTE_REQUIRED";
+            own = vi.fn(() => "instance value");
+        }
+        const instance = new DocumentElement();
+        api.create = () => instance;
+        const { result: ref } = await callHost({ type: "CALL_ROOT", reqId: "create", method: "create" });
+        expect(ref).toEqual({ __type: "REMOTE_REF", id: expect.any(String) });
+
+        for (const method of [
+            "missing",
+            "constructor",
+            "__defineGetter__",
+            "hasOwnProperty",
+            "valueOf",
+            "toString",
+            ["own"],
+            null,
+        ]) {
+            const response = await callHost({
+                type: "CALL_INSTANCE",
+                reqId: "refused-instance",
+                id: ref.id,
+                method,
+                args: ["injected", { __type: "CALLBACK_REF", id: "getter" }],
+            });
+            expect.soft(response).toEqual({
+                type: "RESPONSE",
+                reqId: "refused-instance",
+                error: expect.stringMatching(/^Method .+ missing on instance$/),
+            });
+        }
+        expect(Object.hasOwn(instance, "injected")).toBe(false);
+        expect(instance.own).not.toHaveBeenCalled();
+        for (const [method, result] of [
+            ["own", "instance value"],
+            ["getValue", "base value"],
+        ]) {
+            expect(await callHost({ type: "CALL_INSTANCE", reqId: method, id: ref.id, method })).toEqual({
+                type: "RESPONSE",
+                reqId: method,
+                result,
+            });
+        }
+    });
+
+    it("refuses Function.prototype methods on callable instances without invoking the function", async () => {
+        const called = vi.fn();
+        const instance = Object.assign(called, { __classType: "REMOTE_REQUIRED" });
+        api.create = () => instance;
+        const { result: ref } = await callHost({ type: "CALL_ROOT", reqId: "create", method: "create" });
+        expect(ref).toEqual({ __type: "REMOTE_REF", id: expect.any(String) });
+
+        for (const method of ["call", "apply", "bind", "toString"]) {
+            expect.soft(await callHost({ type: "CALL_INSTANCE", reqId: method, id: ref.id, method })).toEqual({
+                type: "RESPONSE",
+                reqId: method,
+                error: `Method ${method} missing on instance`,
+            });
+        }
+        expect(called).not.toHaveBeenCalled();
+    });
+});
+
+it("serializes remote-required callback arguments as callable host references", async () => {
+    const registered = deferred<(...args: unknown[]) => Promise<unknown>>();
+    api.keep = registered.resolve;
+    send({ type: "CALL_ROOT", reqId: "keep", method: "keep", args: [{ __type: "CALLBACK_REF", id: "cb-1" }] });
+    const wrapper = await registered.promise;
+    const record = new (class {
+        __classType = "REMOTE_REQUIRED";
+        #type = "childList";
+        getType() {
+            return this.#type;
+        }
+    })();
+    const running = wrapper(record);
+    const invoke = lastPosted().data;
+    try {
+        expect(invoke).toMatchObject({
+            type: "INVOKE_CALLBACK",
+            id: "cb-1",
+            args: [{ __type: "REMOTE_REF", id: expect.any(String) }],
+        });
+
+        const answered = deferred<unknown>();
+        vi.spyOn(guestWindow!, "postMessage").mockImplementation((data) => {
+            if (data.type === "RESPONSE" && data.reqId === "record-type") answered.resolve(data);
+        });
+        send({ type: "CALL_INSTANCE", reqId: "record-type", id: invoke.args[0].id, method: "getType", args: [] });
+        expect(await answered.promise).toEqual({ type: "RESPONSE", reqId: "record-type", result: "childList" });
+    } finally {
+        send({ type: "CALLBACK_RETURN", reqId: invoke.reqId, result: "delivered" });
+        await expect(running).resolves.toBe("delivered");
+    }
+});
+
+describe("SandboxHost callback lifetime", () => {
+    let collection: ReturnType<typeof controlCollection>;
+    beforeEach(() => {
+        host.terminate();
+        collection = controlCollection();
+        host = new SandboxHost(api);
+        host.run(document.createElement("iframe"), "");
+        settledScript();
+    });
+
+    it("reuses a retained callback wrapper and releases its latest send count when collected", async () => {
+        const wrapper = await callbackFromGuest(1);
+        expect(await callbackFromGuest(3)).toBe(wrapper);
+        expect(await callbackFromGuest(2)).toBe(wrapper);
+
+        collection.collect(wrapper)();
+        expect(lastPosted().data).toEqual({ type: "RELEASE_CALLBACK", id: "cb-1", sendCount: 3 });
+    });
+
+    it("keeps a replacement callback cached when its old wrapper finalizes", async () => {
+        const old = await callbackFromGuest(1);
+        const finalizeOld = collection.collect(old);
+        const replacement = await callbackFromGuest(2);
+        expect(replacement).not.toBe(old);
+
+        finalizeOld();
+        expect(lastPosted().data).toEqual({ type: "RELEASE_CALLBACK", id: "cb-1", sendCount: 1 });
+        expect(await callbackFromGuest(3)).toBe(replacement);
+        collection.collect(replacement)();
+        expect(lastPosted().data).toEqual({ type: "RELEASE_CALLBACK", id: "cb-1", sendCount: 3 });
+    });
+
+    it("does not post a callback release after termination", async () => {
+        const wrapper = await callbackFromGuest();
+        const finalize = collection.collect(wrapper);
+        host.terminate();
+        posted = [];
+
+        finalize();
+        expect(posted).toEqual([]);
+    });
+});
+
+describe("SandboxHost remote instance lifetime", () => {
+    beforeEach(() => {
+        api.create = (value: string) =>
+            new (class {
+                __classType = "REMOTE_REQUIRED";
+                getValue() {
+                    return value;
+                }
+            })();
+    });
+
+    async function createRef(value: string): Promise<{ __type: "REMOTE_REF"; id: string }> {
+        const response = await callHost({
+            type: "CALL_ROOT",
+            reqId: `create-${value}`,
+            method: "create",
+            args: [value],
+        });
+        expect(response).toEqual({
+            type: "RESPONSE",
+            reqId: `create-${value}`,
+            result: { __type: "REMOTE_REF", id: expect.any(String) },
+        });
+        return response.result;
+    }
+
+    it("releases every batched id while leaving other instances callable", async () => {
+        const first = await createRef("first");
+        const second = await createRef("second");
+        const retained = await createRef("retained");
+        send({ type: "RELEASE_INSTANCE", ids: [first.id, second.id] });
+
+        for (const ref of [first, second]) {
+            expect(await callHost({ type: "CALL_INSTANCE", reqId: ref.id, id: ref.id, method: "getValue" })).toEqual({
+                type: "RESPONSE",
+                reqId: ref.id,
+                error: "Instance not found or released",
+            });
+        }
+        expect(
+            await callHost({ type: "CALL_INSTANCE", reqId: "retained", id: retained.id, method: "getValue" }),
+        ).toEqual({ type: "RESPONSE", reqId: "retained", result: "retained" });
+    });
+
+    it("rejects a released ref argument before calling the host API", async () => {
+        const ref = await createRef("argument");
+        const accept = vi.fn(() => "accepted");
+        api.accept = accept;
+        send({ type: "RELEASE_INSTANCE", id: ref.id });
+
+        expect(await callHost({ type: "CALL_ROOT", reqId: "accept", method: "accept", args: [ref] })).toEqual({
+            type: "RESPONSE",
+            reqId: "accept",
+            error: "Instance not found or released",
+        });
+        expect(accept).not.toHaveBeenCalled();
+    });
+
+    it("assigns distinct increasing ids to serialized instances even after a release", async () => {
+        // ID uniqueness must not depend on random values happening to differ.
+        vi.spyOn(Math, "random").mockReturnValue(0.5);
+        const first = await createRef("first");
+        send({ type: "RELEASE_INSTANCE", id: first.id });
+        const second = await createRef("second");
+
+        expect(second.id).not.toBe(first.id);
+        const firstCounter = Number(first.id.match(/-?\d+$/)?.[0]);
+        const secondCounter = Number(second.id.match(/-?\d+$/)?.[0]);
+        expect(Number.isSafeInteger(firstCounter)).toBe(true);
+        expect(Number.isSafeInteger(secondCounter)).toBe(true);
+        expect(secondCounter).toBeGreaterThan(firstCounter);
+    });
 });
 
 describe("SandboxHost activity", () => {
@@ -115,6 +397,55 @@ describe("SandboxHost activity", () => {
         await expect(wrapper("arg")).rejects.toThrow("The plugin was unloaded");
         expect(host.isIdle()).toBe(true);
         expect(changed).toHaveBeenCalled();
+    });
+
+    it("rolls back refs from an uncloneable callback delivery while keeping an earlier registration callable", async () => {
+        settledScript();
+        const wrapper = await callbackFromGuest();
+        const remote = () =>
+            new (class {
+                __classType = "REMOTE_REQUIRED";
+                getValue() {
+                    return "retained";
+                }
+            })();
+        const existing = remote();
+        api.existing = () => existing;
+        const registered = await callHost({ type: "CALL_ROOT", reqId: "existing", method: "existing" });
+        expect(registered.result).toEqual({ __type: "REMOTE_REF", id: expect.any(String) });
+
+        let attempted!: { type: string; args: { __type: string; id: string }[] };
+        const postMessage = guestWindow!.postMessage;
+        guestWindow!.postMessage = (data, origin, ports) => {
+            if (data.type === "INVOKE_CALLBACK") {
+                attempted = data;
+                structuredClone(data);
+            }
+            postMessage(data, origin, ports);
+        };
+
+        await expect(wrapper(existing, remote(), () => {})).rejects.toMatchObject({ name: "DataCloneError" });
+        expect(host.isIdle()).toBe(true);
+        expect(attempted.args.slice(0, 2)).toEqual([
+            { __type: "REMOTE_REF", id: expect.any(String) },
+            { __type: "REMOTE_REF", id: expect.any(String) },
+        ]);
+        expect(posted.some(({ data }) => data.type === "INVOKE_CALLBACK")).toBe(false);
+        for (const ref of attempted.args.slice(0, 2)) {
+            expect(await callHost({ type: "CALL_INSTANCE", reqId: ref.id, id: ref.id, method: "getValue" })).toEqual({
+                type: "RESPONSE",
+                reqId: ref.id,
+                error: "Instance not found or released",
+            });
+        }
+        expect(
+            await callHost({
+                type: "CALL_INSTANCE",
+                reqId: "retained",
+                id: registered.result.id,
+                method: "getValue",
+            }),
+        ).toEqual({ type: "RESPONSE", reqId: "retained", result: "retained" });
     });
 
     it("is busy while a host stream bridged to the guest is open", async () => {

@@ -53,17 +53,6 @@ vi.mock("./process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-vi.mock("./rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "./rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 const PORTRAIT = pngWithText({});
 const PAYLOAD = new Uint8Array([71, 73, 70, 56, 57, 97, 42]);
@@ -100,12 +89,12 @@ function character(extra: Record<string, unknown> = {}) {
     } as any;
 }
 
-function moduleFixture(keys: string[]) {
+function moduleFixture(keys: string[], icon = "") {
     return {
         id: "module-id",
         name: "Batched",
         description: "",
-        icon: "assets/portrait.png",
+        icon,
         assets: keys.map((key, i) => [`asset-${i}`, key, "png"] as [string, string, string]),
     };
 }
@@ -248,6 +237,99 @@ afterEach(() => {
 });
 
 describe("batched exports", () => {
+    it.each(["risum", "charx"] as const)(
+        "%s module completion counts re-encoded images and omits the line with compression off or equal bytes",
+        async (format) => {
+            const h = await boot();
+            h.compress.mockRestore();
+            h.data.set("assets/a.png", PORTRAIT);
+            const module = moduleFixture(["assets/a.png"], format === "charx" ? "assets/portrait.png" : "");
+            const encoded = new Uint8Array([82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80]);
+            vi.stubGlobal(
+                "Image",
+                class {
+                    width = 1;
+                    height = 1;
+                    onload?: () => void;
+                    set src(_value: string) {
+                        queueMicrotask(() => this.onload?.());
+                    }
+                },
+            );
+            vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: vi.fn() } as any);
+            const encode = vi.spyOn(HTMLCanvasElement.prototype, "toDataURL");
+
+            for (const [compression, changed] of [
+                [false, false],
+                [true, false],
+                [true, true],
+            ]) {
+                h.settings.memoryTranslateMedia.imageCompression = compression;
+                const expectedBytes = changed ? encoded : PORTRAIT;
+                encode.mockClear().mockReturnValue(`data:image/webp;base64,${b64(expectedBytes)}`);
+                alerts.normal.mockClear();
+                assets.saved.length = 0;
+                h.chunks.length = 0;
+
+                if (format === "risum") {
+                    const bytes = await h.modules.exportModuleLegacy(module, { saveData: false });
+                    await h.modules.readModule(Buffer.from(bytes!));
+                    expect(assets.saved).toEqual([expectedBytes]);
+                } else {
+                    await h.modules.exportModule(module);
+                    const zip = fflate.unzipSync(h.output());
+                    const card = JSON.parse(Buffer.from(zip["card.json"]).toString());
+                    expect(card.data.assets).toHaveLength(2);
+                    for (const asset of card.data.assets) {
+                        expect(zip[asset.uri.replace("embeded://", "")]).toEqual(expectedBytes);
+                    }
+                }
+                const count = format === "risum" ? 1 : 2;
+                expect(encode).toHaveBeenCalledTimes(compression ? count : 0);
+                expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(
+                    changed
+                        ? `${language.successExport}\nRe-encoded ${count} images for export. The originals remain in the app.`
+                        : language.successExport,
+                );
+                expect(alerts.error).not.toHaveBeenCalled();
+                expect(module.assets[0][1]).toBe("assets/a.png");
+                expect(h.data.get("assets/a.png")).toEqual(PORTRAIT);
+            }
+        },
+    );
+
+    it("refuses icon-bearing legacy modules for UI and programmatic callers, but exports iconless modules", async () => {
+        const h = await boot();
+        const module = moduleFixture(["assets/a.png"], "assets/portrait.png");
+        const reads = vi.spyOn(h.api, "loadAssets");
+        const portrait = vi.mocked(h.api.readImage);
+        portrait.mockClear();
+
+        expect(await h.modules.exportModuleLegacy(module)).toBeUndefined();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error(language.moduleLegacyExportIconUnsupported));
+        expect(language.moduleLegacyExportIconUnsupported).toContain("CharX");
+        await expect(h.modules.exportModuleLegacy(module, { saveData: false, alertEnd: false })).rejects.toThrow(
+            language.moduleLegacyExportIconUnsupported,
+        );
+        expect(alerts.error).toHaveBeenCalledOnce();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(reads).not.toHaveBeenCalled();
+        expect(portrait).not.toHaveBeenCalled();
+        expect(h.init).not.toHaveBeenCalled();
+        expect(h.download).not.toHaveBeenCalled();
+        expect(h.output()).toHaveLength(0);
+
+        h.data.set("assets/a.png", PAYLOAD);
+        const bytes = await h.modules.exportModuleLegacy({ ...module, icon: "" }, { saveData: false, alertEnd: false });
+        const imported = await h.modules.readModule(Buffer.from(bytes!));
+        expect(imported).toMatchObject({
+            name: module.name,
+            icon: "",
+            assets: [["asset-0", expect.any(String), "png"]],
+        });
+        expect(assets.saved).toEqual([PAYLOAD]);
+    });
+
     it.each(["risum", "png", "charx", "json", "v2 VITS"] as const)(
         "%s consumes a batch while the next 200-key POST is pending",
         async (format) => {
@@ -526,7 +608,7 @@ describe("batched exports", () => {
                 expect(read.assets).toHaveLength(3);
                 expect(assets.saved.map((b) => b.length)).toEqual([0, 0, 0]);
             } else if (format === "module") {
-                await h.modules.exportModule(moduleFixture(keys));
+                await h.modules.exportModule(moduleFixture(keys, "assets/portrait.png"));
             } else {
                 await h.cards.exportCharacterCard(
                     character(
@@ -710,7 +792,7 @@ describe("export failure ownership", () => {
                     alertEnd: owner === "risum",
                 });
             } else if (owner === "module") {
-                exporting = h.modules.exportModule(moduleFixture(keys));
+                exporting = h.modules.exportModule(moduleFixture(keys, "assets/portrait.png"));
             } else if (owner.startsWith("exportChar")) {
                 const id = h.characterStore.addCharacter(input);
                 alerts.cardExport.mockResolvedValue({
@@ -851,13 +933,15 @@ describe("JSON export asset cap", () => {
     it("exports a card whose assets, portrait included, total exactly 64 MiB", async () => {
         const { h, result } = await capped([half(), half().subarray(PORTRAIT.length)], PAYLOAD);
         expect(h.cards.JSON_EXPORT_ASSET_LIMIT).toBe(64 * 1024 * 1024);
-        expect(result).toEqual({ missingAssets: 0 });
+        expect(result).toEqual({ missingAssets: 0, reencodedImages: 3 });
         expect(h.download).toHaveBeenCalledOnce();
         const card = JSON.parse(Buffer.from(h.downloaded()).toString());
         expect(card.data.assets.map((asset: { uri: string }) => asset.uri)).toEqual(
             Array(3).fill(`data:application/octet-stream;base64,${b64(PAYLOAD)}`),
         );
-        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.successExport);
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(
+            `${language.successExport}\n${language.exportReencodedImages.replace("{count}", "3")}`,
+        );
         expect(alerts.error).not.toHaveBeenCalled();
     });
 

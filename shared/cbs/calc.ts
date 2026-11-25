@@ -177,6 +177,11 @@ function executeRPNCalculation(text: string, vars: CalcVariables) {
     return evaluated;
 }
 
+/**
+ * Evaluates `text` innermost parentheses first, each group's number spliced back into its parent. A `$name` or
+ * `@name` reads as its `parseFloat` (a numeric prefix: `12cats` reads 12), 0 when that is NaN; `null` in any case
+ * reads 0, and an empty expression answers 0.
+ */
 export function calcString(text: string, vars: CalcVariables) {
     let depthText: string[] = [""];
 

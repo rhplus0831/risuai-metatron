@@ -1,9 +1,25 @@
+/**
+ * The rate limiter of the memory algorithms' provider requests (HypaV3's experimental summaries and
+ * `HypaProcessorV2`'s embeddings), shared by the tab (re-exported by
+ * `src/ts/process/memory/taskRateLimiter.ts`) and the server's memory code. One limiter's tasks wait
+ * in one queue: at most `maxConcurrentTasks` run at once, and at most `tasksPerMinute` start in any
+ * 60-second window.
+ *
+ * - A task's failure is its result (`success: false`), never a rejection. With `failFast` (the
+ *   default) the first failure cancels every queued task: each ends with a `TaskCanceledError`
+ *   result. Tasks already running are not stopped.
+ * - `cancelPendingTasks` ends the queued tasks the same way and clears the rate-window retry timer.
+ *   Later tasks schedule their own retry against the unchanged window.
+ */
+
+/** The limits: 20 tasks per minute, 5 at once, and `failFast` by default. */
 export interface TaskRateLimiterOptions {
     tasksPerMinute?: number;
     maxConcurrentTasks?: number;
     failFast?: boolean;
 }
 
+/** A batch's results, in the order of its tasks. */
 export interface BatchResult<TData> {
     results: TaskResult<TData>[];
     successCount: number;
@@ -17,12 +33,17 @@ export interface TaskResult<TData> {
     error?: Error;
 }
 
+/**
+ * The limiter. The constructor throws when `maxConcurrentTasks` exceeds `tasksPerMinute`.
+ * `taskQueueChangeCallback` hears the queued count after each change (the progress counts).
+ */
 export class TaskRateLimiter {
     private static readonly LOG_PREFIX = "[TaskRateLimiter]";
     public readonly options: Required<TaskRateLimiterOptions>;
     public taskQueueChangeCallback: ((queuedCount: number) => void) | null = null;
     private timestamps: number[] = [];
     private active: number = 0;
+    private retryTimer: ReturnType<typeof setTimeout> | undefined;
     private queue: Array<{
         task: () => Promise<TaskResult<any>>;
         resolve: (result: TaskResult<any>) => void;
@@ -74,6 +95,8 @@ export class TaskRateLimiter {
     }
 
     public cancelPendingTasks(reason: string): void {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = undefined;
         const error = new TaskCanceledError(reason);
 
         while (this.queue.length > 0) {
@@ -128,7 +151,12 @@ export class TaskRateLimiter {
             );
 
             // Wait until rate limit window advances before retrying
-            setTimeout(() => this.processNextFromQueue(), timeUntilExpiry);
+            if (this.retryTimer === undefined) {
+                this.retryTimer = setTimeout(() => {
+                    this.retryTimer = undefined;
+                    this.processNextFromQueue();
+                }, timeUntilExpiry);
+            }
             return;
         }
 
@@ -167,6 +195,7 @@ export class TaskRateLimiter {
     }
 }
 
+/** The error of a task cancelled before it started (`failFast`, `cancelPendingTasks`). */
 export class TaskCanceledError extends Error {
     public readonly name: string;
 

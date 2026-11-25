@@ -1,19 +1,29 @@
 // @vitest-environment node
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chat, character, loreBook } from "../../../shared/database.ts";
-import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { NO_GENERATION_HOOKS, type GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { createAssetLifecycle } from "../data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import { createSnapshotManager } from "../data/snapshots.ts";
+import { assetLeased, withAssetLocks } from "../http/assetLeases.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import type { JobScope } from "../jobs/jobScope.ts";
+import { flushChatMetadata, loadJobScope, type JobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings } from "../lua/bindings.ts";
+import { resolveStorageKey } from "../routes/storage.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 
 // A Lua button as a server `command` job, end to end on a real listening server
 // with the default runner (`server/src/jobs/commandRunner.ts`), the real worker pool and prelude,
@@ -22,7 +32,7 @@ import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 // provider. The route's command validation; the host-function contract (shapes, guards, the table
 // bridges, the frozen effective persona, CBS and lore over the scope, the live character reads,
 // the chat writes by id); permission provenance per trigger (the character's `lowLevelAccess`
-// versus a module's) and the trigger order; the group refusal; a load failure versus a handler
+// versus a module's) and the trigger order; the group chat refusal at admission; a load failure versus a handler
 // error; the fatal latch (a barrier failure caught by `pcall` has no later effect); writes built
 // from the current chat after an external edit; and the notices kept before the owner's first
 // attach (an ended job, and the order against a question). The in-process `runInJob` is in
@@ -243,6 +253,7 @@ async function seedCharacter(options: {
     type?: "character" | "group";
     bindPersona?: boolean;
     extra?: Record<string, unknown>;
+    chat?: Partial<Chat>;
 }) {
     const chaId = `lua-${++seeded}`;
     const characterRecord: Record<string, unknown> = {
@@ -295,6 +306,7 @@ async function seedCharacter(options: {
                                     { role: "char", data: "greeting", chatId: "m1" },
                                     { role: "user", data: "hi there", chatId: "m2" },
                                 ],
+                                ...options.chat,
                             },
                         },
                     ],
@@ -475,6 +487,166 @@ describe("the job's Lua budget", () => {
 });
 
 describe("the lore reader binding", () => {
+    it("keeps both preview kinds' activation flags local and lets the following send activate and store them", async () => {
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: ":memory:", kinds });
+        const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+        try {
+            const first = (name: string) => (store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+            const binding = {
+                presetId: first("presets"),
+                modelPresetId: first("modelPresets"),
+                personaId: first("personas"),
+            };
+            const entry = (id: string, decorator: string): loreBook => ({
+                id,
+                key: "dragon",
+                secondkey: "",
+                comment: id,
+                content: `@@${decorator}\n${id}`,
+                insertorder: 100,
+                mode: "normal",
+                alwaysActive: false,
+                selective: false,
+            });
+            store.put(
+                kinds.get("characters")!,
+                "c",
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    globalLore: [
+                        entry("once", "dont_activate_after_match"),
+                        entry("keep", "keep_activate_after_match"),
+                    ],
+                },
+                null,
+            );
+            const before = { $unrelated: "preserve", $__internal_ka_existing: "true", $__internal_da_spent: "true" };
+            for (const kind of ["preview", "previewPrompt"] as const) {
+                const chatId = kind;
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId,
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        name: kind,
+                                        fmIndex: -1,
+                                        message: [{ chatId: "u", role: "user", data: "dragon" }],
+                                        promptPresetId: binding.presetId,
+                                        modelPresetId: binding.modelPresetId,
+                                        bindedPersona: binding.personaId,
+                                        scriptstate: before,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                });
+                const open = (jobKind: typeof kind | "send") => {
+                    const context = {
+                        characterId: "c",
+                        chatId,
+                        ...binding,
+                        mode: "normal" as const,
+                        input: "",
+                        chatRevision: store.chatRevision("c", chatId)!,
+                    };
+                    const signal = new AbortController().signal;
+                    const job: RunningJob = {
+                        id: jobKind,
+                        kind: jobKind,
+                        command: null,
+                        context,
+                        signal,
+                        epoch: store.epoch(),
+                        hooks: NO_GENERATION_HOOKS,
+                        channel: {
+                            notice() {},
+                            ask: async () => ({ outcome: "aborted" }),
+                            callback: async () => ({ outcome: "aborted" }),
+                        },
+                        ownerAttached: () => true,
+                        emit() {},
+                        emitRecords: () => [],
+                        onClientMessage: () => () => {},
+                        write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
+                    };
+                    const bindings = createLuaBindings({
+                        job,
+                        scope: loadJobScope(store, kinds, context),
+                        store,
+                        kinds,
+                        rootDir: REPO_ROOT,
+                        savePath: rootDir,
+                        llm: {} as never,
+                        tokens: { count: async (text: string) => text.length } as never,
+                        runCharacterId: "c",
+                        engineCharacterId: "c",
+                    });
+                    const ctx: HostContext = {
+                        identity: context,
+                        access: "safe",
+                        signal,
+                        regex: async () => ({ value: false }),
+                    };
+                    return {
+                        job,
+                        activate: async () =>
+                            (await bindings.services.activateLore(ctx)).actives.map(({ source }) => source).sort(),
+                    };
+                };
+                const preview = open(kind);
+                expect(await preview.activate()).toEqual(["keep", "once"]);
+                // Subsequent activations in this preview see their own one-shot and keep flags.
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId,
+                            baseRevision: store.chatRevision("c", chatId)!,
+                            ops: [{ op: "setText", id: "u", text: "nothing" }],
+                        },
+                    ],
+                });
+                expect(await preview.activate()).toEqual(["keep"]);
+                flushChatMetadata(preview.job);
+                expect(store.chatMeta("c", chatId)!.data.scriptstate).toEqual(before);
+
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId,
+                            baseRevision: store.chatRevision("c", chatId)!,
+                            ops: [{ op: "setText", id: "u", text: "dragon" }],
+                        },
+                    ],
+                });
+                const send = open("send");
+                expect(await send.activate()).toEqual(["keep", "once"]);
+                flushChatMetadata(send.job);
+                expect(store.chatMeta("c", chatId)!.data.scriptstate).toEqual({
+                    ...before,
+                    $__internal_da_once: "true",
+                    $__internal_ka_keep: "true",
+                });
+                const nextSend = open("send");
+                expect(await nextSend.activate()).toEqual(["keep"]);
+                flushChatMetadata(nextSend.job);
+            }
+        } finally {
+            clock.mockRestore();
+            store.close();
+        }
+    });
+
     it("getLoreBooksMain searches local, merged owner, and module lore by comment and parses their content", () => {
         const entry = (id: string, content: string, comment = "matching"): loreBook => ({
             id,
@@ -559,12 +731,433 @@ describe("the lore reader binding", () => {
     });
 });
 
+const imageMethods = ["getCharacterImageMain", "getPersonaImageMain", "generateImageMain"] as const;
+
+function imageAssetFixture(method: (typeof imageMethods)[number], answerStoredImage = true) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "risu-lua-image-asset-"));
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const kind = (name: string) => kinds.get(name)!;
+    const store = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds });
+    const snapshots = createSnapshotManager({ store, dir: path.join(dir, "backups") });
+    const clock = sweepClock();
+    const lifecycle = createAssetLifecycle({
+        savePath: dir,
+        store,
+        snapshots,
+        inlaysKind: kind("inlays"),
+        ...clock.options,
+    });
+    const id = `asset-reused-by-${method}`;
+    const asset = `assets/${id}.png`;
+    const file = seedSweepAsset({ savePath: dir }, asset);
+    const put = (name: string, key: string, data: unknown) =>
+        store.put(kind(name), key, data, store.get(kind(name), key)?.revision ?? null);
+    put("presets", "main", [{ id: "p", name: "P" }]);
+    put("modelPresets", "main", [{ id: "m", name: "M" }]);
+    put("personas", "main", [{ id: "u", name: "U", icon: id }]);
+    put("characters", "c", { chaId: "c", type: "character", name: "C", image: id });
+    store.applyChanges({
+        chats: [
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: null,
+                ops: [
+                    {
+                        op: "create",
+                        chat: {
+                            message: [],
+                            promptPresetId: "p",
+                            modelPresetId: "m",
+                            bindedPersona: "u",
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    const context = {
+        characterId: "c",
+        chatId: "k",
+        presetId: "p",
+        modelPresetId: "m",
+        personaId: "u",
+        mode: "button" as const,
+        input: "",
+        chatRevision: store.chatRevision("c", "k")!,
+    };
+    const signal = new AbortController().signal;
+    const callback = vi.fn(async () =>
+        answerStoredImage
+            ? { outcome: "answered" as const, value: { id } }
+            : { outcome: "failed" as const, failure: "hook" as const, error: "No image backend" },
+    );
+    const job: RunningJob = {
+        id: "job",
+        kind: "command",
+        context,
+        command: { type: "button", data: "" },
+        hooks: NO_GENERATION_HOOKS,
+        epoch: store.epoch(),
+        signal,
+        channel: { notice() {}, ask: async () => ({ outcome: "aborted" }), callback },
+        ownerAttached: () => true,
+        emit() {},
+        emitRecords: () => [],
+        onClientMessage: () => () => {},
+        write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
+    };
+    const ctx: HostContext = {
+        identity: { characterId: "c", chatId: "k", presetId: "p", personaId: "u" },
+        access: "lowLevel",
+        signal,
+        regex: async () => ({ value: false }),
+    };
+    return {
+        dir,
+        id,
+        asset,
+        file,
+        lifecycle,
+        clock,
+        callback,
+        putImage() {
+            put("inlays", id, { asset, type: "image", name: id, ext: "png" });
+        },
+        removeImage() {
+            store.delete(kind("inlays"), id, store.get(kind("inlays"), id)!.revision);
+        },
+        invoke() {
+            const bindings = createLuaBindings({
+                job,
+                scope: loadJobScope(store, kinds, context),
+                store,
+                kinds,
+                rootDir: REPO_ROOT,
+                savePath: dir,
+                llm: {} as never,
+                tokens: {} as never,
+                runCharacterId: "c",
+                engineCharacterId: "c",
+            });
+            return Promise.resolve(bindings.host.async![method](["id", "prompt", "", "{}"], ctx));
+        },
+        async close() {
+            await lifecycle.close();
+            await snapshots.stop();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        },
+    };
+}
+
+it.each(imageMethods)(
+    "%s blocks sweep during the reused asset check and leases the file afterwards",
+    async (method) => {
+        vi.useFakeTimers({ toFake: ["Date", "performance"] });
+        const f = imageAssetFixture(method);
+        let release!: () => void;
+        const resume = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const checking = new Promise<void>((resolve) => (entered = resolve));
+        const lstat = fs.lstat;
+        let holdCheck = false;
+        const check = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+            if (holdCheck && String(args[0]) === f.file) {
+                holdCheck = false;
+                entered();
+                await resume;
+            }
+            return lstat(...args);
+        });
+        let result: Promise<unknown> | undefined;
+        let duringCheck: ReturnType<typeof f.lifecycle.sweep> | undefined;
+        try {
+            // Mature the file before adding metadata, so retention cannot hide a missing asset lease.
+            expect((await f.lifecycle.scan()).complete).toBe(true);
+            f.clock.advanceWall();
+            expect((await f.lifecycle.scan()).complete).toBe(true);
+            f.putImage();
+            holdCheck = true;
+            result = f.invoke();
+            await checking;
+            f.removeImage();
+            const sweep = () => f.lifecycle.sweep({ dryRun: false, keys: [f.asset], inlays: [] });
+            let swept = false;
+            duringCheck = sweep().then((answer) => {
+                swept = true;
+                return answer;
+            });
+            // With no snapshots or export holds, sweep's setup only queues microtasks before
+            // the key lock. Drain them while verification is explicitly suspended.
+            await nextTurn();
+            expect(swept).toBe(false);
+            expect(await fs.readFile(f.file, "utf8")).toBe("old bytes");
+            release();
+            expect(await result).toBe(`{{${method === "generateImageMain" ? "inlay" : "inlayed"}::${f.id}}}`);
+            expect(f.callback).toHaveBeenCalledTimes(method === "generateImageMain" ? 1 : 0);
+            expect(assetLeased(f.file)).toBe(true);
+            expect(await duringCheck).toMatchObject({ deleted: [], skipped: [{ key: f.asset, reason: "leased" }] });
+            expect(await sweep()).toMatchObject({ deleted: [], skipped: [{ key: f.asset, reason: "leased" }] });
+            expect(await fs.readFile(f.file, "utf8")).toBe("old bytes");
+        } finally {
+            release();
+            await result?.catch(() => {});
+            await duringCheck?.catch(() => {});
+            check.mockRestore();
+            await f.close();
+            vi.useRealTimers();
+        }
+    },
+);
+
+it("an image shortcut waits for the sweep's key lock before checking a reused image", async () => {
+    const f = imageAssetFixture("getCharacterImageMain");
+    const lstat = fs.lstat;
+    let locked = false;
+    const readsWhileLocked: string[] = [];
+    const check = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+        if (String(args[0]) === f.file && locked) readsWhileLocked.push(f.file);
+        return lstat(...args);
+    });
+    let result: Promise<unknown> | undefined;
+    try {
+        f.putImage();
+        // Hold the exact lock used by sweep. The turn barrier drains the callback's microtasks;
+        // it does not race a real deadline or wait for filesystem completion.
+        await withAssetLocks([f.file], async () => {
+            locked = true;
+            result = f.invoke();
+            await nextTurn();
+            expect(readsWhileLocked).toEqual([]);
+            // A deletion by the lock holder must be visible to the check after it acquires the lock.
+            rmSync(f.file);
+            locked = false;
+        });
+        await expect(result).rejects.toThrow("The client answered an image inlay that is not stored");
+        expect(assetLeased(f.file)).toBe(false);
+    } finally {
+        locked = false;
+        await result?.catch(() => {});
+        check.mockRestore();
+        await f.close();
+    }
+});
+
+it("treats missing, non-regular, and unmappable inlay assets as unusable in shortcuts and callback answers", async () => {
+    for (const method of imageMethods) {
+        for (const state of ["missing", "non-regular", "unmappable"] as const) {
+            const f = imageAssetFixture(method, method === "generateImageMain");
+            try {
+                if (state === "unmappable") {
+                    f.putImage();
+                    // Historical metadata can predate today's asset-key validation.
+                    const db = new DatabaseSync(path.join(f.dir, "data", "resources.sqlite"));
+                    try {
+                        db.prepare("UPDATE resources SET data = ? WHERE kind = 'inlays' AND id = ?").run(
+                            JSON.stringify({
+                                asset: "outside-storage/image.png",
+                                type: "image",
+                                name: f.id,
+                                ext: "png",
+                            }),
+                            f.id,
+                        );
+                    } finally {
+                        db.close();
+                    }
+                } else {
+                    f.putImage();
+                    rmSync(f.file);
+                    if (state === "non-regular") mkdirSync(f.file);
+                }
+                if (method === "generateImageMain") {
+                    await expect(f.invoke(), `${method}: ${state}`).rejects.toThrow(
+                        "The client answered an image inlay that is not stored",
+                    );
+                } else {
+                    expect(await f.invoke(), `${method}: ${state}`).toBe("");
+                }
+                expect(f.callback, `${method}: ${state}`).toHaveBeenCalledTimes(1);
+                expect(assetLeased(f.file), `${method}: ${state}`).toBe(false);
+            } finally {
+                await f.close();
+            }
+        }
+    }
+});
+
+it.each(["getCharacterImageMain", "getPersonaImageMain", "generateImageMain"] as const)(
+    "%s protects a reused inlay during its file check and until the message is written",
+    async (method) => {
+        vi.useFakeTimers({ toFake: ["Date", "performance"] });
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-lua-inlay-"));
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const kind = (name: string) => kinds.get(name)!;
+        const store = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds });
+        const snapshots = createSnapshotManager({ store, dir: path.join(dir, "backups") });
+        const clock = sweepClock();
+        const lifecycle = createAssetLifecycle({
+            savePath: dir,
+            store,
+            snapshots,
+            inlaysKind: kind("inlays"),
+            ...clock.options,
+        });
+        const id = `reused-by-${method}`;
+        const asset = `assets/${id}.png`;
+        const file = seedSweepAsset({ savePath: dir }, asset);
+        const put = (name: string, key: string, data: unknown) =>
+            store.put(kind(name), key, data, store.get(kind(name), key)?.revision ?? null);
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const checking = new Promise<void>((resolve) => (entered = resolve));
+        let result: Promise<unknown> | undefined;
+        let holdCheck = false;
+        const lstat = fs.lstat;
+        const check = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+            if (holdCheck && String(args[0]) === file) {
+                holdCheck = false;
+                entered();
+                await pending;
+            }
+            return lstat(...args);
+        });
+        try {
+            put("presets", "main", [{ id: "p", name: "P" }]);
+            put("modelPresets", "main", [{ id: "m", name: "M" }]);
+            put("personas", "main", [{ id: "u", name: "U", icon: id }]);
+            put("characters", "c", { chaId: "c", type: "character", name: "C", image: id });
+            put("inlays", id, { asset, type: "image", name: id, ext: "png" });
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    message: [],
+                                    promptPresetId: "p",
+                                    modelPresetId: "m",
+                                    bindedPersona: "u",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+            expect((await lifecycle.scan()).complete).toBe(true);
+            clock.advanceWall();
+            expect((await lifecycle.scan()).complete).toBe(true);
+            const record = store.get(kind("inlays"), id)!;
+            const context = {
+                characterId: "c",
+                chatId: "k",
+                presetId: "p",
+                modelPresetId: "m",
+                personaId: "u",
+                mode: "button" as const,
+                input: "",
+                chatRevision: store.chatRevision("c", "k")!,
+            };
+            const signal = new AbortController().signal;
+            const callback = vi.fn(async () => ({ outcome: "answered" as const, value: { id } }));
+            const job: RunningJob = {
+                id: "job",
+                kind: "command",
+                context,
+                command: { type: "button", data: "" },
+                hooks: NO_GENERATION_HOOKS,
+                epoch: store.epoch(),
+                signal,
+                channel: { notice() {}, ask: async () => ({ outcome: "aborted" }), callback },
+                ownerAttached: () => true,
+                emit() {},
+                emitRecords: () => [],
+                onClientMessage: () => () => {},
+                write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
+            };
+            const bindings = createLuaBindings({
+                job,
+                scope: loadJobScope(store, kinds, context),
+                store,
+                kinds,
+                rootDir: REPO_ROOT,
+                savePath: dir,
+                llm: {} as never,
+                tokens: {} as never,
+                runCharacterId: "c",
+                engineCharacterId: "c",
+            });
+            const ctx: HostContext = {
+                identity: { characterId: "c", chatId: "k", presetId: "p", personaId: "u" },
+                access: "lowLevel",
+                signal,
+                regex: async () => ({ value: false }),
+            };
+            holdCheck = true;
+            result = Promise.resolve(bindings.host.async![method](["id", "prompt", "", "{}"], ctx));
+            await checking;
+            // No marker is stored yet, and the binding is still awaiting the file check.
+            expect(await lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+                removedInlays: [],
+                skippedInlays: [{ id, reason: "leased" }],
+            });
+            release();
+            const marker = await result;
+            expect(marker).toBe(`{{${method === "generateImageMain" ? "inlay" : "inlayed"}::${id}}}`);
+            expect(callback).toHaveBeenCalledTimes(method === "generateImageMain" ? 1 : 0);
+            expect(store.get(kind("inlays"), id)).toEqual(record);
+            expect(await lifecycle.sweep({ dryRun: false, keys: [], inlays: [id] })).toMatchObject({
+                removedInlays: [],
+                skippedInlays: [{ id, reason: "leased" }],
+            });
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: store.chatRevision("c", "k"),
+                        ops: [
+                            {
+                                op: "append",
+                                anchor: { end: true },
+                                messages: [{ role: "char", data: marker as string, chatId: "image-message" }],
+                            },
+                        ],
+                    },
+                ],
+            });
+            expect((await lifecycle.scan()).orphanInlays.records).toEqual([]);
+            expect(store.get(kind("inlays"), id)).toEqual(record);
+            expect(await fs.readFile(resolveStorageKey(dir, asset)!)).toEqual(Buffer.from("old bytes"));
+        } finally {
+            release();
+            await result?.catch(() => {});
+            check.mockRestore();
+            await lifecycle.close();
+            await snapshots.stop();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+            vi.useRealTimers();
+        }
+    },
+);
+
 describe("the host-function contract through the real worker", () => {
-    it("includes the requested image orientation in the callback and omits it when options are absent", async () => {
+    it("forwards image orientation and a valid name, omitting empty, non-string, and missing names", async () => {
+        // 200 UTF-16 code units (each emoji is two), the longest name forwarded.
+        const name = "🌳".repeat(100);
         const chaId = await seedCharacter({
             codes: [
                 button(`
-                    generateImage(id, "p", "n", { orientation = "portrait" }):await()
+                    generateImage(id, "p", "n", { orientation = "portrait", name = "${name}" }):await()
+                    generateImage(id, "p", "n", { name = "" }):await()
+                    generateImage(id, "p", "n", { name = { "My picture" } }):await()
                     generateImage(id, "p", "n"):await()
                 `),
             ],
@@ -574,22 +1167,26 @@ describe("the host-function contract through the real worker", () => {
         });
         expect(terminal?.type).toBe("done");
         const callbacks = events.filter((event) => event.type === "callback");
-        expect(callbacks.map(({ name, payload }) => ({ name, payload }))).toEqual([
+        expect(callbacks.map(({ name, payload }) => ({ name, payload }))).toStrictEqual([
             {
                 name: "generateImage",
-                payload: { prompt: "p", negative: "n", characterId: chaId, orientation: "portrait" },
+                payload: { prompt: "p", negative: "n", characterId: chaId, orientation: "portrait", name },
             },
+            { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
+            { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
             { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
         ]);
     });
 
-    it("returns orientation errors for an invalid string and a number without asking the tab to generate", async () => {
+    it("rejects overlong image names and reports invalid orientations first without asking the tab", async () => {
         const chaId = await seedCharacter({
             codes: [
                 button(`
-                    local invalidString = generateImage(id, "p", "n", { orientation = "square" }):await()
+                    local longName = string.rep("🌳", 100) .. "!"
+                    local invalidName = generateImage(id, "p", "n", { orientation = "portrait", name = longName }):await()
+                    local invalidString = generateImage(id, "p", "n", { orientation = "square", name = longName }):await()
                     local invalidNumber = generateImage(id, "p", "n", { orientation = 17 }):await()
-                    alertNormal(id, json.encode({invalidString, invalidNumber}))
+                    alertNormal(id, json.encode({invalidName, invalidString, invalidNumber}))
                 `),
             ],
         });
@@ -598,6 +1195,7 @@ describe("the host-function contract through the real worker", () => {
         });
         expect(terminal?.type).toBe("done");
         expect(JSON.parse(notice(events, "alertNormal")!)).toEqual([
+            "Error: Image name must be at most 200 characters",
             "Error: Image orientation must be landscape or portrait, received square",
             "Error: Image orientation must be landscape or portrait, received 17",
         ]);
@@ -677,13 +1275,13 @@ describe("the host-function contract through the real worker", () => {
             const R = JSON.parse(notice(events, "alertNormal")!);
 
             // Reads: the client's projections, negative indexes, the missing-index values.
-            expect(JSON.parse(R.chat0)).toEqual({ role: "char", data: "greeting", time: 0 });
+            expect(JSON.parse(R.chat0)).toEqual({ id: "m1", chatId: "m1", role: "char", data: "greeting", time: 0 });
             expect(R.chatNeg).toBe("hi there");
             expect(R.roleNeg).toBe("user");
             expect(R.chatMissing).toBe("null");
             expect(R.dataMissing).toBe("");
             expect(R.len).toBe(2);
-            expect(JSON.parse(R.recent)).toEqual([{ role: "user", data: "hi there", time: 0 }]);
+            expect(JSON.parse(R.recent)).toEqual([{ id: "m2", chatId: "m2", role: "user", data: "hi there", time: 0 }]);
             // Variables: the literal "null", the character's default, changed only once; Lua `cbs`
             // does not persist `{{setvar}}` (no `runVar`).
             expect(R.var0).toBe("null");
@@ -772,6 +1370,27 @@ describe("the host-function contract through the real worker", () => {
         },
         SLOW,
     );
+
+    it("prefills alertInput questions only when Lua supplies a string default", async () => {
+        const code = button(`
+            alertInput(id, "Name?", "Ada"):await()
+            alertInput(id, "City?"):await()
+            local answer = alertInput(id, "Country?", {"France"}):await()
+            alertNormal(id, answer)
+        `);
+        const chaId = await seedCharacter({ codes: [code] });
+        const { events, terminal } = await runButton(chaId, { answer: () => "Canada" });
+
+        expect(terminal?.type).toBe("done");
+        expect(
+            events.filter((event) => event.type === "question").map(({ kind, payload }) => ({ kind, payload })),
+        ).toStrictEqual([
+            { kind: "alertInput", payload: { message: "Name?", defaultValue: "Ada" } },
+            { kind: "alertInput", payload: { message: "City?" } },
+            { kind: "alertInput", payload: { message: "Country?" } },
+        ]);
+        expect(notice(events, "alertNormal")).toBe("Canada");
+    });
 
     it(
         "routes axLLM modes to their slots, defaults absent and null modes to otherAx, and keeps LLM on main",
@@ -1003,12 +1622,166 @@ describe("the host-function contract through the real worker", () => {
     );
 });
 
+describe("Lua full-chat updates", () => {
+    const messages: Chat["message"] = [
+        { chatId: "question", role: "user", data: "Original question.", time: 1729999999999 },
+        {
+            chatId: "reply",
+            role: "char",
+            data: "Untouched reply.",
+            time: 1730000000000,
+            generationInfo: { model: "old-model", generationId: "old-generation", inputTokens: 8, outputTokens: 2 },
+            promptInfo: { promptName: "Old preset", promptToggles: [{ key: "tone", value: "quiet" }] },
+            translation: {
+                text: "번역",
+                sourceHash: translationSourceHash("Untouched reply."),
+                targetLanguage: "ko",
+                translatedAt: 1730000000001,
+            },
+            candidates: [
+                { id: "candidateA", data: "Untouched reply." },
+                { id: "candidateB", data: "Alternative reply." },
+            ],
+            selected: 0,
+            candidatesRevision: 1,
+        },
+    ];
+
+    async function update(body: string, working = false): Promise<Chat["message"]> {
+        const chaId = await seedCharacter({
+            codes: [working ? `go = async(function(id)\n${body}\nend)` : button(body)],
+            chat: { message: messages },
+        });
+        if (working) {
+            const created = await createJob({
+                kind: "command",
+                clientId: "tab",
+                command: { type: "manual", name: "go" },
+                context: { ...(await context(chaId)), mode: "manual" },
+            });
+            expect(created.status).toBe(200);
+            expect((await follow(created.body.jobId)).terminal?.type).toBe("done");
+        } else {
+            expect((await runButton(chaId)).terminal?.type).toBe("done");
+        }
+        return (await readChat(chaId)).data.message;
+    }
+
+    it.each([
+        { path: "live chat", working: false },
+        { path: "trigger working copy", working: true },
+    ])("preserves an untouched reply through a get/set round trip on the $path", async ({ working }) => {
+        const result = await update(
+            `local chats = getFullChat(id)
+            chats[1].data = "Edited question."
+            setFullChat(id, chats)`,
+            working,
+        );
+        expect(result).toEqual([{ ...messages[0], data: "Edited question." }, messages[1]]);
+    });
+
+    it.each([
+        { path: "live chat", working: false },
+        { path: "trigger working copy", working: true },
+    ])("preserves edited reply metadata when the item supplies only chatId on the $path", async ({ working }) => {
+        const result = await update(
+            `setFullChat(id, {{chatId = "reply", role = "char", data = "Edited reply."}})`,
+            working,
+        );
+        expect(result).toEqual([{ ...messages[1], data: "Edited reply." }]);
+    });
+
+    it("prefers id over chatId and falls back to chatId after the id match is used", async () => {
+        const result = await update(`setFullChat(id, {
+            {id = "reply", chatId = "question", role = "char", data = "Edited reply."},
+            {id = "reply", chatId = "question", role = "user", data = "Edited question."}
+        })`);
+        expect(result).toEqual([
+            { ...messages[1], data: "Edited reply." },
+            { ...messages[0], data: "Edited question." },
+        ]);
+    });
+
+    it("keeps messages at unchanged positions when items have no id", async () => {
+        const result = await update(
+            `setFullChat(id, {{role = "user", data = "Original question."}, {role = "char", data = "Untouched reply."}})`,
+        );
+        expect(result).toEqual(messages);
+    });
+
+    it("creates a new message for changed text without an id and keeps its untouched sibling", async () => {
+        const result = await update(
+            `setFullChat(id, {{role = "user", data = "Edited question."}, {role = "char", data = "Untouched reply."}})`,
+        );
+        expect(result).toEqual([{ chatId: expect.any(String), role: "user", data: "Edited question." }, messages[1]]);
+        expect(result[0].chatId).not.toBe(messages[0].chatId);
+    });
+
+    it("removes omitted messages and preserves the retained message's fields", async () => {
+        const result = await update(`local chats = getFullChat(id)\nsetFullChat(id, {chats[2]})`);
+        expect(result).toEqual([messages[1]]);
+    });
+
+    it("keeps each message's fields when the list is reordered", async () => {
+        const result = await update(`local chats = getFullChat(id)\nsetFullChat(id, {chats[2], chats[1]})`);
+        expect(result).toEqual([messages[1], messages[0]]);
+    });
+
+    it("creates new messages for duplicate and unknown ids after retaining the first match", async () => {
+        const result = await update(
+            `local chats = getFullChat(id)
+            setFullChat(id, {chats[2], chats[2], {id = "unknown", role = "user", data = "New"}})`,
+        );
+        expect(result).toEqual([
+            messages[1],
+            { chatId: expect.any(String), role: "char", data: "Untouched reply." },
+            { chatId: expect.any(String), role: "user", data: "New" },
+        ]);
+        expect(result[2].chatId).not.toBe("unknown");
+        expect(new Set(result.map((message) => message.chatId)).size).toBe(3);
+    });
+});
+
+describe("Lua edit hooks", () => {
+    it("withholds low-level LLM access from editRequest even when the character has a grant", async () => {
+        const chaId = await seedCharacter({
+            lowLevelAccess: true,
+            codes: [
+                `listenEdit("editRequest", function(id, data)
+                    local result = LLMMain(id, '[{"role":"user","content":"edit hook probe"}]', false, ""):await()
+                    return {{role = "user", content = "edit hook grant:" .. type(result)}}
+                end)`,
+            ],
+        });
+        const beforeRequests = providerCalls.length;
+        const created = await createJob({
+            kind: "send",
+            clientId: "tab",
+            context: { ...(await context(chaId)), mode: "send" },
+            hooks: NO_GENERATION_HOOKS,
+        });
+        expect(created.status).toBe(200);
+        const { terminal } = await follow(created.body.jobId);
+
+        expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+        expect(providerCalls.slice(beforeRequests).map((call) => call.body.messages.at(-1)?.content)).toEqual([
+            "edit hook grant:nil",
+        ]);
+        expect((await readChat(chaId)).data.message.at(-1).data).toBe("mock:edit hook grant:nil");
+    });
+});
+
 describe("the command runner", () => {
-    it("refuses a button in a group chat with a 400 terminal", async () => {
+    it("refuses a button in a group chat at admission with groupArchived and leaves the chat unchanged", async () => {
         const chaId = await seedCharacter({ codes: [button(`addChat(id, "char", "ran")`)], type: "group" });
-        const { terminal } = await runButton(chaId);
-        // A command job's failure names its stage: its setup here.
-        expect(terminal).toMatchObject({ type: "error", status: 400, message: /group chat/, stage: "setup" });
+        const created = await createJob({
+            kind: "command",
+            clientId: "tab",
+            context: await context(chaId),
+            command: { type: "button", data: "go" },
+        });
+        expect(created.status).toBe(409);
+        expect(created.body).toEqual({ error: "groupArchived" });
         expect(texts(await readChat(chaId))).toEqual(["char:greeting", "user:hi there"]);
     });
 
@@ -1169,7 +1942,7 @@ describe("notices before the owner's first attach", () => {
             expect(question, JSON.stringify(types)).toBeGreaterThanOrEqual(0);
             expect(kept, JSON.stringify(types)).toBeGreaterThanOrEqual(0);
             // Their relative order is not fixed: the question travels as an async host call and the
-            // notice as a synchronous one, on two message ports (recorded in `self-host-server.md`).
+            // notice as a synchronous one, on two message ports.
             expect(Math.max(question, kept)).toBeLessThan(types.indexOf("done:"));
             expect(notice(events, "alertNormal")).toBe("beside the question");
             expect(texts(await readChat(chaId)).at(-1)).toBe("char:a=yes");

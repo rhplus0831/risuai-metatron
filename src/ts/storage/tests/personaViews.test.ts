@@ -29,12 +29,11 @@ const held = vi.hoisted(() => ({
     chunks: [] as { key: string; value: string }[],
 }));
 
-vi.mock("../../globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    readImage: vi.fn(),
-    saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
-    AppendableBuffer: class {},
-}));
+vi.mock("../../globalApi.svelte", async () =>
+    (await import("../../tests/globalApiMock")).createGlobalApiMock({
+        saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
+    }),
+);
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -59,10 +58,14 @@ vi.mock("../../util", async (importOriginal) => ({
 }));
 
 import { initializeRecords, resetRecords, takeRecordFields } from "../records.svelte";
-import { selection, selectPersona, selectPreset } from "../selection.svelte";
+import { selectCharacter, selection, selectPersona, selectPreset } from "../selection.svelte";
+import { selectChat } from "../chatStore.svelte";
+import { installFlatDatabaseWithChats } from "./installFlatDatabase";
 import {
     activePersona,
     currentPersonaRecord,
+    editedPersona,
+    editedPersonaRecord,
     personaRecordForWrite,
     readSettingsRoot,
     reconcileSelection,
@@ -183,14 +186,14 @@ describe("reads and writes by the selected id", () => {
         persona("u1").name = "Edited in the record";
         expect(persona$.name).toBe("Edited in the record");
 
-        changeUserPersona("u2");
+        changeUserPersona("u2", null);
         expect(selection.personaId).toBe("u2");
         expect(persona$.name).toBe("Two");
         expect(persona$.personaPrompt).toBe("prompt two");
         expect(selectedPersonaIndex()).toBe(1);
         expect(currentPersonaRecord()?.id).toBe("u2");
         // An unknown id changes nothing.
-        changeUserPersona("nope");
+        changeUserPersona("nope", null);
         expect(selection.personaId).toBe("u2");
     });
 
@@ -204,7 +207,7 @@ describe("reads and writes by the selected id", () => {
         flushSync();
         expect(probe.seen).toEqual(["prompt one", "edited"]);
 
-        changeUserPersona("u2");
+        changeUserPersona("u2", null);
         flushSync();
         expect(probe.seen).toEqual(["prompt one", "edited", "prompt two"]);
         expect(probe.derived()).toBe("prompt two");
@@ -215,7 +218,7 @@ describe("reads and writes by the selected id", () => {
         });
         expect(writer.runs()).toBe(1);
         expect(persona("u2").note).toBe("from effect");
-        changeUserPersona("u1");
+        changeUserPersona("u1", null);
         flushSync();
         expect(writer.runs()).toBe(1);
         expect(persona("u1").note).toBe("note one");
@@ -246,7 +249,7 @@ describe("reads and writes by the selected id", () => {
 describe("reconcileSelection after a replacement or a removal", () => {
     it("resolves anew after the collection is replaced, as a conflict reload or a plugin setter does", () => {
         boot();
-        changeUserPersona("u2");
+        changeUserPersona("u2", null);
         const replacement = plainClone(personas());
         replacement[1].personaPrompt = "replaced";
         settings$.personas = replacement;
@@ -266,7 +269,7 @@ describe("reconcileSelection after a replacement or a removal", () => {
 
     it("falls back to the first record on a read when the selected persona is removed, and makes it the selection (also inside a derived)", () => {
         boot();
-        changeUserPersona("u2");
+        changeUserPersona("u2", null);
         const probe = createProbe(() => persona$.name);
         expect(probe.seen).toEqual(["Two"]);
 
@@ -327,13 +330,13 @@ describe("reconcileSelection after a replacement or a removal", () => {
 describe("selectUserImg", () => {
     it("writes the icon into the persona that was selected when the dialog opened, keeping its id, even after a switch", async () => {
         boot();
-        changeUserPersona("u2");
+        changeUserPersona("u2", null);
         const done = selectUserImg();
         await Promise.resolve();
         expect(held.file).not.toBeNull();
 
         // The user switches personas while the file chooser is open, then picks a file.
-        changeUserPersona("u1");
+        changeUserPersona("u1", null);
         held.file!({ name: "icon.png", data: new Uint8Array([1, 2, 3]) });
         await vi.waitFor(() => expect(held.asset).not.toBeNull());
         held.asset!("assets/icon.png");
@@ -349,7 +352,7 @@ describe("selectUserImg", () => {
 
     it("drops the icon when that persona was deleted meanwhile, never redirecting it; a cancelled dialog changes nothing", async () => {
         boot();
-        changeUserPersona("u2");
+        changeUserPersona("u2", null);
         const done = selectUserImg();
         await Promise.resolve();
         personas().splice(1, 1);
@@ -406,5 +409,76 @@ describe("importUserPersona", () => {
         // replacement shows the live list.
         expect(detached).toHaveLength(3);
         expect(selection.personaId).toBe("u1");
+    });
+});
+
+describe("edited persona with a bound chat open", () => {
+    function openBoundChat() {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [
+                        {
+                            id: "chat",
+                            name: "Chat",
+                            message: [],
+                            localLore: [],
+                            bindedPersona: "u2",
+                        },
+                    ],
+                },
+            ],
+            personas: [u1(), u2()],
+        });
+        selectPersona("u1");
+        selectCharacter("c");
+        selectChat("c", "chat");
+    }
+
+    afterEach(() => selectCharacter(null));
+
+    it("active persona reads the binding while the edited persona reads and writes the tab selection", () => {
+        openBoundChat();
+        const boundBefore = plainClone(persona("u2"));
+        expect([activePersona.id, currentPersonaRecord()?.id, activePersona.name]).toEqual(["u2", "u2", "Two"]);
+        expect([editedPersona.id, editedPersonaRecord()?.id, editedPersona.name]).toEqual(["u1", "u1", "One"]);
+        expect([editedPersona.icon, editedPersona.note, editedPersona.personaPrompt]).toEqual([
+            "icon-1",
+            "note one",
+            "prompt one",
+        ]);
+        editedPersona.name = "Tab name";
+        editedPersona.icon = "tab-icon";
+        editedPersona.note = "Tab note";
+        editedPersona.personaPrompt = "Tab prompt";
+        editedPersona.largePortrait = true;
+        expect(persona("u1")).toMatchObject({
+            name: "Tab name",
+            icon: "tab-icon",
+            note: "Tab note",
+            personaPrompt: "Tab prompt",
+            largePortrait: true,
+        });
+        expect(plainClone(persona("u2"))).toEqual(boundBefore);
+        selectPersona("u2");
+        expect([editedPersonaRecord()?.id, editedPersona.name]).toEqual(["u2", "Two"]);
+    });
+
+    it("edited persona drops a write with no selected record and repairs only the tab selection on its next read", () => {
+        openBoundChat();
+        const before = plainClone(personas());
+        selectPersona("gone");
+        editedPersona.name = "must be dropped";
+        expect(plainClone(personas())).toEqual(before);
+        expect(selection.personaId).toBe("gone");
+        expect(editedPersona.name).toBe("One");
+        expect(selection.personaId).toBe("u1");
+        selectPersona("gone");
+        expect(editedPersonaRecord()?.id).toBe("u1");
+        expect(selection.personaId).toBe("u1");
+        expect(activePersona.id).toBe("u2");
     });
 });

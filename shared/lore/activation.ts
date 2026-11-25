@@ -4,6 +4,16 @@ import type { DeepReadonly } from "../readonly.ts";
 import { mergeOwnerLore, offOverrideIds } from "./overrides.ts";
 
 /**
+ * Runs lore activation for both hosts through `LoreActivationInput` and `LoreHost`; no client
+ * stores are imported. `src/ts/process/lorebook.svelte.ts` supplies the tab host and
+ * `server/src/lua/bindings.ts` supplies the server host. Lore is cloned before child expansion;
+ * chat overrides are resolved by `shared/lore/overrides.ts`. Recursive matching precedes the
+ * single budget pass. Token counts must all succeed, and the budget pass must not stop the
+ * activation (`LoreActivationInput.stopOverBudget`), before pending activation flags are written;
+ * regex failures instead count as no match. Injection edits run after budgeting without recounting.
+ */
+
+/**
  * Lorebook activation, shared by the client and the server: the key, regex, and decorator matching
  * over the chat, recursion, the token budget, and `@@inject_lore`. The application state comes
  * through `input` and `host`; the module also uses `Math.random` (`@@probability`) and `console`.
@@ -21,8 +31,20 @@ export type LoreActivationInput = {
     loreBookToken: number;
     /** The user's name in the scanned text: the effective persona's (a bound persona wins). */
     userName: string;
+    /**
+     * Stop instead of dropping: when the budget pass rejects an entry that does not carry
+     * `@@ignore_on_max_context`, the activation returns no active, writes no flag, and is `stopped`.
+     * Rejected entries that all carry the decorator are dropped as without this option.
+     */
+    stopOverBudget?: boolean;
 };
 
+/**
+ * The application state activation reads and writes outside `input`. The client's host is
+ * `activatePinnedLore` in `src/ts/process/lorebook.svelte.ts` (the regex test runs in the tab); the
+ * server's is `activateJobLore` in `server/src/lua/bindings.ts`, whose regex test is a script worker
+ * task (`server/src/scripts/worker.ts`) and so asynchronous.
+ */
 export type LoreHost = {
     /** A deep copy of the lore; activation rewrites `child` entries in place. */
     clone: <T>(value: T) => T;
@@ -39,6 +61,7 @@ export type LoreHost = {
     testRegex: (pattern: string, flags: string, text: string) => boolean | Promise<boolean>;
 };
 
+/** An activated lore prompt with placement, budget cost, ordering, and optional injection instructions. */
 export type LoreActive = {
     depth: number;
     pos: string;
@@ -56,15 +79,38 @@ export type LoreActive = {
     } | null;
 };
 
+/** One successful key match and the scanned text and source that caused it. */
 export type LoreMatch = { prompt: string; source: string; activated: string };
+
+/** An entry the budget pass dropped: its trimmed comment, else its trimmed key, else `lorebook <index>`. */
+export type LoreRejected = { name: string; tokens: number };
 
 /**
  * The token budget pass: `used` is the kept entries' total before `@@inject_lore` edits (accepted
- * injectors included), `limit` the budget, and the rejected entries are the ones the pass dropped.
+ * injectors included), `limit` the budget, and the rejected entries are the ones the pass dropped,
+ * listed in the order it tried them (priority descending).
+ *
+ * The pass runs once, after every recursion round: an entry it rejects has still activated what its
+ * content matched, and its keep and don't-activate-after-match flags are still written, unless the
+ * activation is `stopped`, which writes no entry's flag. Every rejected entry is counted and named,
+ * one with `@@ignore_on_max_context` included.
  */
-export type LoreBudget = { used: number; limit: number; rejectedCount: number; rejectedTokens: number };
+export type LoreBudget = {
+    used: number;
+    limit: number;
+    rejectedCount: number;
+    rejectedTokens: number;
+    rejected: LoreRejected[];
+};
 
-export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget };
+/**
+ * Activation output: emitted lore, matching diagnostics, and the pre-injection budget result.
+ *
+ * `stopped` is present only when `LoreActivationInput.stopOverBudget` was set and the budget pass
+ * rejected an entry without `@@ignore_on_max_context`: `actives` is then empty, `budget` is the
+ * pass's result as it would have been, and no keep or don't-activate-after-match flag was written.
+ */
+export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget; stopped?: true };
 
 /**
  * Runs `steps` synchronously while every yielded value is a boolean; at the first promise it
@@ -88,9 +134,200 @@ function runSteps(
     return step.value;
 }
 
+function loreEntryName(entry: loreBook, index: number): string {
+    const comment = typeof entry.comment === "string" ? entry.comment.trim() : "";
+    const key = typeof entry.key === "string" ? entry.key.trim() : "";
+    return comment || key || `lorebook ${index}`;
+}
+
+/** An activated entry's text, which later rounds scan. */
+type LoreRecursivePrompt = { prompt: string; source: string; data: string };
+
+/** What `searchMatch` reads of the search it serves. */
+export type LoreSearchScope = {
+    host: Pick<LoreHost, "findCharacterName" | "testRegex">;
+    userName: string;
+    /** The speaker of a message with neither a `name` nor a group member behind it. */
+    charName: string;
+    /** What activated entries added to the scan, as it stands at this search. */
+    recursivePrompt: readonly LoreRecursivePrompt[];
+    /** Takes every match. */
+    matchLog: LoreMatch[];
+};
+
+/**
+ * Whether `arg.keys` match the last `searchDepth` of `messages` and, unless `dontSearchWhenRecursive`,
+ * `recursivePrompt`. A plain key matches lower-cased text without `{{//...}}` and `{{comment:...}}`, as a
+ * whole word under `fullWordMatching`, else as a substring with spaces removed from both sides.
+ *
+ * Not `async`: the answer is a promise only when a regex test gives one, so a caller that awaits just
+ * that case does not yield on any other search. A `searchDepth` at or over the list's length searches
+ * every row.
+ */
+export function searchMatch(
+    messages: readonly DeepReadonly<Pick<Message, "role" | "data" | "name" | "saying">>[],
+    arg: {
+        keys: string[];
+        searchDepth: number;
+        regex?: boolean;
+        fullWordMatching: boolean;
+        all?: boolean;
+        dontSearchWhenRecursive: boolean;
+    },
+    { host, userName, charName, recursivePrompt, matchLog }: LoreSearchScope,
+): boolean | Promise<boolean> {
+    // Unlike the upstream slice, an oversized depth includes the first rows of a short chat.
+    const sliced = messages.slice(Math.max(0, messages.length - arg.searchDepth), messages.length);
+    const newKeys = [];
+    for (const key of arg.keys) {
+        const trimmed = key.trim();
+        if (trimmed.length > 0) {
+            newKeys.push(trimmed);
+        }
+    }
+    arg.keys = newKeys;
+    let mList: {
+        source: string;
+        prompt: string;
+        data: string;
+    }[] = sliced
+        .map((msg, i) => {
+            if (msg.role === "user") {
+                return {
+                    source: `message ${i} by user`,
+                    prompt: `\x01{{${userName}}}:` + msg.data + "\x01",
+                    data: msg.data,
+                };
+            } else {
+                return {
+                    source: `message ${i} by char`,
+                    prompt:
+                        `\x01{{${msg.name ?? (msg.saying ? host.findCharacterName(msg.saying) : null) ?? charName}}}:` +
+                        msg.data +
+                        "\x01",
+                    data: msg.data,
+                };
+            }
+        })
+        .concat(
+            arg.dontSearchWhenRecursive
+                ? []
+                : recursivePrompt.map((msg) => {
+                      return {
+                          source: "lorebook " + msg.source,
+                          prompt: msg.prompt,
+                          data: msg.data,
+                      };
+                  }),
+        );
+
+    if (arg.regex) {
+        const keys = arg.keys;
+        // A generator, so the search stays synchronous while `testRegex` answers synchronously
+        // (the client) and suspends only on a promise (the server's worker).
+        return runSteps(
+            (function* (): Generator<boolean | Promise<boolean>, boolean, boolean> {
+                for (const mText of mList) {
+                    for (const regexString of keys) {
+                        if (!regexString.startsWith("/")) {
+                            return false;
+                        }
+                        // `/pattern/flags`: the last `/` ends the pattern, and the flags may be
+                        // empty. (In the browser-only version the key's first entry was
+                        // overwritten with the pattern, the leading `/` stayed in it, and empty
+                        // flags never matched.)
+                        const lastSlash = regexString.lastIndexOf("/");
+                        if (lastSlash === 0) {
+                            return false;
+                        }
+                        const pattern = regexString.substring(1, lastSlash);
+                        const flags = regexString.substring(lastSlash + 1);
+                        try {
+                            const d: boolean = yield host.testRegex(pattern, flags, mText.data);
+                            if (d) {
+                                matchLog.push({
+                                    prompt: mText.prompt,
+                                    source: mText.source,
+                                    activated: regexString,
+                                });
+                                return true;
+                            }
+                        } catch (error) {
+                            return false;
+                        }
+                    }
+                }
+                return false;
+            })(),
+        );
+    }
+
+    mList = mList.map((m) => {
+        return {
+            source: m.source,
+            prompt: m.prompt
+                .toLocaleLowerCase()
+                .replace(/\{\{\/\/(.+?)\}\}/g, "")
+                .replace(/\{\{comment:(.+?)\}\}/g, ""),
+            data: m.data
+                .toLocaleLowerCase()
+                .replace(/\{\{\/\/(.+?)\}\}/g, "")
+                .replace(/\{\{comment:(.+?)\}\}/g, ""),
+        };
+    });
+
+    let allMode = arg.all ?? false;
+    let allModeMatched = true;
+
+    for (const m of mList) {
+        let mText = m.data;
+        if (arg.fullWordMatching) {
+            const splited = mText.split(" ");
+            for (const key of arg.keys) {
+                if (splited.includes(key.toLocaleLowerCase())) {
+                    matchLog.push({
+                        prompt: m.prompt,
+                        source: m.source,
+                        activated: key,
+                    });
+                    if (!allMode) {
+                        return true;
+                    }
+                } else if (allMode) {
+                    allModeMatched = false;
+                }
+            }
+        } else {
+            mText = mText.replace(/ /g, "");
+            for (const key of arg.keys) {
+                const realKey = key.toLocaleLowerCase().replace(/ /g, "");
+                if (mText.includes(realKey)) {
+                    matchLog.push({
+                        prompt: m.prompt,
+                        source: m.source,
+                        activated: key,
+                    });
+                    if (!allMode) {
+                        return true;
+                    }
+                } else if (allMode) {
+                    allModeMatched = false;
+                }
+            }
+        }
+    }
+    if (allMode && allModeMatched) {
+        return true;
+    }
+    return false;
+}
+
 /**
  * The lore of `input.chat` that activates, and why: `loadLoreBookV3Prompt` on the client.
  * Applies chat overrides to owner lore, silently drops orphans, and keeps off child links inactive.
+ * Searches, in this order (a `child` entry links to an earlier entry with its id), the owner's
+ * `globalLore` merged with the chat's overrides (`mergeOwnerLore`), the chat's `localLore`, and the
+ * module lore the caller resolved (`input.moduleLorebooks`), all as one deep copy (`host.clone`).
  */
 export async function activateLore(input: LoreActivationInput, host: LoreHost): Promise<LoreActivation> {
     const char = input.character;
@@ -108,172 +345,16 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     const fullWordMatchingSetting = char.loreSettings?.fullWordMatching ?? false;
     const chatLength = currentChat.length + 1; //includes first message
     const recursiveScanning = char.loreSettings?.recursiveScanning ?? true;
-    let recursivePrompt: {
-        prompt: string;
-        source: string;
-        data: string;
-    }[] = [];
-    let matchLog: LoreMatch[] = [];
-
-    const searchMatch = (
-        messages: readonly DeepReadonly<Message>[],
-        arg: {
-            keys: string[];
-            searchDepth: number;
-            regex?: boolean;
-            fullWordMatching: boolean;
-            all?: boolean;
-            dontSearchWhenRecursive: boolean;
-        },
-    ) => {
-        const sliced = messages.slice(messages.length - arg.searchDepth, messages.length);
-        const newKeys = [];
-        for (const key of arg.keys) {
-            const trimmed = key.trim();
-            if (trimmed.length > 0) {
-                newKeys.push(trimmed);
-            }
-        }
-        arg.keys = newKeys;
-        let mList: {
-            source: string;
-            prompt: string;
-            data: string;
-        }[] = sliced
-            .map((msg, i) => {
-                if (msg.role === "user") {
-                    return {
-                        source: `message ${i} by user`,
-                        prompt: `\x01{{${input.userName}}}:` + msg.data + "\x01",
-                        data: msg.data,
-                    };
-                } else {
-                    return {
-                        source: `message ${i} by char`,
-                        prompt:
-                            `\x01{{${msg.name ?? (msg.saying ? host.findCharacterName(msg.saying) : null) ?? char.name}}}:` +
-                            msg.data +
-                            "\x01",
-                        data: msg.data,
-                    };
-                }
-            })
-            .concat(
-                arg.dontSearchWhenRecursive
-                    ? []
-                    : recursivePrompt.map((msg) => {
-                          return {
-                              source: "lorebook " + msg.source,
-                              prompt: msg.prompt,
-                              data: msg.data,
-                          };
-                      }),
-            );
-
-        if (arg.regex) {
-            const keys = arg.keys;
-            // A generator, so the search stays synchronous while `testRegex` answers synchronously
-            // (the client) and suspends only on a promise (the server's worker).
-            return runSteps(
-                (function* (): Generator<boolean | Promise<boolean>, boolean, boolean> {
-                    for (const mText of mList) {
-                        for (const regexString of keys) {
-                            if (!regexString.startsWith("/")) {
-                                return false;
-                            }
-                            // `/pattern/flags`: the last `/` ends the pattern, and the flags may be
-                            // empty. (In the browser-only version the key's first entry was
-                            // overwritten with the pattern, the leading `/` stayed in it, and empty
-                            // flags never matched.)
-                            const lastSlash = regexString.lastIndexOf("/");
-                            if (lastSlash === 0) {
-                                return false;
-                            }
-                            const pattern = regexString.substring(1, lastSlash);
-                            const flags = regexString.substring(lastSlash + 1);
-                            try {
-                                const d: boolean = yield host.testRegex(pattern, flags, mText.data);
-                                if (d) {
-                                    matchLog.push({
-                                        prompt: mText.prompt,
-                                        source: mText.source,
-                                        activated: regexString,
-                                    });
-                                    return true;
-                                }
-                            } catch (error) {
-                                return false;
-                            }
-                        }
-                    }
-                    return false;
-                })(),
-            );
-        }
-
-        mList = mList.map((m) => {
-            return {
-                source: m.source,
-                prompt: m.prompt
-                    .toLocaleLowerCase()
-                    .replace(/\{\{\/\/(.+?)\}\}/g, "")
-                    .replace(/\{\{comment:(.+?)\}\}/g, ""),
-                data: m.data
-                    .toLocaleLowerCase()
-                    .replace(/\{\{\/\/(.+?)\}\}/g, "")
-                    .replace(/\{\{comment:(.+?)\}\}/g, ""),
-            };
-        });
-
-        let allMode = arg.all ?? false;
-        let allModeMatched = true;
-
-        for (const m of mList) {
-            let mText = m.data;
-            if (arg.fullWordMatching) {
-                const splited = mText.split(" ");
-                for (const key of arg.keys) {
-                    if (splited.includes(key.toLocaleLowerCase())) {
-                        matchLog.push({
-                            prompt: m.prompt,
-                            source: m.source,
-                            activated: key,
-                        });
-                        if (!allMode) {
-                            return true;
-                        }
-                    } else if (allMode) {
-                        allModeMatched = false;
-                    }
-                }
-            } else {
-                mText = mText.replace(/ /g, "");
-                for (const key of arg.keys) {
-                    const realKey = key.toLocaleLowerCase().replace(/ /g, "");
-                    if (mText.includes(realKey)) {
-                        matchLog.push({
-                            prompt: m.prompt,
-                            source: m.source,
-                            activated: key,
-                        });
-                        if (!allMode) {
-                            return true;
-                        }
-                    } else if (allMode) {
-                        allModeMatched = false;
-                    }
-                }
-            }
-        }
-        if (allMode && allModeMatched) {
-            return true;
-        }
-        return false;
-    };
+    const recursivePrompt: LoreRecursivePrompt[] = [];
+    const matchLog: LoreMatch[] = [];
 
     let matching = true;
     let actives: LoreActive[] = [];
     const pendingCounts: { active: LoreActive; count: Promise<number> }[] = [];
+    const activeNames = new Map<LoreActive, string>();
+    // The actives whose entry carries `@@ignore_on_max_context`. Their priority does not say so: a
+    // later `@@priority` replaces the decorator's, and the same value can come from elsewhere.
+    const droppableActives = new Set<LoreActive>();
     const pendingFlags = new Map<string, string>();
     let activatedIndexes: number[] = [];
     let disabledUIPrompts: string[] = [];
@@ -315,6 +396,9 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
             let dontSearchWhenRecursive = false;
             let keepActivateAfterMatch = false;
             let dontActivateAfterMatch = false;
+            let ignoreOnMaxContext = false;
+            // A child takes its linked entry's name, as the editor shows it.
+            let nameIndex = i;
 
             if (fullLore[i].mode === "child") {
                 activated = false;
@@ -326,6 +410,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                             fullLore[i].alwaysActive = true;
                             order = fullLore[j].insertorder;
                             priority = fullLore[j].insertorder;
+                            nameIndex = j;
                             activated = true;
                         }
                         break;
@@ -477,6 +562,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                     }
                     case "ignore_on_max_context": {
                         priority = -1000;
+                        ignoreOnMaxContext = true;
                         return;
                     }
                     case "additional_keys": {
@@ -573,14 +659,18 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                 }
 
                 for (const query of searchQueries) {
-                    const searched = searchMatch(currentChat, {
-                        keys: query.keys,
-                        searchDepth: scanDepth,
-                        regex: fullLore[i].useRegex,
-                        fullWordMatching: fullWordMatching,
-                        all: query.all,
-                        dontSearchWhenRecursive: dontSearchWhenRecursive,
-                    });
+                    const searched = searchMatch(
+                        currentChat,
+                        {
+                            keys: query.keys,
+                            searchDepth: scanDepth,
+                            regex: fullLore[i].useRegex,
+                            fullWordMatching: fullWordMatching,
+                            all: query.all,
+                            dontSearchWhenRecursive: dontSearchWhenRecursive,
+                        },
+                        { host, userName: input.userName, charName: char.name, recursivePrompt, matchLog },
+                    );
                     // Awaited only when a regex test is asynchronous: a synchronous search does not
                     // yield, so nothing can change the chat between two entries' searches.
                     const result = typeof searched === "boolean" ? searched : await searched;
@@ -616,6 +706,10 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                     source: fullLore[i].comment || `lorebook ${i}`,
                     inject: inject ?? null,
                 };
+                activeNames.set(active, loreEntryName(fullLore[nameIndex], nameIndex));
+                if (ignoreOnMaxContext) {
+                    droppableActives.add(active);
+                }
                 // Parse CBS in entry order, with runVar left false as in the output path.
                 // Start each count now and await them together before the budget pass, so cutoff
                 // uses evaluated text without yielding at each entry's count.
@@ -660,11 +754,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     pendingCounts.forEach(({ active }, index) => {
         active.tokens = counts[index];
     });
-    // Writes wait for the counts so an aborted or failed activation leaves no flag. Decorator
-    // reads use pendingFlags during the loop so entries sharing a key still see earlier writes.
-    for (const [key, value] of pendingFlags) {
-        host.setChatVar(key, value);
-    }
 
     const activesSorted = actives.sort((a, b) => {
         return b.priority - a.priority;
@@ -673,6 +762,9 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     let usedTokens = 0;
     let rejectedCount = 0;
     let rejectedTokens = 0;
+    const rejected: LoreRejected[] = [];
+    // Whether the pass rejected an entry its author did not mark as droppable.
+    let rejectedRequired = false;
 
     const activesFiltered = activesSorted.filter((act) => {
         if (usedTokens + act.tokens <= loreToken) {
@@ -681,8 +773,26 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
         }
         rejectedCount++;
         rejectedTokens += act.tokens;
+        rejected.push({ name: activeNames.get(act) ?? act.source, tokens: act.tokens });
+        if (!droppableActives.has(act)) {
+            rejectedRequired = true;
+        }
         return false;
     });
+    const budget: LoreBudget = { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens, rejected };
+
+    // The stop is decided before any flag is written, so the same activation can run again on the
+    // chat as it was: a don't-activate-after-match entry still activates then.
+    if (input.stopOverBudget === true && rejectedRequired) {
+        return { actives: [], matchLog, budget, stopped: true };
+    }
+
+    // Writes wait for the counts and the budget pass (which makes no host call) so an aborted,
+    // failed, or stopped activation leaves no flag. Decorator reads use pendingFlags during the
+    // loop so entries sharing a key still see earlier writes.
+    for (const [key, value] of pendingFlags) {
+        host.setChatVar(key, value);
+    }
 
     let activesResorted = activesFiltered.sort((a, b) => {
         return b.order - a.order;
@@ -724,6 +834,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     return {
         actives: activesResorted.reverse(),
         matchLog: matchLog,
-        budget: { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens },
+        budget,
     };
 }

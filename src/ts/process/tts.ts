@@ -1,3 +1,4 @@
+import { LLM_CALLBACK_TIMEOUT_MS } from "../../../shared/llm/request.ts";
 import { type ClientCharacter, selectedCharacter } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
 import { auxFetch } from "../network/auxFetch";
@@ -17,6 +18,21 @@ import {
     type AfterTTSContext,
     type AfterTTSResult,
 } from "./ttsHooks";
+
+/**
+ * Character TTS, dispatched by the literal `character.ttsMode` values. Each `sayTTS` run
+ * registers its own AbortController in `activeSpeechControllers`; HTTP provider requests
+ * receive its signal as `signal` for fetch/auxFetch and `abortSignal` for globalFetch.
+ * `src/ts/globalApi.svelte.ts` returns `ok: false` on abort rather than throwing, so the
+ * provider branches check cancellation after requests and body reads before alerts or
+ * further work. Translation and the unabortable `loadAsset` and `runVITS` awaits also
+ * have cancellation checks; an aborted run ends without a TTS alert.
+ *
+ * Each run captures the Stop generation at entry and carries it in `TTSPlaybackContext`,
+ * so work finishing after `stopTTS` cannot start playback. Preprocessors run before the
+ * provider request; audio postprocessors run in playback before decoding. Web Speech
+ * and VITS bypass audio postprocessors, but still receive preprocessed text.
+ */
 
 type SpeechPlayback = { source: AudioBufferSourceNode; context: AudioContext };
 type TTSPlaybackContext = { ttsMode: string; characterId: string; generation: number };
@@ -57,7 +73,17 @@ function retireSpeech(playback: SpeechPlayback) {
     void playback.context.close().catch(() => {});
 }
 
-/** Both buffered playback paths share cancellation and context cleanup. */
+/**
+ * Both buffered playback paths share cancellation and context cleanup. `playAudio`,
+ * the GPT-SoVITS gain path, and VITS all arrive here with their final bytes. VITS's
+ * `runVITS` in `src/ts/process/transformers.ts` only synthesizes WAV bytes; no audio
+ * hooks run on those bytes.
+ *
+ * The captured generation is checked before decoding and before starting a source.
+ * Each playing source/context enters `activeSpeech` and is retired on `ended`.
+ * A cancelled or failed decode closes its unused context; rejection after Stop closed
+ * the decoding context is suppressed so cancellation produces no alert.
+ */
 async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, volume = 1) {
     if (ctx.generation !== stopGeneration) return;
     const context = new AudioContext();
@@ -101,7 +127,9 @@ async function playProcessedAudio(audio: ArrayBuffer, ctx: TTSPlaybackContext, v
  * multiple hooks would leave all hooks after the first with a detached buffer.
  *
  * Returns the final audio bytes (possibly replaced by a hook), the final
- * mimeType, and whether a hook requested a skip.
+ * mimeType, and whether a hook requested a skip. Hooks run sequentially; a thrown
+ * error or a timeout at the shared callback allowance is logged and the next hook runs.
+ * Timed-out hooks may finish, but their results are ignored.
  */
 async function runPostprocessorPipeline(
     audio: ArrayBuffer,
@@ -117,18 +145,26 @@ async function runPostprocessorPipeline(
     for (const hook of hooks) {
         const disposable = currentAudio.slice(0); // fresh clone per hook
         let result: AfterTTSResult | void;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            result = await Promise.resolve().then(() =>
-                hook({
-                    audio: disposable,
-                    mimeType: currentMime,
-                    ttsMode: ctx.ttsMode,
-                    characterId: ctx.characterId,
+            result = await Promise.race([
+                Promise.resolve().then(() =>
+                    hook({
+                        audio: disposable,
+                        mimeType: currentMime,
+                        ttsMode: ctx.ttsMode,
+                        characterId: ctx.characterId,
+                    }),
+                ),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("TTS hook timed out")), LLM_CALLBACK_TIMEOUT_MS);
                 }),
-            );
+            ]);
         } catch (err) {
             console.error("[TTS postprocessor] threw, continuing with next hook:", err);
             continue;
+        } finally {
+            clearTimeout(timer);
         }
 
         if (!result) continue;
@@ -147,6 +183,19 @@ async function playAudio(audio: ArrayBuffer, mimeType: string, ctx: TTSPlaybackC
     await playProcessedAudio(processed.audio, ctx);
 }
 
+/**
+ * Speaks through webspeech, elevenlab, VOICEVOX, openai, novelai, huggingface, vits,
+ * gptsovits, or fishspeech, selected by `character.ttsMode`; null uses the selected
+ * non-group character. Hooks use the shared callback timeout and ignore late results.
+ *
+ * VOICEVOX and Hugging Face pass the run's signal to their translators in
+ * `src/ts/translator/translator.ts`, suppressing translator alerts after cancellation.
+ * When `character.hfTTS.language !== "en"`, Hugging Face calls `runTranslator` once
+ * before the retry loop and reuses its result. A JSON 503 with a usable `estimated_time`
+ * waits with `retryDelay` on the same signal before retrying.
+ * GPT-SoVITS with non-default gain runs `runPostprocessorPipeline` explicitly before
+ * `playProcessedAudio`, preserving audio hooks while adding its GainNode.
+ */
 export async function sayTTS(character: ClientCharacter, text: string) {
     const generation = stopGeneration;
     const controller = new AbortController();
@@ -176,11 +225,15 @@ export async function sayTTS(character: ClientCharacter, text: string) {
             }
         }
 
-        const beforeResult = await runHookPipeline<BeforeTTSContext, BeforeTTSResult>(getTTSPreprocessors(), {
-            text,
-            ttsMode: character.ttsMode ?? "",
-            characterId: character.chaId,
-        });
+        const beforeResult = await runHookPipeline<BeforeTTSContext, BeforeTTSResult>(
+            getTTSPreprocessors(),
+            {
+                text,
+                ttsMode: character.ttsMode ?? "",
+                characterId: character.chaId,
+            },
+            LLM_CALLBACK_TIMEOUT_MS,
+        );
         if (beforeResult.skip || generation !== stopGeneration) {
             return;
         }
@@ -204,28 +257,25 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 break;
             }
             case "elevenlab": {
-                const da = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${character.ttsSpeech}`, {
-                    signal,
-                    body: JSON.stringify({
+                const da = await globalFetch(`https://api.elevenlabs.io/v1/text-to-speech/${character.ttsSpeech}`, {
+                    abortSignal: signal,
+                    body: {
                         text: text,
                         model_id: "eleven_multilingual_v2",
-                    }),
+                    },
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
                         "xi-api-key": settings.secrets.elevenLabKey || undefined,
                     },
+                    rawResponse: true,
                 });
                 signal.throwIfAborted();
-                if (da.status >= 200 && da.status < 300) {
-                    const buffer = await da.arrayBuffer();
-                    signal.throwIfAborted();
-                    const mimeType = da.headers.get("content-type") || "audio/mpeg";
-                    await playAudio(buffer, mimeType, hookCtx);
+                if (da.ok) {
+                    const mimeType = da.headers["content-type"] || "audio/mpeg";
+                    await playAudio(da.data.buffer, mimeType, hookCtx);
                 } else {
-                    const errorText = await da.text();
-                    signal.throwIfAborted();
-                    alertError(errorText);
+                    alertError(Buffer.from(da.data).toString());
                 }
                 break;
             }
@@ -368,39 +418,45 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 }
                 while (true) {
                     signal.throwIfAborted();
-                    const response = await fetch(
+                    const response = await globalFetch(
                         `https://api-inference.huggingface.co/models/${character.hfTTS.model}`,
                         {
-                            signal,
+                            abortSignal: signal,
                             method: "POST",
                             headers: {
                                 Authorization: "Bearer " + settings.secrets.huggingfaceKey,
                                 "Content-Type": "application/json",
                             },
-                            body: JSON.stringify({
+                            body: {
                                 inputs: text,
-                            }),
+                            },
+                            rawResponse: true,
                         },
                     );
                     signal.throwIfAborted();
 
-                    if (response.status === 503 && response.headers.get("content-type") === "application/json") {
-                        const json = await response.json();
-                        signal.throwIfAborted();
-                        if (json.estimated_time) {
-                            await retryDelay(json.estimated_time * 1000, signal);
-                            continue;
+                    if (response.status >= 400) {
+                        const body = Buffer.from(response.data).toString();
+                        if (response.status === 503 && response.headers["content-type"] === "application/json") {
+                            let estimate: unknown;
+                            try {
+                                estimate = JSON.parse(body)?.estimated_time;
+                            } catch {
+                                // A malformed JSON body can still contain the provider's error.
+                            }
+                            if (typeof estimate === "number" || typeof estimate === "string") {
+                                const delay = Number(estimate) * 1000;
+                                if (delay > 0 && delay <= 2 ** 31 - 1) {
+                                    await retryDelay(delay, signal);
+                                    continue;
+                                }
+                            }
                         }
-                    } else if (response.status >= 400) {
-                        const errorText = await response.text();
-                        signal.throwIfAborted();
-                        alertError(language.errors.httpError + `${errorText}`);
+                        alertError(language.errors.httpError + body);
                         return;
                     } else if (response.status === 200) {
-                        const buffer = await response.arrayBuffer();
-                        signal.throwIfAborted();
-                        const mimeType = response.headers.get("content-type") || "audio/wav";
-                        await playAudio(buffer, mimeType, hookCtx);
+                        const mimeType = response.headers["content-type"] || "audio/wav";
+                        await playAudio(response.data.buffer, mimeType, hookCtx);
                     } else {
                         alertError("Error fetching or decoding audio data");
                     }
@@ -551,8 +607,15 @@ export async function sayTTS(character: ClientCharacter, text: string) {
     }
 }
 
+/** OpenAI voice ids for the voice picker in `src/lib/SideBars/CharConfig.svelte`. */
 export const oaiVoices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
 
+/**
+ * Advances the playback generation and aborts every registered speech run, including
+ * pending provider requests and Hugging Face retry waits; this does not cancel the
+ * provider's remote job. Stops and retires every `activeSpeech` source, closes their
+ * contexts and all still-decoding `pendingContexts`, then cancels Web Speech.
+ */
 export function stopTTS() {
     stopGeneration++;
     for (const controller of activeSpeechControllers) controller.abort();
@@ -571,24 +634,29 @@ export function stopTTS() {
     }
 }
 
+/** Returns browser voice names for `src/lib/SideBars/CharConfig.svelte`. */
 export function getWebSpeechTTSVoices() {
     return speechSynthesis.getVoices().map((v) => {
         return v.name;
     });
 }
 
+/** Returns ElevenLabs voice records for `src/lib/SideBars/CharConfig.svelte`. */
 export async function getElevenTTSVoices() {
-    const data = await fetch("https://api.elevenlabs.io/v1/voices", {
+    const res = await globalFetch("https://api.elevenlabs.io/v1/voices", {
+        method: "GET",
         headers: {
             "xi-api-key": settings.secrets.elevenLabKey || undefined,
         },
     });
-    const res = await data.json();
-
-    console.log(res);
-    return res.voices;
+    if (!res.ok) {
+        console.error("ElevenLabs voices:", res.status, res.data);
+        return [];
+    }
+    return res.data.voices;
 }
 
+/** Returns VOICEVOX speakers with JSON style lists and a None entry for `src/lib/SideBars/CharConfig.svelte`. */
 export async function getVOICEVOXVoices() {
     const base = settings.memoryTranslateMedia.voicevoxUrl.replace(/\/+$/, "");
     const speakerData = await fetch(new URL(base + "/speakers"));
@@ -603,6 +671,7 @@ export async function getVOICEVOXVoices() {
     return speakersInfo;
 }
 
+/** Returns built-in NovelAI voice seeds grouped by gender for `src/lib/SideBars/CharConfig.svelte`. */
 export function getNovelAIVoices() {
     return [
         {
@@ -620,6 +689,7 @@ export function getNovelAIVoices() {
     ];
 }
 
+/** Fills an undefined NovelAI TTS config with voice/version defaults and returns the character; has no callers. */
 export function FixNAITTS(data: character) {
     if (data.naittsConfig === undefined) {
         // Mirror the defaults used by CharConfig.svelte's $effect.pre

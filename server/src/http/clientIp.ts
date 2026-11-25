@@ -2,6 +2,14 @@ import type { Context } from "hono";
 import proxyaddr from "proxy-addr";
 import type { AppEnv } from "../types.ts";
 
+/**
+ * Express-compatible TRUST_PROXY interpretation and client-IP selection for server/src/app.ts.
+ * With no configured trust, only the socket peer counts; proxy-addr walks forwarded hops using the
+ * compiled trust predicate. In-process requests without a Node socket have no client IP, which
+ * server/src/http/rateLimit.ts groups under its unknown key.
+ */
+
+/** Whether an address at a given hop from the socket peer is trusted as a proxy. */
 export type TrustFn = (addr: string, hop: number) => boolean;
 
 /**

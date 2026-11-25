@@ -6,11 +6,26 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import webPush from "web-push";
+import { WebSocket as WsClient } from "ws";
+import { CALLBACK_TIMEOUT_MS } from "../jobs/channel.ts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
-import { completionNotificationTag } from "../../../shared/notifications.ts";
+import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer } from "../../../shared/llm.ts";
+import * as notifications from "../../../shared/notifications.ts";
 import type { PushTransport } from "../push/pushService.ts";
+import * as tokenCounters from "../prompt/tokens.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The tail of a reply inside a send job (`server/src/prompt/runner.ts` `runSpeaker` and `runSend`,
 // `server/src/prompt/postProcess.ts`, `server/src/prompt/scripts.ts` `editoutput`), end to end on a
@@ -44,6 +59,12 @@ let fallback: Answer = { chunks: ["Done."] };
 const CHUNK_DELAY_MS = 20;
 /** Resolves once the current job's owner socket is open (set per job by `job()`). */
 let socketOpen: Promise<void> = Promise.resolve();
+/**
+ * Resolves once the provider may answer: at once, or for a job whose owner leaves (`closeOn`) once
+ * the socket's close handshake completed, so the server's end is no longer open (a callback sent
+ * into it would count as delivered and hold the client's lane) when the tail's callbacks come.
+ */
+let providerGate: Promise<void> = Promise.resolve();
 /** The current job's owner events (`job()`), and the waiters for a text the owner's chunks rebuild. */
 let ownerEvents: any[] = [];
 let ownerWaiters: { text: string; resolve: () => void }[] = [];
@@ -64,6 +85,7 @@ const provider = http.createServer(async (req, res) => {
     const answer = answers.shift() ?? fallback;
     // The owner socket attaches after the create answered: wait for it, so every chunk is a `chunk` event.
     await socketOpen;
+    await providerGate;
     if (answer.status) {
         res.writeHead(answer.status, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: "upstream broke" } }));
@@ -129,6 +151,7 @@ let presetId = "";
 let modelPresetId = "";
 let personaId = "";
 let embedderUrl = "";
+let runnerTokens: tokenCounters.TokenCounter;
 
 async function api(url: string, init: RequestInit = {}) {
     const res = await fetch(`${base}${url}`, {
@@ -311,7 +334,16 @@ async function clientSetText(chaId: string, messageId: string, text: string) {
 let attach = 0;
 type JobOptions = {
     /** Answers a `callback` event: the answer message's fields. */
-    answerCallback?: (event: any) => Record<string, unknown>;
+    answerCallback?: (event: any) => Record<string, unknown> | Promise<Record<string, unknown>>;
+    requestId?: string;
+    /**
+     * Closes the owner socket at the first event this matches (the tab went away): the job runs on
+     * with no owner, and its end is read from its status instead. The provider answers only after
+     * the close completed (`providerGate`) unless `answerBeforeClose` (a close the reply's own tail
+     * brings about).
+     */
+    closeOn?: (event: any) => boolean;
+    answerBeforeClose?: true;
     hooks?: typeof NO_GENERATION_HOOKS;
     /** `context.client.emotions`: the emotions the tab showed last, by character. */
     emotions?: Record<string, string[]>;
@@ -330,6 +362,13 @@ async function job(
     socketOpen = new Promise<void>((resolve) => {
         opened = resolve;
     });
+    let releaseProvider = () => {};
+    providerGate =
+        options.closeOn && !options.answerBeforeClose
+            ? new Promise<void>((resolve) => {
+                  releaseProvider = resolve;
+              })
+            : Promise.resolve();
     const events: any[] = [];
     ownerEvents = events;
     ownerWaiters = [];
@@ -338,6 +377,7 @@ async function job(
         body: JSON.stringify({
             kind,
             clientId: "tab",
+            ...(options.requestId ? { requestId: options.requestId } : {}),
             hooks: options.hooks ?? NO_GENERATION_HOOKS,
             context: {
                 characterId: chaId,
@@ -368,7 +408,8 @@ async function job(
         `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
     const ws = new WebSocket(url);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const ended = new Promise<void>((resolve) => {
+    let closedEarly = false;
+    const ended = new Promise<void>((resolve, reject) => {
         timer = setTimeout(resolve, 45_000);
         ws.onmessage = (message) => {
             const event = JSON.parse(String(message.data));
@@ -377,9 +418,21 @@ async function job(
             }
             events.push(event);
             ownerEventAdded();
+            if (!closedEarly && options.closeOn?.(event)) {
+                closedEarly = true;
+                ws.onclose = () => releaseProvider();
+                ws.close();
+                clearTimeout(timer);
+                resolve();
+                return;
+            }
             if (event.type === "callback") {
                 const answer = options.answerCallback?.(event) ?? { outcome: "answered", value: true };
-                ws.send(JSON.stringify({ type: "answer", id: event.id, ...answer }));
+                void Promise.resolve(answer).then((fields) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "answer", id: event.id, ...fields }));
+                    }
+                }, reject);
             }
             if (event.type === "done" || event.type === "error") {
                 clearTimeout(timer);
@@ -399,6 +452,20 @@ async function job(
     });
     await ended;
     ws.close();
+    if (closedEarly) {
+        // No owner to receive the terminal: the status carries it once the job ended.
+        let status: any = null;
+        // Polled gently: the status route counts against the HTTP rate limit of the whole file.
+        await waitFor(
+            async () => {
+                status = (await api(`/api/generations/${jobId}?clientId=tab`)).body;
+                return status?.state === "ended";
+            },
+            45_000,
+            250,
+        );
+        return { ...created, events, terminal: status?.terminal };
+    }
     return {
         ...created,
         events,
@@ -446,6 +513,35 @@ const storedText = (event: any, id: string): string | undefined =>
         ? event.data.message.find((entry: any) => entry.chatId === id)?.data
         : event.messages?.find((row: any) => row.message.chatId === id)?.message.data;
 
+async function startServer() {
+    // The owner absence wait is short so a tail with no owner tab (`closeOn`) settles within a test;
+    // every other job attaches its socket right after the create, long before the wait.
+    const createdCounter = vi.spyOn(tokenCounters, "createTokenCounter");
+    try {
+        server = createTestServer({
+            rootDir,
+            generationRandom: () => 0,
+            pushTransport,
+            generationOwnerAbsentMs: 2_500,
+        });
+        runnerTokens = createdCounter.mock.results[0].value;
+    } finally {
+        createdCounter.mockRestore();
+    }
+    node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+    await new Promise<void>((resolve) => node.once("listening", () => resolve()));
+    allowListenerOrigin(node);
+    server.context.attachWebSocket(node);
+    base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
+    signer = await createSigner();
+    await fetch(`${base}/api/login`, json({ password: "pw", publicKey: signer.publicJwk }));
+    epoch = (
+        (await (
+            await fetch(`${base}/api/resources/ui`, { headers: { "risu-auth": await signer.jwt() } })
+        ).json()) as any
+    ).epoch;
+}
+
 beforeAll(async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -466,19 +562,7 @@ beforeAll(async () => {
     // A stored image inlay the `generateImage` callback can answer with.
     mkdirSync(path.join(rootDir, "save", "assets"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "assets", "inlay_cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-    server = createTestServer({ rootDir, generationRandom: () => 0, pushTransport });
-    node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
-    await new Promise<void>((resolve) => node.once("listening", () => resolve()));
-    allowListenerOrigin(node);
-    server.context.attachWebSocket(node);
-    base = `http://127.0.0.1:${(node.address() as { port: number }).port}`;
-    signer = await createSigner();
-    await fetch(`${base}/api/login`, json({ password: "pw", publicKey: signer.publicJwk }));
-    epoch = (
-        (await (
-            await fetch(`${base}/api/resources/ui`, { headers: { "risu-auth": await signer.jwt() } })
-        ).json()) as any
-    ).epoch;
+    await startServer();
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
@@ -576,6 +660,23 @@ async function withSettings(fields: Record<string, unknown>, body: () => Promise
     }
 }
 
+async function subscribePush() {
+    const registered = await api("/api/push/subscription", {
+        method: "PUT",
+        body: JSON.stringify({
+            subscription: {
+                endpoint: PUSH_ENDPOINT,
+                expirationTime: null,
+                keys: {
+                    p256dh: webPush.generateVAPIDKeys().publicKey,
+                    auth: randomBytes(16).toString("base64url"),
+                },
+            },
+        }),
+    });
+    expect(registered.status).toBe(204);
+}
+
 describe("the streaming tail", () => {
     it(
         "runs editoutput once on the completed text (Lua, the plugin hook, the regex) while the chunks stream raw, then the trigger, the listeners, TTS, the notification, the timings, and the final write",
@@ -593,20 +694,7 @@ describe("the streaming tail", () => {
                 const before = bodies.length;
                 // A browser registered for Web Push (`routes/push.ts`): the completion reaches it too.
                 pushes.length = 0;
-                const registered = await api("/api/push/subscription", {
-                    method: "PUT",
-                    body: JSON.stringify({
-                        subscription: {
-                            endpoint: PUSH_ENDPOINT,
-                            expirationTime: null,
-                            keys: {
-                                p256dh: webPush.generateVAPIDKeys().publicKey,
-                                auth: randomBytes(16).toString("base64url"),
-                            },
-                        },
-                    }),
-                });
-                expect(registered.status).toBe(204);
+                await subscribePush();
                 const { events, terminal } = await job(
                     "send",
                     chaId,
@@ -651,7 +739,7 @@ describe("the streaming tail", () => {
                     title: "Risuai",
                     body: "Ann's message has been processed.",
                     url: `/chat/${chaId}/k`,
-                    tag: completionNotificationTag(chaId, "k"),
+                    tag: notifications.completionNotificationTag(chaId, "k"),
                 };
                 expect(notices(events, "notification").map((event) => event.payload)).toEqual([notification]);
                 await waitFor(() => pushes.length === 1);
@@ -675,7 +763,7 @@ describe("the streaming tail", () => {
                 expect(ttsAt).toBeLessThan(notificationAt);
                 // The timings are written onto the reply, and the lock is released by the final write.
                 expect(reply.generationInfo.stageTiming.stage3).toBeGreaterThanOrEqual(CHUNK_DELAY_MS);
-                expect(terminal).toMatchObject({ messageId: reply.chatId, alternatives: ["Hello there"] });
+                expect(terminal).toMatchObject({ messageId: reply.chatId });
                 expect(await clientSetText(chaId, reply.chatId, "edited by the tab")).toBe(200);
                 const removed = await api("/api/push/subscription", {
                     method: "DELETE",
@@ -766,6 +854,112 @@ describe("the streaming tail", () => {
     );
 });
 
+describe("a reply that completes with no owner tab", () => {
+    // The owner socket closed before the tail: the plugin hooks of the reply nobody can answer settle
+    // `disconnected` at the absence deadline. `editoutput` keeps the text (the regex after it still
+    // runs) and the listeners are skipped, both recorded in `done.skipped` for the tab that comes back.
+    // The socket closes at `accepted` and the provider answers once that close completed
+    // (`providerGate`), so no callback is sent into a still-open socket: one would count as
+    // delivered and hold the client's lane (`CANCELLED_CALLBACK_DRAIN_MS`) through the next test.
+    it(
+        "a streaming reply: the editoutput hook and the listeners are skipped and recorded, the regex still runs, and the job ends done",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", customscript: [regex("greet", "Hello", "Howdy")] });
+            // Not paced: a paced answer waits for the owner to hold each chunk, and the owner is gone.
+            answers = [{ chunks: ["Hel", "lo", " there"] }];
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], chatOutput: true },
+                    closeOn: (event) => event.type === "accepted",
+                },
+            );
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            const chat = await readChat(chaId);
+            const reply = chat.data.message[1];
+            expect(texts(chat)).toEqual(["user:q", "char:Howdy there"]);
+            expect((terminal as any).skipped).toEqual([
+                { name: "editoutput" },
+                { name: "chatOutput", payload: { messageId: reply.chatId, speakerId: chaId } },
+            ]);
+            expect((terminal as any).messageId).toBe(reply.chatId);
+            // Nothing reached the closed socket: the tab never saw a callback of this reply.
+            expect(callbacks(events)).toHaveLength(0);
+            expect(await clientSetText(chaId, reply.chatId, "edited by the tab")).toBe(200);
+        },
+        SLOW,
+    );
+
+    it(
+        "a listener callback the tab took before it left is not recorded: its listeners may have run there",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            answers = [{ chunks: ["Hello there"] }];
+            // The socket closes once the `chatOutput` callback arrived, without answering it: the
+            // server waits for the owner (the absence bound), then goes on without recording it.
+            const { events, terminal, body } = await job(
+                "send",
+                chaId,
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, chatOutput: true },
+                    closeOn: (event) => event.type === "callback" && event.name === "chatOutput",
+                    answerBeforeClose: true,
+                },
+            );
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect((terminal as any).skipped).toBeUndefined();
+            const taken = callbacks(events, "chatOutput");
+            expect(taken).toHaveLength(1);
+            // As the tab would once its listeners settled: the cancelled callback no longer holds the
+            // client's lane (otherwise the next job's callbacks would wait out its drain bound).
+            const drained = await api(`/api/generations/${body.jobId}/drained?clientId=tab`, {
+                method: "POST",
+                body: JSON.stringify({ callbackId: taken[0].id }),
+            });
+            expect(drained.status, JSON.stringify(drained.body)).toBe(200);
+            expect(drained.body).toEqual({ drained: true });
+        },
+        SLOW,
+    );
+
+    it(
+        "a non-streaming reply: the afterRequest replacer is skipped too and the text goes on unchanged",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", customscript: [regex("greet", "Hello", "Howdy")] });
+            await withSettings({ useStreaming: false }, async () => {
+                answers = [{ chunks: ["Hello there"] }];
+                const { terminal } = await job(
+                    "send",
+                    chaId,
+                    {},
+                    {
+                        hooks: {
+                            ...NO_GENERATION_HOOKS,
+                            replacers: { beforeRequest: false, afterRequest: true },
+                            scripts: ["editoutput"],
+                            chatOutput: true,
+                        },
+                        closeOn: (event) => event.type === "accepted",
+                    },
+                );
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                const chat = await readChat(chaId);
+                const reply = chat.data.message[1];
+                expect(texts(chat)).toEqual(["user:q", "char:Howdy there"]);
+                expect((terminal as any).skipped).toEqual([
+                    { name: "replacerafterRequest" },
+                    { name: "editoutput" },
+                    { name: "chatOutput", payload: { messageId: reply.chatId, speakerId: chaId } },
+                ]);
+            });
+        },
+        SLOW,
+    );
+});
+
 describe("the non-streaming tail", () => {
     it(
         "a continue runs editoutput on the new text and again on the continued message plus the new text, stores the second, and keeps the reply open through the tail",
@@ -817,6 +1011,64 @@ describe("the non-streaming tail", () => {
 });
 
 describe("rounds", () => {
+    it("finishes a tiktoken special-token reply and IGP without an auto-continue round", async () => {
+        const chaId = await seedCharacter({ name: "Ann" });
+        await withSettings(
+            {
+                useStreaming: false,
+                autoContinueChat: true,
+                autoContinueMinTokens: 1000,
+                igpPrompt: "<|im_start|>user<|im_sep|>Add a tag<|im_end|>",
+            },
+            async () => {
+                answers = [{ chunks: ["Hello <|endoftext|> unfinished"] }, { chunks: [" #tag."] }];
+                const before = bodies.length;
+                const { terminal, events } = await job("send", chaId);
+                expect(terminal).toMatchObject({ type: "done" });
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                expect(reply.data).toBe("Hello <|endoftext|> unfinished #tag.");
+                expect(terminal).toMatchObject({ messageId: reply.chatId });
+                expect(bodies.slice(before)).toHaveLength(2);
+                expect(bodies[before + 1].messages).toEqual([{ role: "user", content: "Add a tag" }]);
+                expect(events.filter((event) => event.type === "accepted" && event.messageId)).toEqual([]);
+            },
+        );
+    });
+
+    it("fails the reply tail on an unrelated tokenizer error", async () => {
+        const chaId = await seedCharacter({ name: "Ann" });
+        const count = runnerTokens.count.bind(runnerTokens);
+        const failure = vi
+            .spyOn(runnerTokens, "count")
+            .mockImplementation((text, scope, signal) =>
+                text === "Ordinary unfinished"
+                    ? Promise.reject(new Error("tokenizer loader failed"))
+                    : count(text, scope, signal),
+            );
+        try {
+            await withSettings(
+                {
+                    useStreaming: false,
+                    autoContinueChat: true,
+                    igpPrompt: "<|im_start|>user<|im_sep|>Add a tag<|im_end|>",
+                },
+                async () => {
+                    answers = [{ chunks: ["Ordinary unfinished"] }];
+                    const before = bodies.length;
+                    const { terminal } = await job("send", chaId);
+                    expect(terminal).toMatchObject({
+                        type: "error",
+                        stage: "tail",
+                        message: "tokenizer loader failed",
+                    });
+                    expect(bodies.slice(before)).toHaveLength(1);
+                },
+            );
+        } finally {
+            failure.mockRestore();
+        }
+    });
+
     it(
         "auto-continue is a continue round of the same reply; igp runs once, on the terminal reply, and appends the answer",
         async () => {
@@ -1227,5 +1479,499 @@ describe("the emotion modes", () => {
         expect(notNames.status).toBe(400);
         const notAMap = await job("send", chaId, {}, { emotions: ["happy"] as unknown as Record<string, string[]> });
         expect(notAMap.status).toBe(400);
+    });
+});
+
+describe("reply hooks during an ownership handoff", () => {
+    async function admitSend(chaId: string, creatorId: string, hooks: typeof NO_GENERATION_HOOKS) {
+        const chat = await readChat(chaId);
+        const created = await api(
+            "/api/generations",
+            json({
+                kind: "send",
+                clientId: creatorId,
+                hooks,
+                context: {
+                    characterId: chaId,
+                    chatId: "k",
+                    presetId,
+                    modelPresetId,
+                    personaId,
+                    mode: "normal",
+                    input: "",
+                    chatRevision: chat.revision,
+                },
+            }),
+        );
+        expect(created.status).toBe(200);
+        return created.body.jobId as string;
+    }
+    async function tail(hooks: typeof NO_GENERATION_HOOKS) {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await patchSettings({ ...DEFAULT_SETTINGS, useStreaming: false });
+        const chaId = await seedCharacter({ name: "Handoff" });
+        const creatorId = `creator-${chaId}`;
+        const workerId = `worker-${chaId}`;
+        answers = [{ chunks: ["Original reply"] }];
+        socketOpen = Promise.resolve();
+        const release = withResolvers<void>();
+        providerGate = release.promise;
+        const id = await admitSend(chaId, creatorId, hooks);
+        const sockets: { ws: WsClient; closed: Promise<void>; peerClosed: Promise<void> }[] = [];
+        async function follow(clientId = creatorId, ticket?: string) {
+            const sends = vi.spyOn(WsClient.prototype, "send");
+            const ws = new WsClient(
+                `${base.replace("http", "ws")}/api/generations/${id}/ws?clientId=${clientId}&risu-auth=${encodeURIComponent(await signer.jwt())}${ticket ? `&ticket=${ticket}` : ""}`,
+            );
+            const events: any[] = [];
+            const waiters = new Set<() => void>();
+            ws.on("message", (raw) => {
+                events.push(JSON.parse(String(raw)));
+                for (const notify of waiters) notify();
+            });
+            const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+            await new Promise<void>((resolve, reject) => {
+                ws.once("open", resolve);
+                ws.once("error", reject);
+            });
+            const peer = sends.mock.contexts.find((socket) => socket !== ws) as WsClient;
+            sends.mockRestore();
+            const peerClosed = new Promise<void>((resolve) => peer.once("close", () => resolve()));
+            sockets.push({ ws, closed, peerClosed });
+            const until = async (predicate: (events: any[]) => boolean) => {
+                if (predicate(events)) return;
+                await new Promise<void>((resolve) => {
+                    const notify = () => {
+                        if (predicate(events)) {
+                            waiters.delete(notify);
+                            resolve();
+                        }
+                    };
+                    waiters.add(notify);
+                });
+            };
+            const fence = async () => {
+                const pong = new Promise<void>((resolve) => ws.once("pong", () => resolve()));
+                ws.ping();
+                await pong;
+            };
+            return {
+                ws,
+                events,
+                until,
+                fence,
+                close: async () => {
+                    ws.close();
+                    await Promise.all([closed, peerClosed]);
+                },
+            };
+        }
+        const owner = await follow();
+        const take = async () => {
+            expect((await api(`/api/generations/${id}/handoff`, json({ clientId: creatorId }))).status).toBe(200);
+            const result = await api(`/api/generations/${id}/takeover`, json({ clientId: workerId }));
+            expect(result.status).toBe(200);
+            const worker = await follow(workerId, result.body.ticket);
+            await worker.fence();
+            return worker;
+        };
+        return {
+            id,
+            chaId,
+            creatorId,
+            workerId,
+            owner,
+            follow,
+            take,
+            release,
+            async close() {
+                release.resolve();
+                await api(`/api/generations/${id}?clientId=${creatorId}`, { method: "DELETE" });
+                for (const socket of sockets) socket.ws.close();
+                await Promise.all(sockets.flatMap((socket) => [socket.closed, socket.peerClosed]));
+                await server.context.generationJobs.drain();
+                providerGate = Promise.resolve();
+                vi.useRealTimers();
+                await patchSettings(DEFAULT_SETTINGS);
+            },
+        };
+    }
+    const terminal = (events: any[]) => events.find((event) => event.type === "done" || event.type === "error");
+    function nextAbsentCallback() {
+        const waiting = withResolvers<void>();
+        const setTimer = globalThis.setTimeout;
+        const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+            handler: (...args: any[]) => void,
+            ms?: number,
+            ...args: any[]
+        ) => {
+            const timer = setTimer(handler, ms, ...args);
+            // This fixture's existing owner-absence allowance; the production callback allowance stays 60 s.
+            if (ms === 2_500 || ms === CALLBACK_TIMEOUT_MS) waiting.resolve();
+            return timer;
+        }) as typeof setTimeout);
+        return { promise: waiting.promise, restore: () => spy.mockRestore() };
+    }
+
+    it("finishes a callback-free send after the owner's socket closes", async () => {
+        const before = bodies.length;
+        const h = await tail(NO_GENERATION_HOOKS);
+        try {
+            await h.owner.close();
+            vi.setSystemTime(Date.now() + 2_500);
+            h.release.resolve();
+            await server.context.generationJobs.drain();
+            const chat = await readChat(h.chaId);
+            expect(texts(chat)).toEqual(["user:q", "char:Original reply"]);
+            expect(server.context.generationJobs.status(h.id, h.creatorId)?.terminal).toMatchObject({
+                type: "done",
+                messageId: chat.data.message[1].chatId,
+            });
+            expect(bodies).toHaveLength(before + 1);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("ends before calling the provider when nobody can answer replacerbeforeRequest", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        try {
+            await withSettings({ useStreaming: false }, async () => {
+                const chaId = await seedCharacter({ name: "Ann" });
+                const before = bodies.length;
+                const id = await admitSend(chaId, chaId, {
+                    ...NO_GENERATION_HOOKS,
+                    replacers: { beforeRequest: true, afterRequest: false },
+                });
+                await vi.advanceTimersByTimeAsync(2_500);
+                await server.context.generationJobs.drain();
+                expect(server.context.generationJobs.status(id, chaId)?.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringMatching(/replacerbeforeRequest.*disconnected/),
+                });
+                expect(bodies).toHaveLength(before);
+                expect(texts(await readChat(chaId))).toEqual(["user:q"]);
+            });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("saves a disconnected plugin provider's partial reply and releases its lock and chat slot", async () => {
+        const modelId = "pluginmodel:::prov";
+        const profiles = await single("modelProfiles");
+        const setProfiles = async (data: unknown) => {
+            const current = await single("modelProfiles");
+            expect(
+                (await batch({ ops: [{ kind: "modelProfiles", id: "main", baseRevision: current.revision, data }] }))
+                    .status,
+            ).toBe(200);
+        };
+        await setProfiles([{ ...profiles.data[0], modelId }, ...profiles.data.slice(1)]);
+        try {
+            const h = await tail({
+                ...NO_GENERATION_HOOKS,
+                providers: [
+                    {
+                        name: "prov",
+                        model: {
+                            id: modelId,
+                            internalID: modelId,
+                            name: "prov",
+                            shortName: "prov",
+                            fullName: "prov",
+                            provider: LLMProvider.AsIs,
+                            format: LLMFormat.Plugin,
+                            flags: [LLMFlags.hasStreaming, LLMFlags.hasFullSystemPrompt],
+                            parameters: [],
+                            tokenizer: LLMTokenizer.Unknown,
+                        },
+                    },
+                ],
+            });
+            try {
+                await h.owner.until((events) => callbacks(events, "provider").length > 0 || !!terminal(events));
+                const [callback] = callbacks(h.owner.events, "provider");
+                expect(callback).toBeDefined();
+                h.owner.ws.send(JSON.stringify({ type: "chunk", id: callback.id, text: "Unfinished reply" }));
+                await h.owner.until((events) =>
+                    events.some((event) => event.type === "chunk" && event.text === "Unfinished reply"),
+                );
+                expect(texts(await readChat(h.chaId))).not.toContain("char:Unfinished reply");
+                await h.owner.close();
+                // Reattach after absence expires, without ticking the stream checkpoint timer.
+                vi.setSystemTime(Date.now() + 2_500);
+                const returned = await h.follow();
+                await returned.until((events) => !!terminal(events));
+                expect(terminal(returned.events)).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("provider callback disconnected"),
+                });
+                const chat = await readChat(h.chaId);
+                expect(texts(chat)).toEqual(["user:q", "char:Unfinished reply"]);
+                expect(await clientSetText(h.chaId, chat.data.message[1].chatId, "recovered")).toBe(200);
+                // Admission of another ordinary send exercises the slot independently of the row lock.
+                const next = await admitSend(h.chaId, h.creatorId, NO_GENERATION_HOOKS);
+                expect(next).not.toBe(h.id);
+                server.context.generationJobs.abort(next, h.creatorId);
+                await server.context.generationJobs.drain();
+            } finally {
+                await h.close();
+            }
+        } finally {
+            await setProfiles(profiles.data);
+        }
+    });
+
+    it("rescues an undelivered listener on takeover and finishes without skipped hooks", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });
+        try {
+            await h.owner.close();
+            const waiting = nextAbsentCallback();
+            h.release.resolve();
+            await waiting.promise;
+            waiting.restore();
+            const worker = await h.take();
+            await worker.until((events) => callbacks(events, "chatOutput").length === 1);
+            const callback = callbacks(worker.events, "chatOutput")[0];
+            expect(callback).not.toHaveProperty("replay");
+            worker.ws.send(JSON.stringify({ type: "answer", id: callback.id, outcome: "answered", value: true }));
+            await worker.until((events) => !!terminal(events));
+            expect(terminal(worker.events)).toMatchObject({ type: "done" });
+            expect(terminal(worker.events)).not.toHaveProperty("skipped");
+            expect(terminal(worker.events)).not.toHaveProperty("missed");
+            expect(texts(await readChat(h.chaId))).toEqual(["user:q", "char:Original reply"]);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("records a delivered disconnected listener as missed in both terminal views", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });
+        try {
+            h.release.resolve();
+            await h.owner.until((events) => callbacks(events, "chatOutput").length === 1);
+            const callback = callbacks(h.owner.events, "chatOutput")[0];
+            const worker = await h.take();
+            expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "other", pending: true });
+            await h.owner.close();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await worker.until((events) => !!terminal(events));
+            const creator = await h.follow();
+            await creator.until((events) => !!terminal(events));
+            for (const events of [worker.events, creator.events]) {
+                expect(terminal(events)).toMatchObject({
+                    type: "done",
+                    missed: [{ name: "chatOutput", payload: callback.payload }],
+                });
+                expect(terminal(events)).not.toHaveProperty("skipped");
+            }
+            expect(callbacks(worker.events)).toEqual([]);
+            expect((await api(`/api/generations/${h.id}?clientId=${h.creatorId}`)).body.terminal.missed).toEqual([
+                { name: "chatOutput", payload: callback.payload },
+            ]);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("records an undelivered disconnected listener as skipped without a missed list", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, chatOutput: true });
+        try {
+            await h.owner.close();
+            const waiting = nextAbsentCallback();
+            h.release.resolve();
+            await waiting.promise;
+            waiting.restore();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await server.context.generationJobs.drain();
+            const creator = await h.follow();
+            await creator.until((events) => !!terminal(events));
+            const reply = (await readChat(h.chaId)).data.message.at(-1);
+            expect(terminal(creator.events)).toMatchObject({
+                type: "done",
+                skipped: [{ name: "chatOutput", payload: { messageId: reply.chatId, speakerId: h.chaId } }],
+            });
+            expect(terminal(creator.events)).not.toHaveProperty("missed");
+            expect(callbacks(h.owner.events)).toEqual([]);
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("keeps the completed text when the old editoutput disconnects and gives only the following listener to the worker", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, scripts: ["editoutput"], chatOutput: true });
+        try {
+            h.release.resolve();
+            await h.owner.until((events) => callbacks(events, "editoutput").length === 1);
+            const worker = await h.take();
+            expect(worker.events[0]).toMatchObject({ owner: "other", pending: true });
+            await h.owner.close();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await worker.until((events) => callbacks(events, "chatOutput").length === 1);
+            expect(callbacks(worker.events).map((event) => event.name)).toEqual(["chatOutput"]);
+            const callback = callbacks(worker.events)[0];
+            expect(callback).not.toHaveProperty("replay");
+            worker.ws.send(JSON.stringify({ type: "answer", id: callback.id, outcome: "answered", value: true }));
+            await worker.until((events) => !!terminal(events));
+            expect(texts(await readChat(h.chaId))).toEqual(["user:q", "char:Original reply"]);
+            expect(terminal(worker.events)).toMatchObject({ type: "done", skipped: [{ name: "editoutput" }] });
+        } finally {
+            await h.close();
+        }
+    });
+
+    it("ends a disconnected body interceptor before promoting a pending takeover", async () => {
+        const h = await tail({ ...NO_GENERATION_HOOKS, interceptors: true });
+        try {
+            await h.owner.until((events) => callbacks(events, "bodyIntercepter").length === 1);
+            const worker = await h.take();
+            expect(worker.events[0]).toMatchObject({ owner: "other", pending: true });
+            await h.owner.close();
+            await vi.advanceTimersByTimeAsync(2_500);
+            await worker.until((events) => !!terminal(events));
+            await vi.advanceTimersByTimeAsync(1);
+            await worker.fence();
+            expect(terminal(worker.events)).toMatchObject({
+                type: "error",
+                message: expect.stringContaining("disconnected"),
+            });
+            expect(
+                worker.events.filter((event) => event.type === "handoff").every((event) => event.owner === "other"),
+            ).toBe(true);
+            expect(callbacks(worker.events)).toEqual([]);
+            expect((await api(`/api/generations/${h.id}?clientId=${h.creatorId}`)).body).not.toHaveProperty(
+                "handedOff",
+            );
+        } finally {
+            await h.close();
+        }
+    });
+});
+
+describe("held completion delivery", () => {
+    const holdMs = 1_000;
+    beforeAll(async () => {
+        // The hold manager captures its timers at construction. Reuse the seeded database,
+        // but build this server under the same fake clock that drives the tail and deadlines.
+        await server.context.dispose();
+        node.closeAllConnections();
+        await new Promise<void>((resolve) => node.close(() => resolve()));
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await startServer();
+        await subscribePush();
+    });
+    afterAll(async () => {
+        await api("/api/push/subscription", { method: "DELETE", body: JSON.stringify({ endpoint: PUSH_ENDPOINT }) });
+        vi.useRealTimers();
+    });
+
+    const release = (requestId: string) => api("/api/generations/completion-release", json({ requestId }));
+    const expectedNotice = (chaId: string, name: string) => ({
+        chaId,
+        chatId: "k",
+        title: "Risuai",
+        body: `${name}'s message has been processed.`,
+        url: `/chat/${chaId}/k`,
+        tag: notifications.completionNotificationTag(chaId, "k"),
+    });
+    const expectedPush = (chaId: string, name: string) => ({
+        title: "Risuai",
+        body: `${name}'s message has been processed.`,
+        url: `/chat/${chaId}/k`,
+        tag: notifications.completionNotificationTag(chaId, "k"),
+        icon: "/logo_192.png",
+        badge: "/logo_192.png",
+    });
+
+    it("keeps Web Push held through a long tail callback while sending the tab notice, then delivers on release", async () => {
+        await withSettings({ notification: true, useStreaming: false }, async () => {
+            const chaId = await seedCharacter({ name: "Ann", extra: { viewScreen: "imggen" } });
+            const requestId = `held-${chaId}`;
+            const entered = withResolvers<void>();
+            const finish = withResolvers<void>();
+            pushes.length = 0;
+            answers = [{ chunks: ["Finished reply."] }];
+            const pending = job(
+                "send",
+                chaId,
+                { completionHoldMs: holdMs },
+                {
+                    requestId,
+                    answerCallback: async (event) => {
+                        if (event.name === "imggen") {
+                            entered.resolve();
+                            await finish.promise;
+                        }
+                        return { outcome: "answered", value: true };
+                    },
+                },
+            );
+            try {
+                await entered.promise;
+                expect(notices(ownerEvents, "notification").map((event) => event.payload)).toEqual([
+                    expectedNotice(chaId, "Ann"),
+                ]);
+                expect(pushes).toEqual([]);
+                await vi.advanceTimersByTimeAsync(holdMs * 3);
+                expect(ownerEvents.some((event) => event.type === "done" || event.type === "error")).toBe(false);
+                expect(pushes).toEqual([]);
+            } finally {
+                finish.resolve();
+                await pending;
+            }
+            const result = await pending;
+            expect(result.terminal?.type).toBe("done");
+            expect(pushes).toEqual([]);
+            expect(await release(requestId)).toEqual({ status: 200, body: { released: true } });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(pushes.map(({ endpoint, payload }) => ({ endpoint, payload: JSON.parse(payload) }))).toEqual([
+                { endpoint: PUSH_ENDPOINT, payload: expectedPush(chaId, "Ann") },
+            ]);
+            expect(await release(requestId)).toEqual({ status: 200, body: { released: false } });
+            await vi.advanceTimersByTimeAsync(holdMs);
+            expect(pushes).toHaveLength(1);
+        });
+    });
+
+    it("holds and sends nothing when Stop arrives before the completion notification", async () => {
+        await withSettings({ notification: true, useStreaming: false }, async () => {
+            const chaId = await seedCharacter({ name: "Stopped" });
+            const requestId = `stopped-${chaId}`;
+            const entered = withResolvers<void>();
+            const finish = withResolvers<void>();
+            pushes.length = 0;
+            answers = [{ chunks: ["Reply before Stop."] }];
+            const pending = job(
+                "send",
+                chaId,
+                { completionHoldMs: holdMs },
+                {
+                    requestId,
+                    hooks: { ...NO_GENERATION_HOOKS, chatOutput: true },
+                    answerCallback: async (event) => {
+                        if (event.name === "chatOutput") {
+                            entered.resolve();
+                            await finish.promise;
+                        }
+                        return { outcome: "answered", value: true };
+                    },
+                },
+            );
+            try {
+                await entered.promise;
+                expect(notices(ownerEvents, "notification")).toEqual([]);
+                expect((await api("/api/generations/cancel", json({ requestId, clientId: "tab" }))).status).toBe(200);
+                const result = await pending;
+                expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
+                expect(notices(result.events, "notification")).toEqual([]);
+                expect(await release(requestId)).toEqual({ status: 200, body: { released: false } });
+                await vi.advanceTimersByTimeAsync(holdMs * 2);
+                expect(pushes).toEqual([]);
+            } finally {
+                finish.resolve();
+                await pending;
+            }
+        });
     });
 });

@@ -1,24 +1,55 @@
 import type { GenerationKind } from "../../../shared/jobs.ts";
+import type { SendReport } from "../../../shared/remoteCommands.ts";
+import type { LoreBudgetStop } from "../../../shared/contextReport.ts";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
-import { type ChatRef, chatEntry, currentChatRef, findChat, pinChat } from "../storage/chatStore.svelte";
+import { type ChatRef, chatEntry, currentChatRef, pinChat } from "../storage/chatStore.svelte";
 import { incrementStatic } from "../storage/collectionStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
-import { addRerolls } from "./prereroll";
+import { jobLoreStop } from "./jobLoreStop";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 
-/** What a send asks of the server (`sendChat`'s argument as the flag branch reads it). */
+/**
+ * Maps the tab's send arguments to jobs through `src/ts/process/serverCommands.ts` and maps
+ * admission and terminal outcomes back to composer recovery. A listed target is required and
+ * stays pinned through the job; the job layer loads it and flushes pending writes. Preview results
+ * return to the caller, while generated replies arrive through server hydration. An unanswered
+ * create or lost follow stays unsettled so its request identity can be retained.
+ */
+
+/** What a send asks of the server (`sendChat`'s argument). */
 export type ServerSendArg = {
     target?: ChatRef;
     signal?: AbortSignal;
+    /** Keeps this send on this tab: runSend must never route it to a remote host. */
+    localOnly?: boolean;
+    /** Omit preferred handoff for this create, without changing the tab's preference. */
+    noHandoffPreference?: boolean;
+    /** Only a remote host sets this to hold the job's completion Web Push for plugin work. */
+    completionHoldMs?: number;
+    /** Caller-owned sink for admission and own-follow reports; none of them is shown on this tab. */
+    reports?: SendReport[];
     continue?: boolean;
     continueMessageId?: string;
+    rerollMessageId?: string;
+    speakerChaId?: string;
     preview?: boolean;
     previewPrompt?: boolean;
-    /** The chat input the job's input stage appends (`sendMain` behind the flag), with its message id. */
+    /** The chat input the job's input stage appends (from `sendMain`), with its message id. */
     input?: string;
+    /** The user's original text, stored as the reviewed draft's translation when the job appends it. */
+    inputOriginal?: string;
     userMessageId?: string;
+    /** This action's request id, reused only while its previous attempt remains uncertain. */
+    requestId?: string;
+    /** An earlier attempt under requestId may still run; local refusals must preserve that uncertainty. */
+    requestUncertain?: boolean;
     /** A plugin call's context: the job takes its preset and effective persona, not the tab's selection now. */
     pluginContext?: PluginCallContext;
+    /**
+     * Ask the job to end before any model request when the lore budget leaves an activated entry out
+     * (`context.stopOverLoreBudget`). Only a caller that shows `ServerSendResult.loreStop` sets it.
+     */
+    stopOverLoreBudget?: boolean;
 };
 
 /**
@@ -29,25 +60,52 @@ export type ServerSendArg = {
 export type ServerSendRefusal = "definite" | "ambiguous";
 
 /**
- * `sendChat` as a server job (the only send path): the tab counts the send (`statics.messages`),
- * then `runServerJob` flushes, creates the job (`preview`, `previewPrompt`, `continue`, `group` for
- * a group chat, else `send`) with the input and the message ids, and follows it to its end. The
- * target's `lastInteraction` is the job's to stamp (a field patch on the server, so the character
- * record is not uploaded before every send). A preview's `done.result` is returned (for
- * `previewChat`); a reply's reroll alternatives go to `addRerolls` under the
- * reply's generation (a continue keeps none, as its alternatives are never looked up on the client
- * either). `ok` is the browser path's result: the job ended with `done` and counted as sent (not
- * `stopped`). `refusal` says why a send did not run. The target chat needs to be listed, not
- * loaded: `runServerJob` loads it, and it stays pinned until the reply's alternatives are read
- * here.
+ * A server send's end. `settled`: nothing of this send writes to the chat any more (it did not run, or
+ * its job ended), false after a create without an answer or a lost follow. `blockedChats`: the chats a
+ * flush refused for a generation waited on.
  */
-export async function sendChatOnServer(
-    arg: ServerSendArg,
-): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
+export type ServerSendResult = {
+    ok: boolean;
+    outcome: ServerCommandOutcome;
+    settled: boolean;
+    /** This action still lacks a known outcome, so an unlanded draft must retain its request id. */
+    requestUncertain?: boolean;
+    /** Whether the chat read for a replay without a usable owner terminal succeeded. */
+    reconciled?: boolean;
+    result?: unknown;
+    /** An existing follow actually submitted the job's error for display on this tab. */
+    reportShownElsewhere?: true;
+    refusal?: ServerSendRefusal;
+    blockedChats?: readonly ChatRef[];
+    /**
+     * The job stopped over the lore budget, as this send asked, and no alert was raised for it: the
+     * caller shows it. Present only when this call's own follow of the job was the one waiting for
+     * the stop, with the entries left out and the terminal's English message.
+     */
+    loreStop?: { lore: LoreBudgetStop; message: string };
+};
+
+/**
+ * `sendChat` as a server job (the only send path): the tab counts the send (`statics.messages`),
+ * then `runServerJob` flushes, creates the job (`preview`, `previewPrompt`, `reroll`, `continue`, `group` for
+ * a group chat, else `send`) with the input and the message ids, and follows it to its end. The
+ * last-chatted time comes from the chat's last message; an ordinary send leaves the character
+ * record and its revision unchanged. A preview's `done.result` is returned (for
+ * `previewChat`). Extra samples are persisted on the reply. `ok` says the job ended with `done` and counted as sent (not
+ * `stopped`). `refusal` says why a send did not run. The target chat needs to be listed, not
+ * loaded: `runServerJob` loads it, and it stays pinned until the job ends.
+ */
+export async function sendChatOnServer(arg: ServerSendArg): Promise<ServerSendResult> {
     const ref = arg.target ?? currentChatRef();
     const char = ref ? characterList().find((entry) => entry?.chaId === ref.chaId) : undefined;
     if (!ref || !char || !chatEntry(ref)) {
-        return { ok: false, outcome: "refused", refusal: "definite" };
+        return {
+            ok: false,
+            outcome: "refused",
+            settled: !arg.requestUncertain,
+            refusal: arg.requestUncertain ? "ambiguous" : "definite",
+            requestUncertain: arg.requestUncertain === true,
+        };
     }
     const release = pinChat(ref);
     try {
@@ -61,60 +119,101 @@ async function sendPinned(
     arg: ServerSendArg,
     ref: ChatRef,
     char: NonNullable<ReturnType<typeof characterList>[number]>,
-): Promise<{ ok: boolean; outcome: ServerCommandOutcome; result?: unknown; refusal?: ServerSendRefusal }> {
+): Promise<ServerSendResult> {
     incrementStatic("messages");
 
     const kind: GenerationKind = arg.preview
         ? "preview"
         : arg.previewPrompt
           ? "previewPrompt"
-          : char.type === "group"
-            ? "group"
-            : arg.continue
-              ? "continue"
-              : "send";
-    const input = kind === "preview" || kind === "previewPrompt" ? "" : (arg.input ?? "");
-    const { outcome, terminal } = await runServerJob(
-        char,
-        ref,
-        {
-            kind,
-            label: "send",
-            context: {
-                input,
-                ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
-                ...(kind === "continue" && arg.continueMessageId ? { continueMessageId: arg.continueMessageId } : {}),
+          : arg.rerollMessageId
+            ? "reroll"
+            : char.type === "group"
+              ? "group"
+              : arg.continue
+                ? "continue"
+                : "send";
+    const input = kind === "preview" || kind === "previewPrompt" || kind === "reroll" ? "" : (arg.input ?? "");
+    const { outcome, terminal, blockedChats, requestUncertain, reconciled, loreStopFollow, reportShownElsewhere } =
+        await runServerJob(
+            char,
+            ref,
+            {
+                kind,
+                label: "send",
+                requestId: arg.requestId,
+                requestUncertain: arg.requestUncertain,
+                context: {
+                    input,
+                    ...(kind === "reroll"
+                        ? {
+                              rerollMessageId: arg.rerollMessageId,
+                              ...(arg.speakerChaId ? { speakerChaId: arg.speakerChaId } : {}),
+                          }
+                        : {}),
+                    ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
+                    ...(input !== "" && arg.userMessageId && arg.inputOriginal !== undefined
+                        ? { inputOriginal: arg.inputOriginal }
+                        : {}),
+                    ...(kind === "continue" && arg.continueMessageId
+                        ? { continueMessageId: arg.continueMessageId }
+                        : {}),
+                    ...(arg.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
+                    ...(typeof arg.completionHoldMs === "number" && arg.completionHoldMs > 0
+                        ? { completionHoldMs: arg.completionHoldMs }
+                        : {}),
+                },
             },
-        },
-        {
-            signal: arg.signal,
-            ...(arg.pluginContext
-                ? {
-                      identity: {
-                          presetId: arg.pluginContext.presetId || null,
-                          modelPresetId: arg.pluginContext.modelPresetId || null,
-                          personaId: arg.pluginContext.personaId || null,
-                      },
-                  }
-                : {}),
-        },
-    );
-    if (outcome === "refused" || outcome === "followed") {
+            {
+                signal: arg.signal,
+                noHandoffPreference: arg.noHandoffPreference,
+                reports: arg.reports,
+                ...(arg.pluginContext
+                    ? {
+                          identity: {
+                              presetId: arg.pluginContext.presetId || null,
+                              modelPresetId: arg.pluginContext.modelPresetId || null,
+                              personaId: arg.pluginContext.personaId || null,
+                          },
+                      }
+                    : {}),
+            },
+        );
+    if (outcome === "refused") {
+        return {
+            ok: false,
+            outcome,
+            settled: !requestUncertain,
+            refusal: requestUncertain ? "ambiguous" : "definite",
+            requestUncertain,
+            ...(blockedChats ? { blockedChats } : {}),
+        };
+    }
+    if (outcome === "followed") {
         // A followed job is this tab's other action: this send's input did not reach it.
-        return { ok: false, outcome, refusal: "definite" };
+        return {
+            ok: false,
+            outcome,
+            settled: terminal !== "lost",
+            refusal: "definite",
+            requestUncertain: false,
+            ...(reportShownElsewhere ? { reportShownElsewhere } : {}),
+        };
     }
     if (outcome === "unknown") {
-        return { ok: false, outcome, refusal: "ambiguous" };
+        return { ok: false, outcome, settled: false, refusal: "ambiguous", requestUncertain: true };
     }
     if (!terminal || terminal === "lost" || terminal.type !== "done") {
-        return { ok: false, outcome };
+        const loreStop = loreStopFollow ? jobLoreStop(terminal) : null;
+        return {
+            ok: false,
+            outcome,
+            settled: terminal !== "lost" && !requestUncertain,
+            requestUncertain: terminal === "lost" || requestUncertain === true,
+            ...(reconciled !== undefined ? { reconciled } : {}),
+            ...(reportShownElsewhere ? { reportShownElsewhere } : {}),
+            ...(loreStop ? { loreStop } : {}),
+        };
     }
-    if (terminal.alternatives && terminal.messageId && kind !== "continue") {
-        const reply = findChat(ref)?.message.find((message) => message.chatId === terminal.messageId);
-        const generationId = reply?.generationInfo?.generationId;
-        if (generationId) {
-            addRerolls(generationId, terminal.alternatives, ref, terminal.messageId);
-        }
-    }
-    return { ok: !terminal.stopped, outcome, result: terminal.result };
+    return { ok: !terminal.stopped, outcome, settled: true, result: terminal.result };
 }

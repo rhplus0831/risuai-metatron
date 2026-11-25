@@ -4,6 +4,14 @@
     import type { NanoGPTModelProviders } from "src/ts/model/nanogpt";
     import { language } from "src/lang";
 
+    /**
+     * The NanoGPT upstream provider choice for a model, shown only when the model supports provider selection. The
+     * providers are fetched through the edited profile's binding (`src/ts/model/nanogpt.ts`
+     * `getNanoGPTModelProviders`) while `keySet` and a `modelId` are present, again whenever `keyVersion`
+     * (`src/ts/model/credentials.ts` `credentialStatusFor`) or the model changes. Choosing writes only the bindable
+     * `value` (`""` is Auto); the caller binds it to the profile's `nanogptProvider`.
+     */
+
     interface Props {
         /** Whether a NanoGPT key is stored, and its version (a replaced key refetches). */
         keySet: boolean;

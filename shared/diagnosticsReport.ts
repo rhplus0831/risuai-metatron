@@ -1,3 +1,4 @@
+import { BUILD_ID_PATTERN } from "./buildInfo.ts";
 import {
     type DiagnosticEvent,
     type DiagnosticsState,
@@ -5,6 +6,7 @@ import {
     projectBrowserEvent,
     projectServerEvent,
 } from "./diagnostics.ts";
+import { SHARE_JOB_ID } from "./requestHistory.ts";
 
 /**
  * The Diagnostics panel's report: the browser's events and the server's state and events as one
@@ -14,8 +16,8 @@ import {
  *
  * Content-free by construction: every value goes through a projection here, whatever the caller
  * passed. What a kept report can hold is what the projections admit: ids of the server's shapes (a
- * UUID, a translation run's `translate-<UUID>`), enumerations, counts, booleans, times, route
- * templates, catalog model ids, provider error codes (`^[A-Za-z0-9_.-]{1,64}$`), and application
+ * UUID, a translation run's `translate-<UUID>`, a memory task's `memory-<UUID>`), enumerations,
+ * counts, booleans, times, route templates, catalog model ids, provider error codes (`^[A-Za-z0-9_.-]{1,64}$`), and application
  * stack frames (a file path of the app's shape, its line and column). A provider code and a frame's
  * file name are the only strings with a free shape; the content-free rule permits both. The check
  * is of shape, not of provenance: a text written by hand to fit the format passes.
@@ -26,6 +28,7 @@ import {
  * ```
  * Metatron diagnostic report v1
  * Version: <app version or unknown>
+ * Build: <build id or unknown>         (only when the tab gave one)
  * Browser: <Chrome | Edge | Firefox | Safari | Other>
  * OS: <Android | iOS | Windows | macOS | Linux | Other>
  * Online: <true | false>
@@ -40,8 +43,10 @@ import {
  * ```
  *
  * Lines end with LF, the text with one. Events are merged by time (a stable sort; the server's first
- * at an equal time). Each source keeps its newest 300 events, and the oldest events are left out
- * while the text passes 1 MiB; `Omitted events` counts both. Times are four-digit-year ISO times.
+ * at an equal time). The browser's events include the service worker's push records, which the tab
+ * merged into its list (`src/ts/diagnostics/report.ts`), so they are `browser` lines. Each source keeps
+ * its newest 300 events, and the oldest events are left out while the text passes 1 MiB; `Omitted
+ * events` counts both. Times are four-digit-year ISO times.
  *
  * v1 is frozen: a later change may add a kind, a field, or an enumeration value, never remove or
  * narrow one, so a report an older tab built still passes. An incompatible change is v2. A model id
@@ -67,6 +72,8 @@ export const REPORT_FILE_PATTERN = /^\d{8}T\d{9}Z-[0-9a-f]{8}\.txt$/;
 export type DiagnosticReportInput = {
     meta: {
         version: unknown;
+        /** The tab's build id (`shared/buildInfo.ts`); a report without the key has no `Build` line. */
+        build?: unknown;
         browser: unknown;
         os: unknown;
         online: unknown;
@@ -90,7 +97,6 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const APP_VERSION = /^\d{1,4}(?:\.\d{1,6}){1,3}$/;
 const NODE_VERSION = /^\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const TRANSLATION_RUN = /^translate-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Node's `process.platform` and `process.arch` values; any other is `other`. */
 const PLATFORMS = [
     "aix",
@@ -129,8 +135,8 @@ function isoTime(value: unknown): string | null {
 /**
  * An event of the report: the side's projection, then the report's rules: a time in range (else no
  * event; a `lastAt` out of range is dropped), and ids of the server's shapes only (a `requestId` a
- * UUID; a `jobId` a UUID, or a translation run's id on a `request` event). The id pattern of the
- * projection admits any short word; the server issues only these.
+ * UUID; a `jobId` a UUID, or a translation run's or memory task's id on a `request` event). The id
+ * pattern of the projection admits any short word; the server issues only these.
  */
 function reportEvent(origin: "server" | "browser", input: unknown): DiagnosticEvent | null {
     const event = origin === "server" ? projectServerEvent(input) : projectBrowserEvent(input);
@@ -146,8 +152,7 @@ function reportEvent(origin: "server" | "browser", input: unknown): DiagnosticEv
     if (event.jobId !== undefined) {
         const jobId = event.jobId;
         const ok =
-            typeof jobId === "string" &&
-            (UUID.test(jobId) || (event.kind === "request" && TRANSLATION_RUN.test(jobId)));
+            typeof jobId === "string" && (UUID.test(jobId) || (event.kind === "request" && SHARE_JOB_ID.test(jobId)));
         if (!ok) {
             delete event.jobId;
         }
@@ -175,7 +180,8 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
         !isCount(state.uptimeSec) ||
         !journal ||
         !isCount(journal.eventBytes) ||
-        !isCount(journal.writeFailures)
+        !isCount(journal.writeFailures) ||
+        (Object.hasOwn(journal, "dropped") && !isCount(journal.dropped))
     ) {
         return null;
     }
@@ -191,6 +197,10 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
         writtenAt,
         app: {
             version: typeof app?.version === "string" && APP_VERSION.test(app.version) ? app.version : null,
+            // v1 grows: only a state that has the build gets it back, as with `shared` below.
+            ...(app && Object.hasOwn(app, "build")
+                ? { build: typeof app.build === "string" && BUILD_ID_PATTERN.test(app.build) ? app.build : null }
+                : {}),
         },
         node: typeof state.node === "string" && NODE_VERSION.test(state.node) ? state.node : UNKNOWN,
         platform: PLATFORMS.includes(state.platform as string) ? (state.platform as string) : OTHER,
@@ -203,7 +213,12 @@ export function projectDiagnosticsState(input: unknown): DiagnosticsState | null
             requestHistoryLimit: countOrNull(settings.requestHistoryLimit),
         },
         history: history && { rows: countOrNull(history.rows), bytes: countOrNull(history.bytes) },
-        journal: { eventBytes: journal.eventBytes, writeFailures: journal.writeFailures },
+        journal: {
+            eventBytes: journal.eventBytes,
+            writeFailures: journal.writeFailures,
+            // v1 grows: only a state that has the count gets it back, as with `shared` below.
+            ...(Object.hasOwn(journal, "dropped") ? { dropped: journal.dropped as number } : {}),
+        },
         // v1 grows: only a state that has the section gets it back, so a report without it stays canonical.
         ...(Object.hasOwn(state, "shared") ? { shared: shared && { files: countOrNull(shared.files) } } : {}),
         workers: workers && {
@@ -234,7 +249,9 @@ const byteLength = (text: string) => utf8.encode(text).length;
 /**
  * The report text of `input`. Every value is checked here (a value that fails is replaced by its
  * fallback, never by the current time, so the same input always gives the same text). A server answer
- * whose state fails `projectDiagnosticsState` counts as unavailable.
+ * whose state fails `projectDiagnosticsState` counts as unavailable. Each source's list must already
+ * be oldest first: its newest 300 are selected by input order before the lists are merged by time.
+ * `src/ts/diagnostics/report.ts` sorts the tab and worker events together before this per-source cut.
  */
 export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     const { meta } = input;
@@ -259,6 +276,10 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     const head = [
         DIAGNOSTIC_REPORT_HEADER,
         `Version: ${typeof meta.version === "string" && APP_VERSION.test(meta.version) ? meta.version : UNKNOWN}`,
+        // v1 grows: a report an older tab built has no build line and stays canonical.
+        ...(Object.hasOwn(meta, "build")
+            ? [`Build: ${typeof meta.build === "string" && BUILD_ID_PATTERN.test(meta.build) ? meta.build : UNKNOWN}`]
+            : []),
         `Browser: ${(BROWSER_FAMILIES as readonly unknown[]).includes(meta.browser) ? meta.browser : "Other"}`,
         `OS: ${(OS_FAMILIES as readonly unknown[]).includes(meta.os) ? meta.os : "Other"}`,
         `Online: ${meta.online === true}`,
@@ -300,6 +321,7 @@ function parseDiagnosticReport(text: string): DiagnosticReportInput | null {
         return null;
     }
     const version = labeled("Version: ");
+    const build = lines[next]?.startsWith("Build: ") ? labeled("Build: ") : undefined;
     const browser = labeled("Browser: ");
     const os = labeled("OS: ");
     const online = labeled("Online: ");
@@ -349,6 +371,7 @@ function parseDiagnosticReport(text: string): DiagnosticReportInput | null {
     return {
         meta: {
             version,
+            ...(build === undefined ? {} : { build }),
             browser,
             os,
             online: online === "true",

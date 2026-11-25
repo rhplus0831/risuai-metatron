@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { activePreset } from "src/ts/storage/settingsViews.svelte";
-    import type { PromptItem, PromptItemChat, PromptRole } from "src/ts/process/prompt";
+    import type { Snippet } from "svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
+    import type { PromptItem, PromptItemChat, PromptRole, PromptSettings, PromptType } from "src/ts/process/prompt";
     import OptionInput from "./GUI/OptionInput.svelte";
     import TextAreaInput from "./GUI/TextAreaInput.svelte";
     import SelectInput from "./GUI/SelectInput.svelte";
@@ -11,11 +12,36 @@
     import TextInput from "./GUI/TextInput.svelte";
     import { RISU_PROMPT_DRAG_TYPE } from "src/ts/dragTypes";
 
+    /**
+     * Edits one `PromptItem` from `src/ts/process/prompt.ts`, including its type and type-specific fields.
+     * The defaults are the prompt template editor's (`PromptSettings.svelte`, which passes the preset's
+     * `promptSettings`); the request interception page narrows them: `allowedTypes` limits the type select
+     * (hidden, with its label, when it offers one type), `showType2` hides the special type select, `cbs`
+     * off renders plain textareas with literal-text popups, and `extra` is rendered at the top of the opened row.
+     */
+
+    /** Every type the select can offer, in its order; `cot` is offered only with `customChainOfThought`. */
+    const ALL_PROMPT_TYPES: readonly PromptType[] = [
+        "plain",
+        "jailbreak",
+        "chat",
+        "persona",
+        "description",
+        "authornote",
+        "lorebook",
+        "memory",
+        "postEverything",
+        "chatML",
+        "cache",
+        "cot",
+    ];
+
     interface Props {
         promptItem: PromptItem;
         onRemove?: () => void;
         moveUp?: () => void;
         moveDown?: () => void;
+        onDragStart?: () => void;
         onDrop?: () => void;
         isDragging?: boolean;
         isOpened?: boolean;
@@ -24,6 +50,18 @@
         openedItemIndices?: Set<number>;
         currentIndex?: number;
         displayIndex?: number;
+        /** The record `promptItem` belongs to; a popup opened on another record is discarded. */
+        popupEditorContext?: unknown;
+        /** The types the type select offers (default: all); with one, the select and its label are hidden. */
+        allowedTypes?: readonly PromptType[];
+        /** The owning preset's settings: `cot` is offered and `chatAsOriginalOnSystem` shown only when set. */
+        promptSettings?: Pick<PromptSettings, "customChainOfThought" | "sendChatAsSystem">;
+        /** Whether the special type (normal, main, global note) select is shown for plain items. */
+        showType2?: boolean;
+        /** Whether prompt text areas get CBS highlighting, autocomplete, and popup Preview. */
+        cbs?: boolean;
+        /** Rendered at the top of the opened row, before the name field. */
+        extra?: Snippet;
     }
 
     let {
@@ -31,6 +69,7 @@
         onRemove = () => {},
         moveUp = () => {},
         moveDown = () => {},
+        onDragStart,
         onDrop = () => {},
         isDragging = false,
         isOpened = false,
@@ -39,7 +78,63 @@
         openedItemIndices = $bindable(new Set<number>()),
         currentIndex = -1,
         displayIndex = -1,
+        popupEditorContext = undefined,
+        allowedTypes = ALL_PROMPT_TYPES,
+        promptSettings = undefined,
+        showType2 = true,
+        cbs = true,
+        extra = undefined,
     }: Props = $props();
+
+    const popupMode = $derived(cbs ? "default" : "literal");
+    const typeOptions = $derived(
+        allowedTypes.filter((type) => type !== "cot" || !!promptSettings?.customChainOfThought),
+    );
+
+    function typeLabel(type: PromptType): string {
+        switch (type) {
+            case "plain":
+                return language.formating.plain;
+            case "jailbreak":
+                return language.formating.jailbreak;
+            case "chat":
+                return language.Chat;
+            case "persona":
+                return language.formating.personaPrompt;
+            case "description":
+                return language.formating.description;
+            case "authornote":
+                return language.formating.authorNote;
+            case "lorebook":
+                return language.formating.lorebook;
+            case "memory":
+                return language.formating.memory;
+            case "postEverything":
+                return language.formating.postEverything;
+            case "chatML":
+                return "chatML";
+            case "cache":
+                return language.cachePoint;
+            case "cot":
+                return language.cot;
+        }
+    }
+
+    // A record wrapper can follow another row after a remote array replacement.
+    let cachedPopupEditorContext: { owner: unknown; row: symbol } | undefined;
+    const rowPopupEditorContext = $derived.by(() => {
+        const owner = popupEditorContext;
+        const row = recordValueIdentity(promptItem);
+        // Rebuilding a containing array can rerun this derived with the same backing row.
+        if (
+            !cachedPopupEditorContext ||
+            !Object.is(cachedPopupEditorContext.owner, owner) ||
+            cachedPopupEditorContext.row !== row
+        ) {
+            cachedPopupEditorContext = { owner, row };
+        }
+        return cachedPopupEditorContext;
+    });
 
     const chatPromptChange = () => {
         const currentprompt = promptItem as PromptItemChat;
@@ -105,24 +200,6 @@
             return "ChatML";
         }
         return "";
-    }
-
-    function replacePrompt(prompt: PromptItem) {
-        if (JSON.stringify(promptItem) === JSON.stringify(prompt)) {
-            return;
-        }
-
-        const ind = activePreset.promptTemplate.findIndex((item, index) => {
-            return JSON.stringify(item) === JSON.stringify(prompt);
-        });
-
-        if (ind !== -1) {
-            activePreset.promptTemplate.splice(ind, 1);
-        }
-        const myInd = activePreset.promptTemplate.findIndex((item, index) => {
-            return JSON.stringify(item) === JSON.stringify(promptItem);
-        });
-        activePreset.promptTemplate.splice(myInd, 0, prompt);
     }
 
     const isPromptDrag = (e: DragEvent) => {
@@ -203,6 +280,7 @@
         style:cursor="grab"
         ondragstart={(e) => {
             draggedIndex = currentIndex;
+            onDragStart?.();
             markPromptDrag(e);
 
             const dragElement = document.createElement("div");
@@ -253,55 +331,60 @@
         </div>
     </div>
     {#if isOpened}
+        {#if extra}
+            <div class="mt-6 flex flex-col">
+                {@render extra()}
+            </div>
+        {/if}
         <span class="mt-6">{language.name}</span>
         <TextInput bind:value={promptItem.name} />
-        <span class="mt-2">{language.type} </span>
-        <SelectInput
-            bind:value={promptItem.type}
-            onchange={() => {
-                if (promptItem.type === "plain" || promptItem.type === "jailbreak" || promptItem.type === "cot") {
-                    promptItem.text = "";
-                    promptItem.role = "system";
-                }
-                if (promptItem.type === "cache") {
-                    promptItem.depth = 1;
-                    promptItem.role = "all";
-                }
-                if (promptItem.type === "chat") {
-                    promptItem.rangeStart = -1000;
-                    promptItem.rangeEnd = "end";
-                }
-                if (hasPromptBlockRole(promptItem) && !isPromptRole(promptItem.role2)) {
-                    promptItem.role2 = "system";
-                }
-            }}
-        >
-            <OptionInput value="plain">{language.formating.plain}</OptionInput>
-            <OptionInput value="jailbreak">{language.formating.jailbreak}</OptionInput>
-            <OptionInput value="chat">{language.Chat}</OptionInput>
-            <OptionInput value="persona">{language.formating.personaPrompt}</OptionInput>
-            <OptionInput value="description">{language.formating.description}</OptionInput>
-            <OptionInput value="authornote">{language.formating.authorNote}</OptionInput>
-            <OptionInput value="lorebook">{language.formating.lorebook}</OptionInput>
-            <OptionInput value="memory">{language.formating.memory}</OptionInput>
-            <OptionInput value="postEverything">{language.formating.postEverything}</OptionInput>
-            <OptionInput value="chatML">{"chatML"}</OptionInput>
-            <OptionInput value="cache">{language.cachePoint}</OptionInput>
-
-            {#if activePreset.promptSettings.customChainOfThought}
-                <OptionInput value="cot">{language.cot}</OptionInput>
-            {/if}
-        </SelectInput>
+        {#if typeOptions.length > 1}
+            <span class="mt-2">{language.type} </span>
+            <SelectInput
+                bind:value={promptItem.type}
+                onchange={() => {
+                    if (promptItem.type === "plain" || promptItem.type === "jailbreak" || promptItem.type === "cot") {
+                        promptItem.text = "";
+                        promptItem.role = "system";
+                    }
+                    if (promptItem.type === "chatML" && typeof promptItem.text !== "string") {
+                        promptItem.text = "";
+                    }
+                    if (promptItem.type === "cache") {
+                        promptItem.depth = 1;
+                        promptItem.role = "all";
+                    }
+                    if (promptItem.type === "chat") {
+                        promptItem.rangeStart = -1000;
+                        promptItem.rangeEnd = "end";
+                    }
+                    if (hasPromptBlockRole(promptItem) && !isPromptRole(promptItem.role2)) {
+                        promptItem.role2 = "system";
+                    }
+                }}
+            >
+                {#each typeOptions as type (type)}
+                    <OptionInput value={type}>{typeLabel(type)}</OptionInput>
+                {/each}
+            </SelectInput>
+        {/if}
 
         {#if promptItem.type === "plain" || promptItem.type === "jailbreak" || promptItem.type === "cot"}
-            <span>{language.specialType}</span>
-            <SelectInput bind:value={promptItem.type2}>
-                <OptionInput value="normal">{language.noSpecialType}</OptionInput>
-                <OptionInput value="main">{language.mainPrompt}</OptionInput>
-                <OptionInput value="globalNote">{language.globalNote}</OptionInput>
-            </SelectInput>
+            {#if showType2}
+                <span>{language.specialType}</span>
+                <SelectInput bind:value={promptItem.type2}>
+                    <OptionInput value="normal">{language.noSpecialType}</OptionInput>
+                    <OptionInput value="main">{language.mainPrompt}</OptionInput>
+                    <OptionInput value="globalNote">{language.globalNote}</OptionInput>
+                </SelectInput>
+            {/if}
             <span>{language.prompt}</span>
-            <TextAreaInput highlight bind:value={promptItem.text} />
+            <TextAreaInput
+                highlight={cbs}
+                bind:value={promptItem.text}
+                {popupMode}
+                popupEditorContext={rowPopupEditorContext}
+            />
             <span>{language.role}</span>
             <SelectInput bind:value={promptItem.role}>
                 <OptionInput value="user">{language.user}</OptionInput>
@@ -311,7 +394,12 @@
         {/if}
         {#if promptItem.type === "chatML"}
             <span>{language.prompt}</span>
-            <TextAreaInput highlight bind:value={promptItem.text} />
+            <TextAreaInput
+                highlight={cbs}
+                bind:value={promptItem.text}
+                {popupMode}
+                popupEditorContext={rowPopupEditorContext}
+            />
         {/if}
         {#if promptItem.type === "cache"}
             <span>{language.depth}</span>
@@ -352,7 +440,7 @@
                         }}
                     />
                 {/if}
-                {#if activePreset.promptSettings.sendChatAsSystem}
+                {#if promptSettings?.sendChatAsSystem}
                     <CheckInput name={language.chatAsOriginalOnSystem} bind:check={promptItem.chatAsOriginalOnSystem} />
                 {/if}
             {/if}
@@ -386,7 +474,12 @@
                 />
             {:else}
                 <span>{language.innerFormat}</span>
-                <TextAreaInput highlight bind:value={promptItem.innerFormat} />
+                <TextAreaInput
+                    highlight={cbs}
+                    bind:value={promptItem.innerFormat}
+                    {popupMode}
+                    popupEditorContext={rowPopupEditorContext}
+                />
                 <CheckInput
                     name={language.customInnerFormat}
                     check={true}

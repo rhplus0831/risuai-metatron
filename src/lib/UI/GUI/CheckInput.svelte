@@ -48,7 +48,7 @@
         aria-checked={indeterminate ? "mixed" : check}
         alt={name}
         bind:checked={
-            () => check,
+            () => check ?? false,
             (next) => {
                 if (!disabled) check = next;
             }

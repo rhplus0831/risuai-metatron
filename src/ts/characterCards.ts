@@ -1,17 +1,8 @@
 import { settings } from "./storage/settingsViews.svelte";
 import { filterBlockedRealmCards, isRealmCreatorBlocked } from "./realmBlocking";
+import { ensureRealmTerms } from "./realmTerms";
 import { writable, type Writable } from "svelte/store";
-import {
-    alertCardExport,
-    alertClear,
-    alertConfirm,
-    alertError,
-    alertInput,
-    alertNormal,
-    alertStore,
-    alertWait,
-    type alertData,
-} from "./alert";
+import { alertCardExport, alertError, alertInput, alertNormal, alertStore, alertWait, type alertData } from "./alert";
 import {
     defaultSdDataFunc,
     type character,
@@ -23,15 +14,26 @@ import {
     appVer,
 } from "./storage/database.svelte";
 import { importPreset } from "./storage/presets.svelte";
-import { checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
+import {
+    blobToUint8Array,
+    checkNullish,
+    decryptBuffer,
+    isKnownUri,
+    selectFileByDom,
+    sleep,
+    sleepAbortable,
+} from "./util";
 import { language } from "src/lang";
+import { confirmLowLevelAccessImport } from "./lowLevelAccessImport";
 import { v4 as uuidv4, v4 } from "uuid";
 import { changeChar } from "./characters";
 import {
+    assetKey,
     AppendableBuffer,
     BlankWriter,
     checkCharOrder,
     downloadFile,
+    fetchNative,
     LocalWriter,
     readImage,
     saveAsset,
@@ -46,6 +48,8 @@ import {
     type ClientCharacter,
 } from "./storage/characterStore.svelte";
 import { incrementStatic } from "./storage/collectionStore.svelte";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "./storage/resourceFlushWait";
+import { beginMutationScope, flushResources, GenerationBlockedError } from "./storage/resourceSync.svelte";
 import { hasher } from "./parser/parser.svelte";
 import { type CharacterCardV3, type LorebookEntry } from "@risuai/ccardlib";
 import { reencodeImage } from "./process/files/inlays";
@@ -60,11 +64,21 @@ import {
     readModule,
     type RisuModule,
     serverImportErrorMessage,
+    stripImportedModuleMcp,
 } from "./process/modules";
 import { loadAssetsInBatches, saveAssets, type AssetSaveItem } from "./storage/assetQueue";
+import { assetContentHash, missingAssets, writeAssets } from "./storage/assetClient";
+import { ASSET_LEASE_MS } from "../../shared/assetLifecycle.ts";
 import { importCharxOverServer } from "./storage/charxImportClient";
-import { cancelRealmImport, commitRealmImport, prepareRealmImport } from "./storage/realmImportClient";
-import { ServerImportRequestError } from "./storage/serverImportClient";
+import {
+    cancelRealmImport,
+    cancelRealmImportOnPagehide,
+    commitRealmImport,
+    isRetriableRealmCommitRefusal,
+    prepareRealmImport,
+    REALM_COMMIT_RETRY_DELAY_MS,
+} from "./storage/realmImportClient";
+import { alertServerImportError, ServerImportRequestError, withServerImportWait } from "./storage/serverImportClient";
 import { type CharxImportResult, INVALID_CHARX_FILE } from "../../shared/charxImport.ts";
 import {
     REALM_DOWNLOAD_FAILED,
@@ -74,6 +88,88 @@ import {
     type RealmPrepared,
 } from "../../shared/realmImport.ts";
 
+/**
+ * Character cards: the import (`importCharacterProcess`, which every card file goes through; a Realm card goes
+ * through `downloadRisuHub`), the export (`exportChar`, the editor's dialog, and `exportCharacterCard`), the Realm hub
+ * helpers (`hubURL`, `getRisuHub`, `downloadRisuHub`), and the page-address and launch-queue import
+ * (`characterURLImport`). `src/App.svelte` passes dropped files to `importDroppedFile` for dispatch.
+ *
+ * `statics.imports` (`incrementStatic("imports")`) counts a card file before it is parsed. `importCharacterProcess`
+ * counts every file whose name does not end in `json` (PNG, JPG, CharX, and a name it then refuses), so a card refused
+ * or declined later still counts, and a JSON card never does. `downloadRisuHub` counts once the server answered a
+ * staged CharX or PNG card (`prepareRealmImport`): a failed download or a file the server refused does not count, a
+ * card declined afterwards does, and a Realm JSON card does not.
+ *
+ * Every importer builds the character under a fresh `chaId` and adds it through `addCharacter`
+ * (`src/ts/storage/characterStore.svelte.ts`), except with `returnCharacter` (`returnValue`), which returns it unadded
+ * (the module dialog converts it to a module). The card's `lowLevelAccess` question comes before the importer saves
+ * an asset of its own. Before it, a PNG's asset chunks and a server-read CharX's entries are already stored, and the
+ * in-tab `CharXImporter`'s entry saves are stored or still queued (its `done()` is awaited only after the question is
+ * accepted); the Realm import asks before its commit. Immediately before addCharacter or returning
+ * a built record, the canonical keys saved, reused, or received by this import are checked again.
+ * Free-text references remain portable. Missing bytes are replayed when available; a failed check or
+ * an unavailable replay refuses the record and alerts the import error.
+ */
+
+/**
+ * Final record handoff, after all questions/uploads, over explicit import results only. Free text
+ * may name keys from another server and is not proof that this import saved/reused those files.
+ * Server and one-shot stream imports may have only keys left: a missing imported key without replay
+ * bytes fails closed. False is the already-alerted asset failure, not a declined card question.
+ */
+async function claimCardAssets(
+    importedKeys: Iterable<string>,
+    replay = new Map<string, AssetSaveItem>(),
+): Promise<boolean> {
+    const keys = new Set([...importedKeys].filter((key) => assetContentHash(key) !== null));
+    if (!keys.size) return true;
+    try {
+        const start = performance.now();
+        const missing = await missingAssets([...keys]);
+        for (const key of missing) {
+            const item = replay.get(key);
+            if (!item) throw new Error(language.errors.cardAssetsUnavailable);
+            const bytes = await item.load();
+            if ((await assetKey(bytes, "", item.fileName ?? "")) !== key)
+                throw new Error(language.errors.assetReloadChanged);
+            await writeAssets([{ key, bytes }]);
+        }
+        if (performance.now() - start >= ASSET_LEASE_MS) throw new Error(language.errors.assetClaimsExpired);
+        return true;
+    } catch (error) {
+        console.warn("Card asset handoff failed", error);
+        alertError(language.errors.cardAssetsUnavailable);
+        return false;
+    }
+}
+
+/**
+ * The notice of an added card: `importedCharacter`, and when the card brings its own lorebook settings
+ * (`loreSettings`, the editor's "Use Global Settings" unchecked) a warning listing them beside the values
+ * the global settings give instead (`shared/lore/activation.ts`: recursive scanning on, full word matching
+ * off, the depth and token budget from settings), since they silently override the user's own.
+ */
+function importedCharacterNotice(loreSettings: loreSettings | undefined): string {
+    if (!loreSettings) {
+        return language.importedCharacter;
+    }
+    const text = language.importedLoreSettings;
+    const onOff = (value: boolean) => (value ? text.on : text.off);
+    const row = (label: string, value: string, global: string) => `${label}: ${value} ${text.global(global)}`;
+    const globalDepth = settings.memoryTranslateMedia.loreBookDepth;
+    const globalToken = settings.providers.loreBookToken;
+    return [
+        language.importedCharacter,
+        "",
+        text.warning,
+        row(language.recursiveScanning, onOff(loreSettings.recursiveScanning ?? true), onOff(true)),
+        row(language.fullWordMatching, onOff(loreSettings.fullWordMatching ?? false), onOff(false)),
+        row(language.loreBookDepth, `${loreSettings.scanDepth ?? globalDepth}`, `${globalDepth}`),
+        row(language.loreBookToken, `${loreSettings.tokenBudget ?? globalToken}`, `${globalToken}`),
+    ].join("\n");
+}
+
+/** The Realm hub's base path: the self-host server's same-origin `/hub-proxy` (`server/src/routes/proxy.ts`). */
 export const hubURL = "/hub-proxy";
 
 export async function importCharacter() {
@@ -101,6 +197,67 @@ export async function importCharacter() {
 }
 
 /**
+ * Imports the first dropped file passed by `src/App.svelte`'s drop handler, using its lowercased name:
+ * `.risup`/`.risupreset` → `importPreset`, alerting `successImport` only when it returns the new preset id;
+ * `.risum` → `importModuleFile` then `addImportedModule`; anything else → `importCharacterProcess`,
+ * then `checkCharOrder`.
+ */
+export async function importDroppedFile(file: File) {
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".risup") || name.endsWith(".risupreset")) {
+        const data = new Uint8Array(await file.arrayBuffer());
+        const id = await importPreset({ name: file.name, data });
+        if (id) {
+            alertNormal(language.successImport);
+        }
+    } else if (name.endsWith(".risum")) {
+        // The dropped `File` itself goes to the server; the module comes back prepared, or null
+        // when declined or failed (alerted). Success is alerted only once the save is acknowledged
+        // (`addImportedModule`).
+        const module = await importModuleFile(file);
+        if (module) {
+            await addImportedModule(module, { announce: true });
+        }
+    } else {
+        await importCharacterProcess({
+            name: file.name,
+            data: file,
+        });
+        checkCharOrder();
+    }
+}
+
+// Keep the loader's closure separate from the importer and its decoded chunk strings.
+function createPngBlobAssetLoader(blob: Blob, start: number, end: number): AssetSaveItem["load"] {
+    return async () => {
+        const slice = blob.slice(start, end);
+        const bytes =
+            typeof slice.arrayBuffer === "function"
+                ? new Uint8Array(await slice.arrayBuffer())
+                : await blobToUint8Array(slice);
+        return Buffer.from(new TextDecoder().decode(bytes), "base64");
+    };
+}
+
+function createPngTextAssetLoader(value: string): AssetSaveItem["load"] {
+    return () => Buffer.from(value, "base64");
+}
+
+// Finish the counting frame before uploads so its last chunk cannot stay in the suspended importer.
+async function countPngAssetChunks(input: Blob | Uint8Array): Promise<number> {
+    let count = 0;
+    for await (const chunk of PngChunk.readGenerator(input)) {
+        if (chunk instanceof AppendableBuffer) {
+            break;
+        }
+        if (chunk.key.startsWith("chara-ext-asset_")) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/**
  * Imports one card file, dispatched by its name (`.json`, `.charx`/`.jpg`/`.jpeg`, `.png`). A CharX
  * (or a `charxJpeg`) given as a `File` or `Blob` is uploaded as it is to the server's CharX import
  * (`importCharxOverServer`), so the tab never holds the file; one given as bytes or a stream is
@@ -109,7 +266,24 @@ export async function importCharacter() {
  * `Response.blob()` is not the environment's `Blob`). The PNG reader (`PngChunk.readGenerator`)
  * takes bytes, a stream, or a `Blob`, which it streams: a stream is read once (a running asset
  * count), bytes or a `Blob` are counted in a first pass. Returns the new character's id (with
- * `returnCharacter`, the character), or null/undefined once the failure is alerted.
+ * `returnCharacter`, the character), or null/undefined once the failure is alerted or the card's
+ * question is declined (`false` for a declined CharX with `returnCharacter`).
+ *
+ * A JSON card (a name ending in `json`) is read whole: `importCharacterCardSpec`, else `convertOffSpecCards` for an
+ * off-spec card with a name, a description and a greeting, else `noData`; a stream under such a name returns null
+ * without an alert. Declining a v2/v3 JSON card's `lowLevelAccess` question returns null silently
+ * and skips the off-spec fallback. A failed or cancelled CharX upload alerts through `serverImportErrorMessage`
+ * and returns null before the local card import begins.
+ *
+ * A PNG is streamed, not read into bytes first (only a `Blob` without `stream()` is read whole). Its `chara` (V2) and
+ * `ccv3` (V3) text chunks are kept, `ccv3` winning when both exist; a later chunk of the same key replaces the text
+ * held only while that text is shorter than `5 * 1024 * 1024` UTF-16 code units, a replacement threshold rather than
+ * a cap, so the kept text can be longer (`PngChunk` caps no chunk). The `chara-ext-asset_<id>` chunks feed
+ * `saveAssets` as they are read, written in batches (`POST /api/assets/write`), the reader held back once a batch's
+ * worth is waiting; they are stored before the card's text is read, so before its questions (`importPngCard`).
+ * For a `File` or `Blob`, asset loaders retain only the Blob and the value's byte range, re-reading and decoding
+ * that slice on each load, including the queue's final missing-asset repair. Streams, byte arrays, and readers
+ * without ranges keep the chunk text in their loaders until the queue finishes.
  */
 export async function importCharacterProcess<T extends boolean = false>(f: {
     name: string;
@@ -126,10 +300,13 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         if (imported) {
             return imported as any;
         }
+        if (imported === null || imported === undefined) {
+            // A declined question or an alerted asset handoff failure ends the import.
+            return null;
+        }
         if ((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)) {
-            const chaId = addCharacter(convertOffSpecCards(da));
-            alertNormal(language.importedCharacter);
-            return chaId as any;
+            const character = convertOffSpecCards(da);
+            return (await addImportedCharacter(character)) as any;
         } else {
             alertError(language.errors.noData);
             return;
@@ -155,17 +332,17 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             cardData = importer.cardData;
             moduleData = importer.moduleData ? Buffer.from(importer.moduleData) : null;
         } else {
-            alertWait(language.charxImportUploading);
             let stored: CharxImportResult;
             try {
-                stored = await importCharxOverServer(f.data, {
-                    onProgress: (done, total) => {
-                        alertWait(`Loading... (Saving Assets ${done}/${total})`);
-                    },
-                });
+                const file = f.data;
+                stored = await withServerImportWait(language.charxImportUploading, (signal, showWait) =>
+                    importCharxOverServer(file, {
+                        signal,
+                        onProgress: (done, total) => showWait(`Loading... (Saving Assets ${done}/${total})`),
+                    }),
+                );
             } catch (error) {
-                // Each alert replaces the wait alert; nothing clears the store after it.
-                alertError(charxImportErrorMessage(error));
+                alertServerImportError(error, charxImportErrorMessage(error));
                 return null;
             }
             cardData = stored.card;
@@ -205,21 +382,16 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     let readedPngChunks = 0;
 
     // A stream is read once, so its asset progress is a running count (`pngChunks` stays 0). Bytes or a
-    // `Blob` (streamed again by `PngChunk.readGenerator`, never read into bytes) can be read twice: a first
+    // `Blob` (streamed again by `PngChunk.readGenerator` when `stream()` exists) can be read twice: a first
     // pass counts the asset chunks for the percentage.
     if (!(f.data instanceof ReadableStream)) {
-        for await (const chunk of PngChunk.readGenerator(f.data, {})) {
-            if (chunk instanceof AppendableBuffer) {
-                break;
-            }
-            if (chunk.key.startsWith("chara-ext-asset_")) {
-                pngChunks++;
-            }
-        }
+        pngChunks = await countPngAssetChunks(f.data);
     }
 
+    const blob = f.data instanceof Uint8Array || f.data instanceof ReadableStream ? null : f.data;
     const readGenerator = PngChunk.readGenerator(f.data, {
         returnTrimed: true,
+        ranges: true,
     });
     const assets: { [key: string]: string } = {};
     // The asset chunks feed the save queue as they are read: the queue pulls the next chunk only when
@@ -260,12 +432,15 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
             }
             if (chunk.key.startsWith("chara-ext-asset_")) {
                 const assetIndex = chunk.key.replace("chara-ext-asset_:", "").replace("chara-ext-asset_", "");
-                const value = chunk.value;
                 if (assetIndices.length === 0) {
                     showAssetProgress();
                 }
                 assetIndices.push(assetIndex);
-                yield { load: () => Buffer.from(value, "base64") };
+                if (blob && chunk.start !== undefined && chunk.end !== undefined) {
+                    yield { load: createPngBlobAssetLoader(blob, chunk.start, chunk.end) };
+                } else {
+                    yield { load: createPngTextAssetLoader(chunk.value) };
+                }
             }
         }
     }
@@ -296,7 +471,10 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
     return (await importPngCard(readedChara, img, assets)) as any;
 }
 
-/** A CharX file's card text as a v3 card; null (alerted) for no text or a card of another spec. Throws for text that is not JSON. */
+/**
+ * A CharX file's card text as a v3 card; null, alerting `noData`, for no text or a card whose `spec` is not
+ * `chara_card_v3`. Throws for text that is not JSON.
+ */
 function readCharxCard(cardData: string | null | undefined): CharacterCardV3 | null {
     if (!cardData) {
         alertError(language.errors.noData);
@@ -318,6 +496,14 @@ function readCharxCard(cardData: string | null | undefined): CharacterCardV3 | n
  * assets are saved), unless `lowLevelAccessAsked` (the Realm import asked before its commit). Returns
  * the new character's id (with `returnCharacter`, the character), or null/undefined/false once the
  * failure is alerted or the question declined.
+ *
+ * The embedded module is read by `readModule`, which stores its assets. If it refuses the module (already alerted),
+ * this returns null. The module's triggers and regex replace the card's
+ * (`extensions.risuai.triggerscript`/`customScripts`; a list the module lacks empties them), and its lorebook,
+ * when it has one, replaces the `character_book` entries (the book's settings still apply).
+ * Then `importCharacterCardSpec` runs with `readAssets`'s entry name → stored key map. The
+ * character's gate is the card's `extensions.risuai.lowLevelAccess`; the embedded module's own `lowLevelAccess` is
+ * not carried onto the character, so it is not asked.
  */
 async function importCharxCard(
     card: CharacterCardV3,
@@ -332,6 +518,9 @@ async function importCharxCard(
     let lorebook: loreBook[] = null;
     if (moduleData) {
         const md = await readModule(moduleData);
+        if (md === undefined) {
+            return null;
+        }
         card.data.extensions ??= {};
         card.data.extensions.risuai ??= {};
         card.data.extensions.risuai.triggerscript = md.trigger ?? [];
@@ -355,6 +544,11 @@ type PngCard = { kind: "spec"; card: CharacterCardV2Risu | CharacterCardV3 } | {
  * Reads a PNG card's text (`ccv3`, else `chara`): base64 JSON, or an `rcc||` card, whose password is
  * asked when it has one. Null once a failure is alerted (a malformed or tampered rcc card, a wrong
  * password) or the password prompt is dismissed; throws for base64 text that is not JSON.
+ * Only the legacy `rccv1` version is decrypted, after its hash is checked: a malformed or tampered card, or a payload
+ * that is not a v2/v3 card, is `noData`; under a password, a failed decryption or JSON parse is `wrongPassword`, and
+ * a dismissed prompt adds nothing and alerts nothing. Its metadata parse and a password-free decryption can throw.
+ * An `rcc||` card of another version falls through to the base64 JSON parse. JSON of another spec is an off-spec
+ * (Tavern) card.
  */
 async function readPngCard(readedChara: string): Promise<PngCard | null> {
     if (readedChara.startsWith("rcc||")) {
@@ -374,7 +568,7 @@ async function readPngCard(readedChara: string): Promise<PngCard | null> {
             const metaData: RccCardMetaData = JSON.parse(Buffer.from(parts[4], "base64").toString("utf-8"));
             let charaData: CharacterCardV2Risu;
             if (metaData.usePassword) {
-                const password = await alertInput(language.inputCardPassword);
+                const password = await alertInput(language.inputCardPassword, undefined, undefined, { secret: true });
                 if (!password) {
                     return null;
                 }
@@ -422,6 +616,7 @@ async function readPngCard(readedChara: string): Promise<PngCard | null> {
  * (`readPngCard`, its password asked), its `lowLevelAccess` asked, then the image without its text
  * chunks and each asset chunk's stored key by index (`importPngCharacter`). Returns the new
  * character's id, or null/undefined once the failure is alerted or a question declined.
+ * `confirmCardLowLevelAccess` asks only a v2/v3 card's `lowLevelAccess`; an off-spec card has none to ask.
  */
 async function importPngCard(
     readedChara: string,
@@ -440,7 +635,8 @@ async function importPngCard(
 
 /**
  * Adds the character of a read PNG card (its questions asked): the image (bytes, or the key the
- * server stored it under) and each asset chunk's stored key by index.
+ * server stored it under) and each asset chunk's stored key by index. An off-spec card is added through
+ * `convertOffSpecCards`, a v2/v3 card through `importCharacterCardSpec` with `lowLevelAccessAsked`.
  */
 async function importPngCharacter(
     read: PngCard,
@@ -449,22 +645,23 @@ async function importPngCharacter(
 ): Promise<string | false | null> {
     if (read.kind === "tavern") {
         const imgp = typeof img === "string" ? img : await saveAsset(img);
-        const chaId = addCharacter(convertOffSpecCards(read.card, imgp));
-        alertNormal(language.importedCharacter);
-        return chaId;
+        const character = convertOffSpecCards(read.card, imgp);
+        const replay = new Map<string, AssetSaveItem>();
+        if (typeof img !== "string") replay.set(imgp, { load: () => img });
+        if (!(await claimCardAssets([imgp, ...Object.values(assets)], replay))) return null;
+        return addImportedCharacter(character);
     }
     return (await importCharacterCardSpec(read.card, img, "normal", assets, null, false, true)) || null;
 }
 
 /**
- * Asks the `lowLevelAccess` confirmation for a card that asks for it (`extensions.risuai.lowLevelAccess`);
- * true when it does not ask, or the user accepts.
+ * Asks the `lowLevelAccess` question for a card that asks for it (`extensions.risuai.lowLevelAccess`,
+ * `confirmLowLevelAccessImport`); true when it does not ask, or the user imports it with or without the
+ * access. Without it, the flag on this card object is cleared, so the importers that build the
+ * character from this object afterwards store `lowLevelAccess: false`.
  */
 async function confirmCardLowLevelAccess(card: CharacterCardV2Risu | CharacterCardV3): Promise<boolean> {
-    if (!card?.data?.extensions?.risuai?.lowLevelAccess) {
-        return true;
-    }
-    return await alertConfirm(language.lowLevelAccessConfirm);
+    return await confirmLowLevelAccessImport(card?.data?.extensions?.risuai);
 }
 
 /** The alert for a CharX upload that failed; `Invalid character file` is `noData`. */
@@ -506,6 +703,10 @@ function realmImportErrorMessage(error: unknown): string {
     });
 }
 
+/**
+ * Creator metadata lookup through `hubURL` (`/hub-proxy` on this server); non-200 answers throw
+ * their text. Private transport only: callers must await `src/ts/realmTerms.ts` before requesting.
+ */
 async function fetchRealmInfo(realmPath: string): Promise<hubType> {
     const res = await fetch(`${hubURL}/hub/info/${realmPath}`);
     if (res.status !== 200) {
@@ -514,6 +715,7 @@ async function fetchRealmInfo(realmPath: string): Promise<hubType> {
     return await res.json();
 }
 
+/** Re-reads the current creator block list after async lookups; absent metadata is allowed, a match shows a notice. */
 function canAccessRealmCreator(creator?: string): boolean {
     if (isRealmCreatorBlocked(settings.ui.blockedRealmCreators ?? [], creator)) {
         alertNormal(language.realmCreatorBlocked);
@@ -522,12 +724,20 @@ function canAccessRealmCreator(creator?: string): boolean {
     return true;
 }
 
+/**
+ * Consumes `?realm=` with history replacement before awaiting `src/ts/realmTerms.ts`; decline or
+ * lookup failure never opens a card. The current block list is checked after lookup, so a creator
+ * blocked during the request cannot enter `showRealmInfoStore`. Missing creator metadata is allowed.
+ */
 export const getRealmInfo = async (realmPath: string) => {
     const url = new URL(location.href);
     url.searchParams.delete("realm");
     // Replaced, not pushed: a consumed link parameter is no history entry.
     window.history.replaceState(window.history.state, "", url.toString());
 
+    if (!(await ensureRealmTerms())) {
+        return;
+    }
     try {
         const info = await fetchRealmInfo(realmPath);
         if (!canAccessRealmCreator(info.creator)) {
@@ -539,6 +749,7 @@ export const getRealmInfo = async (realmPath: string) => {
     }
 };
 
+/** Detail-popup state populated only after `getRealmInfo`'s terms and creator checks; null closes it. */
 export const showRealmInfoStore: Writable<null | hubType> = writable(null);
 
 /**
@@ -561,6 +772,21 @@ async function importPendingShare(
     }
 }
 
+/**
+ * Runs the import the page address asks for, once at startup: `?realm=` (the Realm info dialog), `?charahub=` (a
+ * Chub download, read as a stream), `#import=<url>`, `#import_module=`, `#import_preset=`, the `#share_*` files cached
+ * under `/sw/share/`, and the launch queue (files opened with the installed app). A fetched or launched file is
+ * dispatched by name (`importFile`): `.charx`/`.jpg`/`.jpeg`/`.png` → `importCharacterProcess`, `.risup`/`.risupreset`
+ * → `importPreset`, a name ending in `risum` → `importModuleFile` then `addImportedModule`; the checks are
+ * case-sensitive, and a file no check matches is ignored.
+ * Cards and modules go as the `Blob` itself; only presets are read into bytes.
+ *
+ * The module settings open only when `addImportedModule` reports the save. `#share_module` consumes its pending share
+ * once the module was added, whatever the save's outcome (a second import would add it twice); a declined or failed
+ * read keeps it. Module files and `#import_module=` data have `mcp` removed before the low-level access question;
+ * `addImportedModule` reports its removal with one toast only after a confirmed save, after queuing the success
+ * dialog so the toast appears when it is dismissed.
+ */
 export async function characterURLImport() {
     // Read now: the router (started later in `loadData`) writes URLs without a query or hash.
     const hash = location.hash;
@@ -578,7 +804,7 @@ export async function characterURLImport() {
             const url = new URL(location.href);
             url.searchParams.delete("charahub");
             window.history.replaceState(window.history.state, "", url.toString());
-            const chara = await fetch("https://api.chub.ai/api/characters/download", {
+            const chara = await fetchNative("https://api.chub.ai/api/characters/download", {
                 method: "POST",
                 body: JSON.stringify({
                     format: "tavern",
@@ -604,7 +830,8 @@ export async function characterURLImport() {
         window.history.replaceState(window.history.state, "", location.pathname + location.search);
         const url = hash.replace("#import=", "");
         try {
-            const res = await fetch(url, {
+            // `fetchNative` keeps the Response, so the card reaches the importer as its Blob without a whole-file copy.
+            const res = await fetchNative(url, {
                 method: "GET",
             });
             await importFile(getFileName(res), await res.blob());
@@ -617,13 +844,11 @@ export async function characterURLImport() {
     if (hash.startsWith("#import_module=")) {
         const data = hash.replace("#import_module=", "");
         const importData = JSON.parse(Buffer.from(decodeURIComponent(data), "base64").toString("utf-8"));
+        stripImportedModuleMcp(importData);
         importData.id = v4();
 
-        if (importData.lowLevelAccess) {
-            const conf = await alertConfirm(language.lowLevelAccessConfirm);
-            if (!conf) {
-                return false;
-            }
+        if (!(await confirmLowLevelAccessImport(importData))) {
+            return false;
         }
         if (!(await prepareModuleImport(importData))) {
             return false;
@@ -637,12 +862,14 @@ export async function characterURLImport() {
     if (hash.startsWith("#import_preset=")) {
         const data = hash.replace("#import_preset=", "");
         const importData = Buffer.from(decodeURIComponent(data), "base64");
-        await importPreset({
+        const id = await importPreset({
             name: "imported.risupreset",
             data: importData,
         });
-        SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
-        settingsOpen.set(true);
+        if (id) {
+            SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
+            settingsOpen.set(true);
+        }
         return;
     }
     if (hash.startsWith("#share_character")) {
@@ -703,13 +930,15 @@ export async function characterURLImport() {
             return;
         }
         if (name.endsWith(".risupreset") || name.endsWith(".risup")) {
-            await importPreset({
+            const id = await importPreset({
                 name: name,
                 data: new Uint8Array(await data.arrayBuffer()),
             });
-            SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
-            settingsOpen.set(true);
-            alertNormal(language.successImport);
+            if (id) {
+                SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
+                settingsOpen.set(true);
+                alertNormal(language.successImport);
+            }
             return;
         }
         if (name.endsWith("risum")) {
@@ -753,6 +982,7 @@ export async function characterURLImport() {
     }
 }
 
+/** Off-spec cards may use legacy aliases; explicit canonical fields take precedence. */
 function convertOffSpecCards(
     charaData: OldTavernChar | CharacterCardV2Risu,
     imgp: string | undefined = undefined,
@@ -776,9 +1006,10 @@ function convertOffSpecCards(
     }
 
     return {
-        name: data.name ?? "unknown name",
-        firstMessage: data.first_mes ?? "unknown first message",
-        desc: data.description ?? "",
+        name: data.name ?? ("char_name" in data ? data.char_name : undefined) ?? "unknown name",
+        firstMessage:
+            data.first_mes ?? ("char_greeting" in data ? data.char_greeting : undefined) ?? "unknown first message",
+        desc: data.description ?? ("char_persona" in data ? data.char_persona : undefined) ?? "",
         notes: "",
         chats: [
             {
@@ -820,6 +1051,13 @@ function convertOffSpecCards(
     };
 }
 
+/**
+ * The editor's export dialog (`alertCardExport`) for character `chaId`; a group is not exportable. The V3 formats:
+ * PNG (`ccv3` plus `chara-ext-asset_*` chunks), JSON (assets as data URIs, capped by `JSON_EXPORT_ASSET_LIMIT`),
+ * CharX (`card.json`, `module.risum`, `assets/...`, `x_meta/...`), and CharX-JPEG (the portrait as a JPEG, then the
+ * CharX zip); the `ccv2` choice is V2 PNG (`chara`). The export is not awaited: `exportCharacterCard` alerts its own
+ * failure or success. Returns "", or the dialog's answer when it is no export (a cancel).
+ */
 export async function exportChar(chaId: string): Promise<string> {
     let char = characterSnapshot(chaId);
     if (!char) {
@@ -884,6 +1122,7 @@ async function saveEmbeddedAssets(
     assetDict: { [key: string]: string },
     mode: "hub" | "normal",
     msg: string,
+    replay: Map<string, AssetSaveItem>,
 ): Promise<string[]> {
     const paths: string[] = [];
     const pending: number[] = [];
@@ -918,10 +1157,28 @@ async function saveEmbeddedAssets(
     const saved = await saveAssets(items, { onProgress: showProgress });
     pending.forEach((entry, i) => {
         paths[entry] = saved[i];
+        if (!replay.has(saved[i])) replay.set(saved[i], items[i]);
     });
     return paths;
 }
 
+/**
+ * Builds the character of a v2 or v3 card (false for anything else) under a fresh `chaId` and adds it through
+ * `addCharacter`, or with `returnValue` returns it unadded. It asks `lowLevelAccess` before it saves any asset, the
+ * portrait included, so a declined card leaves none of its own behind; a caller that asked already passes
+ * `lowLevelAccessAsked`. `img` as a string is the key the server stored the portrait under.
+ * A declined question returns undefined silently; a failed asset handoff returns null (already
+ * alerted). The JSON caller ends the import for both; only false permits its off-spec fallback.
+ *
+ * V3 asset URIs: `__asset:<id>` and `embeded://<path>` resolve through `assetDict` (a key it lacks throws),
+ * `ccdefault:` is the portrait as it is at that entry, and a `data:` URI is saved (one whose base64 text is
+ * `50 * 1024 * 1024` characters or more is alerted and skipped); any other URI is skipped. `overrideLorebook` (a
+ * CharX's module lore) replaces the `character_book` entries.
+ *
+ * Not transactional: a card `addCharacter` refuses throws after the portrait and the assets were saved, and nothing
+ * of that is undone (any import count already made remains); the character list, its chats, and the order stay
+ * unchanged.
+ */
 async function importCharacterCardSpec<T extends boolean = false>(
     card: CharacterCardV2Risu | CharacterCardV3,
     img?: Uint8Array | string,
@@ -931,13 +1188,13 @@ async function importCharacterCardSpec<T extends boolean = false>(
     returnValue: T = false as T,
     /** The caller asked the `lowLevelAccess` confirmation already (`confirmCardLowLevelAccess`). */
     lowLevelAccessAsked = false,
-): Promise<T extends true ? character | false : string | false> {
+): Promise<T extends true ? character | false | null | undefined : string | false | null | undefined> {
     if (!card || (card.spec !== "chara_card_v2" && card.spec !== "chara_card_v3")) {
         return false;
     }
     // Asked before anything is saved, so a declined card leaves no assets behind.
     if (!lowLevelAccessAsked && !(await confirmCardLowLevelAccess(card))) {
-        return false;
+        return undefined;
     }
 
     console.log(`Importing ${card.spec}, mode is ${mode}`);
@@ -945,6 +1202,10 @@ async function importCharacterCardSpec<T extends boolean = false>(
     const data = card.data;
     // A string is the key the server already stored the image under (the Realm download).
     let im = typeof img === "string" ? img : img ? await saveAsset(img) : undefined;
+    const replay = new Map<string, AssetSaveItem>();
+    const importedKeys = new Set(Object.values(assetDict));
+    if (im) importedKeys.add(im);
+    if (img && typeof img !== "string") replay.set(im, { load: () => img });
     const risuext = safeStructuredClone(data.extensions.risuai);
     let emotions: [string, string][] = [];
     let bias: [string, number][] = [];
@@ -968,6 +1229,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 assetDict,
                 mode,
                 "Loading... (Loading Emotions)",
+                replay,
             );
             for (let i = 0; i < risuext.emotions.length; i++) {
                 emotions.push([risuext.emotions[i][0], paths[i]]);
@@ -980,6 +1242,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 assetDict,
                 mode,
                 "Loading... (Loading Assets)",
+                replay,
             );
             for (let i = 0; i < risuext.additionalAssets.length; i++) {
                 extAssets.push([risuext.additionalAssets[i][0], paths[i], fileNames[i]]);
@@ -992,6 +1255,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 assetDict,
                 mode,
                 "Loading... (Loading VITS)",
+                replay,
             );
             for (let i = 0; i < keys.length; i++) {
                 risuext.vits[keys[i]] = paths[i];
@@ -1039,7 +1303,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 } else if (uri.startsWith("data:")) {
                     //data uri
                     const b64 = uri.split(",")[1];
-                    if (b64.length < 50 * 1024 * 1024) {
+                    if (b64.length < CARD_DATA_URI_BASE64_LIMIT) {
                         sources.push({ kind: "saved", item: items.length });
                         items.push({ load: () => Buffer.from(b64, "base64") });
                     } else {
@@ -1061,6 +1325,9 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 showProgress(0);
             }
             const saved = await saveAssets(items, { onProgress: showProgress });
+            saved.forEach((key, index) => {
+                if (!replay.has(key)) replay.set(key, items[index]);
+            });
             for (let i = 0; i < data.assets.length; i++) {
                 const source = sources[i];
                 if (!source) {
@@ -1219,13 +1486,48 @@ async function importCharacterCardSpec<T extends boolean = false>(
         char.modification_date = card.data.modification_date ?? 0;
     }
 
+    if (!(await claimCardAssets([...importedKeys, ...replay.keys()], replay))) return null;
     if (returnValue) {
         return char as any;
     }
 
+    return (await addImportedCharacter(char)) as any;
+}
+
+/** Keeps an unconfirmed import available for retry and journal recovery without announcing success. */
+async function addImportedCharacter(char: character): Promise<string | null> {
+    const scope = beginMutationScope();
     const chaId = addCharacter(char);
-    alertNormal(language.importedCharacter);
-    return chaId as any;
+    const belongsToImport = (key: string) =>
+        key === `characters/${chaId}` || key === `chats/${chaId}` || key.startsWith(`chats/${chaId}/`);
+    let discarded: string[];
+    let refused: string[];
+    try {
+        ({ discarded, refused } = await waitForResourceFlush(flushResources({ scope })));
+    } catch (error) {
+        if (!characterSnapshot(chaId)) {
+            alertError(language.characterImportDiscarded);
+            return null;
+        }
+        if (error instanceof ResourceFlushTimeoutError) {
+            alertError(language.importSavePending);
+            return null;
+        }
+        const reason =
+            error instanceof GenerationBlockedError
+                ? language.chatGenerating
+                : error instanceof Error
+                  ? error.message
+                  : String(error);
+        alertError(language.characterImportUnconfirmed.replace("{{error}}", reason));
+        return null;
+    }
+    if (discarded.some(belongsToImport) || refused.some(belongsToImport)) {
+        alertError(language.characterImportDiscarded);
+        return null;
+    }
+    alertNormal(importedCharacterNotice(char.loreSettings));
+    return chaId;
 }
 
 function convertCharbook(arg: {
@@ -1328,6 +1630,8 @@ function convertCharbook(arg: {
             loreCache: book.extensions?.risu_loreCache ?? null,
             useRegex: book.use_regex ?? false,
             folder: book.folder,
+            // Keep current lore out of the legacy text migration when the character is created.
+            bookVersion: typeof extensions.risu_bookVersion === "number" ? extensions.risu_bookVersion : undefined,
         });
     }
 
@@ -1338,12 +1642,18 @@ function convertCharbook(arg: {
     };
 }
 
+/**
+ * The V2 card (`chara_card_v2`) of `char`, which it changes (`loreExt.risu_fullWordMatching`; the export passes a
+ * snapshot). It never carries `customNotificationMessage`: a local field, which the editor shows even for a
+ * `private`-licensed card (`src/lib/SideBars/CharConfig.svelte`) and the card import never sets.
+ */
 function createBaseV2(char: ClientCharacter) {
     let charBook: charBookEntry[] = [];
     for (const lore of char.globalLore) {
         let ext: {
             risu_case_sensitive?: boolean;
             risu_activationPercent?: number;
+            risu_bookVersion?: number;
             risu_loreCache?: {
                 key: string;
                 data: string[];
@@ -1353,6 +1663,7 @@ function createBaseV2(char: ClientCharacter) {
         let caseSensitive = ext.risu_case_sensitive ?? false;
         ext.risu_activationPercent = lore.activationPercent;
         ext.risu_loreCache = lore.loreCache;
+        ext.risu_bookVersion = lore.bookVersion;
 
         charBook.push({
             keys: lore.key.split(",").map((r) => r.trim()),
@@ -1436,9 +1747,37 @@ function createBaseV2(char: ClientCharacter) {
 /**
  * The most asset bytes a JSON card export embeds: past this, the base64 data URIs make a card
  * `JSON.stringify` cannot produce, so the export refuses and points to CharX instead.
+ * It is 64 MiB of read bytes of the V3 card's embedded assets, the `ccdefault:` portrait included, summed as each
+ * arrives, before compression. One byte over refuses the export with `jsonExportTooLarge` before `JSON.stringify`,
+ * cancelling the pending batch read, with no download and no success alert (a supplied writer gets the rethrow
+ * instead).
  */
 export const JSON_EXPORT_ASSET_LIMIT = 64 * 1024 * 1024;
 
+// The importer limits encoded text and excludes the limit itself.
+const CARD_DATA_URI_BASE64_LIMIT = 50 * 1024 * 1024;
+
+/**
+ * Writes `char` as a card file. PNG and CharX go to a download or to the supplied `writer`; a JSON card always goes
+ * to a download (`downloadFile`, its writer a `BlankWriter`), while a supplied writer still suppresses the alerts and
+ * is aborted on failure. `type` and `spec` pick the format; the
+ * default is V2 PNG, for compatibility (a V2 JSON card holds `__asset:N` references only, so it has no cap; no caller
+ * asks for one). Assets are read through `loadAssetsInBatches` (`src/ts/storage/assetQueue.ts`: 200 keys per
+ * `POST /api/assets/read`, at most one request in flight), so read memory is bounded by two batches plus the asset
+ * being written; a JSON card still accumulates its data URIs, up to `JSON_EXPORT_ASSET_LIMIT`.
+ *
+ * A `null` record means a missing or empty file: it is written as an empty asset, counted, and warned with its key,
+ * and the end alert reports the count (`exportMissingAssets`); the result carries it (`missingAssets`). Images
+ * changed by compression are counted in `reencodedImages` and reported beside completion. Transport,
+ * framing, compression and output errors stay fatal. A missing or empty portrait exports as `/none.webp` with a
+ * console warning naming its key (none when no portrait is set), without counting as an empty asset; a portrait read
+ * that throws fails the export.
+ *
+ * Any failure aborts the open `LocalWriter`, cancels and settles the pending read, and shows no success alert;
+ * whether the partial download is removed is streamSaver's and the browser's behavior. Without a supplied writer it
+ * alerts its own failure or success; with one it aborts that writer and rethrows, without an alert (the caller, such
+ * as `exportModule` in `src/ts/process/modules.ts`, alerts).
+ */
 export async function exportCharacterCard(
     char: ClientCharacter,
     type: "png" | "json" | "charx" | "charxJpeg" = "png",
@@ -1457,7 +1796,18 @@ export async function exportCharacterCard(
         alertStore.set(status);
     };
     let missingAssets = 0;
+    let reencodedImages = 0;
     let jsonAssetBytes = 0;
+    const compressExportImage = async (original: Uint8Array) => {
+        const compressed = await compressImage(original);
+        if (
+            compressed !== original &&
+            (compressed.length !== original.length || compressed.some((byte, i) => byte !== original[i]))
+        ) {
+            reencodedImages++;
+        }
+        return compressed;
+    };
     const assetBytes = (key: string, bytes: Uint8Array | null) => {
         if (bytes === null) {
             missingAssets++;
@@ -1468,13 +1818,17 @@ export async function exportCharacterCard(
     };
     const finish = () => {
         if (!arg.writer) {
-            alertNormal(
+            const message =
                 missingAssets > 0
                     ? language.exportMissingAssets.replace("{count}", String(missingAssets))
-                    : language.successExport,
+                    : language.successExport;
+            alertNormal(
+                reencodedImages > 0
+                    ? `${message}\n${language.exportReencodedImages.replace("{count}", String(reencodedImages))}`
+                    : message,
             );
         }
-        return { missingAssets };
+        return { missingAssets, reencodedImages };
     };
     try {
         let img = await readCardExportImage(char.image);
@@ -1512,7 +1866,7 @@ export async function exportCharacterCard(
                         submsg: ((i / card.data.extensions.risuai.emotions.length) * 100).toFixed(2),
                     });
                     const rData = assetBytes(key, bytes);
-                    const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                    const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.emotions[i][1] = `__asset:${assetIndex}`;
                     await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
@@ -1531,7 +1885,7 @@ export async function exportCharacterCard(
                         submsg: ((i / card.data.extensions.risuai.additionalAssets.length) * 100).toFixed(2),
                     });
                     const rData = assetBytes(key, bytes);
-                    const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                    const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.additionalAssets[i][1] = `__asset:${assetIndex}`;
                     await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
@@ -1609,11 +1963,16 @@ export async function exportCharacterCard(
                         }
                         assetIndex++;
                         if (type === "png") {
-                            const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                             card.data.assets[i].uri = `__asset:${assetIndex}`;
                             await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
                         } else if (type === "json") {
-                            const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
+                            if (b64encoded.length >= CARD_DATA_URI_BASE64_LIMIT) {
+                                throw new Error(
+                                    language.jsonExportAssetTooLarge.replace("{name}", card.data.assets[i].name),
+                                );
+                            }
                             card.data.assets[i].uri = `data:application/octet-stream;base64,${b64encoded}`;
                         } else if (writer instanceof CharXWriter) {
                             let type = "other";
@@ -1732,7 +2091,7 @@ export async function exportCharacterCard(
                                     6,
                                 );
                             }
-                            const writtenPath = await writer.write(path, Buffer.from(await compressImage(rData)));
+                            const writtenPath = await writer.write(path, Buffer.from(await compressExportImage(rData)));
                             card.data.assets[i].uri = "embeded://" + writtenPath;
                         }
                     }
@@ -1797,6 +2156,10 @@ type RisuLorebookEntry = LorebookEntry & {
     folder?: string;
 };
 
+/**
+ * The V3 card (`chara_card_v3`) of `char`, which it changes as `createBaseV2` does; its `assets` still name stored
+ * keys for the export to embed. It never carries `customNotificationMessage`, for the same reason as `createBaseV2`.
+ */
 export function createBaseV3(char: ClientCharacter) {
     let charBook: RisuLorebookEntry[] = [];
     let assets: Array<{
@@ -1839,6 +2202,7 @@ export function createBaseV3(char: ClientCharacter) {
         let ext: {
             risu_case_sensitive?: boolean;
             risu_activationPercent?: number;
+            risu_bookVersion?: number;
             risu_loreCache?: {
                 key: string;
                 data: string[];
@@ -1848,6 +2212,7 @@ export function createBaseV3(char: ClientCharacter) {
         let caseSensitive = ext.risu_case_sensitive ?? false;
         ext.risu_activationPercent = lore.activationPercent;
         ext.risu_loreCache = lore.loreCache;
+        ext.risu_bookVersion = lore.bookVersion;
 
         charBook.push({
             ...({
@@ -1943,6 +2308,7 @@ export function createBaseV3(char: ClientCharacter) {
     return card;
 }
 
+/** Realm listing/detail metadata; optional creator ids support filtering, while absent metadata is not a block match. */
 export type hubType = {
     name: string;
     desc: string;
@@ -1964,14 +2330,27 @@ export type hubType = {
     hidden?: boolean;
 };
 
+/**
+ * Last non-empty HTML from an object-shaped listing; array/empty answers retain it.
+ * `src/lib/UI/Realm/RealmMain.svelte` sanitizes it with `trimMarkdown` before rendering with `{@html}`.
+ */
 export let hubAdditionalHTML = "";
 
+/**
+ * Requests follow the `src/ts/realmTerms.ts` gate; the supplied search gains ` __shared`. Listing
+ * replies may be arrays or `{ cards, additionalHTML }`. Both use `src/ts/realmBlocking.ts` against the
+ * current settings; cards without creator metadata remain visible. Decline, refusal, or failure
+ * returns an empty list; object replies may update `hubAdditionalHTML`.
+ */
 export async function getRisuHub(arg: {
     search: string;
     page: number;
     nsfw: boolean;
     sort: string;
 }): Promise<hubType[]> {
+    if (!(await ensureRealmTerms())) {
+        return [];
+    }
     try {
         arg.search += " __shared";
         const stringArg = `search==${arg.search}&&page==${arg.page}&&nsfw==${arg.nsfw}&&sort==${arg.sort}&&web==other`;
@@ -1995,6 +2374,16 @@ export async function getRisuHub(arg: {
     }
 }
 
+/**
+ * The `src/ts/realmTerms.ts` gate precedes access checks. With a non-empty block list and no supplied
+ * creator, a lookup precedes preparation. Lookup failure alerts and stops; after a successful lookup,
+ * `canAccessRealmCreator` re-reads the current list. Missing metadata is otherwise allowed; blocked
+ * cards never reach preparation.
+ * `src/ts/storage/realmImportClient.ts` stages PNG/CharX on the server; the tab receives card text,
+ * not the file. `commitRealmCard` resolves any applicable password and `lowLevelAccess` prompts
+ * before committing the staged assets. The prepare and commit waits can each be cancelled. Legacy JSON
+ * goes through the standard importer in hub mode, fetching portrait/assets through `/hub-proxy`.
+ */
 export async function downloadRisuHub(
     id: string,
     arg: {
@@ -2003,6 +2392,9 @@ export async function downloadRisuHub(
     } = {},
 ) {
     try {
+        if (!(await ensureRealmTerms())) {
+            return;
+        }
         if ((settings.ui.blockedRealmCreators ?? []).length > 0) {
             let creator = arg.creator;
             if (!creator) {
@@ -2017,20 +2409,16 @@ export async function downloadRisuHub(
                 return;
             }
         }
-        if (!arg.forceRedirect) {
-            alertStore.set({
-                type: "wait",
-                msg: "Downloading...",
-            });
-        }
         // The server downloads and stages the card and answers its text (`POST /api/import/realm`):
         // the tab never fetches Realm or holds the file. Nothing is stored until the commit, after
         // the card's questions (an rcc card's password, its `lowLevelAccess`).
         let download: RealmPrepared;
         try {
-            download = await prepareRealmImport(id);
+            download = await withServerImportWait(arg.forceRedirect ? undefined : "Downloading...", (signal) =>
+                prepareRealmImport(id, { signal }),
+            );
         } catch (error) {
-            alertError(realmImportErrorMessage(error));
+            alertServerImportError(error, realmImportErrorMessage(error));
             return;
         }
 
@@ -2054,9 +2442,6 @@ export async function downloadRisuHub(
         checkCharOrder();
         if (imported && (settings.ui.goCharacterOnImport || arg.forceRedirect)) {
             changeChar(imported);
-            // The download's status only. The import's own success dialog stays, as on the staged
-            // (PNG, CharX) path; a dialog of anything else is never closed from here.
-            alertClear();
         }
     } catch (error) {
         console.error(error);
@@ -2066,16 +2451,24 @@ export async function downloadRisuHub(
 }
 
 /**
- * The rest of a staged Realm import (`downloadRisuHub`): reads the prepared card and asks its
- * questions (an rcc card's password, the `lowLevelAccess` confirmation), then commits the staged file
- * (the server stores its assets) and builds the character from the stored keys. A card that fails or
- * is declined is cancelled, so the server stores nothing; so is any failure before the commit
- * answered. Returns the new character's id, or a falsy value once the failure is alerted.
+ * The rest of a staged Realm import (`downloadRisuHub`): the prepared card is read, applicable
+ * password and `lowLevelAccess` prompts resolve, then the staged assets are committed through
+ * `src/ts/storage/realmImportClient.ts` and the character is built from the stored keys.
+ * A pagehide guard is registered at entry, before prompts, and released in finally once commit
+ * succeeds or the normal cancel settles. It sends one best-effort keepalive cancel with auth signed
+ * ahead. Busy/maintenance commit refusals alone are retried once after five seconds. Cancel stops
+ * either request or the retry delay before the character is built.
+ * Read failures and declined prompts trigger best-effort cancellation before commit. If the commit
+ * throws before returning a validated result, cancellation is also attempted, but assets may already
+ * be stored.
+ * CharX alone carries embedded `module.risum`; the standard importers use the commit's stored keys,
+ * including a PNG's image. The result is the new character's id, or a falsy value after failure handling.
  */
 async function commitRealmCard(
     download: Exclude<RealmPrepared, { kind: "json" }>,
     quiet: boolean,
 ): Promise<string | false | null | undefined> {
+    const releasePagehideCancel = cancelRealmImportOnPagehide(download.token);
     let committed = false;
     try {
         let charx: CharacterCardV3 | null = null;
@@ -2091,19 +2484,25 @@ async function commitRealmCard(
                 return null;
             }
         }
-        if (!quiet) {
-            alertWait("Loading...");
-        }
         let stored: RealmCommitted;
         try {
-            stored = await commitRealmImport(download.token, {
-                onProgress: (done, total) => {
-                    alertWait(`Loading... (Saving Assets ${done}/${total})`);
-                },
+            stored = await withServerImportWait(quiet ? undefined : "Loading...", async (signal, showWait) => {
+                const commit = () =>
+                    commitRealmImport(download.token, {
+                        signal,
+                        onProgress: (done, total) => showWait(`Loading... (Saving Assets ${done}/${total})`),
+                    });
+                try {
+                    return await commit();
+                } catch (error) {
+                    if (!isRetriableRealmCommitRefusal(error)) throw error;
+                    await sleepAbortable(REALM_COMMIT_RETRY_DELAY_MS, signal);
+                    return commit();
+                }
             });
             committed = true;
         } catch (error) {
-            alertError(realmImportErrorMessage(error));
+            alertServerImportError(error, realmImportErrorMessage(error));
             return null;
         }
         if (download.kind === "charx" && charx && stored.kind === "charx") {
@@ -2122,11 +2521,14 @@ async function commitRealmCard(
         throw new Error("The Realm commit answered another kind of file");
     } finally {
         if (!committed) {
-            void cancelRealmImport(download.token);
+            void cancelRealmImport(download.token).finally(releasePagehideCancel);
+        } else {
+            releasePagehideCancel();
         }
     }
 }
 
+/** Legacy hub-mode portrait/asset bytes through `hubURL` (`/hub-proxy`); non-200 throws Realm's text. */
 export async function getHubResources(id: string) {
     const res = await fetch(`${hubURL}/resource/${id}`);
     if (res.status !== 200) {
@@ -2210,7 +2612,10 @@ interface OldTavernChar {
     description: string;
     first_mes: string;
     mes_example: string;
-    name: string;
+    name?: string;
+    char_name?: string;
+    char_persona?: string;
+    char_greeting?: string;
     personality: string;
     scenario: string;
     talkativeness: "0.5";

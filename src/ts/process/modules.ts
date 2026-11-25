@@ -2,6 +2,7 @@ import { selectedCharacter, characterList } from "../storage/characterStore.svel
 import { settings, activePreset, readPresetFieldOf, type PresetScope } from "../storage/settingsViews.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { language } from "src/lang";
+import { confirmLowLevelAccessImport } from "../lowLevelAccessImport";
 import {
     alertClear,
     alertConfirm,
@@ -9,6 +10,7 @@ import {
     alertModuleSelect,
     alertNormal,
     alertStore,
+    alertToast,
     alertWait,
     waitAlert,
     type alertData,
@@ -19,7 +21,13 @@ import { LocalWriter, saveAsset, VirtualWriter } from "../globalApi.svelte";
 import { checkPersonaBinded, selectSingleFileHandle } from "../util";
 import { loadAssetsInBatches, saveAssets } from "../storage/assetQueue";
 import { importModuleOverServer } from "../storage/moduleImportClient";
-import { ServerImportFailedError, ServerImportRequestError } from "../storage/serverImportClient";
+import {
+    alertServerImportError,
+    ServerImportCancelledError,
+    ServerImportFailedError,
+    ServerImportRequestError,
+    withServerImportWait,
+} from "../storage/serverImportClient";
 import { v4 } from "uuid";
 import { convertExternalLorebook } from "./lorebook.svelte";
 import { compressImage } from "../media";
@@ -31,6 +39,7 @@ import {
     ReloadGUIPointer,
 } from "../stores.svelte";
 import { addModule } from "../storage/collectionStore.svelte";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "../storage/resourceFlushWait";
 import { beginMutationScope, flushResources, GenerationBlockedError } from "../storage/resourceSync.svelte";
 import { get } from "svelte/store";
 import { moduleMembershipRevision, moduleAssetsRevision, moduleFieldPlain } from "../storage/records.svelte";
@@ -47,8 +56,30 @@ import {
     readModuleFileHeader,
 } from "../../../shared/moduleImport.ts";
 
+/**
+ * Modules in the tab. The `.risum` codec: `exportModuleLegacy` writes it and `readModule` reads it in the tab; the
+ * format and the server's reader are `shared/moduleImport.ts`'s, and the rpack codec is `shared/rpack.ts`'s
+ * (`encodeRPack`/`decodeRPack`, re-exported by `src/ts/rpack/rpack_js.js`). `exportModule` writes a module as CharX
+ * instead.
+ *
+ * The import entry points: `importModuleFile` (a `.risum` file, through the server), `addImportedModule` (the add
+ * every file or data module import ends with), and `importModule` (the module dialog). File and link boundaries
+ * remove `mcp`; user-facing module imports report its removal only after a confirmed save, while `readModule`
+ * removes it silently, including in CharX embeds. The MCP URL import
+ * (`importMCPModule`, `src/ts/process/mcp/mcp.ts`) is the exception: it adds through `addModule` directly and alerts
+ * success without waiting for the save. The effective set: `getModules` and the
+ * `getModule*` getters built on it, and `moduleUpdate`, which publishes the selected chat's icon and background
+ * stores and reloads the GUI once when the set changes.
+ */
+
 export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
 
+/**
+ * Exports `module` as a CharX file through character conversion (`convertModuleToCharacter`, then
+ * `exportCharacterCard` with this writer); a module without an icon gets `/none.webp`, saved as an asset, and the
+ * `moduleNoneImage` mark. It catches every failure (one before the writer is handed over too), aborts the writer, and
+ * alerts once; it never rethrows. With `alertEnd`, completion includes empty-asset and re-encoded-image counts.
+ */
 export async function exportModule(
     module: RisuModule,
     arg: {
@@ -75,10 +106,14 @@ export async function exportModule(
             onInstall: arg.onInstall,
         });
         if (alertEnd) {
-            alertNormal(
+            const message =
                 result.missingAssets > 0
                     ? language.exportMissingAssets.replace("{count}", String(result.missingAssets))
-                    : language.successExport,
+                    : language.successExport;
+            alertNormal(
+                result.reencodedImages > 0
+                    ? `${message}\n${language.exportReencodedImages.replace("{count}", String(result.reencodedImages))}`
+                    : message,
             );
         }
     } catch (error) {
@@ -88,6 +123,20 @@ export async function exportModule(
     }
 }
 
+/**
+ * Writes `module` as a `.risum` file: magic byte 111, version 0, the RPack-encoded JSON main record, one record per
+ * asset, then the end mark (the layout is `shared/moduleImport.ts`'s). The asset tuples are snapshotted before the
+ * first await, so the metadata and the payloads keep one order while the live module is edited. Assets are read
+ * through `loadAssetsInBatches` (`src/ts/storage/assetQueue.ts`); a `null` record (a missing or empty file) is
+ * written as an empty asset, counted, warned with its key, and reported in the end alert (`exportMissingAssets`).
+ * The end alert also counts images whose compressed bytes differ from the stored bytes.
+ * `saveData: false` writes to memory and returns the bytes, so it still buffers the whole `.risum`.
+ *
+ * It alerts its failure and, when `alertEnd` is true, its completion, except `saveData: false, alertEnd: false`
+ * (caller-owned bytes, the CharX embed of `exportCharacterCard`), which aborts and rethrows. A failure aborts the
+ * writer and the pending read either way.
+ * Modules with an icon require CharX, since this legacy layout has no icon payload.
+ */
 export async function exportModuleLegacy(
     module: RisuModule,
     arg: {
@@ -101,7 +150,11 @@ export async function exportModuleLegacy(
     const writer = saveData ? new LocalWriter() : new VirtualWriter();
     const controller = new AbortController();
     let missingAssets = 0;
+    let reencodedImages = 0;
     try {
+        if (module.icon) {
+            throw new Error(language.moduleLegacyExportIconUnsupported);
+        }
         // Capture tuples before any await: metadata and payloads must use the same order even
         // if the live module is edited while a batch is being read or written.
         const assets = (module.assets ?? []).map((asset) => [...asset] as [string, string, string]);
@@ -145,7 +198,15 @@ export async function exportModuleLegacy(
                 missingAssets++;
                 console.warn("Export asset missing or empty:", key);
             }
-            const encoded = await encodeRPack(Buffer.from(await compressImage(bytes ?? new Uint8Array(0))));
+            const original = bytes ?? new Uint8Array(0);
+            const compressed = await compressImage(original);
+            if (
+                compressed !== original &&
+                (compressed.length !== original.length || compressed.some((byte, i) => byte !== original[i]))
+            ) {
+                reencodedImages++;
+            }
+            const encoded = await encodeRPack(Buffer.from(compressed));
             await writeByte(1); //mark as asset
             await writeLength(encoded.length);
             await writer.write(encoded);
@@ -155,10 +216,14 @@ export async function exportModuleLegacy(
         await writer.close();
         const result = writer instanceof VirtualWriter ? writer.buf.buffer : undefined;
         if (alertEnd) {
-            alertNormal(
+            const message =
                 missingAssets > 0
                     ? language.exportMissingAssets.replace("{count}", String(missingAssets))
-                    : language.successExport,
+                    : language.successExport;
+            alertNormal(
+                reencodedImages > 0
+                    ? `${message}\n${language.exportReencodedImages.replace("{count}", String(reencodedImages))}`
+                    : message,
             );
         }
         return result;
@@ -174,7 +239,8 @@ export async function exportModuleLegacy(
 
 /**
  * The in-tab `.risum` reader: the CharX-embedded `module.risum` (small) and tests. A `.risum` file
- * goes through `importModuleFile` instead, which never holds the file.
+ * goes through `importModuleFile` instead, which never holds the file. Removes `mcp` silently,
+ * without tracking a notice for the embedded module.
  */
 export async function readModule(buf: Buffer): Promise<RisuModule> {
     let pos = 0;
@@ -221,6 +287,7 @@ export async function readModule(buf: Buffer): Promise<RisuModule> {
     }
 
     let module = main.module;
+    delete module.mcp;
 
     // Each asset record is decoded inside its queue item's `load()`, so no more than the queue's
     // concurrency decoded copies exist at once; the asset client retries a refused write itself.
@@ -302,14 +369,31 @@ export async function prepareModuleImport(module: { name?: unknown; lorebook?: u
     return true;
 }
 
+const modulesWithDroppedMcp = new WeakSet<object>();
+
+/**
+ * Removes a file or link module's own `mcp` field, regardless of its value. Returns whether it was
+ * present and remembers the removal by object identity for `addImportedModule`'s success toast.
+ */
+export function stripImportedModuleMcp(module: { mcp?: unknown }): boolean {
+    if (!Object.prototype.hasOwnProperty.call(module, "mcp")) {
+        return false;
+    }
+    delete module.mcp;
+    modulesWithDroppedMcp.add(module);
+    return true;
+}
+
 /**
  * Imports a `.risum` file through the server; every `.risum` file entry point (the module dialog,
  * the drop, `#share_module`, `#import=`, the launch queue) calls it, then adds the module through
  * `addImportedModule`. Only the file's header and main record are read here (`file.slice`, decoded
- * with the reader the server uses, `shared/moduleImport.ts`), and on that module, before anything
+ * with the reader the server uses, `shared/moduleImport.ts`). Its `mcp` field is removed immediately
+ * after decoding, with a notice deferred to `addImportedModule` after a confirmed save. Before anything
  * is sent, the low-level access question is asked and `prepareModuleImport` runs. Then the file
- * itself is uploaded (`importModuleOverServer`, its progress in the wait alert), and only the
- * stored assets' keys are taken from the server's result. Returns the prepared module under a fresh
+ * itself is uploaded (`importModuleOverServer`, its progress in a cancellable wait), and only the
+ * stored assets' keys (`assets[i][1]`) are copied from the server's module into the prepared one; a
+ * server module with another asset count is `noData`. Returns the prepared module under a fresh
  * id, or null when nothing is to be added: a question was declined, or the failure is already
  * alerted.
  */
@@ -318,28 +402,28 @@ export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
     let module: RisuModule;
     try {
         module = await readModuleFileMain(file);
+        stripImportedModuleMcp(module);
     } catch (error) {
         console.error(error);
         alertError(language.errors.noData);
         return null;
     }
-    if (module.lowLevelAccess && !(await alertConfirm(language.lowLevelAccessConfirm))) {
+    if (!(await confirmLowLevelAccessImport(module))) {
         return null;
     }
     if (!(await prepareModuleImport(module))) {
         return null;
     }
-    alertWait(language.moduleImportUploading);
     let stored: ModuleImportResult;
     try {
-        stored = await importModuleOverServer(file, {
-            onProgress: (done, total) => {
-                alertWait(`Loading... (Adding Assets ${done} / ${total})`);
-            },
-        });
+        stored = await withServerImportWait(language.moduleImportUploading, (signal, showWait) =>
+            importModuleOverServer(file, {
+                signal,
+                onProgress: (done, total) => showWait(`Loading... (Adding Assets ${done} / ${total})`),
+            }),
+        );
     } catch (error) {
-        // Each alert replaces the wait alert; nothing clears the store after it.
-        alertError(moduleImportErrorMessage(error));
+        alertServerImportError(error, moduleImportErrorMessage(error));
         return null;
     }
     if (!copyStoredKeys(module, stored.module)) {
@@ -348,7 +432,6 @@ export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
         return null;
     }
     module.id = v4();
-    alertClear();
     return module;
 }
 
@@ -413,8 +496,12 @@ export type ServerImportTexts = {
  * with its own text, shown as it is). Busy, maintenance, a timeout, and an interrupted upload share
  * the module import's texts. A network failure may be a refusal the browser did not see (see
  * `serverImportClient.ts`).
+ * The route's invalid-file text maps to `noData`, an unrecognized refusal shows the server's text,
+ * a 413 without JSON text is a proxy's or tunnel's refusal of the upload's size, and a `TypeError`
+ * is an interrupted upload (possibly a refusal the browser never saw). A user cancellation has its own message.
  */
 export function serverImportErrorMessage(error: unknown, texts: ServerImportTexts): string {
+    if (error instanceof ServerImportCancelledError) return language.importCancelled;
     if (error instanceof ServerImportRequestError) {
         switch (error.status) {
             case 400:
@@ -423,6 +510,10 @@ export function serverImportErrorMessage(error: unknown, texts: ServerImportText
                 }
                 break;
             case 413:
+                if (error.serverError === null) {
+                    // No JSON text: a proxy or tunnel in front of the server refused the upload.
+                    return language.uploadRefusedByProxy;
+                }
                 if (error.serverError === "File too large") {
                     return texts.fileTooLarge;
                 }
@@ -473,20 +564,33 @@ function moduleImportErrorMessage(error: unknown): string {
  * `discarded`: a change of the same module, or any change of this tab's other than adding the module)
  * dropped it:
  * `moduleImportDiscarded`. A flush that fails (a generation this tab's other changes wait for, a
- * refused or unreachable save) is `moduleImportUnconfirmed`; the module stays in the list unless a
- * conflict discarded it, in which case it is `moduleImportDiscarded` even if the flush later fails.
+ * refused save) is `moduleImportUnconfirmed`; a save still unanswered at the `waitForResourceFlush`
+ * bound (`flushResources` retries a lost answer, so a network outage ends here) is
+ * `importSavePending`. The module stays in the list unless a conflict discarded it, in which case it
+ * is `moduleImportDiscarded` even if the flush later fails.
  * The flush saves every pending change, not only the module.
+ * With `announce`, `successImport` comes only after that acknowledgement, and only while its
+ * `moduleImportSaving` wait alert is still the status: an alert that replaced it meanwhile stays.
+ * Consumes the boundary's transient MCP-removal marker once. In that same status branch, a saved
+ * module whose `mcp` was removed gets one toast after the success dialog is queued or the wait is
+ * cleared; the dialog stays until dismissed, then the toast appears. Failed or discarded saves
+ * show no toast.
  */
 export async function addImportedModule(module: unknown, { announce }: { announce: boolean }): Promise<boolean> {
+    const mcpDropped = modulesWithDroppedMcp.delete(module as object);
     const scope = beginMutationScope();
     const id = addModule(module);
     alertWait(language.moduleImportSaving);
     let discarded: string[];
     try {
-        ({ discarded } = await flushResources({ scope }));
+        ({ discarded } = await waitForResourceFlush(flushResources({ scope })));
     } catch (error) {
         if (!settings.modules.some((entry) => entry.id === id)) {
             alertError(language.moduleImportDiscarded);
+            return false;
+        }
+        if (error instanceof ResourceFlushTimeoutError) {
+            alertError(language.importSavePending);
             return false;
         }
         const reason =
@@ -510,10 +614,25 @@ export async function addImportedModule(module: unknown, { announce }: { announc
         } else {
             alertClear();
         }
+        if (mcpDropped) {
+            alertToast(language.moduleImportMcpDropped);
+        }
     }
     return true;
 }
 
+/**
+ * The module dialog's import of a picked `.charx`, `.risum`, or JSON file (`.json`, `.lorebook`). A `.risum` goes
+ * through `importModuleFile`. A `.charx` is imported as a character without adding it (`importCharacterProcess` with
+ * `returnCharacter`) and converted (`convertCharacterToModule`): `null` or `undefined` adds no alert (already
+ * alerted), `false` (a declined question) cancels silently, and a string is `noData`. A CharX whose embedded module
+ * `readModule` refuses alerts `noData` and adds neither a module nor a character (the counted import and the stored
+ * assets stay).
+ * The JSON branches (a `risuModule`, a risu or external lorebook, a regex list) clear their saving wait without a
+ * success dialog. A `risuModule` JSON's `mcp` is removed before the low-level access question, with one toast after
+ * a confirmed save; `.risum` imports defer the same notice, while CharX embeds drop it silently in `readModule`.
+ * A file none of them reads is `noData`.
+ */
 export async function importModule() {
     const file = await selectSingleFileHandle(["json", "lorebook", "risum", "charx"]);
     if (!file) {
@@ -531,8 +650,11 @@ export async function importModule() {
                 // Alerted already: no card, or the upload's failure (busy, too large, interrupted).
                 return;
             }
-            if (!char || typeof char === "string") {
+            if (typeof char === "string") {
                 alertError(language.errors.noData);
+                return;
+            }
+            if (!char) {
                 return;
             }
             const module = convertCharacterToModule(char);
@@ -563,17 +685,15 @@ export async function importModule() {
         const fileData = new Uint8Array(await file.arrayBuffer());
         const importData = JSON.parse(Buffer.from(fileData).toString());
         if (importData.type === "risuModule") {
+            stripImportedModuleMcp(importData);
             if (!importData.name || !importData.id) {
                 alertError(language.errors.noData);
                 return;
             }
             importData.id = v4();
 
-            if (importData.lowLevelAccess) {
-                const conf = await alertConfirm(language.lowLevelAccessConfirm);
-                if (!conf) {
-                    return false;
-                }
+            if (!(await confirmLowLevelAccessImport(importData))) {
+                return false;
             }
             if (await prepareModuleImport(importData)) {
                 await addImportedModule(importData, { announce: false });
@@ -672,29 +792,32 @@ export type ModuleChatRef = { chaId: string; chatId: string } | null | undefined
 
 /**
  * The enabled modules for `chatRef`'s chat and character (default: the selected ones): the global
- * list, the chat's and the character's modules, the bound persona's embedded module, and the
- * prompt preset's integration list, all matched by id or namespace, plus the bound persona's linked
- * modules, matched apart (by id only, MCP modules excepted: `personaLinksModule`). The integration
+ * list, the chat's and the character's modules, the bound persona's embedded module's id, and the
+ * prompt preset's integration list, all matched by id or namespace against `settings.modules` only
+ * (`getModuleByIds`), plus the bound persona's linked modules, matched apart (by id only, MCP modules
+ * excepted: `personaLinksModule`). The persona's embedded object is appended when no stored module
+ * has its id; a stored module of that id takes precedence (the server's `jobModules` does the same).
+ * The integration
  * list is `scope`'s preset's (a parse for a captured context, a `presetChain` pick included), else
  * `chatRef`'s display preset's (the chat's binding), else the settings view's, which
  * follows the selected chat.
  */
 export function getModules(chatRef?: ModuleChatRef, scope?: PresetScope) {
     const revision = moduleMembershipRevision();
-    const { ids, personaIds } = enabledModuleIds(chatRef, scope);
+    const { ids, personaIds, embeddedModule } = enabledModuleIds(chatRef, scope);
     // The persona's links resolve apart from the other ids (by id only), so they key apart too.
     const idsJoined = JSON.stringify([ids, [...personaIds]]);
-    if (lastModules === idsJoined && lastModuleRevision === revision) {
-        return lastModuleData;
+    if (lastModules !== idsJoined || lastModuleRevision !== revision) {
+        // Membership is tracked by the revision, including on cache hits. Filtering need not track
+        // every wrapper read, which would give a cache miss different dependencies from a hit.
+        lastModuleData = untrack(() => getModuleByIds(ids, personaIds));
+        lastModules = idsJoined;
+        lastModuleRevision = revision;
     }
-
-    // Membership is tracked by the revision, including on cache hits. Filtering need not track
-    // every wrapper read, which would give a cache miss different dependencies from a hit.
-    const modules = untrack(() => getModuleByIds(ids, personaIds));
-    lastModules = idsJoined;
-    lastModuleRevision = revision;
-    lastModuleData = modules;
-    return modules;
+    // Read the bound object on cache hits too: another persona or replacement can reuse its id.
+    return embeddedModule && !untrack(() => lastModuleData.some((module) => module.id === embeddedModule.id))
+        ? [...lastModuleData, embeddedModule]
+        : lastModuleData;
 }
 
 /** The ids and persona links `getModules` resolves. */
@@ -721,7 +844,7 @@ function enabledModuleIds(chatRef: ModuleChatRef, scope: PresetScope | undefined
         const intList = integration.split(",").map((s) => s.trim());
         ids = ids.concat(intList);
     }
-    return { ids, personaIds };
+    return { ids, personaIds, embeddedModule: persona?.embeddedModule };
 }
 
 /** The lorebooks of `getModules(chatRef, scope)`. */

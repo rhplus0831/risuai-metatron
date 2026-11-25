@@ -3,6 +3,7 @@ import { LLMFormat } from "./llm.ts";
 import { BASE_LLM_MODELS } from "./llm/models.ts";
 import { REQUEST_SOURCES } from "./llm/request.ts";
 import { isProviderCode, PROVIDER_CODE_PATTERN } from "./requestHistory.ts";
+import { REMOTE_COMMAND_STATES } from "./remoteCommands.ts";
 
 export { isProviderCode, PROVIDER_CODE_PATTERN };
 
@@ -13,9 +14,10 @@ export { isProviderCode, PROVIDER_CODE_PATTERN };
  * provider error code, a route template from `ROUTE_TEMPLATES`, a catalog model id, or an
  * application stack frame.
  *
- * The server writes `http`, `job`, `request`, `runtime`, and `lifecycle`; the browser's collector
- * (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, and the browser kinds `jobLink`,
- * `feed`, `sync`, `serviceWorker`, `page`, and `bootCache`.
+ * The server writes `http`, `job`, `request`, `runtime`, `lifecycle`, `remoteCommand`, and its `push`
+ * phases; the browser's collector (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, the browser kinds
+ * `jobLink`, `feed`, `sync`, `serviceWorker`, `page`, `bootCache`, and `notice`, and the browser's
+ * `push` phases (the page's own, and the service worker's records the report reads).
  */
 export const DIAGNOSTIC_EVENT_KINDS = [
     "http",
@@ -29,6 +31,9 @@ export const DIAGNOSTIC_EVENT_KINDS = [
     "serviceWorker",
     "page",
     "bootCache",
+    "push",
+    "notice",
+    "remoteCommand",
 ] as const;
 
 /** `GET`: the server's ring and state (`server/src/routes/diagnostics.ts`). */
@@ -66,9 +71,13 @@ export const RUNTIME_ORIGINS = [
     "generation.socketSend",
     "generation.channelClose",
     "generation.endDelivery",
+    "generation.handoffPublish",
+    "generation.progressPublish",
+    "generation.outputCount",
     "generation.runnerSettle",
     "generation.listener",
     "generation.release",
+    "generation.receipts",
     "checkpoint.auto",
     "error",
     "unhandledrejection",
@@ -76,16 +85,89 @@ export const RUNTIME_ORIGINS = [
 
 export type RuntimeOrigin = (typeof RUNTIME_ORIGINS)[number];
 
-/** A tab's follow of a server job: its socket opened, closed before the end, or never opened; a retry; the end of the follow without the job's end; a saved job followed again after a reload. */
-export const JOB_LINK_PHASES = ["attach", "detach", "attachFailed", "reattach", "lost", "resume"] as const;
+/**
+ * A tab's follow of a server job: its socket opened, closed before the end, or never opened; a retry;
+ * the end of the follow without the job's end (the server could not be reached); a saved job followed
+ * again after a reload; the end read from the server's kept outcome of a collected job; a job the
+ * server no longer knows; the job's chat read again after a lost or gone follow; a socket given up
+ * because it had no frame for too long, did not open in time, or the page came back. `closedAway`
+ * is a close while the page was hidden or the browser offline, which does not consume the attach
+ * budget (`src/ts/process/serverCommands.ts`).
+ */
+export const JOB_LINK_PHASES = [
+    "attach",
+    "detach",
+    "attachFailed",
+    "reattach",
+    "lost",
+    "resume",
+    "kept",
+    "gone",
+    "recovered",
+    "stale",
+    "connectTimeout",
+    "resumeReconnect",
+    "closedAway",
+] as const;
 
-/** The live-update socket: a `hello` of the loaded epoch, a close of a socket that was open, a connection that never opened. */
-export const FEED_PHASES = ["connected", "disconnected", "connectFailed"] as const;
+/**
+ * The live-update socket: a `hello` of the loaded epoch, a close of a socket that was open, a
+ * connection that never opened; a connection given up because it had no frame for too long or did
+ * not open in time, and one replaced because the page came back.
+ */
+export const FEED_PHASES = [
+    "connected",
+    "disconnected",
+    "connectFailed",
+    "stale",
+    "connectTimeout",
+    "resumeReconnect",
+] as const;
 
-/** The save loop: a 409 it recovers from, a reload of the page (after a restore, or a service worker that did not initialize). */
-export const SYNC_PHASES = ["conflict", "reload"] as const;
+/**
+ * The save loop: a 409 it recovers from, a reload of the page (after a restore, or a service worker that
+ * did not initialize), or a dispatched batch that waited over two seconds (`saveWait`): counts of
+ * delayed records, chats and orders, `durationMs` since the oldest first unsettled edit, and the
+ * blocker recorded while it waited (`inFlight`, `backoff`, `refresh`, `generating`, `conflict`). The draft
+ * journal (`src/ts/storage/draftJournal.ts`): `entries` it did not write (`tooLarge`, `budget`) or found in
+ * a format it cannot read (`format`, kept as they are), or a recovery intent it cannot install; a
+ * journal that is off or failed (`unavailable`, `timeout` or `blocked` opening, `quota`, `write`,
+ * `readFailed`), or a value it could not copy (`uncloneable`: a proxy or a function, so that write is
+ * not journaled); and
+ * `entries` it took over from a closed tab (`orphan`). `src/ts/storage/journalRecovery.ts` also emits
+ * `journalRecovered` with this boot's decision count in `entries` and no reason when nonzero;
+ * recovery failures emit `journalFailed` with `timeout` or `readFailed`.
+ */
+export const SYNC_PHASES = [
+    "conflict",
+    "reload",
+    "journalSkipped",
+    "journalFailed",
+    "journalRecovered",
+    "saveWait",
+] as const;
 
-export const SYNC_REASONS = ["restore", "serviceWorker"] as const;
+/** `reload` carries `restore` or `serviceWorker`; journal and save-wait reasons belong to their phases. */
+export const SYNC_REASONS = [
+    "restore",
+    "serviceWorker",
+    "tooLarge",
+    "budget",
+    "format",
+    "unavailable",
+    "timeout",
+    "blocked",
+    "quota",
+    "write",
+    "readFailed",
+    "uncloneable",
+    "orphan",
+    "inFlight",
+    "backoff",
+    "refresh",
+    "generating",
+    "conflict",
+] as const;
 
 export const SERVICE_WORKER_PHASES = [
     "registered",
@@ -95,7 +177,68 @@ export const SERVICE_WORKER_PHASES = [
     "controllerChange",
 ] as const;
 
-export const PAGE_PHASES = ["boot", "visible", "hidden", "online", "offline"] as const;
+/** The page: its boot, visibility, network state, and the Page Lifecycle's `freeze` and `resume`. */
+export const PAGE_PHASES = ["boot", "visible", "hidden", "online", "offline", "freeze", "resume"] as const;
+
+/**
+ * Web Push, the server's side (`server/src/push/pushService.ts`), one event per subscription a
+ * completion was sent to: the push service took it (which is not that the phone showed it), refused it
+ * (`status` when it answered), or reported the subscription gone (404, 410: removed); or the server
+ * sent nothing (`dropped`, with its `reason`). `jobId` is diagnostic context passed beside the
+ * notification by `server/src/prompt/runner.ts`'s `notifyCompletion` to
+ * `server/src/push/pushService.ts`, never a field of the push payload.
+ */
+export const SERVER_PUSH_PHASES = ["accepted", "failed", "removed", "dropped"] as const;
+
+/**
+ * Web Push, the browser's side. The service worker's records (`public/sw.js`): a push arrived
+ * (`received`, stamped on arrival before the display queue), its notification was shown with the
+ * platform's defaults or with `silent`, closed because a window was still in front, could not be
+ * shown, or was clicked. The page's: its notification state (`browserState`: the permission, whether
+ * this browser holds a subscription, whether it runs as an installed app), the completion
+ * notifications it closed on becoming visible (`dismissedByPage`, with their `count`), and a
+ * completion push requesting a chat read no follow of this tab covers (`chatRefresh`, recorded by
+ * `src/ts/process/serverCommands.ts`'s `refreshChatAfterPush`). `received`, `shown`, `shownSilent`,
+ * and `showFailed` retain the display's `inFront` predicate (a window both focused and visible)
+ * and `focusedHidden` (some window focused but not visible); `closedInFront` has the second check's
+ * values. The arrival time of `received` precedes the lookup that fills its window-state fields.
+ */
+export const BROWSER_PUSH_PHASES = [
+    "received",
+    "shown",
+    "shownSilent",
+    "closedInFront",
+    "showFailed",
+    "clicked",
+    "browserState",
+    "dismissedByPage",
+    "chatRefresh",
+] as const;
+
+/**
+ * Why the server sent a completion to no one: it is shutting down, push is off (no VAPID keys), too many
+ * completions are waiting, no browser is subscribed, or the subscriptions file could not be read.
+ */
+export const PUSH_DROP_REASONS = ["closed", "noKeys", "queueFull", "noSubscriptions", "unreadable"] as const;
+
+/** The push service of a subscription, from its endpoint's host (never the endpoint). */
+export const PUSH_SERVICES = ["fcm", "apple", "mozilla", "windows", "other"] as const;
+
+/** The notification permission, or `unsupported` without the Notification API. */
+export const PUSH_PERMISSIONS = ["granted", "denied", "default", "unsupported"] as const;
+
+/**
+ * Content-free notices: `serverJobLost` means a follow gave up reaching the server; `serverJobEndedAway`
+ * means the chat was recovered after the follow treated the job as gone (unknown to the server or
+ * from another epoch). Recorded with their alerts by `reportEnd` and `recoverJobChat` in
+ * `src/ts/process/serverCommands.ts`. `resourceReloaded` is a reload notice from
+ * `src/ts/storage/resourceSync.svelte.ts`'s `showReloadedNotice`, only when the latched notice
+ * was not already on screen. `transformFailed` is recorded once by each `serverProcessScript` call
+ * whose `editdisplay` target fails (`src/ts/parser/transformClient.ts`); it leaves the text unprocessed.
+ * Its batch may show one failure toast. The event has no target id, so the collector may fold recent
+ * identical failure notices across different targets.
+ */
+export const NOTICES = ["serverJobLost", "serverJobEndedAway", "resourceReloaded", "transformFailed"] as const;
 
 /**
  * The boot cache (`src/ts/storage/bootCache.ts`): the boot fell back to the plain read, a cache write
@@ -254,19 +397,59 @@ export function isStackFrame(frame: unknown): frame is string {
  * Every route an `http` event may name: the server's registered templates (`app.routes`), the
  * service worker's `/sw/` routes the browser fetches, and `?` for any other. Literal templates come
  * before parameter ones, so `apiRouteTemplate` matches `/api/resources/revisions` before
- * `/api/resources/:kind`.
+ * `/api/resources/:kind`. The server (`server/src/app.ts`) records only answers of 400 and up or
+ * responses slower than its `HTTP_SLOW_MS`, naming the registered route template rather than a URL.
  */
 export const ROUTE_TEMPLATES = [
+    "/api/remote-commands",
+    "/api/remote-commands/:id",
+    "/api/remote-commands/:id/state",
+    "/api/remote-commands/:id/cancel",
+    "/api/remote-commands/:id/status",
     "/api/generations",
+    "/api/generations/cancel",
+    "/api/generations/completion-release",
+    "/api/generations/current",
+    "/api/generations/stop",
     "/api/generations/:id",
     "/api/generations/:id/memory-stop",
     "/api/generations/:id/drained",
+    "/api/generations/:id/handoff",
+    "/api/generations/:id/takeover",
     "/api/generations/*",
     "/api/transform",
     "/api/transform/continue",
     "/api/translate/message",
     "/api/memory/tasks",
     "/api/memory/tasks/:characterId/:chatId",
+    "/api/memory/structured/revisions",
+    "/api/memory/structured/health",
+    "/api/memory/structured/default-prompts",
+    "/api/memory/structured/:characterId/:chatId/package",
+    "/api/memory/structured/:characterId/:chatId/coverage",
+    "/api/memory/structured/:characterId/:chatId/story",
+    "/api/memory/structured/:characterId/:chatId/chapters",
+    "/api/memory/structured/:characterId/:chatId/chapters/cost",
+    "/api/memory/structured/:characterId/:chatId/chapters/remove",
+    "/api/memory/structured/:characterId/:chatId/find",
+    "/api/memory/structured/:characterId/:chatId/runs",
+    "/api/memory/structured/:characterId/:chatId/threads",
+    "/api/memory/structured/:characterId/:chatId/projection",
+    "/api/memory/structured/:characterId/:chatId/records/:kind/:id",
+    "/api/memory/structured/:characterId/:chatId/edits",
+    "/api/memory/structured/:characterId/:chatId/events/remove",
+    "/api/memory/structured/:characterId/:chatId/revert",
+    "/api/memory/structured/:characterId/:chatId/page-tools",
+    "/api/memory/structured/:characterId/:chatId/import",
+    "/api/memory/structured/:characterId/:chatId/inherit",
+    "/api/memory/structured/:characterId/:chatId/restore",
+    "/api/memory/structured/:characterId/:chatId/adopt",
+    "/api/memory/structured/:characterId/:chatId/decline",
+    "/api/memory/structured/:characterId/:chatId/reset-summaries",
+    "/api/memory/structured/:characterId/:chatId/cost",
+    "/api/memory/structured/:characterId/:chatId/clear",
+    "/api/memory/structured/:characterId/:chatId/rebuild/abandon",
+    "/api/memory/structured/:characterId/:chatId",
     "/api/push/key",
     "/api/push/subscription",
     "/api/llm/request",
@@ -289,6 +472,12 @@ export const ROUTE_TEMPLATES = [
     "/api/write",
     "/api/assets/write",
     "/api/assets/read",
+    "/api/assets/missing",
+    "/api/assets/report",
+    "/api/assets/status",
+    "/api/assets/scan",
+    "/api/assets/sweep",
+    "/api/assets/preview/*",
     "/api/asset/*",
     "/api/chats/search",
     "/api/chat-checkpoints",
@@ -297,6 +486,9 @@ export const ROUTE_TEMPLATES = [
     "/api/chat-checkpoints/rename",
     "/api/chat-checkpoints/delete",
     "/api/chat-checkpoints/load",
+    "/api/chat-trash/trash",
+    "/api/chat-trash/restore",
+    "/api/chat-trash/delete",
     "/api/resources",
     "/api/resources/read",
     "/api/resources/boot",
@@ -309,6 +501,8 @@ export const ROUTE_TEMPLATES = [
     "/api/backups",
     "/api/backups/export",
     "/api/backups/import",
+    "/api/backups/snapshot",
+    "/api/backups/:id",
     "/api/backups/import-upstream/prepare",
     "/api/backups/import-upstream/commit",
     "/api/backups/import-upstream/cancel",
@@ -397,6 +591,12 @@ export function diagnosticModel(modelId: string | null | undefined): string | nu
 }
 
 const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
+    remoteCommand: {
+        commandId: id,
+        command: oneOf(["send", "reload"]),
+        state: oneOf([...REMOTE_COMMAND_STATES, "forgotten"]),
+        bytes: count,
+    },
     http: {
         method: oneOf(HTTP_METHODS),
         route: (value) => typeof value === "string" && ROUTE_TEMPLATE_SET.has(value),
@@ -410,6 +610,12 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         jobKind: oneOf(GENERATION_KINDS),
         stage: oneOf(GENERATION_ERROR_STAGES),
         reason: oneOf(GENERATION_ERROR_REASONS),
+        /**
+         * An explicit chat stop by another client; the error end's reason remains `aborted`.
+         * `server/src/diagnostics/journal.ts` and `shared/diagnosticsReport.ts` retain this field;
+         * `isJobFailureEvent` excludes all user aborts from the journal's recent job failures.
+         */
+        stoppedBy: oneOf(["otherClient"]),
         status: httpStatus,
         requestId: id,
         providerCode: isProviderCode,
@@ -451,12 +657,14 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         code: closeCode,
     },
     sync: {
+        durationMs: count,
         phase: oneOf(SYNC_PHASES),
         reason: oneOf(SYNC_REASONS),
         records: count,
         chats: count,
         orders: count,
         generating: count,
+        entries: count,
     },
     serviceWorker: {
         phase: oneOf(SERVICE_WORKER_PHASES),
@@ -469,6 +677,22 @@ const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
         reason: oneOf(BOOT_CACHE_REASONS),
         records: count,
         items: count,
+    },
+    push: {
+        phase: oneOf([...SERVER_PUSH_PHASES, ...BROWSER_PUSH_PHASES]),
+        service: oneOf(PUSH_SERVICES),
+        jobId: uuid,
+        status: httpStatus,
+        reason: oneOf(PUSH_DROP_REASONS),
+        inFront: bool,
+        focusedHidden: bool,
+        permission: oneOf(PUSH_PERMISSIONS),
+        subscribed: bool,
+        standalone: bool,
+        count,
+    },
+    notice: {
+        notice: oneOf(NOTICES),
     },
 };
 
@@ -499,7 +723,7 @@ export function projectDiagnosticEvent(input: unknown): DiagnosticEvent | null {
     return event;
 }
 
-/** A job's failure: an `error` end other than its owner's abort. */
+/** A job's failure: an `error` end excluding every user abort, including a stop by another client. */
 export function isJobFailureEvent(event: DiagnosticEvent): boolean {
     return event.kind === "job" && event.phase === "error" && event.reason !== "aborted";
 }
@@ -533,19 +757,53 @@ const BROWSER_KINDS: ReadonlySet<string> = new Set([
     "serviceWorker",
     "page",
     "bootCache",
+    "push",
+    "notice",
 ]);
 const BROWSER_RUNTIME_ORIGINS: ReadonlySet<unknown> = new Set(["error", "unhandledrejection"]);
-const SERVER_KINDS: ReadonlySet<string> = new Set(["http", "job", "request", "runtime", "lifecycle"]);
+const SERVER_KINDS: ReadonlySet<string> = new Set([
+    "http",
+    "job",
+    "request",
+    "runtime",
+    "lifecycle",
+    "push",
+    "remoteCommand",
+]);
+
+/** A `push` event's phases and fields of each side; the other side's fields are dropped. */
+const PUSH_SIDES = {
+    server: { phases: new Set<unknown>(SERVER_PUSH_PHASES), fields: ["service", "jobId", "status", "reason"] },
+    browser: {
+        phases: new Set<unknown>(BROWSER_PUSH_PHASES),
+        fields: ["inFront", "focusedHidden", "permission", "subscribed", "standalone", "count"],
+    },
+};
+
+/** `event` (a projected `push`) as `side` writes it: null for the other side's phase (or none), else without the other side's fields. */
+function pushOfSide(event: DiagnosticEvent, side: "server" | "browser"): DiagnosticEvent | null {
+    if (!PUSH_SIDES[side].phases.has(event.phase)) {
+        return null;
+    }
+    for (const field of PUSH_SIDES[side === "server" ? "browser" : "server"].fields) {
+        delete event[field];
+    }
+    return event;
+}
 
 /**
  * The browser's projection: `projectDiagnosticEvent`, then only the browser's kinds and runtime
- * origins, without a server-only field (a `runtime` event's `jobId`). The collector records and
- * restores with it; the report reads the browser's events with it.
+ * origins, without a server-only field (a `runtime` event's `jobId`), and a `push` only of the
+ * browser's phases, without the server's fields. The collector records and restores with it; the
+ * report reads the browser's events (the service worker's records included) with it.
  */
 export function projectBrowserEvent(input: unknown): DiagnosticEvent | null {
     const event = projectDiagnosticEvent(input);
     if (!event || !BROWSER_KINDS.has(event.kind)) {
         return null;
+    }
+    if (event.kind === "push") {
+        return pushOfSide(event, "browser");
     }
     if (event.kind === "runtime") {
         if (!BROWSER_RUNTIME_ORIGINS.has(event.origin)) {
@@ -556,11 +814,17 @@ export function projectBrowserEvent(input: unknown): DiagnosticEvent | null {
     return event;
 }
 
-/** The server's projection: `projectDiagnosticEvent`, then only the server's kinds and runtime origins. */
+/**
+ * The server's projection: `projectDiagnosticEvent`, then only the server's kinds and runtime origins,
+ * and a `push` only of the server's phases, without the browser's fields.
+ */
 export function projectServerEvent(input: unknown): DiagnosticEvent | null {
     const event = projectDiagnosticEvent(input);
     if (!event || !SERVER_KINDS.has(event.kind)) {
         return null;
+    }
+    if (event.kind === "push") {
+        return pushOfSide(event, "server");
     }
     if (event.kind === "runtime" && BROWSER_RUNTIME_ORIGINS.has(event.origin)) {
         return null;
@@ -576,7 +840,11 @@ export function projectServerEvent(input: unknown): DiagnosticEvent | null {
 export type DiagnosticsState = {
     version: 1;
     writtenAt: string;
-    app: { version: string | null };
+    /**
+     * `build` is the server's build id (`shared/buildInfo.ts` `formatBuildId`), null when unknown.
+     * Optional: a state from before this field existed (a report an older tab built) has none.
+     */
+    app: { version: string | null; build?: string | null };
     node: string;
     platform: string;
     arch: string;
@@ -584,7 +852,11 @@ export type DiagnosticsState = {
     uptimeSec: number;
     settings: { requestHistoryContent: boolean | null; requestHistoryLimit: number | null } | null;
     history: { rows: number | null; bytes: number | null } | null;
-    journal: { eventBytes: number; writeFailures: number };
+    /**
+     * `dropped` counts the event lines the queue cap refused. Optional: a state from before this field
+     * existed (a report an older tab built) has none.
+     */
+    journal: { eventBytes: number; writeFailures: number; dropped?: number };
     /**
      * The copies the folder's `shared/` holds, null when it could not be read. Optional: a state
      * from before this field existed (a report an older tab built) has none.

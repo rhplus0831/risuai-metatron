@@ -20,7 +20,7 @@ import {
     wrapperFieldStamp,
 } from "../records.svelte";
 
-// The save loop's field-text stamps (`characterFieldStamp`, `docs/structure/persistence.md` save step 2),
+// The save loop's field-text stamps (`characterFieldStamp`, `docs/structure/resource-sync.md` "Serialization"),
 // checked on the records module alone: a write through a wrapper under a top-level field changes that
 // field's stamp and no other, on every write path (set, delete, defineProperty, each array mutator,
 // `replaceRecordList`, `moveRecordListItem`, batched writes); the raw paths change them too

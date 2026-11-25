@@ -1,5 +1,14 @@
 import type { SerializableSummary } from "../../../../shared/memory.ts";
 
+/**
+ * The HypaV3 modal's view state, shared by the modal and its children. A summary index here
+ * (`summaryIndex`, `requestedSearchFromIndex`, `currentSummaryIndex`, `selectedSummaries`,
+ * `collapsedSummaries`) is a position in
+ * the modal's copy of `hypaV3Data.summaries`, valid only until the copy changes; a state that must
+ * outlive an await keeps the summary itself (`BulkResummaryTarget`). The other indices count search
+ * results, a summary's covered messages, or its tags.
+ */
+
 export interface SummaryItemState {
     originalRef: HTMLTextAreaElement;
     translationRef: HTMLTextAreaElement;
@@ -9,7 +18,7 @@ export interface SummaryItemState {
 
 export interface ExpandedMessageState {
     summaryIndex: number;
-    selectedChatMemo: string;
+    selectedChatMemo: string | null;
     isTranslating: boolean;
     translation: string | null;
     translationRef: HTMLTextAreaElement;
@@ -56,7 +65,7 @@ export interface BulkResummaryState {
     chatKey: string | null;
     /** In index order. Resolved again in the current copy before every use (`resolveBulkTargets`). */
     targets: BulkResummaryTarget[];
-    mergedChatMemos: string[];
+    mergedChatMemos: (string | null)[];
     isTranslating: boolean;
     translation: string | null;
 }

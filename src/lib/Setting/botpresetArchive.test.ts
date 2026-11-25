@@ -31,7 +31,7 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn(), globalFetch: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { normalizeModelPreset, normalizeModelProfile, plainClone } from "../../../shared/presets.ts";
 import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
@@ -327,8 +327,8 @@ describe("the list with a chat bound to an archived preset", () => {
         selectCharacter(null);
     });
 
-    it("archiving the chat's preset leaves the binding and the tab's selection; the mark follows the preset into the archived view", () => {
-        const list = render("prompt");
+    it("archiving the chat's preset leaves the binding and the tab's selection; a list opened for the chat marks it into the archived view", () => {
+        const list = render("prompt", refK);
         expect(list.selectedNames()).toEqual(["2 Prompt Three"]);
         list.archiveControl("Prompt Three").click();
         flushSync();

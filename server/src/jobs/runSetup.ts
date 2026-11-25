@@ -1,12 +1,5 @@
 import type { CbsUsage } from "../../../shared/cbs/limits.ts";
-import {
-    type GenerationErrorStage,
-    type GenerationFollowUp,
-    MAX_FOLLOW_UP_PART_CHARS,
-    MAX_FOLLOW_UP_PARTS,
-    type MemoryGapChoice,
-    type MemoryTaskService,
-} from "../../../shared/jobs.ts";
+import type { GenerationErrorStage, MemoryGapChoice, MemoryTaskService, SkippedHook } from "../../../shared/jobs.ts";
 import type { character, Chat } from "../../../shared/database.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { createScriptCache } from "../../../shared/scripts/regex.ts";
@@ -18,6 +11,7 @@ import type { LlmRequests } from "../llm/requests.ts";
 import { createLuaBindings, type LuaBindings, LuaJobFatalError, type LuaWorkingCopy } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import type { EmbeddingsService } from "../prompt/embeddings.ts";
+import type { MemoryVectorWarmer } from "../prompt/memory/memoryTasks.ts";
 import type { HypaV3SeparatorLimits } from "../prompt/memory/host.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
@@ -34,13 +28,28 @@ import { jobModules, type ServerCbsTimeLimits } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { flushChatMetadata, type JobScope, refreshCharacter, refreshChat, scopeChat } from "./jobScope.ts";
+import {
+    flushChatMetadata,
+    type JobScope,
+    refreshCharacter,
+    refreshChat,
+    scopeHistoryChat,
+    scopeHistoryMessages,
+} from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import type { PushService } from "../push/pushService.ts";
+import type { CompletionHolds } from "../push/completionHolds.ts";
 import type { TranslationRunner } from "../translation/runner.ts";
 
+/**
+ * Job-scoped script services shared by `server/src/jobs/commandRunner.ts` and
+ * `server/src/prompt/runner.ts`. Lua and native triggers share the job's bindings, budget, fatal latch
+ * and effect count. Pending metadata is flushed before snapshots, writes and callback barriers.
+ */
+
+/** Process services injected into each job; credentials stay in the request projection, never the tab's mirror. */
 export type GenerationRunnerDeps = {
     store: ResourceStore;
     kinds: ResourceKindRegistry;
@@ -62,20 +71,23 @@ export type GenerationRunnerDeps = {
     /** The translation runner a send hands its messages to. */
     translations?: Pick<TranslationRunner, "handOff">;
     /**
-     * The detached memory task service a send hands its chat's HypaV3 input to. Without it, HypaV3
-     * summarizes inside the job (blocking) for every job kind: no select-only send, gap question,
-     * initial run, or hand-off.
+     * The detached memory task service a send hands its chat's HypaV3 summary or Structured Memory
+     * writer input to when work is due or a manual start waits. Without it, HypaV3 summarizes inside
+     * every job (blocking); a send's Structured Memory step selects stored records with no hand-off or
+     * gap question (Record now runs the writer inside its job).
      */
-    memoryTasks?: MemoryTaskService;
+    memoryTasks?: MemoryTaskService & Partial<MemoryVectorWarmer>;
     /** Web Push for chat completions; without it only the tab is notified. */
     push?: Pick<PushService, "send">;
+    /** Holds requested Web Push completions until release or the deadline after the job ends. */
+    completionHolds?: Pick<CompletionHolds, "hold">;
     /** The diagnostics journal (its caught faults). */
     diagnostics?: DiagnosticsRecorder;
     /** The trigger effect loop's monotonic clock for its yield (default `performance.now`; tests freeze or step it). */
     effectClock?: () => number;
-    /** HypaV3's summary separator limits (`MemoryHost.separatorLimits`; default the production ones, tests lengthen them). */
+    /** HypaV3's summary separator limits (MemoryHost.separatorLimits); tests lengthen the production defaults. */
     hypaV3SeparatorLimits?: HypaV3SeparatorLimits;
-    /** The CBS wall times of every job, render, and run (`serverCbsLimits`; default the production ones, tests lengthen them). */
+    /** The CBS wall times of every job, render and run (serverCbsLimits); tests lengthen the production defaults. */
     cbsTimeLimits?: ServerCbsTimeLimits;
 };
 
@@ -102,9 +114,10 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
 }
 
 /**
- * What every run of one job shares, whatever its speaker: one aggregate Lua budget, its CBS
- * evaluation time, the effect count of its native triggers, the fatal abort (the first fatal host failure stops the run in progress at
- * once: the Lua hook raises, so a script that catches it cannot go on writing), and the regex
+ * What one send or command shares across its speakers and scripts: one aggregate Lua budget, its CBS
+ * evaluation time, the effect count of its native triggers, the fatal abort (the first fatal host
+ * failure stops the run in progress at once: the Lua hook raises, so a script that catches it cannot
+ * go on writing), and the regex
  * scripts' cache.
  */
 export type JobRunState = {
@@ -116,12 +129,17 @@ export type JobRunState = {
      */
     memoryTrim?: "memory" | "trim";
     /**
-     * The HypaV3 gap question's outcome for the job (asked at most once a job): the user's choice
+     * The memory gap question's outcome for the job (asked at most once a job): the user's choice
      * (a dismissed, timed-out, or disconnected question is `continue`), serving every later speaker
      * and round, or `stopped` once the owner stopped an initial summarization run (later speakers
      * and rounds select only).
      */
     memoryGap?: MemoryGapChoice | "stopped";
+    /**
+     * Structured Memory's writer already ran for an approved gap: a `generate` answer serves every
+     * later speaker and round, but only the first of them records.
+     */
+    memoryGapRecorded?: boolean;
     /** The CBS evaluation time of the job, across its runs (`serverCbsLimits`). */
     cbsUsage: CbsUsage;
     effects: { count: number };
@@ -129,23 +147,25 @@ export type JobRunState = {
     runSignal: AbortSignal;
     /** The regex scripts' result cache of the job (the client keeps one per tab). */
     scriptCache: ReturnType<typeof createScriptCache>;
-    /** The dynamic-asset matches of the job (the client's `bestMatchCache`, one per tab). */
+    /** The dynamic-asset matches of the job (the client's former `bestMatchCache`, one per tab). */
     assetMatches: Map<string, string>;
     /**
      * The emotions shown last per character (the tab's `CharEmotion` names when the job was created,
      * `context.client.emotions`, plus every emotion the job showed since), oldest first.
      */
     emotions: Map<string, string[]>;
-    /** The `/multisend` commands a command job ran: its tab sends their parts after the job. */
-    followUps: GenerationFollowUp[];
     /** The auto-continue and resend rounds the job has run (at most `MAX_SEND_ROUNDS`). */
     rounds: { count: number; noticed?: boolean };
     /** The job's MCP tool sets and the tool calls its models asked for. */
     tools: JobToolState;
     /**
-     * Where the send runner is: the stage a failure that names none gets (`runPromptJob`).
+     * Where the send runner is: the stage a failure that names none gets (`runPromptSend`).
      */
     stage: GenerationErrorStage;
+    /** The reply hooks skipped for want of an owner tab, in order (`done.skipped`). */
+    skippedHooks: SkippedHook[];
+    /** Delivered reply listeners that disconnected and cannot be replayed. */
+    missedHooks: Extract<SkippedHook, { name: "chatOutput" }>[];
 };
 
 /**
@@ -198,10 +218,11 @@ export function createJobRunState(job: RunningJob, budget: LuaBudget = createLua
         scriptCache: createScriptCache(),
         assetMatches: new Map(),
         emotions: new Map(Object.entries(job.context.client?.emotions ?? {}).map(([id, names]) => [id, [...names]])),
-        followUps: [],
         rounds: { count: 0 },
         tools: createJobToolState(),
         stage: "setup",
+        skippedHooks: [],
+        missedHooks: [],
     };
 }
 
@@ -232,14 +253,16 @@ export type RunSetup = {
     runTrigger(char: character, mode: TriggerMode, arg: TriggerArg): Promise<TriggerResult | null | undefined>;
     /**
      * `captureChatBaseline`, `runTrigger(char, mode, { chat })`, and `applyChatResult` on the chat as
-     * stored now; the result (or undefined when the chat is gone or the trigger returned nothing).
+     * stored now (the history view during assembly); a removed reroll carrier returns noReply;
+     * no character or module triggers returns null without copying;
+     * the result (or undefined when the chat is gone or the trigger returned nothing).
      */
     runOnCopy(
         char: character,
         mode: TriggerMode,
         arg?: Omit<TriggerArg, "chat">,
         options?: { generation?: OwnedGeneration },
-    ): Promise<TriggerResult | null | undefined>;
+    ): Promise<(TriggerResult & { noReply?: true }) | null | undefined>;
     /** Raises a latched fatal failure and fences the run. */
     check(): void;
 };
@@ -251,6 +274,7 @@ export function moduleTriggers(scope: JobScope): triggerscript[] {
     );
 }
 
+/** Binds Lua, native triggers and commands to the job's chat. */
 export function createRunSetup(
     job: RunningJob,
     deps: GenerationRunnerDeps,
@@ -279,6 +303,7 @@ export function createRunSetup(
         ...(deps.mcp ? { mcp: { registry: deps.mcp, state: state.tools } } : {}),
         lock: deps.lock,
         onFatal: (error) => state.fatalAbort.abort(error),
+        skipped: state.skippedHooks,
         ...(options.frozen ? { frozen: true } : {}),
         ...(deps.cbsTimeLimits ? { cbsTimeLimits: deps.cbsTimeLimits } : {}),
     });
@@ -346,11 +371,25 @@ export function createRunSetup(
         if (!refreshChat(store, scope)) {
             return undefined;
         }
-        const baseline = { chat: structuredClone(scopeChat(scope)!) as Chat, revision: scope.chatRevision };
+        if (!runtime.hasTriggers(char)) {
+            return null;
+        }
+        const baseline = { chat: structuredClone(scopeHistoryChat(scope)!) as Chat, revision: scope.chatRevision };
+        let noReply = false;
+        const syncChat = (chat: Chat): Chat => {
+            const outcome = applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, chat, options);
+            noReply ||= !!outcome?.noReply;
+            if (refreshChat(store, scope)) {
+                // Later reconciliation starts here, so edits already committed cannot replay over a command.
+                baseline.chat = structuredClone(scopeHistoryChat(scope)!) as Chat;
+                baseline.revision = scope.chatRevision;
+            }
+            return structuredClone(baseline.chat);
+        };
         let result: TriggerResult | null | undefined;
         let threw = false;
         try {
-            result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat }));
+            result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat, syncChat }));
         } catch (error) {
             threw = true;
             throw error;
@@ -367,7 +406,8 @@ export function createRunSetup(
         }
         services.fence(nativeCtx);
         if (result) {
-            applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);
+            const outcome = applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);
+            if (noReply || outcome?.noReply) return { ...result, noReply: true };
         }
         return result;
     };
@@ -386,25 +426,8 @@ export function createRunSetup(
         services,
         ctx: nativeCtx,
         character: storedCharacter,
+        historyMessages: (chat) => scopeHistoryMessages(scope, chat),
         runManualTrigger: runManual,
-        multisend: (clear, parts) => {
-            // In the tab `/multisend` does nothing while a send runs; a send job is that send.
-            if (job.kind !== "command") {
-                return;
-            }
-            const queued = state.followUps.reduce((count, entry) => count + entry.parts.length, 0);
-            if (
-                queued + parts.length > MAX_FOLLOW_UP_PARTS ||
-                parts.some((part) => part.length > MAX_FOLLOW_UP_PART_CHARS)
-            ) {
-                services.notice({
-                    kind: "alertError",
-                    payload: { message: "/multisend: too many or too long parts for one command" },
-                });
-                return;
-            }
-            state.followUps.push({ clear, parts: [...parts] });
-        },
     });
     const runtime = createTriggerRuntime({
         services,
@@ -414,8 +437,8 @@ export function createRunSetup(
         runLua: async (code, options) => {
             const outcome = await runLua(code, options);
             if (outcome.error) {
-                // A failure inside the handler is the script's own (logged, as `runScripted` catches
-                // it); a load failure, a spent budget, or a pool failure ends the job.
+                // A failure inside the handler is the script's own (logged, as the client's former
+                // `runScripted` caught it); a load failure, a spent budget, or a pool failure ends the job.
                 if (outcome.error.failedAt !== "dispatch" || outcome.error.timedOut) {
                     throw new GenerationRunnerError(500, `Lua: ${outcome.error.message}`, { stage: "script" });
                 }
@@ -427,13 +450,13 @@ export function createRunSetup(
         templateDefaultVariables: scope.db.templateDefaultVariables,
         selectedPersonaPrompt: scope.db.personaPrompt ?? "",
         effectivePersonaId: scope.effectivePersona.id ?? null,
-        runCommand: (line) => executor.processMultiCommand(line),
+        runCommand: (line, lowLevelAccess) => executor.processMultiCommand(line, lowLevelAccess),
         effects: state.effects,
         ...(deps.effectClock ? { now: deps.effectClock } : {}),
     });
 
     // `requestChatData`'s `request` trigger: the chat owner's (none for a group), in display mode on
-    // the chat as it is now, before every attempt; an invalid result keeps the messages.
+    // the chat as it is now, before every attempt; absent display data keeps the messages unchanged.
     bindings.setRequestTrigger(async (formated: OpenAIChat[]) => {
         const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
         if (!owner || owner.type === "group" || !services.chatExists()) {
@@ -456,7 +479,10 @@ export function createRunSetup(
             throw error;
         }
         services.fence(nativeCtx);
-        const got = JSON.parse(result?.displayData ?? "null");
+        if (result?.displayData === undefined) {
+            return formated;
+        }
+        const got = JSON.parse(result.displayData);
         if (!got || !Array.isArray(got)) {
             throw new Error("Invalid return");
         }

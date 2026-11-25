@@ -24,7 +24,13 @@ export const holdMockedChats = (characters: MockedCharacter[], fields: Record<st
     assembleChats(
         characters,
         characters.flatMap((char) =>
-            char.chats.map((chat) => ({ characterId: char.chaId, id: chat.id!, revision: "r1", data: chat })),
+            char.chats.map((chat) => ({
+                characterId: char.chaId,
+                id: chat.id!,
+                revision: "r1",
+                trashedAt: null,
+                data: chat,
+            })),
         ),
         characters.map((char) => ({
             characterId: char.chaId,

@@ -68,6 +68,22 @@
     --color-success-800: var(--risu-theme-success-800);
     --color-success-900: var(--risu-theme-success-900);
 
+    --color-warning-50: var(--risu-theme-warning-50);
+    --color-warning-100: var(--risu-theme-warning-100);
+    --color-warning-200: var(--risu-theme-warning-200);
+    --color-warning-300: var(--risu-theme-warning-300);
+    --color-warning-400: var(--risu-theme-warning-400);
+    --color-warning-500: var(--risu-theme-warning-500);
+    --color-warning-600: var(--risu-theme-warning-600);
+    --color-warning-700: var(--risu-theme-warning-700);
+    --color-warning-800: var(--risu-theme-warning-800);
+    --color-warning-900: var(--risu-theme-warning-900);
+
+    /* The context meter's lorebook, character, and memory colors are fixed for every theme. */
+    --color-meter-lore: var(--risu-theme-meter-lore);
+    --color-meter-character: var(--risu-theme-meter-character);
+    --color-meter-memory: var(--risu-theme-meter-memory);
+
     --min-width-2: 0.5rem;
     --min-width-5: 1.25rem;
     --min-width-6: 1.5rem;
@@ -237,6 +253,21 @@ body {
     --risu-theme-success-700: #15803d;
     --risu-theme-success-800: #166534;
     --risu-theme-success-900: #14532d;
+
+    --risu-theme-warning-50: #fffbeb;
+    --risu-theme-warning-100: #fef3c7;
+    --risu-theme-warning-200: #fde68a;
+    --risu-theme-warning-300: #fcd34d;
+    --risu-theme-warning-400: #fbbf24;
+    --risu-theme-warning-500: #f59e0b;
+    --risu-theme-warning-600: #d97706;
+    --risu-theme-warning-700: #b45309;
+    --risu-theme-warning-800: #92400e;
+    --risu-theme-warning-900: #78350f;
+
+    --risu-theme-meter-lore: #b98206;
+    --risu-theme-meter-character: #0d9488;
+    --risu-theme-meter-memory: #e11ed2;
 }
 
 .x-risu-language-json {
@@ -561,14 +592,6 @@ body {
     flex-shrink: 0;
 }
 
-.chat-message-container .dyna-icon {
-    display: none;
-}
-
-.chat-message-container:first-of-type .dyna-icon {
-    display: block;
-}
-
 .default-chat-screen.metatron-chat-theme .chat-message-container {
     border-top: 1px solid #222222;
 }
@@ -627,7 +650,8 @@ annotation {
     WebKit (Safari, iOS browsers) draws native <select> with a fixed-height
     menulist that ignores our padding, so the selected text gets clipped.
     Drop the native appearance and draw the chevron ourselves in currentColor
-    so it follows the active color scheme.
+    so it follows the active color scheme. The rule is unlayered, so its right
+    padding for the chevron overrides Tailwind's `px-*`/`pr-*` utilities.
 */
 .risu-select {
     -webkit-appearance: none;
@@ -655,6 +679,18 @@ annotation {
 .chat-message-container.chat-row-pending,
 .risu-chat.chat-row-pending {
     visibility: hidden;
+}
+
+/* Out of the layout until rendered and the reader stops scrolling (`Chats.svelte`). */
+.chat-message-container.chat-row-held {
+    display: none;
+}
+
+/* Height kept while the reader scrolls (`Chats.svelte`): growth overflows at the top, where it goes at rest. */
+.chat-message-container.chat-row-locked {
+    overflow-x: visible;
+    overflow-y: clip;
+    align-content: unsafe end;
 }
 
 /* Near rows stay uncontained so fixed overlays and overflowing highlights keep their viewport. */

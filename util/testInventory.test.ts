@@ -55,7 +55,7 @@ const CLEAN: Record<string, string> = {
     "shared/codec.ts": `export const codec = 1;\n`,
     "util/tool.test.ts": `it("tool", () => {});\n`,
     "e2e/flow.spec.ts": `test("flow", async () => {});\n`,
-    "docs/structure/build-test-platforms.md": table([
+    "docs/structure/test-harness.md": table([
         "`whole.test.ts` (the whole file)",
         '`limits.test.ts` "ends a runaway loop at the real effect limit, ..." and "loads every tokenizer family cold"',
     ]),
@@ -117,7 +117,7 @@ describe("checkInventory", () => {
         const problems = checkInventory(
             tree({
                 ...CLEAN,
-                "docs/structure/build-test-platforms.md": table([
+                "docs/structure/test-harness.md": table([
                     "`whole.test.ts` (the whole file)",
                     '`limits.test.ts` "ends a runaway loop at the real effect limit, ..." and "loads every tokenizer family cold"',
                     '`limits.test.ts` "is fast"',
@@ -236,7 +236,7 @@ describe("slow tags", () => {
                 tree({
                     ...CLEAN,
                     "server/src/tests/limits.test.ts": limits,
-                    "docs/structure/build-test-platforms.md": docs,
+                    "docs/structure/test-harness.md": docs,
                 }),
             ),
         ).toEqual([]);
@@ -252,7 +252,7 @@ describe("slow tags", () => {
                 tree({
                     ...CLEAN,
                     "server/src/tests/opaque.test.ts": opaque,
-                    "docs/structure/build-test-platforms.md": docs,
+                    "docs/structure/test-harness.md": docs,
                 }),
             ),
         ).toEqual([
@@ -283,7 +283,7 @@ describe("slow tags", () => {
                 tree({
                     ...CLEAN,
                     "server/src/tests/limits.test.ts": limits,
-                    "docs/structure/build-test-platforms.md": docs,
+                    "docs/structure/test-harness.md": docs,
                 }),
             ),
         ).toEqual([]);

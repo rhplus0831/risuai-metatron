@@ -1,6 +1,23 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import ts from "typescript";
 import { SandboxHost } from "./factory";
+import { controlCollection } from "./tests/controlledCollection";
+
+const guestGlobals = new Map(
+    ["HTMLIFrameElement", "window", "ImageBitmap", "FinalizationRegistry", "WeakRef"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
+);
+function restoreGuestGlobals(names: string[]) {
+    for (const name of names) {
+        const descriptor = guestGlobals.get(name);
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+    }
+}
 
 // The guest half of the sandbox RPC (`GUEST_BRIDGE_SCRIPT`) as the iframe runs it: taken from the
 // srcdoc `SandboxHost.run` writes, then evaluated over a fake window. Node's own `ReadableStream`,
@@ -8,28 +25,27 @@ import { SandboxHost } from "./factory";
 // main one (the bridge, then the plugin's code, reporting `SCRIPT_SETTLED` once both settled) and a
 // fallback that reports it when the main one never ran (a syntax error).
 
+class FakeIframe {
+    style = {};
+    sandbox = { add() {} };
+    contentWindow: Window | null = null;
+    srcdoc = "";
+    setAttribute() {}
+    remove() {}
+}
+
 function guestScripts(userCode = ""): { main: string; fallback: string } {
-    let html = "";
-    class FakeIframe {
-        style = {};
-        sandbox = { add() {} };
-        contentWindow = null;
-        setAttribute() {}
-        remove() {}
-        set srcdoc(value: string) {
-            html = value;
-        }
-    }
+    const iframe = new FakeIframe();
     vi.stubGlobal("HTMLIFrameElement", FakeIframe);
     vi.stubGlobal("window", { addEventListener() {}, removeEventListener() {} });
     try {
         const host = new SandboxHost({});
-        host.run(new FakeIframe() as unknown as HTMLIFrameElement, userCode);
+        host.run(iframe as unknown as HTMLIFrameElement, userCode);
         host.terminate();
     } finally {
-        vi.unstubAllGlobals();
+        restoreGuestGlobals(["HTMLIFrameElement", "window"]);
     }
-    const scripts = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    const scripts = [...iframe.srcdoc.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map((match) => match[1]);
     if (scripts.length !== 2) throw new Error(`expected two guest scripts in the srcdoc, found ${scripts.length}`);
     return { main: scripts[0], fallback: scripts[1] };
 }
@@ -37,6 +53,7 @@ function guestScripts(userCode = ""): { main: string; fallback: string } {
 type HostMessage = {
     type: string;
     reqId: string;
+    ids?: string[];
     method?: string;
     args?: unknown[];
     result?: unknown;
@@ -114,6 +131,31 @@ async function startGuest(userCode = "", options: { throws?: boolean } = {}) {
     return { risuai: guestWindow.risuai, calls, posts, deliver, window: guestWindow };
 }
 
+/** Connects both real RPC halves over in-memory windows, including structured cloning. */
+function connectHost(guest: Awaited<ReturnType<typeof startGuest>>, api: Record<string, unknown>) {
+    const host = new SandboxHost(api);
+    let receiveOnHost!: (event: MessageEvent) => void;
+    vi.stubGlobal("window", {
+        addEventListener(_type: string, listener: typeof receiveOnHost) {
+            receiveOnHost = listener;
+        },
+        removeEventListener() {},
+    });
+    vi.stubGlobal("HTMLIFrameElement", FakeIframe);
+    const iframe = new FakeIframe();
+    iframe.contentWindow = guest.window as unknown as Window;
+    // Simulate the two window endpoints, including postMessage's structured clone.
+    guest.window.postMessage = (message: unknown, _origin: string, ports: MessagePort[] = []) =>
+        guest.deliver(structuredClone(message), ports);
+    const postToHost = guest.window.parent.postMessage;
+    guest.window.parent.postMessage = (message: unknown, origin: string, ports: MessagePort[] = []) => {
+        postToHost(message, origin, ports);
+        receiveOnHost({ data: structuredClone(message), ports, source: guest.window } as unknown as MessageEvent);
+    };
+    host.run(iframe as unknown as HTMLIFrameElement, "");
+    return host;
+}
+
 /** Register through the guest API, then invoke the callback with the host's wire-format signals. */
 async function invokeProvider(
     guest: Awaited<ReturnType<typeof startGuest>>,
@@ -147,12 +189,292 @@ function pullFromGuest(port: MessagePort) {
     return next;
 }
 
+function stubFinalizationRegistry() {
+    const registrations: { target: object; heldValue: string }[] = [];
+    let cleanup!: (id: string) => void;
+    vi.stubGlobal(
+        "FinalizationRegistry",
+        class {
+            constructor(callback: typeof cleanup) {
+                cleanup = callback;
+            }
+            register(target: object, heldValue: string) {
+                registrations.push({ target, heldValue });
+            }
+        },
+    );
+    return { registrations, finalize: (id: string) => cleanup(id) };
+}
+
+async function remoteResult(guest: Awaited<ReturnType<typeof startGuest>>, pending: Promise<any>, id: string) {
+    const call = guest.calls.at(-1)!;
+    await guest.deliver({ type: "RESPONSE", reqId: call.reqId, result: { __type: "REMOTE_REF", id } });
+    return pending;
+}
+
 const settledReports = (calls: HostMessage[]) => calls.filter((call) => call.type === "SCRIPT_SETTLED");
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+    restoreGuestGlobals([...guestGlobals.keys()]);
+});
+
+describe("the guest bridge's remote instance lifetime", () => {
+    it("registers result and callback proxies for finalization with only their ref ids", async () => {
+        const registry = stubFinalizationRegistry();
+        const guest = await startGuest();
+        const root = await remoteResult(guest, guest.risuai.getRootDocument(), "document");
+        const element = await remoteResult(guest, root.createElement("div"), "element");
+        let records: unknown;
+        const registering = guest.risuai.createMutationObserver((value: unknown) => {
+            records = value;
+        });
+        const registration = guest.calls.at(-1)!;
+        const callback = registration.args![0] as { id: string };
+        await guest.deliver({ type: "RESPONSE", reqId: registration.reqId });
+        await registering;
+        await guest.deliver({
+            type: "INVOKE_CALLBACK",
+            reqId: "mutation-callback",
+            id: callback.id,
+            args: [{ __type: "REMOTE_REF", id: "records" }],
+        });
+
+        expect(registry.registrations.map(({ heldValue }) => heldValue)).toEqual(["document", "element", "records"]);
+        for (const [index, proxy] of [root, element, records].entries()) {
+            expect(registry.registrations[index].target).toBe(proxy);
+        }
+    });
+
+    it("batches finalized refs once per microtask burst without releasing an id again", async () => {
+        const registry = stubFinalizationRegistry();
+        const guest = await startGuest();
+        const ids = ["first", "second", "third", "later"];
+        for (const id of ids) await remoteResult(guest, guest.risuai.getRootDocument(), id);
+        const releases = () => guest.calls.filter((message) => message.type === "RELEASE_INSTANCE");
+
+        // Simulate each registered proxy being finalized once; no real garbage collection is involved.
+        for (const id of ids.slice(0, 3)) registry.finalize(id);
+        expect(releases()).toEqual([]);
+        await Promise.resolve();
+        expect(releases()).toEqual([{ type: "RELEASE_INSTANCE", ids: expect.arrayContaining(ids.slice(0, 3)) }]);
+        expect(releases()[0].ids).toHaveLength(3);
+
+        registry.finalize(ids[3]);
+        expect(releases()).toHaveLength(1);
+        await Promise.resolve();
+        expect(releases()).toEqual([
+            { type: "RELEASE_INSTANCE", ids: expect.arrayContaining(ids.slice(0, 3)) },
+            { type: "RELEASE_INSTANCE", ids: ["later"] },
+        ]);
+        expect(
+            releases()
+                .flatMap(({ ids }) => ids)
+                .sort(),
+        ).toEqual([...ids].sort());
+    });
+});
+
+describe("the guest bridge's callback lifetime", () => {
+    async function register(guest: Awaited<ReturnType<typeof startGuest>>, callback: () => unknown) {
+        const registering = guest.risuai.keep(callback);
+        const call = guest.calls.at(-1)!;
+        await guest.deliver({ type: "RESPONSE", reqId: call.reqId });
+        await registering;
+        return call.args![0] as { __type: "CALLBACK_REF"; id: string; sendCount: number };
+    }
+
+    it("answers a finalized host wrapper's callback invocation with the unknown-callback error", async () => {
+        const guest = await startGuest();
+        const collection = controlCollection();
+        let wrapper!: () => Promise<unknown>;
+        const host = connectHost(guest, {
+            keep: (fn: typeof wrapper) => {
+                wrapper = fn;
+            },
+        });
+        try {
+            const callback = vi.fn(() => "before release");
+            await guest.risuai.keep(callback);
+            const ref = guest.calls.find((call) => call.method === "keep")!.args![0] as { id: string };
+            await expect(wrapper()).resolves.toBe("before release");
+            collection.collect(wrapper)();
+
+            await guest.deliver({ type: "INVOKE_CALLBACK", id: ref.id, reqId: "released" });
+            expect(guest.calls.at(-1)).toEqual({
+                type: "CALLBACK_RETURN",
+                reqId: "released",
+                error: "Callback not found or released",
+            });
+            expect(callback).toHaveBeenCalledTimes(1);
+        } finally {
+            host.terminate();
+        }
+    });
+
+    it("keeps a callback callable when a release predates its latest send", async () => {
+        const guest = await startGuest();
+        const callback = () => "sent again";
+        const first = await register(guest, callback);
+        await register(guest, callback);
+        await guest.deliver({ type: "RELEASE_CALLBACK", id: first.id, sendCount: first.sendCount });
+
+        await guest.deliver({ type: "INVOKE_CALLBACK", id: first.id, reqId: "resent" });
+        expect(guest.calls.at(-1)).toEqual({ type: "CALLBACK_RETURN", reqId: "resent", result: "sent again" });
+    });
+
+    it("re-registers a held callback with the same id and a higher count after release", async () => {
+        const guest = await startGuest();
+        const callback = () => "registered again";
+        const first = await register(guest, callback);
+        await guest.deliver({ type: "RELEASE_CALLBACK", id: first.id, sendCount: first.sendCount });
+        const second = await register(guest, callback);
+        expect(second).toEqual({ ...first, sendCount: first.sendCount + 1 });
+
+        await guest.deliver({ type: "INVOKE_CALLBACK", id: second.id, reqId: "restored" });
+        expect(guest.calls.at(-1)).toEqual({ type: "CALLBACK_RETURN", reqId: "restored", result: "registered again" });
+    });
+});
+
+describe("the guest bridge's data copies", () => {
+    it("passes remote callback arguments as proxies whose host method calls resolve", async () => {
+        const guest = await startGuest();
+        const registering = guest.risuai.createMutationObserver(async (records: { length(): Promise<number> }) =>
+            records.length(),
+        );
+        const registration = guest.calls.at(-1)!;
+        const callback = registration.args![0] as { __type: string; id: string };
+        expect(callback.__type).toBe("CALLBACK_REF");
+        await guest.deliver({ type: "RESPONSE", reqId: registration.reqId });
+        await registering;
+
+        const invoking = guest.deliver({
+            type: "INVOKE_CALLBACK",
+            reqId: "mutation-callback",
+            id: callback.id,
+            args: [{ __type: "REMOTE_REF", id: "mutation-records" }],
+        });
+        const call = guest.calls.at(-1)!;
+        expect(call).toMatchObject({
+            type: "CALL_INSTANCE",
+            id: "mutation-records",
+            method: "length",
+            args: [],
+        });
+        await guest.deliver({ type: "RESPONSE", reqId: call.reqId, result: 1 });
+        await invoking;
+        expect(guest.calls.find((message) => message.type === "CALLBACK_RETURN")).toEqual({
+            type: "CALLBACK_RETURN",
+            reqId: "mutation-callback",
+            result: 1,
+        });
+    });
+
+    it("type-checks the declared legacy calls and awaits remote createElement instances across the guest bridge", async () => {
+        const declaration = path.resolve(import.meta.dirname, "risuai.d.ts");
+        const virtualFile = path.resolve(import.meta.dirname, "guest-api-contract.ts");
+        const source = `async function pluginCalls() {
+            const buffered: { ok: boolean; data: unknown; headers: Record<string, string>; status: number } =
+                await risuai.risuFetch('https://example.test', { method: 'POST', body: { text: 'hello' },
+                    headers: { Accept: 'application/json' }, abortSignal: new AbortController().signal,
+                    requestTimeoutMs: 100, networkRoute: 'local_network', plainFetchForce: true,
+                    plainFetchDeforce: false, rawResponse: false, useRisuToken: true, chatId: 'chat', interceptor: 'plugin' });
+            const panel: UIPartResponse = await risuai.setChatPanel('<p>panel</p>', { id: 'panel', className: 'panel' });
+            await risuai.setChatPanel(null);
+            await risuai.saveSecretHeader('key', 'value');
+            await risuai.saveSecretHeader('key', ['value']);
+            // @ts-expect-error The runtime accepts only key and value.
+            await risuai.saveSecretHeader('key', 'Bearer', 'value');
+            const root = await risuai.getRootDocument();
+            const pending: Promise<SafeElement> = root.createElement('div');
+            const element: SafeElement = await pending;
+            await element.setAttribute('title', String(buffered.status));
+        }`;
+        const options: ts.CompilerOptions = {
+            noEmit: true,
+            skipLibCheck: true,
+            strict: true,
+            target: ts.ScriptTarget.ES2023,
+            lib: ["lib.es2023.d.ts", "lib.dom.d.ts"],
+            types: [],
+        };
+        const compilerHost = ts.createCompilerHost(options);
+        const originalGetSourceFile = compilerHost.getSourceFile.bind(compilerHost);
+        compilerHost.getSourceFile = (file, languageVersion, onError, shouldCreateNewSourceFile) =>
+            file === virtualFile
+                ? ts.createSourceFile(file, source, ts.ScriptTarget.ES2023, true)
+                : originalGetSourceFile(file, languageVersion, onError, shouldCreateNewSourceFile);
+        const program = ts.createProgram([declaration, virtualFile], options, compilerHost);
+        expect(
+            ts
+                .getPreEmitDiagnostics(program)
+                .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")),
+        ).toEqual([]);
+
+        const guest = await startGuest();
+        const gettingRoot = guest.risuai.getRootDocument();
+        const rootCall = guest.calls.at(-1)!;
+        await guest.deliver({
+            type: "RESPONSE",
+            reqId: rootCall.reqId,
+            result: { __type: "REMOTE_REF", id: "document" },
+        });
+        const root = await gettingRoot;
+        const creating = root.createElement("div");
+        expect(creating).toBeInstanceOf(Promise);
+        const createCall = guest.calls.at(-1)!;
+        expect(createCall).toMatchObject({
+            type: "CALL_INSTANCE",
+            id: "document",
+            method: "createElement",
+            args: ["div"],
+        });
+        await guest.deliver({
+            type: "RESPONSE",
+            reqId: createCall.reqId,
+            result: { __type: "REMOTE_REF", id: "element" },
+        });
+        const element = await creating;
+        const setting = element.setAttribute("title", "created asynchronously");
+        const setCall = guest.calls.at(-1)!;
+        expect(setCall).toMatchObject({
+            type: "CALL_INSTANCE",
+            id: "element",
+            method: "setAttribute",
+            args: ["title", "created asynchronously"],
+        });
+        await guest.deliver({ type: "RESPONSE", reqId: setCall.reqId });
+        await setting;
+    });
+
+    it("preserves an own __proto__ data property in host results and guest callback returns", async () => {
+        const guest = await startGuest();
+        const data = () => JSON.parse('{"__proto__":{"stored":"plugin data"}}');
+        let returnedOnHost: unknown;
+        const host = connectHost(guest, {
+            getStoredValue: data,
+            async receiveCallback(callback: () => Promise<unknown>) {
+                returnedOnHost = await callback();
+            },
+        });
+        try {
+            const receivedInGuest = await guest.risuai.getStoredValue();
+            await guest.risuai.receiveCallback(data);
+            for (const [receiver, value] of [
+                ["guest", receivedInGuest],
+                ["host", returnedOnHost],
+            ] as const) {
+                expect.soft(Object.hasOwn(value, "__proto__"), receiver).toBe(true);
+                expect.soft(Object.getOwnPropertyDescriptor(value, "__proto__"), receiver).toMatchObject({
+                    value: { stored: "plugin data" },
+                });
+                expect.soft(Object.getPrototypeOf(value), receiver).toBe(Object.prototype);
+            }
+        } finally {
+            host.terminate();
+        }
+    });
 });
 
 describe("the guest bridge's message sources", () => {

@@ -15,7 +15,7 @@ const hoisted = vi.hoisted(() => ({
         fetch: null as
             null | ((path: string, init: RequestInit, options?: { beforeDispatch?: () => void }) => Promise<Response>),
     },
-    flush: { run: null as null | (() => Promise<{ discarded: string[] }>) },
+    flush: { run: null as null | (() => Promise<{ discarded: string[]; refused: string[] }>) },
     alerts: { error: vi.fn(), normal: vi.fn() },
 }));
 
@@ -24,15 +24,11 @@ vi.mock("../storage/serverAuth", () => ({
         hoisted.auth.fetch!(path, init, options),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
-vi.mock("../storage/resourceSync.svelte", () => {
-    class GenerationBlockedError extends Error {
-        constructor() {
-            super("A character is still being generated; try again when it finishes");
-            this.name = "GenerationBlockedError";
-        }
-    }
-    return { flushResources: () => hoisted.flush.run!(), GenerationBlockedError };
-});
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: () => hoisted.flush.run!(),
+    }),
+);
 vi.mock("../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: hoisted.alerts.error,
@@ -46,7 +42,7 @@ vi.mock("../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 
 import { language } from "src/lang";
 
@@ -122,7 +118,7 @@ async function boot(options: { translation?: MessageTranslation; persona?: boole
             { role: "user", data: "B", chatId: "b" },
         ],
     } as unknown as Chat;
-    const listed = [{ characterId: "c", id: "k", revision: rev(1), data }];
+    const listed = [{ characterId: "c", id: "k", revision: rev(1), trashedAt: null, data }];
     const orders = [{ characterId: "c", revision: rev(1), ids: ["k"] }];
     chat.seedChats(listed, orders);
     chat.assembleChats(characterStore.characterList() as never, listed, orders);
@@ -188,7 +184,7 @@ beforeEach(() => {
     fetchCalls.length = 0;
     hoisted.alerts.error.mockReset();
     hoisted.alerts.normal.mockReset();
-    hoisted.flush.run = async () => ({ discarded: [] });
+    hoisted.flush.run = async () => ({ discarded: [], refused: [] });
     hoisted.auth.fetch = async () => {
         throw new Error("no transport scripted");
     };
@@ -198,10 +194,37 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+describe("heldMessage", () => {
+    it("shares the position index and returns the current row after insertion, replacement and removal", async () => {
+        const { chat, stored } = await boot();
+        const before = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toMatchObject({ chatId: "a", data: "A" });
+        expect(stored.heldMessage(ref, "b")).toMatchObject({ chatId: "b", data: "B" });
+        expect(chat.messagePositionStats().builds).toBe(before.builds + 1);
+
+        chat.appendMessage(ref, { role: "user", chatId: "x", data: "Inserted" }, { anchor: { start: true } });
+        const inserted = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toMatchObject({ chatId: "a", data: "A" });
+        expect(chat.messagePositionOf(ref, "a")).toBe(1);
+        expect(chat.messagePositionStats().builds).toBe(inserted.builds + 1);
+
+        chat.replaceMessage(ref, { role: "char", chatId: "a", data: "Replacement" });
+        const replaced = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toMatchObject({ chatId: "a", data: "Replacement" });
+        expect(chat.messagePositionStats().builds).toBe(replaced.builds + 1);
+
+        chat.removeMessagesUnasked(ref, ["a"]);
+        const removed = chat.messagePositionStats();
+        expect(stored.heldMessage(ref, "a")).toBeUndefined();
+        expect(stored.heldMessage(ref, "b")).toMatchObject({ chatId: "b", data: "B" });
+        expect(chat.messagePositionStats().builds).toBe(removed.builds + 1);
+    });
+});
+
 describe("requestStoredTranslation: before the request", () => {
     it("stops with translationNoContext when the chat has no complete display context, saving and sending nothing", async () => {
         const { stored } = await boot({ persona: false });
-        const flush = vi.fn(async () => ({ discarded: [] }));
+        const flush = vi.fn(async () => ({ discarded: [], refused: [] }));
         hoisted.flush.run = flush;
         await expect(stored.requestStoredTranslation(ref, "a", { force: false })).resolves.toBe(false);
         expect(hoisted.alerts.error).toHaveBeenCalledTimes(1);
@@ -218,9 +241,9 @@ describe("requestStoredTranslation: before the request", () => {
         expect(fetchCalls).toEqual([]);
     });
 
-    it("saves every pending change first: a blocked save alerts chatGenerating, a failed one its message, a discard of this chat or a text changed meanwhile translationSourceChanged, a display id changed meanwhile the binding mismatch; nothing is sent", async () => {
+    it("saves every pending change first: a blocked save alerts chatGenerating, a failed one its message, a discard of this chat or a text changed meanwhile translationSourceChanged, a still-refused draft of this chat or its order refusedDraft, a display id changed meanwhile the binding mismatch; nothing is sent", async () => {
         const { stored, sync, chat, selection } = await boot();
-        const run = async (flush: () => Promise<{ discarded: string[] }>) => {
+        const run = async (flush: () => Promise<{ discarded: string[]; refused: string[] }>) => {
             hoisted.alerts.error.mockReset();
             hoisted.flush.run = flush;
             const result = await stored.requestStoredTranslation(ref, "a", { force: false });
@@ -239,19 +262,35 @@ describe("requestStoredTranslation: before the request", () => {
                 throw new Error("disk full");
             }),
         ).toBe(`${language.translationFailed}: disk full`);
-        expect(await run(async () => ({ discarded: ["chats/c/k"] }))).toBe(language.translationSourceChanged);
+        expect(await run(async () => ({ discarded: ["chats/c/k"], refused: [] }))).toBe(
+            language.translationSourceChanged,
+        );
         // The chat edited while the save ran (an unrelated discard does not matter by itself).
         expect(
             await run(async () => {
                 chat.setMessageText(ref, "a", "A edited");
-                return { discarded: ["chats/c/other"] };
+                return { discarded: ["chats/c/other"], refused: [] };
+            }),
+        ).toBe(language.translationSourceChanged);
+        chat.setMessageText(ref, "a", "A");
+        // A draft an earlier save left refused (the chat's, or its character's chat order) is held
+        // only in this tab: the server would translate its older copy. An unrelated refusal does
+        // not matter by itself.
+        expect(await run(async () => ({ discarded: [], refused: ["chats/c/k"] }))).toBe(
+            language.serverJob.refusedDraft,
+        );
+        expect(await run(async () => ({ discarded: [], refused: ["chats/c"] }))).toBe(language.serverJob.refusedDraft);
+        expect(
+            await run(async () => {
+                chat.setMessageText(ref, "a", "A edited");
+                return { discarded: [], refused: ["chats/c/other", "chats/d"] };
             }),
         ).toBe(language.translationSourceChanged);
         chat.setMessageText(ref, "a", "A");
         expect(
             await run(async () => {
                 selection.selectPersona("u2");
-                return { discarded: [] };
+                return { discarded: [], refused: [] };
             }),
         ).toBe(language.chatBinding.mismatch);
         expect(fetchCalls).toEqual([]);
@@ -440,7 +479,7 @@ describe("following a server hand-off", () => {
         // The sync poll (100 ms) and its 15 s Date.now deadline run on fake time.
         vi.useFakeTimers();
         const { stored, held, hydrate } = await boot();
-        const flush = vi.fn(async () => ({ discarded: [] }));
+        const flush = vi.fn(async () => ({ discarded: [], refused: [] }));
         hoisted.flush.run = flush;
         const answers = new Map<string, ReturnType<typeof deferred<Response>>>();
         answerWith(async (call) => {

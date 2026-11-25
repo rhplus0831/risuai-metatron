@@ -2,6 +2,15 @@ import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { HypaProcesser } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
+/**
+ * Hanurai memory on the server (`db.hanuraiEnable`, ahead of HypaV2 and HypaV3 in
+ * `server/src/prompt/assemble.ts`), on the job's `MemoryHost` (`host.ts`): the oldest chats are dropped
+ * to leave `hanuraiTokens` of room, which a `supaMemory` card fills with the earlier chats' texts
+ * (paragraphs with `hanuraiSplit`) most similar to the last few chats, through the job's embeddings.
+ * It keeps no memory of its own: nothing is returned to write, and the chat's memory fields stay as
+ * they are.
+ */
+
 const maxRecentChatQuery = 4;
 const searchDocumentPrefix = "search_document: ";
 const prefixLength = searchDocumentPrefix.length;

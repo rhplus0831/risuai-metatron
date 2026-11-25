@@ -13,6 +13,11 @@
         PromptItemChat,
     } from "src/ts/process/prompt.ts";
 
+    /**
+     * Diff saved presets' prompt templates by their list positions; preferences persist in
+     * `settings.ui.promptDiffPrefs` through `src/ts/storage/settingsViews.svelte.ts`.
+     */
+
     interface Props {
         firstPresetId: number;
         secondPresetId: number;

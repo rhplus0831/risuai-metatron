@@ -3,6 +3,12 @@ import { chatDisplayIds } from "../../storage/chatBinding.svelte";
 import { chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
 
 /**
+ * Hook targeting across the iframe RPC boundary. Runners hand context over synchronously through
+ * `invokeHook`; `src/ts/plugins/apiV3/v3.svelte.ts` owns a separate stack for each loaded API instance.
+ * Host functions capture that instance's context before awaiting; unrelated instances never inherit it.
+ */
+
+/**
  * The call context of a plugin hook: the chat a hook runs for and its prompt preset, model preset,
  * and persona when its runner started: the chat's binding, or a job callback's targets. A chat whose
  * binding is not complete gets its display ids (each bound id that exists, else the tab's); a send or
@@ -20,6 +26,8 @@ import { chatOwnerToken, type ChatRef } from "../../storage/chatStore.svelte";
  * correlation id in the sandbox RPC (a transport change).
  */
 export interface PluginCallContext {
+    /** Tab-side transform continuations cannot write durable data through the host API. */
+    readonly purpose?: "transform";
     readonly chatRef: ChatRef;
     /** The prompt preset. */
     readonly presetId: string;
@@ -42,7 +50,12 @@ export interface PluginCallContext {
     readonly channelCall?: { readonly jobId: string; readonly callbackId: string };
 }
 
-/** A hook's chat, character, or preset no longer exists; the host call is refused rather than redirected to the tab's selection. */
+/**
+ * A required hook target is gone: character/chat checks and scoped parsing refuse rather than
+ * redirect to selection. The plugin API's scoped parses via `src/ts/parser/parser.svelte.ts:risuChatParserScoped`
+ * check both presets and the persona before evaluating. Database access checks only the presets its
+ * keys need; `src/ts/process/request/request.ts` returns a failed request for a missing captured preset.
+ */
 export class PluginTargetGoneError extends Error {
     constructor(target: string) {
         super(`The ${target} this plugin hook runs for no longer exists`);
@@ -118,4 +131,12 @@ export function enterContext(owner: object, context: PluginCallContext): () => v
 export function currentContext(owner: object): PluginCallContext | undefined {
     const stack = stacks.get(owner);
     return stack?.[stack.length - 1]?.context;
+}
+
+/**
+ * A writable hook can overlap a transform on this instance and become the innermost context.
+ * Refuse durable writes while ANY transform is active; exact attribution needs an RPC call id.
+ */
+export function hasReadOnlyContext(owner: object): boolean {
+    return stacks.get(owner)?.some((entry) => entry.context.purpose === "transform") ?? false;
 }

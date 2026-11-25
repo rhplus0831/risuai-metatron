@@ -1,11 +1,12 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { settleFlush } from "./flushRetry";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
-// Per `docs/structure/persistence.md` (save loop steps 2, 3, 5, and 9), a held character or
-// `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch is
+// Per `docs/structure/resource-sync.md` ("Serialization", "Record patches", "Record merge") and `docs/structure/live-updates.md` ("Live updates"),
+// a held character or `modules` record is saved as a record patch (`updateOperation`), another tab's `modules` patch is
 // applied from the change feed without a read (`applyModulesPatch`), under the real boot, the real
 // save loop, the real mutation modules, and the real server store with its normalizers and change
 // feed (`storeBackedServer.ts`; every commit is handed to `noteRemoteChanges` as the live-update
@@ -25,7 +26,9 @@ const { server, alerts, bodies } = vi.hoisted(() => ({
 }));
 
 vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => {
+    // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
+    authFetch: (path: string, init?: RequestInit, options: { beforeDispatch?: () => void } = {}) => {
+        options.beforeDispatch?.();
         if (typeof init?.body === "string") {
             bodies.push(init.body);
         }
@@ -53,7 +56,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 const KINDS = Object.values(RESOURCE_KIND);
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
@@ -197,7 +200,7 @@ async function boot(prepare?: (fake: StoreBackedServer) => void) {
         const before = { batches: fake.batchCount(), all: fake.requests.length };
         await vi.advanceTimersByTimeAsync(5000);
         expect({ batches: fake.batchCount(), all: fake.requests.length }, "nothing follows").toEqual(before);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount(), "a flush sends nothing more").toBe(before.batches);
     };
     const noNotice = () => {
@@ -243,7 +246,7 @@ beforeAll(() => warmMutationGraph(), 60_000);
 beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", { reload: vi.fn(), protocol: "http:", host: "test" });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -661,6 +664,23 @@ describe("what a save sends", () => {
 });
 
 describe("lost acknowledgements", () => {
+    it("clears the unconfirmed save as soon as a matching feed patch arrives without a later edit", async () => {
+        const { fake, sync, live, flushFeed, character, reads } = await boot();
+        live.paused = true;
+        fake.dropNextBatchResponse = true;
+        character("c").name = "saved with a lost answer";
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        expect(sync.unconfirmedSave.state).toBe(true);
+
+        flushFeed();
+        expect(sync.unconfirmedSave.state).toBe(false);
+        await expect(settleFlush(flushing)).resolves.toEqual({ discarded: [], refused: [] });
+        expect(fake.batchCount()).toBe(1);
+        expect(reads()).toBe(0);
+    });
+
     it("recognizes a lost acknowledgement of a character patch on the retry's 409 by JSON value (the server keeps its key order): no reload, no notice", async () => {
         const { fake, sync, live, character, record, revision, ops, agree, noNotice } = await boot();
         const element = character("c");
@@ -673,12 +693,14 @@ describe("lost acknowledgements", () => {
         delete element.desc;
         element.desc = desc;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the flush waits out its backoff before the retry.
+        await vi.advanceTimersByTimeAsync(0);
         expect(ops()).toEqual([expect.objectContaining({ patch: { set: { name: "lost" }, remove: [] } })]);
         expect(record("characters", "c").name).toBe("lost");
         expect(Object.keys(record("characters", "c")).at(-1)).not.toBe("desc");
         // The retry: a stale base (409), read back, recognized as this tab's own write.
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.heldRecordRevision("characters", "c")).toBe(revision("characters", "c"));
         expect(element.name).toBe("lost");
@@ -694,9 +716,13 @@ describe("lost acknowledgements", () => {
         const element = character("c");
         fake.dropNextBatchResponse = true;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the typing lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         element.personality = "typed while the answer was lost";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(record("characters", "c")).toMatchObject({
             name: "lost",
             personality: "typed while the answer was lost",
@@ -718,13 +744,15 @@ describe("lost acknowledgements", () => {
             { extra: 1, id: "m2", name: "m2" },
             plain(settings.modules[2]),
         ]);
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the flush waits out its backoff before the retry.
+        await vi.advanceTimersByTimeAsync(0);
         expect(ops()).toEqual([
             expect.objectContaining({ patch: { items: [], changes: [{ id: "m2", set: { extra: 1 }, remove: [] }] } }),
         ]);
         expect(Object.keys(record("modules")[1])).toEqual(["id", "name", "extra"]);
         expect(Object.keys(plain(settings.modules[1]))).toEqual(["extra", "id", "name"]);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.heldRecordRevision("modules", "main")).toBe(revision("modules"));
         agree("modules");
@@ -740,12 +768,14 @@ describe("lost acknowledgements", () => {
         fake.dropNextBatchResponse = true;
         element.name = "lost";
         // The echo arrives with the commit, while the batch is in flight: it waits for the cycle.
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         const landed = revision("characters", "c");
         expect(landed).not.toBe(base);
         element.name = "typed after the lost answer";
-        // (The retry backoff runs on the real clock: the flush runs the cycle now.)
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(ops()).toEqual([
             expect.objectContaining({ baseRevision: base, patch: { set: { name: "lost" }, remove: [] } }),
             expect.objectContaining({
@@ -766,10 +796,14 @@ describe("lost acknowledgements", () => {
         const saved = element.name;
         fake.dropNextBatchResponse = true;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the revert lands after the echo, while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         const landed = revision("characters", "c");
         element.name = saved;
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(2);
         expect(ops().at(-1)).toEqual(
             expect.objectContaining({ baseRevision: landed, patch: { set: { name: saved }, remove: [] } }),
@@ -785,13 +819,17 @@ describe("lost acknowledgements", () => {
         live.paused = true;
         fake.dropNextBatchResponse = true;
         element.name = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the revert and then the echo arrive while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         element.name = saved;
         // The echo arrives after the revert (the mirror equals the saved text again).
         live.paused = false;
         flushFeed();
         expect(element.name).toBe(saved);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(element.name).toBe(saved);
         expect(record("characters", "c").name).toBe(saved);
         agree("characters", "c");
@@ -918,14 +956,14 @@ describe("modules item patches another tab committed", () => {
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
-    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (a changed item still conflicts)", async () => {
+    it("leaves a patch alone while this tab has an unsent module edit; the save then conflicts and reloads with the notice (an item both tabs changed conflicts)", async () => {
         const { fake, sync, settings, changed, record, reads, patchModules, agree } = await boot();
-        settings.modules[2].name = "mine";
+        settings.modules[1].name = "mine";
         await tick();
         const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
-        expect(plain(settings.modules[1]).name).toBe("m2");
+        expect(plain(settings.modules[1]).name).toBe("mine");
         expect(changed).toEqual([]);
-        expect(await sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3"]);
         expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3"]);
@@ -937,7 +975,7 @@ describe("modules item patches another tab committed", () => {
         // The waiting patch (held base, the conflict's revision) rebuilt the server's record: no read.
         expect(reads()).toBe(0);
     });
-    // `mergeItemAdds` (persistence.md Save step 5): an item this tab added goes over another tab's
+    // `mergeItemCollection` (`resource-sync.md` "Record merge"): an item this tab added goes over another tab's
     // list; the feed patch still waits behind the unsent add, and the conflict's recovery rebuilds the
     // server's record from it and merges.
     it("rebases an unsent module add over another tab's rename of a different module: both changes kept, the retry on the server's revision, no discard, no notice, no read, no echo; the added module is then patched like any other", async () => {
@@ -963,7 +1001,7 @@ describe("modules item patches another tab committed", () => {
         // The patch waits: this tab has an unsent change of the record.
         expect(plain(settings.modules[1]).name).toBe("m2");
         expect(changed).toEqual([]);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
         expect(record("modules").map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
         expect(record("modules")[0].additionalAssets).toHaveLength(LARGE);
@@ -1027,7 +1065,7 @@ describe("modules item patches another tab committed", () => {
         collectionStore.addModule(module("m4", { lorebook: [] }));
         await tick();
         const patched = patchModules({ changes: [{ id: "m2", set: { name: "theirs" } }] });
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         // No waiting patch: the conflict read the record back, then merged the same way.
         expect(reads()).toBe(1);
         expect(settings.modules.map((entry: any) => entry.name)).toEqual(["m1", "theirs", "m3", "m4"]);
@@ -1089,6 +1127,185 @@ describe("modules item patches another tab committed", () => {
 // General record patches. Expectations describe the wire contract, not a diff helper.
 const idKinds = ["presets", "modelPresets", "modelProfiles", "personas", "credentials", "plugins"] as const;
 describe("patches of the other mirrored records", () => {
+    it.each(["_pluginStorage", "_safeLocalPluginStorage"])(
+        "saves one changed or removed entry of %s as a nested patch",
+        async (dictionary) => {
+            const keep = "unchanged".repeat(100);
+            const initial = { custom: "kept", [dictionary]: { keep, value: { enabled: false, option: 1 } } };
+            const h = await boot((fake) => fake.set("pluginStorage", "main", initial));
+            const base = h.revision("pluginStorage");
+            const value = { enabled: true, option: 1 };
+            (h.records.trackedRecord("pluginStorage") as any)[dictionary].value.enabled = true;
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            expect(h.ops()).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    baseRevision: base,
+                    patch: { set: {}, remove: [], nested: { [dictionary]: { set: { value }, remove: [] } } },
+                },
+            ]);
+            expect(h.record("pluginStorage")).toEqual({ custom: "kept", [dictionary]: { keep, value } });
+            h.agree("pluginStorage");
+
+            h.fake.requests.length = 0;
+            const saved = h.revision("pluginStorage");
+            delete (h.records.trackedRecord("pluginStorage") as any)[dictionary].value;
+            await h.sync.flushResources();
+            expect(h.ops()).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    baseRevision: saved,
+                    patch: { set: {}, remove: [], nested: { [dictionary]: { set: {}, remove: ["value"] } } },
+                },
+            ]);
+            expect(h.record("pluginStorage")).toEqual({ custom: "kept", [dictionary]: { keep } });
+            await h.settle();
+            h.agree("pluginStorage");
+            h.noNotice();
+        },
+    );
+
+    it("sends a reserved dictionary as a top-level field when its shape, prototype entry, or key order needs replacement", async () => {
+        const h = await boot();
+        const keep = "unchanged".repeat(100);
+        const cases: { label: string; before: unknown; after: unknown }[] = [
+            { label: "array to dictionary", before: [1], after: { value: 2 } },
+            { label: "string to dictionary", before: "old", after: { value: 2 } },
+            { label: "absent to dictionary", before: undefined, after: { value: 2 } },
+            { label: "dictionary to array", before: { value: 1 }, after: [2] },
+            { label: "dictionary to string", before: { value: 1 }, after: "new" },
+            {
+                label: "changed own prototype entry",
+                before: JSON.parse('{"__proto__":{"value":1},"keep":true}'),
+                after: JSON.parse('{"__proto__":{"value":2},"keep":true}'),
+            },
+            { label: "retained keys reordered", before: { a: 1, b: 2 }, after: { b: 3, a: 1 } },
+        ];
+        for (const { label, before, after } of cases) {
+            h.fake.set("pluginStorage", "main", {
+                keep,
+                ...(before === undefined ? {} : { _pluginStorage: before }),
+            });
+            await h.settle();
+            h.fake.requests.length = 0;
+            const base = h.revision("pluginStorage");
+            h.records.replaceRecord("pluginStorage", { keep, _pluginStorage: after });
+            expect(await h.sync.flushResources(), label).toEqual({ discarded: [], refused: [] });
+            expect(h.ops(), label).toEqual([
+                {
+                    kind: "pluginStorage",
+                    id: "main",
+                    baseRevision: base,
+                    patch: { set: { _pluginStorage: after }, remove: [] },
+                },
+            ]);
+            expect(JSON.stringify(h.record("pluginStorage")), label).toBe(
+                JSON.stringify({ keep, _pluginStorage: after }),
+            );
+            h.agree("pluginStorage");
+        }
+        h.noNotice();
+    });
+
+    it("toggles plugins without ids by name and uses names for a changed order", async () => {
+        const initial = [
+            { name: "first", enabled: true, script: "first script".repeat(100) },
+            { name: "second", enabled: false, script: "second script".repeat(100) },
+        ];
+        const h = await boot((fake) => fake.set("plugins", "main", initial));
+        const base = h.revision("plugins");
+        (h.records.trackedRecord("plugins") as any)[1].enabled = true;
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(h.ops()).toEqual([
+            {
+                kind: "plugins",
+                id: "main",
+                baseRevision: base,
+                patch: { itemKey: "name", items: [], changes: [{ id: "second", set: { enabled: true }, remove: [] }] },
+            },
+        ]);
+        const enabled = { ...initial[1], enabled: true };
+        expect(h.record("plugins")).toEqual([initial[0], enabled]);
+        h.agree("plugins");
+
+        h.fake.requests.length = 0;
+        const saved = h.revision("plugins");
+        h.records.replaceRecord("plugins", [enabled, initial[0]]);
+        await h.sync.flushResources();
+        expect(h.ops()).toEqual([
+            {
+                kind: "plugins",
+                id: "main",
+                baseRevision: saved,
+                patch: { itemKey: "name", items: [], changes: [], order: ["second", "first"] },
+            },
+        ]);
+        expect(h.record("plugins")).toEqual([enabled, initial[0]]);
+        await h.settle();
+        h.agree("plugins");
+        h.noNotice();
+    });
+
+    it("sends plugins without ids whole when a name is duplicate or empty", async () => {
+        const h = await boot();
+        for (const names of [
+            ["same", "same"],
+            ["", "second"],
+        ]) {
+            const initial = names.map((name) => ({ name, enabled: false, script: "unchanged script".repeat(100) }));
+            h.fake.set("plugins", "main", initial);
+            await h.settle();
+            h.fake.requests.length = 0;
+            const base = h.revision("plugins");
+            (h.records.trackedRecord("plugins") as any)[1].enabled = true;
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            const expected = [initial[0], { ...initial[1], enabled: true }];
+            expect(h.ops()).toEqual([{ kind: "plugins", id: "main", baseRevision: base, data: expected }]);
+            expect(h.record("plugins")).toEqual(expected);
+            h.agree("plugins");
+        }
+        h.noNotice();
+    });
+
+    it("merges different keys from two tabs in one reserved dictionary after a nested patch conflicts", async () => {
+        const keep = "unchanged".repeat(100);
+        const h = await boot((fake) =>
+            fake.set("pluginStorage", "main", { _pluginStorage: { keep, local: 1, remote: 1 } }),
+        );
+        h.live.paused = true;
+        const base = h.revision("pluginStorage");
+        (h.records.trackedRecord("pluginStorage") as any)._pluginStorage.local = 2;
+        const remote = h.fake.store.applyChanges({
+            ops: [
+                {
+                    kind: h.fake.kind("pluginStorage"),
+                    id: "main",
+                    baseRevision: base,
+                    patch: { nested: { _pluginStorage: { set: { remote: 3 } } } },
+                },
+            ],
+        }).results[0].revision;
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(h.ops()).toEqual(
+            [base, remote].map((baseRevision) => ({
+                kind: "pluginStorage",
+                id: "main",
+                baseRevision,
+                patch: { set: {}, remove: [], nested: { _pluginStorage: { set: { local: 2 }, remove: [] } } },
+            })),
+        );
+        expect(h.record("pluginStorage")).toEqual({ _pluginStorage: { keep, local: 2, remote: 3 } });
+        h.agree("pluginStorage");
+        h.live.paused = false;
+        h.flushFeed();
+        await h.settle();
+        expect(h.fake.batchCount()).toBe(2);
+        h.agree("pluginStorage");
+        h.noNotice();
+    });
+
     it.each(idKinds)("saves and receives %s item patches, including membership and selection changes", async (kind) => {
         const h = await boot((fake) =>
             fake.set(
@@ -1378,13 +1595,13 @@ describe("patches of the other mirrored records", () => {
                     expect(h.sync.applyHydration({ kind, id, ...row })).toBe(false);
                 }
             };
-            // An unrelated character stamp merges, and statistics add both tabs' deltas.
+            // A remote change of a character field this tab did not edit merges, and statistics add both tabs' deltas.
             h.character().desc = "local";
             (h.records.trackedRecord("statics") as any).messages = 6;
             publish("characters", "c", { set: { lastInteraction: 123 } });
             publish("statics", "main", { set: { messages: 7 } });
             expect(h.character().lastInteraction).not.toBe(123);
-            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             expect(h.record("characters", "c")).toMatchObject({ desc: "local", lastInteraction: 123 });
             expect(h.record("statics")).toEqual({ messages: 9, imports: 0 });
             expect(h.reads()).toBe(0);
@@ -1393,7 +1610,7 @@ describe("patches of the other mirrored records", () => {
             h.settings.modules[1].name = "mine";
             publish("modules", "main", { changes: [{ id: "m2", set: { name: "theirs" } }] });
             expect(h.settings.modules[1].name).toBe("mine");
-            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
             expect(h.settings.modules[1].name).toBe("theirs");
             expect(alerts.normal).toHaveBeenCalledWith("reloaded");
             expect(h.reads()).toBe(0);
@@ -1401,13 +1618,16 @@ describe("patches of the other mirrored records", () => {
             // A lost acknowledgement is recognized from an exact copy of what this tab sent.
             h.settings.modules[1].name = "ack lost";
             h.fake.dropNextBatchResponse = true;
-            await expect(h.sync.flushResources()).rejects.toThrow("Failed to fetch");
+            const flushing = h.sync.flushResources();
+            // The copy arrives while the flush waits out its backoff after the lost answer.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(h.fake.dropNextBatchResponse).toBe(false);
             if (delivery === "feed") h.flushFeed();
             else {
                 const row = h.fake.record("modules", "main")!;
                 h.sync.applyHydration({ kind: "modules", id: "main", ...row });
             }
-            expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+            expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
             expect(h.record("modules")[1].name).toBe("ack lost");
             expect(h.reads()).toBe(0);
             expect(alerts.normal).not.toHaveBeenCalled();
@@ -1444,7 +1664,7 @@ describe("patches of the other mirrored records", () => {
                     chatOrders: [],
                 });
             } else h.patchModules({ changes: [{ id: "m2", set: { name: "latest remote" } }] });
-            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"] });
+            expect(await h.sync.flushResources()).toEqual({ discarded: ["modules/main"], refused: [] });
             expect(h.reads()).toBe(1);
             expect(h.settings.modules[1].name).toBe(mode === "wrong base" ? "first remote" : "latest remote");
             expect(h.sync.heldRecordRevision("modules", "main")).toBe(h.revision("modules"));

@@ -90,20 +90,19 @@ vi.mock("../serverAuth", () => ({
     getNodeServerProxyAuth: async () => "signed-token",
 }));
 
-vi.mock("../assetClient", () => ({
-    writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
-        assets.set(key, new Uint8Array(value));
+vi.mock("../assetClient", async () =>
+    (await import("./assetClientMock")).createAssetClientMock({
+        writeAsset: vi.fn(async (key: string, value: Uint8Array) => {
+            assets.set(key, new Uint8Array(value));
+        }),
+        readAsset: vi.fn(async (key: string) => {
+            const bytes = assets.get(key);
+            return bytes ? Buffer.from(bytes) : null;
+        }),
     }),
-    readAsset: vi.fn(async (key: string) => {
-        const bytes = assets.get(key);
-        return bytes ? Buffer.from(bytes) : null;
-    }),
-}));
+);
 
-vi.mock("../../globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("../../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
@@ -183,6 +182,8 @@ beforeEach(async () => {
     fake.set("plugins", "main", []);
     fake.set("pluginStorage", "main", {});
     server.current = fake;
+    // Device-local state, such as the legacy permission import marker, must not leak between cases.
+    localStorage.clear();
     localStorage.setItem("risuauth", "stale token");
     await boot();
 });
@@ -302,6 +303,84 @@ describe("plugin storage", () => {
 });
 
 describe("permissions", () => {
+    it("does not restore revoked grants on reboot when legacy cleanup left entries in this browser", async () => {
+        const legacy = await import("localforage");
+        const createInstance = legacy.default.createInstance.bind(legacy.default);
+        const cleanupFailure = vi.spyOn(legacy.default, "createInstance").mockImplementation((options) => {
+            const instance = createInstance(options);
+            if (options.name === "plugin_permissions") {
+                instance.removeItem = async () => {
+                    throw new Error("browser cleanup failed");
+                };
+            }
+            return instance;
+        });
+        table(PERMISSIONS).set("hash_db", true);
+        table(PERMISSIONS).set("p_db_lastGrantTime", 10);
+        fake.set("pluginPermissions", "main", {
+            grants: { other_db: true },
+            lastGrantTime: { other_db_lastGrantTime: 20 },
+        });
+
+        await importer.importBrowserLocalData();
+        cleanupFailure.mockRestore();
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { other_db: true, hash_db: true },
+            lastGrantTime: { other_db_lastGrantTime: 20, p_db_lastGrantTime: 10 },
+        });
+        expect(table(PERMISSIONS).get("hash_db")).toBe(true);
+        expect(table(PERMISSIONS).get("p_db_lastGrantTime")).toBe(10);
+
+        await permissions.revokePermissionGrants(
+            (key) => key === "hash_db",
+            (key) => key === "p_db_lastGrantTime",
+        );
+        await boot();
+        await importer.importBrowserLocalData();
+
+        expect(permissions.hasPermissionGrant("hash_db")).toBe(false);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { other_db: true },
+            lastGrantTime: { other_db_lastGrantTime: 20 },
+        });
+        expect(
+            fake.requests.filter(({ method, path }) => method === "PUT" && path.includes("pluginPermissions")),
+        ).toEqual([]);
+    });
+
+    it("reloads a grant committed by another writer after the legacy merge", async () => {
+        table(PERMISSIONS).set("legacy", true);
+        const fetch = fake.fetch;
+        let merged = false;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = await fetch(path, init);
+                if (path === "/api/resources/pluginPermissions/main" && init?.method === "PUT" && response.ok) {
+                    merged = true;
+                    // The merge's response contains only its own grant. Another writer commits
+                    // before the importer can reload; only that reload can expose this grant.
+                    fake.set("pluginPermissions", "main", {
+                        grants: { ...fake.data("pluginPermissions", "main").grants, remote: true },
+                        lastGrantTime: { remote_lastGrantTime: 99 },
+                    });
+                }
+                return response;
+            },
+        };
+
+        await importer.importBrowserLocalData();
+        expect(merged).toBe(true);
+        expect(permissions.hasPermissionGrant("legacy")).toBe(true);
+        expect(permissions.hasPermissionGrant("remote")).toBe(true);
+        expect(permissions.getLastGrantTime("remote_lastGrantTime")).toBe(99);
+        expect(
+            fake.requests
+                .filter(({ path }) => path === "/api/resources/pluginPermissions/main")
+                .map(({ method }) => method),
+        ).toEqual(["PUT", "GET"]);
+        expect([...table(PERMISSIONS).keys()]).toEqual([]);
+    });
+
     it("merges grants and grant times into the server record and deletes them locally", async () => {
         fake.set("pluginPermissions", "main", { grants: { theirs: true }, lastGrantTime: { t: 50 } });
         table(PERMISSIONS).set("hash_db", true);
@@ -359,7 +438,10 @@ describe("Iris dialogue when the save fails (written through the settings views)
         const dialogue = [{ speaker: "Iris", text: "hi", tip: "t" }];
         table(IRIS).set("current_dialogue", dialogue);
         fake.failNext = { status: 500, times: 50, match: (path) => path === "/api/resources/batch" };
-        await importer.importBrowserLocalData();
+        // The step's flush retries through its backoffs until its ten attempts run out.
+        const run = importer.importBrowserLocalData();
+        await vi.advanceTimersByTimeAsync(200_000);
+        await run;
         expect(fake.data("ui", "main").irisDialogue).toBeUndefined();
         expect(table(IRIS).get("current_dialogue")).toEqual(dialogue);
         // The ui record holds it (queued): only the server's copy lets the local entry go.
@@ -394,6 +476,83 @@ describe("the run as a whole", () => {
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 });
+
+it.each([
+    {
+        step: "plugin storage",
+        database: PLUGIN,
+        key: "safe_plugin_legacy",
+        value: { enabled: true },
+    },
+    {
+        step: "Iris dialogue",
+        database: IRIS,
+        key: "current_dialogue",
+        value: [{ speaker: "Iris", text: "hello" }],
+    },
+])("ends the $step import wait after 30 seconds of failed saves and keeps the browser copy", async (entry) => {
+    const { step, database, key, value } = entry;
+    table(database).set(key, value);
+    fake.failNext = { status: 503, times: 50, match: (path) => path === "/api/resources/batch" };
+
+    const finished = vi.fn();
+    const run = importer.importBrowserLocalData().then(finished);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fake.requests.filter(({ path }) => path === "/api/resources/batch").length).toBeGreaterThan(1);
+    expect(finished).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(finished).toHaveBeenCalledOnce();
+    await run;
+    expect(console.error).toHaveBeenCalledWith(
+        `[Import] Moving ${step} to the server failed; it stays in this browser.`,
+        expect.any(Error),
+    );
+    expect(table(database).get(key)).toEqual(value);
+});
+
+it.each([
+    {
+        kind: "pluginStorage",
+        database: PLUGIN,
+        key: "safe_plugin_legacy",
+        value: { enabled: true },
+        saved: { _safeLocalPluginStorage: { legacy: { enabled: true } } },
+    },
+    {
+        kind: "ui",
+        database: IRIS,
+        key: "current_dialogue",
+        value: [{ speaker: "Iris", text: "hello" }],
+        saved: { irisDialogue: [{ speaker: "Iris", text: "hello" }] },
+    },
+])(
+    "keeps the browser copy after 30 seconds without $kind verification",
+    async ({ kind, database, key, value, saved }) => {
+        table(database).set(key, value);
+        const fetch = fake.fetch;
+        const heldVerification = vi.fn(() => new Promise<Response>(() => {}));
+        vi.spyOn(fake, "fetch").mockImplementation((path, init) =>
+            path === `/api/resources/${kind}/main` && (init?.method ?? "GET") === "GET"
+                ? heldVerification()
+                : fetch(path, init),
+        );
+
+        const finished = vi.fn();
+        const rejected = vi.fn();
+        void importer.importBrowserLocalData().then(finished, rejected);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(heldVerification).toHaveBeenCalledTimes(1);
+        expect(fake.data(kind, "main")).toMatchObject(saved);
+
+        await vi.advanceTimersByTimeAsync(29_999);
+        expect(finished).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(finished).toHaveBeenCalledTimes(1);
+        expect(rejected).not.toHaveBeenCalled();
+        expect(table(database).get(key)).toEqual(value);
+    },
+);
 
 describe("the Bergamot model store", () => {
     type Request = { onerror: ((event: Event) => void) | null; onsuccess: unknown; onblocked: unknown };

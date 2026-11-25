@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
+    import { settings, editedPersona, editedPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import BaseRoundedButton from "src/lib/UI/BaseRoundedButton.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
@@ -8,26 +8,128 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
     import LazyCharImage from "src/lib/UI/GUI/LazyCharImage.svelte";
-    import { alertConfirm, alertSelect } from "src/ts/alert";
+    import { alertConfirm, alertInput, alertSelect } from "src/ts/alert";
     import { getCharImage } from "src/ts/characters";
     import { changeUserPersona, exportUserPersona, importUserPersona, selectUserImg } from "src/ts/persona";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
-    import { onDestroy, onMount } from "svelte";
+    import { onDestroy, onMount, untrack } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { newPersonaId } from "../../../../shared/presets.ts";
-    import { currentChatRef } from "src/ts/storage/chatStore.svelte";
-    import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
-    import { selectPersona, selection } from "src/ts/storage/selection.svelte";
-    import BindingScopeNote from "../BindingScopeNote.svelte";
-    import { CircleCheckIcon } from "@lucide/svelte";
+    import { chatsBoundTo } from "src/ts/storage/chatBinding.svelte";
+    import { ArrowLeftIcon, CircleCheckIcon, FolderIcon } from "@lucide/svelte";
     import { normalizePersonaModules } from "../../../../shared/personas.ts";
+    import { folderOfItem, groupByFolder } from "../../../../shared/itemFolders.ts";
+    import {
+        addItemFolder,
+        moveItemToFolder,
+        removeItemFolder,
+        removePersona,
+        renameItemFolder,
+    } from "src/ts/storage/collectionStore.svelte";
+    import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
+    import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import { compareByName, folderDisplayName } from "./Module/moduleCatalog";
+    import { reorderShown } from "./personaGrid";
+
+    /**
+     * The persona settings page. The editor and the module links it edits (`RisuPersona.modules`) belong to the tab's
+     * selected persona (`editedPersonaRecord`), read at each write.
+     * Creation selects the new persona for the tab; an imported one is not
+     * picked. A deletion moves only the tab's selection, never a chat's binding; the last persona is never deleted.
+     *
+     * The grid shows one view of the persona folders (`settings.personaFolders`, absent in older mocks): the root
+     * (the folders by name, then the personas in no folder) or one open folder (a back tile, then its personas), each
+     * in list order and with the add tile last. Membership follows the read rules of `shared/itemFolders.ts`. A drag
+     * reorders the shown personas among the list positions they held (`reorderShown`) and never changes a folder; the
+     * editor's select files the shown persona. A persona created or imported while a folder is open is filed into it.
+     */
 
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
-    // Read once per render, not once per row. The ring marks the open chat's bound persona (none
-    // when unset or deleted), else at home the tab's; the editor below edits `activePersona`.
-    const selectedPersonaId = $derived(pickedId("personaId", currentChatRef(), activePersona.id));
+    // Read once per render; the ring marks the tab's selected persona, also with a chat open.
+    const selectedPersonaId = $derived(editedPersona.id);
+
+    // The open folder's id, or null for the root; the page opens at the root.
+    let openFolderId = $state<string | null>(null);
+    const personaFolders = $derived(settings.personaFolders ?? []);
+    // Membership is resolved with the folders in stored order, then the tiles are sorted by name.
+    const groups = $derived(groupByFolder(settings.personas ?? [], personaFolders));
+    const folderTiles = $derived([...groups.folders].sort((a, b) => compareByName(a.folder, b.folder)));
+    const openGroup = $derived(
+        openFolderId === null ? null : (groups.folders.find((group) => group.folder.id === openFolderId) ?? null),
+    );
+    const shownPersonas = $derived(openGroup ? openGroup.items : groups.root);
+    const foldersByName = $derived([...personaFolders].sort(compareByName));
+    // The select's value: the shown persona's folder id, or "" for no folder.
+    const editedFolderId = $derived(
+        typeof selectedPersonaId === "string" ? (folderOfItem(personaFolders, selectedPersonaId)?.id ?? "") : "",
+    );
+
+    // The open folder was deleted, here or on another device: back to the root.
+    $effect.pre(() => {
+        if (openFolderId !== null && !openGroup) {
+            untrack(() => openView(null));
+        }
+    });
+
+    function folderExists(folderId: string) {
+        return (settings.personaFolders ?? []).some((folder) => folder.id === folderId);
+    }
+
+    function openView(folderId: string | null) {
+        if (openFolderId === folderId) {
+            return;
+        }
+        openFolderId = folderId;
+        // The view's tiles replace the grid's, so Sortable is made again for them.
+        void rebuildGrid();
+    }
+
+    // Files a persona the page just added into the folder that was open, while that folder exists.
+    function fileNewPersona(personaId: string | null, folderId: string | null) {
+        if (personaId === null || folderId === null || !folderExists(folderId)) {
+            return;
+        }
+        moveItemToFolder("personaFolders", personaId, folderId);
+    }
+
+    async function importIntoOpenFolder() {
+        const folderId = openFolderId;
+        fileNewPersona(await importUserPersona(), folderId);
+    }
+
+    // Written for the persona the editor shows at the change; "" is no folder.
+    function fileEditedPersona(folderId: string) {
+        const persona = editedPersonaRecord();
+        if (!persona || typeof persona.id !== "string" || persona.id.trim() === "") {
+            return;
+        }
+        moveItemToFolder("personaFolders", persona.id, folderId === "" ? null : folderId);
+    }
+
+    async function newFolder() {
+        const name = (await alertInput(language.itemFolders.folderName)).trim();
+        if (name === "") return;
+        addItemFolder("personaFolders", name);
+    }
+
+    async function renameOpenFolder() {
+        const folderId = openFolderId;
+        const folder = (settings.personaFolders ?? []).find((entry) => entry.id === folderId);
+        if (!folder) return;
+        const name = (await alertInput(language.itemFolders.rename, [], folder.name)).trim();
+        if (name === "" || !folderExists(folderId)) return;
+        renameItemFolder("personaFolders", folderId, name);
+    }
+
+    // The personas stay; the grid returns to the root once the folder is gone.
+    async function deleteOpenFolder() {
+        const folderId = openFolderId;
+        if (folderId === null) return;
+        if (!(await alertConfirm(language.itemFolders.removePersonaFolderConfirm))) return;
+        removeItemFolder("personaFolders", folderId);
+    }
     let moduleSearch = $state("");
     // The modules a persona can link: not MCP, with a non-blank id (`normalizePersonaModules` keeps
     // no other), each id once (the first, as the resolvers pick), shown by name, else by id.
@@ -48,13 +150,13 @@
         const query = prepareQuery(moduleSearch);
         return query ? linkableModules.filter((module) => matchesAny([module.name], query)) : linkableModules;
     });
-    const linkedModuleIds = $derived(new Set(normalizePersonaModules(currentPersonaRecord()?.modules)));
+    const linkedModuleIds = $derived(new Set(normalizePersonaModules(editedPersonaRecord()?.modules)));
 
-    // Written to the persona the editor shows (`currentPersonaRecord`, read at the click), adding or
+    // Written to the persona the editor shows (`editedPersonaRecord`, read at the click), adding or
     // removing only this id (ids of modules not installed stay), in canonical form as the server
     // stores it.
     function togglePersonaModule(moduleId: string) {
-        const persona = currentPersonaRecord();
+        const persona = editedPersonaRecord();
         if (!persona) {
             return;
         }
@@ -64,56 +166,105 @@
         );
     }
 
-    const createStb = () => {
-        stb = Sortable.create(ele, {
-            // The selection is by id, so a reorder leaves it on the same persona.
-            onEnd: async () => {
-                let idx: number[] = [];
-                ele.querySelectorAll("[data-risu-idx]").forEach((e, i) => {
-                    idx.push(parseInt(e.getAttribute("data-risu-idx")));
-                });
-                let newValue: typeof settings.personas = [];
-                idx.forEach((i) => {
-                    newValue.push(settings.personas[i]);
-                });
-                settings.personas = newValue;
-                try {
-                    stb.destroy();
-                } catch (error) {}
-                sorted += 1;
-                await sleep(1);
-                createStb();
-            },
-            ...sortableOptions,
-        });
-    };
+    let destroyed = false;
+    // Bumped by every rebuild, so only the latest one makes the next Sortable.
+    let gridGeneration = 0;
 
-    onMount(createStb);
-
-    onDestroy(() => {
+    function destroyStb() {
         if (stb) {
             try {
                 stb.destroy();
             } catch (error) {}
+            stb = null;
         }
+    }
+
+    const createStb = () => {
+        destroyStb();
+        if (destroyed || !ele) {
+            return;
+        }
+        stb = Sortable.create(ele, {
+            ...sortableOptions,
+            // A filtered tile (a folder, the back tile, the add tile) keeps its click on every input kind.
+            preventOnFilter: false,
+            // The selection is by id, so a reorder leaves it on the same persona.
+            onEnd: async () => {
+                const ids = Array.from(ele.children)
+                    .map((tile) => tile.getAttribute("data-risu-id"))
+                    .filter((id): id is string => id !== null);
+                settings.personas = reorderShown(settings.personas, ids);
+                await rebuildGrid();
+            },
+        });
+    };
+
+    // Replaces the grid's tiles (`{#key sorted}`) and makes Sortable again for them.
+    async function rebuildGrid() {
+        destroyStb();
+        const generation = ++gridGeneration;
+        sorted += 1;
+        await sleep(1);
+        if (generation === gridGeneration) {
+            createStb();
+        }
+    }
+
+    onMount(createStb);
+
+    onDestroy(() => {
+        destroyed = true;
+        gridGeneration += 1;
+        destroyStb();
     });
 </script>
 
-<div class="flex items-center gap-2 mb-2 mt-2">
-    <h2 class="text-2xl font-bold">{language.persona}</h2>
-    <BindingScopeNote field="personaId" />
-</div>
+<h2 class="text-2xl font-bold mb-2 mt-2">{language.persona}</h2>
 
 {#key sorted}
     <div
         class="p-4 rounded-md border-darkborderc border mb-2 flex-wrap flex gap-2 w-full max-w-full min-w-0"
         bind:this={ele}
     >
-        {#each settings.personas as persona, i}
+        {#if openGroup}
             <button
-                data-risu-idx={i}
+                type="button"
+                class="no-sort"
+                aria-label={`${language.itemFolders.back}: ${folderDisplayName(openGroup.folder.name, language.itemFolders.unnamed)}`}
+                onclick={() => openView(null)}
+            >
+                <div
+                    class="rounded-md h-20 w-20 shadow-lg border border-darkborderc bg-darkbutton cursor-pointer hover:text-green-500 flex flex-col items-center justify-center gap-1 p-1 text-textcolor"
+                >
+                    <ArrowLeftIcon size={20} class="shrink-0" />
+                    <span class="w-full truncate text-center text-xs text-textcolor2"
+                        >{folderDisplayName(openGroup.folder.name, language.itemFolders.unnamed)}</span
+                    >
+                </div>
+            </button>
+        {:else}
+            {#each folderTiles as tile}
+                <button type="button" class="no-sort" onclick={() => openView(tile.folder.id)}>
+                    <div
+                        class="rounded-md h-20 w-20 shadow-lg border border-darkborderc bg-darkbutton cursor-pointer hover:text-green-500 flex flex-col items-center justify-center gap-1 p-1 text-textcolor"
+                        class:ring-3={tile.items.some((persona) => persona.id === selectedPersonaId)}
+                    >
+                        <FolderIcon size={20} class="shrink-0" />
+                        <span
+                            class="w-full truncate text-center text-xs"
+                            class:text-textcolor2={tile.folder.name.trim() === ""}
+                            >{folderDisplayName(tile.folder.name, language.itemFolders.unnamed)}</span
+                        >
+                        <span class="text-xs text-textcolor2">{tile.items.length}</span>
+                    </div>
+                </button>
+            {/each}
+        {/if}
+        {#each shownPersonas as persona}
+            <button
+                data-risu-id={persona.id}
                 onclick={() => {
-                    changeUserPersona(persona.id);
+                    changeUserPersona(persona.id, null);
                 }}
             >
                 {#if persona.icon === ""}
@@ -141,11 +292,11 @@
                 {/if}
             </button>
         {/each}
-        <div class="flex justify-center items-center ml-2 mr-2">
+        <div class="no-sort flex justify-center items-center ml-2 mr-2">
             <BaseRoundedButton
                 onClick={async () => {
-                    // The chat a new persona is picked for, read before the dialog (null: the tab's selection).
-                    const target = currentChatRef();
+                    // The folder open at the click receives the new persona.
+                    const folderId = openFolderId;
                     const sel = parseInt(await alertSelect([language.createfromScratch, language.importCharacter]));
                     if (sel === 0) {
                         const id = newPersonaId();
@@ -156,9 +307,10 @@
                             personaPrompt: "",
                             note: "",
                         });
-                        changeUserPersona(id, target);
+                        fileNewPersona(id, folderId);
+                        changeUserPersona(id, null);
                     } else if (sel === 1) {
-                        await importUserPersona();
+                        fileNewPersona(await importUserPersona(), folderId);
                     }
                 }}
                 ><svg viewBox="0 0 24 24" width="1.2em" height="1.2em"
@@ -183,10 +335,10 @@
                 selectUserImg();
             }}
         >
-            {#if activePersona.icon === ""}
+            {#if editedPersona.icon === ""}
                 <div class="rounded-md h-28 w-28 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"></div>
             {:else}
-                {#await getCharImage(activePersona.icon, activePersona.largePortrait ? "lgcss" : "css", 512)}
+                {#await getCharImage(editedPersona.icon, editedPersona.largePortrait ? "lgcss" : "css", 512)}
                     <div class="rounded-md h-28 w-28 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"></div>
                 {:then im}
                     <div
@@ -199,21 +351,48 @@
     </div>
     <div class="flex grow flex-col p-2 max-w-full">
         <span class="text-sm text-textcolor2">{language.name}</span>
-        <TextInput marginBottom size="lg" placeholder="User" bind:value={activePersona.name} />
+        <TextInput marginBottom size="lg" placeholder="User" bind:value={editedPersona.name} />
         <span class="text-sm text-textcolor2">{language.personaNote}</span>
+        <!-- The popups are the shown persona's: a selection change while one is open discards its text
+             (the bound value alone cannot tell two personas with the same note apart). -->
         <TextAreaInput
             autocomplete="off"
             height="20"
             margin="bottom"
-            bind:value={activePersona.note}
+            bind:value={editedPersona.note}
+            popupLanguage="plaintext"
+            popupEditorContext={editedPersona.id}
             placeholder={language.personaNotePlaceholder}
         />
         <span class="text-sm text-textcolor2">{language.description}</span>
         <TextAreaInput
             autocomplete="off"
-            bind:value={activePersona.personaPrompt}
+            bind:value={editedPersona.personaPrompt}
+            popupEditorContext={editedPersona.id}
             placeholder={`Put the description of this persona here.\nExample: [<user> is a 20 year old girl.]`}
         />
+        <div class="mt-4 flex flex-col gap-2">
+            <span class="text-sm text-textcolor">{language.itemFolders.folder}</span>
+            <div class="flex gap-2 flex-wrap items-center">
+                <SelectInput
+                    size="sm"
+                    aria-label={language.itemFolders.folder}
+                    bind:value={() => editedFolderId, (value) => fileEditedPersona(String(value))}
+                >
+                    {#each foldersByName as folder}
+                        <OptionInput value={folder.id}
+                            >{folderDisplayName(folder.name, language.itemFolders.unnamed)}</OptionInput
+                        >
+                    {/each}
+                    <OptionInput value="">{language.itemFolders.noFolder}</OptionInput>
+                </SelectInput>
+                <Button size="sm" onclick={newFolder}>{language.itemFolders.newFolder}</Button>
+                {#if openGroup}
+                    <Button size="sm" onclick={renameOpenFolder}>{language.itemFolders.rename}</Button>
+                    <Button size="sm" styled="danger" onclick={deleteOpenFolder}>{language.itemFolders.remove}</Button>
+                {/if}
+            </div>
+        </div>
         <div class="mt-4 flex flex-col gap-2">
             <span class="text-sm text-textcolor">{language.personaModuleLink}</span>
             <span class="text-sm text-textcolor2">{language.personaModuleLinkInfo}</span>
@@ -246,7 +425,7 @@
         </div>
         <div class="flex gap-2 mt-4 max-w-full flex-wrap">
             <Button onclick={exportUserPersona}>{language.export}</Button>
-            <Button onclick={importUserPersona}>{language.import}</Button>
+            <Button onclick={importIntoOpenFolder}>{language.import}</Button>
 
             <Button
                 styled="danger"
@@ -255,7 +434,7 @@
                         return;
                     }
                     // The list can change while the dialog is open: act on this persona by id.
-                    const target = currentPersonaRecord();
+                    const target = editedPersonaRecord();
                     if (!target) {
                         return;
                     }
@@ -268,25 +447,18 @@
                     if (!d) {
                         return;
                     }
-                    const personas = settings.personas;
-                    const index = personas.findIndex((persona) => persona.id === id);
-                    if (index === -1 || personas.length === 1) {
-                        return;
-                    }
                     // Chats bound to it keep the id and show it as deleted; only the tab's selection moves on.
-                    if (selection.personaId === id) {
-                        selectPersona(personas.find((persona) => persona.id !== id).id);
-                    }
-                    personas.splice(index, 1);
+                    // `removePersona` keeps the last persona and takes the id out of the persona folders.
+                    removePersona(id);
                 }}>{language.remove}</Button
             >
             <!-- Written to the persona the selection resolves to (the first one when it names none), as the
-                 index binding did; `activePersona`'s setter would drop it. -->
+                 index binding did; `editedPersona`'s setter would drop it. -->
             <Check
                 bind:check={
-                    () => activePersona.largePortrait,
+                    () => editedPersona.largePortrait,
                     (value) => {
-                        const persona = currentPersonaRecord();
+                        const persona = editedPersonaRecord();
                         if (persona) {
                             persona.largePortrait = value;
                         }

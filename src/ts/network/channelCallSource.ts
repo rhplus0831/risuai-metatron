@@ -1,14 +1,17 @@
 import type { CallbackTargets } from "../../../shared/jobs.ts";
 
-// Whether a job callback a plugin call context names (`PluginCallContext.channelCall`) still runs in
-// this tab, and on which targets. The job channel's dispatcher is loaded on first use
-// (`generationJobs.ts`) and registers its `liveChannelCallTargets` here when it loads; before that no
-// callback can be running. Nothing here picks a callback for a request: only a context the
-// dispatcher handed to a hook names one.
+/**
+ * Whether a job callback named by `PluginCallContext.channelCall` still runs here, and on which
+ * targets. `src/ts/network/generationJobs.ts` loads `src/ts/network/jobChannel.ts` on first use;
+ * that dispatcher registers `liveChannelCallTargets` here. Before then no callback can be running.
+ * Nothing here selects a callback for a request: only a context handed to a hook names one.
+ */
+
 type ChannelCall = { jobId: string; callbackId: string };
 
 let source: ((call: ChannelCall) => CallbackTargets | null) | null = null;
 
+/** Installs the dispatcher's live lookup; captured contexts are checked at use, never cached as live. */
 export function setChannelCallSource(next: (call: ChannelCall) => CallbackTargets | null) {
     source = next;
 }

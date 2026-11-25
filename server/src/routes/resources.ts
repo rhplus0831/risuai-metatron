@@ -1,5 +1,12 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { MAX_BOOT_BODY_BYTES, RESOURCE_BOOT_PATH, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import type { ChatStreamingSnapshot } from "../../../shared/events.ts";
+import {
+    MAX_BOOT_BODY_BYTES,
+    MAX_READ_RESPONSE_BYTES,
+    RESOURCE_BOOT_PATH,
+    RESOURCE_EPOCH_HEADER,
+} from "../../../shared/resources.ts";
+import type { ResourceReadEntries, ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import {
     isValidResourceId,
@@ -21,6 +28,13 @@ import { parseBootRequest, readBoot } from "./resourceBoot.ts";
 
 /** Most operations one batch or one read may name. */
 export const MAX_BATCH_OPERATIONS = 5000;
+export const RESOURCE_READ_PATH = "/api/resources/read";
+/**
+ * A read's body cap, also bounding named row and metadata lists. A request of 5,000 entries of two
+ * ids of 512 units at up to 3 UTF-8 bytes each is about 15.4 million bytes before framing, and an
+ * older tab may send it.
+ */
+export const MAX_READ_BODY_BYTES = 32 * 1024 * 1024;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -29,12 +43,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * `/api/resources` over the resource store. Reads return the database `epoch`; every mutation must
  * send it in `x-resource-epoch` (412 otherwise, so nothing based on data from before a restore can
- * land), is refused with 503 while a restore or import runs, and names the revision it was based on
- * (`baseRevision`: null to create); a stale one is a 409 carrying the current revision (null when the
- * record is gone). A batch op may be a record patch instead of whole data (`patch`, with a string
- * `baseRevision`; see `ResourceBatchOperation`). The batch also carries chat groups and reorders, and the reads chats and chat
- * collections (`shared/chats.ts`). An edit of a message a generation job owns is a 409 whose entry
- * (or, on the single routes, whose body) carries `reason: "generating"`. Responses are never cached.
+ * land), is refused with 503 while the maintenance gate is closed (`data/snapshots.ts`), and names
+ * the revision it was based on (`baseRevision`: null to create); a stale one is a 409 carrying the
+ * current revision (null when the record is gone). A batch op may be a record patch instead of whole
+ * data (`patch`, with a string `baseRevision`; see `ResourceBatchOperation`). The batch also carries
+ * chat groups and reorders, and the reads chats, named rows, and chat collections (`shared/chats.ts`). With a
+ * streaming source, whole chats carry authoritative lock lists sampled in the same synchronous step
+ * as the read; summaries, row reads and missing chats do not. Whole-chat reads answer a structured
+ * chat's `hypaV3Data` with its projection, which only these routes ask for (`memoryProjection`),
+ * so a tab's plugins read it from the chat they hold. Row reads use stored metadata.
+ * `POST /api/resources/read` lists each named entry once. With `continue: true`, it uses a soft
+ * stored-byte budget (`readResponseBytes`, default `MAX_READ_RESPONSE_BYTES`): the first group is
+ * always served whole; groups left out are named in `unanswered` (`ResourceReadRefsAnswer`).
+ * An edit of a message a generation job owns is a 409 whose entry
+ * (or, on the single routes, whose body) carries `reason: "generating"`. Responses passing this
+ * module's noStore middleware receive no-store; the earlier global body limiter in `server/src/app.ts`
+ * can refuse a request before that middleware runs.
  */
 export function registerResourceRoutes(
     app: Hono<AppEnv>,
@@ -44,9 +68,24 @@ export function registerResourceRoutes(
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
         maintenance: MaintenanceGate;
+        /** The same synchronous generation-lock snapshot used by the live-update `hello`. */
+        streaming?: () => ChatStreamingSnapshot[];
+        /** A read's body cap (default `MAX_READ_BODY_BYTES`; tests lower it). */
+        readBodyBytes?: number;
+        /** A `continue: true` read's budget in charged bytes (default `MAX_READ_RESPONSE_BYTES`; tests lower it). */
+        readResponseBytes?: number;
     },
 ) {
-    const { store, kinds, auth, limiter, maintenance } = arg;
+    const {
+        store,
+        kinds,
+        auth,
+        limiter,
+        maintenance,
+        streaming,
+        readBodyBytes = MAX_READ_BODY_BYTES,
+        readResponseBytes = MAX_READ_RESPONSE_BYTES,
+    } = arg;
 
     const noStore: MiddlewareHandler<AppEnv> = async (c, next) => {
         await next();
@@ -72,6 +111,28 @@ export function registerResourceRoutes(
     const prepare = (kind: ResourceKind, id: string, data: unknown) =>
         kind.prepareWrite ? kind.prepareWrite(data, store.get(kind, id)?.data ?? null) : data;
 
+    /** Decorates whole chats without yielding after the store read, indexing one snapshot per response. */
+    function addStreaming(read: Pick<ResourceReadRefsResult, "chats" | "chatCollections">) {
+        if (!streaming || (!read.chats && !read.chatCollections)) return;
+        const byChat = new Map(streaming().map((chat) => [`${chat.characterId}\u0000${chat.id}`, chat.streaming]));
+        for (const chat of read.chats ?? []) {
+            if (chat.revision !== null) {
+                chat.streaming = byChat.get(`${chat.characterId}\u0000${chat.id}`) ?? [];
+            }
+        }
+        for (const collection of read.chatCollections ?? []) {
+            for (const chat of collection.chats) {
+                chat.streaming = byChat.get(`${chat.characterId}\u0000${chat.id}`) ?? [];
+            }
+        }
+    }
+
+    /**
+     * GET ?kinds=a,b[&chats=1|&chatSummaries=1] returns one committed state:
+     * { epoch, kinds: { [kind]: [{ id, revision, data }] }, chats?, chatSummaries?, chatOrders? }.
+     * Kinds are projected (credentials masked), compressed by `http/compressedJson.ts` according to
+     * Accept-Encoding. 400 for missing/unknown kinds, a chat option other than 1, or both chat options.
+     */
     app.get("/api/resources", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -100,7 +161,12 @@ export function registerResourceRoutes(
         if (chats !== undefined && chatSummaries !== undefined) {
             return c.json({ error: "chats and chatSummaries cannot be combined" }, 400);
         }
-        const read = store.readKinds(selected, { chats: chats === "1", chatSummaries: chatSummaries === "1" });
+        const read = store.readKinds(selected, {
+            chats: chats === "1",
+            chatSummaries: chatSummaries === "1",
+            memoryProjection: true,
+        });
+        addStreaming(read);
         for (const kind of selected) {
             if (kind.project) {
                 read.kinds[kind.name] = read.kinds[kind.name].map((record) => ({
@@ -112,11 +178,31 @@ export function registerResourceRoutes(
         return compressedJson(c, read);
     });
 
-    app.post("/api/resources/read", limiter, async (c) => {
+    // The read and the boot read authenticate before their own body caps, so the app's 100 MiB limit is
+    // not applied to them (`app.ts`).
+    const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
             return denied;
         }
+        await next();
+    };
+
+    /**
+     * POST /api/resources/read: { refs?: [{ kind, id }], chats?: [{ characterId, id }],
+     * chatRows?: [{ characterId, id, revision, messageIds, meta }],
+     * chatCollections?: [characterId], chatSummaryCollections?: [characterId], continue?: boolean }.
+     * Names 1–5000 entries before deduplication; each distinct entry is answered once. Authentication
+     * precedes the 32 MiB cap (`MAX_READ_BODY_BYTES`; 413), independent of the app's global limit.
+     * Returns compressed { epoch, items, chats?, chatRows?, chatCollections?, chatSummaryCollections?, unanswered? };
+     * a missing record/chat has null data and revision. Row reads at another revision answer moved,
+     * including a missing chat; identical row requests coalesce, conflicting requests for one chat
+     * refuse. Summary collections omit messages, memory, bookmarks and toolCalls (`shared/chats.ts`). With continue:
+     * true, whole groups are served within
+     * the soft stored-byte budget in `data/resourceStore.ts` readRefsWithinBudget; otherwise all are read.
+     * Malformed entries, unknown kinds, an empty request or more than 5000 entries are 400.
+     */
+    app.post(RESOURCE_READ_PATH, limiter, authenticated, limitedBody(readBodyBytes), async (c) => {
         const parsed = await readJsonBody(c);
         if (!parsed.ok) {
             return parsed.response;
@@ -124,33 +210,80 @@ export function registerResourceRoutes(
         const {
             refs = [],
             chats = [],
+            chatRows = [],
             chatCollections = [],
             chatSummaryCollections = [],
+            continue: canContinue,
         } = parsed.body as Record<string, unknown>;
         if (!Array.isArray(refs) || !Array.isArray(chats) || !Array.isArray(chatCollections)) {
-            return c.json({ error: "Body must be { refs?, chats?, chatCollections? } of arrays" }, 400);
+            return c.json(
+                { error: "Body must be { refs?, chats?, chatCollections?, chatSummaryCollections? } of arrays" },
+                400,
+            );
+        }
+        if (!Array.isArray(chatRows)) {
+            return c.json({ error: "chatRows must be an array" }, 400);
         }
         if (!Array.isArray(chatSummaryCollections)) {
             return c.json({ error: "chatSummaryCollections must be an array of character ids" }, 400);
         }
-        const total = refs.length + chats.length + chatCollections.length + chatSummaryCollections.length;
+        if (canContinue !== undefined && typeof canContinue !== "boolean") {
+            return c.json({ error: "continue must be a boolean" }, 400);
+        }
+        const total =
+            refs.length + chats.length + chatRows.length + chatCollections.length + chatSummaryCollections.length;
         if (total === 0 || total > MAX_BATCH_OPERATIONS) {
             return c.json({ error: `Body must name 1 to ${MAX_BATCH_OPERATIONS} entries` }, 400);
         }
-        const resolved: { kind: ResourceKind; id: string }[] = [];
+        // Keyed so a repeated entry is read once; a valid id holds no NUL, so the keys cannot collide.
+        const resolved = new Map<string, { kind: ResourceKind; id: string }>();
         for (const [index, ref] of refs.entries()) {
             const kind = isPlainObject(ref) && typeof ref.kind === "string" ? kinds.get(ref.kind) : undefined;
             if (!kind || !isValidResourceId(ref.id)) {
                 return c.json({ error: `refs[${index}] must name a known kind and a valid id` }, 400);
             }
-            resolved.push({ kind, id: ref.id });
+            resolved.set(`${kind.name}\u0000${ref.id}`, { kind, id: ref.id });
         }
-        const chatRefs: { characterId: string; id: string }[] = [];
+        const chatRefs = new Map<string, { characterId: string; id: string }>();
         for (const [index, ref] of chats.entries()) {
             if (!isPlainObject(ref) || !isValidResourceId(ref.characterId) || !isValidResourceId(ref.id)) {
                 return c.json({ error: `chats[${index}] must name a valid characterId and id` }, 400);
             }
-            chatRefs.push({ characterId: ref.characterId, id: ref.id });
+            chatRefs.set(`${ref.characterId}\u0000${ref.id}`, { characterId: ref.characterId, id: ref.id });
+        }
+        const rowRefs = new Map<string, ResourceReadEntries["chatRows"][number]>();
+        for (const [index, ref] of chatRows.entries()) {
+            if (
+                !isPlainObject(ref) ||
+                !isValidResourceId(ref.characterId) ||
+                !isValidResourceId(ref.id) ||
+                typeof ref.revision !== "string" ||
+                !Array.isArray(ref.messageIds) ||
+                !ref.messageIds.every(isValidResourceId) ||
+                !Array.isArray(ref.meta) ||
+                !ref.meta.every((name) => typeof name === "string") ||
+                (ref.messageIds.length === 0 && ref.meta.length === 0)
+            ) {
+                return c.json(
+                    {
+                        error: `chatRows[${index}] must name a chat, revision and at least one message id or meta field`,
+                    },
+                    400,
+                );
+            }
+            const entry = {
+                characterId: ref.characterId,
+                id: ref.id,
+                revision: ref.revision,
+                messageIds: ref.messageIds,
+                meta: ref.meta,
+            };
+            const key = `${entry.characterId}\u0000${entry.id}`;
+            const previous = rowRefs.get(key);
+            if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) {
+                return c.json({ error: `chatRows[${index}] conflicts with another request for this chat` }, 400);
+            }
+            rowRefs.set(key, entry);
         }
         if (!chatCollections.every(isValidResourceId)) {
             return c.json({ error: "chatCollections must be character ids" }, 400);
@@ -158,8 +291,20 @@ export function registerResourceRoutes(
         if (!chatSummaryCollections.every(isValidResourceId)) {
             return c.json({ error: "chatSummaryCollections must be character ids" }, 400);
         }
+        const named = [...resolved.values()];
+        const options = {
+            chats: [...chatRefs.values()],
+            chatRows: [...rowRefs.values()],
+            chatCollections: [...new Set(chatCollections)],
+            chatSummaryCollections: [...new Set(chatSummaryCollections)],
+            memoryProjection: true,
+        };
         try {
-            const read = store.readRefs(resolved, { chats: chatRefs, chatCollections, chatSummaryCollections });
+            const read =
+                canContinue === true
+                    ? store.readRefsWithinBudget(named, options, readResponseBytes)
+                    : store.readRefs(named, options);
+            addStreaming(read);
             return compressedJson(c, {
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: project(kinds.get(item.kind), item.data) })),
@@ -169,27 +314,18 @@ export function registerResourceRoutes(
         }
     });
 
-    // The boot read that skips what the client holds (`resourceBoot.ts`). Its body has its own cap,
-    // so the app's 100 MiB limit is not applied to it (`app.ts`).
-    const authenticated: MiddlewareHandler<AppEnv> = async (c, next) => {
-        const denied = await auth.checkAuth(c);
-        if (denied) {
-            return denied;
-        }
-        await next();
-    };
+    // The boot read that skips what the client holds (`resourceBoot.ts`).
     const limitBootBody = limitedBody(MAX_BOOT_BODY_BYTES);
+    /**
+     * POST /api/resources/boot: ResourceBootRequest { kinds, chatSummaries?: true,
+     * known?: { records?, items?, chatCollections? } } (`shared/resources.ts`). A read, with no epoch
+     * header; authenticated before its own 2 MiB cap (413). Malformed entries, unknown kinds and more
+     * than 5000 combined claims are 400 (`routes/resourceBoot.ts` parseBootRequest).
+     * Returns compressed ResourceBootResult { format: 1, epoch, kinds, chatSummaries?, chatOrders?,
+     * chatSummaryFormat?, cachedChatCollections? }; kinds can contain cached revisions and item deltas
+     * instead of whole records. `routes/resourceBoot.ts` readBoot keeps the result in one committed state.
+     */
     app.post(RESOURCE_BOOT_PATH, limiter, authenticated, limitBootBody, async (c) => {
-        let text: string;
-        try {
-            text = await c.req.text();
-        } catch {
-            return c.json({ error: "Invalid JSON body" }, 400);
-        }
-        // The limiter trusts a declared length; measure the cached text before parsing it.
-        if (Buffer.byteLength(text, "utf8") > MAX_BOOT_BODY_BYTES) {
-            return c.json({ error: "Request body too large" }, 413);
-        }
         const parsed = await readJsonBody(c);
         if (!parsed.ok) {
             return parsed.response;
@@ -205,6 +341,12 @@ export function registerResourceRoutes(
         }
     });
 
+    /**
+     * POST { ops?, chats?, chatOrders? }, with the current x-resource-epoch. The 1–5000 operation cap
+     * counts nested chat operations and reorders; resource operations require exactly one of data,
+     * delete and patch. Returns { epoch, results, chats?, chatOrders? }. A conflict is 409
+     * { error, conflicts } with the entire batch rolled back; malformed operations are 400.
+     */
     app.post("/api/resources/batch", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -260,15 +402,35 @@ export function registerResourceRoutes(
         }
     });
 
+    /**
+     * GET /api/resources/revisions: { epoch, resources: [{ kind, id, revision }],
+     * chats: [{ characterId, id, revision }], chatOrders: [{ characterId, revision }] }.
+     * The live-update reconciliation read carries no data and is compressed per Accept-Encoding.
+     * With `since`, requires nonnegative safe integer `since`/`until` and a nonempty `epoch` (400
+     * otherwise), returning the store's bounded, coalesced replay or its expired/epoch answer.
+     */
     // Before `/api/resources/:kind`, which would take `revisions` as a kind name.
     app.get("/api/resources/revisions", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
             return denied;
         }
-        return c.json(store.listRevisions());
+        const sinceText = c.req.query("since");
+        if (sinceText === undefined) return compressedJson(c, store.listRevisions());
+        const untilText = c.req.query("until");
+        const epoch = c.req.query("epoch");
+        const parseCursor = (value: string | undefined) =>
+            value !== undefined && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
+        const since = parseCursor(sinceText);
+        const until = parseCursor(untilText);
+        if (since === null || until === null || !epoch) {
+            return c.json({ error: "Expected since, until and epoch for revision replay" }, 400);
+        }
+        return compressedJson(c, store.listChanges(since, until, epoch));
     });
 
+    /** GET returns compressed { epoch, items: [{ id, revision, data }] } in creation order,
+     * with each kind's projection applied; an unknown kind is 404. */
     app.get("/api/resources/:kind", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -284,6 +446,7 @@ export function registerResourceRoutes(
         });
     });
 
+    /** 404 for an unknown kind or a missing record, 400 for an invalid id. */
     app.get("/api/resources/:kind/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -313,6 +476,11 @@ export function registerResourceRoutes(
         });
     });
 
+    /**
+     * PUT { baseRevision: string | null, data }, with x-resource-epoch: null creates, a token updates.
+     * Returns { epoch, revision, data } as stored with the kind's projection applied (credentials
+     * masked). A stale revision is 409 { error, revision }; malformed body/id is 400, unknown kind 404.
+     */
     app.put("/api/resources/:kind/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -350,6 +518,11 @@ export function registerResourceRoutes(
         }
     });
 
+    /**
+     * DELETE ?baseRevision=<token>, with x-resource-epoch, returns { success: true, epoch }.
+     * Stale tokens or an already missing record are 409 { error, revision }; a singleton, invalid id
+     * or absent baseRevision is 400, an unknown kind 404.
+     */
     app.delete("/api/resources/:kind/:id", limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

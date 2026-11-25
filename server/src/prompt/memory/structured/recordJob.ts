@@ -1,0 +1,437 @@
+import { RESOURCE_KIND } from "../../../../../shared/resources.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../../../shared/chatMemory.ts";
+import { eligibleHistory } from "../../../../../shared/contextReport.ts";
+import { summarizesLocally } from "../../../../../shared/hypaV3Presets.ts";
+import type {
+    JobMemoryTaskStatus,
+    MemoryBlockingReason,
+    MemoryRecordResult,
+    MemoryTaskRecordAnswer,
+    StructuredMemoryTaskInput,
+    SummaryWriterLease,
+} from "../../../../../shared/jobs.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../../../shared/structuredMemory.ts";
+import type { MemoryChanges } from "../../../data/memoryStore.ts";
+import {
+    GenerationRunnerError,
+    markFailure,
+    type MemoryControl,
+    type RunningJob,
+} from "../../../jobs/generationJobs.ts";
+import {
+    admitProviderModels,
+    flushChatMetadata,
+    type JobScope,
+    loadJobScope,
+    refreshChat,
+    refreshChatAfterWrite,
+    scopeChat,
+} from "../../../jobs/jobScope.ts";
+import { createJobRunState, createRunSetup, type GenerationRunnerDeps, type RunSetup } from "../../../jobs/runSetup.ts";
+import {
+    acquireJobWriter,
+    createJobMemoryHost,
+    jobChatTokenCounter,
+    jobMemoryBlockingReason,
+    jobMemoryTaskBase,
+    openJobMemoryRun,
+} from "../../runner.ts";
+import type { MemoryHost, MemoryTokenizer } from "../host.ts";
+import { MEMORY_TASK_LIMITS, type StructuredMemoryCommit } from "../memoryTasks.ts";
+import { retireRerecorded } from "./reconcile.ts";
+import {
+    confirmedWindows,
+    writerGreeting,
+    greetingRerecordCeiling,
+    historicalWindow,
+    readRecordedMessages,
+    readRerecordEvents,
+    writerCadence,
+    writerCeiling,
+    type WriterCeiling,
+    type WriterWindow,
+} from "./window.ts";
+import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb } from "./writer.ts";
+
+/**
+ * A person's start of Structured Memory's writer as a command job (`memoryRecord`): "record now" names
+ * a message, which the press confirms, and resume names none. A job and not a call on the service,
+ * because only a job has a fresh scope: the service retains no input across a restart, and it cannot
+ * tell a slot that needs the tab.
+ *
+ * - Refused: another algorithm is selected, the owner's memory is off, the summarization model is a
+ *   local one, which the writer cannot serve here either, the chat waits for a person to adopt or
+ *   decline its HypaV3 summaries (`chatAdoptionHold`, a 409), so a stale tab's press with no such choice
+ *   gets an answer, or the named message is not an eligible assistant message. The chat is this job's,
+ *   so no generation runs at admission. With nothing confirmed there is nothing to do: the job ends
+ *   `done`.
+ * - With a service and nothing that needs the tab: the input goes to `MemoryTasks.record`. The job ends
+ *   at once, and the task starts after its terminal.
+ * - A Plugin memory connection, a `request` trigger, or no service: the writer runs here on the chat's
+ *   writer lease, as a blocking HypaV3 summary does, because only the job's requests reach the plugin
+ *   provider and the trigger. Repair windows run first, then ordinary windows oldest first, up to
+ *   `maxWriterWindows` with a task's request policy. The first nonrecorded window ends the job; any run
+ *   or receipt already written stays stored, and a skipped window need not create either.
+ *   Windows left past the cap are an ordinary `done`. With a service, the job publishes its writer's
+ *   status through that registry, so every tab is fenced through the terminal's chat revision.
+ * - A press also re-records the marked events, here as on the service: their windows come first
+ *   (`confirmedWindows`), and a commit retires what each replaces (`retireRerecorded`), refused
+ *   `windowChanged` when that event no longer wants it.
+ *
+ * A send's approved gap (`recordGapInJob`) shares those windows, inside the send: the person who said
+ * yes to the question waits for it, so it takes their stop control, and a window that does not record
+ * only ends the run and the send goes on with the gap. Any run or receipt already written stays stored;
+ * a skipped window need not create either. It re-records nothing: marks wait for a press or hand-off.
+ */
+
+type RecordRefusal = Extract<MemoryTaskRecordAnswer, { outcome: "refused" }>["reason"];
+
+/** Service refusals become command errors, so a press gets an answer instead of a silent hand-off. */
+export const RECORD_REFUSALS: Readonly<Record<RecordRefusal, { status: number; message: string }>> = {
+    shuttingDown: { status: 503, message: "The server is shutting down" },
+    maintenance: { status: 503, message: "The server is under maintenance" },
+    staleInput: { status: 409, message: "The chat changed while the recording was being set up" },
+    queueFull: { status: 503, message: "Too many chats are waiting for memory work. Try again later." },
+};
+
+/** Loads the job's scope, sends `accepted`, and refuses what no writer can serve. */
+export function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, messageId: string | undefined): JobScope {
+    try {
+        const scope = loadJobScope(deps.store, deps.kinds, job.context);
+        admitProviderModels(scope, job.hooks.providers);
+        job.emit({ type: "accepted", jobId: job.id, revision: scope.chatRevision, text: "" });
+        const { db } = scope;
+        if (chatMemoryAlgorithm(db, scopeChat(scope)) !== STRUCTURED_MEMORY_ALGORITHM) {
+            throw new GenerationRunnerError(400, "Structured memory is not this chat's memory");
+        }
+        if (
+            !chatMemoryEnabled(
+                scopeChat(scope),
+                db.characters.find((entry) => entry?.chaId === scope.characterId),
+                db,
+            )
+        ) {
+            throw new GenerationRunnerError(400, "Memory is turned off for this chat");
+        }
+        if (summarizesLocally(db)) {
+            throw new GenerationRunnerError(400, "The memory writer cannot run a local summarization model");
+        }
+        const { characterId, chatId } = job.context;
+        const contents = deps.store.memory.readContents(characterId, chatId);
+        if (contents && chatAdoptionHold(deps.store, characterId, chatId, contents) > 0) {
+            throw new GenerationRunnerError(
+                409,
+                "Adopt or decline this chat's HypaV3 summaries in the memory panel before recording",
+            );
+        }
+        if (messageId !== undefined) {
+            const eligible = eligibleHistory(scopeChat(scope)?.message ?? []).messages;
+            if (eligible.find((message) => message.chatId === messageId)?.role !== "char") {
+                throw new GenerationRunnerError(409, "This message cannot be recorded");
+            }
+        }
+        return scope;
+    } catch (error) {
+        throw markFailure(error, { stage: "setup" });
+    }
+}
+
+/**
+ * How `runWindows` ended, with the windows it recorded. `done` ran every window, or stopped between two
+ * when the owner asked; `gone` found the ceiling no longer an eligible message; the other two are the
+ * first window that did not record.
+ */
+type WindowsEnd = { recorded: number } & (
+    { outcome: "done" | "gone" } | { outcome: "failed"; error: string } | { outcome: "skipped"; reason: string }
+);
+
+/**
+ * The writer's windows through `ceiling`, on the job's lease, in order, after those of the marked
+ * events when `rerecords` says a press started it. Only an `initial` run takes the stop control, as the
+ * job's memory runs do. A throw is the job's own end, not a window's.
+ */
+async function runWindows(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    setup: RunSetup,
+    host: MemoryHost,
+    arg: {
+        input: StructuredMemoryTaskInput;
+        ceiling: WriterCeiling;
+        phase: "blocking" | "initial";
+        reason: MemoryBlockingReason | null;
+        rerecords: boolean;
+        /** Record now holds the lease through its metadata flush and task terminal. */
+        lease?: SummaryWriterLease;
+        taskStatus?: JobMemoryTaskStatus | null;
+    },
+): Promise<WindowsEnd> {
+    const { store } = deps;
+    const { scope } = setup;
+    const { input, ceiling } = arg;
+    const { characterId, chatId } = job.context;
+    const counter = jobChatTokenCounter(deps, scope, input.tokenPolicy.chatAdditionalTokens);
+    const tokenizer: MemoryTokenizer = {
+        tokenizeChat: async (chat) => {
+            const tokens = await counter.tokenizeChat(chat);
+            setup.check();
+            return tokens;
+        },
+    };
+    const refreshed = () => {
+        if (!refreshChat(store, scope)) {
+            throw new GenerationRunnerError(404, "The job's chat no longer exists");
+        }
+    };
+    const commitFor =
+        (window: WriterWindow) =>
+        (baseRevision: string, changes: MemoryChanges): StructuredMemoryCommit => {
+            setup.check();
+            job.assertWritable?.();
+            if (
+                store.epoch() !== input.epoch ||
+                store.chatSourceGeneration(characterId, chatId) !== input.sourceGeneration
+            ) {
+                return { outcome: "refused", reason: "staleInput" };
+            }
+            const retired = retireRerecorded(store, input.chatRef, window, changes);
+            if (!retired) {
+                return { outcome: "refused", reason: "windowChanged" };
+            }
+            return commitWindow(store, {
+                charactersKind: deps.kinds.get(RESOURCE_KIND.characters)!,
+                input,
+                window,
+                ceiling,
+                baseRevision,
+                changes: retired,
+                writeReceipt: (group) => {
+                    const applied = job.write(() => ({ chats: [group] }));
+                    refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
+                    job.emitRecords({ chats: [{ characterId, id: chatId }] });
+                },
+            });
+        };
+
+    const lease = arg.lease ?? (await acquireJobWriter(job, deps, setup));
+    const run = openJobMemoryRun(job, setup, arg.phase, arg.reason);
+    let stop: MemoryControl | null = null;
+    try {
+        stop = arg.phase === "initial" ? run.registerStop() : null;
+        // A lease holder reads what the chat's task wrote before the lease.
+        refreshed();
+        const windows = await confirmedWindows({
+            messages: scopeChat(scope)?.message ?? [],
+            greeting: writerGreeting(
+                scope.db.characters.find((owner) => owner?.chaId === characterId),
+                scopeChat(scope),
+            ),
+            confirmedBefore: ceiling.id,
+            inclusive: ceiling.inclusive,
+            recorded: readRecordedMessages(store, characterId, chatId),
+            cadence: writerCadence(scope.db),
+            maxContext: input.maxContext,
+            tokenizer,
+            limit: MEMORY_TASK_LIMITS.maxWriterWindows,
+            manual: true,
+            ...(arg.rerecords ? { rerecord: readRerecordEvents(store, characterId, chatId) } : {}),
+        });
+        setup.check();
+        if (!windows) {
+            return { outcome: "gone", recorded: 0 };
+        }
+        arg.taskStatus?.progress(0, windows.length);
+        const writer = createStructuredWriter(store);
+        let recorded = 0;
+        for (const [index, window] of windows.entries()) {
+            if (stop?.stopRequested()) {
+                break;
+            }
+            run.update({ done: index, total: windows.length });
+            setup.check();
+            refreshed();
+            const historical = historicalWindow(store, characterId, chatId, scopeChat(scope)?.message ?? [], window);
+            const result = await writer({
+                scope,
+                input,
+                host,
+                tokenizer,
+                window,
+                manual: true,
+                ...(historical ? { historical } : {}),
+                commit: commitFor(window),
+            });
+            setup.check();
+            if (result.outcome !== "recorded") {
+                return { ...result, recorded };
+            }
+            recorded++;
+            arg.taskStatus?.progress(recorded, windows.length);
+        }
+        return { outcome: "done", recorded };
+    } finally {
+        try {
+            stop?.release();
+        } finally {
+            try {
+                if (!arg.lease) lease.release();
+            } finally {
+                run.close();
+            }
+        }
+    }
+}
+
+/** Records in the job: see the file's comment. */
+async function recordInJob(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    scope: JobScope,
+    arg: { input: StructuredMemoryTaskInput; ceiling: WriterCeiling; reason: MemoryBlockingReason | null },
+): Promise<void> {
+    const { characterId } = job.context;
+    const state = createJobRunState(job, deps.scriptWorkers.createBudget());
+    const setup = createRunSetup(job, deps, state, scope, {
+        runCharacterId: characterId,
+        engineCharacterId: characterId,
+    });
+    // The input's fingerprint was taken from the settings as they stand: a request reads the scope's
+    // copy, and only that copy takes the writer's policy.
+    scope.request = { ...scope.request, db: writerRequestDb(scope.request.db) };
+    const host = createJobMemoryHost({
+        deps,
+        setup,
+        chatRef: arg.input.chatRef,
+        embeddingEnv: setup.bindings.services.embeddings(setup.nativeCtx),
+    });
+    let lease: SummaryWriterLease | undefined;
+    let taskStatus: JobMemoryTaskStatus | null | undefined;
+    // Job finalization can precede a suspended runner settling. Its aborted write fence makes this
+    // revision final now; pending metadata cannot write after abort either.
+    const aborted = () => {
+        taskStatus?.end("cancelled", { reason: "cancelled" });
+        lease?.release();
+    };
+    try {
+        job.emit({ type: "stage", stage: "memory" });
+        lease = await acquireJobWriter(job, deps, setup);
+        taskStatus = deps.memoryTasks?.openJobStatus?.(arg.input);
+        job.signal.addEventListener("abort", aborted, { once: true });
+        if (job.signal.aborted) aborted();
+        setup.check();
+        const ended = await runWindows(job, deps, setup, host, {
+            ...arg,
+            phase: "blocking",
+            rerecords: true,
+            lease,
+            taskStatus,
+        });
+        if (ended.outcome === "gone") {
+            taskStatus?.end("skipped", { reason: "windowChanged" });
+            throw new GenerationRunnerError(409, "This message can no longer be recorded", { stage: "persist" });
+        }
+        if (ended.outcome === "failed") {
+            throw new GenerationRunnerError(500, host.redact(ended.error), { stage: "request" });
+        }
+        if (ended.outcome === "skipped") {
+            taskStatus?.end("skipped", { reason: ended.reason });
+            throw new GenerationRunnerError(409, ended.reason, { stage: "persist", code: "memoryRecordSkipped" });
+        }
+        flushChatMetadata(job);
+        taskStatus?.end("done");
+    } catch (error) {
+        // A latched failure is the job's own, whatever surfaced first.
+        const failure = setup.bindings.fatal() ?? error;
+        if (job.signal.aborted) aborted();
+        else
+            taskStatus?.end("failed", {
+                error: host.redact(failure instanceof Error ? failure.message : String(failure)),
+            });
+        throw markFailure(failure, { stage: "request" });
+    } finally {
+        job.signal.removeEventListener("abort", aborted);
+        // The terminal precedes release, so no queued successor can publish or start ahead of it.
+        lease?.release();
+    }
+}
+
+/**
+ * A send's approved gap: the windows open before the input's ceiling, up to `maxWriterWindows`, in the
+ * send, with the writer's request policy around them alone, so the reply's own request keeps its
+ * temperature and schema. Answers how many it recorded, whichever way the run ended.
+ */
+export async function recordGapInJob(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    setup: RunSetup,
+    host: MemoryHost,
+    input: StructuredMemoryTaskInput,
+): Promise<number> {
+    const { scope } = setup;
+    const request = scope.request;
+    scope.request = { ...request, db: writerRequestDb(request.db) };
+    try {
+        const { recorded } = await runWindows(job, deps, setup, host, {
+            input,
+            ceiling: { id: input.confirmedBefore, inclusive: false },
+            phase: "initial",
+            reason: "gap",
+            rerecords: false,
+        });
+        return recorded;
+    } finally {
+        scope.request = request;
+    }
+}
+
+/** The `memoryRecord` command, `messageId` its message: see the file's comment. */
+export async function runMemoryRecord(
+    job: RunningJob,
+    messageId: string | undefined,
+    deps: GenerationRunnerDeps,
+): Promise<void> {
+    const { store } = deps;
+    const { characterId, chatId } = job.context;
+    const scope = admitRecord(job, deps, messageId);
+    const result: MemoryRecordResult = { memoryRecord: "completed" };
+    const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
+    const messages = scopeChat(scope)?.message ?? [];
+    const confirmedBefore =
+        messageId ??
+        writerCeiling(messages) ??
+        greetingRerecordCeiling(
+            messages,
+            readRerecordEvents(store, characterId, chatId),
+            writerGreeting(owner, scopeChat(scope)),
+        );
+    if (confirmedBefore === null) {
+        job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result });
+        return;
+    }
+    const input: StructuredMemoryTaskInput = {
+        ...jobMemoryTaskBase({
+            job,
+            scope,
+            sourceGeneration: scope.chatSourceGeneration!,
+            speakerId: owner?.type === "group" ? null : characterId,
+            fromChain: false,
+            chatAdditionalTokens: 0,
+        }),
+        kind: "structuredMemory",
+        confirmedBefore,
+    };
+    const reason = jobMemoryBlockingReason(scope);
+    if (!deps.memoryTasks || reason !== null) {
+        const ceiling = { id: confirmedBefore, inclusive: messageId !== undefined };
+        await recordInJob(job, deps, scope, { input, ceiling, reason });
+    } else {
+        const answer = deps.memoryTasks.record(input, messageId !== undefined ? { through: messageId } : {});
+        if (answer.outcome === "refused") {
+            const { status, message } = RECORD_REFUSALS[answer.reason];
+            throw new GenerationRunnerError(status, message, { stage: "setup" });
+        }
+        result.memoryRecord = "queued";
+    }
+    // Synchronous after queueing: the service starts a queued input on a later turn, so after this terminal.
+    job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result });
+}

@@ -1,3 +1,10 @@
+import { chatMemorySummary } from "../../../shared/chatMemory.ts";
+import {
+    isRerollCarrier,
+    selectCandidateChange,
+    normalizeCandidateFields,
+    withoutCandidateCheckpoints,
+} from "../../../shared/rerollCandidates.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
     ChatConflict,
@@ -12,8 +19,23 @@ import type {
     TranslationOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
-import type { Chat, MessageTranslation } from "../../../shared/database.ts";
-import { type ChatPatchBody, MAX_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../shared/resources.ts";
+import { oocExchangeError } from "../../../shared/ooc.ts";
+import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
+import {
+    type ChangeSet,
+    type ChatDeltaBody,
+    type ChatMetaFields,
+    type ChatPatchBody,
+    type ChatRowDeltaBody,
+    type ChatRowDiff,
+    type ChatRowsReadResult,
+    type ResourceReadEntries,
+    MAX_FEED_PATCH_BYTES,
+    SMALL_FEED_PATCH_BYTES,
+    RESOURCE_KIND,
+} from "../../../shared/resources.ts";
+import { hypaV3DataHoldsSummaries, isSealedHypaV3Data, memorySourceSpeaker } from "../../../shared/structuredMemory.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { chatTranslationSummary } from "../../../shared/translation/chatSettings.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -25,13 +47,25 @@ import {
     normalizeMessage,
     normalizeMessageList,
 } from "./chats.ts";
-import { isValidResourceId, nextRevision, ResourceValidationError, serialize } from "./resourceStore.ts";
+import {
+    isValidResourceId,
+    nextRevision,
+    NOT_A_RESOURCE_DATABASE,
+    ResourceValidationError,
+    serialize,
+    snapshotRows,
+} from "./resourceStore.ts";
 
 /**
  * The chat tables of the resource database: chat metadata (`chats`), one row per message (`messages`,
- * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), and each
- * character's chat order (`chatOrders`). The resource store owns the connection, the epoch, and the
- * transactions; this module prepares, applies, reads, and validates chat changes inside them.
+ * keyed by the chat's incarnation `seq` and `Message.chatId`, ordered by `position`), each
+ * character's chat order (`chatOrders`), and each chat's stored summary projection (`chatSummaries`).
+ * The resource store owns the connection, the epoch, and the transactions; this module prepares,
+ * applies, reads, and validates chat changes inside them. Candidate revisions and checkpoint retention
+ * are store-owned: appends keep snapshots on the newest non-comment message and live job rows;
+ * appended comments never keep them. By-id writes cannot restore absent snapshots unless admitted
+ * by a generation fence or made by the row's lock owner. Reroll variable provenance is staged with
+ * the same transaction.
  *
  * Positions: an insert shifts the rows after its anchor by the number of inserted messages; a
  * removal leaves a gap. Positions are distinct within a chat but not unique-constrained, because
@@ -46,6 +80,7 @@ export const CHAT_TABLES_SQL = `
         revision INTEGER NOT NULL,
         schemaVersion INTEGER NOT NULL,
         meta TEXT NOT NULL,
+        trashedAt INTEGER,
         UNIQUE (characterId, id)
     ) STRICT;
     CREATE TABLE messages (
@@ -68,9 +103,18 @@ export const CHAT_TABLES_SQL = `
     ) STRICT;
 `;
 
+/** CROSS JOIN keeps the requested ids driving point lookups before sorting the selected rows. */
+export const TOUCHED_ROWS_SQL = `
+    SELECT m.id, m.data,
+        (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position
+            ORDER BY p.position DESC LIMIT 1) AS after
+    FROM json_each(?) r CROSS JOIN messages m ON m.chatSeq = ? AND m.id = r.value
+    ORDER BY m.position
+`;
+
 /** Column names of the chat tables, in `PRAGMA table_info` order (snapshot layout check). */
 export const CHAT_TABLE_COLUMNS: Record<string, readonly string[]> = {
-    chats: ["seq", "characterId", "id", "revision", "schemaVersion", "meta"],
+    chats: ["seq", "characterId", "id", "revision", "schemaVersion", "meta", "trashedAt"],
     messages: [
         "chatSeq",
         "id",
@@ -105,6 +149,271 @@ export const CHAT_GROUP_TABLE_SQL = `
     ) STRICT;
 `;
 
+// Only jobs create these rows. Old chats have no floor; a restored snapshot starts a new epoch.
+const CHAT_MEMORY_WRITES_SQL = `
+    CREATE TABLE IF NOT EXISTS chatMemoryWrites (
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        field TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        PRIMARY KEY (chatSeq, field)
+    ) STRICT;
+`;
+
+/**
+ * Each chat's summary projection, so a summary read costs its stored text and not a parse of the
+ * whole metadata. `text` is `summaryText` of the chat's stored metadata: without the last message's
+ * time (memoized apart) and without the revision. `revision` is the chat's revision at the last write
+ * by a server that maintains this table, and a row is fresh when it equals `chats.revision`: an older
+ * server ignores the table and bumps revisions as it writes, so its edits leave rows behind, and a
+ * stale or missing row is rebuilt at open (`openChatSchema`) or by the next reader
+ * (`freshSummaryText`). Keyed by the chat's incarnation, so deleting the chat drops its row by
+ * cascade. Created when missing; not part of the snapshot layout (`CHAT_TABLE_COLUMNS`): a snapshot's
+ * copy is ignored and a restore writes its own rows.
+ */
+export const CHAT_SUMMARY_TABLE_SQL = `
+    CREATE TABLE IF NOT EXISTS chatSummaries (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        text TEXT NOT NULL
+    ) STRICT;
+`;
+
+/**
+ * `memory_state`'s column for a person's decline of adopting the chat's HypaV3 summaries, in the table's
+ * `CREATE` and in what `openChatSchema` adds to a table from before it, so the two cannot differ.
+ */
+const MEMORY_DECLINE_COLUMN_SQL = "adoptionDeclined INTEGER NOT NULL DEFAULT 0";
+
+/**
+ * Each chat's structured memory (`memoryStore.ts`): a table each for pages, events, threads, and writer
+ * runs, one row per record with the whole record as stored JSON in `data`, and `memory_state`, the one
+ * revision over all of them and the chat's decline of adoption, which a chat has no row in until its
+ * first memory write. `seq` is storage order, not message order. `data` is the last column, so a
+ * table-of-contents read stops before it.
+ * Keyed by the chat's incarnation (`chats.seq`): deleting the chat drops its rows by cascade, and the
+ * prefix of `UNIQUE (chatSeq, id)` keeps that cascade from scanning a table. `memory_pages_scene` holds
+ * a chat to one `scene` page; `memoryStore.ts` refuses a second one before it reaches this index. Created
+ * when missing; not part of the required snapshot layout (`CHAT_TABLE_COLUMNS`), so a snapshot from
+ * before them restores with none, but a snapshot with any of them has them all checked and restored
+ * (`walkMemorySnapshot`). Event citations are derived separately by `MEMORY_EVENT_SOURCES_SQL`.
+ */
+export const MEMORY_TABLES_SQL = `
+    CREATE TABLE IF NOT EXISTS memory_state (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        revision INTEGER NOT NULL,
+        ${MEMORY_DECLINE_COLUMN_SQL}
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_pages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_pages_scene ON memory_pages (chatSeq) WHERE type = 'scene';
+    CREATE TABLE IF NOT EXISTS memory_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        createdRevision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_threads (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        state TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_runs (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        result TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+`;
+
+/**
+ * A chat's rebuild (`memoryStore.ts`): `memory_rebuilds`, the run itself, and the staged tables holding what
+ * it records until its swap: the same columns, uniqueness, and scene index as the record tables above, each
+ * row going with its chat by cascade. `plan` is a JSON list of message-id arrays or `{ ids, greeting }`
+ * windows with their stored greeting source, written once;
+ * `cursor` counts the windows done and `revision` the staged set's writes, which is its own counter.
+ * `sourceReplaced` is set in the commit of a whole-chat replace: the store's source generations live in
+ * memory and start over with a process, and a run outlives one.
+ * None of these is a record: they are in no snapshot walk, checkpoint, chat file, or inherit, and the
+ * snapshot layout names none of them, so a restore leaves them behind with the chats it deletes.
+ */
+const MEMORY_REBUILD_TABLES_SQL = `
+    CREATE TABLE IF NOT EXISTS memory_rebuilds (
+        chatSeq INTEGER PRIMARY KEY REFERENCES chats (seq) ON DELETE CASCADE,
+        mode TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        sourceReplaced INTEGER NOT NULL DEFAULT 0,
+        cursor INTEGER NOT NULL,
+        total INTEGER NOT NULL,
+        plan TEXT NOT NULL,
+        reason TEXT,
+        error TEXT
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_staged_pages (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_staged_pages_scene ON memory_staged_pages (chatSeq) WHERE type = 'scene';
+    CREATE TABLE IF NOT EXISTS memory_staged_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL,
+        createdRevision INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_staged_threads (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        state TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS memory_staged_runs (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        result TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+`;
+
+const MEMORY_EVENT_SOURCE_TABLES = [
+    { events: "memory_events", sources: "memory_event_sources" },
+    { events: "memory_staged_events", sources: "memory_staged_event_sources" },
+];
+
+/**
+ * Message-to-event citations for live and staged records, keyed by chat incarnation. Created at open,
+ * outside the snapshot and checkpoint layouts: triggers derive them on every insert, update, and
+ * delete, including restore copies and writes by an older build. The event index bounds replacement
+ * and deletion; the primary key finds events citing a changed message without reading their bodies.
+ * Guards leave text SQLite cannot parse untouched and unindexed. Object sources with a string
+ * `messageId` count whether anchored or not, matching `storedMemorySources` for ordinary JSON.stringify
+ * output; crafted duplicate or NUL-containing keys can make SQLite's paths differ from JSON.parse.
+ */
+const MEMORY_EVENT_SOURCES_SQL = MEMORY_EVENT_SOURCE_TABLES.map(({ events, sources }) => {
+    // An outer upsert's DO UPDATE can override OR IGNORE, so duplicate citations are removed first.
+    const insert = `
+        INSERT OR IGNORE INTO ${sources} (chatSeq, messageId, eventId)
+            SELECT DISTINCT NEW.chatSeq, json_extract(source.value, '$.messageId'), NEW.id
+                FROM json_each(CASE WHEN json_valid(NEW.data) THEN NEW.data END, '$.sources') source
+                WHERE json_type(CASE WHEN json_valid(NEW.data) THEN NEW.data END, '$.sources') = 'array'
+                    AND source.type = 'object' AND json_type(source.value, '$.messageId') = 'text';`;
+    const remove = `DELETE FROM ${sources} WHERE chatSeq = OLD.chatSeq AND eventId = OLD.id;`;
+    return `
+        CREATE TABLE IF NOT EXISTS ${sources} (
+            chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+            messageId TEXT NOT NULL,
+            eventId TEXT NOT NULL,
+            PRIMARY KEY (chatSeq, messageId, eventId)
+        ) STRICT, WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS ${sources}_event ON ${sources} (chatSeq, eventId);
+        CREATE TRIGGER IF NOT EXISTS ${sources}_insert AFTER INSERT ON ${events}
+        BEGIN
+            ${insert}
+        END;
+        CREATE TRIGGER IF NOT EXISTS ${sources}_update AFTER UPDATE ON ${events}
+        BEGIN
+            ${remove}
+            ${insert}
+        END;
+        CREATE TRIGGER IF NOT EXISTS ${sources}_delete AFTER DELETE ON ${events}
+        BEGIN
+            ${remove}
+        END;
+    `;
+}).join("");
+
+/** Display synopses are created at every open and cascade with their chat. Restore walks only the
+ * record tables in the memory group, even when the source database also holds chapters. */
+const MEMORY_CHAPTERS_SQL = `
+    CREATE TABLE IF NOT EXISTS memory_chapters (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+`;
+
+/**
+ * A message's role as `messages_role` indexes it. A query reaches that index only through this exact
+ * expression, so every statement that counts by role builds on this text.
+ */
+const MESSAGE_ROLE_SQL = "json_extract(data, '$.role')";
+
+/**
+ * Lets a count by role read no message row. Created when missing (`openChatSchema`), not part of the
+ * snapshot layout (`CHAT_TABLE_COLUMNS`); SQLite maintains it on every write of a message's `data`.
+ */
+const MESSAGE_ROLE_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_role ON messages (chatSeq, ${MESSAGE_ROLE_SQL});`;
+
+/**
+ * Checkpoint keys in the server's canonical `JSON.stringify` text: whole-row preparation and snapshot
+ * staging reserialize messages, so keys have this exact spelling and quotes inside string values are
+ * escaped. A byte scan avoids parsing candidate arrays; the cleanup query repeats this exact predicate
+ * so SQLite can use the partial index. Keys nested elsewhere are harmless false positives: the append
+ * loop rechecks them with `withoutCandidateCheckpoints` and skips unchanged serialized text.
+ */
+const MESSAGE_CHECKPOINT_PREDICATE_SQL = `(instr(data, '"scriptstateCheckpoint":') > 0 OR instr(data, '"scriptstateAfter":') > 0)`;
+
+/**
+ * Messages that may need checkpoint cleanup after any fresh append, indexed by chat without pruning
+ * candidate history. Retention follows the newest non-comment message's stored position. Created when
+ * missing (`openChatSchema`), outside the snapshot layout (`CHAT_TABLE_COLUMNS`); SQLite maintains it
+ * on every write of a message's `data`, including staged imports and restores.
+ */
+const MESSAGE_CHECKPOINT_INDEX_SQL = `CREATE INDEX IF NOT EXISTS messages_checkpoints ON messages (chatSeq) WHERE ${MESSAGE_CHECKPOINT_PREDICATE_SQL};`;
+
+/**
+ * Lets memory rounds seek within one chat in storage order without sorting. Created when missing at
+ * open, including staged restores, and outside the snapshot layout; updates keep each record's `seq`.
+ */
+const MEMORY_ROUND_INDEXES_SQL = `
+    CREATE INDEX IF NOT EXISTS memory_runs_chat_seq ON memory_runs (chatSeq, seq);
+    CREATE INDEX IF NOT EXISTS memory_threads_chat_seq ON memory_threads (chatSeq, seq);
+`;
+
+/**
+ * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
+ * writer too, so a staged file has the live schema.
+ */
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_MEMORY_WRITES_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MEMORY_CHAPTERS_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}${MEMORY_ROUND_INDEXES_SQL}`;
+
+/** A chat's user messages, answered from `messages_role` alone: no message row is read. */
+export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
+
+const UPSERT_CHAT_SUMMARY_SQL =
+    "INSERT INTO chatSummaries (chatSeq, revision, text) VALUES (?, ?, ?) " +
+    "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision, text = excluded.text";
+
 /**
  * How many group ids a chat remembers (the newest ones; the oldest is dropped). A lost answer is
  * resent on the client's next save cycle, so the ids need to outlive only the other writers' groups
@@ -117,37 +426,73 @@ export const MAX_CHAT_GROUP_ID_LENGTH = 128;
 
 /** A remembered group's answer besides its ids and revision (`chatGroups.result`). */
 type RememberedResult = {
+    memoryRefused?: true;
+    oocAnswerRefusals?: ChatGroupResult["oocAnswerRefusals"];
+    refusedMeta?: ChatGroupResult["refusedMeta"];
     stale?: true;
     /** Only when the server gave a message a fresh id; otherwise rebuilt from the replayed group. */
     messageIds?: string[];
     /** How many `checkpoints` entries the answer had (a replay answers each `duplicate`). */
     checkpoints?: number;
     translations?: TranslationOutcome[];
+    selections?: ChatGroupResult["selections"];
+    candidateRows?: ChatGroupResult["candidateRows"];
     targets?: TargetOutcome[];
 };
 
 type Generation = { id: string; seq: number; final: boolean };
 
 type PreparedOp =
-    | { op: "create"; meta: string; messages: PreparedMessage[]; renamed: boolean; index: number | null }
+    | {
+          op: "create";
+          meta: string;
+          summary: string;
+          messages: PreparedMessage[];
+          renamed: boolean;
+          index: number | null;
+      }
     | { op: "delete" }
-    | { op: "replace"; meta: string; messages: PreparedMessage[]; renamed: boolean }
+    | { op: "replace"; meta: string; summary: string; messages: PreparedMessage[]; renamed: boolean }
     | {
           op: "meta";
           set: Record<string, unknown>;
           unset: string[];
           merge: Record<string, Record<string, unknown>>;
           mergeUnset: Record<string, string[]>;
+          ifOocUnanswered?: string;
+          acceptMatchingOocExchange?: true;
       }
     | { op: "append"; messages: PreparedMessage[]; anchor: { start: true } | { end: true } | { after: string } }
     | { op: "setMessage"; message: PreparedMessage; generation: Generation | null }
     | { op: "setText"; id: string; text: string; generation: Generation | null }
     | { op: "patchMessage"; id: string; set: Record<string, unknown>; unset: string[] }
-    | { op: "remove"; ids: string[] }
+    | { op: "remove"; ids: string[]; retract: boolean }
     | { op: "begin"; id: string; generationId: string }
-    | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
+    | {
+          op: "setTranslation";
+          id: string;
+          translation: MessageTranslation | null;
+          /** A detached run's starting record; absent for an unconditional editor save. */
+          expectTranslation?: MessageTranslation | null;
+      }
+    | { op: "selectCandidate"; messageId: string; candidateId: string; expect: { candidatesRevision: number } };
 
 type PreparedMessage = { id: string; text: string };
+
+/**
+ * What a by-id group did to the evidence in a chat's messages, once it commits: `retracted`, the messages
+ * a `remove` with `retract` deleted, and `rewritten`, those a person's write gave another `role`, `data`,
+ * or normalized group speaker (`saying`), which a current memory source's hash reads. A write of a job
+ * or a generation reports nothing, nor does a change of any other field, nor an id the group inserted or removed.
+ */
+export type ChatMessageChanges = {
+    characterId: string;
+    id: string;
+    retracted: string[];
+    rewritten: string[];
+    /** Rewritten messages whose normalized speaker changed, which a legacy memory hash cannot detect. */
+    speakerChanged?: string[];
+};
 
 export type PreparedChatGroup = {
     characterId: string;
@@ -172,6 +517,7 @@ export type ChatSnapshotRows = {
         revision: number;
         schemaVersion: number;
         meta: string;
+        trashedAt: number | null;
     }[];
     readonly messages: readonly {
         chatSeq: number;
@@ -185,6 +531,136 @@ export type ChatSnapshotRows = {
     }[];
     readonly chatOrders: readonly { characterId: string; revision: number; ids: string }[];
 };
+
+/**
+ * Where `walkChatSnapshot` hands each row it checked, as it reads them. `meta` of a chat is the
+ * row's metadata as its stored text reads back.
+ */
+export type ChatSnapshotSink = {
+    chat(row: ChatSnapshotRows["chats"][number], meta: Record<string, unknown>): void;
+    message(row: ChatSnapshotRows["messages"][number]): void;
+    chatOrder(row: ChatSnapshotRows["chatOrders"][number]): void;
+};
+
+/**
+ * What one by-id chat group changed, as stored right after it, for the writer that asked
+ * (`applyChanges` with `changes: true`). Rows and metadata stay the stored JSON strings.
+ */
+export type ChatWriteChange = {
+    /** The stored revision right before the group; for a stale group, newer than its requested base. */
+    baseRevision: string;
+    /** The revision after the group (advanced by its applied op count). */
+    revision: string;
+    /** The message count after the group. */
+    count: number;
+    /** The ids of the rows the group removed that were there before it, in removal order. */
+    removed: string[];
+    /**
+     * Every row the group touched, as stored now (its `data` column), in position order; `after` is
+     * the id of the row right before it by position, null at the start.
+     */
+    rows: { id: string; after: string | null; data: string }[];
+    /** The stored metadata JSON (`meta`), only when the group changed the metadata. */
+    meta?: string;
+};
+
+/**
+ * What a group's feed entry carries beside its ref (`shared/resources.ts` `ChangeSet["chats"]`):
+ * its by-id change, as a `patch`, `delta`, `rowDelta`, or `rows` manifest, and its summary knowledge.
+ * Feed-only: never in HTTP results.
+ *
+ * An applied by-id group carries `summary` at its revision when the summary changed, otherwise
+ * `summaryBase`, its stored base revision. The comparison ignores revisions: projection text before
+ * the first metadata op and after the last is compared without parsing it (`freshSummaryText` may
+ * rebuild a missing or stale projection from parsed metadata). Message ops also compare
+ * `lastMessageAt` immediately before the first one, even when absent, and after the group, inside
+ * the transaction without the memo. Thus a note edit with removal of the last row, or leaving an
+ * undated last row, still detects a changed time. A changed summary without a message op reads the
+ * time once to complete it.
+ * Removing and reappending one id keeps summary knowledge but carries no body or row manifest.
+ * Whole-chat writes, no-op groups and deletions carry neither summary field: unknown, preserving
+ * the summary-list read in `src/ts/storage/chatStore.svelte.ts`. Remembered groups publish no feed
+ * entry at all (`server/src/data/resourceStore.ts`).
+ */
+export type ChatFeedPayloads = Pick<
+    ChangeSet["chats"][number],
+    "patch" | "delta" | "rowDelta" | "rows" | "summary" | "summaryBase"
+>;
+
+/** Live publications always carry the stored mark for a surviving chat. */
+export type LiveChatChange = ChangeSet["chats"][number] &
+    ({ revision: string; trashedAt: number | null } | { revision: null });
+
+/**
+ * Where a by-id group's change leaves a chat's messages, from their ids at its base (`base`, in
+ * position order): each entry is the id of a message the group left alone or the index of the
+ * change row placed there (`change.rows[index]`). Null when the change does not fit the base: the
+ * base ids are not unique strings, a removed id is not one of them exactly once, a row id repeats
+ * or was removed, a row's anchor (`after`) is neither the start, a base message the group left
+ * alone, nor an earlier row of the change, two rows share an anchor, or the result does not have
+ * `change.count` messages.
+ *
+ * The messages the group left alone keep their order (a by-id group never moves one); each row
+ * goes right after its anchor, so a row anchored on another row of the change follows that row,
+ * and the rows come out in the change's order (final position order).
+ */
+export function messageOrderAfterChange(base: readonly unknown[], change: ChatWriteChange): (string | number)[] | null {
+    const ids = new Set<string>();
+    for (const id of base) {
+        if (typeof id !== "string" || ids.has(id)) {
+            return null;
+        }
+        ids.add(id);
+    }
+    const removed = new Set(change.removed);
+    if (removed.size !== change.removed.length || change.removed.some((id) => !ids.has(id))) {
+        return null;
+    }
+    const rowIndex = new Map<string, number>();
+    change.rows.forEach((row, index) => rowIndex.set(row.id, index));
+    if (rowIndex.size !== change.rows.length) {
+        return null;
+    }
+    // The one row placed right after each anchor (null: the start).
+    const following = new Map<string | null, number>();
+    for (const [index, row] of change.rows.entries()) {
+        const anchor = row.after;
+        const anchorRow = anchor === null ? undefined : rowIndex.get(anchor);
+        const anchored =
+            anchor === null || (anchorRow !== undefined ? anchorRow < index : ids.has(anchor) && !removed.has(anchor));
+        if (removed.has(row.id) || !anchored || following.has(anchor)) {
+            return null;
+        }
+        following.set(anchor, index);
+    }
+    const order: (string | number)[] = [];
+    let placed = 0;
+    /** Places the rows chained after `anchor`; false when one comes out of the change's order. */
+    const place = (anchor: string | null): boolean => {
+        for (let index = following.get(anchor); index !== undefined; index = following.get(change.rows[index].id)) {
+            if (index !== placed) {
+                return false;
+            }
+            order.push(index);
+            placed += 1;
+        }
+        return true;
+    };
+    if (!place(null)) {
+        return null;
+    }
+    // Unique strings, checked above.
+    for (const id of base as readonly string[]) {
+        if (removed.has(id) || rowIndex.has(id)) {
+            continue;
+        }
+        order.push(id);
+        if (!place(id)) {
+            return null;
+        }
+    }
+    return placed === change.rows.length && order.length === change.count ? order : null;
+}
 
 type TokenFunctions = {
     token(seq: number, revision: number): string;
@@ -208,6 +684,165 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Whether two stored JSON values are equal as JSON values, whatever their key order. */
+function sameJson(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b) || sortedJson(a) === sortedJson(b);
+}
+
+type SummaryFields = Omit<ChatSummary, "characterId" | "id" | "revision">;
+type SummaryProjection = Omit<SummaryFields, "lastMessageAt" | "trashedAt">;
+
+/**
+ * The shape of the stored projection (`summaryText`). Bump it whenever the projection's shape changes:
+ * an open that finds another value in the `meta` table's `summaryProjectionVersion` rebuilds every row.
+ */
+export const SUMMARY_PROJECTION_VERSION = 3;
+
+/**
+ * A chat summary's listed fields: the projection of its stored metadata (the JSON copy, never a
+ * normalizer's raw output), everything but its identity, its revision, and the time of its last
+ * message, in the summary's key order.
+ */
+function summaryFields(meta: Record<string, unknown>): SummaryProjection {
+    const fields: SummaryProjection = {
+        name: typeof meta.name === "string" ? meta.name : "",
+        fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
+    };
+    if (typeof meta.folderId === "string") {
+        fields.folderId = meta.folderId;
+    }
+    if (typeof meta.bindedPersona === "string") {
+        fields.bindedPersona = meta.bindedPersona;
+    }
+    if (typeof meta.promptPresetId === "string") {
+        fields.promptPresetId = meta.promptPresetId;
+    }
+    if (typeof meta.modelPresetId === "string") {
+        fields.modelPresetId = meta.modelPresetId;
+    }
+    if (typeof meta.bindingReview === "boolean") {
+        fields.bindingReview = meta.bindingReview;
+    }
+    if (meta.pinned === true) {
+        fields.pinned = true;
+    }
+    // List-editable translation and memory metadata.
+    Object.assign(fields, chatTranslationSummary(meta), chatMemorySummary(meta));
+    return fields;
+}
+
+/**
+ * The stored form of a chat's projection (`chatSummaries.text`). Its key order is fixed and every value
+ * is a string, number, or boolean, so two projections are equal exactly when their texts are.
+ */
+function summaryText(meta: Record<string, unknown>): string {
+    return JSON.stringify(summaryFields(meta));
+}
+
+/** A stored projection's fields with the time of the chat's last message, in the summary's key order. */
+function summaryWithTime(text: string, lastMessageAt: number | undefined, trashedAt: number | null): SummaryFields {
+    const { name, fmIndex, ...rest } = JSON.parse(text) as SummaryProjection;
+    return {
+        name,
+        fmIndex,
+        ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
+        ...(trashedAt === null ? {} : { trashedAt }),
+        ...rest,
+    };
+}
+
+/**
+ * The field form (`ChatMetaFields`) of the change from one stored metadata value to another, or
+ * null when they are equal as JSON values. Computed from the stored values, never from the ops that
+ * led there (a stale group merges onto the stored base, and normalization rewrites the result).
+ * Built from entries, so a map entry named like an `Object.prototype` member (`__proto__`) stays an
+ * own key, and no value is `undefined`.
+ */
+function chatMetaFields(before: Record<string, unknown>, after: Record<string, unknown>): ChatMetaFields | null {
+    const remove = Object.keys(before).filter((key) => !Object.hasOwn(after, key));
+    const set: [string, unknown][] = [];
+    const merge: [string, Record<string, unknown>][] = [];
+    const mergeUnset: [string, string[]][] = [];
+    for (const key of Object.keys(after)) {
+        const had = Object.hasOwn(before, key);
+        const old = had ? before[key] : undefined;
+        const value = after[key];
+        if (had && sameJson(old, value)) {
+            continue;
+        }
+        if (had && CHAT_META_MERGE_KEYS.includes(key) && isPlainObject(old) && isPlainObject(value)) {
+            // A map at both revisions: by entry.
+            const gone = Object.keys(old).filter((id) => !Object.hasOwn(value, id));
+            const entries = Object.keys(value)
+                .filter((id) => !Object.hasOwn(old, id) || !sameJson(old[id], value[id]))
+                .map((id): [string, unknown] => [id, value[id]]);
+            if (entries.length > 0) {
+                merge.push([key, Object.fromEntries(entries)]);
+            }
+            if (gone.length > 0) {
+                mergeUnset.push([key, gone]);
+            }
+            continue;
+        }
+        set.push([key, value]);
+    }
+    if (remove.length === 0 && set.length === 0 && merge.length === 0 && mergeUnset.length === 0) {
+        return null;
+    }
+    const fields: ChatMetaFields = { set: Object.fromEntries(set), remove };
+    if (merge.length > 0) {
+        fields.merge = Object.fromEntries(merge);
+    }
+    if (mergeUnset.length > 0) {
+        fields.mergeUnset = Object.fromEntries(mergeUnset);
+    }
+    return fields;
+}
+
+type ChatRowDiffCandidate = { diff: ChatRowDiff; beforeText: string };
+
+/**
+ * An existing row's fields and text from its first stored read to its final value. A non-string
+ * `data` or a changed own `__proto__` field needs a whole row. Equal JSON fields keep no diff even
+ * when their object keys were stored in another order. A text hash uses a fixed-width placeholder
+ * for size measurement; its captured old text is hashed only if the rowDelta is selected.
+ */
+function chatRowDiff(
+    id: string,
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+): ChatRowDiffCandidate | null {
+    if (typeof before.data !== "string" || typeof after.data !== "string") {
+        return null;
+    }
+    const unset = Object.keys(before).filter((key) => key !== "data" && !Object.hasOwn(after, key));
+    const set = Object.keys(after)
+        .filter((key) => key !== "data" && (!Object.hasOwn(before, key) || !sameJson(before[key], after[key])))
+        .map((key): [string, unknown] => [key, after[key]]);
+    if (unset.includes("__proto__") || set.some(([key]) => key === "__proto__")) {
+        return null;
+    }
+    const diff: ChatRowDiff = { id };
+    if (unset.length > 0 || set.length > 0) {
+        diff.fields = { set: Object.fromEntries(set), unset };
+    }
+    if (before.data !== after.data) {
+        let keep = before.data.length;
+        if (!after.data.startsWith(before.data)) {
+            keep = 0;
+            while (keep < before.data.length && keep < after.data.length && before.data[keep] === after.data[keep]) {
+                keep += 1;
+            }
+        }
+        diff.text = {
+            keep,
+            text: after.data.slice(keep),
+            base: { length: before.data.length, hash: "00000000000000" },
+        };
+    }
+    return { diff, beforeText: before.data };
+}
+
 function isNonNegativeSafeInteger(value: unknown): value is number {
     return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -218,21 +853,35 @@ function isPositiveSafeInteger(value: unknown): value is number {
 
 /** Normalizes the JSON copy of a message (what is stored), not the input: an in-process `toJSON` cannot change it after the check. */
 function prepareMessage(input: unknown): PreparedMessage {
-    const message = normalizeMessage(serialize(input).stored);
+    const message = normalizeMessage(serialize(input).stored, true);
     return { id: message.chatId as string, text: serialize(message).text };
+}
+
+/**
+ * `fields` without a sealed `hypaV3Data`: a projection a tab carried over from a read (a recovered
+ * resend, a stale tab) is never stored. An unsealed value is a real HypaV3 write and stays here; one
+ * written while the projection owns the field goes at apply time (`refusesHypaV3Data`).
+ */
+function withoutProjection(fields: Record<string, unknown>): Record<string, unknown> {
+    if (!isSealedHypaV3Data(fields.hypaV3Data)) {
+        return fields;
+    }
+    const { hypaV3Data: _projected, ...rest } = fields;
+    return rest;
 }
 
 function prepareWholeChat(
     chat: unknown,
     chatId: string,
-): { meta: string; messages: PreparedMessage[]; renamed: boolean } {
+): { meta: string; summary: string; messages: PreparedMessage[]; renamed: boolean } {
     if (!isPlainObject(chat)) {
         throw new ResourceValidationError("chat must be an object");
     }
-    const meta = serialize(normalizeChatMeta(chat, chatId)).text;
+    const { text: meta, stored } = serialize(normalizeChatMeta(withoutProjection(chat), chatId));
+    const summary = summaryText(stored as Record<string, unknown>);
     // Keep whole-array JSON semantics, but measure depth per message as `prepareMessage` does.
     const sent = chat.message === undefined ? undefined : serialize(chat.message, { arrayElementDepth: true }).stored;
-    const messages = normalizeMessageList(sent).map((message) => ({
+    const messages = normalizeMessageList(sent, true).map((message) => ({
         id: message.chatId as string,
         text: serialize(message).text,
     }));
@@ -241,7 +890,7 @@ function prepareWholeChat(
     const renamed = messages.some(
         (message, index) => (sent as { chatId?: unknown }[] | undefined)?.[index]?.chatId !== message.id,
     );
-    return { meta, messages, renamed };
+    return { meta, summary, messages, renamed };
 }
 
 function prepareGeneration(value: unknown): Generation | null {
@@ -377,9 +1026,32 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             ) {
                 throw new ResourceValidationError("meta merges a field it also sets or unsets");
             }
+            const condition = raw.ifOocUnanswered;
+            const acceptMatch = raw.acceptMatchingOocExchange;
+            if (condition !== undefined || acceptMatch !== undefined) {
+                const entries = isPlainObject(merge.oocLog) ? Object.entries(merge.oocLog) : [];
+                const [id, answer] = entries[0] ?? [];
+                if (
+                    condition !== id ||
+                    (acceptMatch !== undefined && acceptMatch !== true) ||
+                    entries.length !== 1 ||
+                    !isPlainObject(answer) ||
+                    typeof answer.answer !== "string" ||
+                    oocExchangeError(id, answer) ||
+                    Object.keys(set).length ||
+                    unset.length ||
+                    Object.keys(mergeUnset).length ||
+                    Object.keys(merge).length !== 1
+                ) {
+                    throw new ResourceValidationError("ifOocUnanswered requires a single matching OOC answer merge");
+                }
+            }
             return {
                 op: "meta",
-                set,
+                ...(typeof condition === "string" ? { ifOocUnanswered: condition } : {}),
+                ...(acceptMatch === true ? { acceptMatchingOocExchange: true } : {}),
+                // A set this leaves empty still applies: the op moves the revision as sent.
+                set: withoutProjection(set),
                 unset,
                 merge: merge as Record<string, Record<string, unknown>>,
                 mergeUnset: mergeUnset as Record<string, string[]>,
@@ -431,12 +1103,34 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             }
             return { op: "setText", id: raw.id, text: raw.text, generation: prepareGeneration(raw.generation) };
         case "remove":
-            return { op: "remove", ids: prepareIdList(raw.ids, "remove.ids") };
+            if (raw.retract !== undefined && raw.retract !== true) {
+                throw new ResourceValidationError("remove.retract must be true");
+            }
+            return { op: "remove", ids: prepareIdList(raw.ids, "remove.ids"), retract: raw.retract === true };
         case "begin":
             if (!isValidResourceId(raw.id) || !isValidResourceId(raw.generationId)) {
                 throw new ResourceValidationError("begin must be { id, generationId }");
             }
             return { op: "begin", id: raw.id, generationId: raw.generationId };
+        case "selectCandidate":
+            if (
+                !isValidResourceId(raw.messageId) ||
+                typeof raw.candidateId !== "string" ||
+                raw.candidateId.length < 1 ||
+                raw.candidateId.length > 32 ||
+                !isPlainObject(raw.expect) ||
+                !isNonNegativeSafeInteger(raw.expect.candidatesRevision)
+            ) {
+                throw new ResourceValidationError(
+                    "selectCandidate must be { messageId, candidateId, expect: { candidatesRevision } }",
+                );
+            }
+            return {
+                op: "selectCandidate",
+                messageId: raw.messageId,
+                candidateId: raw.candidateId,
+                expect: { candidatesRevision: raw.expect.candidatesRevision },
+            };
         case "setTranslation": {
             // A non-null value is checked as its JSON copy (detached, what is stored), so an in-process
             // `toJSON` cannot turn a checked value into another one, or into a clear.
@@ -456,6 +1150,15 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
                 throw new ResourceValidationError(
                     "setTranslation must be { id, translation: MessageTranslation | null }",
                 );
+            }
+            if (Object.hasOwn(raw, "expectTranslation")) {
+                const expectTranslation = serialize(raw.expectTranslation).stored;
+                if (expectTranslation !== null && !isMessageTranslation(expectTranslation)) {
+                    throw new ResourceValidationError(
+                        "setTranslation.expectTranslation must be MessageTranslation | null",
+                    );
+                }
+                return { op: "setTranslation", id: raw.id, translation, expectTranslation };
             }
             return { op: "setTranslation", id: raw.id, translation };
         }
@@ -577,7 +1280,26 @@ export function countChatOperations(
     return groups.reduce((total, group) => total + group.ops.length, 0) + orders.length;
 }
 
-type ChatRow = { seq: number; revision: number; meta: string };
+type ChatRow = { seq: number; revision: number; meta: string; trashedAt: number | null };
+/** A chat as a summary read selects it: no metadata, with its joined `chatSummaries` columns (null: no row). */
+type ChatSummaryRow = {
+    seq: number;
+    characterId: string;
+    id: string;
+    revision: number;
+    trashedAt: number | null;
+    summaryRevision: number | null;
+    summaryText: string | null;
+};
+/** A `chatSummaries` row's columns, as `freshSummaryText` compares them. */
+type StoredSummary = { revision: number | null; text: string | null };
+/**
+ * One write of `chats.meta` (`writeChatMeta`): a new chat, whose revision starts at 0, or new metadata
+ * on a stored chat, at its revision before the group's bump.
+ */
+type ChatMetaWrite =
+    | { kind: "create"; characterId: string; id: string; meta: string }
+    | { kind: "update"; seq: number; revision: number; meta: string };
 type MessageRow = {
     position: number;
     data: string;
@@ -601,14 +1323,13 @@ class ChatChangeConflict extends Error {
 
 /**
  * The message ids of a group's ops that rewrite or remove a message, or "chat" for an op that
- * replaces or deletes the whole chat (the generation lock's preflight).
+ * replaces the whole chat (the generation lock's preflight).
  */
 function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set<string> } {
     const messages = new Set<string>();
     let chat = false;
     for (const op of group.ops) {
         switch (op.op) {
-            case "delete":
             case "replace":
                 chat = true;
                 break;
@@ -621,6 +1342,9 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
             case "setTranslation":
                 messages.add(op.id);
                 break;
+            case "selectCandidate":
+                messages.add(op.messageId);
+                break;
             case "remove":
                 op.ids.forEach((id) => messages.add(id));
                 break;
@@ -629,8 +1353,203 @@ function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set
     return { chat, messages };
 }
 
-export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard?: MessageGuard) {
-    db.exec(CHAT_GROUP_TABLE_SQL);
+/**
+ * The chat schema past the tables `initialize` creates, in its own transaction, before any statement
+ * of `createChatTables` is prepared: creates `chatGroups`, `chatSummaries`, the memory and rebuild tables
+ * with their citation relations and triggers, and the `messages_role` and `messages_checkpoints` indexes
+ * when missing (on fresh and existing files alike; building the role index parses each message once,
+ * while the checkpoint index scans its text), adds `memory_state`'s decline column to a table from before
+ * it, where every existing row reads as not declined, and rebuilds the stored projections. `BEGIN IMMEDIATE` holds the
+ * look at that column and its `ALTER` together, so a second start, at once or later, finds the column
+ * and adds nothing. When the live citation relation was absent, both relations are backfilled from
+ * stored event texts in this transaction, skipping text SQLite cannot parse. Rebuilds every chat's
+ * projections when the `meta` table's `summaryProjectionVersion` is missing or differs from
+ * `SUMMARY_PROJECTION_VERSION`, otherwise only
+ * the chats with no row or a row at another revision, so an open with nothing to create or rebuild
+ * writes nothing. The seqs come first and each chat's metadata is read alone, so a store with a large
+ * chat never holds them all. The only pass that parses metadata for summaries at open; its rows are
+ * derived data, not store writes. A metadata value that cannot be projected throws, naming the chat,
+ * with the transaction left for the caller to roll back.
+ */
+export function openChatSchema(db: DatabaseSync): void {
+    db.exec("BEGIN IMMEDIATE");
+    const hadEventSources = db
+        .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'memory_event_sources'")
+        .get();
+    db.exec(CHAT_OPEN_SCHEMA_SQL);
+    if (!hadEventSources) {
+        for (const { events, sources } of MEMORY_EVENT_SOURCE_TABLES) {
+            db.exec(`
+                INSERT OR IGNORE INTO ${sources} (chatSeq, messageId, eventId)
+                    SELECT e.chatSeq, json_extract(source.value, '$.messageId'), e.id
+                        FROM ${events} e,
+                            json_each(CASE WHEN json_valid(e.data) THEN e.data END, '$.sources') source
+                        WHERE json_type(CASE WHEN json_valid(e.data) THEN e.data END, '$.sources') = 'array'
+                            AND source.type = 'object' AND json_type(source.value, '$.messageId') = 'text';
+            `);
+        }
+    }
+    const chatColumns = db.prepare("PRAGMA table_xinfo(chats)").all() as { name: string }[];
+    if (!chatColumns.some(({ name }) => name === "trashedAt")) {
+        db.exec("ALTER TABLE chats ADD COLUMN trashedAt INTEGER");
+    }
+    const stateColumns = db.prepare("PRAGMA table_xinfo(memory_state)").all() as { name: string }[];
+    if (!stateColumns.some(({ name }) => name === "adoptionDeclined")) {
+        db.exec(`ALTER TABLE memory_state ADD COLUMN ${MEMORY_DECLINE_COLUMN_SQL}`);
+    }
+    const version = String(SUMMARY_PROJECTION_VERSION);
+    const stored = db.prepare("SELECT value FROM meta WHERE key = 'summaryProjectionVersion'").get() as
+        { value: string } | undefined;
+    const sameVersion = stored?.value === version;
+    const rebuilt = db
+        .prepare(
+            sameVersion
+                ? "SELECT c.seq FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq " +
+                      "WHERE s.revision IS NOT c.revision ORDER BY c.seq"
+                : "SELECT seq FROM chats ORDER BY seq",
+        )
+        .all() as { seq: number }[];
+    const selectChat = db.prepare("SELECT characterId, id, revision, meta FROM chats WHERE seq = ?");
+    const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
+    for (const { seq } of rebuilt) {
+        const chat = selectChat.get(seq) as { characterId: string; id: string; revision: number; meta: string };
+        let text: string;
+        try {
+            text = summaryText(JSON.parse(chat.meta) as Record<string, unknown>);
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new Error(`Stored chat ${chat.characterId}/${chat.id} fails its summary projection: ${reason}`, {
+                cause: error,
+            });
+        }
+        upsertSummary.run(seq, chat.revision, text);
+    }
+    if (!sameVersion) {
+        db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('summaryProjectionVersion', ?)").run(version);
+    }
+    db.exec("COMMIT");
+}
+
+/** Process-local attempt control, admitted only through the job write path; never a wire op. */
+export type RerollAttemptWrite = {
+    characterId: string;
+    chatId: string;
+    messageId: string;
+    generationId: string;
+    action: "begin" | "rollback";
+};
+type AttemptEntry = { before: unknown; foreign?: { value: unknown }; last: "job" | "foreign" };
+type RerollAttempt = Omit<RerollAttemptWrite, "action"> & { token: string; entries: Map<string, AttemptEntry> };
+
+/** Only the new optional fields are sanitized on legacy reads; unrelated message data stays as stored. */
+function readMessage(text: string): Message {
+    return normalizeCandidateFields(JSON.parse(text)) as Message;
+}
+
+function hasCandidateCheckpoints(message: Message): boolean {
+    return (
+        message.scriptstateCheckpoint !== undefined ||
+        !!message.candidates?.some((candidate) => candidate.scriptstateAfter !== undefined)
+    );
+}
+
+/** The counter is assigned after admission. Writers can neither reset it nor choose its next value. */
+function withCandidateRevision(text: string, previous?: string): string {
+    const message = JSON.parse(text) as Message;
+    const before = previous === undefined ? undefined : (JSON.parse(previous) as Message);
+    const revision = isNonNegativeSafeInteger(before?.candidatesRevision) ? before.candidatesRevision : undefined;
+    const changed =
+        sortedJson(message.candidates) !== sortedJson(before?.candidates) ||
+        sortedJson(message.selected) !== sortedJson(before?.selected);
+    delete message.candidatesRevision;
+    if (changed || revision !== undefined) {
+        message.candidatesRevision = nextRevision(revision ?? 0, changed ? 1 : 0);
+    }
+    return serialize(message).text;
+}
+
+/** Replay equality still compares the complete row's bytes, apart from the store-owned counter. */
+function appendReplay(text: string, stored: string): boolean {
+    const withoutRevision = (value: string) => {
+        const message = JSON.parse(value);
+        delete message.candidatesRevision;
+        return JSON.stringify(message);
+    };
+    return withoutRevision(text) === withoutRevision(stored);
+}
+
+/**
+ * Prepares the chat statements and returns the methods over them. The tables must exist:
+ * `openChatSchema` and `createCheckpointTables` (`chatRestoreFloors`) run first.
+ */
+export function createChatTables(
+    db: DatabaseSync,
+    tokens: TokenFunctions,
+    guard?: MessageGuard,
+    /** Whether the memory projection answers for the chat with this `seq`: the resulting mode selects the algorithm and it has event rows. */
+    memory?: { projectsChat(chatSeq: number, modeAfter: unknown): boolean },
+) {
+    let attempts = new Map<string, RerollAttempt>();
+    /**
+     * Whether a write's unsealed `hypaV3Data` is refused because the projection owns the chat's field:
+     * the projection answers for the resulting mode (`memory.projectsChat`) and the value stored before
+     * the write holds no summaries, the one thing that means HypaV3 owns it (`hypaV3DataHoldsSummaries`). A boot replay,
+     * a quarantine retry, or a tab from before the switch sends its ops as they were, so the field goes
+     * here and the rest of the write applies, as a stale tab's sealed value does in `withoutProjection`;
+     * otherwise a replayed value would stand the projection aside with no choice offered, since the
+     * adoption hold is for a chat with no records. A chat with no event rows takes the value: it is what
+     * the adoption choice is about, and a create is a new chat with none. A checkpoint load restores the
+     * chat's fields as captured, with the captured memory rows after them (`restoredFields`), so it is
+     * no write of a tab's and keeps the field.
+     */
+    const refusesHypaV3Data = (chatSeq: number, meta: Record<string, unknown>, modeAfter: unknown, restored: boolean) =>
+        !restored && memory?.projectsChat(chatSeq, modeAfter) === true && !hypaV3DataHoldsSummaries(meta.hypaV3Data);
+    let stagedAttempts: Map<string, RerollAttempt> | null = null;
+    const attemptKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
+    const liveAttempt = (characterId: string, chatId: string) => {
+        const map = stagedAttempts ?? attempts;
+        const key = attemptKey(characterId, chatId);
+        const attempt = map.get(key);
+        if (
+            attempt &&
+            (!guard?.isLive(attempt.token) || guard.holder(characterId, chatId, attempt.messageId) !== attempt.token)
+        ) {
+            map.delete(key);
+            return undefined;
+        }
+        return attempt;
+    };
+    const mapOf = (value: unknown): Record<string, unknown> => (isPlainObject(value) ? value : {});
+    const entryOf = (map: Record<string, unknown>, key: string) => (Object.hasOwn(map, key) ? map[key] : undefined);
+    function recordVariable(
+        attempt: RerollAttempt | undefined,
+        token: string | undefined,
+        key: string,
+        before: unknown,
+        after: unknown,
+    ) {
+        if (!attempt) return;
+        const own = token === attempt.token;
+        let entry = attempt.entries.get(key);
+        if (!entry) {
+            if (!own) return;
+            entry = { before, last: "job" };
+            attempt.entries.set(key, entry);
+        }
+        entry.last = own ? "job" : "foreign";
+        if (!own) entry.foreign = { value: after };
+    }
+    function recordMap(attempt: RerollAttempt | undefined, token: string | undefined, before: unknown, after: unknown) {
+        if (!attempt || before === after) return;
+        const was = mapOf(before),
+            now = mapOf(after);
+        for (const key of new Set([...Object.keys(was), ...Object.keys(now)])) {
+            if (sortedJson(entryOf(was, key)) !== sortedJson(entryOf(now, key))) {
+                recordVariable(attempt, token, key, entryOf(was, key), entryOf(now, key));
+            }
+        }
+    }
+
     const selectGroup = db.prepare("SELECT revision, result FROM chatGroups WHERE chatSeq = ? AND groupId = ?");
     const insertGroup = db.prepare("INSERT INTO chatGroups (chatSeq, groupId, revision, result) VALUES (?, ?, ?, ?)");
     const trimGroups = db.prepare(
@@ -642,20 +1561,66 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             "AS oldest FROM chatGroups WHERE chatSeq = ?1",
     );
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
-    const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
-    const selectChatRevision = db.prepare("SELECT seq, revision FROM chats WHERE characterId = ? AND id = ?");
+    const selectChat = db.prepare("SELECT seq, revision, meta, trashedAt FROM chats WHERE characterId = ? AND id = ?");
+    const selectChatRevision = db.prepare(
+        "SELECT seq, revision, trashedAt FROM chats WHERE characterId = ? AND id = ?",
+    );
+    const selectExpiredTrashedChats = db.prepare(
+        "SELECT characterId, id, seq, revision, trashedAt FROM chats " +
+            "WHERE trashedAt IS NOT NULL AND trashedAt <= ? ORDER BY trashedAt, seq",
+    );
+    const newerMemoryWrite = db.prepare(
+        "SELECT 1 FROM chatMemoryWrites WHERE chatSeq = ? AND field = ? AND revision > ?",
+    );
+    const markMemoryWrite = db.prepare(
+        "INSERT INTO chatMemoryWrites (chatSeq, field, revision) VALUES (?, ?, ?) " +
+            "ON CONFLICT (chatSeq, field) DO UPDATE SET revision = excluded.revision",
+    );
     const selectRestoreFloor = db.prepare("SELECT revision FROM chatRestoreFloors WHERE chatSeq = ?");
     const insertChat = db.prepare(
         "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, 0, ?, ?)",
     );
+    const setChatTrash = db.prepare("UPDATE chats SET trashedAt = ?, revision = ? WHERE seq = ?");
+    const otherActiveChat = db.prepare(
+        "SELECT 1 FROM chats WHERE characterId = ? AND id != ? AND trashedAt IS NULL LIMIT 1",
+    );
     const setChatMeta = db.prepare("UPDATE chats SET meta = ?, schemaVersion = ? WHERE seq = ?");
     const bumpChat = db.prepare("UPDATE chats SET revision = revision + ? WHERE seq = ?");
+    // Compare-and-set: a row an older writer left behind stays stale and never turns fresh with old text.
+    const advanceSummary = db.prepare("UPDATE chatSummaries SET revision = ? WHERE chatSeq = ? AND revision = ?");
+    const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
+    const selectSummary = db.prepare("SELECT revision, text FROM chatSummaries WHERE chatSeq = ?");
+    const selectChatMeta = db.prepare("SELECT meta FROM chats WHERE seq = ?");
     const deleteChat = db.prepare("DELETE FROM chats WHERE seq = ?");
     const deleteCharacterChats = db.prepare("DELETE FROM chats WHERE characterId = ?");
     const selectMessage = db.prepare(
         "SELECT position, data, generationId, generationSeq, generationFinal, generationHistory FROM messages " +
             "WHERE chatSeq = ? AND id = ?",
     );
+    const selectCarrierMessages = db.prepare(
+        "SELECT id AS chatId, json_extract(data, '$.role') AS role, json_extract(data, '$.isComment') AS isComment " +
+            "FROM messages WHERE chatSeq = ? ORDER BY position DESC",
+    );
+    const selectLastMessage = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position DESC LIMIT 1");
+    /**
+     * Keyed by the chat incarnation. `undefined` is cached too (empty or undated last message).
+     * The value is the finite numeric time of the last message by position, never MAX(time) or an
+     * earlier dated message; a miss reads one row through messages_position. Metadata-only changes
+     * keep it. Creation/replacement, append/insert, setMessage, setText, patchMessage, removal and
+     * translation writes invalidate it, as do chat/character deletion. `data/resourceStore.ts`
+     * replaceAll clears it only after commit. While db.isTransaction, lastMessageAt bypasses both
+     * reading and filling this memo, so a rollback cannot leave uncommitted activity cached.
+     */
+    const lastMessageTimes = new Map<number, number | undefined>();
+    /**
+     * Counts keyed by chat incarnation. Creation/replacement seed zero, inserts/removals adjust
+     * known counts, and chat/character deletion evicts them. Hooked transactions stage reads and
+     * changes (undefined marks eviction), merge only after commit, and discard on rollback.
+     * Without hooks, membership writes invalidate committed entries; raw transactions read COUNT
+     * without consulting or filling the memo. replaceAll clears it only after commit.
+     */
+    const messageCounts = new Map<number, number>();
+    let stagedMessageCounts: Map<number, number | undefined> | null = null;
     const maxPosition = db.prepare("SELECT MAX(position) AS position FROM messages WHERE chatSeq = ?");
     const shiftAfter = db.prepare("UPDATE messages SET position = position + ? WHERE chatSeq = ? AND position > ?");
     const insertMessage = db.prepare("INSERT INTO messages (chatSeq, id, position, data) VALUES (?, ?, ?, ?)");
@@ -681,86 +1646,208 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
     const insertOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, 1, '[]')");
     const updateOrder = db.prepare("UPDATE chatOrders SET revision = revision + 1, ids = ? WHERE seq = ?");
     const deleteOrder = db.prepare("DELETE FROM chatOrders WHERE characterId = ?");
-    const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta FROM chats ORDER BY seq");
+    const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta, trashedAt FROM chats ORDER BY seq");
+    // Summary reads take the stored projection and never select the potentially large metadata.
+    const summaryRead =
+        "SELECT c.seq, c.characterId, c.id, c.revision, c.trashedAt, s.revision AS summaryRevision, s.text AS summaryText " +
+        "FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq";
+    const selectChatSummary = db.prepare(`${summaryRead} WHERE c.characterId = ? AND c.id = ?`);
+    const selectAllSummaries = db.prepare(`${summaryRead} ORDER BY c.seq`);
+    // Filter in SQL so a cached character's rows never leave SQLite.
+    const selectUncachedSummaries = db.prepare(
+        `${summaryRead} WHERE c.characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY c.seq`,
+    );
+    const selectCharacterSummaries = db.prepare(`${summaryRead} WHERE c.characterId = ? ORDER BY c.seq`);
     const selectAllMessages = db.prepare("SELECT chatSeq, data FROM messages ORDER BY chatSeq, position");
     const selectChatMessages = db.prepare("SELECT data FROM messages WHERE chatSeq = ? ORDER BY position");
+    // Only rows with candidate state need their previous revision carried through a replacement.
+    const selectCandidateRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND (
+        json_type(data, '$.candidates') IS NOT NULL OR json_type(data, '$.selected') IS NOT NULL OR
+        json_type(data, '$.candidatesRevision') IS NOT NULL)`);
+    // The partial index finds possible checkpoints outside the newest non-comment row (null if none)
+    // without traversing historical candidate arrays. After any fresh append, skip unchanged false
+    // positives and rows a live job owns; an open generation fence with no live owner is cleaned.
+    const selectCheckpointRows = db.prepare(`SELECT id, data FROM messages WHERE chatSeq = ? AND id IS NOT ?
+        AND ${MESSAGE_CHECKPOINT_PREDICATE_SQL}`);
     const countMessages = db.prepare("SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ?");
-    const selectPatchMessages = db.prepare(
-        "SELECT m.data, (SELECT p.id FROM messages p WHERE p.chatSeq = m.chatSeq AND p.position < m.position " +
-            "ORDER BY p.position DESC LIMIT 1) AS after FROM messages m " +
-            "WHERE m.chatSeq = ? AND m.id IN (SELECT value FROM json_each(?)) ORDER BY m.position",
-    );
+    const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
+    const selectPatchMessages = db.prepare(TOUCHED_ROWS_SQL);
     const selectCharacterChats = db.prepare(
-        "SELECT seq, id, revision, meta FROM chats WHERE characterId = ? ORDER BY seq",
+        "SELECT seq, id, revision, meta, trashedAt FROM chats WHERE characterId = ? ORDER BY seq",
     );
     const selectAllOrders = db.prepare("SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq");
-    const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision FROM chats ORDER BY seq");
+    const selectUncachedOrders = db.prepare(
+        "SELECT seq, characterId, revision, ids FROM chatOrders WHERE characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY seq",
+    );
+    const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision, trashedAt FROM chats ORDER BY seq");
     const selectOrderRevisions = db.prepare("SELECT seq, characterId, revision FROM chatOrders ORDER BY seq");
-    const insertRestoredChat = db.prepare(
-        "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, ?, ?, ?)",
-    );
-    const insertRestoredMessage = db.prepare(
-        "INSERT INTO messages (chatSeq, id, position, data, generationId, generationSeq, generationFinal, " +
-            "generationHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    const insertRestoredOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, ?, ?)");
     // Message search (`searchBatch`).
-    const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ?");
-    const searchNextChat = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq < ? ORDER BY seq DESC LIMIT 1");
+    const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ? AND trashedAt IS NULL");
+    const searchNextChat = db.prepare(
+        "SELECT seq, characterId, id FROM chats WHERE seq < ? AND trashedAt IS NULL ORDER BY seq DESC LIMIT 1",
+    );
     // Unary + keeps SQLite on the descending rowid scan instead of sorting the character/id index.
     const searchNextCharacterChat = db.prepare(
-        "SELECT seq, characterId, id FROM chats WHERE +characterId = ? AND seq < ? ORDER BY seq DESC LIMIT 1",
+        "SELECT seq, characterId, id FROM chats WHERE +characterId = ? AND seq < ? AND trashedAt IS NULL ORDER BY seq DESC LIMIT 1",
     );
     const searchChatName = db.prepare("SELECT json_extract(meta, '$.name') AS name FROM chats WHERE seq = ?");
     const searchAnchor = db.prepare("SELECT position FROM messages WHERE chatSeq = ? AND id = ?");
     // `octet_length` is the stored text's UTF-8 size (`length` on TEXT counts characters).
+    // `substr(text, 1)` preserves LIKE's stop at the first NUL; SQLite's lower folds ASCII only.
     const searchMessages = db.prepare(
         "SELECT id, position, octet_length(data) AS bytes, " +
-            "CASE WHEN json_extract(data, '$.data') LIKE ? ESCAPE '\\' THEN data END AS hit " +
+            "CASE WHEN instr(lower(substr(json_extract(data, '$.data'), 1)), lower(?)) > 0 THEN data END AS hit " +
             "FROM messages WHERE chatSeq = ? AND position < ? ORDER BY position DESC LIMIT ?",
     );
+    // A budgeted read's charges: stored sizes only, so no row text leaves SQLite for an entry left out.
+    const selectChatBytes = db.prepare(
+        "SELECT seq, revision, octet_length(meta) AS bytes FROM chats WHERE characterId = ? AND id = ?",
+    );
+    const sumNamedMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages " +
+            "WHERE chatSeq = ? AND id IN (SELECT value FROM json_each(?))",
+    );
+    const sumMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM messages WHERE chatSeq = ?",
+    );
+    /** Point lookups of the named messages of one chat, driven by the id list (`TOUCHED_ROWS_SQL`). */
+    const selectNamedMessages = db.prepare(
+        "SELECT m.id, m.data FROM json_each(?) r CROSS JOIN messages m ON m.chatSeq = ? AND m.id = r.value",
+    );
+    const selectOrderBytes = db.prepare("SELECT octet_length(ids) AS bytes FROM chatOrders WHERE characterId = ?");
+    const sumCharacterMetaBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(meta)), 0) AS bytes FROM chats WHERE characterId = ?",
+    );
+    const sumCharacterMessageBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(m.data)), 0) AS bytes FROM messages m " +
+            "JOIN chats c ON c.seq = m.chatSeq WHERE c.characterId = ?",
+    );
+    const sumCharacterSummaryBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(s.text)), 0) AS bytes FROM chatSummaries s " +
+            "JOIN chats c ON c.seq = s.chatSeq WHERE c.characterId = ?",
+    );
 
-    function chatRecord(
-        characterId: string,
-        row: { seq: number; id: string; revision: number; meta: string },
-        messages: unknown[],
-    ): ChatRecord {
+    function chatRecord(characterId: string, row: ChatRow & { id: string }, messages: unknown[]): ChatRecord {
         const data = JSON.parse(row.meta) as Chat;
         data.message = messages as Chat["message"];
-        return { characterId, id: row.id, revision: tokens.token(row.seq, row.revision), data };
-    }
-
-    /** A chat's summary from its row: the listed fields picked from its metadata (no message rows read). */
-    function chatSummary(characterId: string, row: { seq: number; id: string; revision: number; meta: string }) {
-        const meta = JSON.parse(row.meta) as Record<string, unknown>;
-        const summary: ChatSummary = {
+        return {
             characterId,
             id: row.id,
             revision: tokens.token(row.seq, row.revision),
-            name: typeof meta.name === "string" ? meta.name : "",
-            fmIndex: typeof meta.fmIndex === "number" ? meta.fmIndex : -1,
+            trashedAt: row.trashedAt,
+            data,
         };
-        if (typeof meta.folderId === "string") {
-            summary.folderId = meta.folderId;
+    }
+
+    /** One indexed row read on a miss; metadata-only changes keep the memo. */
+    function lastMessageAt(chatSeq: number): number | undefined {
+        // An in-transaction reader may be followed by a rollback. Never read or fill the memo
+        // there: a later metadata-only commit can reuse the rolled-back chat revision.
+        if (!db.isTransaction && lastMessageTimes.has(chatSeq)) {
+            return lastMessageTimes.get(chatSeq);
         }
-        if (typeof meta.bindedPersona === "string") {
-            summary.bindedPersona = meta.bindedPersona;
+        const row = selectLastMessage.get(chatSeq) as { data: string } | undefined;
+        const time: unknown = row ? JSON.parse(row.data).time : undefined;
+        const value = typeof time === "number" && Number.isFinite(time) ? time : undefined;
+        if (!db.isTransaction) {
+            lastMessageTimes.set(chatSeq, value);
         }
-        if (typeof meta.promptPresetId === "string") {
-            summary.promptPresetId = meta.promptPresetId;
+        return value;
+    }
+
+    function cachedMessageCount(chatSeq: number): number | undefined {
+        return stagedMessageCounts?.has(chatSeq) ? stagedMessageCounts.get(chatSeq) : messageCounts.get(chatSeq);
+    }
+
+    function messageCount(chatSeq: number): number {
+        if (stagedMessageCounts || !db.isTransaction) {
+            const cached = cachedMessageCount(chatSeq);
+            if (cached !== undefined) return cached;
         }
-        if (typeof meta.modelPresetId === "string") {
-            summary.modelPresetId = meta.modelPresetId;
+        const { count } = countMessages.get(chatSeq) as { count: number };
+        if (stagedMessageCounts) stagedMessageCounts.set(chatSeq, count);
+        else if (!db.isTransaction) messageCounts.set(chatSeq, count);
+        return count;
+    }
+
+    function setMessageCount(chatSeq: number, count: number | undefined) {
+        if (stagedMessageCounts) stagedMessageCounts.set(chatSeq, count);
+        else messageCounts.delete(chatSeq);
+    }
+
+    function changeMessageCount(chatSeq: number, delta: number) {
+        const count = cachedMessageCount(chatSeq);
+        setMessageCount(chatSeq, count === undefined ? undefined : count + delta);
+    }
+
+    /**
+     * The one writer of `chats.meta` on a live write: the only caller of the statements that write it.
+     * Stores the metadata and its projection together in the caller's transaction, so no write leaves
+     * the projection behind. `summary` is the metadata's `summaryText`, from the caller; nothing is
+     * parsed here. Returns the chat's seq. A restore writes both tables its own way: the staged store's
+     * writer (`createChatStagingSink`) and the install's copy (`copyStagedChats`).
+     */
+    function writeChatMeta(write: ChatMetaWrite, summary: string): number {
+        let seq: number;
+        let revision = 0;
+        if (write.kind === "create") {
+            seq = Number(insertChat.run(write.characterId, write.id, CHAT_SCHEMA_VERSION, write.meta).lastInsertRowid);
+            setMessageCount(seq, 0);
+        } else {
+            setChatMeta.run(write.meta, CHAT_SCHEMA_VERSION, write.seq);
+            ({ seq, revision } = write);
         }
-        if (typeof meta.bindingReview === "boolean") {
-            summary.bindingReview = meta.bindingReview;
+        upsertSummary.run(seq, revision, summary);
+        return seq;
+    }
+
+    /**
+     * A chat's projection at `revision`, the revision its row must match: the stored text when the row
+     * is there, otherwise computed from the stored metadata (one parse) with the row rewritten.
+     * `known` is the row's columns when the caller's read joined them (its metadata is then read here
+     * by seq, on a miss only), or the metadata the caller holds (the row is then read here). Call it
+     * after the caller's read statement ended.
+     *
+     * The rewrite is derived data: it counts as no store write and publishes nothing. It never runs
+     * inside a transaction: a failure there (a full disk) can make SQLite roll the whole transaction
+     * back, and going on past it would let the rest of the batch autocommit. Outside one it is
+     * best-effort, since a read must not fail because a derived row could not be written.
+     */
+    function freshSummaryText(seq: number, revision: number, known: StoredSummary | { meta: string }): string {
+        const stored = "meta" in known ? (selectSummary.get(seq) as StoredSummary | undefined) : known;
+        if (stored && stored.revision === revision && stored.text !== null) {
+            return stored.text;
         }
-        if (meta.pinned === true) {
-            summary.pinned = true;
+        const meta = "meta" in known ? known.meta : (selectChatMeta.get(seq) as { meta: string }).meta;
+        const text = summaryText(JSON.parse(meta) as Record<string, unknown>);
+        if (!db.isTransaction) {
+            try {
+                upsertSummary.run(seq, revision, text);
+            } catch {
+                // The row stays stale and the next read computes it again.
+            }
         }
-        // The translation settings: a new chat inherits them.
-        Object.assign(summary, chatTranslationSummary(meta));
-        return summary;
+        return text;
+    }
+
+    /**
+     * A chat's summary: its stored projection and the memoized time of its last message by position.
+     * Shared by full listings, collection summaries and single-chat binding reads. Feed entries use
+     * the same summary fields (summaryWithTime) with the write's projection. Fresh projection reads
+     * never select or parse meta; a stale/missing projection falls back to freshSummaryText, which
+     * parses meta once and repairs the row best-effort outside a transaction.
+     */
+    function chatSummary(row: ChatSummaryRow): ChatSummary {
+        return {
+            characterId: row.characterId,
+            id: row.id,
+            revision: tokens.token(row.seq, row.revision),
+            ...summaryWithTime(
+                freshSummaryText(row.seq, row.revision, { revision: row.summaryRevision, text: row.summaryText }),
+                lastMessageAt(row.seq),
+                row.trashedAt,
+            ),
+        };
     }
 
     function readOrder(characterId: string): { seq: number; revision: number; ids: string[] } | null {
@@ -780,14 +1867,17 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
     /** Stores a new id list on an order row and advances its revision (guarded, see `nextRevision`). */
     function writeOrder(order: { seq: number; revision: number }, ids: readonly string[]) {
-        nextRevision(order.revision, 1);
+        const next = nextRevision(order.revision, 1);
         updateOrder.run(JSON.stringify(ids), order.seq);
+        return next;
     }
 
     function insertAt(chatSeq: number, after: number, messages: readonly PreparedMessage[]) {
+        lastMessageTimes.delete(chatSeq);
         shiftAfter.run(messages.length, chatSeq, after);
         messages.forEach((message, index) => {
             insertMessage.run(chatSeq, message.id, after + 1 + index, message.text);
+            changeMessageCount(chatSeq, 1);
         });
     }
 
@@ -870,54 +1960,211 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         return targets.chat && [...guard.chatHolders(group.characterId, group.chatId)].some(foreign) ? [] : null;
     }
 
-    /** Reads only touched rows and their final anchors, stopping once the feed's byte cap is exceeded. */
-    function chatFeedPatch(
+    /**
+     * The touched rows as stored now, in position order, each with the id of the row right before it
+     * by position. Invalid optional candidate fields are omitted from the returned row text.
+     * Lazy: nothing is read before the first row is asked for, and a caller that stops early ends the read.
+     */
+    function* touchedRows(chatSeq: number, touched: ReadonlySet<string>): Generator<ChatWriteChange["rows"][number]> {
+        for (const stored of selectPatchMessages.iterate(JSON.stringify([...touched]), chatSeq)) {
+            const row = stored as ChatWriteChange["rows"][number];
+            yield { ...row, data: JSON.stringify(readMessage(row.data)) };
+        }
+    }
+
+    /**
+     * One optional feed body, selected by its UTF-8 JSON size: the whole-row patch below
+     * `SMALL_FEED_PATCH_BYTES`, else a fitting rowDelta with at least one diff smaller than the
+     * patch, else a fitting patch, else a fitting delta, else a fitting row manifest. Metadata is
+     * whole in a patch and by field in both deltas. Inserted rows and rows that cannot be diffed
+     * keep their whole values and anchors.
+     *
+     * One pass over the stored row iterator, with separate running sizes. Small patches defer the
+     * alternatives; crossing the selection threshold considers the rows already read. Once a size
+     * passes the cap its exact value is unnecessary. The iterator stops when all three forms exceed
+     * the cap. Stored rows are parsed only for a live diff candidate or the selected whole-row body,
+     * with each after value reused if the diff loses the size comparison. The manifest takes ids
+     * from `touched`, never the iterator that may have stopped before reading them all.
+     */
+    function chatFeedChange(
+        baseRevision: string,
+        count: number,
+        meta: { stored: string; fields: () => ChatMetaFields | null } | undefined,
+        removed: ReadonlySet<string>,
+        touched: ReadonlySet<string>,
+        rows: Iterable<{ id: string; after: string | null; data: string }> | null,
+        before: ReadonlyMap<string, string>,
+        insertedHere: ReadonlySet<string>,
+    ): Pick<ChatFeedPayloads, "patch" | "delta" | "rowDelta" | "rows"> {
+        const removedIds = [...removed].filter((id) => !insertedHere.has(id));
+        const head = Buffer.byteLength(JSON.stringify({ baseRevision, count }));
+        const capped = (size: number) => Math.min(size, MAX_FEED_PATCH_BYTES + 1);
+        let patchBytes = capped(head + (meta === undefined ? 0 : Buffer.byteLength(meta.stored) + ',"meta":'.length));
+        let deltaBytes = head;
+        let rowDeltaBytes = head + ',"rowDiffs":[]'.length;
+        let fields: ChatMetaFields | null | undefined;
+        const readFields = () => {
+            if (fields !== undefined) return;
+            fields = meta?.fields() ?? null;
+            const size = fields === null ? 0 : Buffer.byteLength(JSON.stringify(fields)) + ',"metaFields":'.length;
+            deltaBytes = capped(deltaBytes + size);
+            rowDeltaBytes = capped(rowDeltaBytes + size);
+        };
+        const manifest = (): Pick<ChatFeedPayloads, "rows"> => {
+            readFields();
+            const rows = {
+                baseRevision,
+                changed: [...touched],
+                removed: removedIds,
+                count,
+                meta: fields
+                    ? [
+                          ...new Set([
+                              ...Object.keys(fields.set),
+                              ...fields.remove,
+                              ...Object.keys(fields.merge ?? {}),
+                              ...Object.keys(fields.mergeUnset ?? {}),
+                          ]),
+                      ]
+                    : [],
+            };
+            return Buffer.byteLength(JSON.stringify(rows)) <= MAX_FEED_PATCH_BYTES ? { rows } : {};
+        };
+        // Without a captured row, only an over-cap patch can make the metadata field form useful.
+        const considerAlternatives = () =>
+            patchBytes > MAX_FEED_PATCH_BYTES ||
+            (rows !== null && before.size > 0 && patchBytes >= SMALL_FEED_PATCH_BYTES);
+        const allOver = () =>
+            patchBytes > MAX_FEED_PATCH_BYTES &&
+            deltaBytes > MAX_FEED_PATCH_BYTES &&
+            rowDeltaBytes > MAX_FEED_PATCH_BYTES;
+        if (considerAlternatives()) readFields();
+        if (allOver()) return manifest();
+        if (removedIds.length > 0) {
+            let index = 0;
+            for (const id of removedIds) {
+                const size = Buffer.byteLength(JSON.stringify(id)) + (index++ > 0 ? 1 : ',"removed":[]'.length);
+                patchBytes = capped(patchBytes + size);
+                deltaBytes = capped(deltaBytes + size);
+                rowDeltaBytes = capped(rowDeltaBytes + size);
+                if (considerAlternatives()) readFields();
+                if (allOver()) return manifest();
+            }
+        }
+        type FeedRow = {
+            id: string;
+            after: string | null;
+            data: string;
+            message?: Record<string, unknown>;
+            bytes: number;
+        };
+        const kept: FeedRow[] = [];
+        const whole: FeedRow[] = [];
+        const rowDiffCandidates: ChatRowDiffCandidate[] = [];
+        const parsed = (row: FeedRow) => (row.message ??= JSON.parse(row.data) as Record<string, unknown>);
+        let considered = 0;
+        const diffRows = () => {
+            while (considered < kept.length && rowDeltaBytes <= MAX_FEED_PATCH_BYTES) {
+                const row = kept[considered++];
+                const old = insertedHere.has(row.id) ? undefined : before.get(row.id);
+                const candidate = old === undefined ? null : chatRowDiff(row.id, JSON.parse(old), parsed(row));
+                if (candidate) {
+                    rowDeltaBytes = capped(
+                        rowDeltaBytes +
+                            Buffer.byteLength(JSON.stringify(candidate.diff)) +
+                            (rowDiffCandidates.length > 0 ? 1 : 0),
+                    );
+                    rowDiffCandidates.push(candidate);
+                } else {
+                    rowDeltaBytes = capped(
+                        rowDeltaBytes + row.bytes + (whole.length > 0 ? 1 : ',"messages":[]'.length),
+                    );
+                    whole.push(row);
+                }
+            }
+        };
+        if (rows) {
+            patchBytes = capped(patchBytes + ',"messages":[]'.length);
+            deltaBytes = capped(deltaBytes + ',"messages":[]'.length);
+            if (considerAlternatives()) readFields();
+            if (allOver()) return manifest();
+            for (const row of rows) {
+                const size =
+                    Buffer.byteLength(JSON.stringify(row.after)) +
+                    Buffer.byteLength(row.data) +
+                    '{"after":,"message":}'.length;
+                patchBytes = capped(patchBytes + size + (kept.length > 0 ? 1 : 0));
+                deltaBytes = capped(deltaBytes + size + (kept.length > 0 ? 1 : 0));
+                kept.push({ ...row, bytes: size });
+                if (considerAlternatives()) {
+                    readFields();
+                    diffRows();
+                }
+                if (allOver()) return manifest();
+            }
+        }
+        const useRowDelta =
+            patchBytes >= SMALL_FEED_PATCH_BYTES &&
+            rowDiffCandidates.length > 0 &&
+            rowDeltaBytes <= MAX_FEED_PATCH_BYTES &&
+            rowDeltaBytes < patchBytes;
+        const usePatch = !useRowDelta && patchBytes <= MAX_FEED_PATCH_BYTES;
+        if (!useRowDelta && !usePatch && deltaBytes > MAX_FEED_PATCH_BYTES) return manifest();
+        const body: ChatPatchBody & ChatDeltaBody = { baseRevision, count };
+        if (usePatch && meta !== undefined) {
+            body.meta = JSON.parse(meta.stored) as Record<string, unknown>;
+        } else if (!usePatch && fields) {
+            body.metaFields = fields;
+        }
+        if (removedIds.length > 0) body.removed = removedIds;
+        const selected = useRowDelta ? whole : kept;
+        if (useRowDelta ? selected.length > 0 : rows !== null) {
+            body.messages = selected.map((row) => ({ after: row.after, message: parsed(row) }));
+        }
+        if (useRowDelta) {
+            const rowDelta: ChatRowDeltaBody = {
+                ...body,
+                rowDiffs: rowDiffCandidates.map(({ diff, beforeText }) => {
+                    if (diff.text) {
+                        diff.text.base = { length: beforeText.length, hash: textHash(beforeText) };
+                    }
+                    return diff;
+                }),
+            };
+            return { rowDelta };
+        }
+        return usePatch ? { patch: body } : { delta: body };
+    }
+
+    /**
+     * A by-id group's change as stored now (`ChatWriteChange`), uncapped: the count and one read of
+     * the touched rows, with the metadata as its stored string.
+     */
+    function chatWriteChange(
         row: ChatRow,
         baseRevision: string,
+        revision: string,
         touched: ReadonlySet<string>,
         removed: ReadonlySet<string>,
+        insertedHere: ReadonlySet<string>,
         metaChanged: boolean,
-    ): ChatPatchBody | undefined {
-        const { count } = countMessages.get(row.seq) as { count: number };
-        const patch: ChatPatchBody = { baseRevision, count };
-        let bytes = Buffer.byteLength(JSON.stringify(patch));
+    ): ChatWriteChange {
+        const count = messageCount(row.seq);
+        const change: ChatWriteChange = {
+            baseRevision,
+            revision,
+            count,
+            // An id the group appended and removed again was never in the base.
+            removed: [...removed].filter((id) => !insertedHere.has(id)),
+            rows:
+                touched.size > 0
+                    ? Array.from(touchedRows(row.seq, touched), ({ id, after, data }) => ({ id, after, data }))
+                    : [],
+        };
         if (metaChanged) {
-            bytes += Buffer.byteLength(row.meta) + ',"meta":'.length;
-            if (bytes > MAX_FEED_PATCH_BYTES) {
-                return undefined;
-            }
-            patch.meta = JSON.parse(row.meta) as Record<string, unknown>;
+            change.meta = row.meta;
         }
-        if (removed.size > 0) {
-            const ids: string[] = [];
-            patch.removed = ids;
-            bytes += ',"removed":[]'.length;
-            for (const id of removed) {
-                bytes += Buffer.byteLength(JSON.stringify(id)) + (ids.length > 0 ? 1 : 0);
-                if (bytes > MAX_FEED_PATCH_BYTES) {
-                    return undefined;
-                }
-                ids.push(id);
-            }
-        }
-        if (touched.size > 0) {
-            const messages: { after: string | null; message: unknown }[] = [];
-            patch.messages = messages;
-            bytes += ',"messages":[]'.length;
-            for (const stored of selectPatchMessages.iterate(row.seq, JSON.stringify([...touched]))) {
-                const { after, data } = stored as { after: string | null; data: string };
-                bytes +=
-                    Buffer.byteLength(JSON.stringify(after)) +
-                    Buffer.byteLength(data) +
-                    '{"after":,"message":}'.length +
-                    (messages.length > 0 ? 1 : 0);
-                if (bytes > MAX_FEED_PATCH_BYTES) {
-                    return undefined;
-                }
-                messages.push({ after, message: JSON.parse(data) });
-            }
-        }
-        return patch;
+        return change;
     }
 
     /**
@@ -952,6 +2199,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (remembered.translations) {
             result.translations = remembered.translations;
         }
+        if (remembered.oocAnswerRefusals) result.oocAnswerRefusals = remembered.oocAnswerRefusals;
+        if (remembered.memoryRefused) result.memoryRefused = true;
+        if (remembered.refusedMeta) result.refusedMeta = remembered.refusedMeta;
+        if (remembered.selections) result.selections = remembered.selections;
+        if (remembered.candidateRows) result.candidateRows = remembered.candidateRows;
         if (remembered.targets) {
             result.targets = remembered.targets;
         }
@@ -995,6 +2247,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (result.translations) {
             remembered.translations = result.translations;
         }
+        if (result.oocAnswerRefusals) remembered.oocAnswerRefusals = result.oocAnswerRefusals;
+        if (result.memoryRefused) remembered.memoryRefused = true;
+        if (result.refusedMeta) remembered.refusedMeta = result.refusedMeta;
+        if (result.selections) remembered.selections = result.selections;
+        if (result.candidateRows) remembered.candidateRows = result.candidateRows;
         if (result.targets) {
             remembered.targets = result.targets;
         }
@@ -1003,11 +2260,29 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         trimGroups.run(chatSeq, chatSeq, MAX_CHAT_GROUP_IDS);
     }
 
+    /**
+     * A remembered groupId is answered before lock/revision checks, without reapplying it or producing
+     * a feed ref; duplicate tracking is internal and adds no field to the HTTP ChatGroupResult.
+     * Otherwise selectRestoreFloor refuses a base below a checkpoint load's barrier even for by-id
+     * operations that may use an older revision. `data/checkpointService.ts` load sets that floor in
+     * the replacement's transaction. `data/resourceStore.ts` suppresses feed refs for remembered
+     * duplicate groups; other successful groups may publish a ref even when no operation changes the chat.
+     */
     function applyGroup(
         group: PreparedChatGroup,
         changedOrders: Set<string>,
         jobToken: string | undefined,
-    ): { result: ChatGroupResult; applied: number; patch?: ChatPatchBody; invalidated?: true; duplicate?: true } {
+        changes: boolean,
+        attemptWrite?: RerollAttemptWrite,
+        restoredFields = false,
+    ): {
+        result: ChatGroupResult;
+        applied: number;
+        feed?: LiveChatChange;
+        change?: ChatWriteChange;
+        invalidated?: true;
+        messageChanges?: ChatMessageChanges;
+    } {
         const { characterId, chatId } = group;
         const conflictHere = (row: ChatRow | undefined, reason?: ChatConflict["reason"]): never => {
             throw new ChatChangeConflict({
@@ -1025,12 +2300,18 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             // refuse it now.
             const remembered = rememberedResult(group, row);
             if (remembered) {
-                return { result: remembered, applied: 0, duplicate: true };
+                return { result: remembered, applied: 0 };
             }
             if (group.retry && mayHaveForgotten(group, row)) {
                 // It may have landed before the oldest remembered group: refused, never applied twice.
                 conflictHere(row, "expired");
             }
+        }
+        if (group.ops[0].op === "delete") {
+            conflictHere(row, row ? "useTrash" : undefined);
+        }
+        if (row && row.trashedAt !== null) {
+            conflictHere(row, "chatTrashed");
         }
         // Before the revision checks: a refused edit of a generating message must read as
         // "retry after the job", not as a stale view to reload. The locked messages it targets
@@ -1048,12 +2329,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         }
         /** Whether the group names an older revision of this chat (allowed for by-id ops). */
         let stale = false;
+        const base = group.baseRevision === null ? null : tokens.parse(group.baseRevision);
         if (group.baseRevision === null) {
             if (row || !characterExists.get(RESOURCE_KIND.characters, characterId)) {
                 conflictHere(row);
             }
         } else {
-            const base = tokens.parse(group.baseRevision);
             if (
                 !row ||
                 !base ||
@@ -1066,6 +2347,25 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             }
             stale = base!.revision !== row!.revision;
         }
+        let attempt = liveAttempt(characterId, chatId);
+        const control =
+            attemptWrite?.characterId === characterId && attemptWrite.chatId === chatId ? attemptWrite : undefined;
+        if (control?.action === "begin") {
+            if (
+                !jobToken ||
+                !guard?.isLive(jobToken) ||
+                guard.holder(characterId, chatId, control.messageId) !== jobToken ||
+                !group.ops.some(
+                    (op) =>
+                        op.op === "begin" && op.id === control.messageId && op.generationId === control.generationId,
+                )
+            ) {
+                throw new ResourceValidationError("A reroll attempt must begin with its owned generation");
+            }
+            attempt = { ...control, token: jobToken, entries: new Map() };
+            (stagedAttempts ?? attempts).set(attemptKey(characterId, chatId), attempt);
+        }
+        let finishedAttempt = false;
         /** Messages this group inserted; a new generation may begin on them without the current revision. */
         const insertedHere = new Set<string>();
         // The actual stored base, which can be newer than a stale group's requested base.
@@ -1073,28 +2373,62 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             row && group.ops.every((op) => op.op !== "create" && op.op !== "replace" && op.op !== "delete")
                 ? tokens.token(row.seq, row.revision)
                 : null;
+        // The stored metadata before the group, for the field form of its change (by-id groups).
+        const metaBefore = patchBase ? row!.meta : undefined;
+        /** The first stored read of each mutable row, retained only for a possible feed body. */
+        const rowsBefore = new Map<string, string>();
+        /** The projection right before the group's first `meta` op (by-id groups). */
+        let summaryBefore: string | undefined;
+        /** The projection the group's last `meta` op wrote. */
+        let summaryAfter: string | undefined;
+        /** Taken right before the group's first op that can change its messages, even when absent. */
+        let timeBefore: { time: number | undefined } | undefined;
         const touched = new Set<string>();
         const removedIds = new Set<string>();
+        /** The messages a `remove` with `retract` deleted. */
+        const retractedIds = new Set<string>();
+        /** The messages a person's write gave another role, data, or normalized speaker (`ChatMessageChanges`). */
+        const rewrittenIds = new Set<string>();
+        const speakerChangedIds = new Set<string>();
         let reappended = false;
         let metaChanged = false;
+        let memoryRefused = false;
+        const oocAnswerRefusals = new Set<"missing" | "answered">();
+        const refusedMeta: NonNullable<ChatGroupResult["refusedMeta"]> = [];
         let applied = 0;
         let messageIds: string[] | undefined;
         let messageIdsRenamed = false;
         const checkpoints: CheckpointOutcome[] = [];
         const translations: TranslationOutcome[] = [];
+        const selections: NonNullable<ChatGroupResult["selections"]> = [];
+        // Keep the writer's expected counter; cleanup survives later row writes.
+        const candidateWrites = new Map<string, { revision: number | null; cleaned: boolean }>();
+        const expectCandidateRevision = (id: string, revision: number | null) => {
+            const previous = candidateWrites.get(id);
+            if (previous) previous.revision = revision;
+            else candidateWrites.set(id, { revision, cleaned: false });
+        };
         // Per message-editing op: whether its message was there (reported only when one was not).
         const targets: TargetOutcome[] = [];
-        let deleted = false;
-        /** A `delete` or `replace` applied: the chat's source changed as a whole (its source generation). */
+        /** A `replace` applied: the chat's source changed as a whole (its source generation). */
         let invalidated = false;
         for (const [opIndex, op] of group.ops.entries()) {
             applyingOp = opIndex;
             const chatSeq = row?.seq ?? -1;
+            if (op.op !== "meta" && op.op !== "begin") {
+                if (patchBase && !timeBefore) {
+                    timeBefore = { time: lastMessageAt(chatSeq) };
+                }
+                lastMessageTimes.delete(chatSeq);
+            }
             switch (op.op) {
                 case "create": {
-                    const created = insertChat.run(characterId, chatId, CHAT_SCHEMA_VERSION, op.meta);
-                    const seq = Number(created.lastInsertRowid);
-                    insertAt(seq, -1, op.messages);
+                    const seq = writeChatMeta({ kind: "create", characterId, id: chatId, meta: op.meta }, op.summary);
+                    insertAt(
+                        seq,
+                        -1,
+                        op.messages.map((message) => ({ ...message, text: withCandidateRevision(message.text) })),
+                    );
                     const order = ensureOrder(characterId);
                     const ids = order.ids.filter((id) => id !== chatId);
                     ids.splice(Math.min(op.index ?? ids.length, ids.length), 0, chatId);
@@ -1103,22 +2437,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     messageIds = op.messages.map((message) => message.id);
                     messageIdsRenamed = op.renamed;
                     messageIds.forEach((id) => insertedHere.add(id));
-                    row = { seq, revision: 0, meta: op.meta };
-                    applied += 1;
-                    break;
-                }
-                case "delete": {
-                    deleteChat.run(chatSeq);
-                    const order = readOrder(characterId);
-                    if (order) {
-                        writeOrder(
-                            order,
-                            order.ids.filter((id) => id !== chatId),
-                        );
-                        changedOrders.add(characterId);
-                    }
-                    deleted = true;
-                    invalidated = true;
+                    row = { seq, revision: 0, meta: op.meta, trashedAt: null };
                     applied += 1;
                     break;
                 }
@@ -1131,9 +2450,35 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         generationSeq: number;
                         generationHistory: string | null;
                     }[];
-                    setChatMeta.run(op.meta, CHAT_SCHEMA_VERSION, chatSeq);
+                    const stored = JSON.parse(row!.meta) as Record<string, unknown>;
+                    const incoming = JSON.parse(op.meta) as Record<string, unknown>;
+                    recordMap(attempt, jobToken, stored.scriptstate, incoming.scriptstate);
+                    let { meta, summary } = op;
+                    if (
+                        Object.hasOwn(incoming, "hypaV3Data") &&
+                        refusesHypaV3Data(chatSeq, stored, incoming.memoryMode, restoredFields)
+                    ) {
+                        const { hypaV3Data: _refused, ...kept } = incoming;
+                        meta = serialize(kept).text;
+                        summary = summaryText(kept);
+                    }
+                    const previous = new Map(
+                        (selectCandidateRows.all(chatSeq) as { id: string; data: string }[]).map(({ id, data }) => [
+                            id,
+                            data,
+                        ]),
+                    );
+                    writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta }, summary);
                     deleteMessages.run(chatSeq);
-                    insertAt(chatSeq, -1, op.messages);
+                    setMessageCount(chatSeq, 0);
+                    insertAt(
+                        chatSeq,
+                        -1,
+                        op.messages.map((message) => ({
+                            ...message,
+                            text: withCandidateRevision(message.text, previous.get(message.id)),
+                        })),
+                    );
                     const kept = new Set(op.messages.map((message) => message.id));
                     for (const fence of fences) {
                         if (kept.has(fence.id)) {
@@ -1146,7 +2491,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             );
                         }
                     }
-                    row = { ...row!, meta: op.meta };
+                    row = { ...row!, meta };
                     messageIds = op.messages.map((message) => message.id);
                     messageIdsRenamed = op.renamed;
                     invalidated = true;
@@ -1154,18 +2499,75 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     break;
                 }
                 case "meta": {
+                    if (patchBase && summaryBefore === undefined) {
+                        summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
+                    }
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
-                    for (const key of op.unset) {
+                    const exchangeId = op.ifOocUnanswered;
+                    if (exchangeId !== undefined) {
+                        const log = current.oocLog;
+                        const exchange =
+                            isPlainObject(log) && Object.hasOwn(log, exchangeId) ? log[exchangeId] : undefined;
+                        if (!isPlainObject(exchange) || exchange.answer !== undefined) {
+                            if (!op.acceptMatchingOocExchange || !sameJson(exchange, op.merge.oocLog[exchangeId])) {
+                                oocAnswerRefusals.add(exchange === undefined ? "missing" : "answered");
+                                refusedMeta.push({ index: opIndex });
+                            }
+                            break;
+                        }
+                    }
+                    const previousVariables = current.scriptstate;
+                    const { hypaV3Data: _refused, ...kept } = op.set;
+                    const modeAfter = Object.hasOwn(op.set, "memoryMode")
+                        ? op.set.memoryMode
+                        : op.unset.includes("memoryMode")
+                          ? undefined
+                          : current.memoryMode;
+                    let set =
+                        Object.hasOwn(op.set, "hypaV3Data") &&
+                        refusesHypaV3Data(chatSeq, current, modeAfter, restoredFields)
+                            ? kept
+                            : op.set;
+                    let unset = op.unset;
+                    if (jobToken || stale) {
+                        const refused = new Set<string>();
+                        for (const field of ["hypaV2Data", "supaMemoryData"]) {
+                            if (!Object.hasOwn(set, field) && !unset.includes(field)) continue;
+                            if (jobToken) {
+                                markMemoryWrite.run(chatSeq, field, nextRevision(row!.revision, applied + 1));
+                            } else if (base && newerMemoryWrite.get(chatSeq, field, base.revision)) {
+                                refused.add(field);
+                            }
+                        }
+                        if (refused.size) {
+                            memoryRefused = true;
+                            refusedMeta.push({ index: opIndex, memoryFields: [...refused] });
+                            set = Object.fromEntries(Object.entries(set).filter(([key]) => !refused.has(key)));
+                            unset = unset.filter((key) => !refused.has(key));
+                            if (
+                                !Object.keys(set).length &&
+                                !unset.length &&
+                                !Object.keys(op.merge).length &&
+                                !Object.keys(op.mergeUnset).length
+                            )
+                                break;
+                        }
+                    }
+                    for (const key of unset) {
                         delete current[key];
                     }
-                    Object.assign(current, op.set);
+                    Object.assign(current, set);
+                    recordMap(attempt, jobToken, previousVariables, current.scriptstate);
                     for (const key of new Set([...Object.keys(op.mergeUnset), ...Object.keys(op.merge)])) {
                         // Onto the entries as stored now: another writer's entries stay.
                         const stored = current[key];
                         const isMap = isPlainObject(stored);
                         const entries = Object.hasOwn(op.merge, key) ? op.merge[key] : undefined;
                         if (!isMap && !entries) {
-                            // Removals alone from a field that is not a map: nothing to remove.
+                            // An explicit removal still has an origin, even when already absent.
+                            if (key === "scriptstate")
+                                for (const id of op.mergeUnset[key] ?? [])
+                                    recordVariable(attempt, jobToken, id, undefined, undefined);
                             continue;
                         }
                         const map: Record<string, unknown> = Object.create(null);
@@ -1175,15 +2577,20 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             }
                         }
                         for (const id of Object.hasOwn(op.mergeUnset, key) ? op.mergeUnset[key] : []) {
+                            if (key === "scriptstate")
+                                recordVariable(attempt, jobToken, id, entryOf(map, id), undefined);
                             delete map[id];
                         }
                         for (const id of Object.keys(entries ?? {})) {
+                            if (key === "scriptstate")
+                                recordVariable(attempt, jobToken, id, entryOf(map, id), entries![id]);
                             map[id] = entries![id];
                         }
                         current[key] = { ...map };
                     }
-                    const meta = serialize(normalizeChatMeta(current, chatId)).text;
-                    setChatMeta.run(meta, CHAT_SCHEMA_VERSION, chatSeq);
+                    const { text: meta, stored: copy } = serialize(normalizeChatMeta(current, chatId));
+                    summaryAfter = summaryText(copy as Record<string, unknown>);
+                    writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta }, summaryAfter);
                     row = { ...row!, meta };
                     metaChanged = true;
                     applied += 1;
@@ -1209,8 +2616,16 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     for (const message of op.messages) {
                         const existing = selectMessage.get(chatSeq, message.id) as MessageRow | undefined;
                         if (!existing) {
-                            fresh.push(message);
-                        } else if (existing.data !== message.text) {
+                            const incoming = JSON.parse(message.text) as Message;
+                            expectCandidateRevision(message.id, incoming.candidatesRevision ?? null);
+                            let text = message.text;
+                            // Comments never carry snapshots, even when a job owns their new ids.
+                            if (incoming.isComment && hasCandidateCheckpoints(incoming)) {
+                                text = serialize(withoutCandidateCheckpoints(incoming)).text;
+                                candidateWrites.get(message.id)!.cleaned = true;
+                            }
+                            fresh.push({ ...message, text: withCandidateRevision(text) });
+                        } else if (!appendReplay(message.text, existing.data)) {
                             conflictHere(row);
                         }
                     }
@@ -1221,6 +2636,36 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         fresh.forEach((message) => insertedHere.add(message.id));
                         insertAt(chatSeq, after, fresh);
+                        // Match isLatestReply: stop at the first non-comment, regardless of role.
+                        // Read the current order so earlier ops and insertions before the tail count.
+                        let newest: string | null = null;
+                        for (const message of selectCarrierMessages.iterate(chatSeq)) {
+                            if (message.isComment) continue;
+                            newest = message.chatId as string;
+                            break;
+                        }
+                        for (const { data } of selectCheckpointRows.all(chatSeq, newest) as { data: string }[]) {
+                            const message = readMessage(data);
+                            // A job may already own a row whose begin comes later in this group.
+                            if (guard && guard.holder(characterId, chatId, message.chatId!) !== null) continue;
+                            const cleaned = withoutCandidateCheckpoints(message);
+                            if (data === JSON.stringify(cleaned)) continue;
+                            const candidateWrite = candidateWrites.get(message.chatId!) ?? {
+                                revision: message.candidatesRevision ?? null,
+                                cleaned: false,
+                            };
+                            candidateWrite.cleaned = true;
+                            candidateWrites.set(message.chatId!, candidateWrite);
+                            if (patchBase !== null && !rowsBefore.has(message.chatId!)) {
+                                rowsBefore.set(message.chatId!, data);
+                            }
+                            setMessageData.run(
+                                withCandidateRevision(serialize(cleaned).text, data),
+                                chatSeq,
+                                message.chatId!,
+                            );
+                            touched.add(message.chatId!);
+                        }
                         applied += 1;
                     }
                     break;
@@ -1238,17 +2683,33 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         }
                         break;
                     }
+                    if (patchBase !== null && !rowsBefore.has(id)) {
+                        rowsBefore.set(id, existing.data);
+                    }
                     targets.push("applied");
+                    let admittedGeneration = false;
                     if (op.op !== "patchMessage" && op.generation) {
                         const outcome = admitGeneration(chatSeq, id, existing!, op.generation);
                         checkpoints.push(outcome);
                         if (outcome !== "applied") {
                             break;
                         }
+                        admittedGeneration = true;
+                        if (
+                            op.generation.final &&
+                            attempt &&
+                            attempt.token === jobToken &&
+                            attempt.messageId === id &&
+                            attempt.generationId === op.generation.id
+                        )
+                            finishedAttempt = true;
                     } else {
                         closeFence(chatSeq, id, existing!);
                     }
                     let text: string;
+                    /** Whether the op changes role, data, or normalized speaker in the message's memory evidence. */
+                    let rewrites: boolean;
+                    let speakerChanged = false;
                     if (op.op === "setMessage") {
                         // The whole row, also on a stale revision: fields the sender has not seen are
                         // replaced (`patchMessage` changes only the fields it names).
@@ -1256,6 +2717,8 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         // older copy, or none) never replaces or removes it.
                         const stored = JSON.parse(existing!.data) as Record<string, unknown>;
                         const message = JSON.parse(op.message.text) as Record<string, unknown>;
+                        speakerChanged = memorySourceSpeaker(message) !== memorySourceSpeaker(stored);
+                        rewrites = message.role !== stored.role || message.data !== stored.data || speakerChanged;
                         if (Object.hasOwn(message, "translation") || Object.hasOwn(stored, "translation")) {
                             delete message.translation;
                             if (Object.hasOwn(stored, "translation")) {
@@ -1269,21 +2732,54 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         // Onto the row as stored: the fields it does not name (`data` another tab
                         // wrote, the stored translation) stay. Checked again as a whole message.
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
+                        const { role, data } = message;
+                        const speaker = memorySourceSpeaker(message);
                         for (const key of op.unset) {
                             delete message[key];
                         }
                         for (const key of Object.keys(op.set)) {
                             message[key] = op.set[key];
                         }
-                        text = serialize(normalizeMessage(message)).text;
+                        speakerChanged = memorySourceSpeaker(message) !== speaker;
+                        rewrites = message.role !== role || message.data !== data || speakerChanged;
+                        text = serialize(normalizeMessage(message, true)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
+                        rewrites = message.data !== op.text;
                         message.data = op.text;
                         text = serialize(message).text;
+                    }
+                    if (op.op !== "setText") {
+                        // A field patch retains the counter the writer already holds from earlier ops.
+                        if (op.op === "setMessage" || !candidateWrites.has(id)) {
+                            expectCandidateRevision(
+                                id,
+                                (JSON.parse(op.op === "setMessage" ? op.message.text : existing!.data) as Message)
+                                    .candidatesRevision ?? null,
+                            );
+                        }
+                        if (
+                            !admittedGeneration &&
+                            !(jobToken !== undefined && guard?.holder(characterId, chatId, id) === jobToken) &&
+                            !hasCandidateCheckpoints(JSON.parse(existing.data) as Message)
+                        ) {
+                            const message = JSON.parse(text) as Message;
+                            if (hasCandidateCheckpoints(message)) {
+                                text = serialize(withoutCandidateCheckpoints(message)).text;
+                                // A stale whole-row write or journal replay must clear the writer's
+                                // copies even when stripping leaves the stored bytes unchanged.
+                                candidateWrites.get(id)!.cleaned = true;
+                            }
+                        }
+                        text = withCandidateRevision(text, existing!.data);
                     }
                     setMessageData.run(text, chatSeq, id);
                     if (text !== existing!.data) {
                         touched.add(id);
+                    }
+                    if (rewrites && jobToken === undefined && (op.op === "patchMessage" || !op.generation)) {
+                        rewrittenIds.add(id);
+                        if (speakerChanged) speakerChangedIds.add(id);
                     }
                     applied += 1;
                     break;
@@ -1294,8 +2790,13 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     // stale client view.
                     let removed = 0;
                     for (const id of op.ids) {
-                        if (deleteMessage.run(chatSeq, id).changes > 0) {
+                        const { changes } = deleteMessage.run(chatSeq, id);
+                        if (changes > 0) {
+                            changeMessageCount(chatSeq, -Number(changes));
                             removedIds.add(id);
+                            if (op.retract) {
+                                retractedIds.add(id);
+                            }
                             touched.delete(id);
                             removed += 1;
                         } else if (op.ids.length > 1) {
@@ -1327,6 +2828,69 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     applied += 1;
                     break;
                 }
+                case "selectCandidate": {
+                    const existing = selectMessage.get(chatSeq, op.messageId) as MessageRow | undefined;
+                    const stored = existing ? (JSON.parse(existing.data) as Message) : undefined;
+                    const current = JSON.parse(row!.meta) as Chat;
+                    const carrierMessages: Pick<Message, "chatId" | "role" | "isComment">[] = [];
+                    // Walk backward through comments, stopping at the two rows the carrier check needs.
+                    for (const row of selectCarrierMessages.iterate(chatSeq)) {
+                        const message = {
+                            chatId: row.chatId as string,
+                            role: row.role as Message["role"],
+                            isComment: !!row.isComment,
+                        };
+                        if (message.isComment) continue;
+                        carrierMessages.push(message);
+                        if (carrierMessages.length === 2) break;
+                    }
+                    const carrierChat = { message: carrierMessages.reverse() };
+                    const change =
+                        stored &&
+                        isRerollCarrier(carrierChat, op.messageId) &&
+                        (stored.candidatesRevision ?? 0) === op.expect.candidatesRevision
+                            ? selectCandidateChange(stored, op.candidateId, current.scriptstate)
+                            : null;
+                    if (!change) {
+                        selections.push("refused");
+                        break;
+                    }
+                    selections.push("applied");
+                    expectCandidateRevision(op.messageId, op.expect.candidatesRevision);
+                    if (stored!.candidates?.[stored!.selected ?? 0]?.id === op.candidateId) break;
+                    expectCandidateRevision(op.messageId, op.expect.candidatesRevision + 1);
+                    if (patchBase !== null && !rowsBefore.has(op.messageId)) {
+                        rowsBefore.set(op.messageId, existing!.data);
+                    }
+                    const text = withCandidateRevision(serialize(change.message).text, existing!.data);
+                    closeFence(chatSeq, op.messageId, existing!);
+                    setMessageData.run(text, chatSeq, op.messageId);
+                    touched.add(op.messageId);
+                    if (change.message.data !== stored!.data && jobToken === undefined) rewrittenIds.add(op.messageId);
+                    if (Object.keys(change.merge).length || change.mergeUnset.length) {
+                        if (patchBase && summaryBefore === undefined)
+                            summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
+                        const map = Object.assign(Object.create(null), mapOf(current.scriptstate));
+                        for (const key of change.mergeUnset) {
+                            recordVariable(attempt, jobToken, key, entryOf(map, key), undefined);
+                            delete map[key];
+                        }
+                        for (const [key, value] of Object.entries(change.merge)) {
+                            recordVariable(attempt, jobToken, key, entryOf(map, key), value);
+                            map[key] = value;
+                        }
+                        // As with a meta merge, removals alone do not create an absent map.
+                        if (isPlainObject(current.scriptstate) || Object.keys(change.merge).length)
+                            current.scriptstate = { ...map };
+                        const { text: meta, stored: copy } = serialize(normalizeChatMeta(current, chatId));
+                        summaryAfter = summaryText(copy as Record<string, unknown>);
+                        writeChatMeta({ kind: "update", seq: chatSeq, revision: row!.revision, meta }, summaryAfter);
+                        row = { ...row!, meta };
+                        metaChanged = true;
+                    }
+                    applied += 1;
+                    break;
+                }
                 case "setTranslation": {
                     // Not a text write: the generation fence is left as it is.
                     const existing = selectMessage.get(chatSeq, op.id) as MessageRow | undefined;
@@ -1334,6 +2898,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                         targets.push("missing");
                         translations.push("ignored");
                         break;
+                    }
+                    if (patchBase !== null && !rowsBefore.has(op.id)) {
+                        rowsBefore.set(op.id, existing.data);
                     }
                     targets.push("applied");
                     const message = JSON.parse(existing!.data) as Record<string, unknown>;
@@ -1343,6 +2910,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                             translationSourceHash(message.data) !== op.translation.sourceHash)
                     ) {
                         // A translation of a text the message no longer holds.
+                        translations.push("ignored");
+                        break;
+                    }
+                    if (
+                        op.expectTranslation !== undefined &&
+                        sortedJson(message.translation ?? null) !== sortedJson(op.expectTranslation)
+                    ) {
+                        // A detached answer must not replace a translation saved during its run.
                         translations.push("ignored");
                         break;
                     }
@@ -1367,12 +2942,49 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 }
             }
         }
+        if (finishedAttempt && attempt) {
+            if (
+                control?.action === "rollback" &&
+                control.generationId === attempt.generationId &&
+                control.messageId === attempt.messageId &&
+                row
+            ) {
+                if (patchBase && summaryBefore === undefined)
+                    summaryBefore = freshSummaryText(row.seq, row.revision, { meta: row.meta });
+                const current = JSON.parse(row.meta) as Record<string, unknown>;
+                const variables = { ...mapOf(current.scriptstate) };
+                for (const [key, entry] of attempt.entries) {
+                    if (entry.last === "foreign") continue;
+                    const value = entry.foreign ? entry.foreign.value : entry.before;
+                    if (value === undefined) delete variables[key];
+                    else
+                        Object.defineProperty(variables, key, {
+                            value,
+                            enumerable: true,
+                            configurable: true,
+                            writable: true,
+                        });
+                }
+                if (attempt.entries.size > 0) current.scriptstate = variables;
+                const meta = serialize(normalizeChatMeta(current, chatId)).text;
+                if (meta !== row.meta) {
+                    summaryAfter = summaryText(current);
+                    writeChatMeta({ kind: "update", seq: row.seq, revision: row.revision, meta }, summaryAfter);
+                    row = { ...row, meta };
+                    metaChanged = true;
+                    applied += 1;
+                }
+            }
+            (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
+        }
         let revision: string | null = null;
         let next = 0;
-        if (!deleted && row) {
+        if (row) {
             next = nextRevision(row.revision, applied);
             if (applied > 0) {
                 bumpChat.run(applied, row.seq);
+                // Also carries a row this group's own metadata write left at `row.revision`.
+                advanceSummary.run(next, row.seq, row.revision);
             }
             revision = tokens.token(row.seq, next);
         }
@@ -1390,20 +3002,131 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         if (translations.length > 0) {
             result.translations = translations;
         }
+        if (oocAnswerRefusals.size) result.oocAnswerRefusals = [...oocAnswerRefusals];
+        if (memoryRefused) result.memoryRefused = true;
+        if (refusedMeta.length) result.refusedMeta = refusedMeta;
+        if (selections.length) result.selections = selections;
+        if (row) {
+            const candidateRows: NonNullable<ChatGroupResult["candidateRows"]> = [];
+            for (const [id, expected] of candidateWrites) {
+                const stored = selectMessage.get(row.seq, id) as MessageRow | undefined;
+                if (!stored) continue;
+                const message = JSON.parse(stored.data) as Message;
+                const candidatesRevision = message.candidatesRevision ?? null;
+                if (!expected.cleaned && candidatesRevision === expected.revision) continue;
+                const cleared = expected.cleaned && !hasCandidateCheckpoints(message);
+                candidateRows.push({ id, candidatesRevision, ...(cleared ? { cleared: true as const } : {}) });
+            }
+            if (candidateRows.length) result.candidateRows = candidateRows;
+        }
         if (targets.includes("missing")) {
             result.targets = targets;
         }
-        if (group.groupId !== null && !deleted && row) {
+        if (group.groupId !== null && row) {
             // Every answered group, also one that changed nothing: a resend of it must not apply
             // after another writer recreated its target or changed its text. Rolled back with the
             // batch when anything conflicts.
             rememberGroup(row.seq, group.groupId, next, result, messageIdsRenamed);
         }
-        const patch =
-            patchBase && applied > 0 && !reappended
-                ? chatFeedPatch(row!, patchBase, touched, removedIds, metaChanged)
-                : undefined;
-        return { result, applied, patch, ...(invalidated ? { invalidated } : {}) };
+        let change: ChatWriteChange | undefined;
+        let feed: ChatFeedPayloads | undefined;
+        if (patchBase && applied > 0) {
+            // Both stored metadata values, parsed at most once and only for the field form.
+            let metaValues: { before: Record<string, unknown>; after: Record<string, unknown> } | undefined;
+            const storedMeta = () =>
+                (metaValues ??= {
+                    before: JSON.parse(metaBefore!) as Record<string, unknown>,
+                    after: JSON.parse(row!.meta) as Record<string, unknown>,
+                });
+            feed = {};
+            if (!reappended) {
+                const meta = metaChanged
+                    ? { stored: row!.meta, fields: () => chatMetaFields(storedMeta().before, storedMeta().after) }
+                    : undefined;
+                if (changes) {
+                    // The feed's change from the same rows, so nothing is read twice.
+                    change = chatWriteChange(
+                        row!,
+                        patchBase,
+                        revision!,
+                        touched,
+                        removedIds,
+                        insertedHere,
+                        metaChanged,
+                    );
+                    feed = chatFeedChange(
+                        patchBase,
+                        change.count,
+                        meta,
+                        removedIds,
+                        touched,
+                        touched.size > 0 ? change.rows : null,
+                        rowsBefore,
+                        insertedHere,
+                    );
+                } else {
+                    // Without a change to build, the rows are read only while a form of the feed's change still fits.
+                    const count = messageCount(row!.seq);
+                    feed = chatFeedChange(
+                        patchBase,
+                        count,
+                        meta,
+                        removedIds,
+                        touched,
+                        touched.size > 0 ? touchedRows(row!.seq, touched) : null,
+                        rowsBefore,
+                        insertedHere,
+                    );
+                }
+            }
+            // The summary without its revision: the stored projection (equal texts are equal
+            // projections) and the last message's time, which a message op can change without a
+            // metadata change (a removal of the last row) or make absent.
+            const time = timeBefore ? lastMessageAt(row!.seq) : undefined;
+            const summaryChanged =
+                (timeBefore !== undefined && time !== timeBefore.time) ||
+                (metaChanged && summaryBefore !== summaryAfter);
+            if (summaryChanged) {
+                feed.summary = {
+                    characterId,
+                    id: chatId,
+                    // The group's revision: `row` still holds the one before it (`bumpChat` writes only the table).
+                    revision: revision!,
+                    ...summaryWithTime(
+                        // Checked against the group's revision: a row left stale must not publish old text at it.
+                        summaryAfter ?? freshSummaryText(row!.seq, next, { meta: row!.meta }),
+                        timeBefore ? time : lastMessageAt(row!.seq),
+                        row!.trashedAt,
+                    ),
+                };
+            } else {
+                feed.summaryBase = patchBase;
+            }
+        }
+        // By-id groups only: a whole-chat write says nothing of its messages one by one.
+        const retracted = patchBase ? [...retractedIds].filter((id) => !insertedHere.has(id)) : [];
+        const rewritten = patchBase
+            ? [...rewrittenIds].filter((id) => !insertedHere.has(id) && !removedIds.has(id))
+            : [];
+        const speakerChanged = rewritten.filter((id) => speakerChangedIds.has(id));
+        return {
+            result,
+            applied,
+            change,
+            feed: { characterId, id: chatId, revision: revision!, trashedAt: row!.trashedAt, ...feed },
+            ...(invalidated ? { invalidated } : {}),
+            ...(retracted.length > 0 || rewritten.length > 0
+                ? {
+                      messageChanges: {
+                          characterId,
+                          id: chatId,
+                          retracted,
+                          rewritten,
+                          ...(speakerChanged.length > 0 ? { speakerChanged } : {}),
+                      },
+                  }
+                : {}),
+        };
     }
 
     return {
@@ -1425,16 +3148,106 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return !!guard && [...guard.characterHolders(characterId)].some((token) => token !== jobToken);
         },
 
+        /** Whether a generation job owns any of the chat's `messageIds` (what `refusedByLock` reads). */
+        messagesLocked(characterId: string, chatId: string, messageIds: readonly string[]): boolean {
+            return !!guard && messageIds.some((id) => guard.holder(characterId, chatId, id) !== null);
+        },
+
+        /** Stage provenance and counts alongside SQLite, including later callbacks in the transaction. */
+        beginTransaction() {
+            for (const attempt of attempts.values()) liveAttempt(attempt.characterId, attempt.chatId);
+            stagedAttempts = structuredClone(attempts);
+            stagedMessageCounts = new Map();
+        },
+        commitTransaction() {
+            if (stagedAttempts) attempts = stagedAttempts;
+            stagedAttempts = null;
+            for (const [chatSeq, count] of stagedMessageCounts ?? []) {
+                if (count === undefined) messageCounts.delete(chatSeq);
+                else messageCounts.set(chatSeq, count);
+            }
+            stagedMessageCounts = null;
+        },
+        rollbackTransaction() {
+            stagedAttempts = null;
+            stagedMessageCounts = null;
+        },
+        dropRerollAttempts(token?: string) {
+            const map = stagedAttempts ?? attempts;
+            for (const [key, attempt] of map) if (token === undefined || attempt.token === token) map.delete(key);
+        },
+
         /** The chat's revision token, or null when it does not exist (no metadata or messages read). */
         chatRevision(characterId: string, id: string): string | null {
             const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
             return row ? tokens.token(row.seq, row.revision) : null;
         },
 
-        /** A chat's summary (its listed fields; its messages are not read), or null when it does not exist. */
+        /**
+         * The named rows in position order, with their immediate predecessors and named metadata
+         * fields as stored. A different revision (including incarnation) or deletion answers moved;
+         * no projection is overlaid, so the client's patch installer can keep its sealed projection.
+         */
+        readRows(request: ResourceReadEntries["chatRows"][number]): ChatRowsReadResult {
+            const { characterId, id, revision, messageIds, meta } = request;
+            const current = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq" | "revision"> | undefined;
+            const token = current ? tokens.token(current.seq, current.revision) : null;
+            if (!current || token !== revision) {
+                return { characterId, id, revision: token, moved: true };
+            }
+            const rows = Array.from(touchedRows(current.seq, new Set(messageIds)), ({ id, after, data }) => ({
+                id,
+                after,
+                message: JSON.parse(data) as Record<string, unknown>,
+            }));
+            if (meta.length === 0) return { characterId, id, revision, rows };
+            const stored = JSON.parse((selectChat.get(characterId, id) as ChatRow).meta) as Record<string, unknown>;
+            const metaFields: ChatMetaFields = {
+                set: Object.fromEntries(
+                    meta.filter((name) => Object.hasOwn(stored, name)).map((name) => [name, stored[name]]),
+                ),
+                remove: meta.filter((name) => !Object.hasOwn(stored, name)),
+            };
+            return { characterId, id, revision, rows, metaFields };
+        },
+
+        /**
+         * Named rows' stored UTF-8 bytes, plus conservative whole metadata bytes when fields are named, before parsing.
+         */
+        rowsBytes({ characterId, id, revision, messageIds, meta }: ResourceReadEntries["chatRows"][number]): number {
+            const row = selectChatBytes.get(characterId, id) as
+                { seq: number; revision: number; bytes: number } | undefined;
+            if (!row || tokens.token(row.seq, row.revision) !== revision) return 0;
+            const messages = sumNamedMessageBytes.get(row.seq, JSON.stringify(messageIds)) as { bytes: number };
+            return messages.bytes + (meta.length > 0 ? row.bytes : 0);
+        },
+
+        /**
+         * The chat's stored messages among `messageIds`, by id: one point lookup each, and no other row is
+         * read. An id the chat does not hold, or a chat that does not exist, is left out.
+         */
+        readMessagesById(characterId: string, chatId: string, messageIds: readonly string[]): Map<string, Message> {
+            const found = new Map<string, Message>();
+            const row = selectChatRevision.get(characterId, chatId) as Pick<ChatRow, "seq"> | undefined;
+            if (!row || messageIds.length === 0) return found;
+            const rows = selectNamedMessages.all(JSON.stringify([...new Set(messageIds)]), row.seq) as {
+                id: string;
+                data: string;
+            }[];
+            for (const { id, data } of rows) found.set(id, readMessage(data));
+            return found;
+        },
+
+        /** How many of the chat's messages have the user role, or null when it does not exist (no message row read). */
+        countUserTurns(characterId: string, id: string): number | null {
+            const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq"> | undefined;
+            return row ? (countUserTurns.get(row.seq) as { count: number }).count : null;
+        },
+
+        /** A chat's summary (listed fields and memoized last-message time), or null when it does not exist. */
         readChatSummary(characterId: string, id: string): ChatSummary | null {
-            const row = selectChat.get(characterId, id) as ChatRow | undefined;
-            return row ? chatSummary(characterId, { ...row, id }) : null;
+            const row = selectChatSummary.get(characterId, id) as ChatSummaryRow | undefined;
+            return row ? chatSummary(row) : null;
         },
 
         /** A chat's metadata with an empty `message` list (its messages are not read), or null when it does not exist. */
@@ -1443,10 +3256,40 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return row ? chatRecord(characterId, { ...row, id }, []) : null;
         },
 
-        /** A chat's incarnation (`chats.seq`), or null when it does not exist. */
-        chatSeq(characterId: string, id: string): number | null {
-            const row = selectChatRevision.get(characterId, id) as Pick<ChatRow, "seq"> | undefined;
-            return row ? row.seq : null;
+        chatState(characterId: string, id: string) {
+            return selectChatRevision.get(characterId, id) as
+                Pick<ChatRow, "seq" | "revision" | "trashedAt"> | undefined;
+        },
+        expiredTrashedChats(cutoff: number) {
+            return selectExpiredTrashedChats.all(cutoff) as {
+                characterId: string;
+                id: string;
+                seq: number;
+                revision: number;
+                trashedAt: number;
+            }[];
+        },
+        hasOtherActiveChat(characterId: string, id: string): boolean {
+            return !!otherActiveChat.get(characterId, id);
+        },
+        setTrashedAt(seq: number, revision: number, trashedAt: number | null) {
+            const next = nextRevision(revision, 1);
+            setChatTrash.run(trashedAt, next, seq);
+            advanceSummary.run(next, seq, revision);
+        },
+        /** Deletes the chat and returns its changed order's revision. */
+        deleteChat(characterId: string, id: string, seq: number): string | null {
+            (stagedAttempts ?? attempts).delete(attemptKey(characterId, id));
+            lastMessageTimes.delete(seq);
+            deleteChat.run(seq);
+            setMessageCount(seq, undefined);
+            const order = readOrder(characterId);
+            if (!order) return null;
+            const revision = writeOrder(
+                order,
+                order.ids.filter((member) => member !== id),
+            );
+            return tokens.token(order.seq, revision);
         },
 
         /** A chat's metadata `name` for a search hit ("" when it has none or the chat is gone). */
@@ -1458,14 +3301,14 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
         /**
          * One synchronous batch of a message search: the scope's chats by `seq` descending, each
          * chat's messages by `position` descending, every message charged and handed to `visit` (with
-         * its JSON only when its text matches the `LIKE` pattern), until `visit` ends the request
+         * its JSON only when its text matches the literal query), until `visit` ends the request
          * (`stopped`), the batch is full, or the scope is exhausted (`end`). A batch is full at
          * `maxRows` units (one per message row and one per chat looked at, so empty or skipped chats
          * cannot keep it running) or `maxBytes` (the messages' UTF-8 bytes plus what `scope.eligible`
          * charged); the limits are checked after each unit, so a batch always advances. `resume` is
          * where the next batch starts: a resumed message's chat continues below that message's
          * current position (found again by id, so inserts before it neither repeat nor skip rows; its
-         * stored position when it is gone), and a chat that is gone or out of scope continues with
+         * stored position when it is gone), and a trashed, missing, or out-of-scope chat continues with
          * the next lower `seq`. Rows are read lazily and the scan statement is reset before
          * returning, so nothing stays open across the caller's yield.
          */
@@ -1595,7 +3438,12 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * and whether an order existed.
          */
         deleteCharacter(characterId: string): { chatIds: string[]; order: boolean } {
-            const chatIds = (selectCharacterChats.all(characterId) as { id: string }[]).map((row) => row.id);
+            const rows = selectCharacterChats.all(characterId) as { seq: number; id: string }[];
+            const chatIds = rows.map((row) => row.id);
+            for (const row of rows) {
+                lastMessageTimes.delete(row.seq);
+                setMessageCount(row.seq, undefined);
+            }
             const order = readOrder(characterId) !== null;
             deleteCharacterChats.run(characterId);
             deleteOrder.run(characterId);
@@ -1608,8 +3456,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
          * permutation of the list after this batch's creates and deletes; that check is skipped once
          * anything conflicted (`priorConflicts`: a resource op did), since the batch rolls back and a
          * conflicting change is missing from the list. Returns every conflict found (the caller rolls
-         * back when there is one), the results, the applied count, and the chats a `delete` or
-         * `replace` applied to (`invalidated`, once each, in group order).
+         * back when there is one), the results, the applied count, each newly answered group's feed
+         * entry (`feed`), the chats a `replace` applied to (`invalidated`,
+         * once each, in group order), and what the groups did to messages (`messageChanges`, a group
+         * with nothing to report left out). With `changes`, also each group's own change (`changes`,
+         * aligned with the results; undefined for a group without one).
          */
         apply(
             groups: readonly PreparedChatGroup[],
@@ -1617,28 +3468,35 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             orderBases: ReadonlyMap<string, { seq: number; revision: number } | null>,
             priorConflicts: boolean,
             jobToken?: string,
+            changes = false,
+            attemptWrite?: RerollAttemptWrite,
+            /** A checkpoint load: the groups restore a chat's fields as captured (`refusesHypaV3Data`). */
+            restoredFields = false,
         ) {
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
             // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
-            const patches = new Map<ChatGroupResult, ChatPatchBody>();
-            const duplicates = new Set<ChatGroupResult>();
+            const feed: LiveChatChange[] = [];
+            // Only for a writer that asked; kept outside the results like the feed's payloads.
+            const written: (ChatWriteChange | undefined)[] | undefined = changes ? [] : undefined;
             const changedOrders = new Set<string>();
             const invalidated: { characterId: string; id: string }[] = [];
+            const messageChanges: ChatMessageChanges[] = [];
             let applied = 0;
             for (const [index, group] of groups.entries()) {
                 applyingOp = -1;
                 try {
-                    const outcome = applyGroup(group, changedOrders, jobToken);
+                    const outcome = applyGroup(group, changedOrders, jobToken, changes, attemptWrite, restoredFields);
                     results.push(outcome.result);
-                    if (outcome.duplicate) {
-                        duplicates.add(outcome.result);
-                    }
-                    if (outcome.patch) {
-                        patches.set(outcome.result, outcome.patch);
+                    written?.push(outcome.change);
+                    if (outcome.feed) {
+                        feed.push(outcome.feed);
                     }
                     if (outcome.invalidated) {
                         invalidated.push({ characterId: group.characterId, id: group.chatId });
+                    }
+                    if (outcome.messageChanges) {
+                        messageChanges.push(outcome.messageChanges);
                     }
                     applied += outcome.applied;
                 } catch (error) {
@@ -1693,7 +3551,16 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     });
                 }
             }
-            return { conflicts, results, orders: orderResults, applied, patches, duplicates, invalidated };
+            return {
+                conflicts,
+                results,
+                orders: orderResults,
+                applied,
+                feed,
+                invalidated,
+                messageChanges,
+                changes: written,
+            };
         },
 
         /** The order rows the given reorders name, as they are before the batch writes anything. */
@@ -1708,15 +3575,19 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
 
         /** Every chat's and every chat order's revision, without their data. */
         listRevisions(): {
-            chats: { characterId: string; id: string; revision: string }[];
+            chats: { characterId: string; id: string; revision: string; trashedAt: number | null }[];
             chatOrders: { characterId: string; revision: string }[];
         } {
             const chats = (
-                selectChatRevisions.all() as { seq: number; characterId: string; id: string; revision: number }[]
+                selectChatRevisions.all() as Pick<
+                    ChatSummaryRow,
+                    "seq" | "characterId" | "id" | "revision" | "trashedAt"
+                >[]
             ).map((row) => ({
                 characterId: row.characterId,
                 id: row.id,
                 revision: tokens.token(row.seq, row.revision),
+                trashedAt: row.trashedAt,
             }));
             const chatOrders = (
                 selectOrderRevisions.all() as { seq: number; characterId: string; revision: number }[]
@@ -1733,17 +3604,11 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                     list = [];
                     messagesBySeq.set(row.chatSeq, list);
                 }
-                list.push(JSON.parse(row.data));
+                list.push(readMessage(row.data));
             }
-            const chats = (
-                selectAllChats.all() as {
-                    seq: number;
-                    characterId: string;
-                    id: string;
-                    revision: number;
-                    meta: string;
-                }[]
-            ).map((row) => chatRecord(row.characterId, row, messagesBySeq.get(row.seq) ?? []));
+            const chats = (selectAllChats.all() as (ChatRow & { characterId: string; id: string })[]).map((row) =>
+                chatRecord(row.characterId, row, messagesBySeq.get(row.seq) ?? []),
+            );
             const chatOrders = (
                 selectAllOrders.all() as { seq: number; characterId: string; revision: number; ids: string }[]
             ).map((row) => ({
@@ -1754,19 +3619,19 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return { chats, chatOrders };
         },
 
-        /** Every chat's summary (no message rows read) and every chat order, in one read. */
-        readSummaries(): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
+        /** Summaries and orders in seq order, without reading any skipped character's rows or order ids. */
+        readSummaries(skip?: ReadonlySet<string>): { chatSummaries: ChatSummary[]; chatOrders: ChatOrderRecord[] } {
+            const skipped = skip?.size ? JSON.stringify([...skip]) : null;
             const chatSummaries = (
-                selectAllChats.all() as {
+                (skipped === null ? selectAllSummaries.all() : selectUncachedSummaries.all(skipped)) as ChatSummaryRow[]
+            ).map((row) => chatSummary(row));
+            const chatOrders = (
+                (skipped === null ? selectAllOrders.all() : selectUncachedOrders.all(skipped)) as {
                     seq: number;
                     characterId: string;
-                    id: string;
                     revision: number;
-                    meta: string;
+                    ids: string;
                 }[]
-            ).map((row) => chatSummary(row.characterId, row));
-            const chatOrders = (
-                selectAllOrders.all() as { seq: number; characterId: string; revision: number; ids: string }[]
             ).map((row) => ({
                 characterId: row.characterId,
                 revision: tokens.token(row.seq, row.revision),
@@ -1775,15 +3640,15 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             return { chatSummaries, chatOrders };
         },
 
-        /** A character's order and its chats' summaries (no message rows read), or null when it has no order. */
+        /** A character's order and its chats' summaries (with memoized last-message times), or null when it has no order. */
         readCollectionSummaries(characterId: string): { order: ChatOrderRecord; chats: ChatSummary[] } | null {
             const order = readOrder(characterId);
             if (!order) {
                 return null;
             }
-            const chats = (
-                selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
-            ).map((row) => chatSummary(characterId, row));
+            const chats = (selectCharacterSummaries.all(characterId) as ChatSummaryRow[]).map((row) =>
+                chatSummary(row),
+            );
             return {
                 order: { characterId, revision: tokens.token(order.seq, order.revision), ids: order.ids },
                 chats,
@@ -1797,7 +3662,7 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
                 return null;
             }
             const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
-                JSON.parse(entry.data),
+                readMessage(entry.data),
             );
             return chatRecord(characterId, { ...row, id }, messages);
         },
@@ -1808,11 +3673,9 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             if (!order) {
                 return null;
             }
-            const chats = (
-                selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
-            ).map((row) => {
+            const chats = (selectCharacterChats.all(characterId) as (ChatRow & { id: string })[]).map((row) => {
                 const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
-                    JSON.parse(entry.data),
+                    readMessage(entry.data),
                 );
                 return chatRecord(characterId, row, messages);
             });
@@ -1822,36 +3685,47 @@ export function createChatTables(db: DatabaseSync, tokens: TokenFunctions, guard
             };
         },
 
-        /** Restores validated chat rows in the caller's transaction and returns the old-to-new chat seq map. */
-        replaceAll(rows: ChatSnapshotRows) {
-            db.exec("DELETE FROM messages; DELETE FROM chats; DELETE FROM chatOrders;");
-            for (const order of rows.chatOrders) {
-                insertRestoredOrder.run(order.characterId, order.revision, order.ids);
+        /** A chat's stored bytes, its metadata and message rows, or 0 when it does not exist. */
+        chatBytes(characterId: string, id: string): number {
+            const chat = selectChatBytes.get(characterId, id) as { seq: number; bytes: number } | undefined;
+            if (!chat) {
+                return 0;
             }
-            const seqs = new Map<number, number>();
-            for (const chat of rows.chats) {
-                const result = insertRestoredChat.run(
-                    chat.characterId,
-                    chat.id,
-                    chat.revision,
-                    chat.schemaVersion,
-                    chat.meta,
-                );
-                seqs.set(chat.seq, Number(result.lastInsertRowid));
+            return chat.bytes + (sumMessageBytes.get(chat.seq) as { bytes: number }).bytes;
+        },
+
+        /**
+         * What `readCollection` reads, in stored bytes: the order and every chat of the character, also one
+         * the order does not list, since it reads them all. 0 without an order, when it reads no chat.
+         */
+        collectionBytes(characterId: string): number {
+            const order = selectOrderBytes.get(characterId) as { bytes: number } | undefined;
+            if (!order) {
+                return 0;
             }
-            for (const message of rows.messages) {
-                insertRestoredMessage.run(
-                    seqs.get(message.chatSeq)!,
-                    message.id,
-                    message.position,
-                    message.data,
-                    message.generationId,
-                    message.generationSeq,
-                    message.generationFinal,
-                    message.generationHistory,
-                );
+            return (
+                order.bytes +
+                (sumCharacterMetaBytes.get(characterId) as { bytes: number }).bytes +
+                (sumCharacterMessageBytes.get(characterId) as { bytes: number }).bytes
+            );
+        },
+
+        /**
+         * What `readCollectionSummaries` reads, in stored bytes: the order and the stored projections as
+         * they stand, since charging rebuilds no row and reads no last-message time. 0 without an order.
+         */
+        collectionSummaryBytes(characterId: string): number {
+            const order = selectOrderBytes.get(characterId) as { bytes: number } | undefined;
+            if (!order) {
+                return 0;
             }
-            return seqs;
+            return order.bytes + (sumCharacterSummaryBytes.get(characterId) as { bytes: number }).bytes;
+        },
+
+        /** Drops the chat memos: an install's commit gave every chat a new seq. */
+        forgetChatMemos() {
+            lastMessageTimes.clear();
+            messageCounts.clear();
         },
     };
 }
@@ -1905,8 +3779,8 @@ function sliceWhole(text: string, start: number, end: number): { text: string; s
 
 /**
  * A search hit's snippet: up to 60 code units before the first match of `query` in `text` and 120
- * after it, found with the ASCII-only case folding `LIKE` used (not `toLowerCase`, which folds more
- * than `LIKE` matched). `matchStart` and `matchLength` are UTF-16 offsets into the snippet. When the
+ * after it, found with SQLite's ASCII-only case folding (not `toLowerCase`, which folds more
+ * than SQLite matched). `matchStart` and `matchLength` are UTF-16 offsets into the snippet. When the
  * match cannot be found again (the text changed meaning between SQLite and JavaScript), returns null.
  */
 export function messageSearchSnippet(
@@ -1926,44 +3800,41 @@ export function messageSearchSnippet(
 }
 
 /**
- * Reads and checks the chat tables of a snapshot file for `readSnapshot`: every chat belongs to a
+ * Reads and checks the chat tables of a snapshot file, one row at a time: every chat belongs to a
  * character of the snapshot, is unique, and has metadata the normalizer accepts; every message
  * belongs to a chat, has a unique id equal to its JSON `chatId`, a distinct integer position, a
  * valid message, and a well-formed fence; every character has exactly one order with a positive
- * unique `seq`, and each order is a duplicate-free permutation of that character's chats. Throws
- * `ResourceValidationError`.
+ * unique `seq`, and each order is a duplicate-free permutation of that character's chats. Each row
+ * goes to `sink` once it passed, chats by seq, messages by chat and position, orders by seq. Throws
+ * `ResourceValidationError`. Returns each chat's id by its seq, for the checkpoint and memory tables.
  *
- * Message positions are returned compacted to `0..n-1` in stored order: positions are internal, and
+ * Message positions are handed on compacted to `0..n-1` in stored order: positions are internal, and
  * the insertion arithmetic assumes they start at or above 0 and leave room to grow (a crafted
- * snapshot could otherwise place one below the `start` anchor or at the safe-integer limit).
+ * snapshot could otherwise place one below the `start` anchor or at the safe-integer limit). Messages
+ * arrive ordered by chat, so the sets that find a duplicate hold one chat's ids at a time.
  */
-export function readChatSnapshotRows(source: DatabaseSync, characterIds: ReadonlySet<string>): ChatSnapshotRows {
-    let rawChats: Record<string, unknown>[];
-    let rawMessages: Record<string, unknown>[];
-    let rawOrders: Record<string, unknown>[];
-    try {
-        rawChats = source
-            .prepare("SELECT seq, characterId, id, revision, schemaVersion, meta FROM chats ORDER BY seq")
-            .all() as Record<string, unknown>[];
-        rawMessages = source
-            .prepare(
-                "SELECT chatSeq, id, position, data, generationId, generationSeq, generationFinal, generationHistory " +
-                    "FROM messages ORDER BY chatSeq, position",
-            )
-            .all() as Record<string, unknown>[];
-        rawOrders = source
-            .prepare("SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq")
-            .all() as Record<string, unknown>[];
-    } catch {
-        throw new ResourceValidationError("Not a resource database");
-    }
-
+export function walkChatSnapshot(
+    source: DatabaseSync,
+    characterIds: ReadonlySet<string>,
+    chatColumns: readonly string[],
+    sink: ChatSnapshotSink,
+    signal?: AbortSignal,
+): ReadonlyMap<number, string> {
     const chatKeys = new Set<string>();
-    const chatSeqs = new Map<number, { characterId: string; id: string }>();
+    const chatIds = new Map<number, string>();
     const chatsByCharacter = new Map<string, Set<string>>();
-    const chats = rawChats.map((row, index) => {
-        const where = `chat row ${index + 1}`;
-        if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision) || chatSeqs.has(row.seq)) {
+    for (const [row, number] of snapshotRows(
+        source,
+        `SELECT seq, characterId, id, revision, schemaVersion, meta, ${chatColumns.includes("trashedAt") ? "trashedAt" : "NULL AS trashedAt"} FROM chats ORDER BY seq`,
+        NOT_A_RESOURCE_DATABASE,
+        signal,
+    )) {
+        const where = `chat row ${number}`;
+        const { trashedAt } = row;
+        if (trashedAt !== null && !isNonNegativeSafeInteger(trashedAt)) {
+            throw new ResourceValidationError(`${where}: invalid trashedAt`);
+        }
+        if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision) || chatIds.has(row.seq)) {
             throw new ResourceValidationError(`${where}: invalid seq or revision`);
         }
         if (typeof row.characterId !== "string" || !characterIds.has(row.characterId)) {
@@ -1980,53 +3851,65 @@ export function readChatSnapshotRows(source: DatabaseSync, characterIds: Readonl
         if (row.schemaVersion !== CHAT_SCHEMA_VERSION) {
             throw new ResourceValidationError(`${where}: unsupported schema version`);
         }
-        let meta: string;
+        let meta: { text: string; stored: unknown };
         try {
-            meta = serialize(normalizeChatMeta(JSON.parse(String(row.meta)), row.id)).text;
+            meta = serialize(normalizeChatMeta(JSON.parse(String(row.meta)), row.id));
         } catch (error) {
             throw new ResourceValidationError(
                 `${where}: ${error instanceof ResourceValidationError ? error.message : "meta is not JSON"}`,
             );
         }
-        chatSeqs.set(row.seq, { characterId: row.characterId, id: row.id });
+        chatIds.set(row.seq, row.id);
         let list = chatsByCharacter.get(row.characterId);
         if (!list) {
             list = new Set();
             chatsByCharacter.set(row.characterId, list);
         }
         list.add(row.id);
-        return {
-            seq: row.seq,
-            characterId: row.characterId,
-            id: row.id,
-            revision: row.revision,
-            schemaVersion: CHAT_SCHEMA_VERSION,
-            meta,
-        };
-    });
+        sink.chat(
+            {
+                seq: row.seq,
+                characterId: row.characterId,
+                id: row.id,
+                revision: row.revision,
+                schemaVersion: CHAT_SCHEMA_VERSION,
+                meta: meta.text,
+                trashedAt,
+            },
+            meta.stored as Record<string, unknown>,
+        );
+    }
 
-    const messageKeys = new Set<string>();
-    const positionKeys = new Set<string>();
-    /** Next compacted position per chat (rows arrive ordered by chat and stored position). */
-    const nextPosition = new Map<number, number>();
-    const messages = rawMessages.map((row, index) => {
-        const where = `message row ${index + 1}`;
-        if (typeof row.chatSeq !== "number" || !chatSeqs.has(row.chatSeq)) {
+    let currentChat: number | null = null;
+    const messageIds = new Set<string>();
+    const positions = new Set<unknown>();
+    for (const [row, number] of snapshotRows(
+        source,
+        "SELECT chatSeq, id, position, data, generationId, generationSeq, generationFinal, generationHistory " +
+            "FROM messages ORDER BY chatSeq, position",
+        NOT_A_RESOURCE_DATABASE,
+        signal,
+    )) {
+        const where = `message row ${number}`;
+        if (typeof row.chatSeq !== "number" || !chatIds.has(row.chatSeq)) {
             throw new ResourceValidationError(`${where}: no such chat`);
+        }
+        if (row.chatSeq !== currentChat) {
+            currentChat = row.chatSeq;
+            messageIds.clear();
+            positions.clear();
         }
         if (!isValidResourceId(row.id)) {
             throw new ResourceValidationError(`${where}: invalid id`);
         }
-        const key = `${row.chatSeq}\u0000${row.id}`;
-        const positionKey = `${row.chatSeq}\u0000${String(row.position)}`;
-        if (messageKeys.has(key)) {
+        if (messageIds.has(row.id)) {
             throw new ResourceValidationError(`${where}: duplicate message id`);
         }
-        if (!Number.isSafeInteger(row.position) || positionKeys.has(positionKey)) {
+        if (!Number.isSafeInteger(row.position) || positions.has(row.position)) {
             throw new ResourceValidationError(`${where}: invalid or duplicate position`);
         }
-        messageKeys.add(key);
-        positionKeys.add(positionKey);
+        messageIds.add(row.id);
+        positions.add(row.position);
         let data: string;
         try {
             const message = normalizeMessage(JSON.parse(String(row.data)));
@@ -2065,24 +3948,27 @@ export function readChatSnapshotRows(source: DatabaseSync, characterIds: Readonl
         ) {
             throw new ResourceValidationError(`${where}: invalid generation`);
         }
-        const position = nextPosition.get(row.chatSeq) ?? 0;
-        nextPosition.set(row.chatSeq, position + 1);
-        return {
+        sink.message({
             chatSeq: row.chatSeq,
             id: row.id,
-            position,
+            position: messageIds.size - 1,
             data,
             generationId: (row.generationId as string | null) ?? null,
             generationSeq: (row.generationSeq as number | null) ?? null,
             generationFinal: (row.generationFinal as number | null) ?? null,
             generationHistory: (row.generationHistory as string | null) ?? null,
-        };
-    });
+        });
+    }
 
     const ordered = new Set<string>();
     const orderSeqs = new Set<number>();
-    const chatOrders = rawOrders.map((row, index) => {
-        const where = `chat order row ${index + 1}`;
+    for (const [row, number] of snapshotRows(
+        source,
+        "SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq",
+        NOT_A_RESOURCE_DATABASE,
+        signal,
+    )) {
+        const where = `chat order row ${number}`;
         if (typeof row.characterId !== "string" || !characterIds.has(row.characterId) || ordered.has(row.characterId)) {
             throw new ResourceValidationError(`${where}: no such character or a duplicate order`);
         }
@@ -2106,12 +3992,96 @@ export function readChatSnapshotRows(source: DatabaseSync, characterIds: Readonl
         ) {
             throw new ResourceValidationError(`${where}: ids must list exactly the character's chats`);
         }
-        return { characterId: row.characterId, revision: row.revision, ids: JSON.stringify(ids) };
-    });
+        sink.chatOrder({ characterId: row.characterId, revision: row.revision, ids: JSON.stringify(ids) });
+    }
     for (const characterId of characterIds) {
         if (!ordered.has(characterId)) {
             throw new ResourceValidationError(`character ${characterId} has no chat order`);
         }
     }
-    return { chats, messages, chatOrders };
+    return chatIds;
+}
+
+/**
+ * The chat half of a staged store's writer (`writeValidatedStore`): writes each checked row into the
+ * staged tables. A chat keeps the source's numeric `seq`, so its messages need no mapping, with the
+ * projection of its normalized metadata beside it (a snapshot's own `chatSummaries` are never read);
+ * an order takes a seq of the staged table's in source order.
+ */
+export function createChatStagingSink(db: DatabaseSync): ChatSnapshotSink {
+    const insertChat = db.prepare(
+        "INSERT INTO chats (seq, characterId, id, revision, schemaVersion, meta, trashedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
+    const insertMessage = db.prepare(
+        "INSERT INTO messages (chatSeq, id, position, data, generationId, generationSeq, generationFinal, " +
+            "generationHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const insertOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, ?, ?)");
+    return {
+        chat(row, meta) {
+            insertChat.run(row.seq, row.characterId, row.id, row.revision, row.schemaVersion, row.meta, row.trashedAt);
+            upsertSummary.run(row.seq, row.revision, summaryText(meta));
+        },
+        message(row) {
+            insertMessage.run(
+                row.chatSeq,
+                row.id,
+                row.position,
+                row.data,
+                row.generationId,
+                row.generationSeq,
+                row.generationFinal,
+                row.generationHistory,
+            );
+        },
+        chatOrder(row) {
+            insertOrder.run(row.characterId, row.revision, row.ids);
+        },
+    };
+}
+
+/** A staged chat's live seq while an install runs: from `copyStagedChats` until the install drops it. */
+export const STAGED_CHAT_SEQS = "temp.stagedChatSeqs";
+
+/**
+ * Copies the staged chat tables into the emptied live ones inside the caller's transaction, with the
+ * staged store attached as `staged` (`replaceAll`): chats by staged seq, so the live `AUTOINCREMENT`
+ * gives each a fresh seq and a later delete and recreate cannot reuse an incarnation; then, through
+ * `STAGED_CHAT_SEQS`, their messages, orders, and projections. With the staged writer, this is the one
+ * place `chats.meta` is written past `writeChatMeta`: every row here was checked by the staging walk,
+ * and nothing is parsed.
+ */
+export function copyStagedChats(db: DatabaseSync): void {
+    // Choose a survivor using the original marks, before the other trashed chats get a fresh retention period.
+    db.prepare(
+        `
+        WITH survivors AS (
+            SELECT (SELECT c.seq FROM staged.chats c WHERE c.characterId = s.characterId
+                    ORDER BY c.trashedAt DESC, c.seq DESC LIMIT 1) AS seq
+            FROM staged.chats s GROUP BY s.characterId HAVING COUNT(s.trashedAt) = COUNT(*)
+        )
+        INSERT INTO main.chats (characterId, id, revision, schemaVersion, meta, trashedAt)
+            SELECT characterId, id, revision, schemaVersion, meta,
+                CASE WHEN trashedAt IS NULL OR seq IN (SELECT seq FROM survivors) THEN NULL ELSE ? END
+            FROM staged.chats ORDER BY seq
+    `,
+    ).run(Date.now());
+    db.exec(`
+        CREATE TABLE ${STAGED_CHAT_SEQS} (stagedSeq INTEGER PRIMARY KEY, liveSeq INTEGER NOT NULL) STRICT;
+        INSERT INTO ${STAGED_CHAT_SEQS} (stagedSeq, liveSeq)
+            SELECT s.seq, l.seq FROM staged.chats s
+                JOIN main.chats l ON l.characterId = s.characterId AND l.id = s.id;
+        INSERT INTO main.messages (chatSeq, id, position, data, generationId, generationSeq, generationFinal,
+                generationHistory)
+            SELECT seqs.liveSeq, m.id, m.position, m.data, m.generationId, m.generationSeq, m.generationFinal,
+                    m.generationHistory
+                FROM staged.messages m JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = m.chatSeq
+                ORDER BY m.chatSeq, m.position;
+        INSERT INTO main.chatOrders (characterId, revision, ids)
+            SELECT characterId, revision, ids FROM staged.chatOrders ORDER BY seq;
+        INSERT INTO main.chatSummaries (chatSeq, revision, text)
+            SELECT seqs.liveSeq, s.revision, s.text
+                FROM staged.chatSummaries s JOIN ${STAGED_CHAT_SEQS} seqs ON seqs.stagedSeq = s.chatSeq;
+    `);
 }

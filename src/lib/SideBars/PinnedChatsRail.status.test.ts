@@ -2,7 +2,15 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { getCharImage } from "src/ts/characters";
-import { resolveChatStatus, type ChatStatus, type ChatStatusSets } from "./chatStatus";
+import { memoryHealthState, type MemoryHealthState } from "../../../shared/structuredMemory.ts";
+import {
+    groupHealthState,
+    collectCharacterStatuses,
+    folderStatus,
+    resolveChatStatus,
+    type ChatStatus,
+    type ChatStatusSets,
+} from "./chatStatus";
 import type { PinnedChatItem } from "./pinnedChats";
 
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
@@ -283,4 +291,101 @@ describe("PinnedChatsRail memory badges", () => {
         expect(badge(0).classList.contains("w-5")).toBe(false);
         expect(badge(0).classList.contains("px-1")).toBe(true);
     });
+});
+
+it("renders unavailable health with refused's neutral look and a help icon in both badge layouts", () => {
+    for (const inline of [false, true]) {
+        const target = document.createElement("div");
+        document.body.append(target);
+        for (const props of [
+            { status: "health", health: "unavailable" },
+            { status: "refused" },
+            { status: "health", health: "gap" },
+        ] as const) {
+            mounted.push(mount(ChatStatusBadge, { target, props: { ...props, label: "Health", inline } }));
+        }
+        flushSync();
+        const [unavailable, refused, gap] = [...target.querySelectorAll<HTMLElement>(badgeSelector)];
+        expect(unavailable.dataset.risuChatHealth).toBe("unavailable");
+        for (const neutralClass of inline ? ["border-darkborderc", "text-textcolor2"] : ["bg-neutral-500"]) {
+            expect(unavailable.classList.contains(neutralClass)).toBe(true);
+            expect(refused.classList.contains(neutralClass)).toBe(true);
+            expect(gap.classList.contains(neutralClass)).toBe(false);
+        }
+        expect(unavailable.className).not.toMatch(/(?:bg|border|text)-danger-500/);
+        expect(unavailable.querySelector("svg.lucide-circle-help")).not.toBeNull();
+        expect(unavailable.querySelector("svg.lucide-heart-pulse")).toBeNull();
+        expect(gap.className).toMatch(/(?:bg|text)-danger-500/);
+        expect(gap.querySelector("svg.lucide-heart-pulse")).not.toBeNull();
+    }
+});
+
+it("shows the worst health state on chats and groups as a fault, with unseen ahead", () => {
+    const order: MemoryHealthState[] = [
+        "writerPaused",
+        "gap",
+        "staleEvents",
+        "unsupportedSections",
+        "requiredOverCap",
+        "pageOverBudget",
+    ];
+    for (let index = 0; index < order.length; index++) {
+        const state = order[index];
+        const holds = Object.fromEntries(order.map((name, i) => [name, i >= index])) as Record<
+            MemoryHealthState,
+            boolean
+        >;
+        expect(memoryHealthState(holds)).toBe(state);
+        const health = new Map<string, MemoryHealthState>([
+            ["a\u0000shared", state],
+            ["b\u0000shared", "pageOverBudget"],
+            ["outside\u0000k", "writerPaused"],
+        ]);
+        expect(groupHealthState(health, ["a"])).toBe(state);
+        expect(groupHealthState(health, ["b", "a"])).toBe(state);
+        expect(groupHealthState(health, ["b"])).toBe("pageOverBudget");
+        const sets = {
+            recovery: new Set<string>(),
+            generating: new Set<string>(),
+            unseen: new Set(["a\u0000shared"]),
+            health,
+        };
+        expect(resolveChatStatus(sets, "a\u0000shared")).toBe("unseen");
+        expect(folderStatus(collectCharacterStatuses(sets), ["a", "b"])).toBe("unseen");
+        const target = document.createElement("div");
+        document.body.append(target);
+        mounted.push(
+            mount(PinnedChatsRail, {
+                target,
+                props: {
+                    items: [items[0]],
+                    selectedChaId: null,
+                    selectedChatId: null,
+                    rounded: false,
+                    onOpen: () => {},
+                    statuses: new Map<string, ChatStatus>([["a\u0000shared", "health"]]),
+                    healthStates: health,
+                },
+            }),
+        );
+        mounted.push(
+            mount(ChatStatusBadge, {
+                target,
+                props: {
+                    status: "health",
+                    health: groupHealthState(health, ["a", "b"]),
+                    label: "Group health",
+                    inline: true,
+                },
+            }),
+        );
+        flushSync();
+        const badges = [...target.querySelectorAll<HTMLElement>(badgeSelector)];
+        expect(badges).toHaveLength(2);
+        for (const badge of badges) {
+            expect(badge.dataset.risuChatHealth).toBe(state);
+            expect(badge.className).toMatch(/(?:bg|text)-danger-500/);
+            expect(badge.className).not.toMatch(/bg-neutral-500|text-textcolor2/);
+        }
+    }
 });

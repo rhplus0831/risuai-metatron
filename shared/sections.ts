@@ -28,6 +28,7 @@ import {
  * - `DROPPED_FIELDS`: no longer persisted (no reader, write-only, migrated, or legacy mirrors).
  */
 
+/** The singleton settings resource kinds. */
 export const SECTION_KIND = {
     providers: "providers",
     secrets: "secrets",
@@ -36,8 +37,10 @@ export const SECTION_KIND = {
     memoryTranslateMedia: "memoryTranslateMedia",
 } as const;
 
+/** A singleton settings resource kind. */
 export type SectionKind = (typeof SECTION_KIND)[keyof typeof SECTION_KIND];
 
+/** The legacy `Database` fields stored in each singleton settings resource. */
 export const SECTION_FIELDS = {
     /** Provider and request settings outside the presets. */
     providers: [
@@ -46,6 +49,7 @@ export const SECTION_FIELDS = {
         "descriptionPrefix",
         "requestRetrys",
         "useStreaming",
+        "halfStreaming",
         "usePlainFetch",
         "openrouterMiddleOut",
         "openrouterFallback",
@@ -87,6 +91,13 @@ export const SECTION_FIELDS = {
         "presetChain",
         "requestHistoryContent",
         "requestHistoryLimit",
+        "requestInterceptions",
+        "minResponseLengthModel",
+        "minResponseLengthSubmodel",
+        "minResponseLengthMemory",
+        "minResponseLengthEmotion",
+        "minResponseLengthOtherAx",
+        "minResponseLengthTranslate",
     ],
     /** Write-only LLM provider defaults; named-key values live in the `credentials` entry map. */
     llmSecrets: [
@@ -227,6 +238,7 @@ export const SECTION_FIELDS = {
         "botSettingAtStart",
         "hideRealm",
         "blockedRealmCreators",
+        "realmTermsAccepted",
         "colorScheme",
         "colorSchemeName",
         "customColorScheme",
@@ -284,6 +296,7 @@ export const SECTION_FIELDS = {
         "blockquoteStyling",
         "keepSessionAlive",
         "longPressToPopupEditor",
+        "disableAutoPopupMessageEditor",
         "irisDialogue",
         "legacyMediaFindings",
         "showMemoryLimit",
@@ -295,9 +308,15 @@ export const SECTION_FIELDS = {
         "contextMeter",
         "contextMeterTurnUnit",
         "contextMeterFixedWarn",
+        "completionWaitMaxSeconds",
+        "chatTrashDays",
+        "contextMeterLookahead",
+        "loreBudgetStop",
+        "generationProgressWindow",
     ],
 } as const satisfies Record<SectionKind, readonly (keyof Database)[]>;
 
+/** The collection resource kinds, excluding records stored individually in `ITEM_RECORD_FIELDS`. */
 export const COLLECTION_KIND = {
     loreBook: "loreBook",
     globalscript: "globalscript",
@@ -310,13 +329,17 @@ export const COLLECTION_KIND = {
     hypaV3Presets: "hypaV3Presets",
     togglePresets: "togglePresets",
     customModels: "customModels",
+    inputHooks: "inputHooks",
     credentials: "credentials",
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",
     modelProfiles: "modelProfiles",
+    moduleFolders: "moduleFolders",
+    personaFolders: "personaFolders",
 } as const;
 
+/** A collection resource kind. */
 export type CollectionKind = (typeof COLLECTION_KIND)[keyof typeof COLLECTION_KIND];
 
 /** The `Database` field each collection resource holds. */
@@ -332,11 +355,14 @@ export const COLLECTION_FIELDS = {
     hypaV3Presets: "hypaV3Presets",
     togglePresets: "togglePresets",
     customModels: "customModels",
+    inputHooks: "inputHooks",
     credentials: "credentials",
     enabledModules: "enabledModules",
     statics: "statics",
     modelPresets: "modelPresets",
     modelProfiles: "modelProfiles",
+    moduleFolders: "moduleFolders",
+    personaFolders: "personaFolders",
 } as const satisfies Record<CollectionKind, keyof Database>;
 
 /**
@@ -380,6 +406,7 @@ export const FORWARDED_MODEL_PRESET_KEYS = [
     ...MODEL_PROFILE_ROOT_FIELDS,
 ] as const satisfies readonly (keyof Database)[];
 
+/** A legacy root derived from a model preset's slots, auxiliary toggle, or main profile. */
 export type ModelPresetRootKey = (typeof FORWARDED_MODEL_PRESET_KEYS)[number];
 
 /**
@@ -463,9 +490,9 @@ export function forwardPresetRoots(
 }
 
 /**
- * The prompt preset's main-model context size (`maxContextOverride` on and a finite
- * `maxContextOverrideSize` above 0, which is unset), or `undefined` when the main profile's
- * `maxContext` applies. Reads a prompt preset record or any object carrying the two fields under
+ * The prompt preset's main-model context size when `maxContextOverride` is on and
+ * `maxContextOverrideSize` is finite and above 0; otherwise `undefined` (unset: the main profile's
+ * `maxContext` applies). Reads a prompt preset record or any object carrying the two fields under
  * their root names (a job or request database).
  */
 export function maxContextOverrideOf(promptPreset: Record<string, unknown> | undefined): number | undefined {

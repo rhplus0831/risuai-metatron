@@ -1,16 +1,26 @@
-import type { Chat } from "./database.ts";
+import type { CandidateNoticeCode } from "./rerollCandidates.ts";
+import type { LoreBudgetStop } from "./contextReport.ts";
+import type { Chat, MessageGenerationInfo } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
 import type { ChatPatchBody } from "./resources.ts";
+import type { StructuredMemoryRebuildMode } from "./structuredMemory.ts";
 
 /**
  * The generation job contract: `POST /api/generations` creates a job for one chat, its owner (the
  * tab's `clientId`) follows it over `/api/generations/:id/ws`, and `DELETE /api/generations/:id`
- * aborts it. One chat has at most one running job.
+ * aborts it. Any authenticated tab can read `/api/generations/current` and explicitly stop that
+ * chat's named job through `/api/generations/stop`. One chat has at most one running job.
+ * The job socket's optional `rows=streamed` query accepts raw checkpoint rows reconstructed from
+ * the owner's stream buffer, independently of `hydration=patch` (incremental callback hydration).
+ * Optional `proto` is a finite non-negative integer recorded per socket and logged (invalid or
+ * absent: none), never enforced and never used to select capabilities.
  */
 
+/** The operations accepted when creating a generation job. */
 export type GenerationKind = "send" | "continue" | "reroll" | "group" | "preview" | "previewPrompt" | "command";
 
+/** The generation kinds accepted by client and server request validators. */
 export const GENERATION_KINDS: readonly GenerationKind[] = [
     "send",
     "continue",
@@ -33,7 +43,16 @@ export type GenerationContext = {
     personaId: string | null;
     mode: string;
     input: string;
+    /**
+     * The text the user typed for a send whose `input` is a reviewed draft. The input stage stores
+     * it as the appended user message's translation. Not part of `requestFingerprint`.
+     */
+    inputOriginal?: string;
     continueMessageId?: string;
+    /** Regenerate the newest reply in place; accepted only for a reroll job. */
+    rerollMessageId?: string;
+    /** Assemble a preview on a detached chat for this stored OOC exchange; accepted only for preview jobs. */
+    oocExchangeId?: string;
     speakerChaId?: string;
     /**
      * A send's user message: the id the job appends `input` under after the input trigger and
@@ -51,7 +70,20 @@ export type GenerationContext = {
     selectedPersonaId?: string | null;
     /** What CBS reads of the tab (`{{screenwidth}}`, `{{metadata::browserlanguage}}`). Absent: 0×0 and `en`. */
     client?: GenerationClientEnv;
+    /**
+     * End the job before any model request, as an `error` coded `loreOverBudget`, when the lore
+     * budget pass of its first assembly leaves out an activated entry without
+     * `@@ignore_on_max_context`. Honored for a `send`, `continue`, `group`, or `reroll` job only;
+     * later rounds and later group speakers never stop. When absent or false, the entries are left
+     * out and the reply's context report names them.
+     */
+    stopOverLoreBudget?: boolean;
+    /** Hold Web Push until released, or this many milliseconds after the registry ends the job; the tab's notice does not wait. */
+    completionHoldMs?: number;
 };
+
+/** The largest completion wait (600 seconds) plus the host's 30-second margin. */
+export const MAX_COMPLETION_HOLD_MS = 630_000;
 
 /**
  * The tab's viewport (CSS pixels) and `navigator.language` when the job was created, and the
@@ -81,16 +113,30 @@ export const MAX_TRIGGER_NAME_BYTES = 4096;
 
 /**
  * What a `command` job runs: a Lua button (`risu-btn`) with its attribute's text, a Lua form
- * (`risu-form`) with its attribute's key and submitted string values, or a manual trigger
- * (`risu-trigger`, `/trigger`) by name (its `risu-id` is `context.triggerId`).
+ * (`risu-form`) with its attribute's key and submitted string values, a manual trigger (`risu-trigger`,
+ * `/trigger`) by name (its `risu-id` is `context.triggerId`), a person's start of Structured
+ * Memory's writer: "record now" through the message `messageId`, which that press confirms, or resume
+ * without one, a test run of that writer over the chat's last window, which saves nothing and answers
+ * on `done.result` (`StructuredMemoryTestResult`), chapter synopses (up to `limit` requests or a
+ * remake of one chapter by id, returning `StructuredMemoryChaptersResult`), or a rebuild of the
+ * chat's records from its transcript: a start in windows of `turns` turns, or a resume of the run
+ * the chat holds. The memory commands are the only ones a group chat runs.
  */
 export type GenerationCommand =
     | { type: "button"; data: string }
     | { type: "form"; key: string; values: Record<string, string | string[]> }
-    | { type: "manual"; name: string };
+    | { type: "manual"; name: string }
+    | { type: "memoryRecord"; messageId?: string }
+    | { type: "memoryTest" }
+    | { type: "memoryChapters"; limit: number }
+    | { type: "memoryChapters"; remake: string }
+    | { type: "memoryRebuild"; mode: StructuredMemoryRebuildMode; turns: 1 | 2 }
+    | { type: "memoryRebuild"; resume: true };
 
+/** Plugin script hooks a generation can request from its owner tab. */
 export type ScriptHookMode = "editinput" | "editprocess" | "editoutput" | "editdisplay";
 
+/** Supported script callback names for hook registration and validation. */
 export const SCRIPT_HOOK_MODES: readonly ScriptHookMode[] = ["editinput", "editprocess", "editoutput", "editdisplay"];
 
 /**
@@ -108,6 +154,7 @@ export type GenerationHooks = {
     mcpTools: string[];
 };
 
+/** An empty hook registration for jobs without client plugin hooks. */
 export const NO_GENERATION_HOOKS: GenerationHooks = {
     replacers: { beforeRequest: false, afterRequest: false },
     scripts: [],
@@ -122,6 +169,10 @@ type GenerationCreateBase = {
     /** The client's registered hooks; missing means none. */
     hooks?: GenerationHooks;
     clientId: string;
+    /** Identifies one attempt across retries; omitted by older clients. */
+    requestId?: string;
+    /** Publishes an offer at admission; the creator remains owner until a ticket attaches. */
+    handoff?: "prefer";
 };
 
 /** A create body: a `command` job carries its `command`; every other kind has none. */
@@ -129,7 +180,39 @@ export type GenerationCreateBody =
     | (GenerationCreateBase & { kind: Exclude<GenerationKind, "command">; command?: undefined })
     | (GenerationCreateBase & { kind: "command"; command: GenerationCommand });
 
-export type GenerationCreated = { jobId: string };
+/** A newly admitted job, or a replay with ownership and its retained status (null after payload pruning). */
+export type GenerationCreated =
+    | { jobId: string; replayed?: false }
+    | { jobId: string; replayed: true; owned: boolean; status: GenerationStatus | null };
+
+/** Cancels one request id; clientId determines ownership of the answer, not authority to cancel. */
+export type GenerationCancelBody = { requestId: string; clientId: string };
+/** A tombstone, an abort requested for an admitted job, or a job already ended; an abort is not a terminal. */
+export type GenerationCancelled =
+    | { state: "cancelled" }
+    | { state: "aborted" | "ended"; jobId: string; owned: boolean; status: GenerationStatus | null };
+
+/**
+ * The chat's running job, without attaching or granting access to its channel. An idle chat answers
+ * `GET /api/generations/current` with 200 `null`, not an error status.
+ */
+export type GenerationCurrent = {
+    jobId: string;
+    kind: GenerationKind;
+    owned: boolean;
+    handedOff?: true;
+    stage?: GenerationStage;
+};
+
+/** Stops only the named job while it still holds this chat; clientId is attribution, not authority. */
+export type GenerationStopBody = { characterId: string; chatId: string; jobId: string; clientId: string };
+
+/** A participant opens an offer, optionally for one client. */
+export type GenerationHandoffBody = { clientId: string; target?: string };
+/** Claims an open offer; the returned ticket authorizes one socket attach. */
+export type GenerationTakeoverBody = { clientId: string };
+/** A one-use socket attach ticket returned after reserving a handoff offer. */
+export type GenerationTakeoverAnswer = { ticket: string };
 
 /** 409: the chat has a running job (the owner can attach to it). */
 export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
@@ -137,8 +220,10 @@ export type GenerationBusyBody = { error: "chatBusy"; jobId: string };
 /** 409: the chat changed since the revision the client sent. */
 export type GenerationStaleBody = { error: "stale" };
 
+/** Terminal error reasons, including aborts and server lifecycle interruptions. */
 export const GENERATION_ERROR_REASONS = ["failed", "aborted", "shutdown", "maintenance", "timeout"] as const;
 
+/** The reason a generation ended with an error. */
 export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
 
 /**
@@ -147,6 +232,7 @@ export type GenerationErrorReason = (typeof GENERATION_ERROR_REASONS)[number];
  */
 export const GENERATION_STAGES = ["preparing", "memory", "generating", "finishing"] as const;
 
+/** A running job's presentation stage. */
 export type GenerationStage = (typeof GENERATION_STAGES)[number];
 
 /**
@@ -156,7 +242,28 @@ export type GenerationStage = (typeof GENERATION_STAGES)[number];
  */
 export const GENERATION_ERROR_STAGES = ["setup", "input", "assembly", "request", "script", "persist", "tail"] as const;
 
+/** The runner step in which a generation failed. */
 export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
+
+/**
+ * A failure a tab tells apart from the rest by code, not by text: a send whose required memory pages did
+ * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows, a
+ * record-now window skipped (`memoryRecordSkipped`), whose message is a reason token the tab translates,
+ * or a send that asked to stop when the lore budget left an entry out (`loreOverBudget`), whose
+ * terminal carries the budget pass's result as `lore`. An OOC preview can also fail because its
+ * exchange or anchor is gone, or its memory cursor is outside the anchored history.
+ */
+export const GENERATION_ERROR_CODES = [
+    "memoryRequiredOverCap",
+    "memoryRecordSkipped",
+    "loreOverBudget",
+    "oocExchangeGone",
+    "oocAnchorGone",
+    "oocMemoryAhead",
+] as const;
+
+/** A machine-readable generation failure code with specialized client handling. */
+export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];
 
 /** A job's or a request's id as the server makes them (`randomUUID`). */
 export const GENERATION_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
@@ -229,13 +336,26 @@ export type GenerationResourceEvent =
  * The job chat's change since the last copy the server handed the owner's socket (`baseRevision`),
  * up to `revision`: a diff of two stored states, applied by the client only when it holds exactly
  * one of the two revisions. `messages`, in stored order, holds every message that is new or changed
- * since `baseRevision`, plus every message the job has begun a generation on (changed or not: the
- * client's copy of those can hold streamed text), each with the id of the message right before it
+ * since `baseRevision`, plus messages the job began generating whose final state has not yet been
+ * delivered (changed or not: a client's copy can hold streamed text). A delivered event retires
+ * those no longer listed in `streaming`; later patches carry them only if their stored JSON changes
+ * or the job begins generating them again. Each row carries the id of the message right before it
  * (`after`, null at the start). `meta` (the chat's fields without `message`) is present only when
  * it changed. `count` is the message count at `revision`. `streaming` is as in the chat `resource`
  * event. A client that cannot apply it sends `ChatResyncRequest`.
+ * With `rows=streamed`, a carried row already in the base may instead be `{ after, id, streamed }`:
+ * it is still locked to the named generation, its applied raw checkpoint covers exactly `seq`,
+ * its stored text equals that checkpoint's raw text, and all other fields equal the base row's.
+ * The client stages a detached held row with its stream buffer text only when that buffer belongs
+ * to the job and generation, is real and not retired, and has reached `seq`. The entry must agree
+ * with `streaming`; otherwise the entire patch mismatches and asks for a whole-chat resync without
+ * advancing the revision or claiming the checkpoint. At equality the buffer text is installed too.
  */
-export type GenerationChatPatchEvent = ChatPatchBody & {
+export type GenerationChatPatchEvent = Omit<ChatPatchBody, "messages"> & {
+    messages?: (
+        | NonNullable<ChatPatchBody["messages"]>[number]
+        | { after: string | null; id: string; streamed: { generationId: string; seq: number } }
+    )[];
     type: "chatPatch";
     epoch: string;
     characterId: string;
@@ -253,14 +373,32 @@ export type ChatResyncRequest = { type: "resync" };
  */
 export type ReplyResyncRequest = { type: "resyncReply" };
 
+/** A generation socket's liveness reply, echoing the server ping's timestamp. */
+export type GenerationPong = { type: "pong"; ts: number };
+
+/**
+ * A `preview` job's `done.result`: the final prompt, the report a send of it stores on its reply, and the
+ * indexes of Structured Memory's entries in `messages`, which the prompt no longer marks.
+ */
+export type GenerationPreviewResult = {
+    messages: OpenAIChat[];
+    context: MessageGenerationInfo["context"];
+    memoryBlock?: number[];
+    /** Confirms the preview used the OOC exchange's detached chat and forced toggles. */
+    ooc?: true;
+};
+
+/** A `memoryRecord` command's `done.result`: work finished in the job, or accepted by the task queue. */
+export type MemoryRecordResult = { memoryRecord: "completed" | "queued" };
+
+/** A job's terminal success or error, retained for reconnects and status reads. */
 export type GenerationTerminalEvent =
     | {
           type: "done";
           epoch: string;
           revision: string | null;
           messageId?: string;
-          alternatives?: string[];
-          /** A preview's result (`preview`: the assembled messages; `previewPrompt`: the provider body). */
+          /** A preview or command result, including `GenerationPreviewResult` and `MemoryRecordResult`. */
           result?: unknown;
           /**
            * A send that ended without counting as sent (a trigger's stop, an error written into the
@@ -268,11 +406,14 @@ export type GenerationTerminalEvent =
            */
           stopped?: true;
           /**
-           * `/multisend` commands a command job ran, in order: the tab sends each part after the
-           * job (the user message appended, then a send), `clear` removing the chat's messages
-           * before each part, and stops at the first part that does not send.
+           * The plugin hooks of its replies the job skipped because no owner tab was attached when
+           * they came due (`disconnected`); absent when none was. The tab runs the `chatOutput`
+           * listeners of each entry late (`replaySkippedListeners`) once it holds the job's chat.
+           * Only the frozen late-replay recipient receives the list; other readers receive [].
            */
-          followUps?: GenerationFollowUp[];
+          skipped?: SkippedHook[];
+          /** Delivered listeners that disconnected; may have run and must never be replayed. */
+          missed?: Extract<SkippedHook, { name: "chatOutput" }>[];
       }
     | {
           type: "error";
@@ -280,6 +421,8 @@ export type GenerationTerminalEvent =
           message: string;
           status: number;
           reason: GenerationErrorReason;
+          /** A participant or chat stop from another client; present only for reason `aborted`. */
+          abortedBy?: "other";
           /**
            * A runner's failure only (an abort, a timeout, shutdown, or maintenance has none): where
            * it failed, the LLM request that failed when it was one (the request history's id), and
@@ -288,23 +431,38 @@ export type GenerationTerminalEvent =
           stage?: GenerationErrorStage;
           requestId?: string;
           providerCode?: string;
+          /** The failure's code when it has one (`GenerationErrorCode`). */
+          code?: GenerationErrorCode;
+          /**
+           * Present only with the code `loreOverBudget`: the lore budget and the entries it left out
+           * (`parseLoreBudgetStop`). Its `rejected` holds lore entry names; the other failure
+           * fields are content-free.
+           */
+          lore?: LoreBudgetStop;
       };
 
-/** One `/multisend` of a command job: the texts to send in turn. */
-export type GenerationFollowUp = { clear: boolean; parts: string[] };
-
-/** The most parts all the follow-ups of one job carry, and the longest part in characters. */
-export const MAX_FOLLOW_UP_PARTS = 64;
-export const MAX_FOLLOW_UP_PART_CHARS = 100_000;
+/**
+ * A plugin hook of a completed reply that its job skipped because no owner tab was attached before
+ * the callback's deadline: the text went on unchanged (`editoutput`, `replacerafterRequest`), or
+ * the listeners never ran (`chatOutput`, whose payload lets the tab run them late; a `chatOutput`
+ * callback a tab had taken before it left is not listed, since its listeners may have run). Hooks
+ * that shape the request (`editinput`, `editprocess`, `replacerbeforeRequest`, `bodyIntercepter`)
+ * are never skipped: with no request made yet, failing the job loses nothing, while a silently
+ * changed prompt would.
+ */
+export type SkippedHook =
+    | { name: "editoutput" | "replacerafterRequest" }
+    | { name: "chatOutput"; payload: { messageId: string; speakerId: string } };
 
 // ---------------------------------------------------------------------------------------------
 // The job channel (`job-channel`): notices one way; questions and plugin callbacks are requests
 // the owner answers. Every request has one deadline from the moment it is dispatched; the server alone
 // decides `timedOut`, `disconnected`, `aborted`, and `refused`.
 
-/** A notice: a UI effect the job asks the owner's tab to show. */
+/** A notice: dialogs go to the owner, display effects to all sockets, device effects to the creator. */
 export type GenerationNotice =
-    | { kind: "alertNormal" | "alertError" | "alertToast" | "alertMd" | "alertWait"; payload: { message: string } }
+    | { kind: "alertToast"; payload: { message: string; code?: CandidateNoticeCode } }
+    | { kind: "alertNormal" | "alertError" | "alertMd" | "alertWait"; payload: { message: string } }
     | { kind: "alertClear"; payload: Record<string, never> }
     | { kind: "reloadDisplay" | "updateGUI"; payload: Record<string, never> }
     | { kind: "reloadChat"; payload: { chaId: string; chatId: string; messageId: string } }
@@ -333,7 +491,7 @@ export type GenerationNotice =
 export type MemoryChatRef = { chaId: string; chatId: string };
 
 /**
- * Why a send summarizes inside the job: the `memory` slot is a Plugin model (its requests run in the
+ * Why a send summarizes inside the job: the chat's resolved memory model is a Plugin model (its requests run in the
  * job's tab), the chat owner has a `request` trigger that applies to them, or the user approved
  * summarizing a gap now (`memoryGap`). Null: an ordinary blocking run or a selection.
  */
@@ -358,6 +516,7 @@ export type MemoryProgress =
           text?: string;
       };
 
+/** A question the server asks the owner tab, answered through `ChannelAnswer`. */
 export type GenerationQuestion =
     | { kind: "alertInput"; payload: { message: string; datalist?: [string, string][]; defaultValue?: string } }
     | { kind: "alertSelect"; payload: { options: string[]; display?: string } }
@@ -371,10 +530,11 @@ export type GenerationQuestion =
      */
     | { kind: "memoryTrim"; payload: Record<string, never> }
     /**
-     * The HypaV3 gap question: a send that uses stored summaries only would leave out `gapTokens`
-     * tokens of history no summary covers (more than the preset's `gapConfirmTokens`). Summarizing
-     * them now takes about `plannedCalls` summary requests; `lastTaskError` is the chat's last
-     * background memory failure, when there is one. The tab answers a `MemoryGapChoice`.
+     * The memory gap question: a send that uses stored memory only would leave out `gapTokens`
+     * tokens of history no HypaV3 summary or Structured Memory event covers (more than the preset's
+     * `gapConfirmTokens`). Summarizing them now takes about `plannedCalls` requests; `lastTaskError`
+     * is the chat's last background memory failure, when there is one. The tab answers a
+     * `MemoryGapChoice`.
      */
     | { kind: "memoryGap"; payload: { gapTokens: number; plannedCalls: number; lastTaskError?: string } };
 
@@ -383,19 +543,21 @@ export type GenerationQuestion =
  * trim and do not ask again in this chat (until the owner's memory is turned on again).
  */
 export type MemoryTrimChoice = "memory" | "once" | "ignore";
+/** Trim answers in the dialog button order used by `src/ts/network/jobChannel.ts`. */
 export const MEMORY_TRIM_CHOICES: readonly MemoryTrimChoice[] = ["memory", "once", "ignore"];
 
 /**
- * The answer to `memoryGap`: summarize the gap in this send (with progress and the stop control), or
- * send now with the stored summaries and leave the gap to the background memory task.
+ * The answer to `memoryGap`: generate memory for the gap in this send (HypaV3 summaries or Structured
+ * Memory records), or send now with stored memory and leave the gap to the background memory task.
  */
 export type MemoryGapChoice = "generate" | "continue";
+/** Gap answers in the dialog button order used by `src/ts/network/jobChannel.ts`. */
 export const MEMORY_GAP_CHOICES: readonly MemoryGapChoice[] = ["generate", "continue"];
 
 // ---------------------------------------------------------------------------------------------
 // The background memory task: a job hands its chat's memory input to a detached service, which
-// writes the summaries the job left out. Data only: the service rebuilds its host from a fresh
-// scope, never from the job.
+// writes HypaV3 summaries or runs the Structured Memory writer. Data only: the service rebuilds its
+// host from a fresh scope, never from the job.
 
 /**
  * A history entry's source, captured from the snapshot the entry was built from: a chat message
@@ -436,21 +598,19 @@ export type MemoryTokenPolicy = {
 };
 
 /**
- * What a job hands to the memory task service, captured just before its memory step and deep-copied:
+ * What a job hands to the memory task service for either kind of task, captured in its memory step
+ * and deep-copied:
  *
- * - `history`: the processed prompt history the memory step gets (message-id memos), `sources` one per
- *   entry (same length), and `historyStart`, the index of its first chat history entry;
- * - the counts: `currentTokens` (the prompt before memory), `maxContext`, `maxResponse`, and the
- *   token policy; `settingsFingerprint`, a digest of the memory-relevant settings (the Hypa preset,
- *   the `memory` slot, the embedding model);
+ * - the counts: `maxContext`, `maxResponse`, and the token policy; `settingsFingerprint`, a digest of
+ *   the memory-relevant settings (the Hypa preset, the memory connection, the embedding model);
  * - `binding`: the ids the job was admitted with; `effective`: the presets it ran with and whether a
  *   `presetChain` picked the prompt preset;
  * - `speakerId`: the character the job replied as (null for none);
  * - freshness: the `epoch`, `admittedRevision` (the chat revision the job was admitted at, the job's
  *   `context.chatRevision`, never a revision read later), and `sourceGeneration`, the chat's source
- *   generation read in the same synchronous chat read that produced the history's source snapshot.
+ *   generation read in the same synchronous chat read that produced the snapshot the step reads.
  */
-export type MemoryTaskInput = {
+export type MemoryTaskBase = {
     chatRef: MemoryChatRef;
     epoch: string;
     admittedRevision: string;
@@ -458,28 +618,60 @@ export type MemoryTaskInput = {
     speakerId: string | null;
     binding: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
     effective: { presetId: string; modelPresetId: string; fromChain: boolean };
-    history: OpenAIChat[];
-    sources: MemoryEntrySource[];
-    historyStart: number;
-    currentTokens: number;
     maxContext: number;
     maxResponse: number;
     tokenPolicy: MemoryTokenPolicy;
     settingsFingerprint: string;
 };
 
+/**
+ * A HypaV3 task's input, captured just before the job's memory step: `history`, the processed prompt
+ * history the step gets (message-id memos), `sources` one per entry (same length), `historyStart`,
+ * the index of its first chat history entry, and `currentTokens`, the prompt before memory. `kind`
+ * stays absent, so what a HypaV3 task sends and reports is unchanged by the other kind.
+ */
+export type MemoryTaskInput = MemoryTaskBase & {
+    kind?: "hypaV3";
+    history: OpenAIChat[];
+    sources: MemoryEntrySource[];
+    historyStart: number;
+    currentTokens: number;
+};
+
+/**
+ * A Structured Memory writer task's input. The task reads the chat and its coverage from the store, so
+ * all it takes from the job beyond the base is the ceiling: `confirmedBefore`, the id of the message
+ * the writer's windows stop before (`writerCeiling`), captured in the step because a message appended
+ * after the reply must not confirm it. A manual task, confirmed by the person who started it, uses
+ * this only when the chat as stored has no ceiling of its own, and a press on a message replaces it
+ * altogether (`MemoryTaskService.record`). `rebuild` says the task works the chat's rebuild run, which
+ * knows its windows, so `confirmedBefore` only holds the plan's last message.
+ */
+export type StructuredMemoryTaskInput = MemoryTaskBase & {
+    kind: "structuredMemory";
+    confirmedBefore: string;
+    rebuild?: true;
+};
+
+/** A task's input of either kind, as the memory task service takes and keeps it. */
+export type AnyMemoryTaskInput = MemoryTaskInput | StructuredMemoryTaskInput;
+
+/** The queued, running, or terminal state of a background memory task. */
 export type MemoryTaskState = "queued" | "running" | "done" | "failed" | "cancelled" | "skipped";
 
 /**
- * A chat's memory task as the service reports it: `done` of `total` summaries; for a terminal state
- * the reason (`skipped`) or redacted error (`failed`), and `terminalRevision`, the chat's revision
+ * A chat's memory task as the service reports it: `done` of `total` summaries, or of writer windows on
+ * a Structured Memory task (`kind`, absent on a HypaV3 task); for a terminal state the reason (`skipped`,
+ * a `done` that left work) or redacted error (`failed`), and `terminalRevision`, the chat's revision
  * read in the step that closed the task's writes and published the terminal (null: the chat is
- * gone), with `lastCommittedRevision` when the task committed a summary.
+ * gone), with `lastCommittedRevision` when the task committed a summary or a receipt. Both are chat
+ * revisions, what the tab's fence compares: a memory revision never goes here.
  */
 export type MemoryTaskStatus =
-    | { taskId: string; state: "queued" | "running"; done: number; total: number }
+    | { taskId: string; kind?: "structuredMemory"; state: "queued" | "running"; done: number; total: number }
     | {
           taskId: string;
+          kind?: "structuredMemory";
           state: "done" | "failed" | "cancelled" | "skipped";
           done: number;
           total: number;
@@ -492,16 +684,33 @@ export type MemoryTaskStatus =
 /** A held summary writer lease (`MemoryTaskService.acquireSummaryWriter`). */
 export type SummaryWriterLease = { release(): void };
 
+/** Status for a writer owned by a job; the caller closes it after its final write, including on abort. */
+export type JobMemoryTaskStatus = {
+    progress(done: number, total: number): void;
+    end(state: Exclude<MemoryTaskState, "queued" | "running">, details?: { reason?: string; error?: string }): void;
+};
+
+/** `MemoryTaskService.record`'s answer: the chat's queued task, or why it could not be queued. */
+export type MemoryTaskRecordAnswer =
+    | { outcome: "queued"; status: MemoryTaskStatus }
+    | { outcome: "refused"; reason: "shuttingDown" | "maintenance" | "staleInput" | "queueFull" };
+
 /**
  * The detached memory task service a job talks to. `handOff` queues the chat's latest input (a newer
- * one replaces a pending one); `status` is the chat's current or last task (null for none);
- * `acquireSummaryWriter` closes the write fence of the chat's running task, waits (bounded) for its
- * last write to settle, and resolves the lease `ownerId` (the job) holds until `release` (hand-offs
- * and manual starts for the chat only queue meanwhile); `pendingManual` tells whether a manual start
- * waits for the chat's next input.
+ * one replaces a pending one); `record` does so for a person's press, marked manual, with `through` the
+ * message that press confirms, and answers a refusal instead of dropping the input; `status` is the
+ * chat's current or last task (null for none); `acquireSummaryWriter` closes the write fence of the
+ * chat's running task, waits (bounded) for its last write to settle, and resolves the lease `ownerId`
+ * (the job) holds until `release` (hand-offs and manual starts for the chat only queue meanwhile);
+ * `pendingManual` tells whether a manual start waits for the chat's next input. `rebuild` queues the
+ * task of the chat's rebuild run as `record` does. A service with a status registry exposes
+ * `openJobStatus`: the lease-holding job publishes its own writer through that registry.
  */
 export interface MemoryTaskService {
-    handOff(input: MemoryTaskInput): void;
+    openJobStatus?(input: Pick<StructuredMemoryTaskInput, "epoch" | "chatRef">): JobMemoryTaskStatus | null;
+    handOff(input: AnyMemoryTaskInput): void;
+    record(input: StructuredMemoryTaskInput, options?: { through?: string }): MemoryTaskRecordAnswer;
+    rebuild(input: StructuredMemoryTaskInput): MemoryTaskRecordAnswer;
     status(chatRef: MemoryChatRef): MemoryTaskStatus | null;
     acquireSummaryWriter(chatRef: MemoryChatRef, ownerId: string): Promise<SummaryWriterLease>;
     pendingManual(chatRef: MemoryChatRef): boolean;
@@ -513,6 +722,7 @@ export interface MemoryTaskService {
  */
 export const TAB_MCP_IDENTIFIERS: readonly string[] = ["internal:fs", "internal:googlesearch"];
 
+/** Plugin and built-in requests the server can dispatch to the owner tab. */
 export type CallbackName =
     | "replacerbeforeRequest"
     | "replacerafterRequest"
@@ -527,7 +737,15 @@ export type CallbackName =
     | "inlayImage"
     | "imggen";
 
+/** The optional orientation requested by an image-generation callback. */
 export type ImageOrientation = "landscape" | "portrait";
+
+/**
+ * The longest inlay name Lua `generateImage` forwards (`CallbackPayloads.generateImage.name`), in
+ * characters (JS `string.length`). The server answers a longer name with an error string once the
+ * grant, host argument cap and orientation checks pass; the tab ignores one.
+ */
+export const MAX_LUA_INLAY_NAME_LENGTH = 200;
 
 /** A callback's payload by name. */
 export type CallbackPayloads = {
@@ -548,9 +766,11 @@ export type CallbackPayloads = {
      * A plugin provider model's request: the tab calls the provider `name` with `argument` (the
      * prompt and the parameters, built on the server from the job's frozen settings). A provider
      * that answers text: the callback's answer is `{ success, content }`. One that answers a
-     * stream: the tab sends `chunk` messages with the cumulative text (the first one, possibly
-     * empty, as soon as the stream exists) and then answers `{ success: true, streamed: true }`. No
-     * answer from the provider at all: `{ none: true }`.
+     * stream: the tab sends `chunk` messages (the first one, possibly empty, as soon as the stream
+     * exists), then answers `{ success: true, streamed: true }`. With `chunks: "append"` offered,
+     * chunks are sequenced appends or snapshots and the answer also carries the final `seq`; the
+     * server reconstructs cumulative text and waits for that sequence before accepting success.
+     * Without the offer, chunks carry cumulative text. No answer at all: `{ none: true }`.
      */
     provider: { name: string; argument: Record<string, unknown> };
     /**
@@ -567,8 +787,17 @@ export type CallbackPayloads = {
      * tab has no such character or chat.
      */
     selectedChat: { characterId: string };
-    /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
-    generateImage: { prompt: string; negative: string; characterId: string; orientation?: ImageOrientation };
+    /**
+     * Lua `generateImage`: the client generates for `characterId`, writes the inlay (labelled `name`
+     * when given, otherwise its id), and answers `{ id }`.
+     */
+    generateImage: {
+        prompt: string;
+        negative: string;
+        characterId: string;
+        orientation?: ImageOrientation;
+        name?: string;
+    };
     /**
      * An image inlay drawn by the client's canvas (`writeInlayImage`: PNG, at most 1024² pixels),
      * written under `id`, answered `{ id }`: a stored image `asset` (Lua `getCharacterImage`/
@@ -591,9 +820,15 @@ export type CallbackTargets = {
     personaId: string;
 };
 
-/** A record the job hydrated before a callback, at the revision sent: the client must hold it at least that new. */
+/**
+ * A record the job hydrated before a callback, at the revision sent: the client must hold it at least
+ * that new. For an owner socket that advertised `hydration=patch`, the job chat's names that chat's
+ * last copy the socket took when nothing changed since (nothing is sent then), and a `chatPatch`'s
+ * revision when only a patch was sent: a client that does not hold it reads the chat.
+ */
 export type HydrationReceipt = { kind: string; id: string; characterId?: string; revision: string };
 
+/** A question with its request id and server-clock deadline, replayable on owner reattach. */
 export type GenerationQuestionEvent = {
     type: "question";
     epoch: string;
@@ -602,6 +837,11 @@ export type GenerationQuestionEvent = {
     replay?: true;
 } & GenerationQuestion;
 
+/**
+ * An owner-tab callback with captured targets and hydration receipts. The tab must hold the listed
+ * revisions before running it; a replay requires retained state for that request in
+ * `src/ts/network/jobChannel.ts`.
+ */
 export type GenerationCallbackEvent = {
     type: "callback";
     epoch: string;
@@ -614,21 +854,28 @@ export type GenerationCallbackEvent = {
     /** Every record the job hydrated right before this callback. */
     revisions: HydrationReceipt[];
     payload: unknown;
+    /** Accepts sequenced append chunks and snapshots; omitted by older servers. */
+    chunks?: "append";
     /** Epoch milliseconds (server clock) after which the server stops waiting. */
     deadline: number;
     /** Sent again on a reattach: a page without this request's state must not run it. */
     replay?: true;
 };
 
+/** Server-to-tab notices, owner requests, and cancellation or provider-stream resync controls. */
 export type GenerationChannelEvent =
     | ({ type: "notice"; epoch: string } & GenerationNotice)
     | GenerationQuestionEvent
     | GenerationCallbackEvent
+    /** Owner only: resend the provider callback's cumulative text and its sequence. */
+    | { type: "chunkResync"; epoch: string; id: string }
     /** The server stopped waiting for a request (timeout, job end): close it and drop its answer. */
     | { type: "cancel"; epoch: string; id: string };
 
+/** The server channel's final disposition of a question. */
 export type QuestionOutcome = "answered" | "cancelled" | "timedOut" | "disconnected" | "aborted" | "refused";
 
+/** A question's answer, or its non-answer outcome with an optional diagnostic. */
 export type QuestionResult =
     { outcome: "answered"; value: unknown } | { outcome: Exclude<QuestionOutcome, "answered">; error?: string };
 
@@ -642,11 +889,18 @@ export type CallbackFailure = "hook" | "barrier" | "protocol";
 /** Why the server refused a callback: the job's hook list lacks it, or a nesting or queue rule. */
 export type CallbackRefusal = "unregistered" | "nesting" | "queue";
 
+/** A callback's answer or failure, including server-owned refusal and disconnect outcomes. */
 export type CallbackResult =
     | { outcome: "answered"; value: unknown }
     | { outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] }
     | { outcome: "refused"; refusal?: CallbackRefusal; error?: string }
-    | { outcome: "timedOut" | "disconnected" | "aborted"; error?: string };
+    /**
+     * `disconnected`: no owner answered before the deadline. `delivered`: an owner socket had taken
+     * the callback before it left, so the tab may have run its hook (its answer never arrived); a
+     * caller that would run the hook again later skips a delivered one.
+     */
+    | { outcome: "disconnected"; error?: string; delivered?: true }
+    | { outcome: "timedOut" | "aborted"; error?: string };
 
 /**
  * How long a callback the server cancelled after delivering it keeps its client's lane at most: the
@@ -664,8 +918,13 @@ export const CANCELLED_CALLBACK_DRAIN_MS = 60_000;
  */
 export type ChannelDrainedBody = { callbackId: string };
 
-/** A streaming `provider` callback's text so far (client to server), before its answer. */
-export type ChannelChunk = { type: "chunk"; id: string; text: string };
+/**
+ * A streaming `provider` callback's text (client to server). Snapshots replace the cumulative text;
+ * appends extend sequence `seq - 1`. Sequenced forms require the callback's `chunks: "append"` offer.
+ */
+export type ChannelChunk = { type: "chunk"; id: string } & (
+    { text: string; seq?: number; append?: never } | { append: string; seq: number; text?: never }
+);
 
 /** The longest cumulative text a `provider` callback may stream, in characters. */
 export const MAX_PROVIDER_TEXT_CHARS = 4 * 1024 * 1024;
@@ -676,12 +935,16 @@ export type ChannelAnswer =
     | { type: "answer"; id: string; outcome: "cancelled" }
     | { type: "answer"; id: string; outcome: "failed"; failure: CallbackFailure; error: string; discarded?: string[] };
 
+/** Frames sent on a generation job's WebSocket: ownership, reply data, status, and channel traffic. */
 export type GenerationEvent =
+    | { type: "handoff"; epoch: string; owner: "self" | "other"; clientName?: string; pending?: true }
     | GenerationAcceptedEvent
     | GenerationChunkEvent
     | { type: "preset"; epoch: string; presetId: string }
     /** The job's current stage, sent only when it changes, retained and replayed on attach while it runs. */
     | { type: "stage"; epoch: string; stage: GenerationStage }
+    /** Re-sent provider requests since the last stage change; null clears it live, attach replays only a count. */
+    | { type: "retry"; epoch: string; retry: number | null }
     | GenerationResourceEvent
     | GenerationChatPatchEvent
     | { type: "progress"; epoch: string; payload: unknown }
@@ -689,7 +952,12 @@ export type GenerationEvent =
     | GenerationTerminalEvent
     | { type: "ping"; ts: number };
 
-/** `GET /api/generations/:id`: what the owner needs to attach again. */
+/**
+ * `GET /api/generations/:id`: what a participant needs to attach again. After an ended job is collected,
+ * the server keeps its outcome for a while (`kept`): the job can no longer be attached, and its
+ * terminal is trimmed (no preview `result`, an error
+ * message cut).
+ */
 export type GenerationStatus = {
     jobId: string;
     kind: GenerationKind;
@@ -697,9 +965,12 @@ export type GenerationStatus = {
     chatId: string;
     epoch: string;
     state: "running" | "ended";
+    handedOff?: true;
     messageId?: string;
     generationId?: string;
     terminal?: GenerationTerminalEvent;
+    /** The job was collected: this is its kept outcome, and an attach to it is refused. */
+    kept?: true;
 };
 
 /** Record kinds a job never sends as `resource` events (credentials stay on the server). */

@@ -1,5 +1,10 @@
 <script lang="ts">
     import { tick } from "svelte";
+    /**
+     * A single-choice row of buttons; pass `label` when the group needs an accessible name. `disabled` disables every
+     * button, so no choice changes the value.
+     */
+
     interface SegmentOption {
         value: string | number;
         label: string;
@@ -15,6 +20,7 @@
         describedBy?: string;
         /** Keeps the bottom margin the settings pages lay out with. */
         margin?: boolean;
+        disabled?: boolean;
     }
 
     let {
@@ -25,6 +31,7 @@
         label,
         describedBy,
         margin = true,
+        disabled = false,
     }: Props = $props();
 
     let containerRef: HTMLDivElement | undefined = $state();
@@ -66,6 +73,7 @@
     });
 
     function handleSelect(opt: SegmentOption) {
+        if (disabled) return;
         value = opt.value;
     }
 </script>
@@ -97,6 +105,7 @@
             class:px-6={size === "lg"}
             class:py-3={size === "lg"}
             aria-pressed={opt.value === value}
+            {disabled}
             onclick={() => handleSelect(opt)}
         >
             {opt.label}
@@ -155,7 +164,12 @@
         line-height: 1.4;
     }
 
-    .segmented-btn:hover:not(.segmented-btn-active) {
+    .segmented-btn:disabled {
+        cursor: default;
+        opacity: 0.6;
+    }
+
+    .segmented-btn:hover:not(.segmented-btn-active):not(:disabled) {
         color: var(--risu-theme-textcolor);
     }
 

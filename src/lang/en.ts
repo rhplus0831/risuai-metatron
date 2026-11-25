@@ -1,4 +1,91 @@
+/** "1 turn", "3 messages": the context meter's counts. */
+const countOf = (count: number, noun: "turn" | "message") => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/** What a memory cost preview says, which is the least a press can spend, and an estimate. */
+const memoryCostText = (calls: number, tokens: number) =>
+    `This takes at least ${calls === 1 ? "1 model call" : `${calls} model calls`} and about ${tokens} input tokens. That is an estimate of each window's first call alone: a window can also add a page update call and compaction calls.`;
+
+/** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
+    oocPanel: {
+        title: "OOC session",
+        close: "Close OOC session",
+        refresh: "Refresh",
+        clearEarlier: "Clear earlier segments",
+        clearConfirm: "Delete all earlier OOC session segments, including picked attachments?",
+        noChat: "Select a loaded chat to view its OOC session.",
+        currentSegment: "Current segment",
+        earlierSegment: (count: number) => `Earlier segment · ${count} ${count === 1 ? "exchange" : "exchanges"}`,
+        newMessages: (count: number) => `${count} new ${count === 1 ? "message" : "messages"} since this segment began`,
+        anchorGone: "This segment's anchor message is gone. Refresh the OOC session to continue.",
+        memoryAhead: "The chat's memory has moved past this segment. Refresh the OOC session to continue.",
+        question: "Question",
+        answer: "Answer",
+        noAnswer: "No answer saved.",
+        retry: "Retry",
+        copyAnswer: "Copy answer",
+        delete: "Delete",
+        attach: "Attach",
+        removeAttachment: (question: string) => `Remove attachment: ${question}`,
+        placeholder: "Ask an out-of-character question about this chat…",
+        send: "Send",
+        stop: "Stop",
+        asking: "An OOC question is in progress.",
+        chatBusy: "Wait for the chat to finish generating.",
+        emptyQuestion: "Enter a question to send.",
+    },
+    oocToggles: {
+        title: "OOC session toggles",
+        help: "These values are forced on the toggles for an OOC session question.",
+        settings: "OOC session settings",
+        own: "Use this chat's own OOC toggles",
+        presetApplies: (count: number) =>
+            `The preset's OOC toggles apply (${count} forced ${count === 1 ? "key" : "keys"}).`,
+        asInChat: "As in the chat",
+        on: "On",
+        off: "Off",
+        forcedCount: (count: number) => `${count} forced`,
+        forced: "Forced value",
+        stale: "These forced keys are no longer defined:",
+        remove: "Remove",
+        removeKey: (key: string) => `Remove stale OOC toggle: ${key}`,
+        suggestion: (label: string) => `Force “${label}” on in this preset for OOC session questions?`,
+        forceOn: "Force it on",
+        notNow: "Not now",
+    },
+    ooc: {
+        group: "OOC sessions are not available for group chats.",
+        busy: "Wait for this chat to finish generating before asking in the OOC session.",
+        inFlight: "An OOC session question is already in progress. Stop it or wait for it to finish.",
+        binding: "Choose this chat's prompt preset, model preset, and persona before asking in the OOC session.",
+        loreOrphans: "Resolve this chat's orphaned lore overrides before asking in the OOC session.",
+        anchorGone: "This OOC session segment's anchor message is gone. Refresh the session to ask again.",
+        pruneFull: "The OOC session log is full. Refresh the session or delete exchanges before asking again.",
+        tooLarge: "This OOC session exchange exceeds the storage limit and could not be saved.",
+        olderServer: "The server does not support OOC session previews. Update the server before asking again.",
+        previewFailed: "The OOC session prompt could not be prepared. Retry the question.",
+        oocExchangeGone: "This OOC session exchange is no longer available.",
+        oocAnchorGone: "The OOC session's anchor message is no longer available. Refresh the session to ask again.",
+        oocMemoryAhead: "The chat's memory has moved past this OOC session segment. Refresh the session to ask again.",
+        requestFailed: "The OOC session answer request failed. Retry the question.",
+        stopped: "The OOC session question was stopped. No answer was saved.",
+        chatGone: "This chat was removed or replaced. The OOC session action could not be completed.",
+        alreadyAnswered: "An answer to this question was already saved elsewhere.",
+        retryUnavailable: "Only an unanswered exchange in the current OOC session segment can be retried.",
+        attachmentUnavailable: "Only an exchange from an earlier OOC session segment can be picked as an attachment.",
+        updateFailed: "The OOC session could not be updated. Try again.",
+    },
+    rerollCandidateUnavailable:
+        "This reply candidate is unavailable or exceeds the storage limit. Reload the chat to see the current candidates.",
+    rerollCandidatePending:
+        "The previous candidate switch has not settled yet. Wait for the chat to finish saving and refreshing.",
+    rerollCandidateRefreshFailed:
+        "The candidate switch could not be confirmed. Wait for the chat to finish saving and refreshing before switching again.",
+    rerollCandidateCounter: "Reply candidate {index} of {count}",
+    rerollCandidateDropped: "Older reply candidates were dropped to keep this message within its limit.",
+    rerollCandidateTooLarge: "This reply is too large to keep as a candidate.",
+    scriptstateCheckpointSkipped: "The chat variables are too large to checkpoint; this reroll will not restore them.",
+
     formating: {
         main: "Main Prompt",
         jailbreak: "Jailbreak Prompt",
@@ -19,6 +106,12 @@ export const languageEnglish = {
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
         noData: "The file is invalid, or it's data is corrupted.",
+        unsupportedPreset:
+            "This preset file is from an unsupported version or is not a prompt preset. Nothing was imported.",
+        cardAssetsUnavailable:
+            "The card's assets could not be verified or restored. Import the card again; no character was added.",
+        assetReloadChanged: "An asset changed while it was being imported. Please import it again.",
+        assetClaimsExpired: "The final asset check took too long. Please import again before saving the record.",
         importTargetGone: "The character was deleted before the chat could be imported.",
         onlyOneChat: "There must be least one chat",
         alreadyCharInGroup: "There is already a character with the same name in the group.",
@@ -58,6 +151,10 @@ export const languageEnglish = {
         charFirstMessage: "First message of the character. This highly affects characters response.",
         customNotificationMessage:
             "When set, chat completion notifications for this character use this text instead of the default message. It stays on this server and is not exported with the character.",
+        completionWaitMaxSeconds:
+            "In Remote Host Mode, this device holds a reply's completion notification until the plugins set to be waited for on the Plugins page have gone quiet. This is the longest it waits after the reply ends; past it, the notification is sent anyway.",
+        chatTrashDays:
+            "Chats in a character's trash are deleted forever this many days after they were trashed. Lowering it can delete trashed chats at the next purge, which runs every hour.",
         charNote: "A note that strongly affects model behavior. Embbedded to current character, also known as UJB.",
         toggleNsfw: "Toggles jailbreak prompt on and off.",
         lorebook:
@@ -121,7 +218,7 @@ export const languageEnglish = {
             "SuperMemory makes your character memorize more by giving summarized data to AI.\n\n" +
             "SuperMemory model is a model that summarizes that text. davinci is recommended, and Auxiliary models are not recommended unless it is an unfiltered model with over 2000 tokens with great summarizing skill.\n\n" +
             "SuperMemory Prompt decides what prompt should be sent to summarize. If you leave it blank, it will use the default prompt. leaving blank is recommended.\n\n" +
-            "After it is all setup, you can able it in the setting of a character.",
+            "After setup, turn memory on in Chat settings or the open chat sidebar.",
         replaceGlobalNote: "If it's not blank, it replaces current global note to this.",
         backgroundHTML:
             "A Markdown/HTML Data that would be injected to the background of chat screen.\n\n You can also use additional assets. for example, you can use `{{audio::<asset name}}` for background music." +
@@ -148,7 +245,7 @@ export const languageEnglish = {
             "Strong shows the streaming text raw, without rendering it, then renders the message normally once the stream finishes. It lowers the load the most and can help on mobile or low-end devices.\n\n" +
             "This is an experimental feature, and some features may behave unexpectedly because of it.",
         imageCompression:
-            "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
+            "Compress images when exporting characters and modules. If animated images do not work, try disabling this option.",
         useExperimental: "If enabled, it will show some experimental features.",
         forcePlainFetch:
             "If enabled, it will use browser fetch api instead of native http request. this can cause CORS errors.",
@@ -244,9 +341,8 @@ export const languageEnglish = {
             'If it is not blank, it will extract specific JSON data from the response. For example, if you want to extract `response.text[0]` in response `{"response": {"text": ["hello"]}}`, you can put `response.text.0`.',
         translatorNote:
             "Here, you can add a unique translation prompt for each character. This option only applies when using the Ax. model for translation. To apply it, include `{{slot::tnote}}` in the translation settings. It doesn't work in group chats.",
-        groupInnerFormat:
-            "This defines a format that is used in group chat for characters that isn't speaker. If it is not blank, it will use this format instead of the default format. If `Group Other Bot Role` is `assistant`, it will also be applied to the speaker.",
-        groupOtherBotRole: "This defines a role that is used in group chat for characters that isn't speaker.",
+        showMemoryLimit:
+            "The line marks the first message the model still saw in the last prompt; older, omitted history is above it. It is approximate because a final token check can drop a few more messages after the line is placed.",
         chatHTML:
             "A HTML that would be inserted as each chat.\n\nYou can use CBS and special tags.\n- `<risutextbox>`: a textbox that would be used to render text\n- `<risuicon>`: an icon for user or assistant\n- `<risubuttons>`: icon buttons for chat edit, translations and etc.\n- `<risugeninfo>`: generation information button.",
         systemContentReplacement:
@@ -280,6 +376,14 @@ export const languageEnglish = {
             "How the context meter counts the history the model still sees. Turns counts your own messages that are still in the prompt; All Messages counts the character's replies too. When the prompt no longer fits the context, the oldest messages are left out (or summarized, with memory on), so this number stops growing once a chat is long.",
         contextMeterFixedWarn:
             "The fixed share is the part of the prompt budget (the context size minus the reserved response) taken by everything but the chat history and memory: the prompt, description, persona, lorebook, author's note, and the like. Above this level the meter turns red, because the fixed part leaves little room for history. 10% to 95%.",
+        contextMeterLookahead:
+            "With HypaV3 summarizing in the background, the meter's bar marks with a dashed line where the next send asks for a background summary, ahead of the point where it must summarize.",
+        loreBudgetStop:
+            "When the lorebook token limit leaves out an activated entry, a send, continue, or reroll from the chat screen stops before the model is called and asks what to do. Sends from plugins, auto mode, and commands are not stopped; the context meter warns after them. Entries marked `@@ignore_on_max_context` never cause a stop. A chat can turn this off.",
+        generationProgressWindow:
+            "A small window at the top right lists every reply being generated on the server, with its stage, the time elapsed, and, while the model streams, the tokens generated and the speed.",
+        halfStreaming:
+            "With Response Streaming off, still ask models that support it to stream, so the progress window can show the tokens generated and the speed. A streamed reply appears when it is complete. Plugins' after-request replacers do not run for it, as with Response Streaming on, but it is still checked before it is shown: a reply that contains a banned script or is shorter than its minimum is requested again within the retry count. A model that answers without streaming is handled as usual.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -318,6 +422,7 @@ export const languageEnglish = {
             "- **Trigger Scripts**: Similarity conditions in trigger scripts\n" +
             "- **File Attachments**: Searching within PDF/TXT/XML attachments\n" +
             "- **Playground**: Embedding testing in Playground",
+        /** Keep this help and its `src/lang/ko.ts` override aligned with `src/ts/keepAliveAudio.ts`. */
         keepSessionAlive:
             "Helps keep the tab active in the background. Refresh the page if changes do not take effect.\n\n" +
             "- **Via Sound**: Continuously loops an inaudible 20 Hz tone. On Android, this shows a media notification and may pause playback in other music apps.\n",
@@ -327,6 +432,20 @@ export const languageEnglish = {
             "The fraction of the max context size allocated to the long-term memory block {{slot}} in the prompt.",
         hypaV3ExtraSummarizationRatio:
             "Lowers the threshold at which summarization stops. At 0, summarization stops as soon as tokens fall below the max context. Higher values cause more summarization before stopping.",
+        hypaV3LookaheadHeadroomRatio:
+            "With background summaries, how far ahead of the max context they are made: a summary is prepared once the count the background planner keeps passes the max context less this share of it. " +
+            "That count already holds the whole memory budget, so even at 0 a summary can be prepared before a send needs it. " +
+            "A prepared summary takes the place of its messages only when the prompt reaches the max context, as without background summaries.",
+        hypaV3MemoryBudgetTokens:
+            "The total space, in tokens, for the long-term memory block {{slot}} in the prompt. " +
+            "When it does not fit the current max context, at most half of the prompt budget (the max context minus the reply) is used.",
+        hypaV3LookaheadHeadroomTokens:
+            "How many tokens before the max context the background summaries begin, which sets how many turns ahead of need a summary is made. " +
+            "A summary made early takes the place of its messages only when the prompt reaches the max context. " +
+            "Together with the extra tokens, it is reduced to fit at most half of the prompt budget (the max context minus the reply).",
+        hypaV3ExtraSummarizationTokens:
+            "How many tokens below the max context summarization goes before it stops. At 0, it stops as soon as the prompt fits. " +
+            "Larger values summarize less often, but more at once.",
         hypaV3MaxChatsPerSummary: "Maximum number of chat messages to include when creating a single summary.",
         hypaV3RecentMemoryRatio:
             "The fraction of memory tokens allocated to recent memory. Automatically filled with the most recently created summaries until the allocated tokens are full.",
@@ -344,7 +463,7 @@ export const languageEnglish = {
         hypaV3UseExperimentalImpl:
             "Switches to the experimental HypaMemory V3 implementation. Enables rate limit settings and changes the query method.",
         hypaV3AlwaysToggleOn:
-            "If enabled, the HypaMemory toggle is automatically activated when selecting a character.",
+            "Defaults memory to on for chats using HypaV3 or Structured Memory that have not chosen a memory switch. A chat explicitly turned off stays off.",
         hypaV3SummarizationRequestsPerMinute:
             "Maximum SuperMemory model requests per minute for summarization. Only applies when the SuperMemory model is set to Auxiliary Model.",
         hypaV3SummarizationMaxConcurrent:
@@ -667,6 +786,7 @@ export const languageEnglish = {
     },
     playground: {
         playground: "Playground",
+        inlayDelete: "Delete",
         inlayDeleteSelected: "Delete Selected",
         inlayDeselectAll: "Deselect All",
         inlayEmpty: "No saved inlay assets",
@@ -676,6 +796,7 @@ export const languageEnglish = {
         inlayDeleteConfirm: "Are you sure you want to delete {name}?",
         inlayDeleteMultipleConfirm: "Are you sure you want to delete the selected {count} assets?",
         inlayTotalAssets: "Total {count} assets",
+        inlayLoading: "Loading...",
     },
     confirm: "Confirm",
     goback: "Go Back",
@@ -741,7 +862,7 @@ export const languageEnglish = {
     settingsSectionChatNavigation: "Chat & navigation",
     settingsSectionContextMeter: "Context usage meter",
     settingsSectionContextMeterDesc:
-        "A chip beside the chat input that shows how far back the model remembers and where the context went on the last reply. Not shown in group chats.",
+        "A line above the chat input that shows how far back the model remembers and where the context went on the last reply. Not shown in group chats.",
     settingsSectionScrolling: "Scrolling",
     settingsSectionReachability: "Reachability",
     accessibilityDisplaySizesLink: "Text, icon and input sizes are in Display & Audio › Layout & sizing.",
@@ -778,6 +899,16 @@ export const languageEnglish = {
         unseen: (name: string) => `New reply: ${name}`,
         memory: (name: string, count: string | null = null) =>
             count === null ? `Summarizing memory: ${name}` : `Summarizing memory (${count}): ${name}`,
+        health: (name: string, detail: string | null = null) => `${detail ?? "Memory needs attention"}: ${name}`,
+        healthStates: {
+            writerPaused: "Memory recording is paused",
+            gap: "The last send dropped unrecorded history",
+            staleEvents: "Memory events need a repair",
+            unsupportedSections: "Memory sections lost their evidence",
+            requiredOverCap: "The required memory pages did not fit",
+            pageOverBudget: "A memory section is past its budget",
+            unavailable: "Memory health is too large to check",
+        },
     },
     refusedData: {
         chatTitle: "The server refused this chat change",
@@ -838,6 +969,7 @@ export const languageEnglish = {
     groupLoreInfo: "Group Lorebook applys to all chats in the group.",
     localLoreInfo: "Chat Lorebook only applies to the current chat.",
     localLoreExportNotLoaded: "This chat is still loading. Export its lorebook once it has loaded.",
+    lorePopupUnsaved: "This lore prompt could not be saved. Copy the text below and paste it into the prompt again.",
     removeConfirm: "Do you really want to remove: ",
     removeConfirm2: "Do you REALLY want to remove: ",
     exportConfirm: "Do you want to export this?",
@@ -857,24 +989,121 @@ export const languageEnglish = {
     userIcon: "Your Icon",
     successExport: "Successfuly exported and downloaded to your download directory",
     exportMissingAssets: "Export finished, but {count} assets were missing or empty and were written as empty assets.",
+    exportReencodedImages: "Re-encoded {count} images for export. The originals remain in the app.",
     jsonExportTooLarge: "The assets total more than 64 MiB, too large for a JSON card. Export it as CharX instead.",
+    jsonExportAssetTooLarge: 'Asset "{name}" is too large to import from a JSON card. Export it as CharX instead.',
+    moduleLegacyExportIconUnsupported:
+        "Modules with an icon cannot be exported as legacy RisuM. Export it as CharX instead.",
     onnxSaving: "Saving the model files...",
     onnxFilesSkipped:
         "Model imported, but {count} files in the zip are too large to upload (the limit is just under 100 MiB) and were skipped: {names}",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
+    importSavePending:
+        "This item is already in your list and its save is still pending. Please check back shortly without importing it again.",
+    characterImportUnconfirmed: "The character was added, but its save could not be confirmed ({{error}}).",
+    characterImportDiscarded: "The imported character or its first chat could not be saved. Please import it again.",
+    importedLoreSettings: {
+        warning:
+            "This character does not use the global lorebook settings: its own settings below apply, with the global value in parentheses. Change them in the character's Lorebook > Settings.",
+        on: "On",
+        off: "Off",
+        global: (value: string) => `(global: ${value})`,
+    },
     alwaysActive: "Always Active",
     additionalPrompt: "Additional Prompt",
     descriptionPrefix: "Description Prefix",
     forceReplaceUrl: "Reverse Proxy",
     emotionWarn: "Auxiliary model is used.",
     plugin: "Plugin",
+    pluginData: "Plugin data",
+    pluginDataNamespaces: {
+        custom: "Custom keys (server)",
+        pluginStorage: "pluginStorage (unowned / legacy, server)",
+        ownedPluginStorage: "pluginStorage (owned, server)",
+        safeLocalPluginStorage: "getLocalPluginStorage (server)",
+        device: "safeLocalStorage (this device)",
+    },
+    pluginDataSearch: "Search keys",
+    pluginDataOwner: "Plugin owner",
+    pluginDataLegacyDescription:
+        "Legacy keys are shared until a plugin claims them on write. Assign a key to move it into an installed plugin's storage.",
+    pluginDataAssignOwner: "Assign legacy keys to",
+    pluginDataAssign: "Assign to plugin",
+    pluginDataAssignOverwriteConfirm: 'Replace "{key}" in {owner}\'s storage with this legacy value?',
+    pluginRemoveStoredData: "Also delete its stored data",
+    pluginDataRefresh: "Refresh",
+    pluginDataBytes: "{bytes} bytes",
+    pluginDataKeyCount: "{count} keys",
+    pluginDataEmpty: "No matching keys.",
+    pluginDataViewJson: "View JSON",
+    pluginDataCloseJson: "Close JSON",
+    pluginDataDelete: "Delete key",
+    pluginDataDeleteAll: "Delete all",
+    pluginDataDeleteKeyConfirm: 'Delete key "{key}" from {namespace}?',
+    pluginDataDeleteNamespaceConfirm: "Delete all data in {namespace}?",
+    pluginDataError: "Could not read or update plugin data: {error}",
+    pluginResetPermissions: "Reset permissions",
+    pluginResetPermissionsConfirm: 'Reset permissions for "{name}"? Permission requests will ask again.',
+    pluginPermissionResetError: "Could not reset plugin permissions: {error}",
+    pluginPermissionsEdit: "Permissions",
+    pluginCompletionWait: "Wait for this plugin before the completion notification",
+    pluginCompletionQuietSeconds: "Plugin quiet time (seconds)",
+    pluginCompletionWaitHelp:
+        "Applies only when this device is in Remote Host Mode. Plugin wait time limit in {place}: {seconds} seconds.",
+    pluginPermissionsReview:
+        'Permissions of "{name}"\n\nA checked permission is allowed without asking until the plugin\'s script changes. An unchecked one is asked when the plugin first needs it. Saving restarts the plugin.\n\nSave these permissions?',
+    pluginPermissionsCarriedOver: "The permissions the previous version was allowed are checked.",
+    pluginPermissionsInstallNote: "The plugin is installed whichever you answer.",
+    pluginPermissionSaveError: "Could not save plugin permissions: {error}",
+    pluginImportSavePending:
+        "The server has not answered the plugin save request yet. Once the save finishes, reload this tab to run the new version.",
+    pluginImportUnconfirmed:
+        "The plugin is still in this tab, but its save could not be confirmed ({{error}}). It has not been started. Keep this page open to retry saving, or import the file again.",
+    pluginImportDiscarded: "The imported plugin was replaced by another save. Please import it again.",
+    pluginChangedDuringImport:
+        "The installed plugin changed elsewhere while its permission list was open. Nothing was installed.",
+    pluginPermissionsStale:
+        "The plugin's permissions were reset or changed elsewhere while this list was open. Open the list again.",
+    pluginPermissionNames: {
+        fetchLogs: "Read the request logs",
+        db: "Read the full database",
+        dbWrite: "Modify the database (characters, chats, modules, settings)",
+        mainDom: "Access the main document",
+        replacer: "Replace chat content and request bodies",
+        provider: "Act as an AI provider",
+        sendChat: "Send chat messages on your behalf",
+        inlay: "Read inlay assets",
+        globalStyle: "Apply its chat panel's styles to the whole app",
+    },
+    pluginRemove: "Remove plugin",
+    pluginRemoveOrphanGrants: "Remove grants of scripts no installed plugin has",
+    pluginRemoveOrphanGrantsConfirm:
+        "Remove permission grants for scripts that are neither installed nor still running?",
+    pluginOrphanGrantsRemoved: "Unused permission grants removed.",
     language: "Language",
     // The Translation settings page: its menu entry and heading.
     translationSettings: "Translation",
     memorySettings: "Memory",
     voiceSettings: "Voice & Emotion",
     interactionSettings: "Interaction",
+    // The Device Link settings page: its menu entry, heading, notes and section texts. `name` also
+    // labels the name on the Remote Host Mode screen.
+    deviceLink: {
+        title: "Device Link",
+        localNote: "These settings are saved in this browser only.",
+        description: "Let the app open on another device handle this device's sends.",
+        name: "Name of this browser",
+        nameHelp: "Other devices list this browser under this name.",
+        remoteHostSection: "Remote host",
+        remoteHostDescription:
+            "A host tab on another device runs the send from its start, so this device can close once it has sent.",
+        handoffSection: "Job handoff",
+        handoffDescription:
+            "When the device that started a job stops answering, a tab on another device takes over the job's remaining plugin steps.",
+        handoffWarning:
+            "A plugin step already delivered to a device is never run again on another tab. If the sending device sleeps midway, the job can fail or lose a plugin's work. Remote host is recommended instead.",
+    },
     backups: "Backups",
     settingsNavGroupChatSetup: "Chat setup",
     settingsNavGroupFeatures: "Features",
@@ -914,6 +1143,8 @@ export const languageEnglish = {
         messageGone: "That message is no longer in the chat.",
     },
     longPressToPopupEditor: "Long Press to Open Popup Editor",
+    popupEditorMonaco: "Code editor (Monaco)",
+    disableAutoPopupMessageEditor: "Disable Auto Popup Editor When Editing Messages",
     UiLanguage: "UI Language",
     createfromScratch: "Create from Scratch",
     importCharacter: "Import Character",
@@ -928,7 +1159,6 @@ export const languageEnglish = {
     autoTranslation: "Auto Translation",
     playMessage: "Play Message Audio",
     iconSize: "Icon Size",
-    createGroup: "Create Group Chat",
     groupIcon: "Group Icon",
     single: "Single",
     multiple: "Multiple",
@@ -969,6 +1199,9 @@ export const languageEnglish = {
     noActivePromptPresets: "No active prompt presets",
     noArchivedPromptPresets: "No archived prompt presets",
     imageGeneration: "Image Generation",
+    wavespeedLoraConflict:
+        "Another tab or device changed these LoRAs. Your rows are kept here; your next edit saves them over that change.",
+    wavespeedLoraUseSaved: "Load the saved LoRAs",
     provider: "Provider",
     key: "Key",
     noData: "No Data",
@@ -985,6 +1218,12 @@ export const languageEnglish = {
     requestretrys: "Request Retrys when Fail",
     utilityBot: "Utility Bot",
     ShowLog: "Show Request Logs",
+    showStatistics: "Show Statistics",
+    exportSettingsForBugReport: "Export Settings for Bug Report",
+    allowAllExtentionFiles: "Allow all in file select",
+    visionQuality: "Vision Quality",
+    closeSettingsToApply: "Close the settings to take effect",
+    newGoogleTranslateExperimental: "New Google Translate Experimental",
     waifuWidth2: "Waifu Character Size",
     sayNothing: "Input 'say nothing' when no string inputed",
     regexScript: "Regex Script",
@@ -1016,7 +1255,6 @@ export const languageEnglish = {
     creator: "Creator",
     CharVersion: "Character Version",
     Speech: "Speech",
-    ToggleSuperMemory: "Toggle SupaMemory",
     SuperMemory: "SupaMemory",
     useExperimental: "Enable Experimental Features",
     showMemoryLimit: "Show Memory Limit",
@@ -1045,6 +1283,10 @@ export const languageEnglish = {
     setNodePassword: "Set your password to security",
     inputNodePassword:
         "Input your password. if you can't remember, remove save/server/password in your server files and restart the server.",
+    /**
+     * HTTP-status fallbacks for `src/ts/storage/serverAuth.ts`, where server error text takes precedence.
+     * `src/lang/ko.ts` overrides these functions; the other bundled locales inherit English.
+     */
     serverAuth: {
         loginFailed: (status: number) => `Login failed (${status})`,
         passwordSetupFailed: (status: number) => `Password setup failed (${status})`,
@@ -1091,6 +1333,8 @@ export const languageEnglish = {
         keepOne: "Keep at least one connection.",
         profileLabel: (name: string, model: string) => `${name} — ${model}`,
         missingProfile: (id: string) => `Missing connection (${id})`,
+        unresolvedModelNotice:
+            "This model ID is not in the current model list. It will be sent as-is to an OpenAI-compatible endpoint until you choose another model.",
         missingSlotHint: "This slot's connection was deleted. Choose another connection before sending a request.",
         noProfile: (model: string) => `No connection (${model})`,
         createFromBare: "Create a connection for this model",
@@ -1115,7 +1359,9 @@ export const languageEnglish = {
         localNetworkTimeoutSec: "Local network timeout (seconds)",
         vertexRegion: "Vertex region",
         responseStreaming: "Response streaming",
+        halfStreaming: "Half Streaming",
         streamGeminiThoughts: "Stream Gemini thoughts",
+        saveSignatures: "Save Gemini thought signatures",
     },
     sharedApiKeys: {
         description:
@@ -1237,8 +1483,9 @@ export const languageEnglish = {
     homeRecentCharactersEmpty: "Characters you chat with will appear here.",
     homeViewAllCharacters: "View all",
     homeOpenCharacter: (name: string) => `Open ${name}`,
-    homeExplore: "Explore",
+    homeMore: "More",
     homeExploreRealmDescription: "Discover and download new characters from RisuRealm.",
+    homeImportCharacterDescription: "Add characters from card files on this device.",
     openRisuRealm: "Open RisuRealm",
     unknownInteractionTime: "Unknown",
     hideAllImages: "Hide All Images",
@@ -1254,10 +1501,30 @@ export const languageEnglish = {
     customInnerFormat: "Custom Inner Format",
     innerFormat: "Inner Format",
     HypaMemory: "HypaMemory",
-    ToggleHypaMemory: "Toggle HypaMemory",
     memoryTrimWarning:
         "Long-term memory is set up, but it is off for this chat. The prompt is over the context size, so the oldest messages will be left out of what the model sees.",
-    memoryTrimEnable: "Turn memory on and send",
+    chatMemory: {
+        connection: "Memory connection",
+        defaultConnection: "Default (model preset's memory slot)",
+        deletedConnection: (id: string) => `Deleted connection (${id})`,
+        connectionHelp:
+            "Does not apply to fixed summarization models in SupaMemory/HypaV2, local summarization models, or embeddings.",
+        preset: "Memory preset",
+        defaultPreset: (name: string) => `Default (${name})`,
+        deletedPreset: (id: string) => `Deleted preset (${id})`,
+        editingChatPreset: "Editing this chat's memory preset.",
+        enabled: "Use memory for this chat",
+        mode: "Memory mode",
+        legacy: (algorithm: string) => `Legacy (${algorithm})`,
+        hypaV3: "HypaV3",
+        legacyAlgorithm: "Algorithm for Legacy chats",
+        legacyAlgorithmHelp:
+            "Chats set to Legacy use this algorithm. Each chat can choose HypaV3 or Structured Memory in its memory settings.",
+        sharedPreset: "HypaV3 and Structured Memory preset",
+        sharedPresetHelp: "Both modes use a memory preset. Each chat can choose its own or follow the default.",
+        sharedBudget: "Shared memory budget",
+    },
+    memoryTrimEnable: "Turn memory on for this chat and send",
     memoryTrimOnce: "Send without them this time",
     memoryTrimIgnore: "Send without them, and don't ask again in this chat",
     resetPromptTemplateConfirm: "Do you really want to reset prompt template?",
@@ -1274,8 +1541,12 @@ export const languageEnglish = {
     importPersona: "Import Persona",
     export: "Export",
     import: "Import",
-    supporterThanks: "Supporter Thanks",
-    supporterThanksDesc: "Thank you for your support!",
+    supporterThanks: "RisuAI Supporters",
+    // The supporter page lists the original RisuAI project's Patreon supporters, not this app's: the notice and the
+    // button label say so.
+    supporterUpstreamNotice:
+        "These are the people who support the original RisuAI project on Patreon. This app is not run by RisuAI, and the buttons below lead to RisuAI's Patreon page and its name registration.",
+    supporterLinkName: "Add your name on RisuAI's Patreon",
     supporterListLoadFailed: "The supporter list could not be loaded. Check your connection and open this page again.",
     donatorPatreonDesc:
         "For default, it will not be shown in the list for privacy. If you want to show your nickname, go to Risuai's patreon page and press the link button.",
@@ -1354,12 +1625,29 @@ export const languageEnglish = {
     noLinkableModules: "No linkable modules are installed.",
     noMatchingModules: "No modules match the search.",
     noMatchingAssets: "No assets match the search.",
+    itemFolders: {
+        moveToFolder: "Move to folder",
+        moveToWhich: "Move to which folder?",
+        noFolder: "No folder",
+        unnamed: "Unnamed folder",
+        newFolder: "New folder",
+        folderName: "Folder name",
+        rename: "Rename folder",
+        remove: "Delete folder",
+        removeModuleFolderConfirm: "Delete this folder? Its modules stay.",
+        removePersonaFolderConfirm: "Delete this folder? Its personas stay.",
+        folder: "Folder",
+        back: "Back",
+        enableAllGlobally: "Enable all globally",
+        switchAllForChat: "Switch all for this chat",
+    },
     createModule: "Create Module",
     basicInfo: "Basic Info",
     moduleContent: "Module Content",
     confirmRemoveModuleFeature: "Do you really want to remove this feature? This action cannot be undone.",
     editModule: "Edit Module",
     importModule: "Import Module",
+    importCancelled: "The import was cancelled. Nothing was added.",
     moduleImportUploading: "Uploading the module file... A large file can take several minutes.",
     moduleImportFileTooLarge: "The module file is larger than the server accepts.",
     moduleImportAssetTooLarge: "An asset in the module file is larger than the server accepts.",
@@ -1372,8 +1660,14 @@ export const languageEnglish = {
     moduleImportDiscarded:
         "Another tab or device changed the modules at the same time, and its version was kept: the imported module was not added. Import it again.",
     moduleImportUnconfirmed: "The module was added, but its save could not be confirmed ({{error}}).",
+    moduleImportMcpDropped:
+        "This module carried an MCP tool server, which was not imported. Add MCP servers through the MCP import.",
     moduleImportInterrupted:
         "The upload was interrupted. The server may have refused the file (another import running, a file too large, or maintenance), or the connection was lost. Try again.",
+    uploadRefusedByProxy:
+        "The file is larger than the connection to the server accepts: a proxy or tunnel in front of the server refused it. Use a direct connection to the server for a file this large.",
+    backupRestoreUnconfirmed:
+        "The connection was lost while the backup was being restored. It may have been restored; reload to check before restoring again.",
     charxImportUploading: "Uploading the character file... A large file can take several minutes.",
     charxImportFileTooLarge: "The character file is larger than the server accepts.",
     charxImportRequestFailed: "The character file import failed (HTTP {{status}}).",
@@ -1394,12 +1688,20 @@ export const languageEnglish = {
     blockedRealmCreators: "Blocked RisuRealm Creators",
     noBlockedRealmCreators: "No RisuRealm creators are blocked.",
     unblockRealmCreator: "Unblock",
+    realmTerms: {
+        title: "RisuRealm Terms",
+        body: "RisuRealm is a service run by RisuAI. To browse or download from RisuRealm, you need to accept RisuAI's Terms of Service and Privacy Policy.\n\nThis app itself is not a RisuAI service; these terms apply only to using RisuRealm.",
+        termsOfService: "Terms of Service",
+        privacyPolicy: "Privacy Policy",
+        accept: "Accept",
+        decline: "Do not Accept",
+    },
     upstreamImport: {
         title: "Restore a RisuAI backup",
         intro: "This is a backup from RisuAI (or from this app before its server storage). It was read and converted; nothing has been replaced yet.",
         counts: {
             characters: "Characters",
-            groups: "Group chats",
+            groups: "Group chats (kept, hidden)",
             chats: "Chats",
             messages: "Messages",
             promptPresets: "Prompt presets",
@@ -1420,10 +1722,13 @@ export const languageEnglish = {
             "custom-model-key-to-credential": "Custom model keys became named API keys",
             "cold-character-restored": "Characters restored from cold storage",
             "cold-chat-restored": "Chats restored from cold storage",
+            "message-swipes": "Message swipes, kept as reroll candidates",
             "cold-plugin-storage-restored": "Plugin data restored from cold storage",
             "legacy-plugin-storage": "Older plugin data was copied into the plugin storage",
             "character-id-replaced": "Characters with an invalid or repeated id got a new id",
             "post-history-instructions-to-note": "Post-history instructions moved into the chat's note",
+            "messagepack-value":
+                "Binary data, dates, and other values the older save format holds were stored as JSON (they may read differently)",
         },
         excluded: {
             "unknown-setting": "Settings this app does not know",
@@ -1466,6 +1771,7 @@ export const languageEnglish = {
             preset: "Preset image",
             module: "Module asset",
             moduleIcon: "Module icon",
+            plugin: "Plugin custom data",
         },
         examples: "e.g.",
         warning:
@@ -1519,6 +1825,7 @@ export const languageEnglish = {
             "translator-steps-flattened": "Translator presets reduced to their first enabled step",
             "trash-time-refreshed": "Trashed characters kept, so RisuAI does not delete them at once",
             "shape-repaired": "Lists RisuAI could not load, repaired",
+            "memory-projected": "Chats whose structured memory events became HypaV3 summaries",
         },
         excluded: {
             "api-keys": "API keys (left out by your choice)",
@@ -1528,12 +1835,18 @@ export const languageEnglish = {
             "character-fields": "Character fields only this app has",
             "chat-fields": "Chat fields only this app has",
             "message-translations": "Stored message translations",
+            "message-candidates": "Alternative message replies (reroll candidates; selected reply kept)",
             "persona-modules": "Persona module links",
             "translator-steps": "Translator settings RisuAI has no place for",
             "plugin-storage": "Plugin data RisuAI keeps in the browser",
             inlays: "Chats with inlay images (the images are not in the file)",
+            "memory-unreadable": "Chats whose structured memory could not be read",
+            "memory-pages": "Structured Memory pages",
+            "memory-threads": "Structured Memory threads",
             "asset-names": "Images and files whose name a RisuAI backup cannot hold",
         },
+        memoryOmitted: (pages: number, threads: number) =>
+            `Structured Memory pages (${pages}) and threads (${threads}) are not part of a compatible export. The native backup includes them.`,
         missingTitle: "Missing images and files (not in the file)",
         downloadQuestion: "Download it now?",
         downloading: "Saving the RisuAI-compatible backup",
@@ -1554,6 +1867,7 @@ export const languageEnglish = {
         "Your browser supports persistent storage. This is recommended for better performance and user experience.",
     enable: "Enable",
     postFile: "Post File",
+    attachmentTooLarge: "The file is larger than the server, or a proxy or tunnel in front of it, accepts.",
     requestInfoInsideChat: "Show Request Info Inside Chat",
     inputTokens: "Input Tokens",
     outputTokens: "Output Tokens",
@@ -1566,7 +1880,52 @@ export const languageEnglish = {
     noWaitForTranslate: "No Wait for Translate",
     antiClaudeOverload: "Anti-Claude Overload",
     resourceReloaded: "Another tab or device changed this data. The latest version was loaded.",
+    resourceRecoveryDrafts:
+        "Changes from an earlier page could not be applied automatically. They are available as recovery drafts.",
+    recoveredChanges: "Recovered changes",
+    recoveryDrafts: {
+        review: "Review",
+        close: "Close",
+        exportAll: "Export all",
+        discard: "Discard",
+        chatOrder: "Chat order",
+        empty: "There are no recovery drafts.",
+        working: "Working…",
+        expiresIn: (hours: number, minutes: number) => `Expires in ${hours} h ${minutes} min`,
+        underMinute: "Expires in less than a minute",
+        expired: "This recovery draft has expired.",
+        otherEpoch: "The data was restored or imported since this draft was created. Export or discard it.",
+        missingCharacter: "The character is no longer available. Export or discard this draft.",
+        trashExpired:
+            "The character is past the trash retention period. This draft was kept; export it to keep its changes.",
+        noSnapshot: "This chat is gone and the draft has no snapshot to restore. Export or discard it.",
+        invalid: "This draft cannot be applied. Export or discard it.",
+        unavailable: "The chat changed or is no longer available. The draft has been kept.",
+        notSaved: "A conflict discarded or refused recovered changes. The draft has been kept; you can apply it again.",
+        applyConfirm: (name: string) => `Apply “${name}” over the current server copy?`,
+        superseded:
+            "A newer edit was saved before this draft could be applied. The draft was kept. Choose Apply again to overwrite the current copy.",
+        progressFailed: "Could not save which changes still need to be applied. The original draft was kept.",
+        discardConfirm: (name: string) => `Discard the recovery draft “${name}”? This cannot be undone.`,
+        applied: "Recovered changes were processed.",
+        memoryFiled:
+            "This chat's memory belongs to Structured Memory, so the recovered HypaV3 memory was not applied. It was kept as a separate recovery draft. Export it, or apply it after switching the memory algorithm to HypaV3.",
+        memoryKept:
+            "This chat's memory belongs to Structured Memory, so the recovered HypaV3 memory was not applied. This draft was kept. Export it, or apply it after switching the memory algorithm to HypaV3.",
+        memoryDraftFailed:
+            "The recovered HypaV3 memory could not be kept as a draft of its own, so this draft was kept. Export it to keep a copy of the memory.",
+        skipped:
+            "Skipped operations (missing targets, expired trash, whole-chat changes, or a translation whose source changed):",
+        skippedKept: "Skipped content was kept as a recovery draft. You can export it or apply it again.",
+        failed: "Could not complete this action. The recovery draft has been kept.",
+        refreshFailed: "Could not refresh recovery drafts.",
+        removeFailed: "The recovery draft could not be removed.",
+        appliedNotRemoved:
+            "The recovered changes were saved, but the draft could not be removed. Discard it instead of applying it again.",
+    },
+    resourceNoticeDismiss: "Dismiss",
     chatLoadFailed: "This chat could not be loaded: {0}",
+    chatLoadTimedOut: "The chat request timed out. Try again.",
     chatLoadRetry: "Try again",
     selectChatToOpen: "Select a chat from the list to start.",
     openMostRecentChat: "Open most recent chat",
@@ -1574,24 +1933,205 @@ export const languageEnglish = {
     chatUnavailable: "the chat is not available on the server",
     chatCreateRefused:
         "This chat could not be created on the server. Its local messages have been kept. Edit or delete the chat, or choose Retry, to try again. Use the refusal banner to export or discard the local data.",
+    resourceSaveTimedOut: "The server has not answered the save request. Please try again shortly.",
+    resourceSaveUnconfirmed: "A save has not been confirmed yet. It is being retried. Keep this tab open.",
     resourceRecordRefused:
         "This record could not be saved. Other records will continue saving. Edit the refused record to try again.",
     chatSaveRefused:
         "The server refused this chat change. Edit or delete the chat, or choose Retry, to try again. Use the refusal banner to export available local data or discard the refused change.",
     chatOrderRefused: "This chat order could not be saved. Change the order to try again.",
+    chatRecoveryExpired:
+        "The server can no longer confirm whether these recovered changes were saved. They have been kept as refused work. Retry only if you want to apply them again.",
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
+    chatTrash: {
+        open: "Trash",
+        title: (count: number) => `Trash (${count})`,
+        retention: (days: number) =>
+            `Chats in the trash are deleted forever after ${days} ${days === 1 ? "day" : "days"}`,
+        daysLeft: (days: number) => `${days} ${days === 1 ? "day" : "days"} left`,
+        restore: "Restore",
+        deleteForever: "Delete forever",
+        emptyTrash: "Empty trash",
+        confirm: (name: string) => `Move "${name}" to the trash?`,
+        confirmDeleteForever: (name: string) => `Delete "${name}" forever? This cannot be undone.`,
+        confirmEmptyTrash: (count: number) => `Delete the ${count} chats in the trash forever? This cannot be undone.`,
+        emptyTrashFailed: (names: string[]) =>
+            `Could not permanently delete the following chats.\n\n${names.map((name) => `"${name}"`).join("\n")}`,
+        saving: "This chat is still saving. Try again when it finishes.",
+        changed: "The chat changed. Check its current state and try again.",
+        unknown: "The server may have applied the request. Check the chat before trying again.",
+        notSent: "The request was not sent. Check that your changes have been saved and try again.",
+        closed: "This chat was moved to the trash and has been closed.",
+        checkpointsClosed: "Checkpoints closed because this chat was moved to the trash.",
+    },
+    multisendRemoved: "The /multisend command was removed.",
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
+    rerollRepliesNotRestored:
+        "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",
     serverJob: {
+        chatLoading: "Loading chat…",
+        retried: "Retry {count}",
+        stoppedElsewhere: "This job was stopped from another tab or device.",
+        stopOther: {
+            label: "Stop this chat's running job",
+            confirm: "Stop {kind} ({stage})?",
+            idle: "No job is running in this chat.",
+            invalidCurrent: "The server returned an invalid job lookup response.",
+            invalidStop: "The server returned an invalid job stop response.",
+            lookupTimedOut: "The current job lookup timed out. Try stopping the chat again.",
+            stopTimedOut: "The job stop request timed out. Try stopping the chat again.",
+            running: "running",
+            kinds: {
+                send: "reply generation",
+                continue: "reply continuation",
+                reroll: "reply regeneration",
+                group: "group reply generation",
+                preview: "message preview",
+                previewPrompt: "request preview",
+                command: "command",
+            },
+            stages: {
+                preparing: "preparing",
+                memory: "processing memory",
+                generating: "generating",
+                finishing: "finishing",
+            },
+        },
+        requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
+        groupArchived:
+            "Group chats are archived. You can no longer generate replies or start memory tasks in this chat.",
+        memoryRebuilding:
+            "A rebuild, start over, or fill gaps holds this chat's memory. Resume or abandon it in the memory panel to use the chat again.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
+        endedAway: "The response job ended while this page was away; the chat was reloaded",
+        hooksSkipped: "Plugin processing skipped while this page was away: {hooks}",
         discarded: {
             send: "A conflict discarded local changes; the send did not run",
             button: "A conflict discarded local changes; the button did not run",
             trigger: "A conflict discarded local changes; the trigger did not run",
+            memoryRecord: "A conflict discarded local changes; the recording did not start",
+            memoryTest: "A conflict discarded local changes; the test run did not start",
+            memoryChapters: "A conflict discarded local changes; the synopses did not start",
+            memoryRebuild: "A conflict discarded local changes; the memory work did not start",
         },
         saveFailed: "Local changes could not be saved: {0}",
+        sendSaveTimedOut: "The send timed out waiting for a save response. Please send again.",
+        refusedDraft:
+            "This chat has local changes the server refused. Choose Retry or Discard in the refused-changes banner first.",
         chatLoadFailed: "The chat could not be loaded: {0}",
         chatNotSaved: "This chat is not saved on the server yet",
+        handoff: {
+            acceptHandoffs: "Accept job handoffs on this browser",
+            acceptHelp:
+                "Let this browser run plugin steps for jobs started on your other devices. Keep a tab open here.",
+            preferHandoff: "Prefer a worker for new jobs",
+            preferHelp:
+                "Ask an available worker to take new jobs. A plugin step already running on a device that sleeps cannot move; preferring a worker helps avoid this.",
+            pending: "{character}: waiting for the other device to finish a plugin step",
+            working: "{character}: processing this job here",
+            takenBy: "{name} took over this job. You can keep watching and stop it here.",
+            takenByOther: "Another tab or device took over this job. You can keep watching and stop it here.",
+            missedCallback:
+                "A plugin listener lost its connection after starting. It may not have finished and was not run again.",
+            timedOut: "The job takeover request timed out.",
+            invalidTakeover: "The server returned an invalid job takeover response.",
+            controls: "Job handoff",
+            takeBack: "Take back",
+            handOffTo: "Hand off to {name}",
+            handOffToTabs: "Hand off to {name} ({count} tabs)",
+            notTaken: "The handoff offer is still open. No worker has taken it yet.",
+            unavailable: "This job cannot be handed off to that tab right now.",
+            requestTimedOut: "The job handoff request timed out.",
+            invalidHandoff: "The server returned an invalid job handoff response.",
+            requestFailed: "Could not hand off this job: {error}",
+            unnamed: "Unnamed worker",
+        },
+        remoteSend: {
+            unnamed: "Unnamed host",
+            failed: "Remote send through {host}: {reason}",
+            fallback: "Remote send through {host}: {reason} Sending from this device instead.",
+            settings: {
+                hosts: "Hosts",
+                host: "{name}",
+                hostTabs: "{name} ({count} tabs)",
+                useHost: "Use",
+                noHosts: "No hosts connected.",
+                enabled: "Send through a remote host",
+                help: "The composer's Send and Send Draft, Continue, and a reroll of a single reply go to the named host tab. Keep that tab open in Remote Host Mode. Other sends stay on this device.",
+                offlineHost: "{name} · Not connected",
+                clearHost: "Clear",
+                hostHelp:
+                    "The host is remembered by its name. When several host tabs share a name, the newest connected one is used.",
+                fallback: "Send from this device if the host cannot take the send",
+                fallbackHelp:
+                    "Only falls back when the host certainly did not take the send. A send whose outcome is unknown is never run again on this device.",
+            },
+            marker: {
+                connected: "Sends go through {host} · Connected",
+                disconnected: "Sends go through {host} · Not connected",
+                offline: "Not connected",
+            },
+            uncertain: "The outcome is still unknown. Retry unchanged text to keep the same request.",
+            commandChanged:
+                "This request id belongs to another remote action. Its outcome is unknown. Change the text before sending a new request.",
+            shownElsewhere: "The send's error was shown on host {host}.",
+            reasons: {
+                targetUnavailable: "The chosen host is not connected.",
+                targetFull: "The host's command queue is full.",
+                tooLarge: "The send exceeds the remote command size limit.",
+                expired: "The host did not pick up the send in time.",
+                stopped: "The host stopped before attempting the send.",
+                pluginsOff: "Plugins are disabled on the host.",
+                chatMissing: "The chat is unavailable on the host.",
+                busy: "The host is busy with this chat.",
+                unsupported: "The host is running an older version. Reload the host tab to run this action.",
+                refused: "The host refused the send before attempting it.",
+            },
+        },
+        remoteHost: {
+            label: "Remote Host Mode",
+            reload: "Reload plugins",
+            reloadPending: "Waiting for reload…",
+            reloadPluginsMode: "Reload plugins when idle",
+            reloadPageMode: "Reload the host page",
+            reloadChoose: "Reload plugins on {name}",
+            reloadHelp:
+                "Plugin reload waits for plugin work to finish. Page reload can interrupt that work. A plugin setting kept in safeLocalStorage belongs to each browser: changing it on another device does not change it on the host.",
+            reloadPageConfirm:
+                "Reload the page on {name}? This interrupts any job the host is running, including jobs taken over from another device. A callback in progress can be lost and its job can fail.",
+            reloadPageBusyConfirm:
+                "There are running jobs created by {name}. Reload its page? This interrupts jobs the host is running, including jobs taken over from another device. A callback in progress can be lost and its job can fail.",
+            unnamedHost: "Unnamed host",
+            reloadOutcome: "{name}: {outcome}",
+            reloadApplied: "The plugin loader completed.",
+            reloadFailed: "The plugin loader failed on the host.",
+            reloadPluginsOff: "Plugins are off for this page load on the host (safe boot).",
+            reloadNotReloaded:
+                "The host could not save its reload recovery marker or reload its page. The page was not reloaded.",
+            reloadUnavailable: "The host is no longer available.",
+            reloadRejected: "The reload request was rejected.",
+            reloadRefused: "The host refused the reload: {reason}",
+            reloadStopped: "The request was stopped.",
+            reloadExpired: "The request expired before the host read it.",
+            reloadUncertain: "The reload outcome is unknown.",
+            reloadNoAnswer: "No reload outcome arrived in time. The host may still complete the request.",
+            help: "This browser runs sends and plugin reloads requested by your other devices. Keep this tab open; host mode locks its screen. Keep it in a window of its own, rather than a background tab, to prevent browser throttling.",
+            start: "Start Remote Host Mode",
+            startDescription: "This tab runs sends for your other devices. Its screen locks.",
+            title: "Remote Host Mode",
+            connection: "Feed connection",
+            connected: "Connected",
+            disconnected: "Disconnected",
+            runningJobs: "This tab's running jobs",
+            noJobs: "No running jobs.",
+            recentCommands: "Recent commands",
+            noCommands: "No commands yet.",
+            waitingDialogs: "Dialogs are waiting for an answer above this screen.",
+            lockHelp:
+                "Keep this tab open to host for your other devices. Leave host mode to use this tab again; no reload is needed.",
+            leave: "Leave host mode",
+        },
     },
     newChatBinding: "New Chat Presets and Persona",
     newChatBindingInherit: "Current Chat",
@@ -1601,6 +2141,32 @@ export const languageEnglish = {
     contextMeterTurnUnitUser: "Turns",
     contextMeterTurnUnitMessage: "All Messages",
     contextMeterFixedWarn: "Fixed Share Warning",
+    contextMeterLookahead: "Mark the Background Summary Point",
+    loreBudgetStop: "Stop a send when lorebook entries are left out",
+    generationProgressWindow: "Show the generation progress window",
+    generationProgress: {
+        collapse: "Collapse generation progress",
+        expand: "Expand generation progress",
+        character: "Character",
+        chat: "Chat",
+        anotherDevice: "Another device",
+        tokens: "≈{tokens} tokens",
+        tokensPerSecond: "tokens/s",
+        windowLabel: "Generation progress",
+        jobs: "{count} running",
+    },
+    loreBudgetStopDialog: {
+        title: "Lorebook entries were left out",
+        notCalled: "The model was not called.",
+        messageKept: "Your message is in the chat.",
+        limitOwnCharacter: "This limit is the character's own, set in its lorebook settings.",
+        limitOwnGroup: "This limit is the group's own, set in its lorebook settings.",
+        limitGlobal: "This is the global lorebook token limit, set in the Memory settings.",
+        warnOffAndSend: "Don't warn in this chat and send",
+        changeLimit: "Change the token limit",
+        manageLorebook: "Manage lorebook",
+        close: "Close",
+    },
     contextUsage: {
         title: "Context usage",
         close: "Close",
@@ -1610,7 +2176,25 @@ export const languageEnglish = {
         summarized: "summarized",
         gap: "gap",
         memoryOn: "memory on",
+        memoryOff: "memory off",
         chipLabel: (summary: string) => `Context usage: ${summary}. As of the last reply. Open the breakdown.`,
+        chipLabelNoReply: (summary: string) => `Context usage: ${summary}. No reply yet. Open the details.`,
+        noReplyYet: "No reply yet in this chat.",
+        memoryNowOnSummary: (memory: string) => `memory is on (${memory})`,
+        memoryNowOffSummary: (memory: string) => `memory is off for this chat (${memory})`,
+        memoryNowTitle: "Memory for this chat",
+        memoryNowOn: (memory: string) => `On · ${memory}`,
+        memoryNowOff: (memory: string) => `Off · ${memory}`,
+        memoryNowNone: "Not set up",
+        memoryTurnOn: "Turn on for this chat",
+        memoryTurnOff: "Turn off for this chat",
+        memoryOffLeftOut: (count: number) =>
+            `The last request left out ${countOf(count, "message")}. With memory off, sends leave them out without a summary.`,
+        memoryNoneLeftOut: (count: number) =>
+            `The last request left out ${countOf(count, "message")}. With no memory set up, sends leave them out without a summary.`,
+        memoryLastUsed: (memory: string) =>
+            `The last reply was sent with ${memory}; the breakdown below is that reply's.`,
+        memoryLastWithout: "The last reply was sent without memory; the breakdown below is that reply's.",
         fullSummary: (percent: number) =>
             `all eligible history fit in the last request, ${percent}% of the prompt budget`,
         trimmedSummary: (kept: string) => `the last request kept ${kept}`,
@@ -1618,15 +2202,30 @@ export const languageEnglish = {
             `the last request kept ${kept}, ${memory} ${coverage}`,
         legacySummary: (percent: number) => `${percent}% of the context`,
         fixedWarnSummary: "the fixed part crowds out the history",
+        fixedPart: (percent: number) => `fixed ${percent}%`,
+        loreWarnSummary: (count: number) =>
+            `the lorebook budget left out ${count === 1 ? "1 entry" : `${count} entries`}`,
+        memoryReducedSummary: "the memory budget was reduced to fit the max context",
+        memoryReduced: "memory reduced",
         input: (input: string, maxContext: string) => `${input} of ${maxContext} tokens`,
-        replyBudget: (tokens: string) =>
-            `Reply budget: ${tokens} tokens. The prompt budget is the context size minus it.`,
+        inputOfBudget: (budget: string, percent: number) => `of ${budget} prompt budget · ${percent}%`,
+        budgetFrom: (maxContext: string, reply: string) =>
+            `Model context ${maxContext}, minus ${reply} kept for the reply.`,
         tokens: (tokens: string) => `${tokens} tokens`,
         noBudget: "No prompt budget: the reply budget takes the whole context.",
-        other: "Other",
+        otherLine: (signed: string) => `Counting difference: ${signed} tokens`,
         otherHelp:
             "The difference between the counted input and the sections above; positive or negative (merges, trimming, continue text).",
-        approximate: "The breakdown is approximate: the prompt was rewritten or an entry could not be traced.",
+        approximate: "≈ The breakdown is approximate: the prompt was rewritten or an entry could not be traced.",
+        groups: {
+            fixed: "Fixed",
+            fixedRest: "Other fixed",
+            lore: "Lorebook",
+            character: "Character and persona",
+            memory: "Memory",
+            history: "Chat history",
+        },
+        legendReserveEmpty: "Memory reserve (empty)",
         sections: {
             main: "Main prompt",
             globalNote: "Global note",
@@ -1644,35 +2243,91 @@ export const languageEnglish = {
             triggers: "Trigger additions",
             history: "Chat history",
         },
-        historyIncluded: (kept: number, total: number, keptUser: number, totalUser: number) =>
-            `The last request included ${kept} of ${total} messages (${keptUser} of ${totalUser} of your turns; the greeting counts as a message).`,
+        historySent: (kept: number, otherKept: number, unit: "user" | "message") =>
+            unit === "user"
+                ? `${countOf(kept, "turn")} (${countOf(otherKept, "message")}) sent`
+                : `${countOf(kept, "message")} (${countOf(otherKept, "turn")}) sent`,
+        historyTotal: (total: number, otherTotal: number, unit: "user" | "message") =>
+            unit === "user"
+                ? `of ${countOf(total, "turn")} · ${countOf(otherTotal, "message")}`
+                : `of ${countOf(total, "message")} · ${countOf(otherTotal, "turn")}`,
+        runwayCaption: "Room for the history as sent",
+        runwayUsage: (used: string, left: string) => `${used} used · ~${left} left`,
+        memoryReserveNote: (reserved: string) => `The HypaV3 memory reserve (${reserved}) lowers this room.`,
+        memorySettings: "Memory settings",
+        taskTitle: "Background summary",
+        taskQueued: "summary queued",
+        taskRunning: (done: number, total: number) => `summarizing ${done}/${total}`,
+        taskRunningUnknown: "summarizing",
+        taskSummary: (state: string) => `background ${state}`,
+        taskLiveNote:
+            "Later sends use its summaries as the history needs them; the breakdown below is the last reply's.",
+        taskDone: "Finished: the new summaries are stored; later sends use them as the history needs them.",
+        taskFailed: "The last background summary failed.",
+        taskFailedMark: "summary failed",
+        writerTask: {
+            title: "Memory recording",
+            queued: "recording queued",
+            running: (done: number, total: number) => `recording ${done}/${total}`,
+            runningUnknown: "recording",
+            liveNote: "Later sends read its new records; the breakdown below is the last reply's.",
+            done: "Finished: the new records are stored; later sends read them.",
+            failed: "The last memory recording failed.",
+            failedMark: "recording failed",
+        },
         historyOmitted: (count: number, tokens: string) =>
-            `${count === 1 ? "1 message" : `${count} messages`} omitted from the raw history (${tokens} tokens): trimmed, summarized, or removed while formatting.`,
+            `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
+        omittedSummarized: (count: number) => `summarized into memory: ${count}`,
+        omittedUnsummarized: (count: number) => `left out unsummarized: ${count}`,
+        omittedNoMemory: "sent without memory: none summarized",
         loreBudget: "Lorebook activation budget",
         loreBudgetHelp: "Tokens of the activated entries before injection edits, not the lore tokens finally sent.",
         loreRejected: (count: number, tokens: string) =>
             `${count === 1 ? "1 entry" : `${count} entries`} left out by the budget (${tokens} tokens).`,
+        loreRejectedMore: (count: number) => `and ${count === 1 ? "1 more entry" : `${count} more entries`}`,
+        loreWarnOff: "Don't warn or stop sends in this chat",
+        loreWarnOn: "Warn and stop sends in this chat again",
+        loreWarnOffNote: "This chat neither warns of left-out lore nor stops a send over it.",
         memoryKinds: {
             hypaV3: "HypaV3",
             hypaV2: "HypaV2",
             supa: "SupaMemory",
             hanurai: "Hanurai",
+            structuredMemory: "Structured memory",
         },
+        budgetReducedNote: "Reduced to fit the current max context",
+        budgetReducedFields: {
+            memory: "Memory budget",
+            headroom: "Background summary headroom",
+            extra: "Extra summarization",
+        },
+        budgetReducedValue: (label: string, configured: string, applied: string) =>
+            `${label}: ${configured} → ${applied}`,
         memoryBudget: (kind: string) => `${kind} memory budget`,
         memoryLine: (kind: string, tokens: string) => `${kind} memory: ${tokens} tokens sent.`,
+        preparedInLabel: (count: number) => `Ready summaries for ${countOf(count, "message")} apply`,
+        summarizeInLabel: "Summary applies",
+        lookaheadLabel: "Background summary asked",
+        tokensAway: (tokens: string) => `in ~${tokens} tokens of history`,
+        nextSend: "on the next send",
+        lookaheadPassed: "passed",
+        preparedHelp:
+            "Ready summaries cover messages still sent in full; they take those messages' place once the prompt fills the context.",
         coverageCovered: "The memory covers the history left out.",
         coverageGap: "Some history left out is not covered by the memory.",
         coverageUnknown: "Whether the memory covers the history left out is unknown.",
         fixedShare: (percent: number) => `Fixed share: ${percent}% of the prompt budget`,
+        toolSchemas: "Tool schemas (estimated)",
+        interceptions: "Inserted prompts (estimated)",
         fixedShareHelp: "Everything but the chat history and memory.",
         fixedShareOver: (warn: number) => `Above the ${warn}% warning: little room is left for the history.`,
         basis: (unit: string, warn: number) => `Counting ${unit}; warning above ${warn}%.`,
         basisTurns: "your turns",
         basisMessages: "all messages",
-        changeSettings: "Change",
         legacyNote: "No breakdown for this reply: it was generated before the meter, or its report could not be read.",
         estimateTitle: "If you send this draft",
         estimateSuffix: (count: number) => `≈ −${count}`,
+        estimateLead: "if sent",
         estimateBeyondSuffix: (count: number) => (count > 0 ? `≈ −${count}+` : "≈ −?"),
         estimateDrops: (dropped: string, kept: string, left: number) =>
             `About ${dropped} of the earlier history would be pushed out (${kept} kept before, ${left} of them after).`,
@@ -1757,9 +2412,8 @@ export const languageEnglish = {
         chatSettings: "Chat Settings",
         close: "Close",
         setUp: "Set up this chat",
+        setupNeeded: "Setup required",
         confirmReview: "Confirm",
-        thisChat: "This chat",
-        notSetForChat: "Not set for this chat",
         forChat: (name: string) => `For this chat: ${name}`,
         incomplete: "This chat cannot be sent until its settings are set or confirmed.",
         usedByChats: (count: number) =>
@@ -1778,6 +2432,7 @@ export const languageEnglish = {
         changed: (count: number) => `${count} changed`,
         notApplied: "not applied",
         folderOffNotice: "This folder is off in this chat",
+        turnOffAll: "Turn off every entry in this folder",
         releaseAll: "Release all overrides in this folder",
         releaseAllConfirm: (count: number) =>
             `Release ${count} override${count === 1 ? "" : "s"} in this folder? ${count === 1 ? "Its edits" : "Their edits"} will be discarded and this chat will use the original character entries again. The folder's own On/Off state stays.`,
@@ -1843,8 +2498,10 @@ export const languageEnglish = {
     select: "Select",
     options: "Options",
     alertContent: "Alert Content",
-    lowLevelAccessConfirm:
-        "This content uses Low Level Access. which means this content can access the AI model and your storage directly. Do you really want to import this content?",
+    lowLevelAccessImportQuestion:
+        "This content uses Low Level Access, which means it can access the AI model and your storage directly. Import it with Low Level Access, or without it? Without it, the parts that need it will not work; you can turn it on later in its settings.",
+    lowLevelAccessImportWith: "Import with Low Level Access",
+    lowLevelAccessImportWithout: "Import without Low Level Access",
     extractRegex: "Extract Text with Regex",
     runImgGen: "Run Image Generation",
     cutChat: "Cut Chat",
@@ -1877,8 +2534,9 @@ export const languageEnglish = {
     blockMode: "Block",
     helpBlock: "Help",
     hideChatIcon: "Hide Icon UI",
-    loadInternalBackup: "Load Internal Backup",
     createCopy: "Create a Copy",
+    createSettingsCopy: "Copy Settings Only",
+    createSettingsCopyDesc: "A new chat without the messages, keeping the toggles, lorebook, and chat settings.",
     chatOptions: "Chat Options",
     parameters: "Parameters",
     useLegacyGUI: "Use Legacy GUI",
@@ -1909,8 +2567,6 @@ export const languageEnglish = {
     trailingDoubleQuote: "Trailing Double Quote",
     translatorNote: "Translator's Note",
     formatGroupInSingle: "Format Group in Single",
-    groupInnerFormat: "Non-Speaker Inner Format",
-    groupOtherBotRole: "Non-Speaker Role in Group",
     chatHTML: "Chat HTML",
     logShare: "Show Share Log Button",
     preview: "Preview",
@@ -1921,6 +2577,74 @@ export const languageEnglish = {
     systemRoleReplacement: "System Role Replacement",
     summarizationPrompt: "Summarization Prompt",
     reSummarizationPrompt: "Re-Summarizaion Prompt",
+    inputHooks: {
+        title: "Input Hooks",
+        navLabel: "Input Hooks",
+        draftDescription:
+            "Draft: Send runs the hook on the composer text and puts the result in a draft box for you to review and send.",
+        btwDescription: "BTW: Run on demand from the composer menu. The result appears in a panel and is never sent.",
+        slotsDescription:
+            "Prompt slots: {{slot::content}} is the composer text, {{slot::draft}} is the draft box text, {{slot::history::N}} is the last N messages, and {{slot::historytrans::N}} is their translations, as in the translator.",
+        draft: "Draft",
+        btw: "BTW",
+        translationMode: "Translation mode",
+        translationModeDescription:
+            "Stores the text you typed as the sent message's translation. With the LLM translator on the message target and a target language set, it appears through the row's translation toggle or the chat's auto-translate.",
+        add: "Add hook",
+        empty: "No input hooks yet.",
+        name: "Name",
+        type: "Type",
+        model: "Model",
+        prompt: "Prompt",
+        missingProfile: "This hook's connection is missing. Choose another connection.",
+        remove: "Delete hook",
+        removeConfirm: (name: string) => `Delete the input hook "${name}"?`,
+        panelTitle: "Draft hook",
+        none: "None",
+        missingHook: "Missing Draft hook",
+        draftPlaceholder: "Review and edit your draft here.",
+        sendDraft: "Send Draft",
+        runningDraft: "Running Draft hook…",
+        btwPickerTitle: "Run BTW Hook",
+        btwResult: "BTW Result",
+        btwDismiss: "Dismiss BTW Result",
+        runningBtw: "Running BTW hook…",
+    },
+    requestInterception: {
+        title: "Request Rules",
+        navLabel: "Request Rules",
+        promptInsertion: "Prompt insertion",
+        responseChecks: "Response checks",
+        description:
+            "Each enabled rule inserts its prompt into every request of the request kinds it targets, at the start or the end of the messages, in list order.",
+        add: "Add rule",
+        empty: "No prompt insertion rules yet.",
+        enabled: "Enabled",
+        modes: "Request kinds",
+        position: "Position",
+        start: "Start",
+        end: "End",
+        notesTitle: "Notes",
+        notes: [
+            "The text is sent as written. CBS such as {{user}} is not evaluated.",
+            "Memory and emotion answers are parsed: the Structured Memory writer expects JSON and the emotion step a single word. A rule on these requests can break them.",
+            "A summary made with a fixed summarization model is not a Memory request and gets no inserted prompts.",
+            "Only the chat reply reserves context for the inserted text. Other requests can exceed the context size.",
+            "Additional parameters and plugins that rewrite the request body run afterwards and can change the inserted text.",
+        ],
+        responseChecksDescription:
+            "An answer that the provider returned as a success but that is shorter than the minimum of its request kind is treated as a failed request; 0 or a blank field turns the check off.",
+        minimumLength: "Minimum answer length (characters)",
+        responseCheckNotes: [
+            "Characters are counted after trimming, without thought blocks, tool call records, and image markers, so a reply that is only an image fails any minimum.",
+            "Only the length is checked: a long refusal passes.",
+            "A buffered request of the same kind that a script or trigger sends is measured too.",
+            "A Memory minimum can reject the Structured Memory writer's valid JSON, whose shortest valid answers are a few characters, and fail that recording, which is tried again in a later recording. A rejected compaction does not fail the recording: the event is kept and the recording shows a warning.",
+            "A continue request is not measured for length; the banned-script check still applies to it.",
+            'An answer rejected before it was shown is requested again, within the "Request Retrys when Fail" count. A fully streamed reply fails without a retry and keeps its text; a reroll goes back to its previous answer.',
+            'The banned-script list ("Auto Regenerate On Characterset") is on the Prompt page, in the Others tab\'s "Advanced prompt behavior" section.',
+        ],
+    },
     translatorSteps: {
         title: "Steps",
         add: "Add step",
@@ -1953,6 +2677,8 @@ export const languageEnglish = {
     translationFailed: "Translation failed",
     translationSourceChanged: "The message changed while it was being translated. Translate it again.",
     translationEditStale: "The message changed since the translation editor opened. The translation was not saved.",
+    messageEditorChangedElsewhere: "This message changed elsewhere. Saving will overwrite that change.",
+    translationEditorChangedElsewhere: "This translation changed elsewhere. Saving will overwrite that change.",
     translationNoContext: "This chat has no preset, model preset, or persona to translate with.",
     togglePresets: {
         title: "Toggle preset",
@@ -1999,6 +2725,7 @@ export const languageEnglish = {
     loading: "Loading",
     autoTranslateCachedOnly: "Auto-translate Cached Messages Only",
     notification: "Notification",
+    completionWaitMaxSeconds: "Plugin wait time limit (seconds)",
     permissionDenied: "Permission Denied by Your Browser or OS",
     customNotificationMessage: "Custom Notification Message",
     pushNotifications: {
@@ -2072,6 +2799,16 @@ export const languageEnglish = {
         maxMemoryTokensRatioError: "Unable to calculate Max Memory Tokens Ratio",
         memoryTokensRatioLabel: "Memory Tokens Ratio",
         extraSummarizationRatioLabel: "Extra Summarization Ratio",
+        lookaheadHeadroomRatioLabel: "Background Summary Headroom Ratio",
+        budgetModeLabel: "Budget mode",
+        budgetModeRatio: "Ratio",
+        budgetModeTokens: "Tokens",
+        memoryBudgetTokensLabel: "Total space for memory (tokens)",
+        lookaheadHeadroomTokensLabel: "Token headroom to start summaries early",
+        extraSummarizationTokensLabel: "Extra tokens to free when summarizing",
+        convertToTokens: (maxContext: string) => `Convert to tokens at the current max context (${maxContext})`,
+        budgetReducedWarning: (maxContext: string, promptBudget: string, applied: string) =>
+            `At the current max context (${maxContext}, ${promptBudget} without the reply) this is reduced to ${applied}.`,
         maxChatsPerSummaryLabel: "Max Messages Per Summary",
         queryChatCountLabel: "Query Chat Count",
         gapConfirmTokensLabel: "Ask Before Summarizing Over (Tokens)",
@@ -2091,6 +2828,9 @@ export const languageEnglish = {
         doNotSummarizeUserMessageLabel: "Do Not Summarize User Message",
     },
     hypaV3Modal: {
+        readyBadge: "Ready",
+        readyBadgeHelp:
+            "Left out of the last prompt: a ready summary waits while the messages it covers are still sent in full, and takes their place once the prompt fills the context.",
         titleLabel: "HypaV3",
         resetConfirmMessage: "This action cannot be undone. Do you want to reset HypaV3 data?",
         resetConfirmSecondMessage: "This action is irreversible. Do you really, really want to reset HypaV3 data?",
@@ -2164,6 +2904,7 @@ export const languageEnglish = {
         running: (done: number, total: number) =>
             total > 0 ? `Making summaries in the background: ${done}/${total}` : "Making summaries in the background",
         done: (reason: string) => `The background summaries were made, but: ${reason}`,
+        rebuilt: "The memory was rebuilt.",
         failed: (reason: string) => `The last background summarization failed: ${reason}`,
         skipped: (reason: string) => `The last background summarization was skipped: ${reason}`,
         cancelled: (reason: string) => `The last background summarization was stopped: ${reason}`,
@@ -2181,7 +2922,7 @@ export const languageEnglish = {
         startFailed: (error: string) => `The background summaries could not be started: ${error}`,
         cancelFailed: (error: string) => `The background summaries could not be cancelled: ${error}`,
         reasons: {
-            memoryOff: "memory is turned off for this character",
+            memoryOff: "memory is turned off for this chat",
             notHypaV3: "HypaV3 is not the memory in use",
             pluginModel: "the memory model runs in a tab, so summaries are made during a send",
             requestTrigger: "a request trigger applies, so summaries are made during a send",
@@ -2199,7 +2940,820 @@ export const languageEnglish = {
             shutdown: "the server shut down",
             cancelled: "cancelled",
             epoch: "the data was restored",
+            notStructuredMemory: "structured memory is not the memory in use",
+            windowsLeft: "more turns are waiting for the next reply",
+            writerPaused: "recording is paused after repeated failures",
+            windowChanged: "the chat changed during recording",
+            revisionConflict: "the memory was changed meanwhile",
+            awaitingAdoption:
+                "nothing records until you adopt or decline this chat's HypaV3 summaries in the memory panel, and the summaries stay stored",
+            memoryRebuilding: "a rebuild, start over, or fill gaps holds this chat's memory",
+            rebuildGone: "the rebuild, start over, or fill gaps is gone",
+            nothingRecorded: "no turn was recorded, so the records stay as they were",
+            queueFull: "too many chats are waiting for memory work",
         } as Record<string, string>,
+    },
+    structuredMemory: {
+        name: "Structured memory",
+        requiredOverCap: (
+            tokens: number,
+            limit: number,
+            pages: string,
+            sceneLimit?: "required" | "whole",
+            otherPages = false,
+        ) => {
+            let advice = "Shorten a page, or set it to auto.";
+            if (sceneLimit) {
+                advice =
+                    sceneLimit === "required"
+                        ? "Shorten the scene, or raise the required-page limit in Memory settings."
+                        : "Shorten the scene to fit the total memory budget.";
+                if (otherPages) advice += " You can also shorten another required page or set it to auto.";
+            }
+            return `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. ${advice}`;
+        },
+        removeRetracts: (events: number) =>
+            events === 1
+                ? "1 memory event cites this. Removing it also retracts that event, and nothing can bring it back. If these messages are the newest recorded turn, its memory page changes are undone too. Remove anyway?"
+                : `${events} memory events cite this. Removing it also retracts them, and nothing can bring them back. If these messages are the newest recorded turn, its memory page changes are undone too. Remove anyway?`,
+        projectionWriteRefused:
+            "A plugin tried to change this chat's memory. Structured memory keeps its own records, so what plugins read of them cannot be written, and that change was dropped.",
+        meter: {
+            status: {
+                unknown: "unknown",
+                failed: "failed",
+                paused: "paused",
+                notAutomatic: "not automatic",
+                pending: "pending",
+                recorded: "recorded",
+            },
+            tokensSent: (tokens: string) => `Structured memory: ${tokens} tokens sent.`,
+        },
+        manifest: {
+            writer: "Writer",
+            writerStates: {
+                recorded: "Recorded",
+                pending: "Pending",
+                failed: "Failed",
+                paused: "Paused",
+                notAutomatic: "Not automatic",
+            },
+            writerReasons: {
+                repair: "a re-record is waiting",
+            } as Record<string, string>,
+            included: "Included",
+            noneIncluded: "Nothing was included.",
+            verified: "Found in the prompt",
+            notVerified: "Not found in the prompt",
+            leftOut: "Left out",
+            leftOutMore: (count: number) => `and ${count} more`,
+            exclusions: {
+                stale: "sources changed",
+                never: "never sent",
+                budget: "over the budget",
+                "not-relevant": "not relevant",
+            },
+            lanesTitle: "Lane spend",
+            lanes: {
+                required: "Required",
+                flow: "Recent events",
+                pages: "Pages",
+                events: "Events",
+                evidence: "Evidence",
+                threads: "Threads",
+            },
+        },
+        revert: {
+            button: "Revert",
+            reverted: "Reverted",
+            done: (laterEvents: number) =>
+                laterEvents === 0
+                    ? "Reverted."
+                    : laterEvents === 1
+                      ? "Reverted. 1 later event stays."
+                      : `Reverted. ${laterEvents} later events stay.`,
+            nothing: "Nothing to revert: this change was already reverted.",
+        },
+        highlightModes: {
+            none: "Highlight nothing",
+            important: "Highlight important changes",
+            all: "Highlight every change",
+        },
+        receipt: {
+            recorded: (counts: { events: number; pages: number; refused: number; unverified: number }) => {
+                const { events, pages, refused, unverified } = counts;
+                const parts = [
+                    ...(events > 0 ? [events === 1 ? "1 event" : `${events} events`] : []),
+                    ...(pages > 0 ? [pages === 1 ? "1 page updated" : `${pages} pages updated`] : []),
+                    ...(refused > 0 ? [`${refused} refused`] : []),
+                    ...(unverified > 0 ? [`${unverified} to check`] : []),
+                ];
+                return parts.length > 0 ? `Recorded: ${parts.join(", ")}` : "Recorded";
+            },
+            notRecorded: (reason: string) => (reason ? `Not recorded: ${reason}` : "Not recorded"),
+            notAutomatic: (reason: string) =>
+                reason ? `Not recording automatically: ${reason}` : "Not recording automatically",
+            paused: "Recording is paused after repeated failures",
+            working: "The memory writer is working in this chat",
+            none: "No memory receipt yet",
+            recordNow: "Record now",
+            resume: "Resume",
+            requested: "Recording requested",
+            finished: "Recording finished",
+            queued: "Recording queued",
+            recordSkipped: (reason: string) =>
+                reason ? `Recording stopped: ${reason}` : "Recording stopped before it could finish.",
+            recordCost: (calls: number, tokens: number) => `Record now? ${memoryCostText(calls, tokens)}`,
+            recordCostUnknown: "Record now? The cost could not be read, so it is unknown.",
+            busy: "This chat is busy. Try again when the running job ends.",
+            changes: "Changes",
+            newPage: "New page",
+            warnings: "Warnings",
+            unverified: "To check",
+            refused: "Refused",
+            model: "Model",
+            tokens: (input: number, output: number) => `Tokens: ${input} in, ${output} out`,
+            customPrompt: "Custom prompt",
+            repairPending: "A repair is waiting: record now re-records the marked events",
+        },
+        notAutomaticReasons: {
+            pluginModel: "the memory model is a plugin model, which needs this tab",
+            requestTrigger: "a request trigger applies, which needs this tab",
+            localSummarization: "the server cannot run this summarization model",
+            manual: "this memory preset records only when asked",
+            awaitingAdoption:
+                "nothing records until you adopt or decline this chat's HypaV3 summaries in the memory panel, and the summaries stay stored",
+        } as Record<string, string>,
+        failureReasons: {
+            requestFailed: "the model request failed",
+            unexpectedResponse: "the model's answer was of an unexpected kind",
+            emptyResponse: "the model's answer was empty",
+            invalidJson: "the model's answer was not valid JSON",
+            invalidField: "the model's answer lacked a required field",
+            inputTooLarge: "the prompt was too large to store",
+            hostFailure: "the memory task failed",
+            patchFailed: "the page update failed",
+            customPromptInvalid: "the preset's own prompt could not be used",
+        } as Record<string, string>,
+        unverifiedReasons: {
+            quoteNotFound: "the quote was not found in these messages",
+            unknownPage: "it names no known page",
+        } as Record<string, string>,
+        warningKinds: {
+            malformed: "A malformed item was left out",
+            aliasCollision: "A new page's alias matches another page; merge them if they describe the same subject",
+            capped: "Items past the limit were left out",
+            unknownPage: "A page that does not exist was named",
+            unknownThread: "A thread that does not exist was named",
+            endedThread: "A thread that already ended was named",
+            unseenPage: "A page the model was not shown was left as it is",
+            lockedSection: "A locked section was left as it is",
+            sceneClipped: "A scene field was shortened to its rewrite limit (characters)",
+            unseenSection: "A section the model did not see as it stands was left as it is",
+            duplicateHeading: "A section was changed twice in one answer",
+            notASlot: "A character page has no such section",
+            tooManySections: "The page has no room for another section",
+            emptyBody: "A section was given no text",
+            pageRefused: "Left out with the rest of its page",
+            emptiesPage: "This would have left the page empty",
+            sectionTooLong: "The new text is too long for the section",
+            disputed: "Both values were kept as disputed",
+            compacted: "A long section was shortened",
+            compactionFailed: "A long section could not be shortened",
+            compactionNotSmaller: "The new text was no shorter, so a long section was left as it is",
+            compactionStale: "The records changed during the run, so a shorter text was left out",
+            compactionSkipped: "A long section a person corrected, or one in dispute, was left as it is",
+            frozenPage: "A page that already stood was left as it is, because this turn lies before it",
+            revertedScene: "The scene repeated what you took back, so that part was left as it is",
+        } as Record<string, string>,
+        refusalKinds: {
+            lowConfidence: "an unresolved mention, too uncertain to make a page",
+            unknownPage: "it names no known page",
+            sceneOwned: "the writer keeps the scene page itself",
+            repeatedEvent: "this turn repeats the last event",
+            allLocked: "every section of the page is locked and it has no room for a new one",
+            overBudget: "the page was too long to show the model",
+        } as Record<string, string>,
+        panel: {
+            title: "Structured Memory",
+            sections: "Memory panel sections",
+            coverage: "Coverage",
+            log: "Log",
+            preview: "Preview",
+            pages: "Pages",
+            unsupported: "Evidence missing",
+            timeline: "Timeline",
+            threads: "Threads",
+            settings: "Settings",
+            refresh: "Refresh",
+            close: "Close",
+            readOnly: "A reply or the memory writer is working in this chat, so this panel is read-only until it ends.",
+            loading: "Loading...",
+            usedInLastSend: "Used in the last send",
+            showMore: (left: number) => `Show more (${left} left)`,
+            memoryOff: "Memory is off for this chat, so nothing is recorded.",
+            readRefused: {
+                chatGone: "This chat no longer exists.",
+                recordGone: "This record no longer exists.",
+                changed: "This chat's memory changed in the meantime. Refresh to try again.",
+                epoch: "The data was restored on the server. Reload the page to continue.",
+                fenced: "A reply or the memory writer is working in this chat. Wait until it ends before editing.",
+                superseded:
+                    "This change can no longer be reverted: a later change stands on it, or its history is gone.",
+                tooLarge: "These records are over the server's size limit.",
+            },
+            readFailed: (error: string) => `The memory could not be read: ${error}`,
+        },
+        settingsTab: {
+            language: "Recording language in this chat",
+            languagePlaceholder: "Leave it blank to use the preset's language",
+            highlightMode: "Highlighting in this chat",
+            highlightDefault: "Use the default",
+            ownerInstructions: "Memory instructions for this character",
+            ownerInstructionsHelp:
+                'Added after the writer\'s rules in every chat of this character or group. Say what to keep and where, for example: "Always record HP and MP under Condition and stats." Stored on this server only, never in the card.',
+            ownerInstructionsCount: (count: number, limit: number) => `${count} / ${limit}`,
+            presetValues: "Every other value, the screening lists included, comes from the selected memory preset.",
+            openMemorySettings: "Open memory settings",
+        },
+        greeting: {
+            sources: "Sources",
+            source: "Greeting",
+            changed: "Changed",
+            help: "This event was recorded from an earlier greeting. A covered greeting outside the raw window still stays out of the prompt. Re-recording the event or rebuilding memory reads the current greeting.",
+            keep: "Keep this record",
+        },
+        coverage: {
+            states: {
+                covered: "Covered",
+                pending: "Pending",
+                failed: "Failed",
+                skipped: "Skipped",
+                excluded: "Excluded",
+                stale: "Sources changed",
+            } as Record<string, string>,
+            reasons: {
+                disabled: "the message is left out of what a send reads",
+                suppressed: "its event is suppressed",
+                retracted: "its event was retracted",
+                changed: "the message changed after it was recorded",
+                missing: "a message its event cites is gone",
+                inserted: "a message was inserted among the ones its event cites",
+                moved: "the messages its event cites moved",
+                interrupted: "the run was interrupted",
+                screenedRefusal: "the reply matches a refusal text of the memory preset's screening",
+                screenedFormat: "the reply matches a format text of the memory preset's screening",
+            } as Record<string, string>,
+            roles: { user: "User", char: "Character", greeting: "Greeting" } as Record<string, string>,
+            empty: "This chat has no greeting or messages yet.",
+            memoryOff: "Memory is off for this chat, so no covered history leaves the prompt.",
+            gap: (turns: number, messages: number, tokens: string) =>
+                `Older than the last ${turns === 1 ? "turn" : `${turns} turns`} with no event covering them: ${
+                    messages === 1 ? "1 entry" : `${messages} entries`
+                }, ${tokens}`,
+            leaving: (turns: number, messages: number, tokens: string) =>
+                `Covered history older than the last ${turns === 1 ? "turn" : `${turns} turns`}, leaving the prompt: ${
+                    messages === 1 ? "1 entry" : `${messages} entries`
+                }, ${tokens}`,
+            aboutTokens: (tokens: number) => `about ${tokens} tokens`,
+            countingTokens: "counting tokens...",
+            tokensUnavailable: "tokens not counted",
+            estimate:
+                "These counts include the stored greeting and messages. They are not an exact prediction: a send uses processed text and can also trim uncovered history that no longer fits.",
+            range: (first: number, last: number, count: number) => `#${first} to #${last} (${count})`,
+        },
+        log: {
+            total: (held: number, total: number) => `${held} of ${total} runs`,
+            empty: "The memory writer has not run in this chat yet.",
+            export: "Export",
+            loadMore: "Load more",
+            results: {
+                pending: "In progress",
+                recorded: "Recorded",
+                failed: "Failed",
+                skipped: "Skipped",
+            } as Record<string, string>,
+            range: (first: number, last: number, count: number) =>
+                count === 1 ? `Message #${first}` : `Messages #${first} to #${last} (${count})`,
+            noMessages: "No messages",
+            noModel: "No model",
+            seconds: (milliseconds: number) => `${(milliseconds / 1000).toFixed(1)} s`,
+            noExtraction: "This run left no extraction.",
+            answer: "The model's answer, which could not be read",
+            storyTime: "Story time",
+            participants: "Participants",
+            keyLines: "Key lines",
+            stateChanges: "State changes",
+            knowledge: "Knowledge",
+            knowers: "Known by",
+            stances: { knows: "knows", believes: "believes" } as Record<string, string>,
+            relationshipShifts: "Relationship shifts",
+            threads: "Threads",
+            threadAdded: "New",
+            threadClosed: "Closed",
+            candidates: "Page candidates",
+            newPage: "New page",
+            confidence: "Confidence",
+        },
+        preview: {
+            note: "Built from the chat as it stands now, without your next message, so the next send can differ.",
+            run: "Build preview",
+            running: "Building...",
+            failed: "The preview could not be built.",
+            noBlock: "The next send gets no memory block.",
+        },
+        pages: {
+            empty: "This chat has no memory pages yet.",
+            select: "Select a page to read it.",
+            view: "Page view",
+            views: { read: "Read", manage: "Manage" },
+            links: "Linked pages",
+            filter: "Find a page by title",
+            filterNone: "No page title matches.",
+            searchText: "Search text",
+            usedLegend: (count: number) => `Used in the last send · ${count}`,
+            wasLines: (count: number) => `Earlier text (${count})`,
+            searchNone: "Nothing matches.",
+            findMore: (max: number) => `Showing the first ${max} matches.`,
+            eventsNaming: "Events naming this page",
+            eventsNamingNone: "No event names this page.",
+            eventsMore: (max: number) => `Showing the newest ${max} events.`,
+            eventImportant: "Important",
+            showAll: (count: number) => `Show all ${count}`,
+            showFewer: "Show fewer",
+            knowledge: "Knows and believes",
+            believes: "Believes",
+            secret: "Secret",
+            shifts: "Relationship shifts",
+            shiftIn: "Toward this page, from",
+            shiftOut: "From this page, toward",
+            threadsNaming: "Threads",
+            types: {
+                character: "Character",
+                location: "Location",
+                faction: "Faction",
+                item: "Item",
+                concept: "Concept",
+                scene: "Scene",
+                note: "Note",
+            } as Record<string, string>,
+            aliases: "Also known as",
+            contextMode: "When it is sent",
+            contextModes: { always: "Always", auto: "When relevant", never: "Never" },
+            grade: "Grade",
+            noGrade: "None",
+            headings: {
+                identity: "Identity",
+                currentState: "Current state",
+                condition: "Condition and stats",
+                relationships: "Relationships",
+                knowledge: "Knowledge",
+                goals: "Goals",
+                inventory: "Inventory",
+                openContinuity: "Open continuity",
+                place: "Place",
+                time: "Time",
+                state: "State",
+            } as Record<string, string>,
+            noSections: "This page has no sections yet.",
+            locked: "Locked",
+            flags: { disputed: "Disputed", unsupported: "Unsupported", userCorrected: "Corrected by you" },
+            release: "Remove this mark",
+            releaseConfirm: (heading: string) =>
+                `Remove the “Corrected by you” mark from “${heading}”? The text stays, but the memory model may then rewrite and shorten it freely, and a full rebuild no longer keeps it.`,
+            edit: "Edit",
+            unsupported: {
+                keep: "Keep",
+                keepAll: "Keep all on this page",
+                keepAllConfirm: (title: string) => `Keep all sections with missing evidence on “${title}”?`,
+                preserve: "Keep through a full rebuild",
+                preserveDescription:
+                    "Kept sections are marked “Corrected by you”, survive a full rebuild, and are not compacted.",
+                resolved: "All sections with missing evidence have been resolved.",
+            },
+            save: "Save",
+            cancel: "Cancel",
+            sectionText: "Section text",
+            sceneTokens: (count: number, limit: number) =>
+                `Saved scene: ${count.toLocaleString()} / ${limit.toLocaleString()} required-page tokens`,
+            requiredTokens: (count: number, limit: number) =>
+                `All required pages: ${count.toLocaleString()} / ${limit.toLocaleString()} tokens`,
+            sceneOverCap:
+                "Required pages exceed their token limit. Shorten the scene or raise the limit in Memory settings.",
+            sceneCountUnavailable: "Saved scene token count unavailable.",
+            sceneLongField:
+                "Over 600 characters: prompts get longer. The memory writer may rewrite this field up to this length.",
+            characters: (count: number, limit: number) => `${count} / ${limit}`,
+            provenance: "Events",
+            sources: "Messages",
+            messageGone: "Gone",
+            history: "History",
+            noHistory: "Nothing has changed on this page yet.",
+            historyKinds: {
+                create: "Created",
+                change: "Changed",
+                contradiction: "Contradicted",
+                delete: "Deleted",
+                compact: "Compacted",
+                edit: "Edited by you",
+                revert: "Reverted by you",
+                merge: "Merged by you",
+                split: "Split by you",
+            } as Record<string, string>,
+            highlighted: "Highlighted",
+            wholePage: "Whole page",
+            diffFailed: "The comparison could not be loaded.",
+            tools: {
+                refused: (error: string) => `This change was refused: ${error}`,
+                trash: "Trash",
+                delete: "Delete",
+                trashed:
+                    "This page is in the trash: it is not sent, listed, or written to, and everything on it stays until you delete it forever.",
+                restore: "Restore",
+                purge: "Delete forever",
+                purgeConfirm: (title: string) =>
+                    `Delete "${title}" forever? Its sections and history go with it, and nothing can bring them back.`,
+                mergeInto: "Merge into",
+                mergeTarget: "Choose a page",
+                merge: "Merge",
+                mergeConfirm: (source: string, target: string) =>
+                    `Merge "${source}" into "${target}"? Its sections, aliases, and every reference to it move to "${target}", a section both pages have is joined, and "${source}" goes to the trash with its history.`,
+                split: "Split",
+                rename: "Rename",
+                renameTitle: "Page title",
+                newNote: "New note page",
+                addSection: "Add section",
+                sectionHeading: "Section heading",
+                editAliases: "Edit aliases",
+                alias: "Alias",
+                addAlias: "Add",
+                removeAlias: "Remove",
+                aliasCount: (count: number, limit: number) => `${count} / ${limit} aliases`,
+                splitTitle: "Title of the new page",
+                splitHeadings: "Sections to move",
+                splitAliases: "Aliases to move",
+                splitConfirm: (title: string, sections: number) =>
+                    `Move ${sections === 1 ? "1 section" : `${sections} sections`} to a new page "${title}"? The events stay on this page.`,
+                export: "Export to lorebook",
+                exported: (title: string) => `"${title}" was added to this chat's lorebook as an inactive entry.`,
+                exportNotLoaded: "This chat is not loaded, so nothing can be added to its lorebook.",
+                import: "Import a Markdown package",
+                importConfirm:
+                    "Import this package into the chat's memory? Only a chat with no memory records takes it, and what a file gets wrong is left out and listed.",
+                importDone: (counts: { pages: number; events: number; threads: number }) => {
+                    const { pages, events, threads } = counts;
+                    return `Imported ${pages === 1 ? "1 page" : `${pages} pages`}, ${events === 1 ? "1 event" : `${events} events`}, and ${threads === 1 ? "1 thread" : `${threads} threads`}.`;
+                },
+                importNothing:
+                    "Nothing was imported: this chat already holds memory records or waits for a choice on its HypaV3 summaries, or the package holds no record.",
+                importRefusals: "Left out",
+                importReasons: {
+                    unknownFile: "not a file of a memory package",
+                    unreadable: "not in the package's layout",
+                    newerVersion: "written by a newer version of the app",
+                    shape: "not a whole record",
+                    invalidId: "its id is not a valid id",
+                    duplicateId: "its id is already used in the package",
+                    secondScene: "a second scene page",
+                    tooLarge: "over the server's size limit",
+                    missingThreads: "this package has no threads file, so the events' thread references were dropped",
+                } as Record<string, string>,
+            },
+        },
+        timeline: {
+            view: "Timeline view",
+            search: "Search memory text",
+            searchClear: "Clear search",
+            edit: "Edit",
+            title: "Event title",
+            summary: "Event summary",
+            save: "Save",
+            cancel: "Cancel",
+            characters: (count: number, limit: number) => `${count} / ${limit}`,
+            userCorrected: "Corrected by you",
+            release: "Remove this mark",
+            releaseConfirm: (title: string) =>
+                `Remove the “Corrected by you” mark from “${title}”? The title and summary stay, but a re-record or rebuild may replace them.`,
+            views: { read: "Read", manage: "Manage" },
+            openInManage: "Open in Manage",
+            checkNotice: (count: number) =>
+                count === 1 ? "1 event needs checking." : `${count} events need checking.`,
+            checkInManage: "Review in Manage",
+            eventGone: "This event is no longer recorded.",
+            eventCount: (count: number) => (count === 1 ? "1 event" : `${count} events`),
+            chapters: {
+                make: "Make synopses",
+                remake: "Make again",
+                remove: "Remove",
+                stale: "Out of date",
+                dates: (first: string, last: string) => `${first} – ${last}`,
+                readFailed: (reason: string) => `Chapters could not be loaded. ${reason}`,
+                removeConfirm: (title: string) =>
+                    `Remove the chapter “${title}”? Its events will stay in the timeline.`,
+                nothing: "There are no chapter synopses to make yet.",
+                confirm: (count: number) => `Send ${count} chapter requests to make synopses?`,
+                more: "More chapter requests will remain for a later press.",
+                result: (made: number, failed: number, left: number) =>
+                    `Synopses made: ${made}. Chapter requests failed: ${failed}. Chapter requests left: ${left}.`,
+                replaced: "The chapter was replaced with a new synopsis.",
+                removed: "The chapter is no longer in the timeline.",
+                kept: "The existing chapter was kept.",
+                lost: "The result of the chapter request is no longer available.",
+            },
+            turnsAgoRange: (min: number, max: number) => `${min}–${max} turns ago`,
+            importantEvent: "Important event",
+            empty: "This chat has no recorded events yet.",
+            turnsAgo: (turns: number) => (turns === 1 ? "1 turn ago" : `${turns} turns ago`),
+            stale: (reason: string) => (reason ? `Sources changed: ${reason}` : "Sources changed"),
+            suppressed: "Suppressed",
+            sources: "Messages",
+            repairs: {
+                rerecord: "Re-record",
+                retract: "Retract",
+                keep: "Keep as it is",
+                retractConfirm: "Retract this event? It stops being used, and nothing here can bring it back.",
+                waiting: "Waiting to be re-recorded",
+                remove: "Delete",
+                removeConfirm: "Delete this retracted event from the records? This cannot be undone.",
+                removeConfirmSources:
+                    "Delete this retracted event from the records? What it cites is still in the chat, so that counts as unrecorded again and the writer or Fill gaps can record it anew. This cannot be undone.",
+                retractedCount: (count: number) => (count === 1 ? "1 retracted event" : `${count} retracted events`),
+                removeOrphans: (count: number) => `Delete the ${count} whose messages are gone`,
+                removeOrphansConfirm: (count: number) =>
+                    `Delete ${count === 1 ? "the retracted event" : `the ${count} retracted events`} whose messages are no longer in the chat? This cannot be undone.`,
+                removed: (count: number) =>
+                    count === 1 ? "Deleted 1 retracted event." : `Deleted ${count} retracted events.`,
+                removeNothing: "Nothing was deleted: the events are no longer in the records.",
+            },
+        },
+        threads: {
+            empty: "This chat has no threads yet.",
+            state: "State",
+            states: {
+                open: "Open",
+                progress: "In progress",
+                partial: "Partly done",
+                done: "Done",
+                cancelled: "Cancelled",
+                paused: "Paused",
+            } as Record<string, string>,
+            who: "Who",
+            openedBy: "Opened by",
+            closedBy: "Closed by",
+        },
+        inherit: {
+            failed: (chat: string) =>
+                `Memory records could not be copied to "${chat}". The chat itself is intact, but its earlier messages are not covered by memory.`,
+        },
+        adopt: {
+            offer: (summaries: number) =>
+                `${
+                    summaries === 1
+                        ? "This chat has 1 HypaV3 summary and no memory records. Adopting makes it an event, so the turns it covers count as recorded."
+                        : `This chat has ${summaries} HypaV3 summaries and no memory records. Adopting makes each summary an event, so the turns they cover count as recorded.`
+                } No model is called, and the HypaV3 data stays as it is. Declining leaves the summaries out, and the writer starts from the oldest turn. Nothing records until you choose, and the summaries stay stored either way.`,
+            button: "Adopt summaries",
+            done: (events: number, stale: number) => {
+                const adopted = `Adopted ${events === 1 ? "1 event" : `${events} events`}, with no model call.`;
+                return stale > 0
+                    ? `${adopted} ${stale === 1 ? "1 could not be matched to its messages" : `${stale} could not be matched to their messages`}: see Timeline.`
+                    : adopted;
+            },
+            nothing: "Nothing to adopt: this chat already has memory records, has no summaries, or declined them.",
+            adoptedEvent: "Originally adopted from HypaV3 data, without a model call.",
+            decline: "Decline",
+            declineConfirm:
+                "Decline this chat's HypaV3 summaries? The writer then records from the oldest turn, and this chat is not offered them again. This cannot be undone. The summaries stay stored.",
+            declined: "Declined. The writer now starts from this chat's oldest turn.",
+            declineNothing: "Nothing to decline: this chat is not waiting for that choice.",
+            resetOffer:
+                "This chat's HypaV3 summaries are still stored, so plugins read them instead of its memory records.",
+            reset: "Reset summaries",
+            resetConfirm:
+                "Empty this chat's stored HypaV3 summaries? Its memory records stay, and plugins read those from now on. This cannot be undone.",
+            resetDone: "The stored HypaV3 summaries are empty. Plugins now read this chat's memory records.",
+            resetNothing: "Nothing to reset: this chat holds no adopted summaries.",
+        },
+        rebuild: {
+            offer: "Rebuild writes this chat's records again from its messages, keeping what you locked, pinned, corrected, or added. Start over discards every record first. Fill gaps records only the turns no event cites.",
+            languageChanged: (recorded: string, current: string) =>
+                `This chat's records were written in "${recorded}", and the writer now writes in "${current}". A rebuild applies the change.`,
+            rebuild: "Rebuild",
+            fresh: "Start over",
+            fillGaps: "Fill gaps",
+            confirmRebuild: (cost: string) =>
+                `Rebuild this chat's memory from its messages? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until the rebuild ends or you abandon it. Pages and threads are then written anew, except what you locked, pinned, corrected, or added.`,
+            confirmFresh: (cost: string) =>
+                `Discard every memory record of this chat and write it again from its messages? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Every page, event, and thread is then replaced, including what you locked, pinned, corrected, or added, and the trash is emptied. This cannot be undone.`,
+            confirmBackfill: (cost: string) =>
+                `Record the turns no event cites? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Existing pages and threads do not change: a rebuild is what refreshes them.`,
+            confirmBackfillFolds: (count: number) =>
+                `Fill gaps by attaching up to ${count} user message${count === 1 ? "" : "s"} to the events that cover their replies? No model is called. This chat cannot generate until this ends or you abandon it.`,
+            folds: (count: number) =>
+                `Up to ${count} user message${count === 1 ? " is" : "s are"} also attached to the events that cover their replies.`,
+            cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
+            costUnknown: "The cost could not be read, so it is unknown.",
+            nothing: "Nothing to do: this chat has no turn to record.",
+            confirmFreshEmpty:
+                "Discard every memory record of this chat? It has no turn to record, so no model is called and nothing is written in their place. Every page, event, and thread goes, including what you locked, pinned, corrected, or added, and the trash is emptied. This cannot be undone.",
+            cleared: "Every memory record of this chat was discarded.",
+            started: { rebuild: "Rebuild started", fresh: "Start over started", backfill: "Fill gaps started" },
+            resumed: { rebuild: "Rebuild resumed", fresh: "Start over resumed", backfill: "Fill gaps resumed" },
+            progress: (done: number, total: number) => `Rebuilding ${done} of ${total}`,
+            backfillProgress: (done: number, total: number) => `Filling gaps ${done} of ${total}`,
+            freshProgress: (done: number, total: number) => `Starting over ${done} of ${total}`,
+            readOnly: {
+                rebuild: "This chat holds a rebuild, so this panel is read-only until it ends or you abandon it.",
+                fresh: "This chat is starting over, so this panel is read-only until that ends or you abandon it.",
+                backfill: "This chat is filling gaps, so this panel is read-only until that ends or you abandon it.",
+            },
+            paused: "Paused. This chat cannot generate until you resume or abandon.",
+            stopped: (reason: string) => `Stopped: ${reason}. This chat cannot generate until you resume or abandon.`,
+            stopReasons: { staleInput: "the chat or the memory settings changed" } as Record<string, string>,
+            replaced: {
+                rebuild:
+                    "This chat was replaced after the rebuild began, so it cannot go on. Abandon it to use the chat again.",
+                fresh: "This chat was replaced after starting over began, so that cannot go on. Abandon it to use the chat again.",
+                backfill:
+                    "This chat was replaced after filling gaps began, so that cannot go on. Abandon it to use the chat again.",
+            },
+            pause: "Pause",
+            resume: "Resume",
+            abandon: "Abandon",
+            abandonConfirm: {
+                rebuild:
+                    "Abandon this rebuild? The model calls already paid for are lost, and the records stay as they were.",
+                fresh: "Abandon starting over? The model calls already paid for are lost, and the records stay as they were.",
+                backfill:
+                    "Abandon filling gaps? The model calls already paid for are lost, and the records stay as they were.",
+            },
+            abandoned: {
+                rebuild: "The rebuild is abandoned. The records stay as they were.",
+                fresh: "Starting over is abandoned. The records stay as they were.",
+                backfill: "Filling gaps is abandoned. The records stay as they were.",
+            },
+            abandonNothing: "Nothing to abandon: no rebuild, start over, or fill gaps is under way in this chat.",
+            pauseFailed: (error: string) => `The memory work could not be paused: ${error}`,
+        },
+        memoryFile: {
+            exportedWithoutRecords:
+                "The chat was exported, but its memory records could not be read, so the file holds none of them.",
+            allExportedWithoutRecords: (count: number) =>
+                `The chats were exported, but the memory records of ${count} of them could not be read, so the file holds none for those chats.`,
+            restoreFailed: (chats: string) =>
+                `The memory records of these chats could not be confirmed as restored: ${chats}. The chats themselves are imported, but their earlier messages may not be covered by memory.`,
+            restoreTooLarge: (chats: string, limitMiB: number) =>
+                `The memory records of these chats are over the server's ${limitMiB} MiB limit, so they could not be confirmed as restored: ${chats}. The chats themselves are imported, but their earlier messages may not be covered by memory.`,
+        },
+        settings: {
+            description:
+                "Records the chat's turns as events in the background and builds the memory block from them. A chat starts with a coverage gap until its turns are recorded. Existing HypaV3 summaries are kept but not used.",
+            language: "Recording language",
+            languagePlaceholder: "Leave it blank to follow the app language",
+            cadence: "When to record",
+            cadences: {
+                everyTurn: "After every turn",
+                everyK: "Every few turns",
+                tokens: "When unrecorded history grows",
+                manual: "Only when asked",
+            },
+            cadenceTurns: "Turns between recordings",
+            cadenceTokens: "Unrecorded tokens that start a recording",
+            cadenceRatio: "Unrecorded share of the max context that starts a recording",
+            highlightMode: "Highlighting of the writer's changes",
+            highlightKinds: {
+                create: "New pages and sections",
+                contradiction: "Contradictions",
+                delete: "Deleted sections",
+                change: "Other changes",
+            },
+            highlightChangeGrade: "Lowest grade of a highlighted change",
+            highlightHelp: "A change that replaces your correction is always highlighted.",
+            eventsPerGroup: "Events per Timeline group",
+            eventsPerGroupHelp:
+                "A story day with more events is shown in parts. Chapters use the same number as their target size once they exist.",
+            chapterAuto: "Make chapter synopses automatically",
+            chapterAutoHelp:
+                "After a recording, one chapter is made from older events when enough have accrued. Each chapter costs one model request.",
+            sections: {
+                recording: "Recording",
+                budget: "Memory block budget",
+                recent: "Recent turns and recent events",
+                prompts: "Recording prompts",
+                display: "Placement and highlighting",
+            },
+            windowTurns: "Recent turns kept as full messages",
+            windowTurnsHelp:
+                "Older turns leave the prompt once they are recorded, and the memory block stands in for them.",
+            flowEvents: "Other recent events listed by title",
+            flowEventsHelp: "Recent events outside the summaries, listed by title alone. 0 lists none.",
+            flowKeyLineEvents: "Newest events shown with key lines",
+            flowKeyLineEventsHelp:
+                "Counted from the newest summarized event. Events past this count, or whose key lines do not fit the budget, show their summary without key lines.",
+            flowTarget: "Tokens for the recent timeline",
+            requiredCap: "Token limit for required pages",
+            requiredCapHelp:
+                "Required pages are the Scene page and the pages whose context mode is Always. They come out of the memory maximum before the lanes above, and are never cut: a send is refused when they need more than this limit.",
+            laneSplit: "How lane tokens are set",
+            laneSplits: { auto: "Shares of the memory maximum", manual: "Token counts entered here" },
+            laneMaximum: (tokens: string) => `The memory maximum is ${tokens} tokens at the current max context.`,
+            laneTokens: (tokens: string) => `${tokens} tokens`,
+            laneOfMaximum: (percent: number) => `${percent}% of the maximum`,
+            laneHelp: {
+                flow: "The newest events past the full messages, in story order, each with its summary.",
+                pages: "Pages on the characters, places, and things that are on stage, named in the latest messages, or close to them.",
+                events: "Older events close to the current messages, brought in when the chat looks back.",
+                evidence:
+                    "Excerpts of original messages that left the prompt: the sources of the earlier events, and ones matching the current messages.",
+                threads: "Promises, questions, and plans the story has not settled.",
+            },
+            flowShare: "Recent timeline share (%)",
+            pagesShare: "Related pages share (%)",
+            eventsShare: "Earlier events share (%)",
+            evidenceShare: "Original messages share (%)",
+            threadsShare: "Open threads share (%)",
+            laneSharesHelp: (total: number) =>
+                `${total}% in all. A lane at 0% is off, except that the recent timeline at 0% lists titles only. What a lane leaves goes to the others, and the recent timeline takes what is left last.${total > 100 ? " Over 100%, the lanes fill in the order above and the later ones get less." : ""}`,
+            timeline: {
+                window: "Full messages",
+                windowValue: (turns: number) => `Latest ${turns} ${turns === 1 ? "turn" : "turns"}`,
+                full: "Summaries",
+                fullValue: (amount: string) => `Up to ${amount}`,
+                fullOff: "Off: titles only",
+                keyLines: (count: number) => `Key lines on the newest ${count}`,
+                titles: "Titles only",
+                titlesValue: (count: number) => `${count} other recent ${count === 1 ? "event" : "events"}`,
+                off: "Off",
+                caption:
+                    "Newest on the left. The recent timeline's tokens in the budget above set how far the summaries reach, and they go on with what the other lanes leave.",
+            },
+            pagesTarget: "Tokens for related pages",
+            eventsTarget: "Tokens for earlier events",
+            evidenceTarget: "Tokens for original messages",
+            threadsTarget: "Tokens for open threads",
+            instructions: "Instructions for recording",
+            instructionsPlaceholder: "Added to the default recording prompt",
+            instructionsHelp:
+                "Added to the default prompts of every writer call. While prompt fine-tuning is on, it reaches only the compaction call.",
+            keyLineGuidance: "Ask the writer to pick key lines that matter",
+            keyLineGuidanceHelp:
+                "When on, the writer keeps lines that carry a decision, a promise, a revealed fact, or a feeling, and leaves out greetings and filler. It applies to events recorded from now on. Stored events keep their key lines until re-recorded or rebuilt.",
+            omitUserMessages: "Leave user messages out of recording",
+            omitUserMessagesHelp:
+                "The writer is given replies only. A user message still counts as recorded and leaves the prompt with its turn, but what it says reaches memory only when a reply restates it. For prompts where the reply expands on what you wrote. CBS in your own writer instructions can still bring user messages in. Applies to events recorded from now on.",
+            fineTuning: "Fine-tune the recording prompts",
+            fineTuningConfirm:
+                "Replace the writer's default prompts with your own? A prompt that loses a required field or slot breaks recording: every run fails until the prompt is fixed or this box is unticked. Blank prompts start as copies of the defaults.",
+            fineTuningDefaultsUnavailable: "The default prompts could not be read, so fine-tuning stays off.",
+            analysisPrompt: "Analysis prompt",
+            patchPrompt: "Page update prompt",
+            promptGuide: [
+                "Each prompt is the whole ChatML of its call. Ordinary CBS is processed in it, and the {{slot::...}} marks are filled afterwards with the writer's inputs.",
+                "You may change the wording, the order, the examples, and the language of the text.",
+                "You may not change the field names and types the format slot describes, nor the rules about ids and quotes: the answer is validated the same way in both modes, and a missing field fails the run.",
+                "The analysis prompt must quote {{slot::messages}} and {{slot::scene}}; the page update prompt must quote {{slot::cast}} and {{slot::previous}}. A prompt without them, a blank one, or one that is not ChatML fails every run.",
+                "The other slots are optional: format, rules, language, threads, and previous in the analysis prompt; format, rules, and language in the page update prompt. The test run lists the ones a prompt leaves out, and the names it quotes that are no slot, which stay as written.",
+                "While fine-tuning is on, the instructions for recording reach only the compaction call, whose prompt stays the default.",
+            ],
+            viewDefault: "View default prompt",
+            hideDefault: "Hide default prompt",
+            defaultAnalysis: "Default analysis prompt",
+            defaultPatch: "Default page update prompt",
+            defaultFormat: "Text of {{slot::format}}",
+            defaultRules: "Text of {{slot::rules}}",
+            testRun: "Test run",
+            testRunning: "Testing...",
+            testHelp:
+                "Replays the open chat's last window with the prompts as they stand, saves nothing, and shows the parsed answer and its validation errors.",
+            testNoChat: "Open a chat to test the prompts on its last window.",
+            testLost: "The test run ended without a result.",
+            testResult: {
+                nothing: "This chat has no window to test: nothing is confirmed yet.",
+                window: (count: number) => (count === 1 ? "Window: 1 message" : `Window: ${count} messages`),
+                windowWithGreeting: (count: number) =>
+                    `Window: greeting + ${count} ${count === 1 ? "message" : "messages"}`,
+                outcome: "Outcome",
+                outcomes: { recorded: "Would record (nothing saved)", failed: "Failed", skipped: "Skipped" },
+                reason: "Reason",
+                error: "Error",
+                defaultPrompt: "Default prompt",
+                patchCalled: "The page update call ran",
+                patchNotCalled: "No page update call was made",
+                analysis: "Analysis as parsed",
+                patches: "Page updates as parsed",
+                noAnalysis: "No analysis was parsed",
+                unquoted: (call: string) => `Slots the ${call} prompt does not quote`,
+                unknown: (call: string) => `Names the ${call} prompt quotes that are no slot`,
+                analysisCall: "analysis",
+                patchCall: "page update",
+            },
+            volatileBeforeLastUser: "Put what changes each send right before the latest user message",
+            screeningRefusal: "Refusal texts that keep a reply out of memory",
+            screeningFormat: "Format texts that keep a reply out of memory",
+            screeningPlaceholder: "One text per line",
+            screeningHelp:
+                "A reply holding one of these texts, compared without case, is never recorded and shows as excluded in Coverage. Its text still reaches the prompt. Blank lines are dropped.",
+        },
     },
     bulkEnabling: "Lorebook Bulk Enabling",
     showTranslationLoading: "Show Translation Loading",
@@ -2267,9 +3821,10 @@ export const languageEnglish = {
     customModels: "Custom Models",
     igpPrompt: "IGP Prompt",
     useTokenizerCaching: "Tokenizer Caching",
+    memoryEditRefused: "Memory changed elsewhere, so your edit could not be saved. The latest memory has been loaded.",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
-    showMenuHypaMemoryModal: "Show Menu Hypa Modal",
+    showMenuHypaMemoryModal: "Show Menu HypaV2 Modal",
     promptInfoInsideChat: "Add Prompt Info to Chat",
     promptTextInfoInsideChat: "Add Prompt Text to Chat",
     promptInfoEmptyMessage: "No prompt information is available for this message.",
@@ -2301,6 +3856,7 @@ export const languageEnglish = {
     collapseAll: "Collapse All",
     expandAll: "Expand All",
     noRequestLogs: "No request logs available.",
+    requestLogCopyFailed: "Could not copy",
     requestHistoryServerTab: "Server history",
     requestHistoryThisTab: "This tab",
     copyDebugInfo: "Copy debug info",
@@ -2353,6 +3909,178 @@ export const languageEnglish = {
     diagnosticsSaveNetwork: "Could not reach the server.",
     diagnosticsSaveUnconfirmed: "No answer from the server: the report may or may not have been saved.",
     diagnosticsCopyFailed: "Could not copy the report.",
+    storage: {
+        loading: "Reading storage…",
+        scanning: "Scanning storage…",
+        scan: "Scan",
+        noScanYet: "No scan yet.",
+        generatedAt: "Last scan",
+        incomplete: "The scan is incomplete. Asset and orphan inlay deletion are disabled until a complete scan.",
+        unknown: "Unknown",
+        none: "None",
+        missingValue: "-",
+        byteUnits: ["B", "KiB", "MiB", "GiB", "TiB"],
+        diskFree: "Disk free",
+        diskTotal: "Disk total",
+        assetsOnDisk: "Assets on disk",
+        resourcesDb: "Resource database",
+        snapshots: "Resource snapshots",
+        thumbnails: "Thumbnails",
+        staging: "Staging",
+        unmanaged: "Unrecognized files in assets",
+        referencedLogical: "Referenced logical size",
+        referencedDeduped: "Referenced deduplicated size",
+        referencedSavings: "Deduplication savings",
+        referencedCount: "Referenced assets",
+        unreferencedCount: "Unreferenced assets",
+        unreferencedBytes: "Unreferenced size",
+        pastGraceCount: "Assets past the grace period",
+        pastGraceBytes: "Size past the grace period",
+        orphanInlayCount: "Orphan inlay records",
+        orphanInlayBytes: "Orphan inlay size",
+        owners: "Asset owners",
+        ownerKind: "Kind",
+        name: "Name",
+        count: "Count",
+        bytes: "Size",
+        ownerKinds: {
+            character: "Character",
+            module: "Module",
+            persona: "Persona",
+            preset: "Preset",
+            folder: "Folder",
+            settings: "Settings",
+            inlays: "Inlays",
+        },
+        sharesNote: "Owner shares are logical sizes and may add up to more than the deduplicated total.",
+        candidates: "Unreferenced assets past the grace period",
+        assetKey: "Asset key",
+        since: "Unreferenced since",
+        emptyCandidates: "No assets are ready for deletion.",
+        showing: (count: number, total: number) => `Showing ${count} of ${total}.`,
+        deleteAssets: "Delete selected assets",
+        deleteConfirm: (count: number, bytes: string) => `Delete ${count} selected asset files (${bytes})?`,
+        deleteResult: (count: number, bytes: string) => `Deleted ${count} asset files and freed ${bytes}.`,
+        skippedAssets: "Skipped assets",
+        orphanInlays: "Orphan inlay records",
+        inlayId: "Inlay ID",
+        emptyInlays: "No orphan inlay records.",
+        inlayGraceNote:
+            "The server skips records still within the grace period. Their assets follow the usual grace period after record removal.",
+        deleteInlays: "Delete selected inlay records",
+        deleteInlaysConfirm: (count: number) => `Delete ${count} selected orphan inlay records?`,
+        deleteInlaysResult: (count: number) => `Removed ${count} orphan inlay records.`,
+        skippedInlays: "Skipped inlay records",
+        emptySnapshots: "No resource snapshots.",
+        snapshotLabel: "Label",
+        optionalLabel: "Optional snapshot label",
+        createdAt: "Created",
+        heldBytes: "Assets held exclusively",
+        heldBytesNote: "Held asset sizes come from the last scan. Scan again to update them after snapshot changes.",
+        draftsBackupNote:
+            "Unsent drafts and recovery drafts are kept in this browser only. Snapshots, file backups and compatible exports do not include them.",
+        pinnedState: "Pin state",
+        pinned: "Pinned",
+        unpinned: "Unpinned",
+        takeSnapshot: "Take snapshot",
+        snapshotSaveFailed: (error: string) => `Could not save your latest changes before the snapshot: ${error}`,
+        snapshotRefusedChanges:
+            "The server refused local changes to the following items. This snapshot holds the server's copy and does not contain those local changes:",
+        pin: "Pin",
+        unpin: "Unpin",
+        label: "Label",
+        save: "Save",
+        cancel: "Cancel",
+        restore: "Restore",
+        deleteSnapshot: "Delete",
+        deleteSnapshotConfirm: (date: string) => `Delete the resource snapshot from ${date}?`,
+        restoreConfirm: (date: string) =>
+            `Restore the resource snapshot from ${date}? This replaces the current resource data and reloads the app.`,
+        restored: "Resource snapshot restored. The app will reload.",
+        restoreConflict:
+            "The resource snapshot was not restored because the server data was replaced elsewhere. The app will reload to show the current data.",
+        unreadableSnapshot: "Unreadable snapshot — delete it, then scan again.",
+    },
+    // The Source & credits settings page (`CreditsPage.svelte`). Project names are not translated and stay in the page.
+    creditsPage: {
+        title: "Source code & credits",
+        navLabel: "Source & credits",
+        description: "Where this app's source code is, and the projects it comes from and learned from.",
+        original: {
+            title: "Original project",
+            risuai: "The AI roleplay chat client this app is a fork of, by Kwaroran.",
+        },
+        fork: {
+            title: "This fork",
+            metatron: "The source code of this app.",
+        },
+        references: {
+            title: "Projects this fork learned from",
+            description:
+                "Other Risuai forks and community plugins whose features, policies, and bug fixes were studied while planning this fork. Thank you to their authors.",
+            pocketRisu:
+                "Storage dashboard and asset cleanup, deletion and disk space policies, settings search, and bug fixes that were checked against this app.",
+            risuBard:
+                "A fork of PocketRisu. Script state per reroll, named chat checkpoints, OOC turns, and turn markers in memory.",
+            haejeokRisuai:
+                "Message search across chats, Korean-aware fuzzy matching, server-made thumbnails, and stopping a generation from another device.",
+            risuNest:
+                "The alert queue, plugin safe mode, asset cleanup with a storage dashboard, and the network guard for unit tests.",
+            memorySystem: "A community memory system, studied for the structured memory.",
+        },
+        license:
+            "Risuai Metatron keeps the license of Risuai, the GNU General Public License version 3. You may use, change, and share it under that license.",
+    },
+    storagePage: {
+        title: "Storage",
+        navLabel: "Storage",
+        description: "Server disk usage, asset cleanup, and resource snapshots.",
+        overview: {
+            title: "Overview",
+            outside: "Used outside RisuAI",
+            outsideHelp:
+                "Other programs, files in save/ outside the measured folders, and blocks the filesystem reserves.",
+            free: "Free",
+            measuredTotal: "Used by RisuAI",
+            wholeDisk: "Show the whole disk",
+            diskUnknown: "Disk size unknown; only measured usage is shown.",
+            reclaimable: "Reclaimable",
+            snapshotsCard: "Snapshots",
+            snapshotCount: (count: number) => `${count.toLocaleString()} snapshots`,
+            dedupeSaved: "Saved by deduplication",
+        },
+        cleanup: {
+            title: "Cleanup",
+            filterKind: "Filter by kind",
+            kinds: { all: "All", image: "Image", audio: "Audio", video: "Video", other: "Other" },
+            sortBy: "Sort by",
+            sortSize: "Size (largest first)",
+            sortAge: "Age (oldest first)",
+            selectAll: "Select all",
+            clear: "Clear",
+            selected: (count: number, bytes: string) => `${count} selected · ${bytes}`,
+            unusedDays: (days: number) => `Unused for ${days} days`,
+            noExtension: "No extension",
+            noMatches: "No items match this filter.",
+        },
+        chatTrash: {
+            title: "Chat trash",
+            retentionDays: "Delete trashed chats after (days)",
+        },
+        snapshots: {
+            title: "Snapshots",
+            noLabel: "No label",
+            actions: "Snapshot actions",
+            editLabel: "Edit label",
+            backupsLink: "Manage server snapshots in Storage",
+        },
+        owners: {
+            title: "Usage by owner",
+            showAll: (count: number) => `Show all (${count.toLocaleString()})`,
+            showFewer: "Show top ten",
+        },
+        details: { title: "Details" },
+    },
     requestHistoryLabels: {
         request: "Request",
         job: "Job",
@@ -2360,6 +4088,8 @@ export const languageEnglish = {
         source: "Source",
         provider: "Provider",
         profile: "Profile",
+        interceptions: "Inserted prompts",
+        interceptedPrompts: (count: number) => `${count} ${count === 1 ? "prompt" : "prompts"}`,
         httpStatus: "HTTP status",
         providerCode: "Provider code",
         firstByte: "First byte",
@@ -2409,8 +4139,9 @@ export const languageEnglish = {
     stackTraceTranslationFailed: "Stack trace translation failed. Showing original obfuscated stack trace below.",
     apply: "Apply",
     add: "Add",
-    nightlyWarning:
-        "## Nightly Builds\n\nYou are connecting to a nightly build of the software. This version is meant for testing and most likely contains bugs. **In this version, even if you encounter issues, we do not support resolving them directly.**",
+    versionLabel: "Version {{build}}",
+    versionBasedOn: "Based on RisuAI {{version}}",
+    versionCopy: "Copy the version",
     nodeServerRequiredTitle: "Risuai self-host server required",
     nodeServerRequiredDesc:
         "Risuai runs only through its self-host server.\nStart the server with `pnpm runserver` or Docker, then open the server's root URL (for example http://localhost:6001/).",
@@ -2460,6 +4191,8 @@ export const languageEnglish = {
         "Plugin {} is requesting to fetch logs, which may expose sensitive information. Do you want to allow this?",
     getFullDatabaseConsent:
         "Plugin {} is requesting to access the full database, which may expose sensitive information. Do you want to allow this?",
+    dbWriteConsent:
+        "Plugin {} is requesting permission to modify your database, including characters, chats, modules and settings. Do you want to allow this?",
     mainDomAccessConsent:
         "Plugin {} is requesting to access the main Document, which may expose sensitive information. Do you want to allow this?",
     replacerPermissionConsent:
@@ -2470,14 +4203,18 @@ export const languageEnglish = {
         "Plugin {} is requesting permission to access the inlay, which may allow it to read, write or edit the inlay content. Do you want to allow this?",
     sendChatConsent:
         "Plugin {} is requesting permission to send chat messages on your behalf, which will trigger AI responses. Do you want to allow this?",
+    globalStyleConsent:
+        "Plugin {} is requesting permission to apply its chat panel's styles to the whole app, which can change or hide any part of the screen and load resources from other hosts. If you decline, the panel is shown without those styles. Do you want to allow this?",
     createFolderOnBranch: "Create Folder on Branch",
     hamburgerButtonBottom: "Move Menu Button to Bottom of Sidebar",
     partialBackupFirstConfirm:
-        "⚠️ WARNING: Partial Local Backup ⚠️\n\nThis backup quickly saves only essential information.\n\nIncluded:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\n⚠️ NOT Included:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other additional media files\n\nThis backup file does NOT include all character assets!\nIf you need a complete backup, use the regular local backup.\n\nDo you want to continue?",
+        "⚠️ WARNING: Partial Local Backup ⚠️\n\nThis backup quickly saves only essential information.\n\nIncluded:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\n⚠️ NOT Included:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- Files saved by plugins\n- All other additional media files\n\nThis backup file does NOT include all character assets!\nIf you need a complete backup, use the regular local backup.\n\nDo you want to continue?",
     partialBackupSecondConfirm:
-        "⚠️⚠️ FINAL WARNING ⚠️⚠️\n\nThis backup saves only character profile images and does NOT save most other assets!\n\nWhat will be saved:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\nWhat will NOT be saved:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- All other media files\n\n⚠️ Proceed ONLY if you don't need character assets in your backup file! ⚠️\n\nAre you really sure you want to proceed with partial backup?",
+        "⚠️⚠️ FINAL WARNING ⚠️⚠️\n\nThis backup saves only character profile images and does NOT save most other assets!\n\nWhat will be saved:\n- Database (chat history, characters, modules, plugins, prompts, settings, etc.)\n- Character profile icons (main images)\n- User icons and custom backgrounds\n- Persona icons\n- Folder images\n- Bot preset images\n\nWhat will NOT be saved:\n- Emotion images\n- Additional character assets\n- VITS voice files\n- Files saved by plugins\n- All other media files\n\n⚠️ Proceed ONLY if you don't need character assets in your backup file! ⚠️\n\nAre you really sure you want to proceed with partial backup?",
     backupDiscardedChanges:
         "While your latest changes were being saved for this backup, another tab or device changed some of the same data. Its version was kept and is in the backup; those changes of yours were replaced and are not in it.",
+    backupRefusedChanges:
+        "The server refused local changes to the following items. This archive holds the server's copy and does not contain those local changes:",
     savePartialLocalBackup: "Save Partial Backup Locally (Excluding Character Assets)",
     pluginProviderNotFound: "Unknown Plugin detected. Please change the model or enable the corresponding plugin.",
     pluginProviderPermissionDenied:
@@ -2517,7 +4254,9 @@ export const languageEnglish = {
     blockquoteStyling: "Blockquote Styling",
     dynamicModelRegistry: "Dynamic Model Registry",
     confirmInstallPluginViaPlugin:
-        "You are trying to install a plugin via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?",
+        'You are trying to install the plugin "{plugin}" via another plugin. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?',
+    confirmReplacePluginViaPlugin:
+        'Another plugin is trying to replace the installed plugin "{plugin}" with a different script. This can be dangerous if the source plugin is not trustworthy. Do you want to continue?',
     disableSeperateParameterChangeOnPresetChange: "Disable Separate Parameter Change on Preset Change",
     keepSessionAlive: "Keep Session Alive",
     keepSessionAlivePip: "Via PIP",
@@ -2571,6 +4310,9 @@ export const languageEnglish = {
     convertToModule: "Convert to Module",
     applyAdditionalParamsToAll: "Apply Additional Parameters to All Models",
     noMatchingLorebooks: "No lorebook entries match the search.",
+    comfyWorkflow: "Workflow (API)",
+    comfyWorkflowUpload: "Import workflow file",
+    comfyWorkflowInvalidJson: "Invalid workflow file. It must be a valid JSON.",
 } satisfies I18nTranslation;
 
 type I18nTranslationFunction = (...args: any[]) => string;

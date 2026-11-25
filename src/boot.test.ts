@@ -7,11 +7,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const order = vi.hoisted(() => [] as string[]);
 
-vi.mock("./ts/diagnostics/collector", () => {
+vi.mock("./ts/diagnostics/collector", async () => {
     order.push("collector module");
-    return {
+    return (await import("./ts/diagnostics/tests/collectorMock")).createCollectorMock({
         startDiagnosticsCollector: () => order.push("collector start"),
-    };
+    });
 });
 vi.mock("./startApp", () => {
     order.push("startApp module");

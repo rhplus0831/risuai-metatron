@@ -1,8 +1,11 @@
 /**
  * The checks and errors the mutation modules (`characterStore`, `collectionStore`,
- * `pluginStorageStore`) share. A mutation validates its whole input before the mirror changes; a
- * refusal throws and leaves everything as it was.
+ * `pluginStorageStore`) and the server's RisuAccess host (`server/src/mcp/internal.ts`) share. A
+ * mutation validates its whole input before the mirror changes; a refusal throws and leaves
+ * everything as it was.
  */
+
+import { isPlainObject } from "./valueKinds.ts";
 
 /** A mutation's input was refused (a malformed value, a forbidden key); nothing was changed. */
 export class MutationValidationError extends Error {
@@ -87,7 +90,7 @@ export function requireJsonData(key: string, value: unknown, allowUndefined = fa
 
 /** Throws unless `value` is a plain object. */
 export function requireObject(key: string, value: unknown): asserts value is Record<string, unknown> {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    if (!isPlainObject(value)) {
         throw new MutationValidationError(key, "expected an object");
     }
 }

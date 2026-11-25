@@ -11,11 +11,36 @@
         currentChatRef,
         isMessageLocked,
         isMessageStreamed,
+        messagePositionOf,
         selectedChatId,
         streamingEntry,
     } from "src/ts/storage/chatStore.svelte";
     import { chatFoldedStateMessageIndex } from "src/ts/globalApi.svelte";
+    import { isRerollCarrier } from "../../../shared/rerollCandidates.ts";
     import { CHAT_ROW_CAP, getAdditionalChatLoadPages } from "src/ts/chatLoadPages";
+
+    /**
+     * The transcript of the chat screen (`DefaultChatScreen.svelte`), in a reversed scroller: the newest row comes
+     * first and `scrollTop` 0 is the bottom. Rows (`Chat.svelte`) are mounted by hand, keyed by the chat and
+     * `Message.chatId`. The structural diff tracks row identity and order, the streaming entry, the window, and
+     * the reload inputs, never message text; each row's own effect sends its text and display updates
+     * (`updateRow`), so a stream chunk reaches only that chat's active row.
+     *
+     * Rows that come in above every shown row (an opening's deferred rows, a loaded or unfolded page) are held
+     * out of the layout until rendered and the reader is not scrolling; appended or newer rows never wait. A new
+     * path that adds rows above the shown ones goes through this hold too (`holdRow`). Rows already shown
+     * whose top is above the view keep their height while the reader scrolls (`lockRowsAboveView`) and are
+     * released with the held rows.
+     *
+     * A row whose `Chat` is mounted again (a text change, a stream's end, a reload) keeps its height until the
+     * new instance has rendered, and its top is put back after (`keepRowHeight`, `settleRowHeight`). A held row (a
+     * whole reply its generation still locks) takes text changes and its release as updates instead.
+     *
+     * Scrolling follows a scroll anchor (`ScrollAnchor`) that input releases to the reader. `suspendTrim` (a
+     * screenshot or a message jump) and an unbounded window (`loadPages === Infinity`, a screenshot) skip the
+     * opening's staging and reveal, show held rows at once, release the anchor, and never trim; only the unbounded
+     * window also turns containment off.
+     */
 
     const getCurrentChatRoomId = () => {
         const ref = currentChatRef();
@@ -27,6 +52,7 @@
         currentCharacter,
         onReroll,
         unReroll,
+        rerollBusy,
         currentUsername,
         userIcon,
         loadPages,
@@ -35,11 +61,13 @@
         suspendTrim = false,
         hasNewUnreadMessage = $bindable(false),
         revealing = $bindable(false),
+        holding = $bindable(false),
     }: {
         messages: readonly DeepReadonly<Message>[];
         currentCharacter: AnyClientCharacter;
         onReroll: () => void;
         unReroll: () => void;
+        rerollBusy?: boolean;
         currentUsername: string;
         userIcon: string;
         loadPages: number;
@@ -48,11 +76,22 @@
         suspendTrim?: boolean;
         hasNewUnreadMessage?: boolean;
         revealing?: boolean;
+        /** Whether rows added above the view are still held out of the layout. */
+        holding?: boolean;
     } = $props();
+
+    const rerollRowId = $derived(messages.findLast((message) => !message.isComment)?.chatId);
+    const carrierId = $derived(rerollRowId && isRerollCarrier({ message: messages }, rerollRowId) ? rerollRowId : null);
 
     let chatBody: HTMLDivElement = $state();
     type RowUpdate = {
         message: string;
+        isComment: boolean;
+        messageGenerationInfo: Message["generationInfo"] | null;
+        candidateCount: number;
+        candidateIndex: number;
+        candidateCarrier: boolean;
+        rerollIcon: boolean;
         idx: number;
         isOptimizedStreamingMessage: boolean;
         streamingOptimizationMode: StreamingDisplayOptimizationMode;
@@ -68,6 +107,13 @@
         optimized: boolean;
         mode: StreamingDisplayOptimizationMode;
     };
+    type EditorPlace = {
+        openId: number;
+        top: number | "bottom";
+        offset: number;
+        inputs: number;
+        anchor: ScrollAnchor | null;
+    };
     type Row = {
         instance: {
             updateRow?: (update: Partial<RowUpdate>) => void;
@@ -77,6 +123,12 @@
         element: HTMLDivElement;
         input: RowInput;
         armed: boolean;
+        held: boolean;
+        /** The instance whose render a held row last finished. */
+        renderedInstance?: Row["instance"];
+        /** The height held until the new body renders, including when an editor closes in place. */
+        kept?: { height: number; scrollTop: number; inputs: number; editor?: EditorPlace | null };
+        editorPlace?: EditorPlace;
         dispose: () => void;
     };
     const rows = new Map<string, Row>();
@@ -92,6 +144,11 @@
     let mountBatch: MountBatch | undefined;
     let mountTimer: ReturnType<typeof setTimeout>;
 
+    /**
+     * Mounts an opening's deferred older rows. An opening mounts its newest rows first; the rest are armed once
+     * those have rendered (`settleFirstStageRow`), at the reader's first wheel, touch, or press on the scroller,
+     * after 3 s, or at a diff that changes the shown rows (one that shows the same rows keeps the staging).
+     */
     function armDeferredRows() {
         clearTimeout(mountTimer);
         const batch = mountBatch;
@@ -126,17 +183,225 @@
         };
     });
 
+    // Rows added above the view (an opening's older rows, a loaded page) stay out of the layout
+    // until they have rendered and the reader is not scrolling. Chrome finishes a running scroll
+    // animation in this reversed scroller at its distance from the top, so content that grows
+    // above the view mid-animation moves the reader up by the grown height.
+    const heldRows = new Set<Row>();
+    /**
+     * The reader is scrolling: from a wheel, scroll, or touch event until `scrollend`, or until 400 ms pass
+     * without another of them (the end where `scrollend` is missing), and while a finger is down.
+     */
+    let readerScrolling = false;
+    let touching = false;
+    let quietTimer: ReturnType<typeof setTimeout>;
+    let releaseFrame: number | undefined;
+    let gatedScroller: HTMLElement | undefined;
+    // Non-passive: while it is registered, a new wheel or touch scroll waits for this thread, so
+    // none can start between the decision to show rows and the commit of their growth.
+    const scrollGate = () => {};
+
+    function setScrollGate(on: boolean) {
+        const scroller = on ? chatBody?.parentElement : gatedScroller;
+        if (!scroller || on === (gatedScroller !== undefined)) return;
+        for (const event of ["wheel", "touchstart"] as const) {
+            if (on) scroller.addEventListener(event, scrollGate, { passive: false });
+            else scroller.removeEventListener(event, scrollGate);
+        }
+        gatedScroller = on ? scroller : undefined;
+    }
+
+    function holdRow(row: Row) {
+        row.held = true;
+        row.element.classList.add("chat-row-held");
+        heldRows.add(row);
+        holding = true;
+    }
+
+    function showRow(row: Row) {
+        row.held = false;
+        row.element.classList.remove("chat-row-held");
+        heldRows.delete(row);
+        // Laid out uncontained first, so the containment observer measures its rendered size.
+        row.element.classList.remove("far");
+        if (row.instance) {
+            observer?.unobserve(row.element);
+            observer?.observe(row.element);
+        }
+    }
+
+    /**
+     * Rows whose top is above the view keep their last measured height while the reader scrolls (with
+     * `chat-row-locked`, `src/styles.css`), so growth inside them (a late image, a re-render, a far row's
+     * size estimate) stays out of the layout during the scroll animation. Their content sits at the row's
+     * bottom and overflows at its top, the way such growth goes at rest in this reversed scroller, so the
+     * release (with the held rows, after the scroll) moves nothing below the row's top. One pass per
+     * scroll, at the reader's first wheel, touch move, or scroll key: rows that pass above the view later
+     * in the same scroll are not locked.
+     */
+    const lockedRows = new Set<Row>();
+    let lockPassDone = false;
+
+    function lockRowsAboveView(scroller: HTMLElement) {
+        if (lockPassDone || anchor || capturing || suspendTrim || revealBatch) return;
+        lockPassDone = true;
+        markScrolling();
+        const viewTop = scroller.getBoundingClientRect().top;
+        // Every read before the first write. The heights are the resize observer's, not a layout read.
+        const locks: [Row, number][] = [];
+        for (const row of rows.values()) {
+            const height = rowHeights.get(row.element);
+            if (!height || !row.instance || row.held || row.kept || lockedRows.has(row) || isEditing(row)) continue;
+            if (row.element.getBoundingClientRect().top < viewTop) locks.push([row, height]);
+        }
+        for (const [row, height] of locks) {
+            lockedRows.add(row);
+            row.element.style.height = `${height}px`;
+            row.element.classList.add("chat-row-locked");
+        }
+    }
+
+    function unlockRow(row: Row) {
+        if (!lockedRows.delete(row)) return;
+        row.element.style.height = "";
+        row.element.classList.remove("chat-row-locked");
+        // The containment observer skipped the locked row; let it measure the natural size.
+        if (row.instance && !row.element.classList.contains("far")) {
+            observer?.unobserve(row.element);
+            observer?.observe(row.element);
+        }
+    }
+
+    function unlockRows() {
+        lockPassDone = false;
+        for (const row of [...lockedRows]) unlockRow(row);
+    }
+
+    function releaseHeldRows() {
+        cancelAnimationFrame(releaseFrame);
+        releaseFrame = undefined;
+        setScrollGate(false);
+        for (const row of [...heldRows]) showRow(row);
+        unlockRows();
+        holding = false;
+    }
+
+    const rendered = (row: Row) => !!row.instance && row.renderedInstance === row.instance;
+
+    function scheduleRelease() {
+        if (releaseFrame !== undefined || readerScrolling) return;
+        if (!lockedRows.size && ![...heldRows].some(rendered)) return;
+        setScrollGate(true);
+        // The compositor learns of the gate at the next commit, so the rows are shown a frame
+        // later, and the gate is lifted a frame after their growth commits. A frame's input and
+        // scroll events are dispatched before its animation frame callbacks, so a scroll that
+        // started before the gate took effect is seen in time.
+        const frame = (step: () => void) => {
+            releaseFrame = requestAnimationFrame(() => {
+                releaseFrame = undefined;
+                step();
+            });
+        };
+        frame(() =>
+            frame(() => {
+                if (!readerScrolling) {
+                    for (const row of [...heldRows]) if (rendered(row)) showRow(row);
+                    unlockRows();
+                    holding = heldRows.size > 0;
+                }
+                frame(() => {
+                    setScrollGate(false);
+                    scheduleRelease();
+                });
+            }),
+        );
+    }
+
+    async function settleHeldRow(row: Row, instance: Row["instance"]) {
+        try {
+            await tick();
+            await instance.whenRendered?.();
+        } catch {
+            // A failed render must not hold the row forever.
+        }
+        if (!row.held || row.instance !== instance) return;
+        row.renderedInstance = instance;
+        scheduleRelease();
+    }
+
+    function settleScrolling() {
+        clearTimeout(quietTimer);
+        if (touching) return;
+        readerScrolling = false;
+        lockPassDone = false;
+        scheduleRelease();
+    }
+
+    function markScrolling() {
+        readerScrolling = true;
+        clearTimeout(quietTimer);
+        // Without scrollend (older Safari), quiet input counts as the end.
+        quietTimer = setTimeout(settleScrolling, 400);
+    }
+
+    $effect(() => {
+        const scroller = chatBody?.parentElement;
+        if (!scroller) return;
+        const settle = settleScrolling;
+        const active = markScrolling;
+        // The last finger can leave the screen outside the scroller (a second finger started there), or
+        // on a node a re-render detached, whose touchend reaches only the node itself.
+        const lifted = (event: TouchEvent) => {
+            if (!touching || event.touches.length > 0) return;
+            touching = false;
+            active();
+        };
+        const touch = (event: TouchEvent) => {
+            touching = event.touches.length > 0;
+            if (event.type === "touchstart") {
+                // A TouchList is not iterable in every engine.
+                const started = event.changedTouches;
+                for (let i = 0; i < (started?.length ?? 0); i++) {
+                    for (const end of ["touchend", "touchcancel"] as const)
+                        started[i].target.addEventListener(end, lifted, { passive: true, once: true });
+                }
+            }
+            active();
+        };
+        const events = ["wheel", "scroll", "touchmove"] as const;
+        for (const event of events) scroller.addEventListener(event, active, { passive: true });
+        for (const event of ["touchstart", "touchend", "touchcancel"] as const)
+            scroller.addEventListener(event, touch, { passive: true });
+        for (const event of ["touchend", "touchcancel"] as const)
+            window.addEventListener(event, lifted, { passive: true });
+        scroller.addEventListener("scrollend", settle);
+        return () => {
+            clearTimeout(quietTimer);
+            readerScrolling = false;
+            touching = false;
+            unlockRows();
+            for (const event of events) scroller.removeEventListener(event, active);
+            for (const event of ["touchstart", "touchend", "touchcancel"] as const)
+                scroller.removeEventListener(event, touch);
+            for (const event of ["touchend", "touchcancel"] as const) window.removeEventListener(event, lifted);
+            scroller.removeEventListener("scrollend", settle);
+        };
+    });
+
     // Where the transcript stays while its content changes size. "start" keeps a row's top at the top
     // of the scroller, so the newest message reads from its start; "end" keeps the bottom, so a reply
     // being generated stays in view. Input that scrolls the transcript releases it to the reader.
     type ScrollAnchor = { mode: "start"; element: Element } | { mode: "end" };
     let anchor: ScrollAnchor | null = null;
 
-    function applyAnchor() {
+    function applyAnchor(keepEditorsVisible = false) {
         const scroller = chatBody?.parentElement;
         if (!anchor || !scroller) return;
-        // A removed row (a reroll's or a deletion's) hands following over to the bottom.
-        if (anchor.mode === "start" && !anchor.element.isConnected) anchor = { mode: "end" };
+        // An anchor places rows by their natural size.
+        unlockRows();
+        // A removed row (a deletion's, a reroll's, a write that gave the message a new id) hands
+        // following over to the row that is newest now.
+        if (anchor.mode === "start" && !anchor.element.isConnected) anchor = latestAnchor() ?? { mode: "end" };
         let target = 0;
         if (anchor.mode === "start") {
             const rect = anchor.element.getBoundingClientRect();
@@ -148,7 +413,12 @@
             // than the view leaves it there.
             target = Math.min(0, scroller.scrollTop + rect.top - scroller.getBoundingClientRect().top);
         }
+        if (keepEditorsVisible && wouldClipEditor(scroller, target)) {
+            anchor = null;
+            return;
+        }
         if (Math.abs(scroller.scrollTop - target) >= 1) scroller.scrollTop = target;
+        knownOffset = target;
     }
 
     function setAnchor(next: ScrollAnchor | null) {
@@ -171,7 +441,24 @@
         const scroller = body?.parentElement;
         if (!scroller) return;
         const release = () => {
+            readerInputs++;
+            // While an opening still hides its newest row (unrendered, or waiting for its images in
+            // view) there is nothing to take over, and released before the row has rendered the view
+            // would stay at the bottom of whatever it renders. The reveal ends at its deadline at the
+            // latest, so the anchor is never kept for long.
+            if (revealBatch?.next === 0) return;
             anchor = null;
+        };
+        // Input that can start a scroll animation; a scrollbar drag places the view directly.
+        const animatedScroll = () => {
+            release();
+            lockRowsAboveView(scroller);
+        };
+        // A sideways wheel does not scroll the transcript; a Ctrl wheel zooms.
+        const wheel = (event: WheelEvent) => {
+            if (event.deltaY === 0) return;
+            if (event.ctrlKey) release();
+            else animatedScroll();
         };
         // Only a press on the scroller itself (its scrollbar); a click in a row or the composer does not scroll.
         const pointer = (event: PointerEvent) => {
@@ -180,11 +467,11 @@
         const key = (event: KeyboardEvent) => {
             const target = event.target as HTMLElement | null;
             if (scrollKeys.has(event.key) && !target?.closest?.("input, textarea, select, [contenteditable]")) {
-                release();
+                animatedScroll();
             }
         };
-        scroller.addEventListener("wheel", release, { passive: true });
-        scroller.addEventListener("touchmove", release, { passive: true });
+        scroller.addEventListener("wheel", wheel, { passive: true });
+        scroller.addEventListener("touchmove", animatedScroll, { passive: true });
         scroller.addEventListener("pointerdown", pointer, { passive: true });
         scroller.addEventListener("keydown", key);
         // Rows render their markdown and images after mounting; the viewport can resize too. Both run
@@ -194,8 +481,8 @@
         resize?.observe(body);
         return () => {
             resize?.disconnect();
-            scroller.removeEventListener("wheel", release);
-            scroller.removeEventListener("touchmove", release);
+            scroller.removeEventListener("wheel", wheel);
+            scroller.removeEventListener("touchmove", animatedScroll);
             scroller.removeEventListener("pointerdown", pointer);
             scroller.removeEventListener("keydown", key);
         };
@@ -334,6 +621,11 @@
         advanceReveal();
     }
 
+    /**
+     * Hides an opening's rows (`chat-row-pending`, by visibility) and reveals them newest first, each once it has
+     * rendered and its unfinished images in the view have loaded. The mask lifts from the rest when a revealed row
+     * reaches the scroller's top, or at a 1200 ms deadline; deferred and held rows keep their own waits.
+     */
     function startReveal(shown: Row[]) {
         finishReveal();
         if (capturing || suspendTrim) return;
@@ -342,15 +634,19 @@
         revealing = true;
         for (const entry of batch.rows) entry.row.element.classList.add("chat-row-pending");
         if (chatBody.parentElement) chatBody.parentElement.scrollTop = 0;
+        knownOffset = 0;
         revealTimer = setTimeout(finishReveal, 1200);
         for (const entry of batch.rows) void settleRevealRow(entry);
     }
 
+    // A capture or a suspension (a screenshot, a message jump) shows every mounted row at once and releases the
+    // anchor. While `suspendTrim` holds, a new reply never anchors again (with auto-scroll on it sets the indicator).
     $effect(() => {
         if (capturing || suspendTrim) {
             anchor = null;
             armDeferredRows();
             finishReveal();
+            releaseHeldRows();
         }
     });
     // Names and images update in place; only character identity and portrait affect mounting.
@@ -371,6 +667,11 @@
         );
     }
 
+    /**
+     * The containment observer: a row farther than two view heights from the view gets `far`
+     * (`content-visibility: auto`, `src/styles.css`), except a held row, a row with an open editor, and every
+     * row during a capture.
+     */
     let observer: IntersectionObserver | undefined;
     // The first observation follows layout. Use that measured block size as the fallback too:
     // browsers need not remember a size rendered before content-visibility became auto.
@@ -386,8 +687,9 @@
                     for (const entry of entries) {
                         const element = entry.target as HTMLDivElement;
                         const row = rowElements.get(element);
-                        if (!row) continue;
-                        if (!element.classList.contains("far")) {
+                        // A held row has no layout yet; it is observed again when shown.
+                        if (!row || row.held) continue;
+                        if (!lockedRows.has(row) && !element.classList.contains("far")) {
                             const style = getComputedStyle(element);
                             const blockSize =
                                 entry.boundingClientRect.height -
@@ -458,12 +760,196 @@
         };
     });
 
-    function createRow(input: RowInput, initiallyArmed: boolean, ref: ChatRef | null): Row {
+    // Every row's height as of the last layout. A remount cannot measure it: by then the old `Chat` may
+    // already have dropped its body (a reload pointer replaces `ChatBody` first), and a layout forced in
+    // that state would itself set off the browser's scroll anchoring.
+    const rowHeights = new WeakMap<Element, number>();
+    const rowSizes =
+        typeof ResizeObserver === "undefined"
+            ? undefined
+            : new ResizeObserver((entries) => {
+                  for (const entry of entries) {
+                      // A locked height is not the row's own.
+                      const row = rowElements.get(entry.target);
+                      if (row && lockedRows.has(row)) continue;
+                      rowHeights.set(entry.target, entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
+                  }
+              });
+    // The scroll offset as of the last scroll event, for the same reason: reading it forces a layout.
+    // A scroller that never scrolled is at 0, the bottom.
+    let knownOffset = 0;
+    // Rows whose kept height still waits for a render, and the reader's scroll inputs so far.
+    const keptRows = new Set<Row>();
+    let readerInputs = 0;
+    let lastScrollInput = 0;
+    $effect(() => {
+        const scroller = chatBody?.parentElement;
+        if (!scroller) return;
+        const moved = () => {
+            const offset = scroller.scrollTop;
+            if (offset !== knownOffset) lastScrollInput = readerInputs;
+            knownOffset = offset;
+        };
+        scroller.addEventListener("scroll", moved, { passive: true });
+        return () => scroller.removeEventListener("scroll", moved);
+    });
+
+    let latestEditorOpen = 0;
+
+    async function openInlineEditor(row: Row) {
+        const openId = ++latestEditorOpen;
+        const scroller = chatBody?.parentElement;
+        if (!scroller || capturing || suspendTrim) return;
+        // The place is the row's natural top; unlocking moves nothing below it.
+        unlockRow(row);
+        const offset = scroller.scrollTop;
+        const place: EditorPlace = {
+            openId,
+            top:
+                offset >= 0 ? "bottom" : row.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+            offset,
+            inputs: readerInputs,
+            anchor: null,
+        };
+        row.editorPlace = place;
+        await tick();
+        const area = row.element.querySelector<HTMLTextAreaElement>("textarea.message-edit-area");
+        if (row.editorPlace !== place || place.openId !== latestEditorOpen || !area || !row.element.isConnected) return;
+        applyAnchor();
+        const view = scroller.getBoundingClientRect();
+        const rect = area.getBoundingClientRect();
+        const delta =
+            rect.top < view.top ? Math.floor(rect.top - view.top) : Math.max(0, Math.ceil(rect.bottom - view.bottom));
+        if (rect.height <= view.height && delta && revealBatch?.next !== 0) {
+            // Only yield an existing anchor if it would clip the editor. The opening's mask still owns its view.
+            place.anchor = anchor;
+            anchor = null;
+            scroller.scrollTop += delta;
+        }
+        // A queued scroll from mounting or revealing the field is part of opening it.
+        place.offset = scroller.scrollTop;
+        knownOffset = place.offset;
+    }
+
+    function closeInlineEditor(row: Row) {
+        const place = row.editorPlace;
+        row.editorPlace = undefined;
+        const scroller = chatBody?.parentElement;
+        if (!place || !scroller || capturing || suspendTrim) return;
+        const ownsPlace = place.openId === latestEditorOpen;
+        // Only transcript movement counts: a wheel inside the field may scroll just the editor.
+        // Check the live offset too in case the last scroll event is still queued.
+        if (
+            ownsPlace &&
+            (lastScrollInput > place.inputs || (readerInputs !== place.inputs && scroller.scrollTop !== place.offset))
+        )
+            return;
+        // Saving can remount Chat. Its replacement finishes this same hold once the saved body renders.
+        if (keepRowHeight(row, row.element.getBoundingClientRect().height)) {
+            // A superseded editor still holds its height so a save remount cannot apply its usual correction.
+            row.kept.editor = ownsPlace ? place : null;
+            void settleRowHeight(row, row.instance);
+        }
+    }
+
+    function wouldClipEditor(scroller: HTMLElement, target: number) {
+        const fields = chatBody.querySelectorAll<HTMLTextAreaElement>("textarea.message-edit-area");
+        if (!fields.length) return false;
+        const view = scroller.getBoundingClientRect();
+        const reachable = Math.min(0, Math.max(scroller.clientHeight - scroller.scrollHeight, target));
+        const shift = scroller.scrollTop - reachable;
+        const visibleHeight = (top: number, bottom: number) =>
+            Math.max(0, Math.min(view.bottom, bottom) - Math.max(view.top, top));
+        for (const field of fields) {
+            const { top, bottom } = field.getBoundingClientRect();
+            if (visibleHeight(top + shift, bottom + shift) < visibleHeight(top, bottom)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Keeps a row's height while its `Chat` is mounted again (a text change, a stream's end, a reload),
+     * until an instance has rendered. Without it the row is only its shell for a frame or more, the
+     * browser's scroll anchoring moves a reader near the bottom there, and nothing brings them back. A
+     * remount during the wait keeps the first height and offset; a row never laid out keeps nothing.
+     */
+    function keepRowHeight(row: Row, height = rowHeights.get(row.element)) {
+        if (row.kept) return true;
+        if (!height) return false;
+        row.kept = { height, scrollTop: knownOffset, inputs: readerInputs };
+        keptRows.add(row);
+        row.element.style.minHeight = `${height}px`;
+        return true;
+    }
+
+    /**
+     * Lets the row take its new height once this instance has rendered, and puts its top back where it
+     * was when the new text is longer or shorter: in this reversed scroller a row's bottom stays and its
+     * top moves by the difference. The browser's anchoring does not do that: the remount removed its
+     * anchor node, and a `min-height` change on the row suppresses it for that layout. An editor close
+     * restores the place from before it opened. Other remounts skip rows above the view and offsets
+     * that changed meanwhile. The active anchor and intervening scroll input take precedence.
+     */
+    async function settleRowHeight(row: Row, instance: Row["instance"]) {
+        try {
+            await tick();
+            await instance.whenRendered?.();
+        } catch {
+            // A failed render must not keep the old height.
+        }
+        // A later remount waits for its own instance.
+        const kept = row.kept;
+        if (row.instance !== instance || !kept) return;
+        row.kept = undefined;
+        keptRows.delete(row);
+        row.element.style.minHeight = "";
+        const scroller = chatBody?.parentElement;
+        if (anchor || kept.inputs !== readerInputs || !scroller || !row.element.isConnected) return;
+        if (
+            kept.editor === null ||
+            (kept.editor && (kept.editor.openId !== latestEditorOpen || capturing || suspendTrim))
+        )
+            return;
+        // Measured before the offset is read: this layout is where the browser's anchoring answers.
+        let rect = row.element.getBoundingClientRect();
+        let offset = scroller.scrollTop;
+        if (kept.editor) {
+            if (kept.editor.anchor) {
+                anchor = kept.editor.anchor;
+                applyAnchor(true);
+                return;
+            }
+            const target =
+                kept.editor.top === "bottom"
+                    ? 0
+                    : offset + rect.top - scroller.getBoundingClientRect().top - kept.editor.top;
+            if (wouldClipEditor(scroller, target)) return;
+            scroller.scrollTop = target;
+        } else {
+            if (offset !== kept.scrollTop || rect.bottom <= scroller.getBoundingClientRect().top) return;
+            // A locked row still shows the kept height and the correction needs its natural one. While
+            // the reader scrolls it stays locked and grows upward at the release instead.
+            if (lockedRows.has(row)) {
+                if (readerScrolling) return;
+                unlockRow(row);
+                rect = row.element.getBoundingClientRect();
+                offset = scroller.scrollTop;
+            }
+            if (rect.bottom <= scroller.getBoundingClientRect().top || Math.abs(rect.height - kept.height) < 1) return;
+            scroller.scrollTop = offset + kept.height - rect.height;
+        }
+        knownOffset = scroller.scrollTop;
+        // The rows of the same flush that still wait were kept at the offset this one replaced.
+        for (const other of keptRows) if (other.kept.scrollTop === offset) other.kept.scrollTop = knownOffset;
+    }
+
+    function createRow(input: RowInput, initiallyArmed: boolean, held: boolean, ref: ChatRef | null): Row {
         const element = document.createElement("div");
         element.classList.add("chat-message-container");
         let currentInput = $state.raw(input);
         let armed = $state(initiallyArmed);
         const row: Row = {
+            held: false,
             element,
             get input() {
                 return currentInput;
@@ -481,20 +967,33 @@
             dispose: () => {},
         };
         rowElements.set(element, row);
+        rowSizes?.observe(element, { box: "border-box" });
+        if (held) holdRow(row);
         row.dispose = $effect.root(() => {
             let mountKey: MountKey | undefined;
             let mountedCharacter: AnyClientCharacter;
             let imageSource: string | undefined;
             let imageThumb: 512 | undefined;
             let sent: RowUpdate | undefined;
+            /** The mounted instance's last text came while the row was held: leaving the hold is an update too. */
+            let mountedHeld = false;
+            // A whole reply its generation still locks (`Chat.svelte`'s `held`, by the same rule). Its text changes
+            // (a continue's acceptance, the tail's writes) and its release reach the mounted instance as updates, so
+            // its body keeps the render it showed; a new instance would have none and show the loading markup.
+            const wholeReplyHeld = $derived(
+                row.input.message.data !== "" &&
+                    isMessageLocked(ref, row.input.message.chatId) &&
+                    !isMessageStreamed(ref, row.input.message.chatId),
+            );
             $effect(() => {
                 if (!row.armed) return;
                 const { message, idx, streaming, optimized, mode } = row.input;
+                const replyHeld = wholeReplyHeld;
                 const ctx = context;
                 const data = message.data;
                 const portrait = message.role === "user" ? ctx.userIconPortrait : ctx.portrait;
                 const key: MountKey = {
-                    text: streaming ? null : data,
+                    text: streaming || replyHeld ? null : data,
                     // Keep disabled's historical by-content comparison, even for legacy object values.
                     rest: JSON.stringify([
                         portrait,
@@ -507,6 +1006,12 @@
                 const nextImageThumb = avatarThumb;
                 const next: RowUpdate = {
                     message: data,
+                    isComment: message.isComment ?? false,
+                    messageGenerationInfo: message.generationInfo ?? null,
+                    candidateCount: message.candidates?.length ?? 1,
+                    candidateIndex: message.selected ?? 0,
+                    candidateCarrier: message.chatId === carrierId,
+                    rerollIcon: message.chatId === rerollRowId,
                     idx,
                     isOptimizedStreamingMessage: optimized,
                     streamingOptimizationMode: mode,
@@ -523,7 +1028,7 @@
                 untrack(() => {
                     if (
                         mountKey &&
-                        mountKey.text === key.text &&
+                        (mountKey.text === key.text || replyHeld || mountedHeld) &&
                         mountKey.rest === key.rest &&
                         mountedCharacter === ctx.character
                     ) {
@@ -533,6 +1038,7 @@
                         }
                         if (Object.keys(update).length) row.instance.updateRow?.(update);
                     } else {
+                        const kept = !!row.instance && keepRowHeight(row);
                         if (row.instance) unmount(row.instance);
                         element.classList.remove("far");
                         row.instance = mount(Chat, {
@@ -540,21 +1046,25 @@
                             context: rowContexts,
                             props: {
                                 ...next,
-                                isLastMemory: false,
                                 messageId: message.chatId,
                                 chatRef: ref,
                                 onReroll,
                                 unReroll,
-                                rerollIcon: "dynamic",
+                                onOpenInlineEditor: () => void openInlineEditor(row),
+                                onCloseInlineEditor: () => closeInlineEditor(row),
+                                onEditing: () => unlockRow(row),
+                                get rerollBusy() {
+                                    return rerollBusy;
+                                },
                                 character: createSimpleCharacter(ctx.character),
                                 largePortrait: portrait,
-                                messageGenerationInfo: message.generationInfo,
                                 role: message.role,
-                                isComment: message.isComment ?? false,
                                 disabled: message.disabled ?? false,
                             },
                         });
+                        if (kept) void settleRowHeight(row, row.instance);
                         if (mountBatch?.pending.has(row)) void settleFirstStageRow(mountBatch, row);
+                        if (row.held) void settleHeldRow(row, row.instance);
                         // A replacement instance must settle again while its row is still hidden.
                         const pending = revealBatch?.rows.slice(revealBatch.next).find((entry) => entry.row === row);
                         if (pending) void settleRevealRow(pending);
@@ -563,6 +1073,7 @@
                     }
                     // Keep the latest equal string after a reload on the same-string comparison path.
                     mountKey = key;
+                    mountedHeld = replyHeld;
                     mountedCharacter = ctx.character;
                     imageSource = nextImageSource;
                     imageThumb = nextImageThumb;
@@ -590,10 +1101,14 @@
 
     function removeRow(row: Row, defer = false) {
         row.dispose();
+        lockedRows.delete(row);
+        keptRows.delete(row);
+        rowSizes?.unobserve(row.element);
         observer?.unobserve(row.element);
         rowElements.delete(row.element);
         row.element.remove();
         if (mountBatch?.pending.delete(row) && mountBatch.pending.size === 0) armDeferredRows();
+        if (heldRows.delete(row)) holding = heldRows.size > 0;
         const pending = revealBatch?.rows.find((entry) => entry.row === row);
         if (pending) {
             pending.wait?.abort();
@@ -610,11 +1125,14 @@
         }
     }
 
-    // Cache the id scan independently of the window/reload/context diff. Text is never an input.
+    // Track the array independently of the window/reload/context diff. Text is never an input.
     const activeStreamingIndex = $derived.by(() => {
+        void messages.length;
         const chatId = selectedChatId(currentCharacter.chaId);
         const entry = chatId === null ? null : streamingEntry({ chaId: currentCharacter.chaId, chatId });
         if (entry === null || entry.mode === "off") return -1;
+        const position = messagePositionOf({ chaId: currentCharacter.chaId, chatId }, entry.messageId);
+        if (messages[position]?.chatId === entry.messageId) return position;
         return messages.findIndex((message) => message.chatId === entry.messageId);
     });
 
@@ -661,6 +1179,16 @@
         if (!sameRows) armDeferredRows();
         if (opening) finishReveal();
         let firstStage = inputs.length;
+        // Rows older than every row already shown come in above the view: an opening's deferred
+        // rows, or a loaded page. They are held until rendered and the reader stops scrolling.
+        let holdFrom = inputs.length;
+        if (!opening && !capturing && !suspendTrim) {
+            let oldestShown = -1;
+            inputs.forEach(({ key }, index) => {
+                if (rows.has(key)) oldestShown = index;
+            });
+            if (oldestShown !== -1) holdFrom = oldestShown + 1;
+        }
         if (opening && !capturing && !suspendTrim) {
             const height = chatBody.parentElement?.clientHeight ?? 0;
             firstStage = 0;
@@ -670,12 +1198,13 @@
                 estimated += Math.min(480, 48 + inputs[firstStage].input.message.data.length * 0.2);
                 firstStage++;
             }
+            holdFrom = firstStage;
         }
         const shown: Row[] = [];
         for (const { key, input } of inputs) {
             let row = rows.get(key);
             if (!row) {
-                row = createRow(input, shown.length < firstStage, ref);
+                row = createRow(input, shown.length < firstStage, shown.length >= holdFrom, ref);
                 rows.set(key, row);
             } else if (Object.keys(input).some((field) => input[field] !== row.input[field])) {
                 row.input = input;
@@ -708,7 +1237,12 @@
         return opening;
     }
 
-    // Called before changing the DOM, only on an append at the bottom of this same open chat.
+    /**
+     * The smaller window an append asks the screen for (`onTrim`), dropping only old rows. Called before changing
+     * the DOM, only on an append at the bottom of this same open chat. It keeps at least `CHAT_ROW_CAP` rows, and
+     * every visible row plus one load page above it. A fold, a screenshot or jump (`suspendTrim`, an unbounded
+     * window), a reader scrolled up from the bottom, or an open editor in a row it would drop blocks the trim.
+     */
     function trimWindow(length: number): number | undefined {
         if (
             !onTrim ||
@@ -737,35 +1271,53 @@
     }
 
     onDestroy(() => {
+        unlockRows();
         anchor = null;
         armDeferredRows();
         finishReveal();
+        cancelAnimationFrame(releaseFrame);
+        setScrollGate(false);
         cancelAnimationFrame(retireFrame);
         for (const instance of retired) unmount(instance);
         retired.clear();
         for (const row of rows.values()) removeRow(row);
         rows.clear();
+        rowSizes?.disconnect();
     });
 
     function checkIfAtBottom() {
         return !chatBody?.parentElement || chatBody.parentElement.scrollTop > -4;
     }
 
+    /**
+     * Settles once every mounted row has rendered its current markdown (a jump's or a screenshot's wait). It
+     * first mounts deferred rows, ends the reveal, and shows held rows at once, so every row is laid out.
+     */
     export async function whenRendered() {
         do {
             armDeferredRows();
             finishReveal();
+            releaseHeldRows();
             await tick();
             // A pending opening diff can create a batch during this flush.
         } while (mountBatch);
         await Promise.all([...rows.values()].map((row) => row.instance?.whenRendered?.()));
     }
 
-    /** Whether the reader follows the newest message: anchored to it, or at the bottom. */
+    /**
+     * Whether the reader follows the newest message: anchored to it, or at the bottom. With
+     * `autoScrollToNewMessage`, a reply's anchor, and a swiped reroll's in `DefaultChatScreen.svelte`, applies
+     * only while this holds or `alwaysScrollToNewMessage` is on; otherwise a reply sets the new-message indicator.
+     */
     export function followsLatest() {
         return anchor !== null || checkIfAtBottom();
     }
 
+    /**
+     * Anchors the newest row's start (its bottom while it streams or waits empty) and clears the new-message
+     * indicator, wherever the reader is: the new-message button, a followed swiped reroll, and a notification's
+     * chat (`ShowLatestMessageStore`) use it.
+     */
     export const scrollToLatestMessage = () => {
         if (!chatBody) return;
         hasNewUnreadMessage = false;

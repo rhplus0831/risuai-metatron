@@ -1,6 +1,9 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+    allowListenerOrigin,
     allowTestLoopbackOrigin,
     createSigner,
     createTestServer,
@@ -28,9 +31,64 @@ afterEach(async () => {
     upstream.requests.length = 0;
 });
 
+describe("/proxy and /proxy2", () => {
+    it("rejects the stored password digest without contacting upstream and accepts a JWT registered with it on GET and POST", async () => {
+        const passwordDigest = createHash("sha256").update("proxy-password").digest("hex");
+        server = createTestServer({ password: passwordDigest });
+        const routes = ["/proxy", "/proxy2"];
+        const methods = ["GET", "POST"];
+
+        for (const route of routes) {
+            for (const method of methods) {
+                const rejected = await server.app.request(route, {
+                    method,
+                    headers: { "risu-auth": passwordDigest, "risu-url": target("/echo") },
+                    body: method === "POST" ? "proxy body" : undefined,
+                });
+                expect(rejected.status, `${method} ${route}`).toBe(400);
+                expect(await rejected.json(), `${method} ${route}`).toEqual({ error: "Invalid Signature" });
+                expect(upstream.requests, `${method} ${route}`).toHaveLength(0);
+            }
+        }
+
+        const signer = await createSigner();
+        const login = await server.app.request(
+            "/api/login",
+            json({ password: passwordDigest, publicKey: signer.publicJwk }),
+        );
+        expect(login.status).toBe(200);
+
+        for (const route of routes) {
+            for (const method of methods) {
+                const forwarded = await server.app.request(route, {
+                    method,
+                    headers: { "risu-auth": await signer.jwt(), "risu-url": target("/echo") },
+                    body: method === "POST" ? "proxy body" : undefined,
+                });
+                expect(forwarded.status, `${method} ${route}`).toBe(200);
+                expect(await forwarded.json(), `${method} ${route}`).toMatchObject({
+                    method,
+                    url: "/echo",
+                    body: method === "POST" ? "proxy body" : "",
+                });
+            }
+        }
+        expect(upstream.requests).toHaveLength(4);
+    });
+});
+
+/** A test server with the password digest "pw" and a JWT registered through `/api/login`. */
+async function serverWithJwt(options: Parameters<typeof createTestServer>[0] = {}): Promise<string> {
+    server = createTestServer({ password: "pw", ...options });
+    const signer = await createSigner();
+    const login = await server.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+    expect(login.status).toBe(200);
+    return await signer.jwt();
+}
+
 describe("/proxy2", () => {
-    it("requires proxy auth (stored password or a registered JWT) and a target URL", async () => {
-        server = createTestServer({ password: "pw" });
+    it("requires a registered JWT and a target URL", async () => {
+        const auth = await serverWithJwt();
         const { app } = server;
         const unauth = await app.request("/proxy2", {
             method: "POST",
@@ -40,26 +98,24 @@ describe("/proxy2", () => {
         expect(unauth.status).toBe(400);
         expect(await unauth.json()).toEqual({ error: "No auth header" });
 
-        const noUrl = await app.request("/proxy2", { method: "POST", headers: { "risu-auth": "pw" }, body: "{}" });
+        const noUrl = await app.request("/proxy2", { method: "POST", headers: { "risu-auth": auth }, body: "{}" });
         expect(noUrl.status).toBe(400);
         expect(await noUrl.json()).toEqual({ error: "URL has no param" });
 
-        const signer = await createSigner();
-        await app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
         const viaJwt = await app.request("/proxy2", {
-            headers: { "risu-auth": await signer.jwt(), "risu-url": target("/echo") },
+            headers: { "risu-auth": auth, "risu-url": target("/echo") },
         });
         expect(viaJwt.status).toBe(200);
-        const viaQuery = await app.request(`/proxy?url=${target("/echo?q=1")}`, { headers: { "risu-auth": "pw" } });
+        const viaQuery = await app.request(`/proxy?url=${target("/echo?q=1")}`, { headers: { "risu-auth": auth } });
         expect(((await viaQuery.json()) as { url: string }).url).toBe("/echo?q=1");
     });
 
     it("forwards the raw body and filters request headers case-insensitively", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const res = await server.app.request("/proxy2", {
             method: "POST",
             headers: {
-                "risu-auth": "pw",
+                "risu-auth": auth,
                 "risu-url": target("/echo"),
                 "content-type": "application/x-www-form-urlencoded",
                 "risu-header": rh({
@@ -99,26 +155,42 @@ describe("/proxy2", () => {
     });
 
     it("never forwards risu-auth when risu-header is absent and rejects a non-object risu-header", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const res = await server.app.request("/proxy2", {
-            headers: { "risu-auth": "pw", "risu-url": target("/echo"), "x-custom": "c" },
+            headers: { "risu-auth": auth, "risu-url": target("/echo"), "x-custom": "c" },
         });
         const seen = (await res.json()) as { headers: Record<string, string> };
         expect(seen.headers["risu-auth"]).toBeUndefined();
         expect(seen.headers["x-custom"]).toBe("c");
 
         const bad = await server.app.request("/proxy2", {
-            headers: { "risu-auth": "pw", "risu-url": target("/echo"), "risu-header": rh([["X-A", "1"]]) },
+            headers: { "risu-auth": auth, "risu-url": target("/echo"), "risu-header": rh([["X-A", "1"]]) },
         });
         expect(bad.status).toBe(500);
         expect(upstream.requests).toHaveLength(1);
     });
 
+    it("keeps an unrelated handler error as 500 with an intact POST body", async () => {
+        const auth = await serverWithJwt({ routeLimits: { bodyBytes: 8 } });
+        const response = await server.app.request("/proxy2", {
+            method: "POST",
+            headers: {
+                "risu-auth": auth,
+                "risu-url": target("/echo"),
+                "risu-header": rh([["invalid", "header object"]]),
+            },
+            body: "{}",
+        });
+        expect(response.status).toBe(500);
+        expect(await response.text()).toBe("Internal Server Error");
+        expect(upstream.requests).toHaveLength(0);
+    });
+
     it("streams SSE through, and a timeout before upstream headers is a 504", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const sse = await server.app.request("/proxy2", {
             method: "POST",
-            headers: { "risu-auth": "pw", "risu-url": target("/sse"), "risu-header": rh({}) },
+            headers: { "risu-auth": auth, "risu-url": target("/sse"), "risu-header": rh({}) },
             body: "{}",
         });
         expect(sse.headers.get("content-type")).toBe("text/event-stream");
@@ -155,7 +227,7 @@ describe("/proxy2", () => {
             const pending = server.app.request("/proxy2", {
                 method: "POST",
                 headers: {
-                    "risu-auth": "pw",
+                    "risu-auth": auth,
                     "risu-url": target("/hang"),
                     "risu-header": rh({}),
                     "risu-timeout-ms": String(timeoutMs),
@@ -176,10 +248,10 @@ describe("/proxy2", () => {
     });
 
     it("answers HEAD with headers only and closes the upstream body", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const res = await server.app.request("/proxy2", {
             method: "HEAD",
-            headers: { "risu-auth": "pw", "risu-url": target("/stall"), "risu-header": rh({}) },
+            headers: { "risu-auth": auth, "risu-url": target("/stall"), "risu-header": rh({}) },
         });
         expect(res.status).toBe(200);
         expect(res.headers.get("content-type")).toBe("text/event-stream");
@@ -191,6 +263,93 @@ describe("/proxy2", () => {
 });
 
 describe("/hub-proxy", () => {
+    async function expectSandboxHeaders(response: Response) {
+        const asset = await server.app.request("/api/asset/" + Buffer.from("assets/policy.txt").toString("hex"));
+        const policy = asset.headers.get("content-security-policy");
+        expect(policy?.split(";").map((directive) => directive.trim())).toContain("sandbox");
+        expect.soft(response.headers.get("content-security-policy")).toBe(policy);
+        expect.soft(response.headers.get("x-content-type-options")).toBe("nosniff");
+        expect.soft(response.headers.get("set-cookie")).toBeNull();
+        expect.soft(response.headers.getSetCookie()).toEqual([]);
+    }
+
+    it("sandboxes hub HTML on success and error, replaces the hub CSP, and strips every cookie", async () => {
+        const html = "<!doctype html><script>document.cookie = 'hub=ran'</script>";
+        const hub = createServer((request, response) => {
+            response.writeHead(request.url === "/error" ? 503 : 200, {
+                "content-type": "text/html; charset=iso-8859-1",
+                "content-security-policy": "default-src * 'unsafe-inline'",
+                "set-cookie": ["session=hub; Path=/; HttpOnly", "preferences=hub; Path=/"],
+            });
+            response.end(html);
+        });
+        onTestFinished(() => {
+            hub.closeAllConnections();
+            hub.close();
+        });
+        await new Promise<void>((resolve) => hub.listen(0, "127.0.0.1", resolve));
+        server = createTestServer({ password: "pw", realm: { hubURL: allowListenerOrigin(hub) } });
+
+        for (const [url, status] of [
+            ["/hub-proxy/html", 200],
+            ["/hub-proxy/error", 503],
+        ] as const) {
+            const response = await server.app.request(url);
+            expect(response.status, url).toBe(status);
+            expect(response.headers.get("content-type"), url).toBe("text/html; charset=iso-8859-1");
+            expect(await response.text(), url).toBe(html);
+            await expectSandboxHeaders(response);
+        }
+    });
+
+    it("strips Clear-Site-Data from success, errors, and returned or followed redirects", async () => {
+        const hubURL = "https://hub.invalid";
+        const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+            const url = new URL(String(input));
+            const headers = new Headers({
+                "Clear-Site-Data": '"storage", "cache", "cookies"',
+                "set-cookie": "session=hub; Path=/",
+                "content-security-policy": "default-src * 'unsafe-inline'",
+                "content-type": "text/html",
+            });
+            let status = url.pathname === "/error" ? 503 : 200;
+            if (url.pathname === "/external" || url.pathname.startsWith("/follow-")) {
+                status = 302;
+                headers.set(
+                    "location",
+                    url.pathname === "/external" ? "https://docs.example/guide" : url.pathname.replace("/follow-", "/"),
+                );
+            }
+            return new Response(`hub ${url.pathname}`, { status, headers });
+        });
+        onTestFinished(() => fetching.mockRestore());
+        server = createTestServer({ password: "pw", realm: { hubURL } });
+
+        for (const [path, status, finalPath, location] of [
+            ["/success", 200, "/success", null],
+            ["/error", 503, "/error", null],
+            ["/external", 302, "/external", "https://docs.example/guide"],
+            ["/follow-success", 200, "/success", null],
+            ["/follow-error", 503, "/error", null],
+        ] as const) {
+            const response = await server.app.request(`/hub-proxy${path}`);
+            expect(response.status, path).toBe(status);
+            expect.soft(response.headers.get("clear-site-data"), path).toBeNull();
+            expect(response.headers.get("location"), path).toBe(location);
+            expect(await response.text(), path).toBe(`hub ${finalPath}`);
+            await expectSandboxHeaders(response);
+        }
+        expect(fetching.mock.calls.map(([url]) => String(url))).toEqual([
+            `${hubURL}/success`,
+            `${hubURL}/error`,
+            `${hubURL}/external`,
+            `${hubURL}/follow-success`,
+            `${hubURL}/success`,
+            `${hubURL}/follow-error`,
+            `${hubURL}/error`,
+        ]);
+    });
+
     it("reaches only the hub (never x-risu-node-path), strips risu-auth, and follows one redirect within the hub's origin", async () => {
         server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
         const res = await server.app.request("/hub-proxy/echo?viahub=1", {
@@ -204,7 +363,7 @@ describe("/hub-proxy", () => {
         const seen = (await res.json()) as { url: string; headers: Record<string, string> };
         expect(seen.url).toBe("/echo?viahub=1");
         expect(seen.headers.origin).toBe(upstream.url);
-        expect(seen.headers["x-custom"]).toBe("hub");
+        expect(seen.headers["x-custom"]).toBeUndefined();
         expect(seen.headers["risu-auth"]).toBeUndefined();
         expect(seen.headers["x-risu-node-path"]).toBeUndefined();
         expect(upstream.requests).toHaveLength(1);
@@ -217,7 +376,46 @@ describe("/hub-proxy", () => {
         expect(upstream.requests.map((r) => r.url)).toEqual(["/echo?viahub=1", "/redirect", "/final?from=redirect"]);
     });
 
-    it("answers a redirect to another origin to the browser as it is, without fetching it", async () => {
+    it("allows content and hub listing headers case-insensitively while dropping credentials and forwarding metadata", async () => {
+        server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
+        const allowed = {
+            Accept: "application/json",
+            "aCcEpT-LaNgUaGe": "ko-KR",
+            "Content-TYPE": "application/json",
+            RANGE: "bytes=0-99",
+            "User-Agent": "hub-browser",
+            "X-RisuAI-Info": "client-version",
+        };
+        const blocked = {
+            Authorization: "Bearer private",
+            Cookie: "session=private",
+            "Proxy-Authorization": "Basic private",
+            Forwarded: "for=private",
+            "X-Forwarded-For": "192.0.2.1",
+            "X-Forwarded-Host": "private.example",
+            "X-Forwarded-Proto": "https",
+            "X-Arbitrary": "private",
+            "Risu-Auth": "pw",
+            "X-Risu-Node-Path": "https://elsewhere.example",
+        };
+        const response = await server.app.request("/hub-proxy/echo", {
+            headers: { ...allowed, ...blocked, Origin: "https://private.example" },
+        });
+        expect(response.status).toBe(200);
+        const seen = (await response.json()) as { headers: Record<string, string> };
+        for (const [name, value] of Object.entries(allowed)) expect(seen.headers[name.toLowerCase()], name).toBe(value);
+        for (const name of Object.keys(blocked)) expect(seen.headers[name.toLowerCase()], name).toBeUndefined();
+        expect(seen.headers.origin).toBe(upstream.url);
+        const redirect = await server.app.request("/hub-proxy/redirect", { headers: { ...allowed, ...blocked } });
+        expect(await redirect.text()).toBe("final body");
+        expect(upstream.requests.map((request) => request.url)).toEqual(["/echo", "/redirect", "/final?from=redirect"]);
+        for (const request of upstream.requests) {
+            expect(request.headers["x-risuai-info"]).toBe("client-version");
+            expect(request.headers.authorization).toBeUndefined();
+        }
+    });
+
+    it("sandboxes a redirect to another origin while passing its Location to the browser without fetching it", async () => {
         server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
         const res = await server.app.request("/hub-proxy/redirect-off/docs/lua");
         expect(res.status).toBe(302);
@@ -225,9 +423,10 @@ describe("/hub-proxy", () => {
         expect(res.headers.get("x-first")).toBe("yes");
         expect(await res.text()).toBe("moved");
         expect(upstream.requests.map((r) => r.url)).toEqual(["/redirect-off/docs/lua"]);
+        await expectSandboxHeaders(res);
     });
 
-    it("answers 502 when the hub cannot be reached", async () => {
+    it("sandboxes its own 502 when the hub cannot be reached", async () => {
         // Nothing listens on port 1: the test wants the refused connection.
         onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"));
         server = createTestServer({ password: "pw", realm: { hubURL: "http://127.0.0.1:1" } });
@@ -235,5 +434,6 @@ describe("/hub-proxy", () => {
         expect(failed.status).toBe(502);
         expect(((await failed.json()) as { error: string }).error).toMatch(/^Proxy request failed: /);
         expect(upstream.requests).toHaveLength(0);
+        await expectSandboxHeaders(failed);
     });
 });

@@ -1,13 +1,22 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The persona page binds the selected persona through `activePersona`. The large-portrait checkbox
-// is the one control that keeps its old index binding's rule: it writes the persona the selection
-// resolves to (the first one when the selection names none), where `activePersona`'s setter would
-// drop the write. The name and description inputs write the selected persona through the view, and
-// follow a selection change.
+// The name and description inputs write the tab's selected persona through `editedPersona` and
+// follow tab selection changes. The large-portrait checkbox writes through `editedPersonaRecord`,
+// which can resolve to the first persona when the selection names none.
+
+// happy-dom cannot drag: capture the grid and invoke a drop after moving its actual tiles.
+const sortables = vi.hoisted(() => [] as { el: HTMLElement; options: { onEnd: () => Promise<void> } }[]);
+vi.mock("sortablejs/modular/sortable.core.esm.js", () => ({
+    default: {
+        create: (el: HTMLElement, options: { onEnd: () => Promise<void> }) => {
+            sortables.push({ el, options });
+            return { destroy: vi.fn() };
+        },
+    },
+}));
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
@@ -16,7 +25,7 @@ vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
 vi.mock("src/ts/persona", async () => {
     const { pickBinding } = await import("src/ts/storage/chatBindingPick");
     return {
-        changeUserPersona: vi.fn((id: string, target?: { chaId: string; chatId: string } | null) =>
+        changeUserPersona: vi.fn((id: string, target: { chaId: string; chatId: string } | null) =>
             pickBinding("personaId", id, target),
         ),
         exportUserPersona: vi.fn(),
@@ -24,7 +33,7 @@ vi.mock("src/ts/persona", async () => {
         selectUserImg: vi.fn(),
     };
 });
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
     getModules: vi.fn(() => []),
@@ -35,12 +44,15 @@ vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: str
 
 import { language } from "src/lang";
 import { alertConfirm, alertSelect } from "src/ts/alert";
+import { importUserPersona } from "src/ts/persona";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import { chatEntry, selectChat } from "src/ts/storage/chatStore.svelte";
+import { addPersona } from "src/ts/storage/collectionStore.svelte";
 import type { Database } from "src/ts/storage/database.svelte";
 import { selectCharacter, selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
-import { activePersona, settings } from "src/ts/storage/settingsViews.svelte";
+import { activePersona, editedPersona, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { closePopupEditorSession, popUpEditorStore } from "src/ts/stores.svelte";
 import PersonaSettings from "./PersonaSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -52,7 +64,7 @@ function render() {
     document.body.appendChild(target);
     mounted.push(mount(PersonaSettings, { target }));
     flushSync();
-    // The checkbox in the large-portrait label (the persona note toggle above it is one too).
+    // The checkbox in the large-portrait label.
     const largePortrait = () =>
         [...target.querySelectorAll("label")]
             .find((label) => label.textContent?.includes(language.largePortrait))!
@@ -87,6 +99,91 @@ afterEach(async () => {
 });
 
 describe("PersonaSettings", () => {
+    it("opens the note popup as plaintext and the description popup as markdown", async () => {
+        vi.useFakeTimers();
+        const previousPopup = { ...popUpEditorStore };
+        try {
+            const note = "# Personal note\nKeep this as written.";
+            const description = "**Persona description**";
+            activePersona.note = note;
+            activePersona.personaPrompt = description;
+            settings.ui.longPressToPopupEditor = true;
+            const { target } = render();
+            const noteInput = target.querySelector<HTMLTextAreaElement>(
+                `textarea[placeholder="${language.personaNotePlaceholder}"]`,
+            )!;
+            const descriptionInput = [...target.querySelectorAll("textarea")].find((input) =>
+                input.placeholder.startsWith("Put the description of this persona here."),
+            )!;
+
+            noteInput.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: note, language: "plaintext" });
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+
+            descriptionInput.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: description, language: "markdown" });
+        } finally {
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+            Object.assign(popUpEditorStore, previousPopup);
+            vi.useRealTimers();
+        }
+    });
+
+    it("a note or description popup writes the persona it opened on; a persona switch while it is open discards it, even between personas with the same text", async () => {
+        vi.useFakeTimers();
+        const previousPopup = { ...popUpEditorStore };
+        try {
+            settings.ui.longPressToPopupEditor = true;
+            const { target } = render();
+            const noteInput = () =>
+                target.querySelector<HTMLTextAreaElement>(
+                    `textarea[placeholder="${language.personaNotePlaceholder}"]`,
+                )!;
+            const descriptionInput = () =>
+                [...target.querySelectorAll("textarea")].find((input) =>
+                    input.placeholder.startsWith("Put the description of this persona here."),
+                )!;
+            const closePopupWith = async (text: string) => {
+                popUpEditorStore.value = text;
+                closePopupEditorSession(popUpEditorStore.sessionId);
+                await vi.advanceTimersByTimeAsync(100);
+                flushSync();
+                await vi.advanceTimersByTimeAsync(0);
+                flushSync();
+            };
+
+            // Bob's (p2) note popup, then Ann is selected while it is open: both notes are "", so the
+            // bound value alone would not notice the switch and the popup's text would land in Ann.
+            noteInput().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: "" });
+            popUpEditorStore.value = "typed for Bob";
+            selectPersona("p1");
+            flushSync();
+            await vi.advanceTimersByTimeAsync(100);
+            flushSync();
+            expect(popUpEditorStore.open).toBe(false);
+            expect([persona("p1").note, persona("p2").note]).toEqual(["", ""]);
+            expect(noteInput().value).toBe("");
+
+            // Without a switch the description popup writes the shown persona (Ann now), and Bob keeps his own.
+            descriptionInput().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            expect(popUpEditorStore).toMatchObject({ open: true, value: "", language: "markdown" });
+            await closePopupWith("Ann, described");
+            expect([persona("p1").personaPrompt, persona("p2").personaPrompt]).toEqual(["Ann, described", ""]);
+            expect(descriptionInput().value).toBe("Ann, described");
+            selectPersona("p2");
+            flushSync();
+            expect(descriptionInput().value).toBe("");
+        } finally {
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+            Object.assign(popUpEditorStore, previousPopup);
+            vi.useRealTimers();
+        }
+    });
+
     it("the name input and the large-portrait checkbox write the selected persona and follow a selection change", () => {
         const { largePortrait, nameInput } = render();
         expect(nameInput().value).toBe("Bob");
@@ -116,12 +213,10 @@ describe("PersonaSettings", () => {
     });
 });
 
-// With a chat open the icon grid's ring marks the chat's bound persona that exists (none when unset
-// or gone; at home the tab's), a grid click binds the open chat through `changeUserPersona` (the
-// tab's selection stays), "create persona" picks the new persona for the chat captured before its
-// dialog (or the tab's selection captured at home), a deletion names how many chats bind the persona,
-// leaves them bound, and moves only a tab selection that named it, and the header note says whose
-// persona the editor shows. The editor itself stays on `activePersona`.
+// The page is the tab's, also with a chat open: the icon grid's ring and the editor are the tab's
+// selected persona (`editedPersona`), a grid click and "create persona" select for the tab through
+// `changeUserPersona(id, null)` and leave every chat's binding, a deletion of the shown persona names
+// how many chats bind it, leaves them bound, and moves the tab's selection.
 describe("PersonaSettings with a chat open", () => {
     const refK = { chaId: "c", chatId: "k" };
     const refJ = { chaId: "c", chatId: "j" };
@@ -137,18 +232,17 @@ describe("PersonaSettings with a chat open", () => {
 
     function renderPage() {
         const page = render();
-        const grid = () => [...page.target.querySelectorAll<HTMLButtonElement>("button[data-risu-idx]")];
+        const grid = () => [...page.target.querySelectorAll<HTMLButtonElement>("button[data-risu-id]")];
         const ringed = () =>
             grid()
                 .filter((button) => button.querySelector(".ring-3"))
-                .map((button) => settings.personas[Number(button.dataset.risuIdx)].id);
+                .map((button) => button.dataset.risuId!);
         const addButton = () => page.target.querySelector<HTMLButtonElement>("button.rounded-full")!;
         const removeButton = () =>
             [...page.target.querySelectorAll("button")].find(
                 (button) => button.textContent?.trim() === language.remove,
             )!;
-        const header = () => page.target.querySelector("h2")!.parentElement!.textContent ?? "";
-        return { ...page, grid, ringed, addButton, removeButton, header };
+        return { ...page, grid, ringed, addButton, removeButton };
     }
 
     /** The tab selects `Ann`; chat `k` binds `Bob`, chat `j` binds nothing; `k` is open. */
@@ -180,38 +274,40 @@ describe("PersonaSettings with a chat open", () => {
         selectCharacter(null);
     });
 
-    it("rings the chat's bound persona, none when unset or gone, the tab's at home; the editor shows the bound one", () => {
+    it("rings and edits the tab's selected persona also with a chat open, whatever the chat binds", () => {
         const page = renderPage();
-        expect(page.ringed()).toEqual(["p2"]);
-        expect(page.nameInput().value).toBe("Bob");
-        expect(page.header()).toContain(strings.thisChat);
+        // The open chat runs with its `Bob`; the page shows the tab's `Ann`.
+        expect(activePersona.id).toBe("p2");
+        expect(page.ringed()).toEqual(["p1"]);
+        expect(page.nameInput().value).toBe("Ann");
 
         chatBindingPatch(refK, { personaId: null });
         flushSync();
-        expect(page.ringed()).toEqual([]);
-        // The editor falls back to the tab's persona, and the header says the chat has none.
+        expect(page.ringed()).toEqual(["p1"]);
         expect(page.nameInput().value).toBe("Ann");
-        expect(page.header()).toContain(strings.notSetForChat);
 
         chatBindingPatch(refK, { personaId: "gone" });
         flushSync();
-        expect(page.ringed()).toEqual([]);
-        expect(page.header()).toContain(strings.notSetForChat);
+        expect(page.ringed()).toEqual(["p1"]);
+
+        chatBindingPatch(refK, { personaId: "p1" });
+        flushSync();
+        expect(page.ringed()).toEqual(["p1"]);
 
         selectCharacter(null);
         flushSync();
         expect(page.ringed()).toEqual(["p1"]);
-        expect(page.header()).not.toContain(strings.thisChat);
-        expect(page.header()).not.toContain(strings.notSetForChat);
+        expect(page.nameInput().value).toBe("Ann");
     });
 
-    it("a grid click binds the open chat and leaves the tab's selection; at home it selects for the tab", () => {
+    it("a grid click with a chat open selects for the tab and leaves the chat's binding; at home it selects for the tab too", () => {
         const page = renderPage();
         page.grid()[2].click();
         flushSync();
-        expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p3" });
+        expect(selection.personaId).toBe("p3");
+        expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
         expect(chatEntry(refJ)).not.toHaveProperty("bindedPersona");
-        expect(selection.personaId).toBe("p1");
+        expect(activePersona.id).toBe("p2");
         expect(page.ringed()).toEqual(["p3"]);
         expect(page.nameInput().value).toBe("Cid");
 
@@ -220,10 +316,10 @@ describe("PersonaSettings with a chat open", () => {
         page.grid()[1].click();
         flushSync();
         expect(selection.personaId).toBe("p2");
-        expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p3" });
+        expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
     });
 
-    it("create persona picks the new persona for the chat captured before the dialog, not the chat shown after it", async () => {
+    it("create persona with a chat open selects the new persona for the tab and binds no chat, neither the one open before the dialog nor the one after", async () => {
         const page = renderPage();
         let choose!: (value: string) => void;
         vi.mocked(alertSelect).mockImplementationOnce(() => new Promise<string>((resolve) => (choose = resolve)));
@@ -237,9 +333,10 @@ describe("PersonaSettings with a chat open", () => {
         flushSync();
         const created = settings.personas.find((persona) => !["p1", "p2", "p3"].includes(persona.id))!;
         expect(created.name).toBe("New Persona");
-        expect(chatEntry(refK)).toMatchObject({ bindedPersona: created.id });
+        expect(selection.personaId).toBe(created.id);
+        expect(page.ringed()).toEqual([created.id]);
+        expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
         expect(chatEntry(refJ)).not.toHaveProperty("bindedPersona");
-        expect(selection.personaId).toBe("p1");
     });
 
     it("create persona at home selects the new persona for the tab, even when a chat is opened during the dialog", async () => {
@@ -261,9 +358,12 @@ describe("PersonaSettings with a chat open", () => {
         expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
     });
 
-    it("deleting the shown persona names the chats bound to it, leaves them bound, and moves only a tab selection that named it", async () => {
+    it("deleting the shown persona (the tab's) names the chats bound to it, leaves them bound, and moves the tab's selection", async () => {
+        settings.personaFolders = [{ id: "filed", name: "Filed", data: ["p2"] }];
+        // The tab shows the chat's `Bob`, which chat `k` binds.
+        selectPersona("p2");
         const page = renderPage();
-        expect(activePersona.id).toBe("p2");
+        expect(editedPersona.id).toBe("p2");
         vi.mocked(alertConfirm).mockResolvedValueOnce(true);
         page.removeButton().click();
         await Promise.resolve();
@@ -271,14 +371,14 @@ describe("PersonaSettings with a chat open", () => {
         flushSync();
         expect(alertConfirm).toHaveBeenLastCalledWith(`${language.removeConfirm}Bob\n\n${strings.usedByChats(1)}`);
         expect(settings.personas.map((persona) => persona.id)).toEqual(["p1", "p3"]);
-        // The chat keeps the id (shown as deleted); the tab's `Ann` stays; the editor falls back to it.
+        expect(settings.personaFolders).toEqual([{ id: "filed", name: "Filed", data: [] }]);
+        // The chat keeps the id (shown as deleted); the tab's selection moves to the first remaining one.
         expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
         expect(selection.personaId).toBe("p1");
         expect(page.nameInput().value).toBe("Ann");
-        expect(page.ringed()).toEqual([]);
+        expect(page.ringed()).toEqual(["p1"]);
 
-        // The tab's own persona deleted (now shown, as the chat's is gone): the selection moves to the
-        // first remaining one; the chat is untouched.
+        // A persona no chat binds: no count; the selection moves on; the chat is untouched.
         vi.mocked(alertConfirm).mockResolvedValueOnce(true);
         page.removeButton().click();
         await Promise.resolve();
@@ -291,11 +391,204 @@ describe("PersonaSettings with a chat open", () => {
     });
 });
 
+describe("PersonaSettings folders", () => {
+    const ids = ["root-a", "folder-a", "other", "root-b", "folder-b", "root-c"];
+    const folders = () => [
+        { id: "z", name: "Zeta", data: ["folder-b", "folder-a"] },
+        { id: "a", name: "Alpha", data: ["other", "folder-a"] },
+    ];
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        sortables.length = 0;
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [{ id: "k", name: "K", message: [], bindedPersona: "root-a" }],
+                },
+            ],
+            personas: ids.map((id) => ({ id, name: id, icon: "", note: "", personaPrompt: `Prompt for ${id}` })),
+            personaFolders: folders(),
+        });
+        selectCharacter(null);
+        selectPersona("root-b");
+    });
+
+    afterEach(() => {
+        selectCharacter(null);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    async function settleGrid() {
+        flushSync();
+        await tick();
+        // The page rebuilds Sortable after its own sleep(1); no wall-clock wait or polling.
+        await vi.advanceTimersByTimeAsync(1);
+        flushSync();
+    }
+
+    function renderFolders() {
+        const page = render();
+        const shownIds = () =>
+            [...page.target.querySelectorAll<HTMLButtonElement>("button[data-risu-id]")].map(
+                (button) => button.dataset.risuId,
+            );
+        const tiles = () =>
+            [...sortables.at(-1)!.el.children].map(
+                (tile) =>
+                    tile.getAttribute("data-risu-id") ??
+                    tile.getAttribute("aria-label") ??
+                    tile.querySelector("span")?.textContent?.trim() ??
+                    "add",
+            );
+        const openFolder = async (name: string) => {
+            const button = [...page.target.querySelectorAll<HTMLButtonElement>("button.no-sort")].find(
+                (button) => button.querySelector("span")?.textContent?.trim() === name,
+            );
+            expect(button, `Folder tile ${name}`).toBeDefined();
+            button!.click();
+            await settleGrid();
+        };
+        return { ...page, shownIds, tiles, openFolder };
+    }
+
+    function chooseFolder(select: HTMLSelectElement, value: string) {
+        select.value = value;
+        // Svelte reads :checked on change; happy-dom needs the selectedIndex shim.
+        const querySelector = select.querySelector.bind(select);
+        (select as { querySelector: unknown }).querySelector = (selector: string) =>
+            selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector);
+        try {
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+        } finally {
+            delete (select as { querySelector?: unknown }).querySelector;
+        }
+        flushSync();
+    }
+
+    it("a drop inside a folder reorders only its shown personas, keeping all outsiders in place and folders unchanged", async () => {
+        const page = renderFolders();
+        expect(page.tiles()).toEqual(["Alpha", "Zeta", "root-a", "root-b", "root-c", "add"]);
+        await page.openFolder("Zeta");
+        // Membership follows stored folder order, and persona order follows the list, not folder.data.
+        expect(page.tiles()).toEqual([`${language.itemFolders.back}: Zeta`, "folder-a", "folder-b", "add"]);
+
+        const { el, options } = sortables.at(-1)!;
+        el.insertBefore(
+            el.querySelector('button[data-risu-id="folder-b"]')!,
+            el.querySelector('button[data-risu-id="folder-a"]')!,
+        );
+        const ended = options.onEnd();
+        await settleGrid();
+        await ended;
+
+        expect(settings.personas.map((persona) => persona.id)).toEqual([
+            "root-a",
+            "folder-b",
+            "other",
+            "root-b",
+            "folder-a",
+            "root-c",
+        ]);
+        expect(settings.personaFolders).toEqual(folders());
+        expect(page.shownIds()).toEqual(["folder-b", "folder-a"]);
+
+        page.target
+            .querySelector<HTMLButtonElement>(`button[aria-label="${language.itemFolders.back}: Zeta"]`)!
+            .click();
+        await settleGrid();
+        expect(page.tiles()).toEqual(["Alpha", "Zeta", "root-a", "root-b", "root-c", "add"]);
+        await page.openFolder("Alpha");
+        expect(page.shownIds()).toEqual(["other"]);
+    });
+
+    it("the Folder select files the edited persona and can return it to no folder without changing any persona", async () => {
+        selectCharacter("c");
+        selectChat("c", "k");
+        selectPersona("folder-a");
+        const before = JSON.parse(JSON.stringify(settings.personas));
+        const page = renderFolders();
+        await page.openFolder("Alpha");
+        const select = page.target.querySelector<HTMLSelectElement>(
+            `select[aria-label="${language.itemFolders.folder}"]`,
+        )!;
+        expect([...select.options].map((option) => [option.value, option.textContent?.trim()])).toEqual([
+            ["a", "Alpha"],
+            ["z", "Zeta"],
+            ["", language.itemFolders.noFolder],
+        ]);
+        expect(select.value).toBe("z");
+        expect(activePersona.id).toBe("root-a");
+        expect(editedPersona.id).toBe("folder-a");
+
+        chooseFolder(select, "a");
+        expect(settings.personaFolders).toEqual([
+            { id: "z", name: "Zeta", data: ["folder-b"] },
+            { id: "a", name: "Alpha", data: ["other", "folder-a"] },
+        ]);
+        expect(page.shownIds()).toEqual(["folder-a", "other"]);
+
+        selectPersona("other");
+        flushSync();
+        expect(select.value).toBe("a");
+        chooseFolder(select, "");
+        expect(settings.personaFolders).toEqual([
+            { id: "z", name: "Zeta", data: ["folder-b"] },
+            { id: "a", name: "Alpha", data: ["folder-a"] },
+        ]);
+        expect(page.shownIds()).toEqual(["folder-a"]);
+        expect(settings.personas).toEqual(before);
+        expect(chatEntry({ chaId: "c", chatId: "k" })).toMatchObject({ bindedPersona: "root-a" });
+    });
+
+    it.each(["create", "import"] as const)(
+        "lists a persona added with %s in the open folder, selecting only a created one",
+        async (action) => {
+            const page = renderFolders();
+            await page.openFolder("Zeta");
+            vi.mocked(alertSelect).mockResolvedValueOnce(action === "create" ? "0" : "1");
+            if (action === "import") {
+                vi.mocked(importUserPersona).mockImplementationOnce(async () =>
+                    addPersona({
+                        id: "imported",
+                        name: "Imported",
+                        icon: "",
+                        note: "",
+                        personaPrompt: "Imported prompt",
+                    }),
+                );
+            }
+
+            page.target.querySelector<HTMLButtonElement>("button.rounded-full")!.click();
+            await settleGrid();
+            const added = settings.personas.filter((persona) => !ids.includes(persona.id));
+            expect(added).toHaveLength(1);
+            expect(added[0].name).toBe(action === "create" ? "New Persona" : "Imported");
+            expect(settings.personaFolders).toEqual([
+                { id: "z", name: "Zeta", data: ["folder-b", "folder-a", added[0].id] },
+                { id: "a", name: "Alpha", data: ["other", "folder-a"] },
+            ]);
+            expect(page.tiles()).toEqual([
+                `${language.itemFolders.back}: Zeta`,
+                "folder-a",
+                "folder-b",
+                added[0].id,
+                "add",
+            ]);
+            expect(selection.personaId).toBe(action === "create" ? added[0].id : "root-b");
+        },
+    );
+});
+
 // The Module Link section: the linkable list is the catalog's non-MCP modules with a non-blank id,
 // each id once (the first, as the resolvers pick), named by `name` or by the id when the name is
 // blank, sorted by that name and filtered by the search; a duplicate id or a nameless module does not
-// break the render. A row toggles the id on the persona the editor shows (the open chat's bound
-// persona, else the tab's), written in canonical form so the mirror equals what the server stores:
+// break the render. A row toggles the id on the persona the editor shows (the tab's selected
+// persona, also with a chat open), written in canonical form so the mirror equals what the server stores:
 // unknown ids stay, blank ones go. An unmatched search says so; a catalog without a linkable module
 // says that instead.
 describe("PersonaSettings module links", () => {
@@ -398,10 +691,14 @@ describe("PersonaSettings module links", () => {
         expect(page.names()).toEqual(["해변"]);
     });
 
-    it("a row toggles the id on the open chat's bound persona in canonical form, keeping unknown ids and dropping blank ones; the tab's persona is untouched", () => {
+    it("a row toggles the id on the tab's selected persona in canonical form, keeping unknown ids and dropping blank ones; the chat's bound persona is untouched", () => {
         install(catalog, { modules: ["missing", "  ", "zeta", "zeta"] });
+        // The tab selects `Bob` (the one with links); the open chat binds `Ann`.
+        selectPersona("p2");
+        chatBindingPatch(refK, { personaId: "p1" });
         const page = renderLinks();
-        expect(activePersona.id).toBe("p2");
+        expect(activePersona.id).toBe("p1");
+        expect(editedPersona.id).toBe("p2");
         expect(page.pressed()).toEqual(["Zeta"]);
 
         page.rowNamed("Dup A").click();
@@ -415,10 +712,14 @@ describe("PersonaSettings module links", () => {
         expect(persona("p2").modules).toEqual(["missing", "dup"]);
         expect(page.pressed()).toEqual(["Dup A"]);
 
-        // With the chat unbound the editor shows the tab's persona, and a toggle writes that one.
+        // A change of the chat's binding leaves the toggles on the tab's persona.
         chatBindingPatch(refK, { personaId: null });
         flushSync();
-        expect(activePersona.id).toBe("p1");
+        expect(page.pressed()).toEqual(["Dup A"]);
+
+        // A selection change moves them, and a toggle writes the newly selected one.
+        selectPersona("p1");
+        flushSync();
         expect(page.pressed()).toEqual([]);
         page.rowNamed("Zeta").click();
         flushSync();

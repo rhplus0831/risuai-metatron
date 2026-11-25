@@ -2,7 +2,9 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes } from "./assetSweepFixtures.ts";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ResourceReadKindsResult } from "../../../shared/resources.ts";
 import {
@@ -449,6 +451,62 @@ describe("POST /api/backups/import-upstream/prepare and /commit", () => {
         expect(s.context.upstreamStaging.full).toBe(false);
     });
 
+    it.each(["declared upload", "undeclared indexed assets", "space lost after spooling"])(
+        "refuses prepare for insufficient disk space at %s, then imports a fitting retry",
+        async (admission) => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const bytes = upstreamArchive();
+            const declared = admission !== "undeclared indexed assets";
+            const beforeSpool = admission === "declared upload";
+            const estimate = beforeSpool ? bytes.byteLength : PROFILE.byteLength + JOY.byteLength;
+            const free = diskNeeded(estimate) - 1;
+            const disk = vi.fn(async () => diskWithFree(free));
+            const runner = vi.fn(inProcess);
+            const s = await server({ assetLifecycle: { statfs: disk }, upstreamImport: { runner } });
+            const epoch = s.epoch;
+            disk.mockClear();
+            if (admission === "space lost after spooling") {
+                disk.mockResolvedValueOnce(diskWithFree(diskNeeded(bytes.byteLength)));
+            }
+            const input = beforeSpool ? unreadBody() : null;
+            const response = await prepareRequest(s, input?.body ?? bytes, {
+                headers: declared ? { "content-length": String(bytes.byteLength) } : {},
+            });
+            expect(response.status).toBe(507);
+            expect(await response.json()).toEqual({
+                error: "Insufficient Storage",
+                needed: diskNeeded(estimate),
+                free,
+            });
+            if (input) expect(input.reads()).toBe(0);
+            expect(runner).not.toHaveBeenCalled();
+            expect(disk).toHaveBeenCalledTimes(admission === "space lost after spooling" ? 2 : 1);
+            expect(s.context.upstreamStaging.size).toBe(0);
+            expect(staged(s)).toEqual([]);
+            expect(assetFiles(s)).toEqual([]);
+            expect(await listBackups(s)).toEqual([]);
+            expect(await s.readEpoch()).toBe(epoch);
+            expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(404);
+
+            disk.mockResolvedValue(diskWithFree(Number.MAX_SAFE_INTEGER));
+            const prepared = (
+                await lines(await prepareRequest(s, bytes, { headers: { "content-length": String(bytes.byteLength) } }))
+            ).at(-1);
+            expect(prepared.token).toMatch(TOKEN);
+            expect(runner).toHaveBeenCalledTimes(1);
+            const committed = await commitRequest(s, { token: prepared.token });
+            expect(committed.status).toBe(200);
+            expect(await committed.json()).toMatchObject({ assetsWritten: 2, assetsSkipped: 0 });
+            await s.readEpoch();
+            expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
+            expect(assetFiles(s)).toEqual(["3f2a9c.png", "joy.png"]);
+            expect(readFileSync(path.join(assetDir(s), "3f2a9c.png"))).toEqual(PROFILE);
+            expect(readFileSync(path.join(assetDir(s), "joy.png"))).toEqual(JOY);
+            expect(s.context.upstreamStaging.size).toBe(0);
+            expect(staged(s)).toEqual([]);
+        },
+    );
+
     it("refuses a Risu Account backup, a version-2 archive, a damaged archive, no body, and a stale epoch before anything streams, writing nothing", async () => {
         const s = await server();
         const epoch = s.epoch;
@@ -777,6 +835,7 @@ describe("createUpstreamImportStaging", () => {
             selection: { promptPresetId: "p", modelPresetId: "m", personaId: "u" },
             epoch: "e",
             writeCount: 0,
+            databaseReport: { size: 0, mtimeMs: 0, ino: 0, sha256: "" },
         };
     };
 
@@ -892,4 +951,177 @@ describe("spool with a signal", () => {
         await expect(spool(body, file, 1000, new AbortController().signal)).resolves.toBe(true);
         expect(readFileSync(file, "utf-8")).toBe("whole body");
     });
+});
+
+/** Hold the first hash read, after the commit took its token and before it can enter maintenance. */
+function holdStagedHash(file: string) {
+    const entered = deferred();
+    const release = deferred();
+    const open = fs.open;
+    let held = false;
+    vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        if (String(args[0]) === file) {
+            const read = handle.read.bind(handle);
+            handle.read = (async (...readArgs: unknown[]) => {
+                if (!held) {
+                    held = true;
+                    entered.resolve();
+                    await release.promise;
+                }
+                return Reflect.apply(read, handle, readArgs);
+            }) as typeof handle.read;
+        }
+        return handle;
+    });
+    return { entered, release };
+}
+
+describe("upstream commit verification window", () => {
+    it.each(["write", "epoch", "shutdown"] as const)(
+        "rechecks %s after hashing before maintenance and preserves ownership of staging",
+        async (change) => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const s = await server();
+            const prepared = await prepare(s);
+            const owned = s.context.upstreamStaging.get(prepared.token)!;
+            const snapshot = change === "epoch" ? await s.context.snapshots.snapshotNow() : null;
+            const epoch = s.epoch;
+            const before = await (await s.list("characters")).json();
+            const { entered, release } = holdStagedHash(owned.databaseFile);
+            const committing = commitRequest(s, { token: prepared.token });
+            await entered.promise;
+            expect(s.context.upstreamStaging.get(prepared.token)).toBeNull();
+            expect(existsSync(owned.staging)).toBe(true);
+            expect(s.context.snapshots.gate.active).toBe(false);
+            if (change === "write") {
+                await s.create("characters", "during-hash", character("during-hash"));
+            } else if (change === "epoch") {
+                const restored = await s.request(`/api/backups/${snapshot!.id}/restore`, { method: "POST" });
+                expect(restored.status).toBe(200);
+            } else {
+                s.context.beginShutdown();
+            }
+            const backups = s.context.snapshots.list();
+            release.resolve();
+            const result = await committing;
+            expect(result.status).toBe(change === "write" ? 409 : change === "epoch" ? 412 : 503);
+            if (change === "write") {
+                expect(await result.json()).toEqual({ error: "changedSinceReview", writes: 1 });
+                expect(await s.readEpoch()).toBe(epoch);
+                expect((await s.get("characters", "during-hash")).status).toBe(200);
+            } else if (change === "epoch") {
+                expect(await result.json()).toEqual({ error: "EpochMismatch", epoch: await s.readEpoch() });
+                expect(s.epoch).not.toBe(epoch);
+            } else {
+                expect(await result.json()).toEqual({ error: "The server is shutting down" });
+                // Shutdown closes route admission, so inspect the persisted epoch and rows directly.
+                const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+                try {
+                    expect(db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get()!.value).toBe(epoch);
+                    expect(db.prepare("SELECT * FROM resources WHERE kind = 'characters'").all()).toEqual([]);
+                } finally {
+                    db.close();
+                }
+            }
+            expect(s.context.snapshots.list()).toEqual(backups);
+            expect(assetFiles(s)).toEqual([]);
+            if (change !== "shutdown") {
+                expect(s.context.upstreamStaging.get(prepared.token)).toMatchObject({ staging: owned.staging });
+                expect(existsSync(owned.staging)).toBe(true);
+                if (change === "write") {
+                    const retried = await commitRequest(s, { token: prepared.token, acceptWrites: 1 });
+                    expect(retried.status).toBe(200);
+                    await s.readEpoch();
+                    expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
+                    expect((await s.get("characters", "during-hash")).status).toBe(404);
+                } else {
+                    expect(await (await s.list("characters")).json()).toMatchObject({
+                        items: (before as { items: unknown[] }).items,
+                    });
+                    s.context.beginShutdown();
+                    await s.context.upstreamStaging.close();
+                    expect((await commitRequest(s, { token: prepared.token })).status).toBe(503);
+                }
+            }
+            expect(existsSync(owned.staging)).toBe(false);
+            expect(staged(s)).toEqual([]);
+        },
+    );
+
+    it("commits without reading or normalizing stored rows on the serving thread", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let measuring = false;
+        let normalizedRows = 0;
+        const rowReads: string[] = [];
+        const prepareSql = DatabaseSync.prototype.prepare;
+        vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepareSql.call(this, sql);
+            if (
+                /^\s*SELECT\b/i.test(sql) &&
+                /\bFROM\s+(?:(?:main|staged)\.)?(resources|chats|messages|chatOrders|chatCheckpoints|checkpointPages|chatSummaries)\b/i.test(
+                    sql,
+                ) &&
+                !/^\s*SELECT\s+(?:1|COUNT\()/i.test(sql)
+            ) {
+                for (const method of ["all", "get", "iterate"] as const) {
+                    const original = statement[method];
+                    Object.assign(statement, {
+                        [method]: function (...args: unknown[]) {
+                            if (measuring) rowReads.push(sql);
+                            return Reflect.apply(original, statement, args);
+                        },
+                    });
+                }
+            }
+            return statement;
+        });
+        const resourceKinds = DEFAULT_RESOURCE_KINDS.map((kind) => ({
+            ...kind,
+            normalize(input: unknown, context: { id: string }) {
+                if (measuring && input !== undefined) normalizedRows++;
+                return kind.normalize(input, context);
+            },
+        }));
+        const s = await server({ resourceKinds, upstreamImport: { runner: inProcess } });
+        const prepared = await prepare(s);
+        measuring = true;
+        const result = await commitRequest(s, { token: prepared.token });
+        measuring = false;
+        expect(result.status).toBe(200);
+        expect(normalizedRows).toBe(0);
+        expect(rowReads).toEqual([]);
+        await s.readEpoch();
+        expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
+    });
+});
+
+it("reserves the large live safety copy at commit and returns a short-disk token for retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let free = Number.MAX_SAFE_INTEGER;
+    const s = await server({ assetLifecycle: { statfs: async () => diskWithFree(free) } });
+    await s.create("characters", "large-live", { chaId: "large-live", desc: "x".repeat(2 * 1024 * 1024) });
+    const prepared = await prepare(s);
+    const folder = staged(s).find((name) => name.startsWith("upstream-"))!;
+    const sqliteFiles = readdirSync(path.join(tmpDir(s), folder)).filter((name) => name.endsWith(".sqlite"));
+    const stagedDb = sqliteFiles.find((name) => name.includes("staged")) ?? sqliteFiles[0];
+    const stagedBytes = (await fs.stat(path.join(tmpDir(s), folder, stagedDb))).size;
+    const live = liveBytes(s.savePath);
+    expect(live).toBeGreaterThan(stagedBytes);
+    free = diskNeeded(stagedBytes);
+    const body = { token: prepared.token, ...prepared.selection };
+    const response = await commitRequest(s, body);
+    expect(response.status).toBe(507);
+    expect(await response.json()).toEqual({
+        error: "Insufficient Storage",
+        needed: diskNeeded(live + stagedBytes),
+        free,
+    });
+    expect((await s.get("characters", "large-live")).status).toBe(200);
+    expect(await listBackups(s)).toEqual([]);
+    free = Number.MAX_SAFE_INTEGER;
+    const retry = await commitRequest(s, body);
+    expect(retry.status, await retry.clone().text()).toBe(200);
+    await s.readEpoch();
+    expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
 });

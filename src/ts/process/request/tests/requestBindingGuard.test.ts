@@ -24,11 +24,12 @@ const stubs = vi.hoisted(() => ({
 }));
 
 vi.mock("src/ts/storage/serverAuth", () => ({ authFetch: vi.fn(), getNodeServerProxyAuth: async () => "" }));
-vi.mock("src/ts/storage/resourceClient", () => ({
-    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
-    getResourceEpoch: () => "epoch-1",
-    epochMismatch: (epoch: string) => new Error(`replaced ${epoch}`),
-}));
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        readRefs: (...args: unknown[]) => stubs.readRefs(...args),
+        getResourceEpoch: () => "epoch-1",
+    }),
+);
 vi.mock("src/ts/process/request/transport", () => ({ requestServer: stubs.requestServer }));
 vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: (...args: unknown[]) => stubs.getTools(...args) }));
 vi.mock("src/ts/plugins/pluginHooks", () => ({ pluginHooks: stubs.hooks }));
@@ -67,10 +68,11 @@ import { language } from "src/lang";
 import { LLMFlags, LLMFormat } from "src/ts/model/types";
 import { setChannelCallSource } from "src/ts/network/channelCallSource";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { selectChat } from "src/ts/storage/chatStore.svelte";
+import { selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
+import { chatOrphanedOverrideEntries } from "../../loreOverrides";
 import { requestChatData, requestChatDataMain } from "../request";
 
 const refBound = { chaId: "a", chatId: "bound" };
@@ -224,6 +226,25 @@ describe("the send guard of a chat's request", () => {
         // No chat, none selected: the selection.
         expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-2" });
         expect(provider2).toHaveBeenCalledTimes(1);
+    });
+
+    it("allows non-job plugin requests for a fully bound chat with orphaned lore overrides", async () => {
+        setChatMeta(refBound, {
+            loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+        });
+        expect(chatOrphanedOverrideEntries(refBound)).toEqual([{ id: "gone", name: "Gone entry" }]);
+
+        for (const request of [requestChatData, requestChatDataMain]) {
+            expect(await request(argOf({ pluginContext: boundContext() }), "model")).toEqual({
+                type: "success",
+                result: "from prov-1",
+                model: "custom",
+            });
+        }
+
+        expect(provider1).toHaveBeenCalledTimes(2);
+        expect(provider2).not.toHaveBeenCalled();
+        expect(stubs.requestServer).not.toHaveBeenCalled();
     });
 
     it("runs a request without a chat on the views: the selected chat's bound presets where they exist, else the selection, with a bare scope its parameters read too, never refused by that chat's binding", async () => {

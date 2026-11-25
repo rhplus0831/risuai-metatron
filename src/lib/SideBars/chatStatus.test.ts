@@ -117,7 +117,7 @@ describe("sidebar chat statuses", () => {
                 null,
             ]);
         }
-        expect(CHAT_STATUS_PRIORITY).toEqual(["recovery", "refused", "generating", "memory", "unseen"]);
+        expect(CHAT_STATUS_PRIORITY).toEqual(["recovery", "refused", "generating", "memory", "unseen", "health"]);
         expect(
             resolveChatStatus({ recovery: new Set(), generating: new Set(), unseen: new Set() }, keys[0]),
         ).toBeNull();

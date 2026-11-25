@@ -1,13 +1,17 @@
+import { normalizeCandidateFields } from "../../../shared/rerollCandidates.ts";
 import { randomUUID } from "node:crypto";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
+import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
+import { oocLogError, oocSegmentError, oocTogglesError } from "../../../shared/ooc.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { isValidResourceId, ResourceValidationError } from "./resourceStore.ts";
 
 /**
  * Pure normalizers for chats. Minimum shapes only, as for the plain record kinds: the client
  * keeps building chats and messages; the server checks what it needs to store and address them and
- * fills the three defaults every reader relies on (`name`, `note`, `localLore`).
+ * fills the defaults readers rely on (`name`, `note`, `localLore`, `fmIndex`). Lore overrides, tool
+ * calls, and OOC metadata are checked when present because their readers rely on their stored shapes.
  */
 
 /** Version of the stored chat metadata, kept in `chats.schemaVersion`. */
@@ -23,7 +27,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * The stored metadata of chat `id`: every field of the input except `message` and the client-only
  * streaming flags, with `id` set and `name`, `note`, `localLore`, `fmIndex` (-1) defaulted. A present `id`
- * must equal the chat id.
+ * must equal the chat id. Present lore overrides, tool calls, OOC log, segment, and toggles are validated.
  */
 export function normalizeChatMeta(input: unknown, id: string): Record<string, unknown> {
     if (!isPlainObject(input)) {
@@ -38,7 +42,6 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
             meta[key] = value;
         }
     }
-    meta.id = id;
     meta.name ??= "";
     meta.note ??= "";
     meta.localLore ??= [];
@@ -63,6 +66,27 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     if (meta.toolCalls !== undefined) {
         assertToolCalls(meta.toolCalls);
     }
+    if (meta.oocLog !== undefined) {
+        const error = oocLogError(meta.oocLog);
+        if (error !== null) {
+            throw new ResourceValidationError(error);
+        }
+    }
+    if (meta.oocSegment !== undefined) {
+        const error = oocSegmentError(meta.oocSegment);
+        if (error !== null) {
+            throw new ResourceValidationError(error);
+        }
+    }
+    if (meta.oocToggles !== undefined) {
+        const error = oocTogglesError(meta.oocToggles);
+        if (error !== null) {
+            throw new ResourceValidationError(error);
+        }
+    }
+    // Last, after the defaults: the copy above drops `id`, so a chat normalized again keeps its key
+    // order and stored string.
+    meta.id = id;
     return meta;
 }
 
@@ -97,21 +121,6 @@ export function assertLoreOverrides(value: unknown): asserts value is { entry: {
             );
         }
     }
-}
-
-/**
- * The first override per `entry.id`, in array order. The merge already applies only the first
- * (`shared/lore/overrides.ts`), so dropping the later ones changes no behavior.
- */
-function firstOverridePerId<T extends { entry: { id: string } }>(overrides: T[]): T[] {
-    const seen = new Set<string>();
-    return overrides.filter((override) => {
-        if (seen.has(override.entry.id)) {
-            return false;
-        }
-        seen.add(override.entry.id);
-        return true;
-    });
 }
 
 /** One entry of `chat.toolCalls`, and its size (`MAX_TOOL_CALL_RECORD_BYTES`). */
@@ -150,8 +159,9 @@ export function assertPatchableMetaKeys(keys: readonly string[]) {
  * One message as stored: a `user` or `char` role, string `data`, and a valid `chatId`. A `translation`
  * that is not a `MessageTranslation` is dropped (a copy without it is returned), never refused: an
  * imported chat keeps its messages (the tab's chat module drops it the same way, `prepareMessages`).
+ * Candidate fields are checked independently: op writes refuse invalid fields; imports drop them.
  */
-export function normalizeMessage(input: unknown): Record<string, unknown> {
+export function normalizeMessage(input: unknown, strictCandidates = false): Record<string, unknown> {
     if (!isPlainObject(input)) {
         throw new ResourceValidationError("message must be an object");
     }
@@ -164,12 +174,20 @@ export function normalizeMessage(input: unknown): Record<string, unknown> {
     if (!isValidResourceId(input.chatId)) {
         throw new ResourceValidationError("message.chatId must be a valid id");
     }
-    if (Object.hasOwn(input, "translation") && !isMessageTranslation(input.translation)) {
-        const message = { ...input };
-        dropInvalidTranslation(message);
-        return message;
+    const message = normalizeCandidateFields(
+        input,
+        strictCandidates
+            ? (field) => {
+                  throw new ResourceValidationError(`message.${field} is malformed or exceeds its size limit`);
+              }
+            : undefined,
+    );
+    if (Object.hasOwn(message, "translation") && !isMessageTranslation(message.translation)) {
+        const copy = { ...message };
+        dropInvalidTranslation(copy);
+        return copy;
     }
-    return input;
+    return message;
 }
 
 /**
@@ -177,7 +195,7 @@ export function normalizeMessage(input: unknown): Record<string, unknown> {
  * gets a new one, and a later duplicate within the list is renamed (the first keeps its id). Returns
  * copies; the input is not changed.
  */
-export function normalizeMessageList(input: unknown): Record<string, unknown>[] {
+export function normalizeMessageList(input: unknown, strictCandidates = false): Record<string, unknown>[] {
     if (input === undefined) {
         return [];
     }
@@ -194,6 +212,6 @@ export function normalizeMessageList(input: unknown): Record<string, unknown>[] 
             message.chatId = randomUUID();
         }
         seen.add(message.chatId as string);
-        return normalizeMessage(message);
+        return normalizeMessage(message, strictCandidates);
     });
 }

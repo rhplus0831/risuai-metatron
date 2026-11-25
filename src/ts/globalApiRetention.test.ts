@@ -14,12 +14,18 @@ vi.mock("./plugins/plugins.svelte", () => ({}));
 vi.mock("./alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("./parser/parser.svelte", () => ({}));
 vi.mock("./characterCards", () => ({}));
-vi.mock("./storage/chatStore.svelte", () => ({}));
+vi.mock("./storage/chatStore.svelte", async () =>
+    (await import("./storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("./storage/selection.svelte", () => ({}));
-vi.mock("./storage/resourceClient", () => ({}));
-vi.mock("./storage/resourceSync.svelte", () => ({ saving: false }));
+vi.mock("./storage/resourceClient", async () =>
+    (await import("./storage/tests/resourceClientMock")).createResourceClientMock(),
+);
+vi.mock("./storage/resourceSync.svelte", async () =>
+    (await import("./tests/bootMocks")).createBootMock("resourceSync"),
+);
 vi.mock("./storage/characterOrder", () => ({}));
-vi.mock("./storage/assetClient", () => ({ readAsset: vi.fn(), writeAsset: vi.fn() }));
+vi.mock("./storage/assetClient", async () => (await import("./storage/tests/assetClientMock")).createAssetClientMock());
 vi.mock("./gui/animation", () => ({}));
 vi.mock("./gui/colorscheme", () => ({}));
 vi.mock("src/lang", () => ({}));
@@ -30,6 +36,7 @@ vi.mock("./storage/serverAuth", async () => (await import("./storage/tests/serve
 import { readAsset } from "./storage/assetClient";
 import { getNodeServerProxyAuth } from "./storage/serverAuth";
 import {
+    AppendableBuffer,
     addFetchLog,
     appendFetchLog,
     getFetchData,
@@ -60,13 +67,14 @@ const entry = (id: string, body = "", header = "", response = "") => ({
 const fetchMock = vi.fn();
 const writers = ["addFetchLog", "appendFetchLog", "globalFetch"] as const;
 type Writer = (typeof writers)[number];
+type LogPayload = { body: unknown; headers: Record<string, string>; response: unknown };
 const payload = (text = "x") => ({ body: { text }, headers: { text }, response: { text } });
-const serialized = (data: ReturnType<typeof payload>) => ({
+const serialized = (data: LogPayload) => ({
     body: JSON.stringify(data.body, null, 2),
     header: JSON.stringify(data.headers, null, 2),
     response: JSON.stringify(data.response, null, 2),
 });
-async function write(writer: Writer, id: string, data = payload()) {
+async function write(writer: Writer, id: string, data: LogPayload = payload()) {
     if (writer === "appendFetchLog") {
         appendFetchLog({ ...entry(id), ...serialized(data) });
     } else if (writer === "addFetchLog") {
@@ -93,6 +101,26 @@ function deferred<T>() {
     });
     return { promise, resolve };
 }
+
+it("AppendableBuffer appends after a full deappend and preserves retained bytes and absolute offsets", () => {
+    const buffer = new AppendableBuffer();
+    buffer.append(Uint8Array.from({ length: 128 }, (_, i) => i));
+    buffer.deappend(128);
+    expect(buffer.buffer).toEqual(new Uint8Array());
+    expect(buffer.length()).toBe(128);
+
+    buffer.append(new Uint8Array([201, 202, 203, 204]));
+    expect(buffer.buffer).toEqual(new Uint8Array([201, 202, 203, 204]));
+    expect(buffer.slice(128, 132)).toEqual(new Uint8Array([201, 202, 203, 204]));
+    expect(buffer.length()).toBe(132);
+
+    buffer.deappend(2);
+    buffer.append(new Uint8Array([205, 206]));
+    expect(buffer.buffer).toEqual(new Uint8Array([203, 204, 205, 206]));
+    expect(buffer.slice(131, 134)).toEqual(new Uint8Array([204, 205, 206]));
+    expect(buffer.slice(130, 1000)).toEqual(new Uint8Array([203, 204, 205, 206]));
+    expect(buffer.length()).toBe(134);
+});
 
 beforeEach(() => {
     logs.length = 0;
@@ -266,6 +294,108 @@ afterEach(() => {
 });
 
 describe("tab request log retention", () => {
+    it("redacts sign-in headers, form and JSON credentials through every writer while preserving ordinary bodies", async () => {
+        const credentials = {
+            access_token: "sample-access-token-value",
+            refresh_token: "sample-refresh-token-value",
+            id_token: "sample-id-token-value",
+            client_secret: "sample-client-secret-value",
+            code_verifier: "sample-verifier-value",
+            token: "sample-token-value",
+            code: "sample-authorization-code-value",
+        };
+        const masked = {
+            access_token: "[redacted]",
+            refresh_token: "[redacted]",
+            id_token: "[redacted]",
+            client_secret: "[redacted]",
+            code_verifier: "[redacted]",
+            token: "[redacted]",
+            code: "[redacted]",
+        };
+        const exchange = { grant_type: "authorization_code", client_id: "sample-client", ...credentials };
+        const credentialHeaders = {
+            Authorization: "Bearer sample-header-token-value",
+            "Proxy-Authorization": "Bearer sample-header-token-value",
+            "X-API-Key": "sample-header-token-value",
+            "X-Goog-Api-Key": "sample-header-token-value",
+            "Api-Key": "sample-header-token-value",
+            ApiKey: "sample-header-token-value",
+            "Xi-Api-Key": "sample-header-token-value",
+            Cookie: "session=sample-header-token-value",
+            "Set-Cookie": "session=sample-header-token-value",
+        };
+        const headers = {
+            ...credentialHeaders,
+            "Content-Type": "application/json",
+            "X-Request-Id": "sample-request",
+            "x-empty": "",
+        };
+        const expectedHeaders = {
+            ...Object.fromEntries(Object.keys(credentialHeaders).map((name) => [name, "[redacted]"])),
+            "Content-Type": "application/json",
+            "X-Request-Id": "sample-request",
+            "x-empty": "",
+        };
+        const response = { ...credentials, grant_type: "authorization_code", token_type: "Bearer", expires_in: 3600 };
+
+        for (const writer of writers) {
+            for (const encoding of ["form", "JSON"] as const) {
+                const data: LogPayload = {
+                    headers,
+                    body:
+                        encoding === "form"
+                            ? new URLSearchParams(exchange).toString() + "&refresh%5ftoken=sample-repeated-token-value"
+                            : { ...exchange, nested: [{ ...credentials, grant_type: "authorization_code" }] },
+                    response,
+                };
+                const original = structuredClone(data);
+                await write(writer, `${writer}-${encoding}`, data);
+                const stored = logs[0];
+                expect(JSON.parse(stored.header), `${writer} headers`).toEqual(expectedHeaders);
+                expect(JSON.parse(stored.response), `${writer} response`).toEqual({
+                    ...masked,
+                    grant_type: "authorization_code",
+                    token_type: "Bearer",
+                    expires_in: 3600,
+                });
+                if (encoding === "form") {
+                    const text = writer === "addFetchLog" ? stored.body : JSON.parse(stored.body);
+                    const form = new URLSearchParams(text);
+                    expect(Object.fromEntries(form), writer).toEqual({
+                        grant_type: "authorization_code",
+                        client_id: "sample-client",
+                        ...masked,
+                    });
+                    expect(form.getAll("refresh_token"), writer).toEqual(["[redacted]", "[redacted]"]);
+                } else {
+                    expect(JSON.parse(stored.body), writer).toEqual({
+                        grant_type: "authorization_code",
+                        client_id: "sample-client",
+                        ...masked,
+                        nested: [{ ...masked, grant_type: "authorization_code" }],
+                    });
+                }
+                for (const value of [
+                    ...Object.values(credentials),
+                    "sample-header-token-value",
+                    "sample-repeated-token-value",
+                ]) {
+                    expect(JSON.stringify(stored), `${writer} ${encoding}`).not.toContain(value);
+                }
+                expect(data, `${writer} input`).toEqual(original);
+            }
+
+            const ordinary = {
+                body: { model: "sample-model", messages: [{ role: "user", content: "hello" }], code: "ordinary-code" },
+                headers: { "Content-Type": "application/json" },
+                response: { message: "ordinary response", code: "ordinary-code" },
+            };
+            await write(writer, "ordinary", ordinary);
+            expect(logs[0], writer).toMatchObject(serialized(ordinary));
+        }
+    });
+
     it("keeps the newest 20 through every writer and mixed writes, preserving the array and chat lookup", async () => {
         for (const sequence of [
             ...writers.map((writer) => Array<Writer>(25).fill(writer)),
@@ -334,6 +464,39 @@ describe("held file sources", () => {
         let serial = 0;
         create = vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:held-${++serial}`);
         revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    });
+
+    it("rejects a shared failed read only for opted-in readers and lets the next read recover", async () => {
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        const failure = new TypeError("Asset storage unavailable");
+        vi.mocked(readAsset).mockRejectedValueOnce(failure);
+        const loc = path();
+        const plain = getFileSrc(loc);
+        const strict = getFileSrc(loc, { rejectFailedReads: true });
+        const held = holdFileSrc(loc);
+        expect(await Promise.allSettled([plain, strict, held.src])).toEqual([
+            { status: "fulfilled", value: "" },
+            { status: "rejected", reason: failure },
+            { status: "fulfilled", value: "" },
+        ]);
+        held.release();
+        expect(readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+        expect(await getFileSrc(loc, { rejectFailedReads: true })).toBe("blob:held-1");
+        expect(readAsset).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(GRACE);
+        expect(revoke).not.toHaveBeenCalled();
+    });
+
+    it("resolves missing files, empty files and an empty key to an empty source even with rejection enabled", async () => {
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        for (const bytes of [null, Buffer.alloc(0)]) {
+            vi.mocked(readAsset).mockResolvedValueOnce(bytes as Buffer);
+            await expect(getFileSrc(path(), { rejectFailedReads: true })).resolves.toBe("");
+        }
+        vi.mocked(readAsset).mockRejectedValue(new Error("An empty key must not be read"));
+        await expect(getFileSrc("", { rejectFailedReads: true })).resolves.toBe("");
+        expect(readAsset).toHaveBeenCalledTimes(2);
+        expect(create).not.toHaveBeenCalled();
     });
 
     it("shares one load across holds and reloads only 100 ms after the last idempotent release", async () => {
@@ -431,6 +594,8 @@ describe("held file sources", () => {
     });
 
     it("service-worker URLs share registration and survive every release without revocation", async () => {
+        // Worker URLs need a controlling worker.
+        vi.stubGlobal("navigator", { serviceWorker: { controller: {} } });
         setUsingSw(true);
         fetchMock.mockResolvedValueOnce({ json: async () => ({ able: false }) }).mockResolvedValueOnce({ ok: true });
         const loc = path();
@@ -465,6 +630,8 @@ describe("worker cache lookup", () => {
         vi.resetModules();
         api = await import("./globalApi.svelte");
         api.setUsingSw(true);
+        // Worker URLs need a controlling worker.
+        vi.stubGlobal("navigator", { serviceWorker: { controller: {} } });
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         create = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:worker-fallback");
         revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
@@ -472,6 +639,70 @@ describe("worker cache lookup", () => {
         open = vi.fn().mockResolvedValue({ match });
         vi.stubGlobal("caches", { open });
     });
+
+    it("invalidates worker sources after controller loss while preserving blob pins, holds and revocation", async () => {
+        create
+            .mockReturnValueOnce("blob:pinned-before-loss")
+            .mockReturnValueOnce("blob:held-before-loss")
+            .mockReturnValueOnce("blob:after-loss");
+        api.setUsingSw(false);
+        const pinnedKey = path();
+        const heldKey = path();
+        expect(await api.getFileSrc(pinnedKey)).toBe("blob:pinned-before-loss");
+        const held = api.holdFileSrc(heldKey);
+        expect(await held.src).toBe("blob:held-before-loss");
+        api.setUsingSw(true);
+        match.mockResolvedValue(new Response("cached bytes"));
+        const workerKey = path();
+        expect(await api.getFileSrc(workerKey)).toBe(workerUrl(workerKey));
+
+        vi.stubGlobal("navigator", { serviceWorker: { controller: null } });
+        api.invalidateWorkerFileSources();
+        expect(await api.getFileSrc(workerKey)).toBe("blob:after-loss");
+        expect(await api.getFileSrc(pinnedKey)).toBe("blob:pinned-before-loss");
+        const stillHeld = api.holdFileSrc(heldKey);
+        expect(await stillHeld.src).toBe("blob:held-before-loss");
+        expect(vi.mocked(readAsset).mock.calls).toEqual([[pinnedKey], [heldKey], [workerKey]]);
+        held.release();
+        await vi.advanceTimersByTimeAsync(GRACE);
+        expect(revoke).not.toHaveBeenCalled();
+        stillHeld.release();
+        await vi.advanceTimersByTimeAsync(GRACE - 1);
+        expect(revoke).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:held-before-loss");
+        expect(await api.getFileSrc(pinnedKey)).toBe("blob:pinned-before-loss");
+    });
+
+    it.each(["cache lookup", "registration"])(
+        "uses a blob when the controller disappears during an in-flight %s",
+        async (stage) => {
+            const loc = path();
+            const lookup = deferred<Response | undefined>();
+            const registration = deferred<{ ok: boolean }>();
+            match.mockReturnValue(lookup.promise);
+            fetchMock.mockReturnValue(registration.promise);
+            const held = api.holdFileSrc(loc);
+            const plain = api.getFileSrc(loc);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(match).toHaveBeenCalledExactlyOnceWith(workerUrl(loc));
+            if (stage === "registration") {
+                lookup.resolve(undefined);
+                await vi.advanceTimersByTimeAsync(0);
+                expect(fetchMock).toHaveBeenCalledWith(workerUrl(loc, "register"), expect.anything());
+            }
+            vi.stubGlobal("navigator", { serviceWorker: { controller: null } });
+            api.invalidateWorkerFileSources();
+            lookup.resolve(new Response("cached bytes"));
+            registration.resolve({ ok: true });
+            expect(await held.src).toBe("blob:worker-fallback");
+            expect(await plain).toBe("blob:worker-fallback");
+            expect(readAsset).toHaveBeenCalledExactlyOnceWith(loc);
+            held.release();
+            await vi.advanceTimersByTimeAsync(GRACE);
+            expect(revoke).not.toHaveBeenCalled();
+        },
+    );
 
     it("reads risuCache directly and shares an in-flight hit without worker or asset I/O", async () => {
         const loc = "assets/한글 image.png";

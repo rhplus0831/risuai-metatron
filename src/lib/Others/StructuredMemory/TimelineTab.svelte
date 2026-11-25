@@ -1,0 +1,1333 @@
+<script lang="ts">
+    import { ChevronDownIcon, ChevronRightIcon, Trash2Icon, XIcon } from "@lucide/svelte";
+    import { getAbortSignal, onDestroy, tick, untrack } from "svelte";
+    import { SvelteMap } from "svelte/reactivity";
+    import { language } from "src/lang";
+    import { alertConfirm, alertError, alertToast } from "src/ts/alert";
+    import {
+        CHAT_MEMORY_WRITE_DEADLINE_MS,
+        editStructuredMemory,
+        memoryChapterLayout,
+        memoryChapterOutOfDate,
+        memoryEventView,
+        memoryItemsUsed,
+        memoryPanelGreeting,
+        memoryMessageHasher,
+        memoryMessageIndexes,
+        memoryTextSearch,
+        memoryTimelineRows,
+        readStructuredMemoryChapters,
+        readStructuredMemoryContents,
+        readStructuredMemoryCoverage,
+        readStructuredMemoryRecord,
+        readStructuredMemoryStory,
+        reconcileMemoryCoverage,
+        removeStructuredMemoryChapters,
+        removeStructuredMemoryEvents,
+        type MemoryPanelTabProps,
+        type MemoryRunEventView,
+        type MemoryTimelineRow,
+        type StructuredMemoryCoverage,
+    } from "src/ts/process/structuredMemory.svelte";
+    import { characterList } from "src/ts/storage/characterStore.svelte";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
+    import { chatEntry, findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
+    import Button from "src/lib/UI/GUI/Button.svelte";
+    import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
+    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
+    import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import { chatHypaV3Preset, chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
+    import {
+        ADOPTED_WRITER_RUN,
+        formatStoryDate,
+        MEMORY_FIND_HITS_MAX,
+        MEMORY_FIND_QUERY_CHARS,
+        MEMORY_REMOVE_EVENTS_MAX,
+        memoryAnchorState,
+        memoryRerecordTarget,
+        normalizeStructuredMemorySettings,
+        storedMemoryGreeting,
+        STRUCTURED_MEMORY_LIMITS,
+        type MemoryChapter,
+        type StructuredMemoryChaptersAnswer,
+        type StructuredMemoryCoverageEvent,
+        type StructuredMemoryEdit,
+        type StructuredMemoryStoryEvent,
+    } from "../../../../shared/structuredMemory.ts";
+    import MemoryEventFacts from "./MemoryEventFacts.svelte";
+    import GreetingCitation from "./GreetingCitation.svelte";
+    import MemoryLinkButton from "./MemoryLinkButton.svelte";
+    import { pressMemoryChapters, pressMemoryRecord } from "./memoryRecordPress";
+    import { codeText, memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
+
+    /**
+     * Timeline opens in Read and holds the view choice while mounted. Coverage supplies titles and
+     * status at one revision. Held messages reconcile those facts and place them in chat order through
+     * memoryTimelineRows. Read omits retracted events and reads stories and chapters together once per
+     * refresh. Missing stories leave titles readable. A failed chapter read leaves loose date groups.
+     * A chapter stands at its first listed member still in Read and shows its members in current chat
+     * order. Loose events inside its span follow the chapter (the latest anchor for overlapping spans).
+     * Each remaining run groups by date and the preset's group size separately. Chapters and groups
+     * appear newest first, 30 at a time, with the newest open by default. Presses follow chapter ids or
+     * loose event ids. A chapter is a bordered card whose heading toggles its synopsis: closed, the
+     * heading itself carries a two-line preview; open, the whole synopsis shows with a second toggle
+     * for the member events, closed until pressed or revealed, and the chapter's actions. The
+     * out-of-date label sits in the heading so a closed chapter shows it. Only matching coverage,
+     * story and chapter revisions can label a chapter out of date. Each chapter action rereads
+     * chapters on settlement. Only the latest read can install, including after a removal or remake.
+     *
+     * A reader's font may render no visible weight difference, so a title never differs from the text
+     * under it by weight alone: Read sets chapter and event titles a size above their text, and a
+     * heading's counts and ages are smaller and muted.
+     *
+     * Read can search memory text even with no events. Submitting replaces the groups with page and
+     * event hits until the trimmed draft changes or Read closes. A page hit opens Pages. An event hit clears
+     * the search and reveals its row. A pending reveal waits for the groups to be visible to scroll.
+     *
+     * Read shows summaries and important stars. An open event shows its story and links to pages and
+     * sources. Manage lists every event newest first, unplaced rows last, with badges, facts, edits
+     * and repairs. Both views share the open record and its page and thread titles. A check notice
+     * counts stale or marked events once each and reveals the first in Manage without opening it.
+     *
+     * A jump opens its event in the current view, switching to Manage for a retracted event or an
+     * explicit Manage link. In Read the reveal waits for both the story and chapter reads to settle,
+     * then pages to the containing chapter or group, expands it (a chapter and its events) and
+     * scrolls to the open event.
+     * Manage can reveal its row as soon as coverage places it. An absent id gets one coverage reread.
+     * Only an accepted, successful answer can establish that the event is gone. All record text stays plain.
+     *
+     * Repairs name the coverage revision and reread whether accepted or refused: a record answer alone
+     * cannot replace a status derived from held messages. Keep sends the held anchor state; an unsaved
+     * local edit can therefore be refused `changed`. Retract asks first because no control reverses it.
+     * Re-record marks before pressing through `memoryRerecordTarget`; an existing mark goes straight to
+     * the press, so a failed press remains retryable.
+     * Edits and repairs refresh both stories and chapters in Read or invalidate both for the next
+     * switch from Manage. Text edits and mark releases also reread the open record. A draft keeps
+     * its base title and summary: a read that changes either closes it with `changed`, and selecting
+     * another event or closing the event discards it. Text edits share the repair's send guard; greeting
+     * choices hold their own request guard and use the same revisioned repair route.
+     */
+
+    let { chatRef, readOnly, refresh, focus, open, jump, rebuild }: MemoryPanelTabProps = $props();
+
+    /** The rows a list renders at once; a long chat stays cheap behind "show more". */
+    const ROWS_AT_ONCE = 200;
+    const GROUPS_AT_ONCE = 30;
+    const { eventTitleChars, eventSummaryChars } = STRUCTURED_MEMORY_LIMITS;
+
+    const text = language.structuredMemory.timeline;
+    const logText = language.structuredMemory.log;
+    const pagesText = language.structuredMemory.pages;
+    const panelText = language.structuredMemory.panel;
+    const repairText = text.repairs;
+
+    /** The route's answer, whose `revision` the next edit or repair names. */
+    let facts = $state.raw<StructuredMemoryCoverage | null>(null);
+    let failure = $state<string | null>(null);
+    let readNumber = 0;
+    type CoverageOutcome = "ok" | "failed" | "ignored";
+    let coverageRead = $state.raw<Promise<CoverageOutcome>>();
+    let view = $state<"read" | "manage">("read");
+    let query = $state("");
+    let composing = false;
+    const trimmedQuery = $derived(query.trim());
+    const search = memoryTextSearch({ chat: () => chatRef, refresh: () => refresh, draft: () => trimmedQuery });
+    const canSearch = $derived(
+        trimmedQuery.length > 0 &&
+            trimmedQuery.length <= MEMORY_FIND_QUERY_CHARS &&
+            !search.searching &&
+            !search.showing,
+    );
+    let stories = $state.raw<ReadonlyMap<string, StructuredMemoryStoryEvent>>(new Map());
+    let storyFailure = $state<string | null>(null);
+    let storyRevision = $state<string | null>(null);
+    /** The refresh at which Read last requested both the story and the chapters, including failures. */
+    let readAtRefresh: number | null = null;
+    let storyNumber = 0;
+    let readingStory = $state(false);
+    let chapterAnswer = $state.raw<StructuredMemoryChaptersAnswer | null>(null);
+    let chapterFailure = $state<string | null>(null);
+    let chaptersNumber = 0;
+    let readingChapters = $state(false);
+    let chapterAction = $state(false);
+    /** Numbers each chapter action; `settledAction` is the latest whose mutation has finished. */
+    let actionNumber = 0;
+    let settledAction = 0;
+    let mounted = true;
+    onDestroy(() => {
+        mounted = false;
+    });
+    /** One edit or repair at a time: while one is out the buttons are off. */
+    let sending = $state(false);
+
+    let shown = $state(ROWS_AT_ONCE);
+    let elementsShown = $state(GROUPS_AT_ONCE);
+    const groupPresses = new SvelteMap<string, boolean>();
+    const chapterPresses = new SvelteMap<string, boolean>();
+    /** Chapters whose member events are listed; the synopsis alone is the default reading. */
+    const chapterEventPresses = new SvelteMap<string, boolean>();
+    /** The expanded event, one at a time, and its record once read. */
+    let openId = $state<string | null>(null);
+    let openEvent = $state.raw<MemoryRunEventView | null>(null);
+    let openCorrected = $state(false);
+    let openRetracted = $state(false);
+    let openFailure = $state<string | null>(null);
+    let openNumber = 0;
+    /** The stored text the draft opened on, kept apart from its editable values. */
+    let editor = $state.raw<{ id: string; title: string; summary: string } | null>(null);
+    let draftTitle = $state("");
+    let draftSummary = $state("");
+    /** Page and thread titles by id; null until read, and a failed read leaves the ids. */
+    let pageTitles = $state.raw<ReadonlyMap<string, string> | null>(null);
+    let threadTitles = $state.raw<ReadonlyMap<string, string> | null>(null);
+    /** The `refresh` the titles were last read at. */
+    let titlesRead: number | null = null;
+    let titlesNumber = 0;
+    let timeline = $state<HTMLElement>();
+
+    const heldChat = $derived(findChat(chatRef));
+    const messages = $derived(heldChat?.message ?? []);
+    const owner = $derived(characterList().find((entry) => entry?.chaId === chatRef.chaId));
+    const greeting = $derived(memoryPanelGreeting(owner, heldChat));
+    const memoryOn = $derived(chatMemoryEnabled(chatEntry(chatRef), owner, chatMemorySettings()));
+    const chapterControlsOff = $derived(readOnly || chapterAction);
+    const greetingAvailable = $derived(greeting?.source != null);
+    const hashOf = memoryMessageHasher();
+    // With no chat held there is nothing to compare, which says nothing of its events.
+    const reconciled = $derived(
+        facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf, greeting?.source ?? null) : facts,
+    );
+    const rows = $derived(reconciled ? memoryTimelineRows(reconciled.events, messages) : []);
+    const manageRows = $derived(
+        [...rows].sort((a, b) => {
+            if (a.position === b.position) return 0;
+            if (a.position === Infinity) return 1;
+            if (b.position === Infinity) return -1;
+            return b.position - a.position;
+        }),
+    );
+    const toCheck = $derived(manageRows.filter(({ event }) => event.status === "stale" || event.rerecord));
+    const retractedEvents = $derived(rows.flatMap(({ event }) => (event.status === "retracted" ? [event] : [])));
+    /**
+     * Whether something `event` cites is still in the chat, so removing it hands that back to the writer:
+     * a held message, or the greeting while the chat has one. With no chat held nothing can be ruled out.
+     */
+    const citesHeld = (event: StructuredMemoryCoverageEvent) =>
+        !heldChat ||
+        event.messageIds.some((id) => messageIndexes.has(id)) ||
+        (greetingAvailable && storedMemoryGreeting(event.greeting) !== null);
+    const orphanedRetracted = $derived(retractedEvents.filter((event) => !citesHeld(event)));
+    const eventsPerGroup = $derived(
+        normalizeStructuredMemorySettings(
+            chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, chatEntry(chatRef))
+                ?.settings.structured,
+        ).eventsPerGroup,
+    );
+    const elements = $derived.by(() => {
+        const events = rows
+            .filter(({ event }) => event.status !== "retracted")
+            .map((row) => {
+                const id = row.event.id;
+                const story = stories.get(id);
+                return { ...row, id, story, date: story?.storyTime?.date };
+            });
+        return memoryChapterLayout(events, chapterAnswer?.chapters ?? [], eventsPerGroup).reverse();
+    });
+    const revisionsMatch = $derived(
+        storyRevision !== null && storyRevision === facts?.revision && storyRevision === chapterAnswer?.revision,
+    );
+    const usedEvents = $derived(memoryItemsUsed(messages, "event"));
+    const messageIndexes = $derived(memoryMessageIndexes(messages));
+    const controlsOff = $derived(readOnly || sending);
+    const titleLength = $derived(draftTitle.trim().length);
+    const draftFits = $derived(
+        titleLength > 0 &&
+            titleLength <= eventTitleChars &&
+            draftSummary.trim() !== "" &&
+            draftSummary.length <= eventSummaryChars,
+    );
+
+    const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
+
+    function submitSearch(event: SubmitEvent) {
+        event.preventDefault();
+        if (canSearch && !composing) void search.search(trimmedQuery);
+    }
+
+    function clearSearch() {
+        query = "";
+        search.clear();
+    }
+
+    $effect(() => {
+        if (view === "manage") {
+            clearSearch();
+            composing = false;
+        }
+    });
+
+    type ReadElement = (typeof elements)[number];
+
+    function elementOpen(element: ReadElement, newest: boolean) {
+        if (element.kind === "chapter") return chapterPresses.get(element.chapter.id) ?? newest;
+        if (element.events.some(({ id }) => groupPresses.get(id) === true)) return true;
+        return newest && !element.events.some(({ id }) => groupPresses.get(id) === false);
+    }
+
+    /** `events` also lists an opened chapter's events, for a reveal that targets one of them. */
+    function pressElement(element: ReadElement, expanded: boolean, events = false) {
+        if (element.kind === "chapter") {
+            chapterPresses.set(element.chapter.id, expanded);
+            if (expanded && events) chapterEventPresses.set(element.chapter.id, true);
+        } else {
+            for (const { id } of element.events) groupPresses.set(id, expanded);
+        }
+    }
+
+    function turnRange(element: ReadElement) {
+        const ages = element.events.map(({ turnsAgo }) => turnsAgo).filter((age) => age !== null);
+        if (!ages.length) return "";
+        const min = Math.min(...ages);
+        const max = Math.max(...ages);
+        return min === max ? text.turnsAgo(min) : text.turnsAgoRange(min, max);
+    }
+
+    function chapterDates(events: ReadElement["events"]) {
+        const first = events.find(({ date }) => date)?.date;
+        const last = events.findLast(({ date }) => date)?.date;
+        if (!first || !last) return "";
+        const start = formatStoryDate(first);
+        const end = formatStoryDate(last);
+        return start === end ? start : text.chapters.dates(start, end);
+    }
+
+    /** Reads the facts. An answer for another chat, or one a newer read replaced, changes nothing. */
+    async function readCoverage(): Promise<CoverageOutcome> {
+        const ref = chatRef;
+        const number = ++readNumber;
+        const result = await readStructuredMemoryCoverage(ref, CHAT_MEMORY_WRITE_DEADLINE_MS);
+        if (number !== readNumber || !sameChat(ref)) {
+            return "ignored";
+        }
+        if (result.outcome === "ok") {
+            facts = result.value;
+            failure = null;
+            return "ok";
+        }
+        failure = memoryReadFailureText(result);
+        return "failed";
+    }
+
+    async function read() {
+        coverageRead = readCoverage();
+        await coverageRead;
+    }
+
+    async function readTitles() {
+        const ref = chatRef;
+        const number = ++titlesNumber;
+        const result = await readStructuredMemoryContents(ref);
+        if (number === titlesNumber && result.outcome === "ok" && sameChat(ref)) {
+            pageTitles = new Map(result.value.pages.map(({ id, title }) => [id, title]));
+            threadTitles = new Map(result.value.threads.map(({ id, title }) => [id, title]));
+        }
+    }
+
+    /** A story failure keeps the coverage rows readable as titles. Only the newest read can fill them. */
+    async function readStory() {
+        const ref = chatRef;
+        const number = ++storyNumber;
+        readingStory = true;
+        const result = await readStructuredMemoryStory(ref);
+        if (number !== storyNumber || !sameChat(ref)) {
+            return;
+        }
+        readingStory = false;
+        if (result.outcome === "ok") {
+            stories = new Map(result.value.events.map((event) => [event.id, event]));
+            storyRevision = result.value.revision;
+            storyFailure = null;
+        } else {
+            stories = new Map();
+            storyRevision = null;
+            storyFailure = memoryReadFailureText(result);
+        }
+    }
+
+    async function readChapters() {
+        const ref = chatRef;
+        const number = ++chaptersNumber;
+        readingChapters = true;
+        const result = await readStructuredMemoryChapters(ref);
+        if (number !== chaptersNumber || !sameChat(ref)) return;
+        readingChapters = false;
+        // The newest read releases a finished action's lock, also when it supersedes the action's own reread.
+        if (chapterAction && settledAction === actionNumber) chapterAction = false;
+        chapterAnswer = result.outcome === "ok" ? result.value : null;
+        chapterFailure = result.outcome === "ok" ? null : text.chapters.readFailed(memoryReadFailureText(result));
+    }
+
+    function readStoryAndChapters() {
+        readAtRefresh = refresh;
+        return Promise.all([readStory(), readChapters()]);
+    }
+
+    /** A local edit can advance coverage without advancing the panel refresh. */
+    async function refreshAfterEdit() {
+        const coverage = read();
+        if (view === "read") {
+            await Promise.all([coverage, readStoryAndChapters()]);
+        } else {
+            readAtRefresh = null;
+            storyNumber++;
+            chaptersNumber++;
+            readingStory = false;
+            readingChapters = false;
+            storyRevision = null;
+            storyFailure = null;
+            chapterFailure = null;
+            stories = new Map();
+            chapterAnswer = null;
+            await coverage;
+        }
+    }
+
+    async function runChapterAction(press: (ref: ChatRef, beforeSend: () => boolean) => Promise<void>) {
+        if (chapterControlsOff) return;
+        const ref = chatRef;
+        const mine = ++actionNumber;
+        chapterAction = true;
+        try {
+            await press(ref, () => {
+                if (!mounted || !sameChat(ref) || readOnly) return false;
+                ++chaptersNumber;
+                return true;
+            });
+        } finally {
+            settledAction = mine;
+            if (mounted && sameChat(ref)) await readChapters();
+            if (actionNumber === mine) chapterAction = false;
+        }
+    }
+
+    function makeChapters(remake?: string) {
+        // Both a batch and a remake go through record admission, which refuses a chat with memory off.
+        if (!owner || !memoryOn) return;
+        const character = owner;
+        return runChapterAction((ref, beforeSend) =>
+            pressMemoryChapters(character, ref, remake, () => memoryOn && beforeSend()),
+        );
+    }
+
+    function removeChapter({ id, title }: MemoryChapter) {
+        return runChapterAction(async (ref, beforeSend) => {
+            if (!(await alertConfirm(text.chapters.removeConfirm(title))) || !beforeSend()) return;
+            const result = await removeStructuredMemoryChapters(ref, [id]);
+            if (result.outcome !== "ok") alertError(memoryReadFailureText(result));
+        });
+    }
+
+    async function readOpen(id: string, noticed = false) {
+        if (titlesRead !== refresh) {
+            titlesRead = refresh;
+            void readTitles();
+        }
+        const ref = chatRef;
+        const number = ++openNumber;
+        const result = await readStructuredMemoryRecord(ref, "events", id);
+        if (number !== openNumber || !sameChat(ref) || openId !== id) {
+            return;
+        }
+        if (result.outcome === "ok") {
+            const event = result.value.data;
+            const view = memoryEventView(event);
+            openEvent = view;
+            openCorrected = event.userCorrected === true;
+            openRetracted = event.status === "retracted";
+            openFailure = null;
+            // The editor's base is the view (a missing or non-string text reads as ""), so compare like with like.
+            if (editor && (editor.title !== view.title || editor.summary !== view.summary || openRetracted)) {
+                editor = null;
+                if (!noticed) {
+                    alertError(memoryReadFailureText({ outcome: "refused", reason: "changed" }));
+                }
+            }
+        } else {
+            openEvent = null;
+            openCorrected = false;
+            openRetracted = false;
+            openFailure = memoryReadFailureText(result);
+        }
+    }
+
+    $effect(() => {
+        refresh;
+        untrack(() => {
+            void read();
+            if (openId !== null) {
+                void readOpen(openId);
+            }
+        });
+    });
+
+    $effect(() => {
+        const atRefresh = refresh;
+        if (view !== "read") {
+            return;
+        }
+        untrack(() => {
+            if (readAtRefresh !== atRefresh) void readStoryAndChapters();
+        });
+    });
+
+    function openRow(id: string) {
+        editor = null;
+        openId = id;
+        openEvent = null;
+        openCorrected = false;
+        openRetracted = false;
+        openFailure = null;
+        void readOpen(id);
+    }
+
+    function toggle(id: string) {
+        if (openId === id) {
+            editor = null;
+            openNumber += 1;
+            openId = null;
+        } else {
+            openRow(id);
+        }
+    }
+
+    /** Runs one edit's or repair's steps, none while the panel is read-only or another is out. */
+    async function repairing(steps: () => Promise<void>) {
+        if (sending || readOnly) {
+            return;
+        }
+        sending = true;
+        try {
+            await steps();
+        } finally {
+            sending = false;
+        }
+    }
+
+    /**
+     * Sends a repair, made on the copy read at `facts.revision`, and shows the notice for a refusal. Either
+     * way the facts are read again: the status a row shows comes from the held messages joined with
+     * them, so the answer's record alone says nothing, and the next repair needs their revision.
+     */
+    async function sendRepair(edit: Extract<StructuredMemoryEdit, { kind: "event" }>, ref = chatRef): Promise<boolean> {
+        if (!facts) {
+            return false;
+        }
+        const result = await editStructuredMemory(ref, facts.revision, edit);
+        if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
+            alertError(memoryReadFailureText(result));
+        }
+        if (sameChat(ref)) {
+            await refreshAfterEdit();
+        }
+        return result.outcome === "ok";
+    }
+
+    /** Refreshes every text-bearing read after either outcome; only the currently open id is reread. */
+    async function sendTextEdit(edit: Extract<StructuredMemoryEdit, { kind: "eventText" | "eventRelease" }>) {
+        if (!facts) {
+            return;
+        }
+        const ref = chatRef;
+        // A record read already in flight may have been answered before this edit.
+        openNumber += 1;
+        const result = await editStructuredMemory(ref, facts.revision, edit);
+        if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
+            alertError(memoryReadFailureText(result));
+        }
+        if (!sameChat(ref)) {
+            return;
+        }
+        if (result.outcome === "ok" && edit.kind === "eventText" && editor?.id === edit.eventId) {
+            editor = null;
+        }
+        const reads = [refreshAfterEdit()];
+        if (openId !== null) {
+            reads.push(readOpen(openId, result.outcome === "refused" && result.reason === "changed"));
+        }
+        await Promise.all(reads);
+    }
+
+    function startEdit() {
+        if (!openEvent || openId === null || openRetracted || controlsOff || editor) {
+            return;
+        }
+        const { title, summary } = openEvent;
+        editor = { id: openId, title, summary };
+        draftTitle = title;
+        draftSummary = summary;
+    }
+
+    function saveText() {
+        if (!editor || !draftFits || openRetracted) {
+            return;
+        }
+        const edit = { kind: "eventText", eventId: editor.id, title: draftTitle, summary: draftSummary } as const;
+        return repairing(() => sendTextEdit(edit));
+    }
+
+    function releaseText() {
+        if (openId === null || !openEvent || !openCorrected) {
+            return;
+        }
+        const ref = chatRef;
+        const id = openId;
+        const title = openEvent.title;
+        return repairing(async () => {
+            if ((await alertConfirm(text.releaseConfirm(title))) && sameChat(ref) && openId === id && !readOnly) {
+                await sendTextEdit({ kind: "eventRelease", eventId: id });
+            }
+        });
+    }
+
+    /** The old event stays until the new one commits, so a press that failed can simply be pressed again. */
+    function rerecord(event: StructuredMemoryCoverageEvent) {
+        return repairing(async () => {
+            const ref = chatRef;
+            const target = memoryRerecordTarget(event.sources, messages, event.greeting, greetingAvailable);
+            const owner = characterList().find((entry) => entry?.chaId === ref.chaId);
+            if (target === null || !owner) {
+                return;
+            }
+            if (event.rerecord || (await sendRepair({ kind: "event", eventId: event.id, repair: "rerecord" }))) {
+                await pressMemoryRecord(owner, ref, "messageId" in target ? target.messageId : undefined);
+            }
+        });
+    }
+
+    /** Asks first, because no control takes it back. */
+    function retract({ id }: StructuredMemoryCoverageEvent) {
+        const ref = chatRef;
+        return repairing(async () => {
+            if (await alertConfirm(repairText.retractConfirm)) {
+                await sendRepair({ kind: "event", eventId: id, repair: "retract" }, ref);
+            }
+        });
+    }
+
+    /**
+     * Removes retracted events for good, a request's worth at a time, each naming the revision the last
+     * answered. The facts are read again either way, and the open row closes when its event went.
+     */
+    async function sendRemove(ids: readonly string[], ref: ChatRef) {
+        let revision = facts?.revision;
+        let removed = 0;
+        let refused = false;
+        for (let start = 0; revision !== undefined && start < ids.length; start += MEMORY_REMOVE_EVENTS_MAX) {
+            const result = await removeStructuredMemoryEvents(
+                ref,
+                revision,
+                ids.slice(start, start + MEMORY_REMOVE_EVENTS_MAX),
+            );
+            if (result.outcome !== "ok") {
+                refused = true;
+                if (result.outcome === "failed" || result.reason !== "epoch") {
+                    alertError(memoryReadFailureText(result));
+                }
+                break;
+            }
+            removed += result.value.removed;
+            revision = result.value.revision;
+        }
+        if (!refused || removed > 0) {
+            alertToast(removed > 0 ? repairText.removed(removed) : repairText.removeNothing);
+        }
+        if (sameChat(ref)) {
+            if (openId !== null && ids.includes(openId)) {
+                toggle(openId);
+            }
+            await refreshAfterEdit();
+        }
+    }
+
+    /** Asks first, and says so when what the event cites is still there to be recorded again. */
+    function removeRetracted(event: StructuredMemoryCoverageEvent) {
+        const ref = chatRef;
+        const question = citesHeld(event) ? repairText.removeConfirmSources : repairText.removeConfirm;
+        return repairing(async () => {
+            if ((await alertConfirm(question)) && sameChat(ref) && !readOnly) {
+                await sendRemove([event.id], ref);
+            }
+        });
+    }
+
+    /** Only the retracted events nothing in the chat stands behind: removing them changes no recording. */
+    function removeOrphaned() {
+        const ref = chatRef;
+        const ids = orphanedRetracted.map(({ id }) => id);
+        return repairing(async () => {
+            if (
+                ids.length > 0 &&
+                (await alertConfirm(repairText.removeOrphansConfirm(ids.length))) &&
+                sameChat(ref) &&
+                !readOnly
+            ) {
+                await sendRemove(ids, ref);
+            }
+        });
+    }
+
+    /** Names the state the person is looking at, so the server keeps only that. */
+    function keep({ id, sources }: StructuredMemoryCoverageEvent) {
+        return repairing(async () => {
+            const state = memoryAnchorState(sources, messages, hashOf);
+            await sendRepair({ kind: "event", eventId: id, repair: "keep", state });
+        });
+    }
+
+    type RevealSource = "focus" | "manage" | "notice";
+    type Reveal = { id: string; source: RevealSource; opened: boolean; retried: boolean };
+    let pending = $state.raw<Reveal | null>(null);
+    let eventGone = $state(false);
+
+    function reveal(id: string, source: RevealSource) {
+        if (source !== "focus") view = "manage";
+        eventGone = false;
+        pending = { id, source, opened: false, retried: false };
+    }
+
+    $effect(() => {
+        if (focus?.tab === "timeline") reveal(focus.id, "focus");
+    });
+
+    $effect(() => {
+        const target = pending;
+        if (!target) return;
+        const signal = getAbortSignal();
+        const index = manageRows.findIndex(({ event }) => event.id === target.id);
+        if (index < 0) {
+            const latest = coverageRead;
+            void latest?.then((outcome) => {
+                if (signal.aborted || pending !== target || latest !== coverageRead || outcome === "ignored") return;
+                if (rows.some(({ event }) => event.id === target.id)) return;
+                if (target.retried) {
+                    eventGone = outcome === "ok";
+                    pending = null;
+                } else {
+                    target.retried = true;
+                    void read();
+                }
+            });
+            return;
+        }
+        if (view === "read" && manageRows[index].event.status === "retracted") {
+            view = "manage";
+            return;
+        }
+        if (view === "manage") {
+            shown = Math.max(shown, index + 1);
+        } else {
+            if (readingStory || readingChapters || search.showing) return;
+            const elementIndex = elements.findIndex((element) => element.events.some(({ id }) => id === target.id));
+            if (elementIndex < 0) return;
+            elementsShown = Math.max(elementsShown, elementIndex + 1);
+            pressElement(elements[elementIndex], true, true);
+        }
+        if (!target.opened && target.source !== "notice") {
+            target.opened = true;
+            // Open as a press does, with a fresh record read, also when Read already had the row open. A row
+            // that is already open keeps its editor: `readOpen` closes it only when the stored record changed.
+            untrack(() => (openId === target.id ? void readOpen(target.id) : openRow(target.id)));
+        }
+        const container = timeline;
+        if (!container || failure !== null) return;
+        void tick().then(() => {
+            if (signal.aborted || pending !== target) return;
+            const row = [...container.querySelectorAll<HTMLElement>("[data-memory-event]")].find(
+                ({ dataset }) => dataset.memoryEvent === target.id,
+            );
+            if (row) {
+                row.scrollIntoView?.({ block: "nearest" });
+                pending = null;
+            }
+        });
+    });
+</script>
+
+{#snippet details({ event }: MemoryTimelineRow)}
+    <div class="flex flex-col gap-1 p-2 border-t border-darkborderc">
+        {#if openFailure !== null}
+            <p role="alert" class="text-draculared">{openFailure}</p>
+        {:else if !openEvent}
+            <p class="text-textcolor2">{panelText.loading}</p>
+        {:else}
+            {#if view === "manage"}
+                <div class="flex flex-wrap items-center gap-2">
+                    {#if openCorrected}
+                        <button
+                            type="button"
+                            class="px-1.5 rounded-sm bg-darkbutton text-textcolor2 enabled:hover:text-textcolor enabled:cursor-pointer"
+                            disabled={controlsOff}
+                            title={text.release}
+                            data-memory-event-corrected
+                            onclick={releaseText}
+                        >
+                            {text.userCorrected}
+                        </button>
+                    {/if}
+                    {#if event.status !== "retracted" && !openRetracted}
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={controlsOff || editor !== null}
+                            onclick={startEdit}
+                        >
+                            <span data-memory-event-edit>{text.edit}</span>
+                        </Button>
+                    {/if}
+                </div>
+                {#if editor?.id === event.id}
+                    <fieldset class="flex flex-col min-w-0 gap-2" disabled={controlsOff} data-memory-event-editor>
+                        <label class="flex flex-col min-w-0 gap-1" data-memory-event-title>
+                            <span class="text-textcolor2">{text.title}</span>
+                            <TextInput size="sm" bind:value={draftTitle} disabled={controlsOff} fullwidth />
+                        </label>
+                        <span
+                            class={titleLength > eventTitleChars ? "text-draculared" : "text-textcolor2"}
+                            data-memory-event-title-count
+                        >
+                            {text.characters(titleLength, eventTitleChars)}
+                        </span>
+                        <label class="flex flex-col min-w-0 gap-1" data-memory-event-summary-input>
+                            <span class="text-textcolor2">{text.summary}</span>
+                            <TextAreaInput
+                                bind:value={draftSummary}
+                                height="36"
+                                optimaizedInput={false}
+                                popupEditor={false}
+                                ariaLabel={text.summary}
+                            />
+                        </label>
+                        <span
+                            class={draftSummary.length > eventSummaryChars ? "text-draculared" : "text-textcolor2"}
+                            data-memory-event-summary-count
+                        >
+                            {text.characters(draftSummary.length, eventSummaryChars)}
+                        </span>
+                        <div class="flex flex-wrap justify-end gap-2">
+                            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (editor = null)}>
+                                <span data-memory-event-cancel>{text.cancel}</span>
+                            </Button>
+                            <Button size="sm" disabled={controlsOff || !draftFits} onclick={saveText}>
+                                <span data-memory-event-save>{text.save}</span>
+                            </Button>
+                        </div>
+                    </fieldset>
+                {:else}
+                    <p class="whitespace-pre-wrap" data-memory-event-summary>{openEvent.summary}</p>
+                {/if}
+                {#if openEvent.writerRun === ADOPTED_WRITER_RUN}
+                    <p class="text-textcolor2" data-memory-event-adopted>
+                        {language.structuredMemory.adopt.adoptedEvent}
+                    </p>
+                {/if}
+            {/if}
+            {#if storyTimeText(openEvent.storyTime) !== ""}
+                <p>
+                    {logText.storyTime}: {storyTimeText(openEvent.storyTime)}
+                </p>
+            {/if}
+            {#if openEvent.participants.length > 0}
+                <div class="flex flex-wrap items-center gap-1">
+                    <span class="text-textcolor2">{logText.participants}</span>
+                    {#each openEvent.participants as id}
+                        <MemoryLinkButton
+                            label={pageTitles?.get(id) ?? id}
+                            disabled={pageTitles !== null && !pageTitles.has(id)}
+                            onclick={() => open({ tab: "pages", id })}
+                            data-memory-participant={id}
+                        />
+                    {/each}
+                </div>
+            {/if}
+            {#if openEvent.keyLines.length > 0}
+                <h3 class="font-semibold">{logText.keyLines}</h3>
+                {#each openEvent.keyLines as line}
+                    {#if line.speaker !== ""}
+                        <p>{line.speaker}</p>
+                    {/if}
+                    <blockquote
+                        class="pl-2 border-l-2 whitespace-pre-wrap break-words border-darkborderc text-textcolor2"
+                    >
+                        {line.text}
+                    </blockquote>
+                {/each}
+            {/if}
+            {#if view === "manage"}
+                <MemoryEventFacts event={openEvent} {pageTitles} {threadTitles} />
+            {/if}
+        {/if}
+        {#if event.messageIds.length > 0 || storedMemoryGreeting(event.greeting)}
+            <div class="flex flex-wrap items-center gap-1">
+                <span class="text-textcolor2"
+                    >{storedMemoryGreeting(event.greeting)
+                        ? language.structuredMemory.greeting.sources
+                        : text.sources}</span
+                >
+                {#if storedMemoryGreeting(event.greeting) && facts}
+                    {#if view === "read"}
+                        <span data-memory-greeting-source={event.id}>
+                            <MemoryLinkButton
+                                label={language.structuredMemory.greeting.source}
+                                onclick={() => jump({ greeting: true })}
+                            />
+                        </span>
+                    {:else}
+                        <GreetingCitation
+                            {event}
+                            current={heldChat ? (greeting?.source ?? null) : undefined}
+                            {chatRef}
+                            revision={facts.revision}
+                            readOnly={controlsOff}
+                            {jump}
+                            {rebuild}
+                            refreshed={refreshAfterEdit}
+                        />
+                    {/if}
+                {/if}
+                {#each event.messageIds as id}
+                    {@const index = messageIndexes.get(id)}
+                    <MemoryLinkButton
+                        label={index === undefined ? pagesText.messageGone : `#${index}`}
+                        disabled={index === undefined}
+                        onclick={() => jump(id)}
+                        data-memory-source={id}
+                    />
+                {/each}
+            </div>
+        {/if}
+        {#if view === "read"}
+            <div>
+                <MemoryLinkButton
+                    label={text.openInManage}
+                    data-memory-open-in-manage={event.id}
+                    onclick={() => reveal(event.id, "manage")}
+                />
+            </div>
+        {:else if event.status === "stale"}
+            {@const off = readOnly || sending}
+            <div class="flex flex-wrap gap-2 pt-1" data-memory-event-repairs>
+                <Button
+                    size="sm"
+                    styled="outlined"
+                    disabled={off ||
+                        memoryRerecordTarget(event.sources, messages, event.greeting, greetingAvailable) === null}
+                    onclick={() => rerecord(event)}
+                >
+                    <span data-memory-repair="rerecord">{repairText.rerecord}</span>
+                </Button>
+                <Button size="sm" styled="outlined" disabled={off} onclick={() => retract(event)}>
+                    <span data-memory-repair="retract">{repairText.retract}</span>
+                </Button>
+                <Button size="sm" styled="outlined" disabled={off} onclick={() => keep(event)}>
+                    <span data-memory-repair="keep">{repairText.keep}</span>
+                </Button>
+            </div>
+        {:else if event.status === "retracted"}
+            <div class="flex flex-wrap gap-2 pt-1" data-memory-event-repairs>
+                <Button
+                    size="sm"
+                    styled="outlined"
+                    disabled={readOnly || sending}
+                    onclick={() => removeRetracted(event)}
+                >
+                    <span data-memory-repair="remove">{repairText.remove}</span>
+                </Button>
+            </div>
+        {/if}
+    </div>
+{/snippet}
+
+{#snippet eventRow(row: MemoryTimelineRow, story?: StructuredMemoryStoryEvent)}
+    {@const { event, turnsAgo } = row}
+    {@const expanded = openId === event.id}
+    <li
+        class="flex flex-col min-w-0 border rounded-md border-darkborderc break-words"
+        data-memory-event={event.id}
+        data-memory-event-status={event.status}
+    >
+        <button
+            type="button"
+            class="flex items-start min-w-0 gap-2 p-2 text-left transition-colors hover:bg-selected"
+            aria-expanded={expanded}
+            onclick={() => toggle(event.id)}
+        >
+            {#if expanded}
+                <ChevronDownIcon size={16} class="shrink-0 {view === 'read' ? 'mt-1' : 'mt-0.5'}" />
+            {:else}
+                <ChevronRightIcon size={16} class="shrink-0 {view === 'read' ? 'mt-1' : 'mt-0.5'}" />
+            {/if}
+            {#if view === "read"}
+                <span class="w-4 shrink-0 text-base">
+                    {#if story?.grade !== undefined && story.grade >= STRUCTURED_MEMORY_LIMITS.importantEventGrade}
+                        <span
+                            role="img"
+                            aria-label={text.importantEvent}
+                            class="text-secondary-500"
+                            data-memory-event-star>★</span
+                        >
+                    {/if}
+                </span>
+            {/if}
+            <span class="flex flex-col flex-1 min-w-0">
+                <span
+                    class={[
+                        view === "read" && "text-base font-semibold",
+                        event.status === "retracted" && "line-through text-textcolor2",
+                    ]}
+                    data-memory-event-title
+                >
+                    {event.title}
+                </span>
+                {#if view === "manage"}
+                    <span class="flex flex-wrap gap-x-2 text-textcolor2">
+                        {#if turnsAgo !== null}
+                            <span>{text.turnsAgo(turnsAgo)}</span>
+                        {/if}
+                        {#if event.status === "stale"}
+                            <span class="text-draculared" data-memory-event-badge="stale">
+                                {text.stale(memoryReasonText(event.staleReason))}
+                            </span>
+                        {/if}
+                        {#if event.rerecord}
+                            <span data-memory-event-badge="rerecord">{repairText.waiting}</span>
+                        {/if}
+                        {#if event.suppressed}
+                            <span data-memory-event-badge="suppressed">{text.suppressed}</span>
+                        {/if}
+                        {#if usedEvents.has(event.id)}
+                            <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
+                                >{panelText.usedInLastSend}</span
+                            >
+                        {/if}
+                    </span>
+                {:else if story?.summary}
+                    <span class="mt-0.5 whitespace-pre-wrap break-words" data-memory-event-summary>
+                        {story.summary}
+                    </span>
+                {/if}
+            </span>
+        </button>
+        {#if expanded}
+            {@render details(row)}
+        {/if}
+    </li>
+{/snippet}
+
+<div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-timeline data-read-only={readOnly} bind:this={timeline}>
+    <SegmentedControl
+        bind:value={view}
+        options={[
+            { value: "read", label: text.views.read },
+            { value: "manage", label: text.views.manage },
+        ]}
+        margin={false}
+        size="sm"
+        label={text.view}
+    />
+    {#if view === "read"}
+        <form
+            class="flex min-w-0 items-center gap-2"
+            data-memory-timeline-search
+            onsubmit={submitSearch}
+            oncompositionstart={() => (composing = true)}
+            oncompositionend={() => (composing = false)}
+        >
+            <input
+                type="text"
+                class="flex-1 min-w-0 px-2 py-1 text-sm transition-colors bg-transparent border rounded-md shadow-xs border-darkborderc text-textcolor focus:border-borderc focus:ring-borderc focus:ring-2 focus:outline-hidden"
+                bind:value={query}
+                maxlength={MEMORY_FIND_QUERY_CHARS}
+                aria-label={text.search}
+                placeholder={text.search}
+            />
+            <button
+                type="submit"
+                class="shrink-0 px-2 py-1 transition-colors border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!canSearch}
+                data-memory-search-text
+            >
+                {pagesText.searchText}
+            </button>
+            {#if query !== ""}
+                <button
+                    type="button"
+                    class="shrink-0 p-1 rounded-md text-textcolor2 hover:bg-selected"
+                    aria-label={text.searchClear}
+                    title={text.searchClear}
+                    onclick={clearSearch}
+                    data-memory-search-clear
+                >
+                    <XIcon size={16} aria-hidden="true" />
+                </button>
+            {/if}
+        </form>
+    {/if}
+    {#if eventGone}
+        <p role="status" class="text-textcolor2" data-memory-event-gone>{text.eventGone}</p>
+    {/if}
+    {#if view === "read" && search.showing}
+        <div class="flex flex-col min-w-0 gap-2" data-memory-find-hits>
+            {#if search.failure !== null}
+                <p role="alert" class="text-draculared" data-memory-find-failure>
+                    {memoryReadFailureText(search.failure)}
+                </p>
+            {:else if search.result === null}
+                <p class="text-textcolor2">{panelText.loading}</p>
+            {:else}
+                <ul class="flex flex-col min-w-0 gap-1">
+                    {#each search.result.hits.filter((hit) => hit.kind !== "thread") as hit}
+                        <li class="min-w-0">
+                            <button
+                                type="button"
+                                class="flex flex-col w-full min-w-0 gap-1 px-2 py-1 text-left transition-colors rounded-md break-words hover:bg-selected disabled:cursor-not-allowed"
+                                disabled={sending}
+                                onclick={() => {
+                                    if (hit.kind === "page") {
+                                        open({ tab: "pages", id: hit.id });
+                                    } else {
+                                        clearSearch();
+                                        reveal(hit.id, "focus");
+                                    }
+                                }}
+                                data-memory-find-kind={hit.kind}
+                                data-memory-find-id={hit.id}
+                            >
+                                <span class="font-semibold">{hit.title}</span>
+                                {#if hit.kind === "page" && hit.heading !== null}
+                                    <span class="text-textcolor2">{codeText(pagesText.headings, hit.heading)}</span>
+                                {/if}
+                                <span class="whitespace-pre-wrap">{hit.excerpt}</span>
+                            </button>
+                        </li>
+                    {:else}
+                        <li class="text-textcolor2">{pagesText.searchNone}</li>
+                    {/each}
+                </ul>
+                {#if search.result.more}
+                    <p class="text-textcolor2" data-memory-find-more>{pagesText.findMore(MEMORY_FIND_HITS_MAX)}</p>
+                {/if}
+            {/if}
+        </div>
+    {:else}
+        {#if view === "read"}
+            <button
+                type="button"
+                class="self-start px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={chapterControlsOff || !memoryOn}
+                onclick={() => makeChapters()}
+                data-memory-chapters-make>{text.chapters.make}</button
+            >
+            {#if chapterFailure !== null}
+                <p role="alert" class="text-draculared" data-memory-chapters-failure>{chapterFailure}</p>
+            {/if}
+        {/if}
+        {#if view === "read" && storyFailure !== null && failure === null}
+            <p role="alert" class="text-draculared" data-memory-panel-failure>{storyFailure}</p>
+        {/if}
+        {#if failure !== null}
+            <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
+        {:else if !facts}
+            <p class="text-textcolor2">{panelText.loading}</p>
+        {:else}
+            {#if view === "read" && toCheck.length > 0}
+                <div class="flex flex-wrap items-center gap-2" data-memory-check-notice>
+                    <span>{text.checkNotice(toCheck.length)}</span>
+                    <MemoryLinkButton
+                        label={text.checkInManage}
+                        onclick={() => reveal(toCheck[0].event.id, "notice")}
+                    />
+                </div>
+            {/if}
+            {#if view === "read"}
+                {#if elements.length === 0}
+                    <p class="text-textcolor2">{text.empty}</p>
+                {:else}
+                    <ul class="flex flex-col min-w-0 gap-2">
+                        {#each elements.slice(0, elementsShown) as element, index (element.kind === "chapter" ? `chapter:${element.chapter.id}` : `group:${element.events[0].id}`)}
+                            {@const expanded = elementOpen(element, index === 0)}
+                            {#if element.kind === "chapter"}
+                                {@const { chapter, events } = element}
+                                {@const eventsOpen = chapterEventPresses.get(chapter.id) ?? false}
+                                {@const outOfDate = revisionsMatch && memoryChapterOutOfDate(chapter, rows, stories)}
+                                {@const dates = chapterDates(events)}
+                                <li
+                                    class="flex flex-col min-w-0 border rounded-md border-darkborderc"
+                                    data-memory-chapter={chapter.id}
+                                >
+                                    <button
+                                        type="button"
+                                        class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
+                                        aria-expanded={expanded}
+                                        onclick={() => pressElement(element, !expanded)}
+                                    >
+                                        {#if expanded}
+                                            <ChevronDownIcon size={16} class="shrink-0 mt-1.5" />
+                                        {:else}
+                                            <ChevronRightIcon size={16} class="shrink-0 mt-1.5" />
+                                        {/if}
+                                        <span class="flex flex-col flex-1 min-w-0 break-words">
+                                            <span class="text-lg font-semibold" data-memory-chapter-title
+                                                >{chapter.title}</span
+                                            >
+                                            <span class="flex flex-wrap gap-x-2 text-xs text-textcolor2">
+                                                {#if dates}
+                                                    <span>{dates}</span>
+                                                {/if}
+                                                <span>{text.eventCount(events.length)}</span>
+                                                <span>{turnRange(element)}</span>
+                                                {#if outOfDate}
+                                                    <span class="text-draculared" data-memory-chapter-stale
+                                                        >{text.chapters.stale}</span
+                                                    >
+                                                {/if}
+                                            </span>
+                                            {#if !expanded}
+                                                <span
+                                                    class="mt-2 pl-2 border-l-2 border-darkborderc text-textcolor2 line-clamp-2"
+                                                    data-memory-chapter-synopsis
+                                                >
+                                                    {chapter.synopsis}
+                                                </span>
+                                            {/if}
+                                        </span>
+                                    </button>
+                                    {#if expanded}
+                                        <p
+                                            class="ml-8 mr-2 mb-2 pl-2 border-l-2 border-darkborderc whitespace-pre-wrap break-words"
+                                            data-memory-chapter-synopsis
+                                        >
+                                            {chapter.synopsis}
+                                        </p>
+                                        <div class="flex flex-wrap items-center gap-2 ml-8 mr-2 mb-2">
+                                            <button
+                                                type="button"
+                                                class="flex items-center gap-1 px-2 py-1 border rounded-md border-darkborderc hover:bg-selected"
+                                                aria-expanded={eventsOpen}
+                                                onclick={() => chapterEventPresses.set(chapter.id, !eventsOpen)}
+                                                data-memory-chapter-events
+                                            >
+                                                {#if eventsOpen}
+                                                    <ChevronDownIcon size={14} class="shrink-0" />
+                                                {:else}
+                                                    <ChevronRightIcon size={14} class="shrink-0" />
+                                                {/if}
+                                                {text.eventCount(events.length)}
+                                            </button>
+                                            {#if outOfDate}
+                                                <button
+                                                    type="button"
+                                                    class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    disabled={chapterControlsOff || !memoryOn}
+                                                    onclick={() => makeChapters(chapter.id)}
+                                                    data-memory-chapter-remake>{text.chapters.remake}</button
+                                                >
+                                            {/if}
+                                            <button
+                                                type="button"
+                                                class="p-1 ml-auto rounded-md text-textcolor2 enabled:hover:bg-selected enabled:hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                                                disabled={chapterControlsOff}
+                                                aria-label={text.chapters.remove}
+                                                title={text.chapters.remove}
+                                                onclick={() => removeChapter(chapter)}
+                                                data-memory-chapter-remove
+                                            >
+                                                <Trash2Icon size={16} aria-hidden="true" />
+                                            </button>
+                                        </div>
+                                        {#if eventsOpen}
+                                            <ul class="flex flex-col min-w-0 gap-1 mx-2 mb-2">
+                                                {#each events as row (row.id)}
+                                                    {@render eventRow(row, row.story)}
+                                                {/each}
+                                            </ul>
+                                        {/if}
+                                    {/if}
+                                </li>
+                            {:else}
+                                <li class="flex flex-col min-w-0 gap-1" data-memory-group>
+                                    <button
+                                        type="button"
+                                        class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
+                                        aria-expanded={expanded}
+                                        onclick={() => pressElement(element, !expanded)}
+                                    >
+                                        {#if expanded}
+                                            <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
+                                        {:else}
+                                            <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
+                                        {/if}
+                                        <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 break-words">
+                                            {#if element.date}
+                                                <span class="font-semibold">
+                                                    {formatStoryDate(element.date)}{element.partCount > 1
+                                                        ? ` (${element.part})`
+                                                        : ""}
+                                                </span>
+                                            {/if}
+                                            <span>{text.eventCount(element.events.length)}</span>
+                                            <span class="text-textcolor2">{turnRange(element)}</span>
+                                        </span>
+                                    </button>
+                                    {#if expanded}
+                                        <ul class="flex flex-col min-w-0 gap-1">
+                                            {#each element.events as row (row.id)}
+                                                {@render eventRow(row, row.story)}
+                                            {/each}
+                                        </ul>
+                                    {/if}
+                                </li>
+                            {/if}
+                        {/each}
+                    </ul>
+                {/if}
+            {:else if manageRows.length === 0}
+                <p class="text-textcolor2">{text.empty}</p>
+            {:else}
+                {#if retractedEvents.length > 0}
+                    <div
+                        class="flex flex-wrap items-center justify-between gap-2 text-textcolor2"
+                        data-memory-retracted-events
+                    >
+                        <span>{repairText.retractedCount(retractedEvents.length)}</span>
+                        {#if orphanedRetracted.length > 0}
+                            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={removeOrphaned}>
+                                <span data-memory-remove-orphans>
+                                    {repairText.removeOrphans(orphanedRetracted.length)}
+                                </span>
+                            </Button>
+                        {/if}
+                    </div>
+                {/if}
+                <ul class="flex flex-col min-w-0 gap-2">
+                    {#each manageRows.slice(0, shown) as row (row.event.id)}
+                        {@render eventRow(row)}
+                    {/each}
+                </ul>
+            {/if}
+            {@const remaining = view === "read" ? elements.length - elementsShown : manageRows.length - shown}
+            {#if remaining > 0}
+                <button
+                    type="button"
+                    class="self-start px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
+                    onclick={() => {
+                        if (view === "read") elementsShown += GROUPS_AT_ONCE;
+                        else shown += ROWS_AT_ONCE;
+                    }}
+                >
+                    {panelText.showMore(remaining)}
+                </button>
+            {/if}
+        {/if}
+    {/if}
+</div>

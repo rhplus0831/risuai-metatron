@@ -1,8 +1,8 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "./fixtures";
 import type { loreBook } from "../shared/database.ts";
-import { clearSafeBootAttempts, isolateContext, openApp, openCharacterChat } from "../util/playwright/stack.mjs";
+import { isolateContext, openApp, openCharacterChat } from "../util/playwright/stack.mjs";
 
 // The real lorebook editor, save loop, reload, and composer against the isolated stack.
 // The shared store keeps its existing bindings; each test owns and deletes one character.
@@ -87,7 +87,6 @@ test("a pinned lore copy survives reload and deleting its original refuses send 
 }) => {
     test.setTimeout(180_000);
     const blocked = await isolateContext(page.context());
-    await clearSafeBootAttempts(page.context());
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error)));
     await openApp(page, baseURL!);
@@ -261,7 +260,6 @@ test("an off folder drops its members from the prompt, entries added later inclu
     };
 
     const blocked = await isolateContext(page.context());
-    await clearSafeBootAttempts(page.context());
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(String(error)));
     await openApp(page, baseURL!);

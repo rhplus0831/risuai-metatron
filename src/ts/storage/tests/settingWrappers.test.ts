@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `modelProfile`): a write lands in that profile, and a model preset switch shows the other main
 // profile's value.
 
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -27,15 +27,18 @@ vi.mock("../../process/modules", () => ({
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
 import type { SettingContext, SettingItem } from "../../setting/types";
 import type { Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
-import { recordData } from "../records.svelte";
-import { selectModelPreset, selectPreset } from "../selection.svelte";
-import { installFlatDatabase } from "./installFlatDatabase";
+import { applyRaw, recordData, setRecordWriteListener } from "../records.svelte";
+import { pickBinding } from "../chatBindingPick";
+import { chatBindingIds } from "../chatBinding.svelte";
+import { selectChat } from "../chatStore.svelte";
+import { selectCharacter, selection, selectModelPreset, selectPersona, selectPreset } from "../selection.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "./installFlatDatabase";
 import { normalizeModelPresets, normalizeModelProfiles } from "../../../../shared/presets.ts";
 import SettingCheck from "src/lib/Setting/Wrappers/SettingCheck.svelte";
 import SettingColor from "src/lib/Setting/Wrappers/SettingColor.svelte";
@@ -48,10 +51,14 @@ import SettingSegmented from "src/lib/Setting/Wrappers/SettingSegmented.svelte";
 import SettingRenderer from "src/lib/Setting/SettingRenderer.svelte";
 import { activeMainProfile, activeModelPreset, activePersona, activePreset, settings } from "../settingsViews.svelte";
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
+import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
+import { storageSettingsItems } from "../../setting/storageSettingsData";
 import { interactionSettingsItems } from "../../setting/interactionSettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 import { modelSpecificParameterItems } from "../../setting/botSettingsParamsData";
 import { LLMFlags } from "../../model/types";
+import LanguageSettings from "src/lib/Setting/Pages/LanguageSettings.svelte";
+import { langState } from "../../setting/languageSettingsData.svelte";
 
 type Mounted = ReturnType<typeof mount>;
 
@@ -162,6 +169,7 @@ function boot() {
 }
 
 beforeEach(() => {
+    changeLanguage("en");
     sessionStorage.clear();
     localStorage.clear();
     selectPreset("");
@@ -176,6 +184,8 @@ afterEach(async () => {
     const instances = mounted.splice(0);
     await Promise.all(instances.map((instance) => unmount(instance)));
     document.body.replaceChildren();
+    changeLanguage("en");
+    langState.changed = false;
 });
 
 describe("SettingNumber", () => {
@@ -229,6 +239,74 @@ describe("SettingNumber", () => {
         expect(input.value).toBe("64");
         expect(preset("b").maxResponse).toBe(555);
     });
+
+    it.each([
+        ["900", 600],
+        ["5", 10],
+        ["90", 90],
+        ["90.7", 90],
+    ] as const)("commits %s as a displayed and stored plugin wait limit of %i", (typed, expected) => {
+        const item = displaySettingsItems.find(({ id }) => id === "display.completionWaitMaxSeconds")!;
+        const { query } = render(SettingNumber, { item, ctx: ctx() });
+        const input = query<HTMLInputElement>("input");
+
+        input.focus();
+        typeInto(input, typed);
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+
+        const stored = recordData<Pick<Database, "completionWaitMaxSeconds">>("ui")?.completionWaitMaxSeconds;
+        expect({ shown: input.valueAsNumber, stored }).toEqual({
+            shown: expected,
+            stored: expected,
+        });
+    });
+
+    it.each([
+        ["7.5", 7],
+        ["0.5", 1],
+        ["14", 14],
+    ] as const)("commits %s as a displayed and stored chat trash retention of %i whole days", (typed, expected) => {
+        // The server keeps whole days, so the field must not show a fraction it will not honor.
+        const item = storageSettingsItems.find(({ id }) => id === "storage.chatTrashDays")!;
+        const { query } = render(SettingNumber, { item, ctx: ctx() });
+        const input = query<HTMLInputElement>("input");
+
+        input.focus();
+        typeInto(input, typed);
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+
+        const stored = recordData<Pick<Database, "chatTrashDays">>("ui")?.chatTrashDays;
+        expect({ shown: input.valueAsNumber, stored }).toEqual({ shown: expected, stored: expected });
+    });
+
+    it("keeps the plugin wait limit while the input is empty and commits the default on change", () => {
+        applyRaw("ui", { completionWaitMaxSeconds: 90 });
+        const item = displaySettingsItems.find(({ id }) => id === "display.completionWaitMaxSeconds")!;
+        const { query } = render(SettingNumber, { item, ctx: ctx() });
+        const input = query<HTMLInputElement>("input");
+
+        expect(input.value).toBe("90");
+        input.focus();
+        typeInto(input, "");
+        expect(settings.ui.completionWaitMaxSeconds).toBe(90);
+        flushSync();
+        expect(input.value).toBe("");
+
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+
+        const stored = recordData<Pick<Database, "completionWaitMaxSeconds">>("ui")?.completionWaitMaxSeconds;
+        expect({ shown: input.valueAsNumber, limit: settings.ui.completionWaitMaxSeconds, stored }).toEqual({
+            shown: 180,
+            limit: 180,
+            stored: 180,
+        });
+    });
 });
 
 describe("SettingSlider", () => {
@@ -254,6 +332,33 @@ describe("SettingSlider", () => {
 });
 
 describe("SettingCheck", () => {
+    it("leaves an optional checkbox absent on mount and persists and notifies once per click", () => {
+        applyRaw("ui", {});
+        const writes = vi.fn();
+        setRecordWriteListener(writes);
+        try {
+            const check = item({ type: "check", bindKey: "alwaysScrollToNewMessage" });
+            const { query } = render(SettingCheck, { item: check, ctx: ctx() });
+            const box = query<HTMLInputElement>("input[type=checkbox]");
+            expect(box.checked).toBe(false);
+            expect(recordData("ui")).not.toHaveProperty("alwaysScrollToNewMessage");
+            expect(writes).not.toHaveBeenCalled();
+            expect(check.onChange).not.toHaveBeenCalled();
+
+            for (const [index, expected] of [true, false].entries()) {
+                box.click();
+                flushSync();
+                expect(recordData("ui")).toHaveProperty("alwaysScrollToNewMessage", expected);
+                expect(box.checked).toBe(expected);
+                expect(writes).toHaveBeenCalledTimes(index + 1);
+                expect(check.onChange).toHaveBeenCalledTimes(index + 1);
+                expect(check.onChange).toHaveBeenLastCalledWith(expected, expect.anything());
+            }
+        } finally {
+            setRecordWriteListener(null);
+        }
+    });
+
     it("writes a toggle synchronously into the selected model preset's main profile and follows a switch", () => {
         const check = item({ type: "check", bindKey: "useInstructPrompt" });
         const { query } = render(SettingCheck, { item: check, ctx: ctx() });
@@ -323,6 +428,58 @@ describe("SettingTextarea", () => {
 });
 
 describe("SettingSelect", () => {
+    it("offers Spanish in the real language page and applies its bundled locale when selected", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            settings.ui.language = "en";
+            const { query } = render(LanguageSettings, {});
+            const select = query<HTMLSelectElement>("select");
+            expect([...select.options].find((option) => option.value === "es")?.textContent.trim()).toBe("Español");
+            chooseOption(select, "es");
+            await vi.advanceTimersByTimeAsync(10);
+            expect(settings.ui.language).toBe("es");
+            expect(select.value).toBe("es");
+            expect(language.settings).toBe("Configuración");
+        } finally {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
+
+    it("retains a saved Spanish language when the real language page mounts", () => {
+        settings.ui.language = "es";
+        changeLanguage("es");
+        const { query } = render(LanguageSettings, {});
+        expect(query<HTMLSelectElement>("select").value).toBe("es");
+        expect(settings.ui.language).toBe("es");
+        expect(language.settings).toBe("Configuración");
+        expect(langState.changed).toBe(false);
+    });
+
+    it("resolves all six message-button style labels in the language selected after the data import", () => {
+        const style = accessibilitySettingsItems.find((entry) => entry.id === "acc.newMessageButtonStyle")!;
+        settings.ui.newMessageButtonStyle = "bottom-center";
+        const english = render(SettingSelect, { item: style, ctx: ctx() });
+        expect(english.query<HTMLSelectElement>("select").options[0].textContent.trim()).toBe(
+            "Bottom Center (Default)",
+        );
+        changeLanguage("ko");
+        const reopened = render(SettingSelect, { item: style, ctx: ctx() });
+        expect(
+            [...reopened.query<HTMLSelectElement>("select").options].map((option) => [
+                option.value,
+                option.textContent.trim(),
+            ]),
+        ).toEqual([
+            ["bottom-center", "하단 중앙 (기본값)"],
+            ["bottom-right", "하단 우측"],
+            ["bottom-left", "하단 좌측"],
+            ["floating-circle", "원형 플로팅 버튼 (우측 하단)"],
+            ["right-center", "우측 중앙"],
+            ["top-bar", "상단 바"],
+        ]);
+    });
+
     const options = {
         selectOptions: [
             { value: "chatml", label: "ChatML" },
@@ -584,8 +741,55 @@ describe("SettingSegmented", () => {
     });
 });
 
+it("omits wrapper-owned row and field margins while preserving item classes", () => {
+    const wrappers = [
+        [SettingCheck, item({ type: "check", bindKey: "useInstructPrompt" }), "mt-2"],
+        [SettingColor, item({ type: "color", bindKey: "customPromptTemplateToggle" }), "mt-2"],
+        [SettingSelect, item({ type: "select", bindKey: "instructChatTemplate" }), "mt-4"],
+        [SettingNumber, item({ type: "number", bindKey: "maxResponse" }), "mb-4"],
+        [SettingSlider, item({ type: "slider", bindKey: "temperature", options: { min: 0, max: 200 } }), "mb-4"],
+        [SettingText, item({ type: "text", bindKey: "forceReplaceUrl" }), "mb-4"],
+        [SettingSegmented, item({ type: "segmented", bindKey: "instructChatTemplate" }), "segmented-margin"],
+    ] as const;
+    const classes = "!mt-1 pl-3";
+
+    for (const [wrapper, setting, defaultMargin] of wrappers) {
+        const { target } = render(wrapper, { item: setting, ctx: ctx() });
+        const wrapperClasses = [...target.children].flatMap((child) => [...child.classList]);
+        expect.soft(wrapperClasses, setting.type).not.toContain(defaultMargin);
+
+        const customized = render(wrapper, { item: { ...setting, classes }, ctx: ctx() });
+        expect
+            .soft([...customized.target.firstElementChild!.classList], setting.type)
+            .toEqual(expect.arrayContaining(classes.split(" ")));
+    }
+});
+
 describe("SettingRenderer", () => {
     const byId = (items: SettingItem[], id: string) => items.find((entry) => entry.id === id)!;
+
+    it("labels every item anchor with its spacing kind, inside an accordion too", () => {
+        const { query } = render(SettingRenderer, {
+            items: [
+                item({ type: "check", bindKey: "useInstructPrompt", id: "check" }),
+                {
+                    id: "accordion",
+                    type: "accordion",
+                    fallbackLabel: "More settings",
+                    options: { children: [item({ type: "number", bindKey: "maxResponse", id: "number" })] },
+                },
+            ],
+        });
+
+        query<HTMLButtonElement>('[data-setting-id="accordion"] button[aria-expanded="false"]').click();
+        flushSync();
+
+        expect({
+            check: query('[data-setting-id="check"]').getAttribute("data-spacing-kind"),
+            accordion: query('[data-setting-id="accordion"]').getAttribute("data-spacing-kind"),
+            number: query('[data-setting-id="accordion"] [data-setting-id="number"]').getAttribute("data-spacing-kind"),
+        }).toEqual({ check: "row", accordion: "block", number: "field" });
+    });
 
     it("shows a stored budget as Adaptive on adaptive-only models and as Budget on budget-capable models without rewriting the preset", () => {
         preset("a").thinkingType = "budget";
@@ -647,5 +851,86 @@ describe("SettingRenderer", () => {
         changeToModelPreset("a");
         flushSync();
         expect(textarea()).toBeNull();
+    });
+});
+
+describe("the settings registry with a bound chat open", () => {
+    afterEach(() => selectCharacter(null));
+
+    it("null-target picks move the tab selection and the rendered registry reads and writes it without changing the bound records", () => {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [
+                        {
+                            id: "chat",
+                            name: "Chat",
+                            message: [],
+                            localLore: [],
+                            promptPresetId: "a",
+                            modelPresetId: "a",
+                            bindedPersona: "u1",
+                        },
+                    ],
+                },
+            ],
+            botPresets: JSON.parse(JSON.stringify(settings.presets)),
+            modelPresets: JSON.parse(JSON.stringify(settings.modelPresets)),
+            modelProfiles: JSON.parse(JSON.stringify(settings.modelProfiles)),
+            personas: [
+                { id: "u1", name: "Bound persona" },
+                { id: "u2", name: "Tab persona" },
+            ],
+        });
+        selectPreset("a");
+        selectModelPreset("a");
+        selectPersona("u1");
+        selectCharacter("c");
+        selectChat("c", "chat");
+        const ref = { chaId: "c", chatId: "chat" };
+        const bindingBefore = chatBindingIds(ref);
+        const boundBefore = JSON.stringify([
+            preset("a"),
+            settings.modelPresets[0],
+            profile("pa"),
+            settings.personas[0],
+        ]);
+        const items = [
+            item({ type: "number", bindKey: "maxResponse" }),
+            item({ type: "text", bindKey: "forceReplaceUrl" }),
+            item({ type: "text", bindKey: "username" }),
+        ];
+        const { query } = render(SettingRenderer, { items });
+        const input = (key: string) => query<HTMLInputElement>(`[data-setting-id="wrappers.${key}"] input`);
+        expect([input("maxResponse").value, input("forceReplaceUrl").value, input("username").value]).toEqual([
+            "500",
+            "https://a",
+            "Bound persona",
+        ]);
+        expect(pickBinding("promptPresetId", "b", null)).toBe(true);
+        expect(pickBinding("modelPresetId", "b", null)).toBe(true);
+        expect(pickBinding("personaId", "u2", null)).toBe(true);
+        flushSync();
+        expect([selection.presetId, selection.modelPresetId, selection.personaId]).toEqual(["b", "b", "u2"]);
+        expect(chatBindingIds(ref)).toEqual(bindingBefore);
+        expect([input("maxResponse").value, input("forceReplaceUrl").value, input("username").value]).toEqual([
+            "555",
+            "https://b",
+            "Tab persona",
+        ]);
+        typeInto(input("maxResponse"), "777");
+        typeInto(input("forceReplaceUrl"), "https://tab-edited");
+        typeInto(input("username"), "Tab renamed");
+        flushSync();
+        expect(preset("b").maxResponse).toBe(777);
+        expect(profile("pb").forceReplaceUrl).toBe("https://tab-edited");
+        expect(settings.personas[1].name).toBe("Tab renamed");
+        expect(JSON.stringify([preset("a"), settings.modelPresets[0], profile("pa"), settings.personas[0]])).toBe(
+            boundBefore,
+        );
+        expect(chatBindingIds(ref)).toEqual(bindingBefore);
     });
 });

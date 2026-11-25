@@ -29,6 +29,12 @@ export function createAlertMock(overrides: Partial<AlertModule> = {}): AlertModu
         })) as unknown as AlertModule["openAlertDialog"],
         alertError: vi.fn<AlertModule["alertError"]>(),
         alertJobError: vi.fn<AlertModule["alertJobError"]>(),
+        jobErrorText: vi.fn<AlertModule["jobErrorText"]>((end) =>
+            end.message.trim() === "{}" ? null : end.message.trim(),
+        ),
+        errorReportText: vi.fn<AlertModule["errorReportText"]>((message) =>
+            message.trim() === "{}" ? null : message.trim(),
+        ),
         waitAlert: vi.fn(async () => {}),
         terminalNotice: readable<string | null>(null),
         alertTerminal: vi.fn(async (_msg: string) => {}),
@@ -50,7 +56,18 @@ export function createAlertMock(overrides: Partial<AlertModule> = {}): AlertModu
         alertClear: vi.fn(),
         alertSelectChar: vi.fn(async () => ""),
         alertConfirm: vi.fn(async (_msg: string) => false),
+        alertConfirmWithCheckbox: vi.fn(async (_msg: string, _label: string, checked = true) => ({
+            confirmed: false,
+            checked,
+        })),
+        alertConfirmWithChecklist: vi.fn(
+            async (_msg: string, items: readonly { id: string; label: string; checked: boolean }[]) => ({
+                confirmed: false,
+                checked: items.filter((item) => item.checked).map((item) => item.id),
+            }),
+        ),
         alertPluginConfirm: vi.fn(async (_msg: string) => false),
+        alertRealmTerms: vi.fn(async () => false),
         alertCardExport: vi.fn(async () => ({ type: "cancel", type2: "" })),
         alertInput: vi.fn(async (_msg: string, _datalist?: [string, string][], _defaultValue?: string) => ""),
         alertModuleSelect: vi.fn(async () => ""),

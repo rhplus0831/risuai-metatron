@@ -91,6 +91,37 @@ describe("pickEncoding", () => {
 });
 
 describe("resource read compression", () => {
+    it("GET /api/resources/revisions negotiates compression without changing the listing", async () => {
+        const s = await createResourceTestClient({ resourceKinds: [docs], epochKind: "docs" });
+        servers.push(s);
+        await s.readEpoch();
+        const resources: { kind: string; id: string; revision: string }[] = [];
+        for (let index = 0; index < Math.ceil(COMPRESS_MIN_BYTES / 40); index++) {
+            const id = `doc-${index}`;
+            const response = await s.put("docs", id, { baseRevision: null, data: { text: "not in the listing" } });
+            expect(response.status).toBe(200);
+            const { revision } = (await response.json()) as { revision: string };
+            resources.push({ kind: "docs", id, revision });
+        }
+        const expected = { epoch: s.epoch, resources, chats: [], chatOrders: [] };
+        expect(Buffer.byteLength(JSON.stringify(expected))).toBeGreaterThan(COMPRESS_MIN_BYTES);
+        for (const [accept, encoding] of [
+            ["identity", null],
+            ["gzip, zstd", "zstd"],
+            ["zstd;q=0, gzip", "gzip"],
+        ] as const) {
+            const response = await s.request("/api/resources/revisions", { headers: acceptHeaders(accept) });
+            expect(response.status).toBe(200);
+            expect(response.headers.get("content-encoding")).toBe(encoding);
+            expect(response.headers.get("vary")).toContain("Accept-Encoding");
+            const listing = decode(encoding, Buffer.from(await response.arrayBuffer())) as typeof expected;
+            expect({ ...listing, resources: [...listing.resources].sort((a, b) => a.id.localeCompare(b.id)) }).toEqual({
+                ...expected,
+                resources: [...resources].sort((a, b) => a.id.localeCompare(b.id)),
+            });
+        }
+    });
+
     it.each(reads)("$label answers zstd, gzip, and identity with the same JSON", async ({ send }) => {
         const s = await serverWithLargeDoc();
         const plain = await send(s);

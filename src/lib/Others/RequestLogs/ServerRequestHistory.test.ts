@@ -1,20 +1,21 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-    RequestHistoryPage,
-    RequestHistoryRecord,
-    RequestHistoryShareBody,
-    RequestHistoryShareList,
-    RequestHistoryShareResult,
-    RequestHistorySummary,
+import {
+    REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
+    type RequestHistoryPage,
+    type RequestHistoryRecord,
+    type RequestHistoryShareBody,
+    type RequestHistoryShareList,
+    type RequestHistoryShareResult,
+    type RequestHistorySummary,
 } from "../../../../shared/requestHistory.ts";
 
 // Sharing to the diagnostics folder: the viewer's share controls. An expanded row's "Share for support"
 // sends the row's job id when it has one (so a withdrawal after the row was pruned still names the job) and
 // its request id only for a standalone row; the answer's ids mark every listed row ("Shared" badge, "Update
 // shared copy" and "Withdraw share"); one operation per target at a time; a failure is a localized notice,
-// the server's "older copy could not be removed" answer its own; the "Shared copies" box lists the folder's
+// the server's "older copy could not be removed" answer (told by its `code`) its own; the "Shared copies" box lists the folder's
 // shares with a Withdraw each, keeps the last list when a read fails, and shows the error with Retry.
 
 const deps = vi.hoisted(() => ({
@@ -25,6 +26,16 @@ const deps = vi.hoisted(() => ({
     alertError: vi.fn<(text: string) => void>(),
 }));
 vi.mock("src/ts/network/requestHistory", () => ({
+    // The transport's error shape (status and the body's `code`), without loading the real transport.
+    RequestHistoryError: class RequestHistoryError extends Error {
+        constructor(
+            message: string,
+            readonly status: number,
+            readonly code: string | null = null,
+        ) {
+            super(message);
+        }
+    },
     listRequestHistory: () => deps.listRequestHistory(),
     readRequestHistory: (id: string) => deps.readRequestHistory(id),
     deleteRequestHistory: async () => {},
@@ -39,10 +50,13 @@ vi.mock("src/ts/alert", async () =>
     }),
 );
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ findCharacter: () => undefined }));
-vi.mock("src/ts/storage/chatStore.svelte", () => ({ chatEntry: () => undefined, currentChatRef: () => null }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
+import { RequestHistoryError } from "src/ts/network/requestHistory";
 import ServerRequestHistory from "./ServerRequestHistory.svelte";
 
 const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
@@ -62,6 +76,7 @@ function summary(id: string, jobId: string | null, over: Partial<RequestHistoryS
         profileId: null,
         profileName: null,
         provider: "OpenAI",
+        interceptions: null,
         startedAt: AT,
         firstByteAt: null,
         completedAt: AT + 1000,
@@ -144,6 +159,42 @@ async function open() {
     const badges = () => buttons().filter((b) => b.textContent?.includes(language.requestHistoryShared)).length;
     return { button, rowBox, expand, badges, text: () => target.textContent ?? "" };
 }
+
+describe("ServerRequestHistory: interception counts", () => {
+    it("shows Inserted prompts with the prompt count in expanded details, using singular for one", async () => {
+        deps.readRequestHistory.mockImplementation(async (id) =>
+            record(summary(id, null, { interceptions: id === REQ(1) ? 2 : 1 })),
+        );
+        const view = await open();
+        expect(view.text()).not.toContain("Inserted prompts");
+        for (const [id, text] of [
+            [REQ(1), "2 prompts"],
+            [REQ(2), "1 prompt"],
+        ] as const) {
+            await view.expand(id);
+            const labels = [...view.rowBox(id).querySelectorAll("span")].filter(
+                (span) => span.textContent?.trim() === "Inserted prompts",
+            );
+            expect(labels).toHaveLength(1);
+            expect(labels[0].nextElementSibling?.textContent?.trim()).toBe(text);
+        }
+    });
+
+    it("omits the Inserted prompts row from expanded details when the count is null or zero", async () => {
+        deps.readRequestHistory.mockImplementation(async (id) =>
+            record(summary(id, null, { interceptions: id === REQ(1) ? null : 0 })),
+        );
+        const view = await open();
+        for (const id of [REQ(1), REQ(2)]) {
+            await view.expand(id);
+            const box = view.rowBox(id);
+            // Confirm that the details loaded before asserting the row's absence.
+            expect(box.textContent).toContain(id);
+            expect(box.textContent).not.toContain("Inserted prompts");
+            expect(box.textContent).not.toContain("0 prompts");
+        }
+    });
+});
 
 describe("ServerRequestHistory: sharing for support", () => {
     it("shares a row's job by job id, marks every row the answer names, and offers Update and Withdraw (by job id) on them; a standalone row goes by request id", async () => {
@@ -228,7 +279,19 @@ describe("ServerRequestHistory: sharing for support", () => {
         );
         expect(view.badges()).toBe(0);
         expect(view.button(language.requestHistoryShare, view.rowBox(REQ(1)))!.disabled).toBe(false);
+        // The older-copy answer is told by its code, not by its English text.
         deps.shareRequestHistory.mockRejectedValueOnce(new Error(languageEnglish.requestHistoryShareOlderCopiesRemain));
+        view.button(language.requestHistoryShare, view.rowBox(REQ(1)))!.click();
+        await settle();
+        expect(deps.alertError).toHaveBeenLastCalledWith(
+            language.requestHistoryShareFailed.replace(
+                "{{error}}",
+                languageEnglish.requestHistoryShareOlderCopiesRemain,
+            ),
+        );
+        deps.shareRequestHistory.mockRejectedValueOnce(
+            new RequestHistoryError("Older copy remains", 500, REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN),
+        );
         view.button(language.requestHistoryShare, view.rowBox(REQ(1)))!.click();
         await settle();
         expect(deps.alertError).toHaveBeenLastCalledWith(language.requestHistoryShareOlderCopiesRemain);

@@ -16,36 +16,37 @@ const { calls, server } = vi.hoisted(() => ({
     server: { handle: null as null | ((call: Call) => Promise<unknown> | unknown) },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    fetchNative: vi.fn(
-        async (
-            url: string,
-            init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
-        ) => {
-            let body: any = init?.body ?? null;
-            if (typeof body === "string") {
-                try {
-                    body = JSON.parse(body);
-                } catch {
-                    body = Object.fromEntries(new URLSearchParams(body));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        fetchNative: vi.fn(
+            async (
+                url: string,
+                init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+            ) => {
+                let body: any = init?.body ?? null;
+                if (typeof body === "string") {
+                    try {
+                        body = JSON.parse(body);
+                    } catch {
+                        body = Object.fromEntries(new URLSearchParams(body));
+                    }
                 }
-            }
-            const call = {
-                url,
-                method: init?.method ?? "GET",
-                headers: { ...(init?.headers ?? {}) },
-                body,
-                signal: init?.signal,
-            };
-            calls.push(call);
-            if (!server.handle) {
-                throw new Error(`unexpected fetchNative(${url})`);
-            }
-            return await server.handle(call);
-        },
-    ),
-    openURL: vi.fn(),
-}));
+                const call = {
+                    url,
+                    method: init?.method ?? "GET",
+                    headers: { ...(init?.headers ?? {}) },
+                    body,
+                    signal: init?.signal,
+                };
+                calls.push(call);
+                if (!server.handle) {
+                    throw new Error(`unexpected fetchNative(${url})`);
+                }
+                return await server.handle(call);
+            },
+        ),
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 const enc = new TextEncoder();
@@ -185,10 +186,131 @@ afterEach(async () => {
         if (type === "mcp-sse") document.removeEventListener(type, listener);
     }
     for (let i = 0; i < 20; i++) await Promise.resolve();
+    vi.useRealTimers();
     vi.restoreAllMocks();
 });
 
 describe("MCP streamable response lifetime", () => {
+    it("holds at most four ping replies per client across SSE transports and reuses settled slots", async () => {
+        for (const transport of ["streamable", "legacy"] as const) {
+            const client = newClient();
+            const held: { resolve(response: Reply): void; reject(error: Error): void }[] = [];
+            const streams: ReturnType<typeof streamOf>[] = [];
+            const session = streamOf([endpoint], { open: true });
+            let active = 0;
+            let peak = 0;
+            let wave = 0;
+            server.handle = (call) => {
+                if (call.body?.id !== undefined && !call.body.method) {
+                    expect(call.body).toEqual({ jsonrpc: "2.0", id: expect.stringMatching(/^ping-/), result: {} });
+                    active++;
+                    peak = Math.max(peak, active);
+                    return new Promise<Reply>((resolve, reject) => {
+                        let settled = false;
+                        held.push({
+                            resolve: (response) => {
+                                if (!settled) active--;
+                                settled = true;
+                                resolve(response);
+                            },
+                            reject: (error) => {
+                                if (!settled) active--;
+                                settled = true;
+                                reject(error);
+                            },
+                        });
+                    });
+                }
+                if (transport === "legacy") {
+                    if (call.method === "GET") return reply({ stream: session.stream });
+                    if (call.url.endsWith("/mcp")) return reply({ status: 404 });
+                    if (call.body.method === "initialize") send(session, call, INFO);
+                } else if (call.body.method === "initialize") return rpcJson(call, INFO);
+                if (call.body.method === "tools/call") {
+                    const pings = Array.from(
+                        { length: 8 },
+                        (_, i) =>
+                            `data:${JSON.stringify({ jsonrpc: "2.0", id: `ping-${wave}-${i}`, method: "ping" })}\n\n`,
+                    );
+                    if (transport === "legacy") {
+                        session.state.controller!.enqueue(enc.encode(pings.join("")));
+                        send(session, call, { content: [] });
+                    } else {
+                        const stream = streamOf([...pings, event(call.body.id, { content: [] })]);
+                        streams.push(stream);
+                        return reply({ stream: stream.stream });
+                    }
+                }
+                return reply({ status: 202 });
+            };
+            try {
+                expect(await result(observe(client.callTool("echo", {})))).toEqual([]);
+                // The answer follows the entire burst; its reader must finish with the replies still held.
+                if (transport === "streamable") await clean(client, streams);
+                expect(held).toHaveLength(4);
+                expect(active).toBe(4);
+                held[0].resolve(reply({ status: 202 }));
+                held[1].reject(new Error("reply failed"));
+                for (let i = 0; i < 40; i++) await Promise.resolve();
+                expect(held).toHaveLength(4);
+                wave++;
+                expect(await result(observe(client.callTool("echo", {})))).toEqual([]);
+                expect(held).toHaveLength(6);
+                expect(active).toBe(4);
+                expect(peak).toBe(4);
+                expect(client.initialized).toBe(true);
+            } finally {
+                for (const post of held) post.resolve(reply({ status: 202 }));
+                client.destroy();
+                await clean(client, transport === "legacy" ? [session] : streams);
+            }
+        }
+        noListeners();
+    });
+
+    it("aborts only the caller's pending SSE answer and removes its reader and listeners", async () => {
+        const client = newClient();
+        const streams = [streamOf([], { open: true }), streamOf([], { open: true })];
+        server.handle = (call) => reply({ stream: streams[call.body.method === "cancelled" ? 0 : 1].stream });
+        const controller = new AbortController();
+        const reason = new Error("caller cancelled");
+        const removed = vi.spyOn(controller.signal, "removeEventListener");
+        const first = observe(client.request("cancelled", {}, { signal: controller.signal }));
+        const second = observe(client.request("survivor"));
+        await until(() => client.sses.length === 2, "both readers acquired");
+        controller.abort(reason);
+        await rejected(first);
+        expect(first.error).toBe(reason);
+        expect(second.status).toBe("pending");
+        expect(streams[0].state.cancelled).toBe(1);
+        expect(removed).toHaveBeenCalledWith("abort", expect.any(Function));
+        send(
+            streams[1],
+            calls.find((call) => call.body.method === "survivor")!,
+            { ok: true },
+        );
+        expect((await result(second)).rpc.result).toEqual({ ok: true });
+        await clean(client, streams);
+        noListeners();
+    });
+
+    it("keeps the five-minute deadline active until a stream answer and cleans the pending reader", async () => {
+        vi.useFakeTimers();
+        const client = newClient();
+        const stream = streamOf([], { open: true });
+        server.handle = () => reply({ stream: stream.stream });
+        const answer = observe(client.request("silent"));
+        await until(() => stream.stream.locked, "reader acquired");
+        await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+        expect(answer.status).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await rejected(answer, "The MCP request timed out");
+        await clean(client, [stream]);
+        expect(stream.state.cancelled).toBe(1);
+        expect(vi.getTimerCount()).toBe(0);
+        noListeners();
+    });
+
     it("releases completed streams and cancels answered open streams through handshake, listing and repeated tool calls", async () => {
         const client = newClient();
         const streams: ReturnType<typeof streamOf>[] = [];
@@ -351,6 +473,55 @@ function legacyServer(session: ReturnType<typeof streamOf>) {
 const endpoint = "event:endpoint\ndata:/messages\n\n";
 
 describe("MCP legacy session lifetime", () => {
+    it("cancels a legacy POST answer without closing another caller's session", async () => {
+        const client = newClient();
+        const session = streamOf([endpoint], { open: true });
+        legacyServer(session);
+        await client.checkHandshake();
+        const controller = new AbortController();
+        const answer = observe(client.request("cancelled-post", {}, { signal: controller.signal }));
+        await until(() => calls.some((call) => call.body?.method === "cancelled-post"), "POST dispatched");
+        const reason = new Error("callback cancelled");
+        controller.abort(reason);
+        await rejected(answer);
+        expect(answer.error).toBe(reason);
+        expect(session.stream.locked).toBe(true);
+        const next = observe(client.request("next"));
+        await until(() => calls.some((call) => call.body?.method === "next"), "next POST dispatched");
+        send(
+            session,
+            calls.find((call) => call.body?.method === "next")!,
+            { ok: true },
+        );
+        expect((await result(next)).rpc.result).toEqual({ ok: true });
+        noListeners();
+        client.destroy();
+        await clean(client, [session]);
+    });
+
+    it("bounds a legacy GET that never announces its endpoint and releases its reader", async () => {
+        vi.useFakeTimers();
+        // AbortSignal.timeout uses the host clock; drive that boundary with the same fake timers.
+        vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(new DOMException("deadline", "TimeoutError")), ms);
+            return controller.signal;
+        });
+        const client = newClient();
+        const session = streamOf([], { open: true });
+        legacyServer(session);
+        const handshake = observe(client.checkHandshake());
+        await until(() => session.stream.locked, "legacy GET waiting for endpoint");
+        await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+        expect(handshake.status).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await rejected(handshake);
+        expect(calls.find((call) => call.method === "GET")!.signal?.aborted).toBe(true);
+        expect(client.initialized).toBe(false);
+        await clean(client, [session]);
+        noListeners();
+    });
+
     it("fails a handshake whose GET reaches EOF before the endpoint event", async () => {
         const client = newClient();
         const session = streamOf([":heartbeat\n\n"]);

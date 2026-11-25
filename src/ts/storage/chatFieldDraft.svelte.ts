@@ -3,8 +3,9 @@ import { fromStore } from "svelte/store";
 import { language } from "src/lang";
 import { alertError } from "../alert";
 import { chatStatusKey, generatingChatKeys } from "../process/chatStatus.svelte";
+import { runningGenerations } from "../process/generationProgress.svelte";
 import { isLocalSend, localSends } from "../process/localSends";
-import { type ChatRef, currentChatRef, selectedChat } from "./chatStore.svelte";
+import { type ChatRef, chatInstallVersion, currentChatRef, isChatBehind, selectedChat } from "./chatStore.svelte";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 
 // Lazily observed by draft effects; structural actions can also read the current fence.
@@ -13,8 +14,17 @@ let sendsView: { current: ReadonlyMap<string, ChatRef | null> } | undefined;
 /** Whether a send of this tab or a job this tab knows of runs in `ref` (reactive). */
 export function loreWriteFenced(ref: ChatRef): boolean {
     return (
-        isLocalSend(ref, (sendsView ??= fromStore(localSends)).current) || generatingChatKeys().has(chatStatusKey(ref))
+        isLocalSend(ref, (sendsView ??= fromStore(localSends)).current) ||
+        generatingChatKeys().has(chatStatusKey(ref)) ||
+        runningGenerations().some((job) => job.characterId === ref.chaId && job.chatId === ref.chatId)
     );
+}
+
+/** A memory write announced by a job can still be waiting for an idle read when the job ends. */
+export function memoryEditorWriteFence(ref: ChatRef): string | null {
+    if (loreWriteFenced(ref)) return language.chatGenerating;
+    chatInstallVersion(ref);
+    return isChatBehind(ref) ? language.memoryTasks.awaitingSync : null;
 }
 
 /**

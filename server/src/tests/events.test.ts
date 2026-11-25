@@ -1,13 +1,34 @@
 // @vitest-environment node
+import { EventEmitter } from "node:events";
 import http from "node:http";
+import { Duplex } from "node:stream";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { WebSocket as WsClient } from "ws";
-import type { EventFeedFrame, MemoryTaskEntry } from "../../../shared/events.ts";
-import type { ResourceRevisionListing } from "../../../shared/resources.ts";
-import { createChangeFeed } from "../data/changeFeed.ts";
+import { WebSocket as WsClient, WebSocketServer } from "ws";
+import type { EventFeedFrame, GenerationProgressEntry, MemoryTaskEntry } from "../../../shared/events.ts";
+import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
+import { DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createEventSockets } from "../routes/events.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import {
+    allowListenerOrigin,
+    createSigner,
+    createTestServer,
+    json,
+    waitFor,
+    type TestServerOptions,
+} from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The live-update socket (`/api/events/ws`, `server/src/routes/events.ts`) on a real listening
 // server: JWT-only authentication, `hello` with the epoch and the memory task snapshot, every
@@ -46,6 +67,40 @@ function connect(url: string, headers: Record<string, string> = {}): Client {
     return { frames, opened, closed, ws };
 }
 
+/** Wait for wire evidence without polling or a real production deadline. */
+function frameAt(client: Client, index: number): Promise<EventFeedFrame> {
+    if (client.frames[index]) return Promise.resolve(client.frames[index]);
+    return new Promise((resolve, reject) => {
+        const cleanup = () => {
+            client.ws.off("message", message);
+            client.ws.off("close", closed);
+        };
+        const message = () => {
+            if (client.frames[index]) {
+                cleanup();
+                resolve(client.frames[index]);
+            }
+        };
+        const closed = () => {
+            cleanup();
+            reject(new Error("Socket closed before the expected frame"));
+        };
+        client.ws.on("message", message);
+        client.ws.on("close", closed);
+    });
+}
+
+/** A pong follows all change frames queued by the completed writes, including zero on rollback. */
+async function delivered(client: Client) {
+    const pong = new Promise<void>((resolve) => client.ws.once("pong", () => resolve()));
+    client.ws.ping();
+    await pong;
+}
+
+const noteKind: ResourceKind = { name: "notes", schemaVersion: 1, normalize: (value) => value };
+const digestKinds = [...DEFAULT_RESOURCE_KINDS, noteKind];
+const admissionBytes = 4 * 1024 * 1024;
+
 describe("the live-update socket on the server", () => {
     let server: ReturnType<typeof createTestServer>;
     let node: http.Server | undefined;
@@ -74,8 +129,8 @@ describe("the live-update socket on the server", () => {
         }
     });
 
-    async function listen() {
-        server = createTestServer({ password: "pw" });
+    async function listen(options: TestServerOptions = {}) {
+        server = createTestServer({ password: "pw", ...options });
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
@@ -107,18 +162,463 @@ describe("the live-update socket on the server", () => {
     const epochOf = async () =>
         ((await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing).epoch;
 
+    it("repeats only a registering host's open commands, including their stop flags", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ remoteCommandOptions: { now: () => 0 } });
+        const epoch = await epochOf();
+        const first = await open();
+        const other = await open();
+        const observer = await open();
+        for (const client of [first, other, observer]) await frameAt(client, 0);
+        const register = async (client: Client, clientId: string, host: boolean) => {
+            client.ws.send(JSON.stringify({ type: "register", clientId, name: clientId, worker: false, host }));
+            await delivered(client);
+        };
+        await register(first, "desk", true);
+        await register(other, "laptop", true);
+        const send = async (url: string, body?: unknown) => {
+            const response = await request(url, {
+                ...(body === undefined ? {} : json(body)),
+                headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+            });
+            expect(response.status).toBe(200);
+            return response.json();
+        };
+        for (const state of ["queued", "delivered", "running", "uncertain", "done", "other"] as const) {
+            await send("/api/remote-commands", {
+                clientId: "phone",
+                target: state === "other" ? "laptop" : "desk",
+                commandId: state,
+                command: {
+                    type: "send",
+                    requestId: state,
+                    chaId: "c",
+                    chatId: "k",
+                    userMessageId: "u",
+                    input: "private input",
+                },
+            });
+            if (state === "queued" || state === "other") continue;
+            await send(`/api/remote-commands/${state}?clientId=desk`);
+            if (state !== "delivered")
+                await send(`/api/remote-commands/${state}/state`, { clientId: "desk", attempt: 1, state });
+            if (state === "running" || state === "uncertain")
+                await send(`/api/remote-commands/${state}/cancel`, { clientId: "phone" });
+        }
+        const reconnected = await open();
+        await frameAt(reconnected, 0);
+        await register(reconnected, "desk", false);
+        expect(reconnected.frames.filter((frame) => frame.type === "remoteCommand")).toEqual([]);
+        for (const client of [first, other, observer]) await delivered(client);
+        const previous = [first, other, observer].map((client) =>
+            client.frames.filter((frame) => frame.type === "remoteCommand"),
+        );
+        await register(reconnected, "desk", true);
+        expect(reconnected.frames.filter((frame) => frame.type === "remoteCommand")).toEqual([
+            { type: "remoteCommand", epoch, commandId: "queued" },
+            { type: "remoteCommand", epoch, commandId: "delivered" },
+            { type: "remoteCommand", epoch, commandId: "running", stop: true },
+            { type: "remoteCommand", epoch, commandId: "uncertain", stop: true },
+        ]);
+        for (const [index, client] of [first, other, observer].entries()) {
+            await delivered(client);
+            expect(client.frames.filter((frame) => frame.type === "remoteCommand")).toEqual(previous[index]);
+        }
+    });
+
+    it("sends committed cursors with hello and changes and serves bounded replay alongside the whole listing", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const initial = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const epoch = initial.epoch;
+        const put = async (baseRevision: string | null, text: string) => {
+            const response = await request("/api/resources/notes/r", {
+                ...json({ baseRevision, data: { text } }, { "x-resource-epoch": epoch }),
+                method: "PUT",
+            });
+            expect(response.status).toBe(200);
+            return ((await response.json()) as { revision: string }).revision;
+        };
+        const first = await open();
+        expect(await frameAt(first, 0)).toMatchObject({
+            type: "hello",
+            epoch,
+            cursor: 0,
+            digest: revisionDigest(initial),
+        });
+        const one = await put(null, "one");
+        const two = await put(one, "two");
+        expect(
+            (
+                await request(`/api/resources/notes/r?baseRevision=${encodeURIComponent(two)}`, {
+                    method: "DELETE",
+                    headers: { "x-resource-epoch": epoch },
+                })
+            ).status,
+        ).toBe(200);
+        for (const [index, revision] of [one, two, null].entries()) {
+            expect(await frameAt(first, index + 1)).toEqual({
+                type: "change",
+                epoch,
+                cursor: index + 1,
+                changes: {
+                    resources: [{ kind: "notes", id: "r", revision }],
+                    chats: [],
+                    chatOrders: [],
+                },
+            });
+        }
+        const reconnect = await open();
+        expect(await frameAt(reconnect, 0)).toMatchObject({
+            type: "hello",
+            epoch,
+            cursor: 3,
+            digest: revisionDigest(initial),
+        });
+        const replay = await request(`/api/resources/revisions?since=0&until=2&epoch=${epoch}`);
+        expect(replay.status).toBe(200);
+        expect(await replay.json()).toEqual({
+            epoch,
+            cursor: 2,
+            changes: { resources: [{ kind: "notes", id: "r", revision: two }], chats: [], chatOrders: [] },
+        });
+        expect(await (await request(`/api/resources/revisions?since=2&until=3&epoch=${epoch}`)).json()).toEqual({
+            epoch,
+            cursor: 3,
+            changes: { resources: [{ kind: "notes", id: "r", revision: null }], chats: [], chatOrders: [] },
+        });
+        expect(await (await request(`/api/resources/revisions?since=0&until=4&epoch=${epoch}`)).json()).toEqual({
+            epoch,
+            cursor: 3,
+            expired: true,
+        });
+        expect(await (await request("/api/resources/revisions?since=0&until=3&epoch=old")).json()).toEqual({
+            epoch,
+            cursor: 3,
+        });
+        expect(await (await request("/api/resources/revisions")).json()).toEqual(initial);
+        for (const query of [
+            "since=0&until=3",
+            `since=0&epoch=${epoch}`,
+            `since=&until=3&epoch=${epoch}`,
+            `since=-1&until=3&epoch=${epoch}`,
+            `since=0.5&until=3&epoch=${epoch}`,
+            `since=0&until=NaN&epoch=${epoch}`,
+            `since=0&until=9007199254740992&epoch=${epoch}`,
+        ])
+            expect((await request(`/api/resources/revisions?${query}`)).status, query).toBe(400);
+    });
+
+    it("publishes a preview's progress through the app feed and samples it for reconnecting sockets", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(1_000);
+        const entered = withResolvers<import("../jobs/generationJobs.ts").RunningJob>();
+        const finish = withResolvers<void>();
+        await listen({
+            generationRunner: async (job) => {
+                entered.resolve(job);
+                await finish.promise;
+            },
+        });
+        try {
+            const epoch = await epochOf();
+            const first = async (kind: string) =>
+                ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0]
+                    .id;
+            const bound = {
+                presetId: await first("presets"),
+                modelPresetId: await first("modelPresets"),
+                personaId: await first("personas"),
+            };
+            const seeded = await request(
+                "/api/resources/batch",
+                json(
+                    {
+                        ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+                        chats: [
+                            {
+                                characterId: "c",
+                                chatId: "k",
+                                baseRevision: null,
+                                ops: [
+                                    {
+                                        op: "create",
+                                        chat: {
+                                            id: "k",
+                                            name: "K",
+                                            message: [],
+                                            modelPresetId: bound.modelPresetId,
+                                            promptPresetId: bound.presetId,
+                                            bindedPersona: bound.personaId,
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    { "x-resource-epoch": epoch },
+                ),
+            );
+            expect(seeded.status).toBe(200);
+            const read = await request("/api/resources/read", json({ chats: [{ characterId: "c", id: "k" }] }));
+            const chatRevision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+            const observer = await open();
+            expect(await frameAt(observer, 0)).toMatchObject({ type: "hello", generations: [] });
+            const created = server.context.generationJobs.create(
+                {
+                    kind: "preview",
+                    clientId: "creator",
+                    context: {
+                        ...bound,
+                        characterId: "c",
+                        chatId: "k",
+                        mode: "normal",
+                        input: "private prompt",
+                        chatRevision,
+                    },
+                },
+                epoch,
+            );
+            if (!created.ok) throw new Error(JSON.stringify(created));
+            const job = await entered.promise;
+            const entry = {
+                jobId: created.jobId,
+                characterId: "c",
+                chatId: "k",
+                kind: "preview",
+                clientId: "creator",
+                startedAt: 1_000,
+                at: 1_000,
+            };
+            await delivered(observer);
+            expect(observer.frames.filter((frame) => frame.type === "generation")).toEqual([
+                { type: "generation", epoch, state: "running", ...entry },
+            ]);
+            vi.setSystemTime(1_010);
+            job.emit({ type: "stage", stage: "preparing" });
+            await delivered(observer);
+            expect(observer.frames.filter((frame) => frame.type === "generation").at(-1)).toEqual({
+                type: "generation",
+                epoch,
+                state: "running",
+                ...entry,
+                at: 1_010,
+                stage: "preparing",
+            });
+            vi.setSystemTime(1_020);
+            const reconnect = await open();
+            expect(await frameAt(reconnect, 0)).toMatchObject({
+                type: "hello",
+                generations: [{ ...entry, at: 1_020, stage: "preparing" }],
+            });
+            job.emit({ type: "done", revision: chatRevision, result: { text: "private preview" } });
+            for (const client of [observer, reconnect]) {
+                await delivered(client);
+                expect(client.frames.filter((frame) => frame.type === "generation").at(-1)).toEqual({
+                    type: "generation",
+                    epoch,
+                    state: "ended",
+                    jobId: created.jobId,
+                    characterId: "c",
+                    chatId: "k",
+                });
+            }
+            expect(await frameAt(await open(), 0)).toMatchObject({ type: "hello", generations: [] });
+        } finally {
+            finish.resolve();
+        }
+    });
+
+    it("publishes handoff offers at admission and request, lists them in hello, and closes them at takeover or job end", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const entered = withResolvers<import("../jobs/generationJobs.ts").RunningJob>();
+        await listen({
+            generationRunner: async (job) => {
+                entered.resolve(job);
+                await new Promise<void>((resolve) =>
+                    job.signal.addEventListener("abort", () => resolve(), { once: true }),
+                );
+            },
+        });
+        const epoch = await epochOf();
+        const first = async (kind: string) =>
+            ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0].id;
+        const bound = {
+            presetId: await first("presets"),
+            modelPresetId: await first("modelPresets"),
+            personaId: await first("personas"),
+        };
+        const post = (url: string, body: unknown) => request(url, json(body, { "x-resource-epoch": epoch }));
+        expect(
+            (
+                await post("/api/resources/batch", {
+                    ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        id: "k",
+                                        name: "K",
+                                        message: [],
+                                        modelPresetId: bound.modelPresetId,
+                                        promptPresetId: bound.presetId,
+                                        bindedPersona: bound.personaId,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                })
+            ).status,
+        ).toBe(200);
+        const feed = await open();
+        expect(await frameAt(feed, 0)).toMatchObject({ type: "hello", handoffs: [] });
+        const read = await post("/api/resources/read", { chats: [{ characterId: "c", id: "k" }] });
+        const chatRevision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+        const created = await post("/api/generations", {
+            kind: "send",
+            clientId: "creator",
+            handoff: "prefer",
+            context: { ...bound, characterId: "c", chatId: "k", mode: "normal", input: "", chatRevision },
+        });
+        expect(created.status).toBe(200);
+        const { jobId } = (await created.json()) as { jobId: string };
+        const job = await entered.promise;
+        await delivered(feed);
+        const preferred = {
+            type: "handoff",
+            epoch,
+            jobId,
+            characterId: "c",
+            chatId: "k",
+            state: "open",
+            reason: "preferred",
+        };
+        expect(feed.frames.filter((frame) => frame.type === "handoff")).toEqual([preferred]);
+        const later = await open();
+        const { type: _type, ...offer } = preferred;
+        expect(await frameAt(later, 0)).toMatchObject({ type: "hello", handoffs: [offer] });
+        expect(
+            (await post(`/api/generations/${jobId}/handoff`, { clientId: "creator", target: "worker" })).status,
+        ).toBe(200);
+        await delivered(feed);
+        const requested = { ...preferred, reason: "requested", target: "worker" };
+        expect(feed.frames.filter((frame) => frame.type === "handoff").slice(-2)).toEqual([
+            { ...preferred, state: "closed" },
+            requested,
+        ]);
+        expect((await post(`/api/generations/${jobId}/takeover`, { clientId: "worker" })).status).toBe(200);
+        await delivered(feed);
+        expect(feed.frames.at(-1)).toEqual({ ...requested, state: "closed" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await delivered(feed);
+        // No owner has attached since admission, so the expired request reopens as an untargeted absent offer.
+        const absent = { ...preferred, reason: "absent" };
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual(absent);
+        job.emit({ type: "done", revision: chatRevision });
+        await delivered(feed);
+        expect(feed.frames.filter((frame) => frame.type === "handoff").at(-1)).toEqual({
+            ...absent,
+            state: "closed",
+        });
+        const ended = await open();
+        expect(await frameAt(ended, 0)).toMatchObject({ type: "hello", handoffs: [] });
+    });
+
     it("admits a JWT in the query or the header and sends `hello` with the epoch and the (empty) memory task snapshot", async () => {
         await listen();
         const epoch = await epochOf();
         const byQuery = await open();
         expect(await byQuery.opened).toBe("open");
         await waitFor(() => byQuery.frames.length > 0);
-        expect(byQuery.frames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
+        expect(byQuery.frames[0]).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch,
+            streaming: [],
+            memoryTasks: [],
+            handoffs: [],
+            generations: [],
+            clients: [],
+            digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: 0,
+        });
         const byHeader = await open("", { "risu-auth": await signer.jwt() });
         expect(await byHeader.opened).toBe("open");
         await waitFor(() => byHeader.frames.length > 0);
-        expect(byHeader.frames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
+        expect(byHeader.frames[0]).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch,
+            streaming: [],
+            memoryTasks: [],
+            handoffs: [],
+            generations: [],
+            clients: [],
+            digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: 0,
+        });
         expect(server.context.eventSockets.size()).toBe(2);
+    });
+
+    it("reconciles a committed refs-only change from the revision listing after admission closes the socket", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const before = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const client = await open();
+        const hello = await frameAt(client, 0);
+        expect(hello).toMatchObject({ type: "hello", epoch: before.epoch, digest: revisionDigest(before) });
+
+        // Even a small refs-only frame cannot fit when only one byte remains. No patch can be
+        // trimmed to rescue it: the reconnect must discover the committed revision instead.
+        const buffered = vi.spyOn(WsClient.prototype, "bufferedAmount", "get").mockReturnValue(admissionBytes - 1);
+        const send = vi.spyOn(WsClient.prototype, "send");
+        const terminate = vi.spyOn(WsClient.prototype, "terminate");
+        let revision: string;
+        try {
+            const response = await request("/api/resources/notes/missed", {
+                ...json(
+                    { baseRevision: null, data: { text: "committed while disconnected" } },
+                    { "x-resource-epoch": before.epoch },
+                ),
+                method: "PUT",
+            });
+            expect(response.status).toBe(200);
+            revision = ((await response.json()) as { revision: string }).revision;
+            expect(send).not.toHaveBeenCalled();
+            expect(terminate).toHaveBeenCalledTimes(1);
+            expect(await client.closed).toBe(1006);
+            expect(client.frames).toEqual([hello]);
+        } finally {
+            buffered.mockRestore();
+            send.mockRestore();
+            terminate.mockRestore();
+        }
+
+        const reconnected = await open();
+        const nextHello = await frameAt(reconnected, 0);
+        const listing = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        expect(listing.resources).toContainEqual({ kind: "notes", id: "missed", revision });
+        expect(nextHello).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch: before.epoch,
+            streaming: [],
+            memoryTasks: [],
+            handoffs: [],
+            generations: [],
+            clients: [],
+            digest: revisionDigest(listing),
+            cursor: expect.any(Number),
+        });
+        expect(revisionDigest(listing)).not.toBe(revisionDigest(before));
+        await delivered(reconnected);
+        expect(reconnected.frames).toEqual([nextHello]);
     });
 
     it("refuses the raw password, an expired or broken JWT, and no token (401), without a frame", async () => {
@@ -218,10 +718,211 @@ describe("the live-update socket on the server", () => {
             revision: applied.results[0].revision,
         });
         expect(listing.resources.some((entry) => entry.kind === "ui")).toBe(true);
-        expect(listing.chats).toEqual([{ characterId: "c", id: "k", revision: applied.chats[0].revision }]);
+        expect(listing.chats).toEqual([
+            { characterId: "c", id: "k", revision: applied.chats[0].revision, trashedAt: null },
+        ]);
         expect(listing.chatOrders).toEqual([{ characterId: "c", revision: applied.chatOrders[0].revision }]);
         expect(JSON.stringify(listing)).not.toContain('"data"');
     });
+
+    it("keeps a frame-built revision map equal to fresh hello digests through every commit kind and rollback", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ resourceKinds: digestKinds });
+        const first = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+        const observer = await open();
+        await frameAt(observer, 0);
+        const resources = new Map(first.resources.map((row) => [JSON.stringify([row.kind, row.id]), row]));
+        const chats = new Map(first.chats.map((row) => [JSON.stringify([row.characterId, row.id]), row]));
+        const chatOrders = new Map(first.chatOrders.map((row) => [row.characterId, row]));
+        let consumed = 1;
+        const advertised = (): ResourceRevisionListing => ({
+            epoch: first.epoch,
+            resources: [...resources.values()],
+            chats: [...chats.values()],
+            chatOrders: [...chatOrders.values()],
+        });
+        async function matches(label: string) {
+            await delivered(observer);
+            for (const frame of observer.frames.slice(consumed)) {
+                if (frame.type !== "change") continue;
+                expect(frame.epoch).toBe(first.epoch);
+                for (const { kind, id, revision } of frame.changes.resources) {
+                    const key = JSON.stringify([kind, id]);
+                    if (revision === null) resources.delete(key);
+                    else resources.set(key, { kind, id, revision });
+                }
+                for (const { characterId, id, revision } of frame.changes.chats) {
+                    const key = JSON.stringify([characterId, id]);
+                    if (revision === null) chats.delete(key);
+                    else chats.set(key, { characterId, id, revision });
+                }
+                for (const { characterId, revision } of frame.changes.chatOrders) {
+                    if (revision === null) chatOrders.delete(characterId);
+                    else chatOrders.set(characterId, { characterId, revision });
+                }
+            }
+            consumed = observer.frames.length;
+            const fresh = await open();
+            expect(await frameAt(fresh, 0), label).toMatchObject({
+                type: "hello",
+                epoch: first.epoch,
+                digest: revisionDigest(advertised()),
+            });
+            fresh.ws.close();
+            await fresh.closed;
+        }
+        const write = async (body: unknown, status = 200) => {
+            const response = await request("/api/resources/batch", json(body, { "x-resource-epoch": first.epoch }));
+            expect(response.status).toBe(status);
+            return response.json();
+        };
+        const resourceRevision = (kind: string, id: string) => resources.get(JSON.stringify([kind, id]))!.revision;
+        const chatRevision = (id: string) => chats.get(JSON.stringify(["c", id]))!.revision;
+        const createChat = (id: string) => ({
+            characterId: "c",
+            chatId: id,
+            baseRevision: null,
+            ops: [{ op: "create", chat: { id, name: id, message: [] } }],
+        });
+        await matches("initial listing");
+        const putNote = async (baseRevision: string | null, text: string) => {
+            expect(
+                (
+                    await request("/api/resources/notes/n", {
+                        ...json({ baseRevision, data: { text } }, { "x-resource-epoch": first.epoch }),
+                        method: "PUT",
+                    })
+                ).status,
+            ).toBe(200);
+        };
+        await putNote(null, "one");
+        await matches("resource insert");
+        await putNote(resourceRevision("notes", "n"), "two");
+        await matches("resource update");
+        expect(
+            (
+                await request(
+                    `/api/resources/notes/n?baseRevision=${encodeURIComponent(resourceRevision("notes", "n"))}`,
+                    {
+                        method: "DELETE",
+                        headers: { "x-resource-epoch": first.epoch },
+                    },
+                )
+            ).status,
+        ).toBe(200);
+        await matches("resource delete");
+        await write({
+            ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [createChat("k")],
+        });
+        await matches("character with chat and order");
+        await write({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: chatRevision("k"),
+                    ops: [{ op: "meta", set: { name: "Renamed" } }],
+                },
+            ],
+        });
+        await matches("existing chat ops");
+        await write({ chats: [createChat("j")] });
+        await matches("chat create");
+        await write({
+            chatOrders: [{ characterId: "c", baseRevision: chatOrders.get("c")!.revision, ids: ["j", "k"] }],
+        });
+        await matches("chat order write");
+        const chatTrash = async (action: "trash" | "delete", revision: string) => {
+            const response = await request(
+                `/api/chat-trash/${action}`,
+                json({ characterId: "c", chatId: "j", revision }, { "x-resource-epoch": first.epoch }),
+            );
+            expect(response.status).toBe(200);
+            return (await response.json()) as { revision: string };
+        };
+        const trashed = await chatTrash("trash", chatRevision("j"));
+        await matches("chat trash");
+        await chatTrash("delete", trashed.revision);
+        await matches("chat delete");
+        const beforeRollback = structuredClone(advertised());
+        const beforeFrames = observer.frames.length;
+        await write(
+            {
+                ops: [
+                    { kind: "notes", id: "rolled-back", baseRevision: null, data: { text: "never committed" } },
+                    { kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "Conflict" } },
+                ],
+            },
+            409,
+        );
+        await matches("rolled-back batch");
+        expect(observer.frames).toHaveLength(beforeFrames);
+        expect(advertised()).toEqual(beforeRollback);
+        await write({
+            ops: [{ kind: "characters", id: "c", baseRevision: resourceRevision("characters", "c"), delete: true }],
+        });
+        await matches("character cascade deletes remaining chat and order");
+    });
+
+    it.each(["startup normalization", "restore"])(
+        "invalidates a preexisting revision map after %s",
+        async (operation) => {
+            vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+            await listen({ resourceKinds: digestKinds });
+            const epoch = await epochOf();
+            expect(
+                (
+                    await request("/api/resources/notes/n", {
+                        ...json({ baseRevision: null, data: { text: "old" } }, { "x-resource-epoch": epoch }),
+                        method: "PUT",
+                    })
+                ).status,
+            ).toBe(200);
+            const before = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+            const prior = await open();
+            expect(await frameAt(prior, 0)).toMatchObject({ digest: revisionDigest(before) });
+            if (operation === "startup normalization") {
+                const rootDir = server.rootDir;
+                await server.context.dispose();
+                node!.closeAllConnections();
+                await new Promise<void>((resolve) => node!.close(() => resolve()));
+                node = undefined;
+                await listen({
+                    rootDir,
+                    resourceKinds: [
+                        ...DEFAULT_RESOURCE_KINDS,
+                        {
+                            ...noteKind,
+                            normalize: (value) => ({ ...(value as object), normalized: true }),
+                        },
+                    ],
+                });
+            } else {
+                const snapshot = await server.context.snapshots.snapshotNow();
+                expect(
+                    (
+                        await request(`/api/backups/${snapshot.id}/restore`, {
+                            method: "POST",
+                            headers: { "x-resource-epoch": epoch },
+                        })
+                    ).status,
+                ).toBe(200);
+                await delivered(prior);
+                expect(prior.frames.some((frame) => frame.type === "epoch" && frame.epoch !== epoch)).toBe(true);
+            }
+            const after = (await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing;
+            if (operation === "startup normalization") {
+                expect(after.epoch).toBe(before.epoch);
+                expect(after.resources.find((row) => row.kind === "notes")?.revision).not.toBe(
+                    before.resources.find((row) => row.kind === "notes")?.revision,
+                );
+            } else expect(after.epoch).not.toBe(before.epoch);
+            const hello = await frameAt(await open(), 0);
+            expect(hello).toMatchObject({ type: "hello", epoch: after.epoch, digest: revisionDigest(after) });
+            expect(hello.type === "hello" && hello.digest).not.toBe(revisionDigest(before));
+        },
+    );
 
     it("closes every socket with 1001 on shutdown and refuses new ones", async () => {
         await listen();
@@ -248,9 +949,21 @@ describe("createEventSockets", () => {
     async function host(
         authorize: (token: string | undefined) => Promise<boolean>,
         memoryTasks: () => MemoryTaskEntry[] = () => [],
+        digest?: () => string,
+        cursor?: () => number,
+        generations?: () => GenerationProgressEntry[],
     ) {
         const feed = createChangeFeed();
-        const sockets = createEventSockets({ feed, epoch: () => "E", authorize, streaming: () => [], memoryTasks });
+        const sockets = createEventSockets({
+            feed,
+            epoch: () => "E",
+            authorize,
+            streaming: () => [],
+            memoryTasks,
+            digest,
+            cursor,
+            generations,
+        });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
             if (!sockets.handleUpgrade(req, socket, head)) {
@@ -263,6 +976,392 @@ describe("createEventSockets", () => {
         const { port } = node.address() as { port: number };
         return { feed, sockets, url: `ws://127.0.0.1:${port}/api/events/ws?risu-auth=t` };
     }
+
+    it("samples running generations in every hello and delivers published progress and ends to every socket", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const entry: GenerationProgressEntry = {
+            jobId: "job",
+            characterId: "c",
+            chatId: "k",
+            kind: "command",
+            clientId: "creator",
+            startedAt: 100,
+            at: 110,
+            stage: "generating",
+            retry: 2,
+        };
+        let generations = [entry];
+        const { feed, sockets, url } = await host(
+            async () => true,
+            () => [],
+            undefined,
+            undefined,
+            () => generations,
+        );
+        const clients: Client[] = [];
+        const hello = (generations: GenerationProgressEntry[]) => ({
+            type: "hello",
+            rerollInPlace: true,
+            epoch: "E",
+            streaming: [],
+            memoryTasks: [],
+            clients: [],
+            generations,
+        });
+        try {
+            const first = connect(url);
+            clients.push(first);
+            expect(await frameAt(first, 0)).toEqual(hello([entry]));
+            const next: GenerationProgressEntry = {
+                jobId: "job",
+                characterId: "c",
+                chatId: "k",
+                kind: "command",
+                clientId: "creator",
+                startedAt: 100,
+                at: 120,
+                stage: "finishing",
+            };
+            generations = [next];
+            const second = connect(url);
+            clients.push(second);
+            expect(await frameAt(second, 0)).toEqual(hello([next]));
+            const progress = { type: "generation", epoch: "E", state: "running", ...next } satisfies ChangeFeedEvent;
+            const ended = {
+                type: "generation",
+                epoch: "E",
+                state: "ended",
+                jobId: "job",
+                characterId: "c",
+                chatId: "k",
+            } satisfies ChangeFeedEvent;
+            feed.publish(progress);
+            feed.publish(ended);
+            for (const client of clients) {
+                expect(await frameAt(client, 1)).toEqual(progress);
+                expect(await frameAt(client, 2)).toEqual(ended);
+            }
+            generations = [];
+            const later = connect(url);
+            clients.push(later);
+            expect(await frameAt(later, 0)).toEqual(hello([]));
+        } finally {
+            sockets.close();
+            await Promise.all(clients.map((client) => client.closed));
+        }
+    });
+
+    it("serves the same hello and changes with a known, invalid or absent protocol number", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const { feed, sockets, url } = await host(async () => true);
+        const clients = ["&proto=1", "&proto=garbage", ""].map((query) => connect(url + query));
+        try {
+            for (const client of clients) {
+                expect(await client.opened).toBe("open");
+                expect(await frameAt(client, 0)).toEqual({
+                    type: "hello",
+                    rerollInPlace: true,
+                    epoch: "E",
+                    streaming: [],
+                    memoryTasks: [],
+                    clients: [],
+                });
+            }
+            const change = { resources: [{ kind: "notes", id: "r", revision: "E:1:2" }], chats: [], chatOrders: [] };
+            feed.publish({ type: "change", epoch: "E", changes: change });
+            for (const client of clients) {
+                expect(await frameAt(client, 1)).toEqual({ type: "change", epoch: "E", changes: change });
+            }
+        } finally {
+            sockets.close();
+            await Promise.all(clients.map((client) => client.closed));
+        }
+    });
+
+    it("samples hello's digest and cursor before a queued commit can intervene", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        let cursor = 7;
+        const rows: ResourceRevisionListing = {
+            epoch: "E",
+            resources: [{ kind: "notes", id: "r", revision: "E:1:7" }],
+            chats: [],
+            chatOrders: [],
+        };
+        const digest = revisionDigest(rows);
+        const { sockets, url } = await host(
+            async () => true,
+            () => [],
+            () => {
+                queueMicrotask(() => {
+                    cursor = 8;
+                    rows.resources[0].revision = "E:1:8";
+                });
+                return revisionDigest(rows);
+            },
+            () => cursor,
+        );
+        const client = connect(url);
+        try {
+            expect(await frameAt(client, 0)).toMatchObject({ type: "hello", digest, cursor: 7 });
+            expect(cursor).toBe(8);
+        } finally {
+            sockets.close();
+            await client.closed;
+        }
+    });
+
+    it("publishes boolean host flags in clients and hello and omits absent or non-boolean flags", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const registered = connect(url);
+        const observer = connect(url);
+        const clients = [registered, observer];
+        try {
+            for (const client of clients) await frameAt(client, 0);
+            for (const flag of [true, false, undefined, "true"]) {
+                registered.ws.send(
+                    JSON.stringify({ type: "register", clientId: "desk", name: "Desk", worker: false, host: flag }),
+                );
+                await delivered(registered);
+                await delivered(observer);
+                const presence = {
+                    clientId: "desk",
+                    name: "Desk",
+                    worker: false,
+                    ...(typeof flag === "boolean" ? { host: flag } : {}),
+                };
+                expect(observer.frames.at(-1)).toEqual({ type: "clients", clients: [presence] });
+                const later = connect(url);
+                clients.push(later);
+                expect(await frameAt(later, 0)).toMatchObject({ type: "hello", clients: [presence] });
+                const hello = later.frames[0];
+                if (hello.type !== "hello") throw new Error("Expected hello");
+                expect(hello.clients).toEqual([presence]);
+            }
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("sends addressed frames only to the newest registration of their target id", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const clients = [connect(url), connect(url), connect(url)];
+        const [older, newer, sender] = clients;
+        try {
+            for (const client of clients) await frameAt(client, 0);
+            const register = async (client: Client, clientId: string) => {
+                client.ws.send(
+                    JSON.stringify({ type: "register", clientId, name: clientId, worker: false, host: true }),
+                );
+                await delivered(client);
+            };
+            await register(older, "desk");
+            await register(newer, "desk");
+            await register(sender, "phone");
+            const command = { type: "remoteCommand", epoch: "E", commandId: "send-1" } as const;
+            const state = { type: "remoteCommandState", epoch: "E", commandId: "send-1", state: "running" } as const;
+            expect(sockets.sendToClient("desk", command)).toBe(true);
+            expect(sockets.sendToClient("phone", state)).toBe(true);
+            expect(sockets.sendToClient("missing", command)).toBe(false);
+            const addressed = (client: Client) =>
+                client.frames.filter((frame) => frame.type === "remoteCommand" || frame.type === "remoteCommandState");
+            for (const client of clients) await delivered(client);
+            expect(addressed(older)).toEqual([]);
+            expect(addressed(newer)).toEqual([command]);
+            expect(addressed(sender)).toEqual([state]);
+            await register(older, "desk");
+            expect(sockets.sendToClient("desk", command)).toBe(true);
+            for (const client of clients) await delivered(client);
+            expect(addressed(older)).toEqual([command]);
+            expect(addressed(newer)).toEqual([command]);
+            expect(addressed(sender)).toEqual([state]);
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("lets the newest false or absent host flag hide an older host registration", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const older = connect(url);
+        const newer = connect(url);
+        try {
+            for (const client of [older, newer]) await frameAt(client, 0);
+            expect(sockets.isHost("desk")).toBe(false);
+            for (const flag of [false, undefined]) {
+                older.ws.send(
+                    JSON.stringify({ type: "register", clientId: "desk", name: "Older", worker: false, host: true }),
+                );
+                await delivered(older);
+                expect(sockets.isHost("desk")).toBe(true);
+                newer.ws.send(
+                    JSON.stringify({ type: "register", clientId: "desk", name: "Newer", worker: false, host: flag }),
+                );
+                await delivered(newer);
+                expect(sockets.isHost("desk")).toBe(false);
+            }
+        } finally {
+            older.ws.terminate();
+            newer.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("publishes bounded names on registration, updates and departure while unregistered sockets receive every frame", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const { feed, sockets, url } = await host(async () => true);
+        const worker = connect(url);
+        const legacy = connect(url);
+        const observers = [worker, legacy];
+        try {
+            for (const client of observers) expect(await frameAt(client, 0)).toMatchObject({ clients: [] });
+            worker.ws.send(JSON.stringify({ type: "register", clientId: "desk", name: "D".repeat(65), worker: true }));
+            const registered = { clientId: "desk", name: "D".repeat(64), worker: true };
+            for (const client of observers) {
+                expect(await frameAt(client, 1)).toEqual({ type: "clients", clients: [registered] });
+            }
+            const later = connect(url);
+            observers.push(later);
+            expect(await frameAt(later, 0)).toMatchObject({ type: "hello", clients: [registered] });
+
+            const changed = { clientId: "desk", name: "Kitchen", worker: false };
+            worker.ws.send(JSON.stringify({ type: "register", ...changed }));
+            for (const [client, index] of [
+                [worker, 2],
+                [legacy, 2],
+                [later, 1],
+            ] as const) {
+                expect(await frameAt(client, index)).toEqual({ type: "clients", clients: [changed] });
+            }
+            const frames = [
+                { type: "change", epoch: "E", changes: { resources: [], chats: [], chatOrders: [] } },
+                {
+                    type: "memoryTask",
+                    epoch: "E",
+                    characterId: "c",
+                    chatId: "k",
+                    status: { taskId: "memory", state: "running", done: 0, total: 1 },
+                },
+                {
+                    type: "handoff",
+                    epoch: "E",
+                    jobId: "j",
+                    characterId: "c",
+                    chatId: "k",
+                    state: "open",
+                    reason: "requested",
+                    target: "desk",
+                },
+                { type: "epoch", epoch: "next" },
+            ] satisfies ChangeFeedEvent[];
+            for (const frame of frames) feed.publish(frame);
+            for (const [client, offset] of [
+                [worker, 3],
+                [legacy, 3],
+                [later, 2],
+            ] as const) {
+                for (const [index, frame] of frames.entries())
+                    expect(await frameAt(client, offset + index)).toEqual(frame);
+            }
+            worker.ws.close();
+            await worker.closed;
+            expect(await frameAt(legacy, 7)).toEqual({ type: "clients", clients: [] });
+            expect(await frameAt(later, 6)).toEqual({ type: "clients", clients: [] });
+        } finally {
+            for (const client of observers) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("resolves the newest live registration's name, including re-registration, empty names and departure", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const first = connect(url);
+        const second = connect(url);
+        const observer = connect(url);
+        const clients = [first, second, observer];
+        try {
+            for (const client of clients) await frameAt(client, 0);
+            expect(sockets.clientName("desk")).toBeUndefined();
+            const register = async (client: Client, name: string) => {
+                client.ws.send(JSON.stringify({ type: "register", clientId: "desk", name, worker: true }));
+                await delivered(client);
+                await delivered(observer);
+            };
+            await register(first, "First");
+            expect(sockets.clientName("desk")).toBe("First");
+            expect(sockets.clientName("unknown")).toBeUndefined();
+            await register(second, "Second");
+            expect(sockets.clientName("desk")).toBe("Second");
+            await register(first, "Renamed");
+            expect(sockets.clientName("desk")).toBe("Renamed");
+            await register(first, "");
+            expect(sockets.clientName("desk")).toBeUndefined();
+
+            let nextFrame = observer.frames.length;
+            first.ws.close();
+            await first.closed;
+            await frameAt(observer, nextFrame);
+            expect(sockets.clientName("desk")).toBe("Second");
+            nextFrame = observer.frames.length;
+            second.ws.close();
+            await second.closed;
+            await frameAt(observer, nextFrame);
+            expect(sockets.clientName("desk")).toBeUndefined();
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("caps presence snapshots at 64 registered clients in broadcasts and hello but resolves names beyond the cap", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const clients: Client[] = [];
+        try {
+            const observer = connect(url);
+            clients.push(observer);
+            await frameAt(observer, 0);
+            for (let index = 0; index < 65; index++) {
+                const client = connect(url);
+                clients.push(client);
+                await frameAt(client, 0);
+                client.ws.send(
+                    JSON.stringify({
+                        type: "register",
+                        clientId: `tab-${index}`,
+                        name: `Worker ${index}`,
+                        worker: true,
+                    }),
+                );
+                await delivered(client);
+                await delivered(observer);
+                const frame = observer.frames.at(-1)!;
+                expect(frame.type).toBe("clients");
+                if (frame.type !== "clients") throw new Error("Expected a presence snapshot");
+                expect(frame.clients).toHaveLength(Math.min(index + 1, 64));
+                expect(new Set(frame.clients.map((entry) => entry.clientId)).size).toBe(frame.clients.length);
+                expect(frame.clients.every((entry) => /^tab-\d+$/.test(entry.clientId))).toBe(true);
+            }
+            const later = connect(url);
+            clients.push(later);
+            const hello = await frameAt(later, 0);
+            expect(hello).toMatchObject({
+                type: "hello",
+                clients: (observer.frames.at(-1) as Extract<EventFeedFrame, { type: "clients" }>).clients,
+            });
+            expect(hello).toMatchObject({
+                clients: expect.not.arrayContaining([expect.objectContaining({ clientId: "tab-0" })]),
+            });
+            expect(sockets.clientName("tab-0")).toBe("Worker 0");
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
 
     it("refuses (503) a socket whose authorization finished after `close()`", async () => {
         let finish!: (ok: boolean) => void;
@@ -307,12 +1406,228 @@ describe("createEventSockets", () => {
             expect(client.frames[1]).toEqual({ type: "epoch", epoch: "F" });
         }
         expect(await failed.closed).toBe(1006);
-        expect(failed.frames).toEqual([{ type: "hello", epoch: "E", streaming: [], memoryTasks: [] }]);
+        expect(failed.frames).toEqual([
+            { type: "hello", rerollInPlace: true, epoch: "E", streaming: [], memoryTasks: [], clients: [] },
+        ]);
         await waitFor(() => sockets.size() === 2);
         for (const client of others) {
             client.ws.terminate();
         }
         sockets.close();
+    });
+
+    it("sends an accepted feed frame larger than 64 KiB as one complete JSON message", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const feed = createChangeFeed();
+        const sockets = createEventSockets({
+            feed,
+            epoch: () => "E",
+            authorize: async () => true,
+            streaming: () => [],
+            memoryTasks: () => [],
+        });
+        const ws = Object.assign(new EventEmitter(), {
+            OPEN: WsClient.OPEN,
+            readyState: WsClient.OPEN as number,
+            bufferedAmount: 0,
+            send: vi.fn<(text: string) => void>(),
+            close: vi.fn(() => {
+                ws.readyState = WsClient.CLOSED;
+                ws.emit("close");
+            }),
+            terminate: vi.fn(),
+        });
+        const transport = new Duplex({
+            read() {},
+            write(_data, _encoding, done) {
+                done();
+            },
+        });
+        const attached = withResolvers<void>();
+        const upgrade = vi
+            .spyOn(WebSocketServer.prototype, "handleUpgrade")
+            .mockImplementationOnce((req, _socket, _head, callback) => {
+                callback(ws as unknown as WsClient, req);
+                attached.resolve();
+            });
+        const frame: ChangeFeedEvent = {
+            type: "change",
+            epoch: "E",
+            changes: {
+                resources: [
+                    {
+                        kind: "notes",
+                        id: "n",
+                        revision: "r2",
+                        patch: { baseRevision: "r1", set: { text: "€한😀" }, remove: [] },
+                    },
+                ],
+                chats: [],
+                chatOrders: [],
+            },
+        };
+        const text = JSON.stringify(frame);
+        const byteLength = Buffer.byteLength;
+        // Control the measured size and transport, keeping real publication and serialization.
+        // This crosses the chunking threshold while remaining below socket admission, without a large allocation.
+        const measured = vi
+            .spyOn(Buffer, "byteLength")
+            .mockImplementation((data, encoding) => (data === text ? 64 * 1024 + 1 : byteLength(data, encoding)));
+        try {
+            expect(
+                sockets.handleUpgrade(
+                    { url: "/api/events/ws?risu-auth=t", headers: {} } as http.IncomingMessage,
+                    transport,
+                    Buffer.alloc(0),
+                ),
+            ).toBe(true);
+            await attached.promise;
+            ws.send.mockClear();
+
+            feed.publish(frame);
+
+            expect(ws.send.mock.calls.map(([sent]) => sent)).toEqual([text]);
+            expect(JSON.parse(ws.send.mock.calls[0][0])).toEqual(frame);
+            expect(ws.terminate).not.toHaveBeenCalled();
+            expect(ws.readyState).toBe(WsClient.OPEN);
+        } finally {
+            measured.mockRestore();
+            upgrade.mockRestore();
+            sockets.close();
+            transport.destroy();
+        }
+    });
+
+    it("admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing rejected frames", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+        // The broadcast frames; the addressed remote-command frames are sent by `sendToClient`, not the feed.
+        const frames: Exclude<EventFeedFrame, { type: "remoteCommand" | "remoteCommandState" }>[] = [
+            {
+                type: "change",
+                epoch: "E",
+                changes: {
+                    resources: [
+                        {
+                            kind: "notes",
+                            id: "n",
+                            revision: "r2",
+                            patch: { baseRevision: "r1", set: { text: "€한😀" }, remove: [] },
+                        },
+                    ],
+                    chats: [],
+                    chatOrders: [],
+                },
+            },
+            {
+                type: "memoryTask",
+                epoch: "E",
+                characterId: "한",
+                chatId: "k",
+                status: { taskId: "t", state: "queued", done: 0, total: 0 },
+            },
+            { type: "epoch", epoch: "새 epoch" },
+            {
+                type: "generation",
+                epoch: "E",
+                state: "running",
+                jobId: "job",
+                characterId: "한",
+                chatId: "k",
+                kind: "command",
+                clientId: "creator",
+                startedAt: 100,
+                at: 120,
+                stage: "generating",
+            },
+            { type: "ping", ts: 15_000 },
+        ];
+        for (const frame of frames) {
+            vi.setSystemTime(0);
+            const { feed, sockets, url } = await host(async () => true);
+            const clients: Client[] = [];
+            // Connect in order so the rejected socket is first in the fan-out.
+            for (let i = 0; i < 3; i++) {
+                const client = connect(url);
+                clients.push(client);
+                await frameAt(client, 0);
+            }
+            const text = JSON.stringify(frame);
+            const bytes = Buffer.byteLength(text);
+            const over = admissionBytes - bytes + 1;
+            if (frame.type !== "ping") {
+                expect(bytes).toBeGreaterThan(text.length);
+                expect(over + text.length).toBeLessThanOrEqual(admissionBytes);
+            }
+            // ws counts buffered strings in UTF-16 code units. Control its getter instead of
+            // relying on real buffering; both the server and clients use this class.
+            const buffered = vi
+                .spyOn(WsClient.prototype, "bufferedAmount", "get")
+                .mockReturnValueOnce(over)
+                .mockReturnValueOnce(admissionBytes - bytes)
+                .mockReturnValue(0);
+            const send = vi.spyOn(WsClient.prototype, "send");
+            const terminate = vi.spyOn(WsClient.prototype, "terminate");
+            try {
+                if (frame.type === "ping") vi.advanceTimersByTime(15_000);
+                else if (frame.type !== "hello" && frame.type !== "clients") feed.publish(frame);
+                expect(
+                    send.mock.calls.map(([data]) => data),
+                    frame.type,
+                ).toEqual([text, text]);
+                expect(terminate, frame.type).toHaveBeenCalledTimes(1);
+                expect(terminate.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
+                expect(await clients[0].closed).toBe(1006);
+                expect(clients[0].frames).toEqual([
+                    { type: "hello", rerollInPlace: true, epoch: "E", streaming: [], memoryTasks: [], clients: [] },
+                ]);
+                for (const client of clients.slice(1)) {
+                    expect(await frameAt(client, 1)).toEqual(frame);
+                    expect(client.ws.readyState).toBe(WsClient.OPEN);
+                }
+            } finally {
+                buffered.mockRestore();
+                send.mockRestore();
+                terminate.mockRestore();
+                for (const client of clients) client.ws.terminate();
+                sockets.close();
+            }
+        }
+    });
+
+    it("admits hello on bufferedAmount alone even when its own bytes would exceed 4 MiB", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const buffered = vi.spyOn(WsClient.prototype, "bufferedAmount", "get").mockReturnValue(admissionBytes);
+        const send = vi.spyOn(WsClient.prototype, "send");
+        const clients: Client[] = [];
+        try {
+            const admitted = connect(url);
+            clients.push(admitted);
+            const hello = {
+                type: "hello",
+                rerollInPlace: true,
+                epoch: "E",
+                streaming: [],
+                memoryTasks: [],
+                clients: [],
+            };
+            expect(admissionBytes + Buffer.byteLength(JSON.stringify(hello))).toBeGreaterThan(admissionBytes);
+            expect(await frameAt(admitted, 0)).toEqual(hello);
+            expect(admitted.ws.readyState).toBe(WsClient.OPEN);
+
+            buffered.mockReturnValue(admissionBytes + 1);
+            send.mockClear();
+            const rejected = connect(url);
+            clients.push(rejected);
+            expect(await rejected.closed).toBe(1006);
+            expect(send).not.toHaveBeenCalled();
+            expect(rejected.frames).toEqual([]);
+        } finally {
+            buffered.mockRestore();
+            send.mockRestore();
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
     });
 
     it("pings every 15 s, publishes `epoch` frames, and forgets a closed socket and its timer", async () => {
@@ -321,7 +1636,14 @@ describe("createEventSockets", () => {
         const client = connect(url);
         expect(await client.opened).toBe("open");
         await waitFor(() => client.frames.length > 0);
-        expect(client.frames[0]).toEqual({ type: "hello", epoch: "E", streaming: [], memoryTasks: [] });
+        expect(client.frames[0]).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch: "E",
+            streaming: [],
+            memoryTasks: [],
+            clients: [],
+        });
         vi.advanceTimersByTime(15_000);
         await waitFor(() => client.frames.length > 1);
         expect(client.frames[1]).toMatchObject({ type: "ping", ts: expect.any(Number) });
@@ -371,6 +1693,41 @@ describe("createEventSockets", () => {
         sockets.close();
     });
 
+    it("omits a failed digest while keeping the hello snapshots and the socket usable", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+        const status: MemoryTaskEntry = {
+            characterId: "c",
+            chatId: "k",
+            status: { taskId: "t", state: "running", done: 0, total: 1 },
+        };
+        const { feed, sockets, url } = await host(
+            async () => true,
+            () => [status],
+            () => {
+                throw new Error("digest failed");
+            },
+        );
+        const client = connect(url);
+        try {
+            expect(await frameAt(client, 0)).toEqual({
+                type: "hello",
+                rerollInPlace: true,
+                epoch: "E",
+                streaming: [],
+                memoryTasks: [status],
+                clients: [],
+            });
+            expect(client.ws.readyState).toBe(WsClient.OPEN);
+            feed.publish({ type: "epoch", epoch: "F" });
+            expect(await frameAt(client, 1)).toEqual({ type: "epoch", epoch: "F" });
+        } finally {
+            client.ws.terminate();
+            sockets.close();
+            logged.mockRestore();
+        }
+    });
+
     it("closes a socket with 1011 and no frame when the memory task snapshot throws, logging no detail", async () => {
         const error = vi.spyOn(console, "error").mockImplementation(() => {});
         try {
@@ -391,5 +1748,121 @@ describe("createEventSockets", () => {
         } finally {
             error.mockRestore();
         }
+    });
+});
+
+describe("revisionDigest", () => {
+    const rows: ResourceRevisionListing = {
+        epoch: "epoch",
+        resources: [
+            { kind: "c", id: "k", revision: "r" },
+            { kind: "ui", id: "main", revision: "s" },
+        ],
+        chats: [
+            { characterId: "c", id: "k", revision: "r" },
+            { characterId: "d", id: "j", revision: "s" },
+        ],
+        chatOrders: [
+            { characterId: "c", revision: "r" },
+            { characterId: "d", revision: "s" },
+        ],
+    };
+    it("is order independent and has exactly 32 lowercase hexadecimal digits", () => {
+        const digest = revisionDigest(rows);
+        expect(digest).toMatch(/^[0-9a-f]{32}$/);
+        expect(
+            revisionDigest({
+                ...rows,
+                resources: [...rows.resources].reverse(),
+                chats: [...rows.chats].reverse(),
+                chatOrders: [...rows.chatOrders].reverse(),
+            }),
+        ).toBe(digest);
+        expect(revisionDigest({ epoch: "", resources: [], chats: [], chatOrders: [] })).toMatch(/^[0-9a-f]{32}$/);
+    });
+    it.each<[string, (listing: ResourceRevisionListing) => void]>([
+        [
+            "epoch",
+            (value) => {
+                value.epoch = "other";
+            },
+        ],
+        [
+            "resource membership",
+            (value) => {
+                value.resources.pop();
+            },
+        ],
+        [
+            "resource kind",
+            (value) => {
+                value.resources[0].kind = "other";
+            },
+        ],
+        [
+            "resource id",
+            (value) => {
+                value.resources[0].id = "other";
+            },
+        ],
+        [
+            "resource revision",
+            (value) => {
+                value.resources[0].revision = "other";
+            },
+        ],
+        [
+            "chat membership",
+            (value) => {
+                value.chats.pop();
+            },
+        ],
+        [
+            "chat character id",
+            (value) => {
+                value.chats[0].characterId = "other";
+            },
+        ],
+        [
+            "chat id",
+            (value) => {
+                value.chats[0].id = "other";
+            },
+        ],
+        [
+            "chat revision",
+            (value) => {
+                value.chats[0].revision = "other";
+            },
+        ],
+        [
+            "order membership",
+            (value) => {
+                value.chatOrders.pop();
+            },
+        ],
+        [
+            "order character id",
+            (value) => {
+                value.chatOrders[0].characterId = "other";
+            },
+        ],
+        [
+            "order revision",
+            (value) => {
+                value.chatOrders[0].revision = "other";
+            },
+        ],
+        [
+            "row category",
+            (value) => {
+                const resource = value.resources.pop()!;
+                value.chats.push({ characterId: resource.kind, id: resource.id, revision: resource.revision });
+            },
+        ],
+    ])("changes when only %s changes", (_label, change) => {
+        const changed = structuredClone(rows);
+        change(changed);
+        expect(revisionDigest(changed)).not.toBe(revisionDigest(rows));
     });
 });

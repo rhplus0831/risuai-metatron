@@ -1,6 +1,7 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { textHash } from "../../../../shared/textHash.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -49,7 +50,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -69,6 +70,7 @@ const refK = { chaId: "c", chatId: "k" };
 const EXTRA = 8;
 /** `c`'s chat ids in server order: `k`, `j`, then `n0`..`n7`. */
 const C_IDS = ["k", "j", ...Array.from({ length: EXTRA }, (_, i) => `n${i}`)];
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location")!;
 
 /**
  * Boots the adapter and the chat module from summaries, the way `loadData` does, against a
@@ -203,7 +205,7 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    Object.defineProperty(globalThis, "location", originalLocation);
     server.current?.close();
 });
 
@@ -278,7 +280,274 @@ describe("the boot from summaries", () => {
 });
 
 describe("live updates of chats that are not loaded", () => {
-    it("a notice for an unloaded chat refreshes its summary through the character's list, never the chat whole; a deleted one leaves the list; a new one arrives as a summary", async () => {
+    it("trims excess noticed chats before choosing reads and refreshes evicted chats through summaries", async () => {
+        const b = await boot();
+        b.live.paused = true;
+        const release = b.chat.pinChats("c");
+        await b.chat.loadChats("c");
+        expect(b.loadedIds("c")).toEqual(C_IDS);
+        b.fake.requests.length = 0;
+        for (const id of C_IDS) b.remoteMeta("c", id, { name: `${id} remote` });
+        b.sync.noteRemoteChanges({
+            resources: [],
+            chats: C_IDS.map((id) => ({ characterId: "c", id, revision: b.fake.chat("c", id)!.revision })),
+            chatOrders: [],
+        });
+        release();
+        // A normal trim still protects every notice; only the refresh pass may drop these copies.
+        b.chat.trimLoadedChats();
+        expect(b.loadedIds("c")).toEqual(C_IDS);
+        await settle(b.fake);
+
+        expect(b.loadedIds("c")).toEqual(C_IDS.slice(2));
+        expect(b.reads().flatMap((read) => read.summaries)).toContain("c");
+        expect(
+            b
+                .reads()
+                .flatMap((read) => read.chats)
+                .sort(),
+        ).toEqual(
+            C_IDS.slice(2)
+                .map((id) => `c/${id}`)
+                .sort(),
+        );
+        expect(b.reads().flatMap((read) => read.collections)).toEqual([]);
+        for (const id of C_IDS) {
+            const ref = { chaId: "c", chatId: id };
+            expect(b.chat.chatEntry(ref)?.name).toBe(`${id} remote`);
+            expect(b.chat.heldChatRevision(ref)).toBe(b.fake.chat("c", id)!.revision);
+            expect(b.chat.isChatBehind(ref)).toBe(false);
+        }
+        expect(b.fake.batchCount()).toBe(0);
+        noNotice();
+    });
+
+    it("keeps a row delta's chat unloaded while advancing its known summary without reads", async () => {
+        const b = await boot();
+        const data = "x".repeat(100 * 1024);
+        const writeText = (text: string) =>
+            b.fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: b.fake.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "b", text }],
+                },
+            ]);
+        writeText(data);
+        const summary = JSON.parse(JSON.stringify(b.chat.chatEntry(refK)));
+        const baseRevision = b.chat.heldChatRevision(refK);
+        writeText(data + " appended");
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.chats).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision: b.fake.chat("c", "k")!.revision,
+                trashedAt: null,
+                summaryBase: baseRevision,
+                rowDelta: {
+                    baseRevision,
+                    count: 3,
+                    rowDiffs: [
+                        {
+                            id: "b",
+                            text: {
+                                keep: data.length,
+                                text: " appended",
+                                base: { length: data.length, hash: textHash(data) },
+                            },
+                        },
+                    ],
+                },
+            },
+        ]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.reads()).toEqual([]);
+        await settle(b.fake);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.chat.chatEntry(refK)).toEqual(summary);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.reads()).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        expect(b.chat.hasChatWork()).toBe(false);
+        noNotice();
+    });
+
+    it("installs known summaries and advances matching summary bases without collection reads or writes", async () => {
+        const b = await boot();
+        const order = b.chat.heldOrderRevision("c");
+        const base = b.chat.heldChatRevision(refK);
+        b.remoteMeta("c", "k", {
+            name: "Renamed",
+            folderId: "folder",
+            pinned: true,
+            modelPresetId: "model",
+            bindingReview: false,
+        });
+        const entry = {
+            id: "k",
+            name: "Renamed",
+            fmIndex: -1,
+            folderId: "folder",
+            pinned: true,
+            modelPresetId: "model",
+            bindingReview: false,
+        };
+        expect(b.chat.chatEntry(refK)).toEqual(entry);
+        expect(b.chat.heldChatRevision(refK)).not.toBe(base);
+        const renamed = b.chat.heldChatRevision(refK);
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: renamed,
+                ops: [{ op: "setText", id: "b", text: "checkpoint" }],
+            },
+        ]);
+        expect(b.chat.chatEntry(refK)).toEqual(entry);
+        expect(b.chat.heldChatRevision(refK)).not.toBe(renamed);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: b.fake.chat("c", "k")!.revision,
+                ops: [{ op: "append", anchor: { end: true }, messages: [{ ...m("dated", "D"), time: 100 }] }],
+            },
+        ]);
+        expect(b.chat.characterLastChattedAt("c", 777)).toBe(100);
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: b.fake.chat("c", "k")!.revision,
+                ops: [{ op: "remove", ids: ["dated"] }],
+            },
+        ]);
+        expect(b.chat.characterLastChattedAt("c", 777)).toBe(777);
+        await settle(b.fake);
+        expect(b.chat.chatEntry(refK)).toEqual(entry);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.heldOrderRevision("c")).toBe(order);
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual(C_IDS);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.reads()).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        expect(b.chat.hasChatWork()).toBe(false);
+        noNotice();
+    });
+
+    it("reads the summary collection after a missed rename, an unknown notice or a reconnect listing", async () => {
+        for (const notice of ["missed rename", "unknown notice", "reconnect listing"]) {
+            const b = await boot();
+            const base = b.chat.heldChatRevision(refK);
+            b.live.paused = true;
+            b.remoteMeta("c", "k", { name: "Missed rename" });
+            b.live.queue.length = 0;
+            if (notice === "missed rename") {
+                b.live.paused = false;
+                b.fake.chatBatch([
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: b.fake.chat("c", "k")!.revision,
+                        ops: [{ op: "setText", id: "b", text: "checkpoint" }],
+                    },
+                ]);
+            } else if (notice === "reconnect listing") {
+                b.sync.reconcileRemote(b.fake.store.listRevisions());
+            } else {
+                b.sync.noteRemoteChanges({
+                    resources: [],
+                    chats: [{ characterId: "c", id: "k", revision: b.fake.chat("c", "k")!.revision }],
+                    chatOrders: [],
+                });
+            }
+            expect(b.chat.chatEntry(refK)?.name, notice).toBe("K");
+            expect(b.chat.heldChatRevision(refK), notice).toBe(base);
+            expect(b.chat.isChatBehind(refK), notice).toBe(true);
+            await settle(b.fake);
+            expect(b.reads(), notice).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+            expect(b.chat.chatEntry(refK)?.name).toBe("Missed rename");
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.findChat(refK)).toBeUndefined();
+            expect(b.fake.batchCount()).toBe(0);
+            expect(b.chat.hasChatWork()).toBe(false);
+            noNotice();
+            b.fake.close();
+        }
+    });
+
+    it("reads membership for an unheld chat with a summary and for a deletion even without an order notice", async () => {
+        const b = await boot();
+        b.live.paused = true;
+        b.fake.store.applyChanges({ chats: [create("c", "new", {})] });
+        b.live.queue.length = 0;
+        b.remoteMeta("c", "new", { name: "New remote" });
+        const created = b.live.queue[0];
+        if (created.type !== "change") throw new Error("expected a committed change");
+        expect(created.changes.chats[0]).toHaveProperty("summary");
+        b.sync.noteRemoteChanges({ ...created.changes, chatOrders: [] });
+        expect(b.chat.chatEntry({ chaId: "c", chatId: "new" })).toBeUndefined();
+        await settle(b.fake);
+        expect(b.reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual([...C_IDS, "new"]);
+        expect(b.chat.chatEntry({ chaId: "c", chatId: "new" })?.name).toBe("New remote");
+        expect(b.chat.findChat({ chaId: "c", chatId: "new" })).toBeUndefined();
+        b.fake.requests.length = 0;
+        b.live.queue.length = 0;
+        b.fake.deleteChatForever("c", "k");
+        // The trash route publishes the trash, then the deletion: the deletion's notice alone is delivered.
+        const deleted = b.live.queue.at(-1)!;
+        if (deleted.type !== "change") throw new Error("expected a committed change");
+        expect(deleted.changes.chats).toEqual([{ characterId: "c", id: "k", revision: null }]);
+        b.sync.noteRemoteChanges({ ...deleted.changes, chatOrders: [] });
+        await settle(b.fake);
+        expect(b.reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual([...C_IDS.filter((id) => id !== "k"), "new"]);
+        expect(b.chat.heldChatRevision(refK)).toBeNull();
+        expect(b.fake.batchCount()).toBe(0);
+        expect(b.chat.hasChatWork()).toBe(false);
+        noNotice();
+    });
+
+    it("keeps local work and stale summaries on the collection refresh path", async () => {
+        for (const state of ["local work", "stale"]) {
+            const b = await boot();
+            const base = b.chat.heldChatRevision(refK);
+            if (state === "local work") b.chat.setChatMeta(refK, { folderId: "mine" });
+            else expect(b.chat.markChatStale(refK)).toBe(true);
+            b.remoteMeta("c", "k", { name: "Remote" });
+            expect(b.chat.chatEntry(refK)?.name, state).toBe("K");
+            expect(b.chat.heldChatRevision(refK), state).toBe(base);
+            expect(b.chat.isChatBehind(refK), state).toBe(true);
+            if (state === "local work") expect(b.chat.chatEntry(refK)?.folderId).toBe("mine");
+            await settle(b.fake);
+            expect(b.reads().length).toBeGreaterThan(0);
+            expect(
+                b
+                    .reads()
+                    .every(
+                        (read) =>
+                            read.chats.length === 0 && read.collections.length === 0 && read.summaries.includes("c"),
+                    ),
+            ).toBe(true);
+            expect(b.chat.chatEntry(refK)?.name).toBe("Remote");
+            if (state === "local work") expect(b.chat.chatEntry(refK)?.folderId).toBe("mine");
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.findChat(refK)).toBeUndefined();
+            expect(b.fake.batchCount()).toBe(state === "local work" ? 1 : 0);
+            expect(b.chat.hasChatWork()).toBe(false);
+            noNotice();
+            b.fake.close();
+        }
+    });
+
+    it("a rename of an unloaded chat installs the feed's summary with no read, never the chat whole; a deleted one leaves the list and a new one arrives as a summary through the character's list", async () => {
         const { fake, chat, selection, reads, remoteMeta } = await boot();
         selection.selectCharacter("c");
         await settle(fake);
@@ -296,26 +565,19 @@ describe("live updates of chats that are not loaded", () => {
         });
         expect(chat.findChat({ chaId: "c", chatId: "n0" })).toBeUndefined();
         expect(chat.heldChatRevision({ chaId: "c", chatId: "n0" })).toBe(fake.chat("c", "n0")!.revision);
-        expect(reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
+        // The rename's feed entry carries the new summary: neither the list nor the chat is read.
+        expect(reads()).toEqual([]);
         expect(fake.batchCount()).toBe(0);
 
         // Deleted and created by another tab: the list follows; the new chat is a summary.
         fake.requests.length = 0;
-        fake.store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "n7",
-                    baseRevision: fake.chat("c", "n7")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-                create("c", "n8", { message: [m("n8-0", "N8")] }),
-            ],
-        });
+        fake.deleteChatForever("c", "n7");
+        fake.store.applyChanges({ chats: [create("c", "n8", { message: [m("n8-0", "N8")] })] });
         await settle(fake);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual([...C_IDS.filter((id) => id !== "n7"), "n8"]);
         expect(chat.findChat({ chaId: "c", chatId: "n8" })).toBeUndefined();
         expect(chat.heldChatRevision({ chaId: "c", chatId: "n7" })).toBeNull();
+        expect(reads().some((read) => read.summaries.includes("c"))).toBe(true);
         expect(reads().every((read) => read.chats.length === 0)).toBe(true);
         expect(fake.batchCount()).toBe(0);
         // The idle loop afterwards: nothing.
@@ -376,13 +638,14 @@ describe("detached reads and exports over unloaded chats", () => {
         const { fake, chat, chatEdits, dataset, downloads, reads, loadedIds } = await boot();
         const detached = await chatEdits.readChatsDetached(["c", "d"]);
         expect(detached.get("c")!.map((entry) => entry.id)).toEqual(C_IDS);
-        expect(detached.get("c")![0].message.map((entry) => entry.data)).toEqual(["A", "B", "C"]);
+        expect(detached.get("c")![0].data.message.map((entry) => entry.data)).toEqual(["A", "B", "C"]);
         expect(
             detached
                 .get("c")!
                 .slice(2)
-                .every((entry) => entry.message.length === 1),
+                .every((entry) => entry.data.message.length === 1),
         ).toBe(true);
+        expect([...detached.values()].flat().every((entry) => entry.trashedAt === null)).toBe(true);
         expect(detached.get("d")!.map((entry) => entry.id)).toEqual(["m"]);
         expect(loadedIds("c")).toEqual([]);
         expect(loadedIds("d")).toEqual([]);
@@ -463,5 +726,98 @@ describe("editChat on an unloaded chat", () => {
                 .flatMap((body: any) => body.chats ?? [])
                 .some((group: any) => group.chatId === "n4" && group.ops.some((op: any) => op.op === "meta")),
         ).toBe(false);
+    });
+});
+
+describe("continued reads over the store", () => {
+    it("exports whole collections in character and chat order across rounds without loading them", async () => {
+        const b = await boot();
+        b.fake.readResponseBytes = 1;
+        const detached = await b.chatEdits.readChatsDetached(["d", "c", "d"]);
+        expect([...detached.keys()]).toEqual(["d", "c"]);
+        expect(detached.get("d")!.map(({ id }) => id)).toEqual(["m"]);
+        expect(detached.get("d")![0].data.message).toEqual([m("x", "X")]);
+        expect(detached.get("c")!.map(({ id }) => id)).toEqual(C_IDS);
+        expect(detached.get("c")!.map(({ data }) => data.message.map((message) => message.data))).toEqual([
+            ["A", "B", "C"],
+            [],
+            ...Array.from({ length: EXTRA }, (_, i) => [`N${i}`]),
+        ]);
+        expect(b.reads().map(({ collections }) => collections)).toEqual([["d", "c"], ["c"]]);
+        expect(b.loadedIds("c")).toEqual([]);
+        expect(b.loadedIds("d")).toEqual([]);
+        await b.dataset.exportAsDataset();
+        expect(b.downloads).toHaveLength(1);
+        const dataset = JSON.parse(b.downloads[0].data) as { name: string; chats: { data: string }[] }[];
+        expect(dataset.map(({ name }) => name)).toEqual([...C_IDS.map(() => "C"), "D"]);
+        expect(dataset.map(({ chats }) => chats.map(({ data }) => data))).toEqual([
+            ["A", "B", "C"],
+            [],
+            ...Array.from({ length: EXTRA }, (_, i) => [`N${i}`]),
+            ["X"],
+        ]);
+        expect(b.reads().map(({ collections }) => collections)).toEqual([["d", "c"], ["c"], ["c", "d"], ["d"]]);
+        expect(b.loadedIds("c")).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+    });
+
+    it("refreshes every stale summary collection when one queue read needs continuation", async () => {
+        const b = await boot();
+        b.fake.readResponseBytes = 1;
+        const fetch = b.fake.fetch;
+        let round = 0;
+        let release!: () => void;
+        let reached!: () => void;
+        const secondRequest = new Promise<void>((resolve) => {
+            reached = resolve;
+        });
+        vi.spyOn(b.fake, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/read" && ++round === 2) {
+                reached();
+                await new Promise<void>((resolve) => {
+                    release = resolve;
+                });
+            }
+            return response;
+        });
+        b.live.paused = true;
+        b.remoteMeta("c", "k", { name: "C remote" });
+        b.remoteMeta("d", "m", { name: "D remote" });
+        // Revision-only notices force the queue to fetch both collections together.
+        b.sync.noteRemoteChanges({
+            resources: [],
+            chats: [
+                { characterId: "c", id: "k", revision: b.fake.chat("c", "k")!.revision },
+                { characterId: "d", id: "m", revision: b.fake.chat("d", "m")!.revision },
+            ],
+            chatOrders: [],
+        });
+        await vi.advanceTimersByTimeAsync(6500);
+        await secondRequest;
+        try {
+            // Neither character is refreshed while the transport is collecting its remaining answer.
+            expect(b.chat.chatEntry({ chaId: "c", chatId: "k" })?.name).toBe("K");
+            expect(b.chat.chatEntry({ chaId: "d", chatId: "m" })?.name).toBe("M");
+        } finally {
+            release();
+        }
+        await settle(b.fake);
+        expect(b.reads()).toEqual([
+            { chats: [], summaries: ["c", "d"], collections: [] },
+            { chats: [], summaries: ["d"], collections: [] },
+        ]);
+        for (const [chaId, chatId, name] of [
+            ["c", "k", "C remote"],
+            ["d", "m", "D remote"],
+        ]) {
+            expect(b.chat.chatEntry({ chaId, chatId })?.name).toBe(name);
+            expect(b.chat.heldChatRevision({ chaId, chatId })).toBe(b.fake.chat(chaId, chatId)!.revision);
+            expect(b.chat.isChatBehind({ chaId, chatId })).toBe(false);
+            expect(b.loadedIds(chaId)).toEqual([]);
+        }
+        expect(b.chat.chatList("c").map(({ id }) => id)).toEqual(C_IDS);
+        expect(b.fake.batchCount()).toBe(0);
+        noNotice();
     });
 });

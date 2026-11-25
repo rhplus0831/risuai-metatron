@@ -17,6 +17,16 @@ export function sleep(ms: number, signal?: AbortSignal | null) {
     });
 }
 
+/**
+ * The wait in ms before retry `retry` (1-based) of a failed provider request (the request that follows
+ * a tool call in the OpenAI, Responses, and Gemini adapters; a Gemini overload re-request): 1, 2, 4,
+ * then 8 s for every later retry, so a 429 or 524 is not re-sent at once. The callers wait with the
+ * request's abort signal, so Stop ends the wait and sends nothing more.
+ */
+export function toolRetryDelay(retry: number): number {
+    return Math.min(1000 * 2 ** (retry - 1), 8000);
+}
+
 export async function replaceAsync(
     string: string,
     regexp: RegExp,

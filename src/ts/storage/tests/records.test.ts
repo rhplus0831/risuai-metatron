@@ -10,7 +10,9 @@ import {
     isRecordWrapper,
     moduleItemFieldStamp,
     moveRecordListItem,
+    pluginStorageRevision,
     recordData,
+    recordValueIdentity,
     replaceRecord,
     replaceRecordList,
     resetRecords,
@@ -407,6 +409,28 @@ describe("whole-list helpers", () => {
         moveRecordListItem(presets, 0.5, 1);
         expect(notified).toEqual([]);
     });
+
+    it("moveRecordListItem leaves the list and record untouched for a negative target index", () => {
+        initializeRecords({ presets: [{ id: "p1" }, { id: "p2" }, { id: "p3" }] });
+        const presets = trackedRecord<any[]>("presets")!;
+
+        moveRecordListItem(presets, 1, -1);
+
+        expect(presets).toEqual([{ id: "p1" }, { id: "p2" }, { id: "p3" }]);
+        expect(text("presets")).toBe('[{"id":"p1"},{"id":"p2"},{"id":"p3"}]');
+        expect(notified).toEqual([]);
+    });
+
+    it("moveRecordListItem leaves the list and record untouched for a target index past the end", () => {
+        initializeRecords({ presets: [{ id: "p1" }, { id: "p2" }, { id: "p3" }] });
+        const presets = trackedRecord<any[]>("presets")!;
+
+        moveRecordListItem(presets, 0, presets.length + 5);
+
+        expect(presets).toEqual([{ id: "p1" }, { id: "p2" }, { id: "p3" }]);
+        expect(text("presets")).toBe('[{"id":"p1"},{"id":"p2"},{"id":"p3"}]');
+        expect(notified).toEqual([]);
+    });
 });
 
 describe("identity", () => {
@@ -461,6 +485,78 @@ describe("identity", () => {
         expect(JSON.parse(text("modules"))[0].scheme).toEqual({ bgcolor: "#000" });
         modules[0].scheme.bgcolor = "#111";
         expect(JSON.parse(text("ui")).colorScheme).toEqual({ bgcolor: "#fff" });
+    });
+});
+
+describe("plugin storage assignments", () => {
+    it("copies assigned objects and arrays before caller mutations or the queued save", async () => {
+        initializeRecords({ pluginStorage: {} });
+        const pc = trackedRecord<any>("pluginStorage")!;
+        const saved: unknown[] = [];
+        setRecordWriteListener((kind) => {
+            notified.push(kind);
+            queueMicrotask(() => saved.push(JSON.parse(text(kind))));
+        });
+        const revision = pluginStorageRevision();
+        const object = { nested: { count: 1 }, list: ["assigned"] };
+        const array = [{ count: 2 }];
+
+        pc.custom = object;
+        expect(pluginStorageRevision()).toBe(revision + 1);
+        pc.list = array;
+        expect(pluginStorageRevision()).toBe(revision + 2);
+        object.nested.count = 9;
+        object.list.push("caller only");
+        array[0].count = 8;
+        array.push({ count: 3 });
+
+        const expected = {
+            custom: { nested: { count: 1 }, list: ["assigned"] },
+            list: [{ count: 2 }],
+        };
+        expect(JSON.parse(text("pluginStorage"))).toEqual(expected);
+        expect(pluginStorageRevision()).toBe(revision + 2);
+        expect(notified).toEqual(["pluginStorage", "pluginStorage"]);
+        await Promise.resolve();
+        expect(saved).toEqual([expected, expected]);
+    });
+
+    it("detaches a same-record dictionary assignment and advances the revision on every write", () => {
+        initializeRecords({ pluginStorage: { _ownedPluginStorage: { "plug\u0000key": { count: 1 } } } });
+        const pc = trackedRecord<any>("pluginStorage")!;
+        const revision = pluginStorageRevision();
+
+        pc.custom = pc._ownedPluginStorage;
+        expect(pluginStorageRevision()).toBe(revision + 1);
+        pc._ownedPluginStorage["plug\u0000key"].count = 2;
+        expect(pluginStorageRevision()).toBe(revision + 2);
+        expect(pc.custom["plug\u0000key"].count).toBe(1);
+        pc.custom["plug\u0000key"].count = 3;
+        expect(pluginStorageRevision()).toBe(revision + 3);
+
+        expect(JSON.parse(text("pluginStorage"))).toEqual({
+            _ownedPluginStorage: { "plug\u0000key": { count: 2 } },
+            custom: { "plug\u0000key": { count: 3 } },
+        });
+        expect(notified).toEqual(["pluginStorage", "pluginStorage", "pluginStorage"]);
+    });
+
+    it("keeps retained element wrappers attached through shift, splice, and sort", () => {
+        initializeRecords({ pluginStorage: { list: [{ value: 3 }, { value: 2 }, { value: 1 }, { value: 4 }] } });
+        const list = trackedRecord<any>("pluginStorage")!.list;
+        const second = list[1];
+        const last = list[3];
+
+        list.shift();
+        second.value = 20;
+        expect(JSON.parse(text("pluginStorage"))).toEqual({ list: [{ value: 20 }, { value: 1 }, { value: 4 }] });
+        list.splice(1, 1);
+        last.value = 40;
+        expect(JSON.parse(text("pluginStorage"))).toEqual({ list: [{ value: 20 }, { value: 40 }] });
+        list.sort((left: { value: number }, right: { value: number }) => right.value - left.value);
+        second.value = 21;
+        last.value = 41;
+        expect(JSON.parse(text("pluginStorage"))).toEqual({ list: [{ value: 41 }, { value: 21 }] });
     });
 });
 
@@ -630,5 +726,44 @@ describe("frozen module asset lists", () => {
         expect(retained.length).toBe(3);
         expect(retained[2]).toEqual(tuple("z"));
         expect(Object.isFrozen(modules[0].assets)).toBe(true);
+    });
+});
+
+describe("recordValueIdentity", () => {
+    it("keeps the token of the same backing object across reads and field writes", () => {
+        initializeRecords({ presets: [{ id: "p", promptTemplate: [{ text: "same" }, { text: "same" }] }] });
+        const rows = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0].promptTemplate;
+        const token = recordValueIdentity(rows[0]);
+        expect(recordValueIdentity(rows[0])).toBe(token);
+        expect(recordValueIdentity(rows[1])).not.toBe(token);
+        rows[0].text = "edited";
+        expect(recordValueIdentity(rows[0])).toBe(token);
+        const plain = { text: "same" };
+        expect(recordValueIdentity(plain)).toBe(recordValueIdentity(plain));
+        expect(recordValueIdentity({ text: "same" })).not.toBe(recordValueIdentity(plain));
+    });
+
+    it("changes the token after an equal-JSON raw replacement at the same path", () => {
+        initializeRecords({ presets: [{ id: "p", promptTemplate: [{ text: "same" }] }] });
+        const row = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0].promptTemplate[0];
+        const token = recordValueIdentity(row);
+        const before = text("presets");
+        applyRaw("presets", JSON.parse(before));
+        const replacement = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0].promptTemplate[0];
+        expect(replacement).toBe(row);
+        expect(text("presets")).toBe(before);
+        expect(recordValueIdentity(replacement)).not.toBe(token);
+        expect(recordValueIdentity(replacement)).toBe(recordValueIdentity(replacement));
+    });
+
+    it("reads a token without changing serialized record data or notifying a write", () => {
+        initializeRecords({ presets: [{ id: "p", promptTemplate: [{ text: "same" }] }] });
+        const preset = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0];
+        const before = text("presets");
+        const wrapperBefore = JSON.stringify(preset);
+        recordValueIdentity(preset.promptTemplate[0]);
+        expect(text("presets")).toBe(before);
+        expect(JSON.stringify(preset)).toBe(wrapperBefore);
+        expect(notified).toEqual([]);
     });
 });

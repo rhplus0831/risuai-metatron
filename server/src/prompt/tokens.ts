@@ -15,10 +15,15 @@ import type { Tokenizers } from "./tokenizers/index.ts";
  * - Google's `countTokens` uses the server's `llmSecrets.google.accessToken`, with an LRU of 1,500;
  *   a count rejects after 30 s.
  */
+
+/** The entries of the encode cache and of the Google count cache. */
 export const TOKEN_CACHE_SIZE = 1500;
+/** Deadline for an active Google count, starting when its fetch is sent rather than while queued. */
 export const GOOGLE_COUNT_TIMEOUT_MS = 30_000;
+/** Maximum simultaneous Google count calls; additional distinct counts wait in a queue. */
 export const GOOGLE_COUNT_MAX_CONCURRENT = 8;
 
+/** Captured model/tokenizer choices and the server-held Google key used for one counting scope. */
 export type TokenCountScope = {
     /** The main slot's derived `aiModel` and its profile's `currentPluginProvider`. */
     aiModel: string;
@@ -53,7 +58,12 @@ export function tokenScopeFromTab(tokenizer: TabTokenScope, googleAccessToken: s
     };
 }
 
-/** Tiktoken refuses special tokens in ordinary text; loader and service failures are not refusals. */
+/**
+ * Tiktoken refuses special tokens in ordinary text; loader and service failures are not refusals. `cl100k_base` and
+ * `o200k_base` refuse a text containing one of their special tokens (`<|endoftext|>`, `<|endofprompt|>`, and for
+ * `cl100k_base` the `<|fim_...|>` ones). The count route (`server/src/routes/tokens.ts`) answers such a text `null`
+ * and fails the whole batch on any other throw; the encode route answers 400.
+ */
 export function isTokenizerTextRefusal(error: unknown): error is Error {
     return (
         error instanceof Error && error.message.startsWith("The text contains a special token that is not allowed: ")
@@ -68,8 +78,28 @@ type PendingGoogleCount = {
     callers: number;
 };
 
+/** Scope-aware asynchronous encoding and counting, with optional caller cancellation. */
 export type TokenCounter = ReturnType<typeof createTokenCounter>;
 
+/** Server scopes never invoke a legacy plugin's tokenizer function. */
+function tokenizerForScope(scope: TokenCountScope) {
+    const choice = selectTokenizer({
+        aiModel: scope.aiModel,
+        customTokenizer: scope.customTokenizer,
+        pluginTokenizer: scope.pluginTokenizer,
+        modelTokenizer: scope.model.tokenizer,
+        googleClaudeTokenizing: scope.googleClaudeTokenizing,
+    });
+    return choice.kind === "pluginFunction" ? { kind: "family" as const, family: "cl100k_base" as const } : choice;
+}
+
+/**
+ * A counter over the shared tokenizer choice. Concurrent Google counts of the same text and model share one call:
+ * a caller's abort cancels it only after its last waiter leaves, while its own 30 s timeout, which starts when the
+ * call is sent (not while it waits in the queue), fails every waiter. At most `GOOGLE_COUNT_MAX_CONCURRENT` calls are
+ * outstanding. A non-200 Google answer counts
+ * with `gemmaSentencePiece`.
+ */
 export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?: typeof fetch }) {
     const { tokenizers } = options;
     const fetchImpl = options.fetchImpl ?? fetch;
@@ -111,7 +141,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
             clearTimeout(timer);
         }
         controller.signal.throwIfAborted();
-        return await tokenizers.encode("gemmaSentencePiece", text);
+        return await tokenizers.encode("gemmaSentencePiece", text, controller.signal);
     }
 
     function pumpGoogleQueue(): void {
@@ -154,7 +184,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
 
     async function countWithGoogle(text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<Encoded> {
         signal?.throwIfAborted();
-        const cacheKey = text + scope.model.internalID;
+        const cacheKey = JSON.stringify([text, scope.model.internalID ?? null]);
         const cached = googleCache.get(cacheKey);
         if (cached !== undefined) {
             return new Uint32Array(cached);
@@ -226,25 +256,19 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
                 return cached;
             }
         }
-        const choice = selectTokenizer({
-            aiModel: scope.aiModel,
-            customTokenizer: scope.customTokenizer,
-            pluginTokenizer: scope.pluginTokenizer,
-            modelTokenizer: scope.model.tokenizer,
-            googleClaudeTokenizing: scope.googleClaudeTokenizing,
-        });
+        const choice = tokenizerForScope(scope);
         let result: Encoded;
         switch (choice.kind) {
             case "googleCloud":
                 result = await countWithGoogle(text, scope, signal);
                 break;
-            case "pluginFunction":
-                result = await tokenizers.encode("cl100k_base", text);
-                break;
             case "family":
-                result = await tokenizers.encode(choice.family, text);
+                result = await (signal
+                    ? tokenizers.encode(choice.family, text, signal)
+                    : tokenizers.encode(choice.family, text));
                 break;
         }
+        signal?.throwIfAborted();
         if (scope.useTokenizerCaching) {
             encodeCache.set(cacheKey, result);
         }
@@ -255,5 +279,11 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         encode,
         count: async (text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<number> =>
             (await encode(text, scope, signal)).length,
+        /** Counts locally without touching either cache or Google's endpoint. */
+        countLocal: async (text: string, scope: TokenCountScope): Promise<number> => {
+            const choice = tokenizerForScope(scope);
+            return (await tokenizers.encode(choice.kind === "googleCloud" ? "gemmaSentencePiece" : choice.family, text))
+                .length;
+        },
     };
 }

@@ -11,6 +11,7 @@ import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { buildTranslatorHistory, type TranslatorHistory } from "../../../shared/translation/historySlots.ts";
 import {
+    EmptyTranslationError,
     runTranslatorPipeline,
     stripTranslatorReasoning,
     translateProtectingLines,
@@ -32,6 +33,19 @@ import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, RequestTargetGoneError, tokenScopeFor } from "../llm/settings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
+
+/**
+ * Stored-message translation, admitted through `server/src/routes/translate.ts` or a send hand-off.
+ * Send Text As-Is runs the whole source once; otherwise `shared/translation/pipeline.ts` protects
+ * empty/asset lines and runs chunks sequentially. Every part shares one deadline, CBS budget and
+ * final write. As-Is still uses the pipeline's output reasoning strip. Unlike the tab adapter in
+ * `src/ts/translator/translator.ts`, this runner never protects `<risu-style>` with placeholders.
+ * A profile step keeps profileId (a deleted profile fails with 502); every step uses the run scope's
+ * modelPresetId, including steps with an explicit profile.
+ * Exclude Chain-of-Thought strips the whole source once before either mode, and history text after
+ * freshness is checked by `shared/translation/historySlots.ts`. Blank stripped source stores ""
+ * without a request; sourceHash always belongs to the original stored text, never the stripped text.
+ */
 
 /** How long one translation may run, from its start; past it the run ends (504) and writes nothing. */
 export const TRANSLATION_DEADLINE_MS = 10 * 60_000;
@@ -55,11 +69,12 @@ export type TranslateMessageRequest = {
     force: boolean;
 };
 
+/** Runner failures returned to the route; resource epoch admission (412) belongs to the HTTP boundary. */
 export type TranslateFailureStatus = 404 | 409 | 429 | 500 | 502 | 503 | 504;
 
 /**
  * - `applied`: the translation is stored (`translation`);
- * - `ignored`: the message's text changed while it was translated, nothing is stored;
+ * - `ignored`: the message's text or stored translation changed during the run, nothing is stored;
  * - `fresh`: not forced, and the message already holds a fresh stored translation (`translation`),
  *   returned without a request.
  */
@@ -108,6 +123,7 @@ type Run = {
     result: Promise<TranslateMessageResult>;
 };
 
+/** Lifecycle shared by HTTP translation, detached send hand-offs, maintenance and server shutdown. */
 export type TranslationRunner = ReturnType<typeof createTranslationRunner>;
 
 /**
@@ -152,12 +168,18 @@ export function createTranslationRunner(deps: {
     const keyOf = (request: TranslateMessageRequest) =>
         `${request.characterId}\u0000${request.chatId}\u0000${request.messageId}`;
 
-    const admission = (): TranslateMessageResult | null => {
+    const admission = ({
+        characterId,
+        chatId,
+    }: Pick<TranslateMessageRequest, "characterId" | "chatId">): TranslateMessageResult | null => {
         if (closed) {
             return failure(503, "The server is shutting down");
         }
         if (paused) {
             return failure(503, "The server data is being replaced");
+        }
+        if (store.chatTrashState(characterId, chatId)?.trashedAt != null) {
+            return failure(409, "chatTrashed");
         }
         return null;
     };
@@ -203,6 +225,7 @@ export function createTranslationRunner(deps: {
         const to = scope.db.translator || "en";
         const from = scope.db.translatorInputLanguage ?? "";
         const sourceHash = translationSourceHash(message.data);
+        const expectTranslation = structuredClone(message.translation ?? null);
         // One CBS budget for the whole run (every step and retry); a chat variable is never written.
         const evaluator = createCbsEvaluator(
             createJobCbsHost(scope, {
@@ -374,7 +397,7 @@ export function createTranslationRunner(deps: {
                         characterId: request.characterId,
                         chatId: request.chatId,
                         baseRevision: scope.chatRevision,
-                        ops: [{ op: "setTranslation", id: request.messageId, translation }],
+                        ops: [{ op: "setTranslation", id: request.messageId, translation, expectTranslation }],
                     },
                 ],
             },
@@ -390,6 +413,9 @@ export function createTranslationRunner(deps: {
 
     /** What a run that threw ends with. */
     function settle(request: TranslateMessageRequest, error: unknown): TranslateMessageResult {
+        if (error instanceof EmptyTranslationError) {
+            return failure(502, "The translation model answered in an unexpected form");
+        }
         if (error instanceof TranslationEnd) {
             return failure(error.status, error.message);
         }
@@ -433,7 +459,7 @@ export function createTranslationRunner(deps: {
      * ignored.
      */
     function translate(request: TranslateMessageRequest): Promise<TranslateMessageResult> {
-        const refused = admission();
+        const refused = admission(request);
         if (refused) {
             return Promise.resolve(refused);
         }
@@ -568,7 +594,7 @@ export function createTranslationRunner(deps: {
         target: Pick<TranslateMessageRequest, "characterId" | "chatId" | "presetId" | "modelPresetId" | "personaId">,
         messageIds: readonly string[],
     ): string[] {
-        if (messageIds.length === 0 || admission()) {
+        if (messageIds.length === 0 || admission(target)) {
             return [];
         }
         const section = kinds.get(SECTION_KIND.memoryTranslateMedia);

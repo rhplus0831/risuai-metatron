@@ -22,6 +22,7 @@ import { failureOf } from "../jobs/generationJobs.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import {
     createLlmRequests,
+    IDLE_COMMENT_MS,
     JobRequestError,
     type JobRequestSpec,
     MAX_REQUESTS_PER_CLIENT,
@@ -32,6 +33,7 @@ import type { requestDataResponse } from "../llm/request.ts";
 import { messages } from "../llm/messages.ts";
 import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { watchFirstByte } from "../llm/transport.ts";
+import { requestChatDataOuter } from "../llm/outer.ts";
 import { createTokenCounter } from "../prompt/tokens.ts";
 import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
@@ -246,6 +248,10 @@ async function readAll(
         while ((index = buffer.indexOf("\n\n")) !== -1) {
             const frame = buffer.slice(0, index);
             buffer = buffer.slice(index + 2);
+            if (frame.startsWith(":")) {
+                // An idle comment (`IDLE_COMMENT_MS`), which carries no event.
+                continue;
+            }
             expect(frame.startsWith("data: ")).toBe(true);
             const event = JSON.parse(frame.slice("data: ".length)) as LlmRequestEvent;
             events.push(event);
@@ -310,6 +316,65 @@ afterEach(() => {
 });
 
 describe("a buffered request", () => {
+    it("saves signed replies only for model mode with provider opt-in, ignoring client opt-in", async () => {
+        const cases = [
+            { mode: "model", saveSignatures: true, clientSaving: undefined, saves: true },
+            { mode: "translate", saveSignatures: true, clientSaving: true, saves: false },
+            { mode: "memory", saveSignatures: true, clientSaving: true, saves: false },
+            { mode: "model", saveSignatures: false, clientSaving: true, saves: false },
+        ] as const;
+        for (const { mode, saveSignatures, clientSaving, saves } of cases) {
+            const records = makeRecords({
+                preset: { aiModel: "gemini-2.5-flash" },
+                secrets: { google: { accessToken: "google-key" } },
+            });
+            records.providers = normalizeProviders({ saveSignatures });
+            const { registry, calls } = harness(records, () =>
+                json({
+                    candidates: [{ content: { parts: [{ text: "Signed answer", thoughtSignature: "opaque-token" }] } }],
+                }),
+            );
+            try {
+                const { events } = await run(
+                    registry,
+                    body(clientSaving === undefined ? {} : { saveSignatures: clientSaving }, { mode }),
+                );
+                const inlays = events.filter((event) => event.type === "inlay");
+                const label = `${mode}, providers.saveSignatures=${saveSignatures}`;
+                expect(inlays, label).toEqual(
+                    saves
+                        ? [
+                              {
+                                  type: "inlay",
+                                  inlay: {
+                                      kind: "signature",
+                                      id: expect.stringMatching(UUID),
+                                      signature: {
+                                          source: "gemini-2.5-flash",
+                                          sourceFormat: LLMFormat.GoogleCloud,
+                                          signatures: [{ type: "text", content: "opaque-token" }],
+                                      },
+                                  },
+                              },
+                          ]
+                        : [],
+                );
+                expect(terminal(events), label).toEqual([
+                    {
+                        type: "result",
+                        response: {
+                            type: "success",
+                            result: saves ? `Signed answer{{inlayeddata::${inlays[0].inlay.id}}}` : "Signed answer",
+                        },
+                    },
+                ]);
+                expect(calls, label).toHaveLength(1);
+            } finally {
+                await registry.dispose();
+            }
+        }
+    });
+
     it("reads the profile's model and its bound proxy key, logs the upstream call with its credential masked, and answers one result", async () => {
         const { registry, calls } = harness(makeRecords(), () => chat("plain answer"));
         const { events, raw } = await run(registry, body());
@@ -351,6 +416,35 @@ describe("a buffered request", () => {
             headers: { Authorization: "Bearer [redacted]" },
         });
         expect(preview.raw).not.toContain(SECRET);
+        await registry.dispose();
+    });
+
+    it("sends an SSE comment every idle interval while a quiet provider answers, and stops once the request ends", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        let answer!: (response: Response) => void;
+        const { registry } = harness(makeRecords(), () => new Promise<Response>((resolve) => (answer = resolve)));
+        const started = registry.start(body(), new AbortController().signal);
+        expect(started.ok).toBe(true);
+        const reader = (started as { stream: ReadableStream<Uint8Array> }).stream.getReader();
+        const decoder = new TextDecoder();
+        let text = "";
+        const reading = (async () => {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) return;
+                text += decoder.decode(value, { stream: true });
+            }
+        })();
+        await waitFor(() => answer !== undefined);
+        // An interval that saw an event sends nothing; each later quiet interval sends one comment.
+        await vi.advanceTimersByTimeAsync(IDLE_COMMENT_MS * 3);
+        expect(text.match(/^: idle$/gm)).toHaveLength(2);
+        answer(chat("late answer"));
+        await reading;
+        expect(text.endsWith("\n\n")).toBe(true);
+        expect(text).toContain('"late answer"');
+        expect(vi.getTimerCount()).toBe(0);
+        vi.useRealTimers();
         await registry.dispose();
     });
 
@@ -448,6 +542,118 @@ describe("a buffered request", () => {
             ),
         );
         await registry.dispose();
+    });
+});
+
+describe("request interceptions at the provider", () => {
+    const requestInterceptions = [
+        {
+            id: "instruction",
+            enabled: true,
+            modes: ["memory"],
+            position: "start",
+            prompt: {
+                type: "plain",
+                type2: "normal",
+                role: "system",
+                text: "Global instruction.",
+                name: "Private label",
+            },
+        },
+        {
+            id: "reminder",
+            enabled: true,
+            modes: ["memory"],
+            position: "end",
+            prompt: { type: "plain", type2: "normal", role: "user", text: "Remember this." },
+        },
+    ];
+
+    it("sends interception messages only for a listed request mode", async () => {
+        const records = makeRecords({
+            preset: { enableCustomFlags: true, customFlags: [LLMFlags.hasFullSystemPrompt] },
+        });
+        records.providers = normalizeProviders({ requestInterceptions });
+        const { registry, calls } = harness(records, () => chat("answer"));
+        try {
+            for (const mode of ["memory", "translate"] as const) {
+                const { events } = await run(registry, body({}, { mode }));
+                expect(terminal(events)).toEqual([{ type: "result", response: { type: "success", result: "answer" } }]);
+            }
+            expect(calls.map((call) => JSON.parse(call.body).messages)).toEqual([
+                [
+                    { role: "system", content: "Global instruction." },
+                    { role: "user", content: "hi" },
+                    { role: "user", content: "Remember this." },
+                ],
+                [{ role: "user", content: "hi" }],
+            ]);
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it("joins a start interception to the first system block before sending", async () => {
+        const records = makeRecords({
+            preset: { enableCustomFlags: true, customFlags: [LLMFlags.hasFirstSystemPrompt] },
+        });
+        records.providers = normalizeProviders({ requestInterceptions });
+        const { registry, calls } = harness(records, () => chat("answer"));
+        try {
+            await run(
+                registry,
+                body(
+                    {
+                        formated: [
+                            { role: "system", content: "Existing instruction." },
+                            { role: "user", content: "hi" },
+                        ],
+                    },
+                    { mode: "memory" },
+                ),
+            );
+            expect(calls.map((call) => JSON.parse(call.body).messages)).toEqual([
+                [
+                    { role: "system", content: "Global instruction.\n\nExisting instruction." },
+                    { role: "user", content: "hi" },
+                    { role: "user", content: "Remember this." },
+                ],
+            ]);
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it("sends exactly one copy of each interception on a retried request", async () => {
+        const records = makeRecords({
+            preset: { enableCustomFlags: true, customFlags: [LLMFlags.hasFirstSystemPrompt] },
+        });
+        records.providers = normalizeProviders({ requestInterceptions, requestRetrys: 1 });
+        const { registry, calls } = harness(records, (_call, index) =>
+            index === 0 ? json({ error: { message: "Please retry" } }, 400) : chat("answer"),
+        );
+        const { spec } = jobSpec(records);
+        spec.mode = "memory";
+        spec.arg.formated = [
+            { role: "system", content: "Existing instruction." },
+            { role: "user", content: "hi" },
+        ];
+        try {
+            const result = await requestChatDataOuter(spec.arg, spec.mode, {
+                db: spec.loaded.db,
+                signal: spec.signal,
+                attempt: (arg) => registry.runInJob({ ...spec, arg }),
+            });
+            expect(result).toMatchObject({ type: "success", result: "answer" });
+            const expected = [
+                { role: "system", content: "Global instruction.\n\nExisting instruction." },
+                { role: "user", content: "hi" },
+                { role: "user", content: "Remember this." },
+            ];
+            expect(calls.map((call) => JSON.parse(call.body).messages)).toEqual([expected, expected]);
+        } finally {
+            await registry.dispose();
+        }
     });
 });
 
@@ -1605,13 +1811,13 @@ describe("a job's request names its failure", () => {
         expect(caught).toMatchObject({
             requestId: seen.begun[0],
             providerCode: "server_overloaded",
-            message: expect.stringContaining("socket hang up"),
+            message: expect.stringContaining("Overloaded"),
         });
         await waitFor(() => seen.finished.length === 1);
         expect(seen.finished[0]).toEqual([
             seen.begun[0],
             expect.objectContaining({ status: "error" }),
-            { error: expect.stringContaining("socket hang up"), providerCode: "server_overloaded" },
+            { error: expect.stringContaining("Overloaded"), providerCode: "server_overloaded" },
         ]);
 
         const fine = await registry.runInJob(spec(records, { streaming: true }).spec);
@@ -2213,7 +2419,7 @@ describe("a job's plugin provider model (runInJob)", () => {
             [{ outcome: "answered", value: { none: true } }, { type: "fail", result: messages.errors.unknownModel }, 0],
             [
                 { outcome: "failed", failure: "hook", error: "boom" },
-                { type: "fail", result: expect.stringMatching(/^Plugin Error from .*: boom$/) },
+                { type: "fail", result: "Plugin Error from prov: boom" },
                 0,
             ],
             [
@@ -2243,7 +2449,9 @@ describe("a job's plugin provider model (runInJob)", () => {
             ],
         ] as [CallbackResult, Record<string, unknown>, number][]) {
             const label = JSON.stringify(result).slice(0, 80);
-            const { registry, pending, call, ended } = await startProvider(pluginRecords());
+            const { registry, pending, call, ended } = await startProvider(
+                makeRecords({ preset: { aiModel: "pluginmodel:::prov", currentPluginProvider: "legacy" } }),
+            );
             call.settle(result);
             expect(await pending, label).toMatchObject(expected);
             expect(ended, label).toHaveLength(ends);

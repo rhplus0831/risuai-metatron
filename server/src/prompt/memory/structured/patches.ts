@@ -1,0 +1,506 @@
+import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
+import {
+    CHARACTER_SECTION_SLOTS,
+    type CharacterSectionSlot,
+    MEMORY_PATCH_CONFLICTS,
+    MEMORY_PATCH_OPS,
+    type MemoryHistoryChangeKind,
+    type MemoryPage,
+    type MemoryPageType,
+    type MemoryPatch,
+    type MemoryReceipt,
+    type MemorySection,
+    STRUCTURED_MEMORY_LIMITS as LIMITS,
+} from "../../../../../shared/structuredMemory.ts";
+import { isPlainObject } from "../../../../../shared/valueKinds.ts";
+import { type Admission, answerJson, readConfidence, readList } from "./analysis.ts";
+import { applyCompactions, type Compaction } from "./compact.ts";
+import {
+    addLinks,
+    addPage,
+    changedSectionTexts,
+    changeSection,
+    DISPUTED_LINE,
+    disputedStanding,
+    newScenePage,
+    type PageChanges,
+    type PagePlan,
+    type PageStamp,
+    PROMPT_TAKEN_BACK,
+    receiptPages,
+    revertEntries,
+    rewriteScene,
+    sectionWarning,
+    type Warning,
+} from "./pages.ts";
+
+/**
+ * The patch call's rules, without any I/O: what it shows of its pages, what is kept of its answer, and
+ * what that makes of the pages as they stand at the commit.
+ *
+ * - A refusal other than `sectionTooLong` cancels the page's group, so a fact moved between two sections
+ *   cannot lose one half of the move. Its warning names the cause and valid patches read `pageRefused`.
+ *   An oversized section refuses only its patch, so the page's other sections can keep updating.
+ *   Other pages still apply and the event commits: one page's refusal is no failure of the run.
+ * - What the call showed is compared with the fresh page, by existence as well as by body, for every
+ *   heading a patch names: a section deleted during the call cannot come back as new, and one added
+ *   during it was never seen.
+ * - An upsert of an existing section is a `change`. A `contradiction` keeps that kind, and below
+ *   `contradictionConfidence`, where a missing confidence counts as 0, both values stay, marked disputed;
+ *   over a section already disputed, the standing value stays with the newest challenger, never a third.
+ *   The call shows the mark, and its rules say a body with one value settles it; a body that keeps the
+ *   join keeps the mark (`changeSection`). Nothing is cut to fit: a body past `sectionBodyChars`, as
+ *   answered or once joined, is refused.
+ * - A body loses every "(was: ...)" line before it is read (`withoutWasLines`): code writes that line
+ *   from `was`, once, so a model that repeats the old body's line cannot stack one line per change.
+ * - The model never sets what code owns: evidence, flags, locks, and history are `changeSection`'s.
+ * - A patch may replace a `userCorrected` section: only a lock refuses it. The call shows the mark and its
+ *   rules ask for a contradiction, and what such a patch does to the mark is `changeSection`'s.
+ * - A page with no editable section and no room for a legal new one is refused `allLocked` before it
+ *   spends any prompt budget. If every target is refused, no patch call is needed; the event still commits.
+ * - What a person took back of a kept target reaches the call, so a reverted change is not proposed again.
+ *   Its room comes first out of `promptPatchChars`, then editable bodies across all kept targets, then
+ *   short locked excerpts for context. Code does not compare a patch with taken-back text: a change can
+ *   come true later. Locked headings stay unseen for admission even when their excerpts fit.
+ */
+
+/** An editable body, a locked heading with at most a short context excerpt, or an empty character slot. */
+type PatchRowSection =
+    | { heading: string; body: string; userCorrected?: true; disputed?: true }
+    | { heading: string; locked: true; excerpt?: string }
+    | { heading: string; empty: true };
+
+/** What a person took back of a page: a section's text, or `deleted` for a deletion they undid. */
+type PatchRowTakenBack = { heading: string; text: string } | { heading: string; deleted: true };
+
+/** A page as the patch call lists it. */
+export type PatchRow = {
+    id: string;
+    type: MemoryPageType;
+    title: string;
+    /** The analysis call's note of what changes on the page, at most `factChars` like its own clamp. */
+    reason?: string;
+    sections: PatchRowSection[];
+    /** The editable sections past the call's budget, by heading. */
+    notShown: string[];
+    /** The newest of what a person took back of the page, when there is any. */
+    takenBack?: PatchRowTakenBack[];
+};
+
+/** What a patch call shows of its targets. */
+export type ShownPages = {
+    rows: PatchRow[];
+    /** By page id then heading, the editable body shown; null for locked sections and omitted bodies. */
+    seen: ReadonlyMap<string, ReadonlyMap<string, string | null>>;
+    /** Targets with no writable section or legal addition, or with editable bodies none of which fit. */
+    refused: MemoryReceipt["refused"];
+};
+
+/** The patches and what bounding them cut, or why the answer cannot be used. */
+export type ParsedPatches = { ok: true; patches: MemoryPatch[]; warnings: Warning[] } | { ok: false; error: string };
+
+/** A patch's effect once it is admitted: a null `body` removes the section. */
+type SectionEdit = { heading: string; body: string | null; kind: MemoryHistoryChangeKind; disputed?: boolean };
+
+/** Whether a target has an editable section or can add one under `resolveGroup`'s rules. */
+function writablePage(page: MemoryPage): boolean {
+    return (
+        page.sections.length === 0 ||
+        page.sections.some(({ locked }) => !locked) ||
+        (page.sections.length < LIMITS.sectionsPerPage &&
+            (page.type !== "character" ||
+                CHARACTER_SECTION_SLOTS.some((slot) => !page.sections.some(({ heading }) => heading === slot))))
+    );
+}
+
+/**
+ * The patch call's list. Targets with no editable section or legal addition are refused `allLocked`
+ * before charging anything. What a person took back of kept targets comes first out of `promptPatchChars`,
+ * at most `PROMPT_TAKEN_BACK` rows a page, newest first. Editable bodies then show whole or not at all,
+ * across all targets in order; those that do not fit go under `notShown`. A target with editable bodies,
+ * none of which fit, is refused `overBudget`, even if it could add a section. Each kept target's
+ * candidate `reason`, at most `factChars`, then shows if it fits, so it never costs a page a body.
+ * Locked sections use the remaining room for excerpts of at most `promptSectionSummaryChars`, or just
+ * their headings if an excerpt does not fit; their `seen` entries are always null. Rows keep page section
+ * order, then empty character slots. A page with no editable sections but room for a legal addition
+ * stays in the list.
+ */
+export function showTargets(targets: PagePlan["targets"]): ShownPages {
+    const rows: PatchRow[] = [];
+    const seen = new Map<string, Map<string, string | null>>();
+    const refused: MemoryReceipt["refused"] = [];
+    const writable = targets.filter(({ page, candidate }) => {
+        if (writablePage(page)) return true;
+        refused.push({ candidate, refusal: "allLocked" });
+        return false;
+    });
+    let room = LIMITS.promptPatchChars;
+    const takenBack = new Map<string, PatchRowTakenBack[]>();
+    for (const { page } of writable) {
+        const listed = revertEntries(page).slice(0, PROMPT_TAKEN_BACK);
+        takenBack.set(
+            page.id,
+            listed.flatMap(({ heading, before }): PatchRowTakenBack[] => {
+                const shown = clampText(heading, LIMITS.labelChars);
+                const text = before && clampText(before.body, LIMITS.promptSectionSummaryChars);
+                const charge = shown.length + (text?.length ?? 0);
+                if (charge > room) {
+                    return [];
+                }
+                room -= charge;
+                return [text === null ? { heading: shown, deleted: true } : { heading: shown, text }];
+            }),
+        );
+    }
+    for (const { page, candidate } of writable) {
+        const headings = new Map<string, string | null>();
+        let editable = 0;
+        let shown = 0;
+        for (const { heading, body, locked } of page.sections) {
+            headings.set(heading, null);
+            if (locked) continue;
+            editable++;
+            if (body.length <= room) {
+                room -= body.length;
+                headings.set(heading, body);
+                shown++;
+            }
+        }
+        if (editable > 0 && shown === 0) {
+            refused.push({ candidate, refusal: "overBudget" });
+            continue;
+        }
+        seen.set(page.id, headings);
+    }
+    const reasons = new Map<string, string>();
+    for (const { page, candidate } of writable) {
+        const reason = clampText(candidate.reason.trim(), LIMITS.factChars);
+        if (seen.has(page.id) && reason !== "" && reason.length <= room) {
+            room -= reason.length;
+            reasons.set(page.id, reason);
+        }
+    }
+    for (const { page } of writable) {
+        const headings = seen.get(page.id);
+        if (!headings) continue;
+        const sections: PatchRowSection[] = [];
+        const notShown: string[] = [];
+        for (const { heading, body, locked, userCorrected, disputed } of page.sections) {
+            if (locked) {
+                const excerpt = clampText(body, LIMITS.promptSectionSummaryChars);
+                if (excerpt.length <= room) {
+                    room -= excerpt.length;
+                    sections.push({ heading, locked: true, excerpt });
+                } else {
+                    sections.push({ heading, locked: true });
+                }
+            } else if (headings.get(heading) !== null) {
+                sections.push({
+                    heading,
+                    body,
+                    ...(userCorrected ? { userCorrected } : {}),
+                    ...(disputed ? { disputed } : {}),
+                });
+            } else {
+                notShown.push(heading);
+            }
+        }
+        const slots: readonly string[] = page.type === "character" ? CHARACTER_SECTION_SLOTS : [];
+        for (const heading of slots.filter((slot) => !headings.has(slot))) {
+            sections.push({ heading, empty: true });
+        }
+        const { id, type, title } = page;
+        const taken = takenBack.get(id) ?? [];
+        const reason = reasons.get(id);
+        rows.push({
+            id,
+            type,
+            title,
+            ...(reason ? { reason } : {}),
+            sections,
+            notShown,
+            ...(taken.length > 0 ? { takenBack: taken } : {}),
+        });
+    }
+    return { rows, seen, refused };
+}
+
+/** A patch needs a page, a heading with text, and a known `op`; a `body` may be missing, and is then blank. */
+function readPatch(value: unknown): MemoryPatch | undefined {
+    if (!isPlainObject(value)) {
+        return undefined;
+    }
+    const { pageId, heading, body, was } = value;
+    const op = MEMORY_PATCH_OPS.find((entry) => entry === value.op);
+    if (typeof pageId !== "string" || typeof heading !== "string" || heading.trim() === "" || !op) {
+        return undefined;
+    }
+    const conflict = MEMORY_PATCH_CONFLICTS.find((entry) => entry === value.conflict);
+    const confidence = readConfidence(value.confidence);
+    return {
+        pageId: clampText(pageId, LIMITS.idChars),
+        heading: clampText(heading.trim(), LIMITS.labelChars),
+        op,
+        // A run keeps this, so it is bounded, but a body too long must still read as too long
+        // (`resolveGroup`), even where the cut would split a surrogate pair and lose a unit. The
+        // "(was: ...)" lines go first, so the cut never hides what admission would have accepted whole.
+        ...(typeof body === "string" ? { body: clampText(withoutWasLines(body), LIMITS.sectionBodyChars + 2) } : {}),
+        ...(conflict ? { conflict } : {}),
+        ...(typeof was === "string" ? { was: clampText(was, LIMITS.factChars) } : {}),
+        ...(confidence !== undefined ? { confidence } : {}),
+    };
+}
+
+/**
+ * A patch call's answer as bounded patches (`answerJson`). An answer that is not JSON, or has no
+ * `patches` list, cannot be used, and the error says which; a malformed element is left out and counted,
+ * and one past `patchesPerCall` is not read. `upsert` supplies the whole new section body; `delete`
+ * removes it. Neither operation is a text diff.
+ */
+export function parsePatches(text: string): ParsedPatches {
+    const json = answerJson(text);
+    if (!json.ok) {
+        return { ok: false, error: `The model's answer is not valid JSON: ${json.error}` };
+    }
+    const parsed = json.value;
+    if (!isPlainObject(parsed) || !Array.isArray(parsed.patches)) {
+        return { ok: false, error: 'The model\'s answer has no valid "patches" list' };
+    }
+    const warnings: Warning[] = [];
+    return {
+        ok: true,
+        patches: readList("patches", parsed.patches, LIMITS.patchesPerCall, readPatch, warnings),
+        warnings,
+    };
+}
+
+/**
+ * The replaced value alone: a model often answers the whole old body as `was`, its own `(was: ...)` line
+ * or a disputed join's `[disputed]` line included, and wrapping that again would nest one line inside the
+ * next on every change, or keep a settled section reading as disputed. The page's history keeps the
+ * whole old body, so what is cut here is not lost.
+ */
+function replacedValue(was: string | undefined): string {
+    const text = was ?? "";
+    const cuts = [text.indexOf("(was:"), text.indexOf(DISPUTED_LINE)].filter((index) => index !== -1);
+    return (cuts.length === 0 ? text : text.slice(0, Math.min(...cuts))).trim();
+}
+
+/** `body` without its "(was: ...)" lines, trimmed: code writes that line, so a body never carries one. */
+function withoutWasLines(body: string): string {
+    return body
+        .split("\n")
+        .filter((line) => !/^\s*\(was:/.test(line))
+        .join("\n")
+        .trim();
+}
+
+/**
+ * What an upsert makes of `section`, or `sectionTooLong` when a joined body would not fit. `keepsWas` is
+ * false for a section whose every change replaces it whole, where the line would only repeat the last
+ * turn: the page's history still holds the old body.
+ */
+function upsertOver(section: MemorySection, patch: MemoryPatch, body: string, keepsWas: boolean): SectionEdit | string {
+    const { heading, conflict, confidence } = patch;
+    const disputed = conflict === "contradiction" && (confidence ?? 0) < LIMITS.contradictionConfidence;
+    const was = keepsWas ? replacedValue(patch.was) : "";
+    const joined = disputed
+        ? `${disputedStanding(section.body)}\n${DISPUTED_LINE} ${body}`
+        : was === ""
+          ? body
+          : `${body}\n(was: ${was})`;
+    if (joined.length > LIMITS.sectionBodyChars) {
+        return "sectionTooLong";
+    }
+    const kind = conflict === "contradiction" ? "contradiction" : "change";
+    return { heading, body: joined, kind, ...(disputed ? { disputed } : {}) };
+}
+
+/** The character slots whose body is the present alone, replaced value after value as the story moves. */
+const PRESENT_ONLY_SLOTS: ReadonlySet<string> = new Set<CharacterSectionSlot>(["currentState", "condition"]);
+
+/** Each of `group`, one page's patches in order, as an edit of `page`, or as the code that refuses it. */
+function resolveGroup(
+    page: MemoryPage,
+    group: readonly MemoryPatch[],
+    shown: ReadonlyMap<string, string | null>,
+): (SectionEdit | string)[] {
+    const slots: readonly string[] = CHARACTER_SECTION_SLOTS;
+    const handled = new Set<string>();
+    // Deletes make room for additions in any order; oversized additions consume no room.
+    let sections = page.sections.length - group.filter(({ op }) => op === "delete").length;
+    return group.map((patch) => {
+        const { heading, op } = patch;
+        const section = page.sections.find((entry) => entry.heading === heading);
+        if (section?.locked) {
+            return "lockedSection";
+        }
+        if (section ? shown.get(heading) !== section.body : shown.has(heading) || op === "delete") {
+            return "unseenSection";
+        }
+        if (handled.has(heading)) {
+            return "duplicateHeading";
+        }
+        handled.add(heading);
+        if (op === "delete") {
+            return { heading, body: null, kind: "delete" };
+        }
+        if (!section && page.type === "character" && !slots.includes(heading)) {
+            return "notASlot";
+        }
+        if (!section && sections + 1 > LIMITS.sectionsPerPage) {
+            return "tooManySections";
+        }
+        const body = withoutWasLines(patch.body ?? "");
+        if (body === "") {
+            return "emptyBody";
+        }
+        // The length as answered: `readPatch` cuts an oversized body to just past the limit, and the
+        // trim here must not bring that cut under it.
+        if ((patch.body ?? "").length > LIMITS.sectionBodyChars) {
+            return "sectionTooLong";
+        }
+        if (!section) sections++;
+        // A character's currentState and condition hold present values alone (`PATCH_RULES`), so they keep
+        // no replaced value.
+        const keepsWas = !(page.type === "character" && PRESENT_ONLY_SLOTS.has(heading));
+        return section ? upsertOver(section, patch, body, keepsWas) : { heading, body, kind: "create" };
+    });
+}
+
+/** Whether `edits` leave a page that had sections with no section that has text. */
+function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
+    const removed = new Set(edits.flatMap(({ heading, body }) => (body === null ? [heading] : [])));
+    return (
+        page.sections.length > 0 &&
+        edits.every(({ body }) => body === null) &&
+        page.sections.every(({ heading, body }) => removed.has(heading) || body.trim() === "")
+    );
+}
+
+/**
+ * Applies `patches` over `changes` and `pages`, a page's patches together, and answers what it lists.
+ * `seen` is what the call showed: a page it does not hold, or one that is gone, is refused `unseenPage`.
+ * Every refused patch is listed with its code as `kind` and `<page title>: <heading>` as `detail`:
+ *
+ * - `lockedSection`: touches a locked section.
+ * - `unseenSection`: an existing body was not shown or changed since, a section was added or deleted
+ *   since it was shown, or a delete names no section.
+ * - `duplicateHeading`: the group names the same heading twice.
+ * - `notASlot`: adds to a character outside `CHARACTER_SECTION_SLOTS`.
+ * - `tooManySections`: additions exceed `sectionsPerPage`, after this group's deletes make room.
+ * - `emptyBody`: an upsert is blank, or holds nothing but "(was: ...)" lines.
+ * - `sectionTooLong`: the answered body, its "(was: ...)" lines gone, or the joined one exceeds
+ *   `sectionBodyChars`; nothing is cut to fit, and a trim never brings a cut body under the limit.
+ *
+ * `sectionTooLong` refuses only its patch. Every other refusal cancels its page's whole group; otherwise
+ * valid patches read `pageRefused`. If the remaining edits would empty a page that had sections, those
+ * edits read `emptiesPage`. Other pages and the event still commit.
+ * An upsert of existing text is `change`, or `contradiction` for that conflict. At or above
+ * `contradictionConfidence` it replaces; below it, missing confidence counting as zero, it joins
+ * `<old>\n[disputed] <new>`, where `<old>` is a disputed body's standing value (`disputedStanding`),
+ * sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
+ * nonblank `was`, cut before any `(was:` it carries, to a body stripped of such lines, so a section holds
+ * one at most; a character's `currentState` and `condition` get none, because they are replaced on
+ * nearly every event and the line would repeat the turn before. Neither conflict waits for approval.
+ */
+export function applyPatches(arg: {
+    changes: PageChanges;
+    pages: ReadonlyMap<string, MemoryPage>;
+    patches: readonly MemoryPatch[];
+    seen: ShownPages["seen"];
+    stamp: PageStamp;
+}): Warning[] {
+    const { changes, pages, seen, stamp } = arg;
+    const groups = new Map<string, MemoryPatch[]>();
+    for (const patch of arg.patches) {
+        groups.set(patch.pageId, [...(groups.get(patch.pageId) ?? []), patch]);
+    }
+    const warnings: Warning[] = [];
+    for (const [pageId, group] of groups) {
+        const page = changes.get(pageId)?.page ?? pages.get(pageId);
+        const shown = seen.get(pageId);
+        if (!page || !shown) {
+            const named = page ?? { id: pageId, title: pageId };
+            warnings.push(...group.map(({ heading }) => sectionWarning("unseenPage", named, heading)));
+            continue;
+        }
+        const outcomes = resolveGroup(page, group, shown);
+        const edits = outcomes.filter((outcome) => typeof outcome !== "string");
+        if (outcomes.some((outcome) => typeof outcome === "string" && outcome !== "sectionTooLong")) {
+            warnings.push(
+                ...group.map(({ heading }, index) => {
+                    const outcome = outcomes[index];
+                    return sectionWarning(typeof outcome === "string" ? outcome : "pageRefused", page, heading);
+                }),
+            );
+        } else {
+            outcomes.forEach((outcome, index) => {
+                if (typeof outcome === "string") {
+                    warnings.push(sectionWarning(outcome, page, group[index].heading));
+                }
+            });
+            if (emptiesPage(page, edits)) {
+                warnings.push(...edits.map(({ heading }) => sectionWarning("emptiesPage", page, heading)));
+                continue;
+            }
+            for (const edit of edits) {
+                changeSection(changes, changes.get(pageId)?.page ?? page, edit, stamp);
+                if (edit.disputed) {
+                    warnings.push(sectionWarning("disputed", page, edit.heading));
+                }
+            }
+        }
+    }
+    return warnings;
+}
+
+/**
+ * Everything one commit does to pages, from `pages`, the chat's whole pages as they stand now: the pages
+ * `plan` makes, the scene page when the chat has none, so a chat with records has one, the patches, the
+ * compactions of what those changed, the links of a new event's relationship shifts except from frozen
+ * pages, and the scene. The event keeps every shift as evidence even when its link is frozen. A
+ * repeat stops the links and the patches, which it lists as unseen, and so the compactions, which it
+ * lists as stale, but not the scene.
+ */
+export function commitPages(arg: {
+    pages: readonly MemoryPage[];
+    /** Pages whose outgoing links a historical write must preserve. */
+    frozenPages?: ReadonlySet<string>;
+    plan: PagePlan;
+    admission: Pick<Admission, "event" | "repeated" | "scene">;
+    patches: readonly MemoryPatch[];
+    seen: ShownPages["seen"];
+    /** The shorter bodies the run's compaction calls gave. */
+    compactions: readonly Compaction[];
+    /** The id of a scene page made now, the same on every attempt of a run. */
+    sceneId: string;
+    stamp: PageStamp;
+}): { pages: MemoryPage[]; receipts: MemoryReceipt["pages"]; warnings: Warning[]; vectorTexts: string[] } {
+    const { plan, admission, patches, compactions, stamp } = arg;
+    const pages = new Map(arg.pages.map((page) => [page.id, page]));
+    const changes: PageChanges = new Map();
+    for (const page of plan.created) {
+        addPage(changes, page, stamp);
+    }
+    const scene = arg.pages.find(({ type }) => type === "scene") ?? addPage(changes, newScenePage(arg.sceneId), stamp);
+    const seen = admission.repeated ? new Map() : arg.seen;
+    const warnings = applyPatches({ changes, pages, patches, seen, stamp });
+    warnings.push(...applyCompactions({ changes, pages, compactions, stamp }));
+    if (!admission.repeated) {
+        addLinks(
+            changes,
+            pages,
+            admission.event.relationshipShifts.filter(({ from }) => !arg.frozenPages?.has(from)),
+        );
+    }
+    if (admission.scene) {
+        warnings.push(...rewriteScene(changes, changes.get(scene.id)?.page ?? scene, admission.scene, stamp));
+    }
+    return {
+        pages: [...changes.values()].map(({ page }) => page),
+        receipts: receiptPages(changes),
+        warnings,
+        vectorTexts: changedSectionTexts(changes),
+    };
+}

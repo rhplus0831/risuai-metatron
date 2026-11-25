@@ -19,6 +19,7 @@ import {
 import { clearSecret, setSecret } from "./llmSecrets.svelte";
 import { v4 } from "uuid";
 import { writeEntries } from "./mutationValidation";
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
 
 /**
  * The settings records: the source of truth of the five sections, the settings collections, and
@@ -38,6 +39,8 @@ import { writeEntries } from "./mutationValidation";
  *   through a wrapper queue one.
  * - `batchRecordWrites(fn)` runs a bulk writer: the record writes inside it are queued once per
  *   kind when it ends.
+ * - `pluginStorageRevision` advances synchronously on every plugin storage wrapper write and
+ *   record installation, replacement, or reset, independently of batched save dispatch.
  *
  * Wrapper rules (first proven on the test prototype, `src/ts/storage/tests/projectionHarness.svelte.ts`):
  * - Identity: the root wrapper resolves its record by kind on every trap, so a retained wrapper
@@ -47,14 +50,19 @@ import { writeEntries } from "./mutationValidation";
  *   by its path. A write through a wrapper whose item is gone throws `DetachedWrapperError`, and one
  *   through a by-id wrapper whose id now matches several elements `DuplicateIdError`, before anything
  *   changes.
- * - Assignment: a wrapper of the same record stores its item's current object; a wrapper of another
- *   record, or a `$state` object the record does not own (a component's editing copy), is stored as a
- *   detached copy, so a record never holds a wrapper or shares another object's state. Array mutators
- *   run in a mutator scope (the elements they displace are written back as they were read), and an
- *   element a write displaced in the current task may be assigned back (an indexed swap).
- *   Plain JSON written under a character or `modules` is copied. Their field-text caches are
- *   disabled by non-JSON data or state shared across cached fields; modules may move whole elements
- *   between root list slots without disabling the cache, which follows element identity, not id.
+ * - Assignment (except `pluginStorage` below): a wrapper of the same record stores its item's current
+ *   object; a wrapper of another record, or a `$state` object the record does not own (a component's
+ *   editing copy), is stored as a detached copy, so a record never holds a wrapper or shares another
+ *   object's state. Array mutators run in a mutator scope (the elements they displace are written
+ *   back as they were read), and an element a write displaced in the current task may be assigned
+ *   back (an indexed swap).
+ *   Plain JSON written under a character, `modules`, or `pluginStorage` is copied. In `pluginStorage`,
+ *   a directly assigned wrapper or state is detached even on self-assignment, except for element
+ *   writeback by a running list mutator; nested own state in a copied plain container is reused so
+ *   rebuilt dictionaries keep their existing entries.
+ *   Character and module field-text caches are disabled by non-JSON data or state shared across
+ *   cached fields; modules may move whole elements between root list slots without disabling the
+ *   cache, which follows element identity, not id.
  * - A module's `assets` list is immutable: every install (`applyRaw`) and adoption
  *   freezes a list of plain JSON tuples, and a read returns the frozen list and tuples themselves,
  *   never a wrapper. An edit replaces the whole list (`module.assets = next`; unchanged frozen
@@ -84,6 +92,7 @@ export const RECORD_KINDS = [
     ...Object.values(SECTION_KIND),
     ...Object.values(COLLECTION_KIND),
 ] as const;
+/** A settings record kind from `RECORD_KINDS`; characters are separate resources addressed by `chaId`. */
 export type RecordKind = (typeof RECORD_KINDS)[number];
 
 const recordKinds = new Set<string>(RECORD_KINDS);
@@ -107,7 +116,7 @@ let characterChatView: CharacterChatView | null = null;
 
 /**
  * Registers the facade view of a character's chats (`chatStore.svelte.ts`): what a character element
- * wrapper answers for `chats` and `chatPage` until `aggregate-removal`. Not an own key of the wrapper,
+ * wrapper answers for `chats` and `chatPage`. Not an own key of the wrapper,
  * so snapshots, spreads, and the save projection are chat-free; writing either is refused.
  */
 export function setCharacterChatView(view: CharacterChatView | null) {
@@ -238,6 +247,24 @@ export function isRecordWrapper(value: unknown): boolean {
     return isObject(value) && nodeOf.has(value);
 }
 
+const valueIdentities = new WeakMap<object, symbol>();
+
+/**
+ * A transient identity for the object a wrapper currently resolves to, tracked across raw replacements.
+ * Unlike the wrapper, it changes when a remote update replaces a row at the same path. Plain objects
+ * use their own identity. The token exposes no mutable record data and is never persisted.
+ */
+export function recordValueIdentity(value: object): symbol {
+    const node = nodeOf.get(value);
+    const target = node ? resolve(node) : value;
+    let identity = valueIdentities.get(target);
+    if (identity === undefined) {
+        identity = Symbol();
+        valueIdentities.set(target, identity);
+    }
+    return identity;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The store.
 
@@ -272,7 +299,7 @@ interface RecordMeta {
     itemFieldStamps: WeakMap<object, Map<string, number>>;
     uncacheable: boolean;
     children: WeakMap<object, TrackedNode>;
-    /** The `$state` objects this record's wrappers have reached (a written proxy that is one is stored as is). */
+    /** The `$state` objects this record's wrappers have reached (eligible for reuse during adoption). */
     owned: WeakSet<object>;
     /** Objects a write through a wrapper overwrote or deleted in the current task, and the latest per id. */
     displaced: Set<object>;
@@ -289,11 +316,36 @@ let stampCounter = 0;
 let moduleRevisionCounter = 0;
 let modulesRevision = $state(0);
 let assetsRevision = $state(0);
+let pluginStorageRevisionCounter = $state(0);
 
+/** Tracked plugin storage revision: every wrapper write, installation, server copy, replacement, and reset. */
+export function pluginStorageRevision(): number {
+    return pluginStorageRevisionCounter;
+}
+
+function bumpPluginStorage() {
+    untrack(() => {
+        pluginStorageRevisionCounter += 1;
+    });
+}
+
+/**
+ * The modules' membership revision, tracked. It advances synchronously at the write, untracked and
+ * before the batched save dispatch, independent of saving, on a counter no reset rewinds: on an
+ * installation, a server copy, or a replacement of the `modules` record, a root list change, a write
+ * of an element's `id`, `namespace`, or `mcp`, and a rebuilt element whatever field was written.
+ * `src/ts/process/modules.ts` `getModules` keys its cache by it.
+ */
 export function moduleMembershipRevision(): number {
     return modulesRevision;
 }
 
+/**
+ * The modules' assets revision, tracked, advancing like `moduleMembershipRevision`: on every
+ * installation, server copy, replacement, or root list change, a write of an element's `assets`, and
+ * every wrapper write while the record is uncacheable. `src/ts/process/modules.ts` `getModuleAssets`
+ * depends on it.
+ */
 export function moduleAssetsRevision(): number {
     return assetsRevision;
 }
@@ -533,7 +585,7 @@ export function setCharacterWriteListener(listener: CharacterWriteListener | nul
 
 /**
  * Registers the selection's hook (`selection.svelte.ts`): called synchronously after every completed
- * change of the character list's membership, local or raw, and after an installation or reset.
+ * change of the character list's membership or a character's type, and after an installation or reset.
  */
 export function setCharacterMembershipHook(hook: (() => void) | null) {
     membershipHook = hook;
@@ -576,9 +628,13 @@ function queueMembership() {
  * character it stamps the top-level field changed (`characterFieldStamp`): the one `node` descends
  * from, or `prop` written on the character element itself. Under modules it stamps the resolved
  * element's top-level field; root list writes change membership/order, not existing field texts.
+ * Under plugin storage every write advances the key index revision before save dispatch.
  */
 function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
     if (node.kind !== CHARACTERS) {
+        if (node.kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (node.kind === "modules") {
             // The bulk list helpers dispatch here after their write scope has ended.
             untrack(() => {
@@ -606,6 +662,7 @@ function queueNodeWrite(node: TrackedNode, prop?: string | symbol) {
             stampField(node.meta, field);
         }
         queueCharacterWrite(node.meta.chaId);
+        if (field === "type") runMembershipHook();
     }
 }
 
@@ -658,6 +715,9 @@ export function applyRaw(kind: RecordKind, data: unknown) {
         }
     }
     untrack(() => {
+        if (kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -672,6 +732,41 @@ export function applyRaw(kind: RecordKind, data: unknown) {
             unpinBelow(root);
         }
         refreshRoot(kind);
+    });
+}
+
+/**
+ * Installs fresh plugin storage dictionaries after an admitted server entry patch. Retained values
+ * may be shared with the current dictionaries; incoming values are already detached. Queues no
+ * write. The epoch and revision advance as for `applyRaw`, and wrappers under changed dictionaries
+ * follow their paths without retaining the old targets.
+ */
+export function patchRawPluginStorage(
+    changes: readonly (readonly [(typeof PLUGIN_STORAGE_DICTIONARIES)[number], Record<string, unknown>])[],
+): boolean {
+    return untrack(() => {
+        const target = records.pluginStorage as Record<string, unknown> | undefined;
+        if (!isObject(target)) {
+            return false;
+        }
+        for (const [field] of changes) {
+            const descriptor = Object.getOwnPropertyDescriptor(target, field);
+            if (!descriptor || !("value" in descriptor) || !descriptor.writable) {
+                return false;
+            }
+        }
+        bumpEpoch(metaOf("pluginStorage"));
+        bumpPluginStorage();
+        const root = rootNodes.get("pluginStorage");
+        for (const [field, value] of changes) {
+            const node = root?.keyChildren.get(field);
+            if (node) {
+                unpinBelow(node, true);
+            }
+            target[field] = value;
+        }
+        refreshRoot("pluginStorage");
+        return true;
     });
 }
 
@@ -734,6 +829,7 @@ export function resetRecords() {
     writeListener = null;
     characterListener = null;
     untrack(() => {
+        bumpPluginStorage();
         bumpModuleMembership();
         bumpModuleAssets();
         for (const kind of Object.keys(records)) {
@@ -764,9 +860,12 @@ export function replaceRecord(kind: RecordKind, value: unknown) {
         const plain =
             kind === "modules"
                 ? adoptModuleValue(prepared.value, metaOf(kind), { type: "list" })
-                : unwrap(prepared.value, metaOf(kind));
+                : unwrapInto(prepared.value, metaOf(kind), null);
         records[kind] = plain;
         refreshRoot(kind);
+        if (kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -802,10 +901,13 @@ export function writeRecordField(kind: RecordKind, field: string, value: unknown
         const plain =
             kind === "modules"
                 ? adoptModuleValue(stored, metaOf(kind), isIndex(field) ? { type: "item" } : null)
-                : unwrap(stored, metaOf(kind));
+                : unwrapInto(stored, metaOf(kind), null);
         const created: Record<string, unknown> = {};
         Object.defineProperty(created, field, { value: plain, enumerable: true, writable: true, configurable: true });
         records[kind] = created;
+        if (kind === "pluginStorage") {
+            bumpPluginStorage();
+        }
         if (kind === "modules") {
             bumpModuleMembership();
             bumpModuleAssets();
@@ -881,6 +983,16 @@ function assertNoLlmCredential(value: unknown) {
 // - `credentials[].key` (`SECRET_ENTRY_MAPS`): see
 //   `prepareEntryCredentials`.
 
+/**
+ * Thrown before anything changes when a write through a view or record wrapper would put a credential
+ * into a record or cannot route it to `setSecret`: among others a credential value other than a
+ * string, `null`, or `undefined`, a whole `llmSecrets` replacement that carries one (the record holds
+ * the mirror form only), a removed credential map in `llmSecrets` (`customModels`, `modelPresets`), a
+ * removed inline key (`customModels[].key`, `modelPresets[].proxyKey`, a profile's `key` or
+ * `proxyKey`), or a credential `delete` (use `clearSecret`). It covers only writes through the views
+ * and wrappers: `collectionStore.svelte.ts` `updateSettings` refuses the `llmSecrets` fields itself
+ * (`MutationValidationError`).
+ */
 class CredentialRefusedError extends TypeError {
     constructor(message: string) {
         super(message);
@@ -1263,7 +1375,8 @@ function adopt(node: TrackedNode, target: object, epoch: number) {
 /**
  * The `$state` object a node stands for now:
  * - the root resolves the record by kind on every access;
- * - an id step resolves the element by its id, wherever it is now; a missing id throws;
+ * - an id step resolves the element by its id, wherever it is now; a missing id throws. A character's
+ *   known position can be reused across same-id replacements because character ids are unique;
  * - a key step follows the same path after a raw replacement and after a local reassignment of an
  *   object field; for an array index whose element a local array operation moved, it follows the
  *   element by identity, and throws when the element was removed.
@@ -1285,6 +1398,11 @@ function resolve(node: TrackedNode): any {
     const step = node.step;
     if (step.type === "id") {
         if (node.target !== undefined && Object.is(parent[step.index], node.target)) {
+            return node.target;
+        }
+        // Character ids are unique and immutable; a same-id replacement can keep its known slot.
+        if (isCharacterElement(node) && parent[step.index]?.chaId === step.id) {
+            adopt(node, parent[step.index], epoch);
             return node.target;
         }
         const index = Array.isArray(parent)
@@ -1327,9 +1445,9 @@ function resolve(node: TrackedNode): any {
 }
 
 /**
- * The `$state` object an assignment of a wrapper stores: its current identity. Inside a mutator
- * scope, the object the mutator read during its own run. A wrapper whose element is gone throws,
- * unless the element was displaced by a write in the current task (an indexed swap).
+ * The `$state` object a wrapper supplies for adoption (which may copy it): its current identity.
+ * Inside a mutator scope, the object the mutator read during its own run. A wrapper whose element is
+ * gone throws, unless the element was displaced by a write in the current task (an indexed swap).
  */
 function assignedTarget(node: TrackedNode): object {
     if (node.parent !== null && mutatorDepth > 0 && node.target !== undefined) {
@@ -1403,7 +1521,10 @@ function containsRecordState(value: unknown, seen = new Set<object>()): value is
  * - a wrapper of another record stores a detached copy;
  * - a Svelte proxy the record owns is stored as is; any other Svelte proxy a detached copy;
  * - a plain object or array is kept, with the wrappers in it replaced in place by these rules.
- * Character and module writes first use their adoption rules, which copy plain JSON inputs.
+ * Character, module, and pluginStorage writes first use their adoption rules, which copy plain
+ * JSON inputs. PluginStorage also detaches directly assigned state, including its own, except for
+ * element writeback by a running list mutator; nested own state inside a copied plain container
+ * follows these reuse rules for dictionary rebuilds.
  */
 function unwrap(value: unknown, meta: RecordMeta, seen = new Set<object>()): unknown {
     if (!isObject(value)) {
@@ -1446,8 +1567,8 @@ function unwrapPlain(value: unknown): unknown {
 }
 
 /**
- * A value written into a record (`unwrap`); under a character (`adoptCharacterValue`), `field` names
- * the character's top-level field it goes under (null: unknown).
+ * A value written into a record (`unwrap`, or `adoptPluginStorageValue` for pluginStorage); under
+ * a character (`adoptCharacterValue`), `field` names its top-level field (null: unknown).
  */
 function unwrapInto(
     value: unknown,
@@ -1455,7 +1576,27 @@ function unwrapInto(
     field: string | null,
     taint: Pick<RecordMeta, "uncacheable"> = meta,
 ): unknown {
+    if (meta.key === "pluginStorage") {
+        return adoptPluginStorageValue(value, meta);
+    }
     return meta.chaId === null ? unwrap(value, meta) : adoptCharacterValue(value, meta, field, taint);
+}
+
+/**
+ * Plugin storage owns plain JSON inputs and directly assigned state, including self-assignments.
+ * Native mutator element writeback uses `unwrap` in `writeThrough` to keep moved state by identity.
+ * Nested own state in a plain input is reused: dictionary rebuilds move entries into a new container
+ * instead of copying large owned dictionaries. Other non-JSON inputs keep `unwrap`'s behavior.
+ */
+function adoptPluginStorageValue(value: unknown, meta: RecordMeta): unknown {
+    if (!isObject(value)) {
+        return value;
+    }
+    if (nodeOf.has(value) || STATE in value) {
+        return detachedCopy(value);
+    }
+    const copy = inertCopy(value, (entry) => unwrap(entry, meta));
+    return copy === NOT_INERT ? unwrap(value, meta) : copy;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1647,7 +1788,11 @@ function frozenAssetOf(value: object): object | null {
     return target;
 }
 
-/** A verified frozen asset list (or its Svelte proxy), never a record wrapper that can retarget. */
+/**
+ * A verified frozen asset list (or its Svelte proxy), never a record wrapper that can retarget: a
+ * reader may key a cache by its identity (`src/ts/assetList.ts` `characterAssetNames`, the parser's
+ * asset index in `src/ts/parser/parser.svelte.ts`).
+ */
 export function isFrozenAssetList(value: unknown): boolean {
     if (!isObject(value) || nodeOf.has(value)) {
         return false;
@@ -1982,12 +2127,12 @@ function adoptCharacterValue(
     }
     if (node || STATE in value) {
         const copy = detachedCopy(value);
-        if (inertCopy(copy as object, meta, field, new Set(), taint) === NOT_INERT) {
+        if (inertCopy(copy as object, (entry) => adoptCharacterValue(entry, meta, field, taint)) === NOT_INERT) {
             taint.uncacheable = true;
         }
         return copy;
     }
-    const copy = inertCopy(value, meta, field, new Set(), taint);
+    const copy = inertCopy(value, (entry) => adoptCharacterValue(entry, meta, field, taint));
     if (copy === NOT_INERT) {
         taint.uncacheable = true;
         return unwrap(value, meta);
@@ -1996,18 +2141,13 @@ function adoptCharacterValue(
 }
 
 /**
- * A fresh copy of plain JSON data written into a character (`adoptCharacterValue`): arrays and
+ * A fresh copy of plain JSON data written into a character or pluginStorage: arrays and
  * `Object.prototype` objects of enumerable data properties (own `__proto__` kept as a key), with no
- * `toJSON` key, symbol key, function, or cycle; this character's state inside is kept as itself and
- * another record's copied (`adoptCharacterValue`). `NOT_INERT` for anything else.
+ * `toJSON` key, symbol key, function, or cycle. Nested state follows `adoptState`: own state is
+ * reused and foreign state detached, with character cache tainting when needed. `NOT_INERT` for
+ * anything else.
  */
-function inertCopy(
-    value: object,
-    meta: RecordMeta,
-    field: string | null,
-    path: Set<object>,
-    taint: Pick<RecordMeta, "uncacheable">,
-): unknown {
+function inertCopy(value: object, adoptState: (value: object) => unknown, path = new Set<object>()): unknown {
     const isArray = Array.isArray(value);
     if (Object.getPrototypeOf(value) !== (isArray ? Array.prototype : Object.prototype) || path.has(value)) {
         return NOT_INERT;
@@ -2030,10 +2170,7 @@ function inertCopy(
             return NOT_INERT;
         }
         if (isObject(entry)) {
-            entry =
-                nodeOf.has(entry) || STATE in entry
-                    ? adoptCharacterValue(entry, meta, field, taint)
-                    : inertCopy(entry, meta, field, path, taint);
+            entry = nodeOf.has(entry) || STATE in entry ? adoptState(entry) : inertCopy(entry, adoptState, path);
             if (entry === NOT_INERT) {
                 return NOT_INERT;
             }
@@ -2136,6 +2273,16 @@ function trimOriginal(kind: string) {
  * The nodes stay, so a retained wrapper and a fresh one remain one object; until
  * then they would keep the replaced data alive. Never after a local change, where a moved element
  * is followed by identity.
+ *
+ * What no release reaches: a throwing mutator's shrink, until the next shrink or replacement; a local
+ * replacement's old value, which its node holds until that node's next read; the nodes of elements
+ * removed from a by-id list other than the character list (`BY_ID_FIELDS`: only
+ * `forgetCharacterNodes` drops nodes from an id map); and the original Svelte targets of nested
+ * objects and arrays, and of root arrays whose elements were replaced without a later shrink, which
+ * keep the values they were installed with (only a root array's shrink rewrites its original target,
+ * `trimRootList`), so bounded by the data installed. A `length` truncation through the generic
+ * `defineProperty` path (`Reflect.defineProperty`) skips the shrink cleanup (`afterShrink`); the
+ * entry lists (`isEntryList`) route a value descriptor through `writeThrough`, which runs it.
  */
 function unpinBelow(node: TrackedNode, self = false) {
     if (mutatorDepth > 0) {
@@ -2482,11 +2629,18 @@ function writeThrough(node: TrackedNode, prop: string, value: unknown): boolean 
         incoming = prepared.value;
         route = prepared.route;
     }
-    // Unwrapped (and validated: a gone wrapper throws) before anything changes.
+    // Unwrapped (and validated: a gone wrapper throws) before anything changes. Plugin storage
+    // reuses state written back by this list's native mutator; inserted values were adopted in its plan.
     const plain =
         mutatorWriteback?.node === node && isIndex(prop) && mutatorWriteback.values.has(incoming)
             ? incoming
-            : unwrapNodeValue(incoming, node, prop);
+            : node.kind === "pluginStorage" &&
+                isIndex(prop) &&
+                runningMutators.has(node) &&
+                isObject(incoming) &&
+                (nodeOf.has(incoming) || STATE in incoming)
+              ? unwrap(incoming, node.meta)
+              : unwrapNodeValue(incoming, node, prop);
     if (!Array.isArray(target) && assignsInheritedName(target, prop)) {
         install(node, writeEntries(target, [[prop, plain]])!);
     } else {
@@ -2694,11 +2848,13 @@ function createNode(
                         queueNodeWrite(node, prop);
                         return done;
                     }
-                    return Reflect.set(
+                    const done = Reflect.set(
                         resolved,
                         prop,
                         node.meta.chaId === null ? value : unwrapInto(value, node.meta, null),
                     );
+                    if (node.kind === "pluginStorage") bumpPluginStorage();
+                    return done;
                 });
             }
             // Writes resolve untracked: an `$effect` that writes through a wrapper must not subscribe
@@ -2890,11 +3046,15 @@ function wrappedList(list: unknown): { node: TrackedNode; target: unknown[] } | 
 export function moveRecordListItem(list: unknown[], from: number, to: number) {
     const wrapped = wrappedList(list);
     const target = wrapped?.target ?? list;
-    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from >= target.length) {
-        return;
-    }
-    const index = Math.min(Math.max(to, 0), target.length - 1);
-    if (index === from) {
+    if (
+        !Number.isInteger(from) ||
+        !Number.isInteger(to) ||
+        from < 0 ||
+        from >= target.length ||
+        to < 0 ||
+        to >= target.length ||
+        to === from
+    ) {
         return;
     }
     untrack(() => {
@@ -2902,7 +3062,7 @@ export function moveRecordListItem(list: unknown[], from: number, to: number) {
             assertUniqueIds(wrapped.node);
         }
         const [item] = target.splice(from, 1);
-        target.splice(index, 0, item);
+        target.splice(to, 0, item);
     });
     if (wrapped) {
         queueNodeWrite(wrapped.node);
@@ -2964,7 +3124,12 @@ export function characterData(): CharacterObject[] {
     return (untrack(() => records[CHARACTERS]) as CharacterObject[] | undefined) ?? [];
 }
 
-/** The index of the character with `chaId` in the list, tracked (a reactive read); -1 when absent. */
+let lastCharacterIndex = -1;
+
+/**
+ * The index of the character with `chaId`, tracked; -1 when absent. Reuses the last position only
+ * while its current id matches, so repeated membership checks avoid rescanning an unchanged list.
+ */
 export function characterIndex(chaId: string | null): number {
     if (chaId === null) {
         return -1;
@@ -2973,8 +3138,12 @@ export function characterIndex(chaId: string | null): number {
     if (!Array.isArray(list)) {
         return -1;
     }
+    if (list[lastCharacterIndex]?.chaId === chaId) {
+        return lastCharacterIndex;
+    }
     for (let index = 0; index < list.length; index += 1) {
         if (list[index]?.chaId === chaId) {
+            lastCharacterIndex = index;
             return index;
         }
     }
@@ -2998,7 +3167,11 @@ function requireNewId(list: readonly CharacterObject[], chaId: unknown, replacin
     if (typeof chaId !== "string" || chaId === "") {
         throw new TypeError("characters: a character needs a chaId");
     }
-    if (list.some((entry, index) => index !== replacing && entry?.chaId === chaId)) {
+    // Replacing the same id preserves the list's uniqueness; only a new id needs a duplicate check.
+    if (
+        list[replacing]?.chaId !== chaId &&
+        list.some((entry, index) => index !== replacing && entry?.chaId === chaId)
+    ) {
         throw new TypeError(`characters: a character with chaId ${chaId} already exists`);
     }
     return chaId;
@@ -3095,6 +3268,55 @@ export function insertCharacterRecord(value: CharacterObject): number {
         return [chaId];
     });
     return index;
+}
+
+/**
+ * Appends checked characters in one membership change and returns their indexes. One id set checks
+ * the current list and the whole batch; all values are staged through the normal ownership rules
+ * before any append. Every new record renews its stamps and queues its own write. If insertion or
+ * its notifications throw, the appended records are removed before the caller forgets their chats.
+ */
+export function insertCharacterRecords(values: readonly CharacterObject[]): number[] {
+    if (values.length === 0) return [];
+    let start = -1;
+    let list: CharacterObject[] | undefined;
+    let ids: string[] = [];
+    try {
+        changeMembership(() => {
+            list = rawList();
+            const seen = new Set(list.map((entry) => entry?.chaId));
+            ids = values.map((value) => {
+                const chaId = value.chaId;
+                if (typeof chaId !== "string" || chaId === "") {
+                    throw new TypeError("characters: a character needs a chaId");
+                }
+                if (seen.has(chaId)) {
+                    throw new TypeError(`characters: a character with chaId ${chaId} already exists`);
+                }
+                seen.add(chaId);
+                return chaId;
+            });
+            const stored = values.map((value, index) => {
+                const chaId = ids[index];
+                renewStamps(characterOwner(chaId));
+                return storedCharacter(value, chaId, undefined);
+            });
+            start = list.length;
+            for (const character of stored) list.push(character);
+            return ids;
+        });
+    } catch (error) {
+        if (list && start !== -1) {
+            untrack(() => {
+                list!.splice(start, values.length);
+                for (const chaId of ids) bumpEpoch(characterOwner(chaId));
+                forgetCharacterNodes(ids);
+                trimRootList(CHARACTERS);
+            });
+        }
+        throw error;
+    }
+    return ids.map((_, index) => start + index);
 }
 
 /**
@@ -3242,6 +3464,7 @@ export function patchRawCharacter(chaId: string, changes: readonly (readonly [st
                 target[field] = value;
             }
         }
+        if (changes.some(([field]) => field === "type")) runMembershipHook();
         return true;
     });
 }

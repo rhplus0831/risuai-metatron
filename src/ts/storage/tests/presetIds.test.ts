@@ -1,8 +1,9 @@
 import * as fflate from "fflate";
-import { decode as decodeMsgpack } from "msgpackr/index-no-eval";
+import { decode as decodeMsgpack, encode as encodeMsgpack } from "msgpackr/index-no-eval";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { language } from "src/lang";
 
 // The client preset paths that build on `normalizePreset`: `copyPreset` and every `importPreset`
 // path assign fresh ids, and `downloadPreset` strips the id. The preset fields are served from the
@@ -26,10 +27,7 @@ await vi.hoisted(async () => {
     (globalThis as any).Buffer = BufferPolyfill;
 });
 
-vi.mock("../../globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
@@ -46,23 +44,8 @@ vi.mock("../../parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
 }));
 
-// The real RPack loads its byte map with `fetch` of a Vite `?url` asset; here the map comes from
-// disk, so the fixtures are decoded with the real map (the codec itself is a byte substitution).
-vi.mock("../../rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../../rpack/rpack_map.bin")));
-    const encodeMap = map.slice(0, 256);
-    const decodeMap = map.slice(256, 512);
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(encodeMap), decodeRPack: apply(decodeMap) };
-});
-
-import { decodeRPack } from "../../rpack/rpack_js";
+import { alertError, alertNormal } from "../../alert";
+import { decodeRPack, encodeRPack } from "../../rpack/rpack_js";
 import { decryptBuffer } from "../../util";
 import type { botPreset, Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset, copyPreset, downloadPreset, importPreset } from "../presets.svelte";
@@ -80,6 +63,7 @@ import { installFlatDatabase } from "./installFlatDatabase";
 import {
     normalizeModelPresets,
     normalizeModelProfiles,
+    normalizePreset,
     normalizePresets,
     normalizePromptTemplate,
     plainClone,
@@ -136,12 +120,18 @@ function promptOnly(value: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * The stored preset an import of a file from before the context size override gives: the file's
- * prompt fields, the override off (only a file's own `maxContextOverride: true` turns it on), and
+ * prompt fields, the override off (only a file's own `maxContextOverride: true` turns it on),
  * `maxContextOverrideSize` seeded from the file's upstream `maxContext` (the file has no size of its
- * own). The two fields are the only additions the normalizer and the importer make.
+ * own), and the default empty `oocToggles` (the file predates it too). These three fields are the only
+ * additions the normalizer and the importer make.
  */
 function storedOf(fixture: Record<string, unknown>): Record<string, unknown> {
-    return { ...promptOnly(fixture), maxContextOverride: false, maxContextOverrideSize: fixture.maxContext };
+    return {
+        ...promptOnly(fixture),
+        maxContextOverride: false,
+        maxContextOverrideSize: fixture.maxContext,
+        oocToggles: {},
+    };
 }
 
 /**
@@ -261,10 +251,46 @@ describe("the selected preset over a normalized list", () => {
 });
 
 describe("copyPreset and importPreset", () => {
+    it("preserves non-empty OOC toggles through normalizePreset and a .risup export/import", async () => {
+        const oocToggles = { mode: "ooc", detail: "0" };
+        const source = { id: "ooc-source", name: "OOC preset", oocToggles };
+        expect(normalizePreset(source).oocToggles).toEqual(oocToggles);
+        bootWith({ botPresets: [source] });
+        const exported = await downloadPreset(source.id, "return");
+        expect((await decodeRisup(exported.buf as Uint8Array)).oocToggles).toEqual(oocToggles);
+
+        bootWith();
+        const importedId = await importPreset({ name: "ooc.risup", data: exported.buf as Uint8Array });
+        expect(settings.presets.find(({ id }) => id === importedId)?.oocToggles).toEqual(oocToggles);
+    });
+
     beforeEach(() => {
         // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
     });
+
+    it.each([
+        { extension: "risup", presetVersion: 1, type: "preset" },
+        { extension: "risupreset", presetVersion: 2, type: "module" },
+    ])(
+        "refuses .$extension with presetVersion $presetVersion and type $type without importing or throwing",
+        async ({ extension, presetVersion, type }) => {
+            bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33 }] });
+            const exported = await downloadPreset("source", "return");
+            const container = decodeMsgpack(fflate.decompressSync(await decodeRPack(exported.buf as Uint8Array)));
+            const compressed = fflate.compressSync(encodeMsgpack({ ...container, presetVersion, type }));
+            const data = extension === "risup" ? await encodeRPack(compressed) : compressed;
+            const before = plainClone(settings.presets);
+            vi.mocked(alertError).mockClear();
+            vi.mocked(alertNormal).mockClear();
+
+            await importPreset({ name: `unsupported.${extension}`, data });
+
+            expect(alertError).toHaveBeenCalledExactlyOnceWith(language.errors.unsupportedPreset);
+            expect(alertNormal).not.toHaveBeenCalled();
+            expect(plainClone(settings.presets)).toEqual(before);
+        },
+    );
 
     it("copyPreset gives the copy a fresh id and the source's values", () => {
         bootWith({ botPresets: [{ id: "source", name: "Source", temperature: 33, min_p: null }] });
@@ -419,8 +445,8 @@ describe(".risup round trip against the captured fixtures", () => {
             // The import itself, apart from the id, is the fixture preset's prompt fields: the
             // normalizer changed nothing the legacy reader wrote (no explicit value replaced), and
             // the record carries no model field (not the file's `maxContext`) and no credential. The
-            // only additions are the two override fields the fixture predates: the flag off, the size
-            // seeded from the file's `maxContext`.
+            // only additions are the fields the fixture predates: the override flag off, its size
+            // seeded from the file's `maxContext`, and the empty `oocToggles`.
             const { id, ...importedWithoutId } = imported as botPreset & Record<string, unknown>;
             expect(id).toMatch(UUID_V4);
             expect(Object.hasOwn(importedWithoutId, "proxyKey")).toBe(false);
@@ -509,7 +535,7 @@ describe(".risup compatibility with the legacy reader", () => {
             // The legacy reader stores the same prompt fields from the new export as from the
             // fixture: in particular `promptPreprocess` stays `undefined` (its working value kept),
             // not the template's `false` an absent key would have given it. The two override fields
-            // are the one addition (that reader's template has neither). The model fields the
+            // and `oocToggles` are the additions (that reader's template has none of them). The model fields the
             // export no longer carries come from that reader's template (the upstream contract),
             // except `maxContext`, which the export carries so that upstream's `setPreset` applies
             // the size the preset was used with.
@@ -518,6 +544,7 @@ describe(".risup compatibility with the legacy reader", () => {
                 ...promptOnly(legacyImportPreset(fixture)),
                 maxContextOverride: false,
                 maxContextOverrideSize: fixture.maxContext,
+                oocToggles: {},
             });
             for (const key of ["aiModel", "subModel", "forceReplaceUrl"]) {
                 expect(fromExport[key], key).toStrictEqual((presetTemplate as Record<string, unknown>)[key]);
@@ -687,6 +714,20 @@ describe("importPreset through addPreset", () => {
         // `repetition_penalty_presence * 100` is NaN without the parameter: the default lands instead.
         expect(imported.PresensePenalty).toBe(PRESET_DEFAULTS.PresensePenalty);
         expect(imported.NAISettings).toMatchObject({ cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1, starter: "" });
+    });
+
+    it("an NAI preset imports its presence penalty into the effective setting after normalization", async () => {
+        bootWith();
+        const nai = {
+            presetVersion: 3,
+            name: "NovelAI presence penalty",
+            parameters: { temperature: 0.8, max_length: 160, repetition_penalty_presence: 0.75 },
+        };
+        const id = await importPreset({ name: "nai.json", data: new TextEncoder().encode(JSON.stringify(nai)) });
+        const imported = settings.presets.find((preset) => preset.id === id)!;
+        expect(normalizePresets([plainClone(imported)])[0].NAISettings.presencePenalty).toBe(0.75);
+        changeToPreset(imported.id);
+        expect(activePreset.NAISettings.presencePenalty).toBe(0.75);
     });
 
     it("a JSON preset's proxyKey and model fields are ignored: no credential write, nothing on the preset, no model preset added", async () => {

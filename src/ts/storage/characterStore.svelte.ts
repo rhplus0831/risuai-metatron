@@ -1,18 +1,17 @@
 import { untrack } from "svelte";
 import { v4 } from "uuid";
 import type { character, groupChat } from "../../../shared/database.ts";
-import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-// Before `../stores.svelte`: its module effects read `selectedCharacter()` while this module is still loading.
-import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
-import { CharacterShapeError, normalizeCharacter, supaMemoryOnCount } from "../../../shared/characters.ts";
+import { selectCharacter, selection } from "./selection.svelte";
+import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
 import type { Chat } from "../../../shared/database.ts";
 import {
+    adoptCharacter,
     forgetCharacterChats,
     installCharacterChats,
+    requestChatListRefresh,
     isCharacterGenerating,
-    normalizeNewCharacter,
     prepareChatInput,
 } from "./chatStore.svelte";
 import { checkCharOrder } from "./characterOrder";
@@ -28,25 +27,26 @@ import {
 } from "./mutationValidation";
 import {
     batchRecordWrites,
-    insertCharacterRecord,
+    insertCharacterRecords,
     removeCharacterRecords,
     replaceCharacterRecordAt,
     trackedCharacters,
 } from "./records.svelte";
 import { settings } from "./settingsViews.svelte";
 
-export { selectCharacter };
-
 /**
- * The character mutations: the external contracts (plugins, MCP, Lua, triggers, imports)
+ * The character mutations: the external contracts (plugins, MCP, imports)
  * write characters only through these functions. Each validates its whole input and prepares a
  * detached copy before the mirror changes (a refusal throws `MutationValidationError` and changes
  * nothing) and writes the character record by `chaId`. The characters are write-through
  * records (`records.svelte.ts`): every write of a character's own fields queues its
  * save, and the list's membership changes only here (add, replace at an index, remove). The chats
  * are the chat module's (`chatStore.svelte.ts`): a character new to the list hands
- * its chats to it (`installCharacterChats`), and the records hold no chats.
+ * its chats to it (`installCharacterChats`), then queues their creates for saving and journaling
+ * (`adoptCharacter`). The records hold no chats.
  */
+
+export { selectCharacter };
 
 type AnyCharacter = character | groupChat;
 
@@ -57,7 +57,9 @@ type AnyCharacter = character | groupChat;
  * `character`/`groupChat` shapes keep `chats`/`chatPage` for the server, cards, and plugin snapshots.
  */
 export type ClientCharacter = Omit<character, "chats" | "chatPage">;
+/** A group record without chats or chat selection; `src/ts/storage/chatStore.svelte.ts` owns both. */
 export type ClientGroup = Omit<groupChat, "chats" | "chatPage">;
+/** A client character or group record, with chats held by `src/ts/storage/chatStore.svelte.ts`. */
 export type AnyClientCharacter = ClientCharacter | ClientGroup;
 
 /** Fields a character patch may not set (`CHARACTER_FIXED_FIELDS`, shared with the server's RisuAccess host). */
@@ -220,8 +222,8 @@ export function findCharacter(chaId: string): DeepReadonly<AnyClientCharacter> |
 
 /**
  * Adds a character to the list, prepared as a creation (`prepareNewCharacter`): its chats go to the
- * chat module, which gives them ids, and it goes into the character order. A `chaId` another
- * character has is refused. Returns the id.
+ * chat module, which gives them ids and queues their creates immediately, and it goes into the
+ * character order. A `chaId` another character has is refused. Returns the id.
  */
 export function addCharacter(char: unknown): string {
     return addPreparedCharacter(prepareNewCharacter(char));
@@ -229,21 +231,43 @@ export function addCharacter(char: unknown): string {
 
 /** `addCharacter` for a character prepared before (a caller's preflight of a whole list). */
 export function addPreparedCharacter(prepared: PreparedCharacter): string {
-    requirePrepared(prepared);
-    const { copy, chaId, chats } = prepared;
-    if (indexOf(chaId) !== -1) {
-        throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
+    return addPreparedCharacters([prepared])[0];
+}
+
+/**
+ * Appends prepared characters in input order and returns their ids. Checks all ids against one
+ * index before installing any chats, then stages and inserts all records in one membership change.
+ * Installation or insertion failure forgets every attempted character's chats and leaves the list
+ * unapplied. Adoption uses the inserted indexes; the character order is repaired once for a nonempty
+ * batch, after the caller's preceding updates (including characters restored from trash).
+ */
+export function addPreparedCharacters(prepared: readonly PreparedCharacter[]): string[] {
+    if (prepared.length === 0) return [];
+    const ids = new Set(list().map((character) => character?.chaId));
+    for (const entry of prepared) {
+        requirePrepared(entry);
+        if (ids.has(entry.chaId)) {
+            throw new MutationValidationError("character", `a character with chaId ${entry.chaId} already exists`);
+        }
+        ids.add(entry.chaId);
     }
-    installCharacterChats(chaId, chats, copy);
+    const installed: string[] = [];
+    const refresh: string[] = [];
+    let indexes: number[];
     try {
-        insertCharacterRecord(copy as unknown as Record<string, unknown>);
+        for (const { copy, chaId, chats } of prepared) {
+            installed.push(chaId);
+            if (installCharacterChats(chaId, chats, copy)) refresh.push(chaId);
+        }
+        indexes = insertCharacterRecords(prepared.map(({ copy }) => copy as unknown as Record<string, unknown>));
     } catch (error) {
-        forgetCharacterChats(chaId);
+        for (const chaId of installed) forgetCharacterChats(chaId);
         throw error;
     }
-    normalizeNewCharacter(chaId);
+    for (let i = 0; i < prepared.length; i++) adoptCharacter(prepared[i].chaId, indexes[i]);
+    for (const id of refresh) requestChatListRefresh(id);
     checkCharOrder();
-    return chaId;
+    return prepared.map(({ chaId }) => chaId);
 }
 
 /**
@@ -273,9 +297,10 @@ export function updateCharacter(chaId: string, patch: Record<string, unknown>): 
 /**
  * Replaces every own field of the existing character with `char.chaId` by `char`'s (last writer
  * wins), keeping its render key (its chats and chat selection are the chat module's). `char` must name its
- * character. Returns `false`, changing nothing, when no character has that id.
+ * character. An optional index hint avoids a list search when that index still names `char.chaId`;
+ * otherwise the character is found by id. Returns `false`, changing nothing, when no character has that id.
  */
-export function replaceCharacterFields(char: unknown): boolean {
+export function replaceCharacterFields(char: unknown, indexHint?: number): boolean {
     checkCharacterInput(char);
     const chaId = char.chaId;
     if (typeof chaId !== "string" || chaId === "") {
@@ -286,7 +311,7 @@ export function replaceCharacterFields(char: unknown): boolean {
         detach(Object.fromEntries(Object.entries(char).filter(([field]) => !INPUT_EXCLUDED.has(field)))),
         "character",
     );
-    const index = indexOf(chaId);
+    const index = indexHint !== undefined && list()[indexHint]?.chaId === chaId ? indexHint : indexOf(chaId);
     if (index === -1) {
         return false;
     }
@@ -299,7 +324,9 @@ export function replaceCharacterFields(char: unknown): boolean {
  * append) in place of the one there: a plugin's `setCharacterToIndex` with a different character.
  * Refused when `char` has the id of the character there (that is `replaceCharacterFields` plus the
  * chat module's `reconcileCharacterChats`), when the character there is generating a reply, or when
- * another character already has the new `chaId`. Returns the new id.
+ * another character already has the new `chaId`. Replaces the old id in the character order,
+ * including folder members, in the same mutation; an unordered live replacement is appended.
+ * Returns the new id.
  */
 export function replaceCharacterAt(index: number, char: unknown): string {
     const characters = list();
@@ -319,9 +346,22 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     }
     // Read before the replacement: the old wrapper is detached once its character leaves the list.
     const replacedId = current?.chaId;
-    installCharacterChats(chaId, chats, copy);
+    const refresh = installCharacterChats(chaId, chats, copy);
     try {
-        replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
+        batchRecordWrites(() => {
+            replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
+            let ordered = false;
+            const replaceId = (id: string) => {
+                const next = id === replacedId ? chaId : id;
+                if (next === chaId) ordered = true;
+                return next;
+            };
+            const order = (settings.characterOrder ?? []).map((entry) =>
+                typeof entry === "string" ? replaceId(entry) : { ...entry, data: entry.data?.map(replaceId) },
+            );
+            if (!ordered && !copy.trashTime && chaId !== "§playground") order.push(chaId);
+            settings.characterOrder = order;
+        });
     } catch (error) {
         forgetCharacterChats(chaId);
         throw error;
@@ -331,7 +371,8 @@ export function replaceCharacterAt(index: number, char: unknown): string {
         // with them on the server).
         forgetCharacterChats(replacedId);
     }
-    normalizeNewCharacter(chaId);
+    adoptCharacter(chaId);
+    if (refresh) requestChatListRefresh(chaId);
     return chaId;
 }
 
@@ -378,24 +419,6 @@ export function selectedCharacter(): AnyClientCharacter | undefined {
     const chaId = selection.characterId;
     return chaId === null ? undefined : list().find((entry) => entry?.chaId === chaId);
 }
-
-// The HypaV3 preset that turns memory on for every chat does so when a character is selected (a
-// turn-on that counts, as the toggle's: `supaMemoryOnCount`).
-onCharacterSelected((chaId) => {
-    untrack(() => {
-        const found = findCharacter(chaId);
-        if (
-            settings.memoryTranslateMedia.hypaV3 &&
-            selectedHypaV3Preset({
-                hypaV3Presets: settings.hypaV3Presets.items,
-                hypaV3PresetId: settings.hypaV3Presets.selectedId,
-            })?.settings?.alwaysToggleOn &&
-            found?.supaMemory !== true
-        ) {
-            updateCharacter(chaId, { supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(found) + 1 });
-        }
-    });
-});
 
 /**
  * The body of `replaceCharacterFields` after its checks. Replaces the own fields of the record at `index` with

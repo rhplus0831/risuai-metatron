@@ -10,12 +10,12 @@ import {
     settingsOpen,
 } from "../stores.svelte";
 
-/*
- * A credential that several features use has one editing place, its owning page; the other places show
- * its status and a link (`CredentialStatusLink.svelte`). An owner may hide its field behind a condition
- * (the API Keys tab lists only the providers the model slots use; Image Generation shows the NovelAI key
- * only for its NovelAI provider), so the link asks the owner to show the field on its next mount and
- * scrolls to it.
+/**
+ * A credential shared by features has one editing place, its owning page; other places show its status
+ * and a link (`src/lib/Setting/CredentialStatusLink.svelte`). Owners may hide fields by condition:
+ * the API Keys tab's provider-default fields follow the model slots and image provider in use;
+ * Image Generation shows the NovelAI key for its NovelAI provider. A link asks the owner to show
+ * the field on its next mount and scrolls to it.
  */
 
 export type SharedCredential = "openAIKey" | "google" | "NAIApiKey" | "supaMemoryKey";
@@ -29,6 +29,10 @@ interface CredentialOwner {
     place: () => string;
 }
 
+/**
+ * One editing place per shared key: `openAIKey`/`google` on API Keys, `NAIApiKey` in Image Generation's
+ * NovelAI block, and `supaMemoryKey` on Memory.
+ */
 export const CREDENTIAL_OWNERS: Record<SharedCredential, CredentialOwner> = {
     openAIKey: {
         path: { kind: "flat", field: "openAIKey" },
@@ -55,7 +59,7 @@ export const CREDENTIAL_OWNERS: Record<SharedCredential, CredentialOwner> = {
 /** The credential a link asked its owner to show, until that owner's next mount takes it. */
 let requested: SharedCredential | null = null;
 
-/** Open the credential's owning page (from settings or elsewhere), showing its field there. */
+/** Open the credential's owning page, requesting its field even when its usual condition would hide it. */
 export function openCredentialOwner(credential: SharedCredential): void {
     requested = credential;
     settingsOpen.set(true);
@@ -64,7 +68,7 @@ export function openCredentialOwner(credential: SharedCredential): void {
 
 /**
  * Whether a link asked for this credential; the request is used up. An owner calls it once at mount and
- * shows the field for the rest of that mount, then `scrollToCredential` after it rendered.
+ * shows the field even if normally hidden for the rest of that mount, then `scrollToCredential` after it rendered.
  */
 export function takeCredentialRequest(credential: SharedCredential): boolean {
     if (requested !== credential) return false;
@@ -74,7 +78,7 @@ export function takeCredentialRequest(credential: SharedCredential): boolean {
 
 /**
  * Scroll the owner's field (its `data-credential` wrapper) into view once it rendered, and move the focus
- * into its input, so the link leaves the keyboard on the field it opened (not on the link, now unmounted).
+ * into its first input, textarea, or select, so focus follows the link to the field it opened.
  */
 export async function scrollToCredential(credential: SharedCredential): Promise<void> {
     await tick();

@@ -54,16 +54,7 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 const text = (result: RPCToolCallContent[] | null) => (result ?? []).map((content) => (content as any).text).join("");
 
 const lore = (comment: string, content: string, key = "") => ({
@@ -498,6 +489,22 @@ describe("the consent gate", () => {
 });
 
 describe("read tools", () => {
+    it("excludes groups before counting and skipping characters in the tab's tool pages", async () => {
+        const { call, characterStore, other, sync } = await boot();
+        characterStore.addCharacter({ chaId: "g", name: "Group", type: "group", characters: ["c"] });
+        const last = characterStore.addCharacter({ name: "Last" });
+        await sync.flushResources();
+        const list = async (count: number, offset: number) =>
+            JSON.parse(await call("risu-list-characters", { count, offset }));
+
+        expect(await list(3, 0)).toEqual([
+            { id: "c", name: "C", type: "character" },
+            { id: other, name: "Other", type: "character" },
+            { id: last, name: "Last", type: "character" },
+        ]);
+        expect(await list(1, 2)).toEqual([{ id: last, name: "Last", type: "character" }]);
+    });
+
     it("return the same shapes as before, with the default empty globalLore read as empty", async () => {
         const { call, characterStore, other, sync } = await boot();
         expect(await call("risu-list-character-lorebooks", { id: "c" })).toBe("[]");

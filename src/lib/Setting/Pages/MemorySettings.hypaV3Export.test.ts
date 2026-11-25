@@ -22,11 +22,9 @@ vi.mock("src/ts/alert", async () =>
         alertNormal: mocks.alertNormal,
     }),
 );
-vi.mock("src/ts/globalApi.svelte", () => ({
-    downloadFile: mocks.downloadFile,
-    saveAsset: vi.fn(),
-    globalFetch: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ downloadFile: mocks.downloadFile }),
+);
 vi.mock("src/ts/util", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/util")>()),
     selectSingleFile: mocks.selectSingleFile,
@@ -77,6 +75,7 @@ beforeEach(() => {
         memoryTokensRatio: 0.35,
         queryChatCount: 7,
         gapConfirmTokens: 0,
+        structured: { eventsPerGroup: 17 },
     });
     const other = createHypaV3Preset("Other");
     // Installed into the records the way the app installs a boot (its fields moved into the
@@ -144,6 +143,7 @@ describe("the HypaV3 preset export", () => {
         expect(settings.hypaV3Presets.selectedId).toBe(imported.id);
         expect(imported.name).toBe("Exported");
         expect(imported.settings.gapConfirmTokens).toBe(0);
+        expect(imported.settings.structured.eventsPerGroup).toBe(17);
         expect(JSON.parse(JSON.stringify(imported.settings))).toStrictEqual(
             JSON.parse(JSON.stringify(settings.hypaV3Presets.items[1].settings)),
         );

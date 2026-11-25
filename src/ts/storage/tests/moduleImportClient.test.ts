@@ -6,8 +6,9 @@ import {
     ModuleImportRequestError,
 } from "../moduleImportClient";
 import { authFetch } from "../serverAuth";
+import { deferred } from "../../checkpoints/tests/checkpointServer";
 
-vi.mock("../serverAuth", () => ({ authFetch: vi.fn() }));
+vi.mock("../serverAuth", async () => (await import("./serverAuthMock")).createServerAuthMock());
 
 const encoder = new TextEncoder();
 const line = (value: unknown) => JSON.stringify(value) + "\n";
@@ -23,6 +24,68 @@ afterEach(() => {
 });
 
 describe("importModuleOverServer", () => {
+    it.each(["headers", "result before EOF", "refusal body"] as const)(
+        "rejects on abort during %s without waiting for the server",
+        async (phase) => {
+            vi.useFakeTimers();
+            const headers = deferred<Response>();
+            vi.mocked(authFetch).mockReturnValue(headers.promise);
+            const controller = new AbortController();
+            const rejected = vi.fn();
+            const importing = importModuleOverServer(new Blob(), { signal: controller.signal }).catch(rejected);
+
+            if (phase !== "headers") {
+                const body = new ReadableStream({
+                    start(stream) {
+                        stream.enqueue(encoder.encode(phase === "result before EOF" ? line(result) : '{"error":'));
+                    },
+                });
+                headers.resolve(new Response(body, { status: phase === "refusal body" ? 413 : 200 }));
+            }
+            await vi.advanceTimersByTimeAsync(0);
+            expect(rejected).not.toHaveBeenCalled();
+            controller.abort();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(rejected).toHaveBeenCalledOnce();
+            await importing;
+        },
+    );
+
+    it("stops progress after Cancel even when the next line is already buffered", async () => {
+        vi.useFakeTimers();
+        const controller = new AbortController();
+        const onProgress = vi.fn(() => controller.abort());
+        const lines = line({ done: 1, total: 2 }) + line({ done: 2, total: 2 }) + line(result);
+        vi.mocked(authFetch).mockResolvedValue(new Response(lines));
+        await expect(importModuleOverServer(new Blob(), { signal: controller.signal, onProgress })).rejects.toThrow();
+        expect(onProgress).toHaveBeenCalledExactlyOnceWith(1, 2);
+    });
+
+    it("finishes when headers and then the body each arrive after ten silent minutes", async () => {
+        vi.useFakeTimers();
+        const headers = deferred<Response>();
+        vi.mocked(authFetch).mockReturnValue(headers.promise);
+        const failed = vi.fn();
+        const importing = importModuleOverServer(new Blob(), { signal: new AbortController().signal }).catch(failed);
+        await vi.advanceTimersByTimeAsync(600_000);
+        expect(failed).not.toHaveBeenCalled();
+        let stream!: ReadableStreamDefaultController<Uint8Array>;
+        headers.resolve(
+            new Response(
+                new ReadableStream({
+                    start(controller) {
+                        stream = controller;
+                    },
+                }),
+            ),
+        );
+        await vi.advanceTimersByTimeAsync(600_000);
+        expect(failed).not.toHaveBeenCalled();
+        stream.enqueue(encoder.encode(line(result)));
+        stream.close();
+        await expect(importing).resolves.toEqual(result);
+    });
+
     it.each([0, 2])("streams %i progress lines and a UTF-8 result using the original Blob once", async (count) => {
         let controller!: ReadableStreamDefaultController<Uint8Array>;
         const body = new ReadableStream<Uint8Array>({ start: (value) => (controller = value) });

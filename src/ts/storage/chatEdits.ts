@@ -1,4 +1,6 @@
+import type { ChatRecord } from "../../../shared/chats.ts";
 import type { Chat } from "../../../shared/database.ts";
+import { language } from "src/lang";
 import {
     applyChatResult,
     captureChatBaseline,
@@ -11,8 +13,10 @@ import {
     pinChat,
     setChatMeta,
 } from "./chatStore.svelte";
+import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
-import { flushResources } from "./resourceSync.svelte";
+import { waitForResourceFlush } from "./resourceFlushWait";
+import { assertSaveAdmission, flushResources } from "./resourceSync.svelte";
 
 /**
  * Helpers over the chat module for writers that work on a whole chat: they edit a detached copy,
@@ -73,34 +77,94 @@ export function setCurrentChatMeta(set: Partial<Chat>, unset: readonly string[] 
     }
 }
 
-/** The most characters one detached read names (the read route's cap is far above it). */
+/** The most characters or chat refs one detached read names (below the read route's cap). */
 const DETACHED_READ_CHUNK = 500;
+/** The bound of one chunk's read (`readWithDeadline`): whole chat lists can be large on a slow link. */
+const DETACHED_READ_DEADLINE_MS = 60_000;
+
+export type DetachedChatRead = Pick<ChatRecord, "revision" | "trashedAt" | "data"> | "gone" | "absent";
+
+/**
+ * Reads named chats across characters as plain server copies, without installing or pinning them.
+ * The caller settles queued saves first. Each chunk has its own deadline, including continuations;
+ * a missing answer is distinct from a chat the server says is gone. No store state is written.
+ * A restore halt rejects before each chunk's read and after its answer, so old-epoch copies never return.
+ */
+export async function readChatRefsDetached(
+    refs: readonly ChatRef[],
+): Promise<Map<string, Map<string, DetachedChatRead>>> {
+    const result = new Map<string, Map<string, DetachedChatRead>>();
+    const wanted: { characterId: string; id: string }[] = [];
+    for (const { chaId, chatId } of refs) {
+        let chats = result.get(chaId);
+        if (!chats) {
+            chats = new Map();
+            result.set(chaId, chats);
+        }
+        if (!chats.has(chatId)) {
+            chats.set(chatId, "absent");
+            wanted.push({ characterId: chaId, id: chatId });
+        }
+    }
+    for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
+        assertSaveAdmission();
+        const read = await readWithDeadline(DETACHED_READ_DEADLINE_MS, language.chatLoadTimedOut, (signal) =>
+            readRefs([], { chats: wanted.slice(start, start + DETACHED_READ_CHUNK), signal }),
+        );
+        assertSaveAdmission();
+        for (const chat of read.chats ?? []) {
+            const chats = result.get(chat.characterId);
+            if (chats?.has(chat.id)) {
+                chats.set(
+                    chat.id,
+                    chat.revision === null || !chat.data
+                        ? "gone"
+                        : "trashedAt" in chat
+                          ? { revision: chat.revision, trashedAt: chat.trashedAt, data: chat.data }
+                          : "absent",
+                );
+            }
+        }
+    }
+    return result;
+}
 
 /**
  * Every chat of the characters `chaIds`, as plain copies in their server order, read from the server
  * after saving what is queued (for exports; complete whatever this tab has
  * loaded). The save comes first, so the copies hold this tab's changes: when it fails, or a conflict
- * discarded a local change of one of these characters or their chats, nothing is read and this
- * throws (a stale server copy is never returned instead). A character the server has no chat order
- * for gets `[]`.
+ * discarded a local change of one of these characters or their chats, or such a change remains refused,
+ * nothing is read and this throws (a stale server copy is never returned instead). A character the
+ * server has no chat order for gets `[]`.
+ * A restore halt rejects before each chunk's read and after its answer, so old-epoch copies never return.
  */
-export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<string, Chat[]>> {
+export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<string, ChatRecord[]>> {
     const wanted = [...new Set(chaIds)];
-    const result = new Map<string, Chat[]>();
+    const result = new Map<string, ChatRecord[]>();
     if (wanted.length === 0) {
         return result;
     }
-    const { discarded } = await flushResources();
-    const touched = discarded.filter((key) =>
+    const { discarded, refused } = await waitForResourceFlush(flushResources());
+    // A key of a wanted character: its record, its chat order, or one of its chats.
+    const concerns = (key: string) =>
         wanted.some(
             (chaId) => key === `characters/${chaId}` || key === `chats/${chaId}` || key.startsWith(`chats/${chaId}/`),
-        ),
-    );
+        );
+    const touched = discarded.filter(concerns);
     if (touched.length > 0) {
         throw new Error(`A conflict discarded local changes before the read: ${touched.join(", ")}`);
     }
+    // A change an earlier save left refused is held only in this tab: the server copy is behind it.
+    const refusedKeys = refused.filter(concerns);
+    if (refusedKeys.length > 0) {
+        throw new Error(`The server refused local changes that are not saved yet: ${refusedKeys.join(", ")}`);
+    }
     for (let start = 0; start < wanted.length; start += DETACHED_READ_CHUNK) {
-        const read = await readRefs([], { chatCollections: wanted.slice(start, start + DETACHED_READ_CHUNK) });
+        assertSaveAdmission();
+        const read = await readWithDeadline(DETACHED_READ_DEADLINE_MS, "The export's chat read timed out", (signal) =>
+            readRefs([], { chatCollections: wanted.slice(start, start + DETACHED_READ_CHUNK), signal }),
+        );
+        assertSaveAdmission();
         for (const collection of read.chatCollections ?? []) {
             result.set(
                 collection.characterId,

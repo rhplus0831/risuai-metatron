@@ -5,7 +5,7 @@ import { requireObject } from "./shared.ts";
 /**
  * The `characters` normalizer: a character record is an object whose `chaId` is its resource id and
  * which holds no chats (they live in the chat tables), with the shared deterministic defaults filled
- * in (`normalizeCharacter`, `shared/characters.ts`; idempotent, so the startup pass rewrites a stored
+ * in (`normalizeCharacter`, `shared/characters.ts`; idempotent, so a run of the normalization pass rewrites a stored
  * character once). A group whose `characters` is not a list is refused. The kind is
  * `shallowNormalize`: nothing given is changed, and every field not replaced is kept by reference.
  */

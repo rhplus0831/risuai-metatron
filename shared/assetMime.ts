@@ -1,3 +1,9 @@
+/**
+ * Shared logical-asset extension and MIME classification. Unknown extensions stay opaque binary;
+ * active document/script extensions are classified separately so server/src/routes/storage.ts can
+ * force downloads. SVG remains an image and relies on that route's sandbox CSP for inline serving.
+ */
+
 const ASSET_MIME_TYPES: Readonly<Record<string, string>> = {
     png: "image/png",
     jpg: "image/jpeg",
@@ -35,7 +41,11 @@ export function assetMimeType(extension: string): string {
     return Object.hasOwn(ASSET_MIME_TYPES, ext) ? ASSET_MIME_TYPES[ext] : "application/octet-stream";
 }
 
-/** Active document and script types are downloaded; SVG stays inline under the asset route's CSP. */
+/**
+ * Active document and script types are downloaded: the asset route (`server/src/routes/storage.ts`)
+ * answers them as an `application/octet-stream` attachment. SVG stays inline under the asset route's
+ * CSP.
+ */
 export function isActiveAssetExtension(extension: string): boolean {
     return ACTIVE_ASSET_EXTENSIONS.has(extension.toLowerCase());
 }

@@ -1,4 +1,10 @@
 /**
+ * Record identity helpers shared by both runtimes. Creation uses `crypto.getRandomValues` so it
+ * also works for clients served over plain HTTP; validation accepts any non-empty string, not
+ * just UUIDs, to retain caller-supplied record ids.
+ */
+
+/**
  * A random v4 UUID for record ids assigned at creation (presets, personas, translator and HypaV3
  * presets). Built on `crypto.getRandomValues`, which exists in Node and in every browser context;
  * `crypto.randomUUID` does not, because it needs a secure context and the self-host client may be
@@ -16,4 +22,17 @@ export function newId(): string {
 /** Whether `value` can serve as a record id: a non-empty string. */
 export function isRecordId(value: unknown): value is string {
     return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * An id list in canonical form: the non-blank strings of a list, each once, in first-occurrence
+ * order; anything that is not a list becomes `[]`. A kept id is not trimmed, so `" a "` and `"a"`
+ * stay two ids. A persona's linked modules and a folder's members (`shared/itemFolders.ts`) share
+ * this rule.
+ */
+export function normalizeIdList(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [...new Set(value.filter((id): id is string => typeof id === "string" && id.trim() !== ""))];
 }

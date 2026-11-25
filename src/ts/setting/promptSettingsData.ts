@@ -1,9 +1,11 @@
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
-// The Prompt page's Others tab (`PromptPresetSettings.svelte`) below its handwritten accordions: the
-// prompt options moved from Advanced. They are global (`providers` and `ui` fields), not fields of
-// the prompt preset the page edits, so their section says it applies to every preset.
+/**
+ * Registry items below the handwritten Others-tab accordions in
+ * `src/lib/Setting/Pages/PromptPresetSettings.svelte`: global `providers`/`ui` options shared by every preset.
+ */
+
 export const promptSettingsItems: SettingItem[] = [
     {
         id: "adv.addPrompt",
@@ -11,7 +13,6 @@ export const promptSettingsItems: SettingItem[] = [
         labelKey: "additionalPrompt",
         bindKey: "additionalPrompt",
         helpKey: "additionalPrompt",
-        classes: "mt-4",
     },
     {
         id: "adv.descPrefix",
@@ -33,7 +34,6 @@ export const promptSettingsItems: SettingItem[] = [
         labelKey: "sayNothing",
         bindKey: "useSayNothing",
         helpKey: "sayNothing",
-        classes: "mt-4",
     },
     {
         id: "adv.cot",
@@ -43,7 +43,6 @@ export const promptSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.settings.ui.showUnrecommended,
         helpKey: "customChainOfThought",
         helpUnrecommended: true,
-        classes: "mt-4",
     },
     // From Display, by way of Advanced.
     {
@@ -52,7 +51,6 @@ export const promptSettingsItems: SettingItem[] = [
         labelKey: "showPromptComparison",
         bindKey: "showPromptComparison",
         keywords: ["prompt", "comparison"],
-        classes: "mt-4",
     },
     // In a collapsible section, so without its own accordion.
     {

@@ -10,6 +10,23 @@ import { globalFetch } from "src/ts/globalApi.svelte";
 import { appendLastPath } from "src/ts/util";
 import { isMobile } from "src/ts/platform";
 
+/**
+ * `HypaProcessorV2`, the newer generic embedding processor: texts addressed by id with metadata, kept
+ * in memory by id and cached in the LocalForage store `hypaVector`. In the tab only the experimental
+ * HypaV3 implementation (`hypav3.ts`) uses it; the server has its port (`server/src/prompt/embeddings.ts`).
+ *
+ * - Batching: the ordinary API requests (every API model's texts, and a contextual model's queries)
+ *   carry at most 50 texts each and run through the `TaskRateLimiter` of `options.rateLimiter`
+ *   (failing fast by default); a local model runs its smaller batches one after another; contextual
+ *   document groups go to the provider directly, under its own request limits.
+ * - Grouped contextual documents: with a contextual model, stored texts that share a `metadata`
+ *   value are one contextual group. When a member of a group with a truthy `metadata` misses the
+ *   cache, the whole group is embedded again; without `metadata` only the missing texts are embedded.
+ * - Queries (`similaritySearchScoredBatch`) stay out of `vectors`, but their vectors are still
+ *   written to `hypaVector` by every branch; a Voyage model writes them under their own key
+ *   (`getCacheKey`), since query and document vectors differ, every other model under the document key.
+ */
+
 export interface HypaProcessorV2Options {
     model?: HypaModel;
     customEmbeddingUrl?: string;
@@ -418,6 +435,11 @@ export class HypaProcessorV2<TMetadata> {
         return results;
     }
 
+    /**
+     * One API request for `contents`: `custom`, OpenAI (`oaiKey`, else the stored memory key through
+     * `auxFetchJson`), a Voyage `/v1/embeddings` model, or a contextual model's queries. A new API
+     * model is one more branch here and in `HypaProcesser.getEmbeds` (`hypamemory.ts`).
+     */
     private async getAPIEmbeds(contents: string[], inputType: "query" | "document"): Promise<EmbeddingVector[]> {
         let response = null;
 

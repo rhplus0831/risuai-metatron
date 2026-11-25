@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createCbsEvaluator } from "../../../../shared/cbs/evaluator.ts";
 import { CbsLimitError } from "../../../../shared/cbs/limits.ts";
-import type { MemoryTaskInput } from "../../../../shared/jobs.ts";
+import type { MemoryTaskBase } from "../../../../shared/jobs.ts";
 import type { RequestArgs } from "../../../../shared/llm/request.ts";
 import { ChatTokenCounter } from "../../../../shared/prompt/chatTokens.ts";
 import { createJobCbsHost, serverCbsLimits, type ServerCbsTimeLimits } from "../../jobs/cbsHost.ts";
@@ -17,6 +17,13 @@ import type { EmbeddingsService } from "../embeddings.ts";
 import type { TokenCounter, TokenCountScope } from "../tokens.ts";
 import { parseChatML } from "../triggers.ts";
 import type { HypaV3SeparatorLimits, MemoryHost, MemoryTokenizer } from "./host.ts";
+
+/**
+ * The `MemoryHost` of a detached memory task (`createMemoryTaskHost`), the counterpart of the job's
+ * host that the runner builds (`server/src/prompt/runner.ts`): no tab, no job channel, and requests
+ * through the chat's captured memory connection (the model preset's memory slot when unset). A fatal
+ * host failure (`MemoryHostFailure`) ends the task `failed`, not `cancelled`.
+ */
 
 /**
  * A fatal failure of a memory task host's work: the request layer ended the run (`endJob`: a barrier
@@ -44,6 +51,7 @@ const DETACHED_MEMORY_CHANNEL: JobChannel = {
     }),
 };
 
+/** The server services a task host uses (`createMemoryTasks` receives them as `hostDeps`). */
 export type MemoryTaskHostDeps = {
     llm: Pick<LlmRequests, "runInJob">;
     embeddings: EmbeddingsService;
@@ -57,21 +65,21 @@ export type MemoryTaskHostDeps = {
 };
 
 /**
- * The `MemoryHost` a detached HypaV3 memory task runs on, and the `MemoryTokenizer` of the job that
- * handed the input off.
+ * The `MemoryHost` a detached memory task of either kind runs on, and the `MemoryTokenizer` of the job
+ * that handed the input off.
  *
  * - `scope`: the task's fresh `loadJobScope` at its start. The caller loads it with the input's
  *   effective preset and model preset ids, the admitted persona, `presetChain` semantics only when
  *   `input.effective.fromChain`, and `speakerChaId: input.speakerId` (so the request projection names
  *   a group speaker as the job's runner does); it checks the admission binding itself. The host never
- *   changes the scope. `host.db` is the scope's `db` with `maxResponse` from `input.maxResponse`, so the
- *   response correction matches the job's captured `currentTokens`.
+ *   changes the scope. `host.db` is the scope's `db` with `maxResponse` from `input.maxResponse`, the
+ *   response budget the job's captured `currentTokens` includes (the task keeps it reserved).
  * - Counting: the tokenizer is the runner's `ChatTokenCounter` rebuilt from `input.tokenPolicy`
  *   (`memoryTokenPolicy`), with the Google key of the fresh scope (the policy carries no credential).
  *   Plain-text `tokenize` and the requests' own counting use the same captured scope, so a Plugin main
  *   model the job admitted still counts as it did in the job.
  * - Requests: `requestChatDataOuter` (retries, `banCharacterset`) → `llm.runInJob` with the fresh
- *   request settings (the `memory` slot and its credentials), one synthetic job id, mode and source
+ *   request settings (the chat's captured memory connection and its credentials), one synthetic job id, mode and source
  *   `"memory"`, the input's chat, and a stub channel. No `request` trigger, no plugin replacers, no
  *   tools, no inlays. A failure's text is redacted.
  * - CBS: one write-disabled evaluator with one task-wide budget (summarization prompts, stop strings).
@@ -89,7 +97,7 @@ export type MemoryTaskHostDeps = {
  */
 export function createMemoryTaskHost(arg: {
     scope: JobScope;
-    input: MemoryTaskInput;
+    input: MemoryTaskBase;
     deps: MemoryTaskHostDeps;
     signal: AbortSignal;
     fence: () => void;
@@ -219,7 +227,14 @@ export function createMemoryTaskHost(arg: {
         request: (formated) =>
             fenced(async (): Promise<requestDataResponse> => {
                 const response = await requestChatDataOuter(
-                    { formated, bias: {}, useStreaming: false, noMultiGen: true, chatRef },
+                    {
+                        formated,
+                        bias: {},
+                        useStreaming: false,
+                        noMultiGen: true,
+                        chatRef,
+                        ...(scope.memoryProfileId !== undefined ? { profileId: scope.memoryProfileId } : {}),
+                    },
                     "memory",
                     {
                         db: requestDb,
@@ -241,6 +256,7 @@ export function createMemoryTaskHost(arg: {
         embeddings: embeddingEnv,
         regex: (op, opts) => fenced(() => untilAborted(deps.scriptWorkers.regex(op, opts), signal)),
         ...(deps.separatorLimits ? { separatorLimits: deps.separatorLimits } : {}),
+        parse: (text) => parse(text),
         parseChatML: (text) => {
             live();
             return parseChatML(text, (part) => parse(part));

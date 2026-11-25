@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactiveProps } from "src/lib/UI/tests/reactiveProps.svelte";
 
@@ -11,21 +11,38 @@ vi.mock("src/lib/SideBars/Scripts/TriggerList.svelte", () => ({ default: () => {
 vi.mock("src/lib/UI/PopupList.svelte", () => ({ default: () => {} }));
 vi.mock("src/lib/UI/GUI/TextAreaInput.svelte", () => ({ default: () => {} }));
 vi.mock("src/ts/process/lorebook.svelte", () => ({ convertExternalLorebook: vi.fn() }));
-vi.mock("src/ts/process/regexFiles", () => ({ exportRegex: vi.fn(), importRegex: vi.fn() }));
+const io = vi.hoisted(() => ({
+    selectSingleFile: vi.fn<typeof import("src/ts/util").selectSingleFile>(),
+    selectMultipleFile: vi.fn<typeof import("src/ts/util").selectMultipleFile>(),
+    selectMultipleFileHandles: vi.fn<typeof import("src/ts/util").selectMultipleFileHandles>(),
+    savePickedFiles: vi.fn<typeof import("src/ts/storage/assetQueue").savePickedFiles>(),
+}));
+vi.mock("src/ts/util", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/util")>()),
+    selectSingleFile: io.selectSingleFile,
+    selectMultipleFile: io.selectMultipleFile,
+    selectMultipleFileHandles: io.selectMultipleFileHandles,
+}));
+vi.mock("src/ts/storage/assetQueue", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/storage/assetQueue")>()),
+    savePickedFiles: io.savePickedFiles,
+}));
 vi.mock("src/ts/characters", () => ({ createBlankChar: vi.fn(), getCharImage: vi.fn() }));
 vi.mock("src/ts/storage/characterStore.svelte", () => ({ characterList: vi.fn(), selectedCharacter: vi.fn() }));
-vi.mock("src/ts/storage/chatStore.svelte", () => ({ chatEntry: vi.fn(), currentChatRef: vi.fn() }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock(),
+);
 vi.mock("src/ts/storage/settingsViews.svelte", () => ({
     settings: { ui: { useAdditionalAssetsPreview: false } },
     activePreset: {},
     tabPersonaRecord: vi.fn(),
 }));
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
-vi.mock("src/ts/globalApi.svelte", () => ({
-    saveAsset: vi.fn(),
-    downloadFile: vi.fn(),
-    holdFileSrc: (path: string) => ({ src: Promise.resolve(path), release: () => {} }),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        holdFileSrc: (path: string) => ({ src: Promise.resolve(path), release: () => {} }),
+    }),
+);
 
 import ModuleMenu from "./ModuleMenu.svelte";
 import AssetInput from "src/lib/ChatScreens/AssetInput.svelte";
@@ -33,6 +50,7 @@ import { language } from "src/lang";
 import type { RisuModule } from "src/ts/process/modules";
 import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 import {
+    applyRaw,
     initializeRecords,
     isRecordWrapper,
     recordData,
@@ -49,6 +67,7 @@ let target: HTMLDivElement;
 let instance: ReturnType<typeof mount>;
 
 beforeEach(() => {
+    for (const mock of Object.values(io)) mock.mockReset();
     resetRecords();
     setRecordWriteListener(() => {});
     setCharacterWriteListener({ character: () => {}, membership: () => {} });
@@ -112,6 +131,41 @@ function render(kind: ListKind, assets: Asset[], otherAssets: Asset[] = assets) 
 }
 
 describe("paged asset lists", () => {
+    it("module names keep focus and the caret on local renames, and blur on outside row replacement", () => {
+        const { module } = render("module", [
+            ["apple", "p0", "png"],
+            ["banana", "p1", "png"],
+        ]);
+        const name = nameInputs()[0];
+        name.focus();
+        name.setSelectionRange(2, 2);
+        for (const [expected, caret] of [
+            ["apXple", 3],
+            ["apXYple", 4],
+        ] as const) {
+            name.value = expected;
+            name.setSelectionRange(caret, caret);
+            name.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).toBe(name);
+            expect([name.selectionStart, name.selectionEnd]).toEqual([caret, caret]);
+            expect(module.assets![0][0]).toBe(expected);
+        }
+
+        const modules = JSON.parse(JSON.stringify(recordData("modules"))) as RisuModule[];
+        const renamed = modules[0].assets!;
+        for (const replacement of [[...renamed].reverse(), [renamed[0]]]) {
+            nameInputs()[0].focus();
+            applyRaw("modules", [{ ...modules[0], assets: structuredClone(replacement) }, modules[1]]);
+            flushSync();
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).not.toBe(name);
+            expect(rowNames("module")).toEqual(replacement.map((row) => row[0]));
+            expect(JSON.parse(JSON.stringify(module.assets))).toEqual(replacement);
+        }
+    });
+
     it.each<ListKind>(["module", "sticker"])(
         "%s pages matching names, resets query/page, and reports no matches",
         (kind) => {
@@ -369,4 +423,117 @@ describe("paged asset lists", () => {
             expect(target.textContent).toContain(language.noMatchingAssets);
         });
     });
+});
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => (resolve = done));
+    return { promise, resolve };
+}
+const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+const regex = (name: string) => ({ comment: name, in: name, out: name, type: "editoutput" as const });
+const lore = (name: string) => ({
+    key: name,
+    comment: name,
+    content: name,
+    mode: "normal" as const,
+    insertorder: 100,
+    alwaysActive: false,
+    secondkey: "",
+    selective: false,
+});
+
+it.each(["regex", "lorebook", "assets"] as const)(
+    "%s picker imports succeed for the original module and cancel after a switch, replacement or removal",
+    async (kind) => {
+        const view = render("module", [["original", "old", "png"]], [["other", "other", "png"]]);
+        const modules = trackedRecord<RisuModule[]>("modules")!;
+        for (const module of modules) {
+            module.regex = [regex(module.id)];
+            module.lorebook = [lore(module.id)];
+        }
+        click(
+            button(
+                kind === "regex"
+                    ? language.regexScript
+                    : kind === "lorebook"
+                      ? language.loreBook
+                      : language.additionalAssets,
+            )!,
+        );
+        const file = {
+            name: "import.json",
+            data: new TextEncoder().encode(
+                JSON.stringify(
+                    kind === "regex"
+                        ? { type: "regex", data: [regex("imported")] }
+                        : { type: "risu", data: [lore("imported")] },
+                ),
+            ),
+        };
+        io.savePickedFiles.mockResolvedValue(["saved"]);
+        for (const change of ["unchanged", "switch", "replace", "remove"] as const) {
+            const picked = deferred<void>();
+            io.selectSingleFile.mockImplementationOnce(async () => {
+                await picked.promise;
+                return file;
+            });
+            io.selectMultipleFile.mockImplementationOnce(async () => {
+                await picked.promise;
+                return [file];
+            });
+            io.selectMultipleFileHandles.mockImplementationOnce(async () => {
+                await picked.promise;
+                return [new File(["asset"], "new.png")];
+            });
+            click(
+                target.querySelector<HTMLButtonElement>(
+                    kind === "assets" ? "th button:has(.lucide-plus)" : "button:has(.lucide-hard-drive-upload)",
+                )!,
+            );
+            const catalog = plain(recordData("modules")) as RisuModule[];
+            if (change === "switch") view.switchOwner();
+            if (change === "replace")
+                applyRaw("modules", [
+                    {
+                        ...catalog[0],
+                        name: "Replacement",
+                        regex: [regex("replacement")],
+                        lorebook: [lore("replacement")],
+                    },
+                    catalog[1],
+                ]);
+            if (change === "remove") applyRaw("modules", [catalog[1]]);
+            flushSync();
+            const before = plain(recordData("modules")) as RisuModule[];
+            picked.resolve();
+            // Picker, real parser/upload boundary, then the component's continuation.
+            for (let i = 0; i < 6; i++) await tick();
+            flushSync();
+            if (change === "unchanged") {
+                const expected = structuredClone(before);
+                if (kind === "regex") expected[0].regex!.push(regex("imported"));
+                if (kind === "lorebook") expected[0].lorebook!.push(lore("imported"));
+                if (kind === "assets") expected[0].assets = [...expected[0].assets!, ["new.png", "saved", "png"]];
+                expect(plain(recordData("modules"))).toEqual(expected);
+            } else expect(plain(recordData("modules"))).toEqual(before);
+            if (change === "switch") view.switchOwner(0);
+        }
+    },
+);
+
+it("cancels an asset import after selection changes during upload", async () => {
+    const view = render("module", [["original", "old", "png"]], [["other", "other", "png"]]);
+    io.selectMultipleFileHandles.mockResolvedValueOnce([new File(["asset"], "new.png")]);
+    const uploaded = deferred<string[]>();
+    io.savePickedFiles.mockReturnValueOnce(uploaded.promise);
+    const before = plain(recordData("modules"));
+    click(target.querySelector<HTMLButtonElement>("th button:has(.lucide-plus)")!);
+    await tick();
+    expect(io.savePickedFiles).toHaveBeenCalled();
+    view.switchOwner();
+    uploaded.resolve(["saved"]);
+    await tick();
+    flushSync();
+    expect(plain(recordData("modules"))).toEqual(before);
 });

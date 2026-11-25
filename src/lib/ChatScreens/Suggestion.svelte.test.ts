@@ -37,14 +37,16 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleLorebooks: vi.fn(() => []),
     getModuleAssets: vi.fn(() => []),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { language } from "src/lang";
+import { alertConfirm } from "src/ts/alert";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { findChat, selectChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { translate } from "src/ts/translator/translator";
 import Suggestion from "./Suggestion.svelte";
 
 const chatK: ChatRef = { chaId: "c", chatId: "k" };
@@ -89,6 +91,9 @@ async function answer(index: number, result = "- one\n- two") {
 
 beforeEach(() => {
     mocks.requests.length = 0;
+    vi.mocked(translate)
+        .mockReset()
+        .mockImplementation(async (text) => text);
     installFlatDatabaseWithChats({
         characters: [
             {
@@ -109,6 +114,73 @@ beforeEach(() => {
     settings.memoryTranslateMedia.translator = "";
     target = document.createElement("div");
     document.body.appendChild(target);
+});
+
+describe("suggestion translation ownership", () => {
+    function translations(messages: string[]) {
+        const pending = new Map(
+            messages.map((text) => {
+                let resolve!: (text: string) => void;
+                const promise = new Promise<string>((done) => (resolve = done));
+                return [text, { promise, resolve }] as const;
+            }),
+        );
+        vi.mocked(translate).mockImplementation((text) => pending.get(text)!.promise);
+        settings.memoryTranslateMedia.translator = "en";
+        return (text: string, result: string) => pending.get(text)!.resolve(result);
+    }
+
+    async function settle() {
+        // Translation and the labels' async markdown each publish in a microtask.
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        flushSync();
+    }
+
+    const labels = () =>
+        [...target.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean);
+
+    it("keeps a previous chat's pending translation out of the selected chat's labels", async () => {
+        const resolve = translations(["A first", "A second", "B first", "B second"]);
+        setChatMeta(chatK, { suggestMessages: ["A first", "A second"], autoTranslate: true });
+        setChatMeta(chatN, { suggestMessages: ["B first", "B second"], autoTranslate: true });
+        open();
+        await settle();
+        expect(translate).toHaveBeenCalledWith("A first", false);
+
+        select(chatN);
+        await settle();
+        expect(labels()).toEqual(["B first", "B second"]);
+        resolve("A first", "Translated A first");
+        resolve("A second", "Translated A second");
+        await settle();
+        expect(labels()).toEqual(["B first", "B second"]);
+        resolve("B first", "Translated B first");
+        resolve("B second", "Translated B second");
+        await settle();
+        expect(labels()).toEqual(["Translated B first", "Translated B second"]);
+    });
+
+    it("lets a replacement suggestion list supersede its pending translation without mixing lists", async () => {
+        const resolve = translations(["Old first", "Old second", "New first", "New second"]);
+        setChatMeta(chatK, { suggestMessages: ["Old first", "Old second"], autoTranslate: true });
+        open();
+        await settle();
+        resolve("Old first", "Translated old first");
+        await settle();
+        expect(translate).toHaveBeenCalledWith("Old second", false);
+
+        setChatMeta(chatK, { suggestMessages: ["New first", "New second"] });
+        flushSync();
+        await settle();
+        resolve("New first", "Translated new first");
+        resolve("New second", "Translated new second");
+        await settle();
+        expect(labels()).toEqual(["Translated new first", "Translated new second"]);
+
+        resolve("Old second", "Translated old second");
+        await settle();
+        expect(labels()).toEqual(["Translated new first", "Translated new second"]);
+    });
 });
 
 afterEach(async () => {
@@ -132,6 +204,21 @@ describe("Suggestion's requests follow the local sends per chat", () => {
         expect(creating()).toBe(false);
         // The refresh button and two buttons per suggestion.
         expect(buttons()).toBe(5);
+    });
+
+    it("an answer without suggestions writes nothing over a chat that has none, and clears one that has", async () => {
+        open();
+        await answer(0, "no list here");
+        expect(stored(chatK)).toBeUndefined();
+
+        setChatMeta(chatK, { suggestMessages: ["old"] });
+        flushSync();
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        (target.querySelector("button") as HTMLButtonElement).click();
+        await Promise.resolve();
+        flushSync();
+        await answer(1, "no list here");
+        expect(stored(chatK)).toEqual([]);
     });
 
     it("opened while the selected chat sends, waits for that send's end to request", () => {
@@ -228,5 +315,43 @@ describe("Suggestion's requests follow the local sends per chat", () => {
         expect(buttons()).toBe(5);
         end();
         expect(requested()).toEqual(["k"]);
+    });
+});
+
+describe("the reroll confirmation", () => {
+    // With no translator the refresh button is the first control.
+    const refresh = () => target.querySelector<HTMLButtonElement>("button")!;
+    async function settle() {
+        for (let i = 0; i < 5; i++) {
+            await Promise.resolve();
+        }
+        flushSync();
+    }
+
+    it("rerolls the chat it was opened for, not the one selected when it is answered", async () => {
+        open();
+        await answer(0);
+        expect(stored(chatK)).toEqual(["one", "two"]);
+
+        let decide!: (confirmed: boolean) => void;
+        vi.mocked(alertConfirm).mockImplementationOnce(
+            () =>
+                new Promise<boolean>((resolve) => {
+                    decide = resolve;
+                }),
+        );
+        refresh().click();
+        select(chatN);
+        decide(true);
+        await settle();
+        // Neither chat was rerolled: K keeps its suggestions and N got no request.
+        expect(requested()).toEqual(["k"]);
+        expect(stored(chatK)).toEqual(["one", "two"]);
+
+        // Answered on the chat it was opened for: that chat is rerolled.
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        refresh().click();
+        await settle();
+        expect(requested()).toEqual(["k", "n"]);
     });
 });

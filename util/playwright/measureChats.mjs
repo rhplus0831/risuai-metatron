@@ -4,11 +4,11 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // loaded chats are evicted beyond eight.
 //
 // Against the production build (`pnpm build` first: the server serves `dist/`), in headless Chrome,
-// through the real UI, with a character "Many" of 30 chats (one of them "Long", 2,000 messages; the
+// through the real UI, with a character "Many" of 30 chats (one of them "Long", LONG_MESSAGES messages; the
 // others 20 each) among 50 characters, and a character "Stream" whose chat a local mock provider
 // streams into (the server's generation job, CHUNKS chunks CHUNK_MS ms apart):
 // - the boot: a fresh page until the sidebar shows "Many" (3 runs), and the JS heap after a forced
-//   garbage collection;
+//   garbage collection; each load clears safe boot's unsettled-attempt counter;
 // - switching Many's chats from its chat list (alternating "Long" and a 20-message chat, both
 //   loaded after the first switch; each switch opens the chat from the list, after an untimed Go Back
 //   has closed the one before, so these timings are not comparable with builds before the
@@ -18,21 +18,24 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 // - a streamed reply: the frame intervals while it streams (each chunk renders through the chat
 //   screen's readers) and the long tasks, labeled with the chat and chunk settings;
 // - Long's mounted row count and JS heap after a forced collection at the initial 30-row window,
-//   the first load-more step past 500 rows, and the end (all 2,000 messages, or MAX_ROWS). Load-more
+//   the first load-more step past 500 rows, and the end (all LONG_MESSAGES messages, or MAX_ROWS). Load-more
 //   task/paint latency starts at the scroll and waits for new rows before calling window.__time;
 //   the initial sample loads 30 -> 45 rows, and later checkpoints summarize the intervening steps;
 // - a second streamed reply into Long, after scrolling to the bottom with its loaded rows still
 //   mounted, with the same frame-interval and long-task reports as Stream, the trim task and retained heap;
-// - a residual stream while scrolled up with up to 600 rows already mounted (no eligible trim);
+// - a residual stream after wheel input scrolls up and releases the bottom anchor, with up to 600
+//   rows already mounted (no eligible trim);
 // - opening the chat list (the list entries of 30 chats).
 // Timed as in `measureCharacters.mjs` (task latency, paint; 3 warm-up and 10 measured runs). Compare
 // with a baseline build (`RISU_DIST=<dist of an earlier commit>`). The checks: both streamed replies
 // are on the server, Long reaches its requested row window, trims at the bottom and retains it when scrolled up, no page error, no unexpected
 // egress.
 //
-// Usage: pnpm build && node util/playwright/measureChats.mjs
-// Environment: CHUNKS=200, CHUNK_MS=20 (0 writes back to back, awaiting only socket backpressure),
-// MAX_ROWS=2000 (all; smaller limits round up in 15-row steps, with at least the initial 30 rows),
+// Usage: pnpm build && LONG_MESSAGES=2000 node util/playwright/measureChats.mjs
+// Environment: LONG_MESSAGES=2000 (positive integer, Long's history length), CHUNKS=200,
+// CHUNK_MS=20 (0 writes back to back, awaiting only socket backpressure),
+// MAX_ROWS=2000 (rows to mount, capped by LONG_MESSAGES; limits round up in 15-row steps,
+// with at least the initial 30 rows when available),
 // RISU_DIST=<production build directory>, RISU_CHROME=<Chrome executable>, DEBUG=1 (server logs).
 // Fast-chunk example: CHUNK_MS=0 MAX_ROWS=600 node util/playwright/measureChats.mjs
 import { CHAT_ROW_CAP } from "../../shared/chatLoadPages.ts";
@@ -45,7 +48,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, repoRoot, unexpectedEgress } from "./stack.mjs";
+import { chromePath, clearSafeBootAttempts, isolateContext, repoRoot, unexpectedEgress } from "./stack.mjs";
 
 const WARMUP = 3;
 const RUNS = 10;
@@ -53,18 +56,23 @@ const port = 6263;
 const base = `http://localhost:${port}`;
 const CHUNKS = Number(process.env.CHUNKS ?? 200);
 const CHUNK_MS = Number(process.env.CHUNK_MS ?? 20);
+const LONG_MESSAGES = Number(process.env.LONG_MESSAGES ?? 2000);
 const MAX_ROWS = Number(process.env.MAX_ROWS ?? 2000);
 if (
     !Number.isSafeInteger(CHUNKS) ||
     CHUNKS < 1 ||
     !Number.isFinite(CHUNK_MS) ||
     CHUNK_MS < 0 ||
+    !Number.isSafeInteger(LONG_MESSAGES) ||
+    LONG_MESSAGES < 1 ||
     !Number.isSafeInteger(MAX_ROWS) ||
     MAX_ROWS < 1
 ) {
-    throw new Error("CHUNKS and MAX_ROWS must be positive integers; CHUNK_MS must be a nonnegative number.");
+    throw new Error(
+        "CHUNKS, LONG_MESSAGES and MAX_ROWS must be positive integers; CHUNK_MS must be a nonnegative number.",
+    );
 }
-const streamSettings = `CHUNKS=${CHUNKS}, CHUNK_MS=${CHUNK_MS}`;
+const streamSettings = `LONG_MESSAGES=${LONG_MESSAGES}, CHUNKS=${CHUNKS}, CHUNK_MS=${CHUNK_MS}`;
 
 const dist = process.env.RISU_DIST ?? path.join(repoRoot, "dist");
 if (!existsSync(path.join(dist, "index.html"))) {
@@ -127,6 +135,7 @@ const browser = await chromium.launch({ executablePath: chromePath, headless: tr
 try {
     await waitForServer();
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    await clearSafeBootAttempts(context);
     const blocked = await isolateContext(context);
     const pageErrors = [];
     let auth = null;
@@ -236,7 +245,7 @@ try {
     const manyChats = Array.from({ length: 30 }, (_, i) => ({
         id: i === 0 ? "long" : `short-${i}`,
         name: i === 0 ? "Long" : `Short ${i}`,
-        count: i === 0 ? 2000 : 20,
+        count: i === 0 ? LONG_MESSAGES : 20,
     }));
     const chatCreate = (characterId, id, name, count) => ({
         characterId,
@@ -373,7 +382,10 @@ try {
             await page.waitForTimeout(400);
         }
     }
-    console.log("open Long from the list (2,000 messages, the default visible window)", split(switches.long));
+    console.log(
+        `open Long from the list (${LONG_MESSAGES} messages, the default visible window)`,
+        split(switches.long),
+    );
     console.log("open a 20-message chat from the list", split(switches.short));
 
     // 2b. Cold switches: until the chat screen shows the chat (after its load, when it was not loaded).
@@ -412,11 +424,18 @@ try {
         const input = page.locator("textarea.input-text").first();
         await input.fill("Stream please");
         if (scrolledUp) {
-            await page.evaluate(() => {
-                const scroller = document.querySelector(".default-chat-screen");
-                scroller.scrollTop = -(scroller.scrollHeight - scroller.clientHeight) + 200;
-                return window.__time(performance.now());
-            });
+            const scroller = page.locator(".default-chat-screen");
+            const bounds = await scroller.boundingBox();
+            if (!bounds) throw new Error("the chat scroller is not visible");
+            await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+            // column-reverse: a negative wheel delta moves away from scrollTop 0 (the bottom).
+            // Real input also releases Chats' anchor; setting scrollTop alone leaves it following.
+            await page.mouse.wheel(0, -600);
+            await page.waitForFunction(() => document.querySelector(".default-chat-screen").scrollTop < -4);
+            check(
+                "Long: the viewport is scrolled up before streaming",
+                await scroller.evaluate((element) => element.scrollTop < -4),
+            );
         }
         await page.evaluate(() => {
             window.__streamStart = performance.now();
@@ -523,6 +542,7 @@ try {
                     observer.disconnect();
                     resolve(rows);
                 });
+                // Set the load-more threshold directly so timing begins at the scroll write.
                 // flex-col-reverse: 0 is the bottom; 50 px from the top triggers onscroll's < 100 check.
                 const scroll = () => {
                     scroller.scrollTop = -(scroller.scrollHeight - scroller.clientHeight) + 50;
@@ -546,7 +566,7 @@ try {
     };
     let longRows = await mountedRows();
     console.log("Long mounted rows (initial window)", { rows: longRows, heapMB: await collectedHeapMB() });
-    const targetRows = Math.min(2000, MAX_ROWS);
+    const targetRows = Math.min(LONG_MESSAGES, MAX_ROWS);
     let loadSamples = [];
     let lastLoad = null;
     let reported500 = false;
@@ -574,12 +594,13 @@ try {
         heapMB: await collectedHeapMB(),
         loadMoreMs: lastLoad === null ? null : split(loadSamples.length ? loadSamples : [lastLoad]),
     });
-    check("Long: loaded the requested row window", longRows >= targetRows && longRows <= 2000, {
+    check("Long: loaded the requested row window", longRows >= targetRows && longRows <= LONG_MESSAGES, {
         rows: longRows,
         targetRows,
     });
 
     // 3c. Stream into the same Long chat without closing it or resetting its loaded row window.
+    // This positions the viewport at the bottom; it need not release the bottom anchor.
     await page.evaluate(() => {
         document.querySelector(".default-chat-screen").scrollTop = 0;
         return window.__time(performance.now());

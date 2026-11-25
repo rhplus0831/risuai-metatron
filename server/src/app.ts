@@ -2,6 +2,15 @@ import type { Credential, Database, ModelProfile } from "../../shared/database.t
 import { credentialSlotOf } from "../../shared/llm/credentialSlots.ts";
 import { resolveModelInfo } from "../../shared/llm/models.ts";
 import type { MemoryTaskService } from "../../shared/jobs.ts";
+import {
+    ASSET_GRACE_DEFAULT_DAYS,
+    ASSET_GRACE_MIN_DAYS,
+    ASSET_PREVIEW_PATH,
+    ASSET_REPORT_PATH,
+    ASSET_STATUS_PATH,
+    ASSET_SCAN_PATH,
+    ASSET_SWEEP_PATH,
+} from "../../shared/assetLifecycle.ts";
 import { resolveCredential } from "./llm/credentials.ts";
 import { readFileSync } from "node:fs";
 import type http from "node:http";
@@ -11,13 +20,23 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { routePath } from "hono/route";
+import { createAssetLifecycle, type AssetLifecycleOptions } from "./data/assetLifecycle.ts";
+import { createChatTrashPurge } from "./data/chatTrashPurge.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createCheckpointService } from "./data/checkpointService.ts";
 import { mkdirDurableSync } from "./data/durableWrite.ts";
+import { createOrderedWriter } from "./data/orderedWriter.ts";
 import { createResourceStore, ResourceStoreClosedError } from "./data/resourceStore.ts";
+import {
+    DEFAULT_RESTORE_HEAP_MB,
+    inProcessRestoreRunner,
+    type RestoreRunner,
+    workerRestoreRunner,
+} from "./data/restore/validateRunner.ts";
 import { createSnapshotManager, MaintenanceError } from "./data/snapshots.ts";
 import { clampRequestHistoryLimit, createRequestHistory, REQUEST_HISTORY_MAX_BYTES } from "./data/requestHistory.ts";
+import { createGenerationReceipts } from "./data/generationReceipts.ts";
 import { createVectorCache } from "./data/vectorCache.ts";
 import { createDiagnosticsJournal, DIAGNOSTICS_MAX_BYTES } from "./diagnostics/journal.ts";
 import { createRequestShares } from "./diagnostics/share.ts";
@@ -35,18 +54,21 @@ import { createGenerationJobs, type GenerationRunner } from "./jobs/generationJo
 import { createGenerationLock } from "./jobs/generationLock.ts";
 import { createClaudeObserver } from "./llm/claudeObserver.ts";
 import { createLlmRequests } from "./llm/requests.ts";
-import { parsePasswordSeed } from "./listenConfig.ts";
+import { parseAssetClockOffset, parsePasswordSeed } from "./listenConfig.ts";
 import { loadStoredSecrets, mergeCredentials } from "./llm/settings.ts";
 import { createVertexTokenCache } from "./llm/vertexToken.ts";
 import { createEmbeddings } from "./prompt/embeddings.ts";
 import type { HypaV3SeparatorLimits } from "./prompt/memory/host.ts";
 import { createMemoryTasks, type MemoryTaskLimits, type MemoryTasks } from "./prompt/memory/memoryTasks.ts";
+import { reconcileMessageChanges } from "./prompt/memory/structured/reconcile.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
-import { createTokenizers } from "./prompt/tokenizers/index.ts";
+import { createWorkerTokenizers } from "./prompt/tokenizers/workerHost.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
-import { createAuthStore } from "./routes/auth.ts";
+import { registerAssetLifecycleRoutes } from "./routes/assetLifecycle.ts";
+import { createAuthStore, CRYPTO_PATH, LOGIN_PATH, SET_PASSWORD_PATH } from "./routes/auth.ts";
 import { CHAT_CHECKPOINTS_PATH, registerChatCheckpointRoutes } from "./routes/chatCheckpoints.ts";
+import { CHAT_TRASH_PATH, registerChatTrashRoutes } from "./routes/chatTrash.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { createUpstreamImportStaging, registerUpstreamImportRoutes } from "./routes/backupsUpstream.ts";
 import { createUpstreamExportStaging, registerUpstreamExportRoutes } from "./routes/backupsUpstreamExport.ts";
@@ -89,19 +111,70 @@ import {
 import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH, registerDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
+import { createCompletionHolds } from "./push/completionHolds.ts";
 import { createEventSockets } from "./routes/events.ts";
+import { createRemoteCommands, type RemoteCommandLimits } from "./remoteCommands.ts";
+import { registerRemoteCommandRoutes } from "./routes/remoteCommands.ts";
+import { REMOTE_COMMANDS_PATH } from "../../shared/remoteCommands.ts";
 import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
-import { registerResourceRoutes } from "./routes/resources.ts";
-import { registerStorageRoutes } from "./routes/storage.ts";
+import { STRUCTURED_MEMORY_PATH, registerStructuredMemoryRoutes } from "./routes/structuredMemory.ts";
+import { registerResourceRoutes, RESOURCE_READ_PATH } from "./routes/resources.ts";
+import { ASSET_MISSING_PATH, assetHeaders, registerStorageRoutes } from "./routes/storage.ts";
 import { createScriptWorkerPool, type ScriptWorkerTimingOptions } from "./scripts/workerPool.ts";
-import { RESOURCE_BOOT_PATH, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import {
+    MAX_READ_RESPONSE_BYTES,
+    RESOURCE_BOOT_PATH,
+    RESOURCE_KIND,
+    SINGLETON_RESOURCE_ID,
+    revisionDigest,
+} from "../../shared/resources.ts";
+import { MEMORY_RESTORE_BODY_BYTES } from "../../shared/structuredMemory.ts";
 import { isClientRoutePath } from "../../shared/routes.ts";
+import { type BuildInfo, formatBuildId } from "../../shared/buildInfo.ts";
+import { readServerBuildInfo, resolveBuildInfo, resolveNormalizationIdentity } from "./buildInfo.ts";
 import type { AppEnv } from "./types.ts";
+
+/**
+ * Composes the self-host HTTP app and its per-context stores, workers, sockets, and background tasks.
+ * server/src/main.ts owns listening: it attaches upgrades and starts timers after creating the
+ * listener, then begins shutdown before draining HTTP and disposing this context.
+ *
+ * Middleware runs before route authentication: HTTP diagnostics, preview asset headers, shutdown
+ * admission/tracking, then body limits. Resource, checkpoint, memory-task, structured-memory, auth
+ * state-write, push state-write, remote-command, and lifecycle handlers are tracked through their
+ * responses before the store closes. Backups/imports manage their own operation admission. Shutdown refuses those
+ * families plus history, diagnostics, and token routes with 503, Retry-After: 5, and no-store; all
+ * responses then close their connections. History, diagnostics, push, memory-task, structured-memory,
+ * checkpoint, remote-command, token, and lifecycle responses are no-store even on limiter/body-limit failures.
+ *
+ * Four independent client-IP limiter buckets use server/src/http/clientIp.ts and
+ * server/src/http/rateLimit.ts: authenticated, storage, and auth each allow 2000/minute by default;
+ * login and initial password setup share 10/30 seconds. Proxy routes (including the unauthenticated
+ * hub proxy), push, history, diagnostics, and resource/job services use the authenticated bucket;
+ * server/src/routes/storage.ts and server/src/routes/assetLifecycle.ts share storage's bucket.
+ * server/src/routes/auth.ts uses the auth bucket for test_auth and crypto.
+ *
+ * The default body limit is 100 MiB, checked before route handlers. Backup, module, and CharX imports
+ * instead stream under maxImportBytes. Route-local caps replace the app cap for Realm POSTs,
+ * diagnostic reports, history shares, translation, memory tasks, structured memory, checkpoints,
+ * tokens, remote-command POSTs (1 MiB), missing-asset checks, resource reads/boot, login/crypto/setup,
+ * transforms, and subscription PUT/DELETE. Their modules own the caps and authentication order; storage batch bodies use the
+ * app cap. History and diagnostics routes require JWT; shares cap at 4 KiB and reports at 1 MiB,
+ * both after auth in server/src/routes/requestHistory.ts and server/src/routes/diagnostics.ts.
+ * server/src/http/staticCache.ts handles validators and encoded siblings before static
+ * serving; /, /index.html, and shared/routes.ts client paths get the flagged index first. Index and
+ * static handlers have neither authentication nor rate limiting; HTML always uses identity encoding.
+ *
+ * One server/src/data/orderedWriter.ts scheduler serializes auth, push, and diagnostic file changes.
+ * beginShutdown stops admissions/timers and aborts work; dispose waits for jobs, admitted operations,
+ * and queued state writes, finishes diagnostics while its sources are open, then closes the stores.
+ */
 
 const MAX_BODY_BYTES = 100 * 1024 * 1024;
 /** An answer slower than this is an `http` diagnostic event whatever its status. */
 const HTTP_SLOW_MS = 5_000;
 
+/** The app, services, upgrade attachment, background-task startup, and shutdown lifecycle of one server. */
 export type ServerContext = ReturnType<typeof createServerContext>;
 
 /** Lower route caps, so a test reaches them in a few requests; each default is the production value. */
@@ -114,6 +187,14 @@ export type RouteLimits = {
     archiveRecords?: number;
     /** Most decoded bytes of one CharX import entry, and the declared-size rules made from it (default `MAX_CHARX_ENTRY_BYTES`, 50 MiB). */
     charxEntryBytes?: number;
+    /** The app's body cap, for a route without its own (default `MAX_BODY_BYTES`, 100 MiB). */
+    bodyBytes?: number;
+    /** The body cap of `POST /api/resources/read` (default `MAX_READ_BODY_BYTES`, 32 MiB). */
+    readBodyBytes?: number;
+    /** The soft budget of one `/package`, `/coverage`, `/runs`, or `/threads` round of structured memory in stored bytes (default `MAX_READ_RESPONSE_BYTES`, 16 MiB). */
+    memoryPackageRoundBytes?: number;
+    /** The body cap of structured memory's `POST .../restore` (default `MEMORY_RESTORE_BODY_BYTES`, 32 MiB). */
+    memoryRestoreBodyBytes?: number;
 };
 
 /**
@@ -123,23 +204,33 @@ export type RouteLimits = {
  * All state (password, known keys, stream jobs, rate-limit counters, the resource database and its
  * snapshots) lives in the returned context. `resourceKinds` replaces the default resource kinds and
  * `snapshotIntervalMs` the 10-minute snapshot interval (tests use them); `maxImportBytes` caps an
- * uploaded backup archive or module file (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB).
+ * uploaded backup archive or module file (default `RISU_MAX_IMPORT_BYTES`, else 16 GiB). With the
+ * default kinds the store gets a normalization identity, which asks git at build time (at most three
+ * commands, once per context); with `resourceKinds` it gets none and runs its normalization pass on
+ * every open.
  * `generationRunner` runs the generation jobs (tests inject one; the default runs `command` jobs
  * and the sends and previews of prompt assembly), and `generationRandom` is the default runner's
  * random source. `messageSearch` replaces the message search's limits and its yield between batches
  * (tests inject a latch). `realmStagingTimer`, `generationEffectClock`, `generationAbortGraceMs`, and
  * `generationHypaV3SeparatorLimits` replace the staged Realm imports' expiry timer, the trigger effect
  * loop's clock, an aborted job's grace, and HypaV3's separator limits (tests control them; the
- * defaults are the production ones). `routeLimits` lowers the rate limits and the asset batch, backup
- * archive, and CharX entry caps (`RouteLimits`; tests reach them quickly, the defaults are the
- * production ones). `cbsTimeLimits` replaces the CBS wall times of every job, render, and
- * translation (`serverCbsLimits`; tests lengthen them, the defaults are the production ones).
+ * defaults are the production ones). `generationOwnerAbsentMs` and `generationOwnerSilentMs` replace
+ * the owner absence and negotiated socket silence allowances (tests shorten them). `routeLimits`
+ * lowers the rate limits, the app's and the resource read's body caps, the structured memory rounds'
+ * budget and restore cap, and the asset batch, backup archive, and CharX entry caps (`RouteLimits`;
+ * tests reach them quickly, the defaults are the production ones). `cbsTimeLimits` replaces the CBS wall
+ * times of every job, render, and translation (`serverCbsLimits`; tests lengthen them, the defaults are
+ * the production ones).
  * The default runner gets the context's own memory task service (`createMemoryTasks`, returned as
- * `memoryTasks`): HypaV3 then selects stored summaries in a send and hands its chat to the service,
- * and the manual start and cancel routes are open. The `memoryTasks` option replaces the runner's
- * service (tests): a fake one, or `"disabled"` for none, where every HypaV3 step summarizes inside its
- * job. With either, the manual routes answer 503 `notEnabled` (nothing hands a chat to the context's
- * service). `memoryTaskOptions` replaces the context's service's clock and limits (tests).
+ * `memoryTasks`) for HypaV3 summaries and the Structured Memory writer. Sends hand off task inputs
+ * when work is due or a manual start waits; the manual start and cancel routes are open.
+ * The `memoryTasks` option replaces the runner's service (tests): a fake one, or
+ * `"disabled"` for none, where every HypaV3 step summarizes inside its job. A send's Structured Memory
+ * step then selects stored records with no hand-off or gap question (Record now runs the writer
+ * inside its job). With either, the manual routes answer 503 `notEnabled` (nothing hands a chat to
+ * the context's service). `memoryTaskOptions` replaces the context's service's clock and limits (tests).
+ * Invalid parsed startup environment overrides throw with their variable name before the context
+ * is returned; the numeric overrides must satisfy their parser's range/integer checks.
  */
 export function createServerContext(options: {
     rootDir: string;
@@ -173,6 +264,11 @@ export function createServerContext(options: {
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
     /** The upstream RisuAI-compatible export (`routes/backupsUpstreamExport.ts`): how long a prepared export waits for its download. */
     upstreamExport?: { stagedTtlMs?: number };
+    /**
+     * What checks a snapshot and stages it for a snapshot restore or a version-2 import (tests replace
+     * it; the default is a worker per restore, or in process with `resourceKinds`).
+     */
+    restore?: { runner?: RestoreRunner };
     messageSearch?: MessageSearchRouteOptions;
     /** What schedules a staged Realm import's expiry (tests hold it; default an unref'd `setTimeout`). */
     realmStagingTimer?: RealmStagingTimer;
@@ -180,6 +276,10 @@ export function createServerContext(options: {
     generationEffectClock?: () => number;
     /** An aborted generation job's grace before it is ended for it (default `JOB_ABORT_GRACE_MS`, 5 s). */
     generationAbortGraceMs?: number;
+    /** Owner absence allowance for generation callbacks (default `OWNER_ABSENT_MS`, 120 s; tests shorten it). */
+    generationOwnerAbsentMs?: number;
+    /** Negotiated generation socket silence allowance (default `OWNER_SILENT_MS`, 45 s; tests shorten it). */
+    generationOwnerSilentMs?: number;
     /** The default runner's HypaV3 summary separator limits (default 5 s chunking, 1 s per split). */
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
     /** Lower route caps (tests reach them in a few requests); each default is the production value. */
@@ -193,9 +293,20 @@ export function createServerContext(options: {
     memoryTasks?: "disabled" | MemoryTaskService;
     /** The context's memory task service: `now` and `limits` replace its clock and caps (`MEMORY_TASK_LIMITS`). */
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    /** The process-local command relay's clock and caps (tests). */
+    remoteCommandOptions?: { now?: () => number; limits?: Partial<RemoteCommandLimits> };
     /** The thumbnail encoder loader and generation limits (default 2 running, 32 queued). */
     thumbnailOptions?: ThumbnailOptions;
+    /** Retention scan clocks, grace, chunk yield, disk probe, and timer delays (tests). */
+    assetLifecycle?: AssetLifecycleOptions;
+    /** The chat trash purge's clock and timer delays (tests). */
+    chatTrashPurge?: { now?: () => number; firstRunDelayMs?: number; intervalMs?: number };
 }) {
+    const graceDays = options.assetLifecycle?.graceDays ?? parseAssetGraceDays(process.env.RISU_ASSET_GRACE_DAYS);
+    const aiDisclosure = parseAiDisclosure(process.env.RISU_AI_DISCLOSURE);
+    const clockOffsetMs =
+        options.assetLifecycle?.clockOffsetMs ??
+        parseAssetClockOffset(process.env.RISU_AGENT_DEV_ASSET_CLOCK_OFFSET_MS, process.env.RISU_HOST);
     const savePath = options.savePath ?? path.join(options.rootDir, "save");
     const distPath = path.join(options.rootDir, "dist");
     mkdirDurableSync(savePath);
@@ -203,10 +314,18 @@ export function createServerContext(options: {
     const trust = compileTrust(parseTrustProxyEnv(options.trustProxy));
     const clientIp = (c: Parameters<typeof getClientIp>[0]) => getClientIp(c, trust);
 
+    // The auxiliary files' writes (the auth, diagnostics, and push files) leave the serving thread here:
+    // one writer per context, shared by `createAuthStore`, the diagnostics journal, and
+    // `createPushService`.
+    const writer = createOrderedWriter();
     const passwordSeed = parsePasswordSeed(options.passwordSeed ?? process.env.RISU_PASSWORD_SHA256);
-    const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed });
+    const auth = createAuthStore(savePath, { bypass: options.authBypass, passwordSeed, writer });
     const resourceKinds = createKindRegistry(options.resourceKinds ?? DEFAULT_RESOURCE_KINDS);
     let appVersion: string | null | undefined;
+    // The checkout's build, asked of git once: the store's normalization identity reads it, and so
+    // does the build the diagnostics report on a server without `dist/build-info.json`.
+    let checkoutBuild: BuildInfo | undefined;
+    const readCheckoutBuild = () => (checkoutBuild ??= resolveBuildInfo(options.rootDir));
     // The diagnostics folder: content-free events and `state.json`, which the developer pulls over
     // sftp. Its state sources are read only after the context is built (the boot state below, the
     // timers, an error event).
@@ -215,6 +334,7 @@ export function createServerContext(options: {
             ? path.resolve(options.rootDir, process.env.RISU_DIAGNOSTICS_DIR)
             : path.join(savePath, "diagnostics"),
         maxBytes: parseDiagnosticsMaxBytes(process.env.RISU_DIAGNOSTICS_MAX_BYTES),
+        writer,
         sources: {
             appVersion: () => {
                 if (appVersion === undefined) {
@@ -222,6 +342,7 @@ export function createServerContext(options: {
                 }
                 return appVersion;
             },
+            appBuild: () => formatBuildId(readServerBuildInfo(options.rootDir, readCheckoutBuild)),
             settings: () => {
                 const providers = readProviders();
                 return {
@@ -244,13 +365,23 @@ export function createServerContext(options: {
         kinds: resourceKinds,
         guard: generationLock,
         feed: changeFeed,
+        synchronous: parseSqliteSynchronous(process.env.RISU_SQLITE_SYNCHRONOUS),
+        // An injected registry's normalizers are not the commit's, so no identity vouches for them.
+        ...(options.resourceKinds
+            ? {}
+            : { normalizationIdentity: resolveNormalizationIdentity(options.rootDir, readCheckoutBuild) }),
     });
     const eventSockets = createEventSockets({
         feed: changeFeed,
         epoch: () => resources.epoch(),
+        digest: () => revisionDigest(resources.listRevisions()),
+        cursor: () => resources.cursor(),
         authorize: auth.isAuthorizedToken,
         // The services are built below; a socket connects only once the context exists.
         streaming: () => generationJobs.streamingSnapshot(),
+        handoffs: () => generationJobs.handoffSnapshot(),
+        generations: () => generationJobs.generationSnapshot(),
+        onRegister: (client) => remoteCommands.onRegister(client),
         memoryTasks: () =>
             memoryTasks?.snapshot().map(({ chatRef, status }) => ({
                 characterId: chatRef.chaId,
@@ -258,7 +389,16 @@ export function createServerContext(options: {
                 status,
             })) ?? [],
     });
+    const remoteCommands = createRemoteCommands({
+        epoch: () => resources.epoch(),
+        isHost: eventSockets.isHost,
+        notify: eventSockets.sendToClient,
+        diagnostics,
+        ...options.remoteCommandOptions,
+    });
     const snapshots = createSnapshotManager({
+        databaseFile: path.join(savePath, "data", "resources.sqlite"),
+        statfs: options.assetLifecycle?.statfs,
         store: resources,
         dir: path.join(savePath, "backups"),
         intervalMs: options.snapshotIntervalMs,
@@ -267,6 +407,7 @@ export function createServerContext(options: {
     const realmStaging = createRealmStaging({ ttlMs: options.realm?.stagedTtlMs, timer: options.realmStagingTimer });
     // The upstream imports prepared and waiting for their commit (`routes/backupsUpstream.ts`).
     const upstreamStaging = createUpstreamImportStaging({ ttlMs: options.upstreamImport?.stagedTtlMs });
+    const restoreShutdown = new AbortController();
     // The upstream exports prepared and waiting for their download (`routes/backupsUpstreamExport.ts`).
     const upstreamExportStaging = createUpstreamExportStaging({ ttlMs: options.upstreamExport?.stagedTtlMs });
     // Before every other maintenance listener, so its start is the first thing recorded; it never
@@ -278,10 +419,10 @@ export function createServerContext(options: {
             diagnostics.record({ kind: "lifecycle", phase: "maintenanceEnd", replaced: resources.epoch() !== epoch });
     });
     const maxImportBytes = options.maxImportBytes ?? parseMaxImportBytes(process.env.RISU_MAX_IMPORT_BYTES);
-    // The server translations' maintenance listener is the first one (the runner is built below; a
-    // maintenance runs only once the context exists): admission closes and every run ends (503)
-    // before the jobs' listener waits for their end, and before the request layer's pause fails a
-    // run's request.
+    // The server translations' maintenance listener comes right after the diagnostics one (the
+    // runner is built below; a maintenance runs only once the context exists): admission closes and
+    // every run ends (503) before the jobs' listener waits for their end, and before the request
+    // layer's pause fails a run's request.
     snapshots.onMaintenance(async () => {
         translationRunner.pause("The server data is being replaced");
         return () => translationRunner.resume();
@@ -292,6 +433,12 @@ export function createServerContext(options: {
     snapshots.onMaintenance(async () => {
         memoryTasks?.pause();
         return () => memoryTasks?.resume();
+    });
+    // Job receipts are diagnostic-style data in a file of their own, in no snapshot or archive.
+    const generationReceipts = createGenerationReceipts({
+        file: path.join(savePath, "data", "generation-jobs.sqlite"),
+        epoch: resources.epoch(),
+        diagnostics,
     });
     const generationJobs = createGenerationJobs({
         store: resources,
@@ -305,11 +452,19 @@ export function createServerContext(options: {
         runner: options.generationRunner ?? ((job) => defaultRunner(job)),
         // The checkpoint service is built below; a job starts only after the context exists.
         onChatJobDone: (characterId, chatId) => checkpoints.autoSave(characterId, chatId),
+        // Holds are built with push below; every registry end starts their fallback deadline.
+        onJobEnded: (jobId) => completionHolds.jobEnded(jobId),
         diagnostics,
+        receipts: generationReceipts,
+        publishHandoff: (event) => changeFeed.publish(event),
+        publishGeneration: (event) => changeFeed.publish(event),
+        clientName: (clientId) => eventSockets.clientName(clientId),
         abortGraceMs: options.generationAbortGraceMs,
+        ownerAbsentMs: options.generationOwnerAbsentMs,
+        ownerSilentMs: options.generationOwnerSilentMs,
     });
-    // The request layer and token routes share one counter and tokenizers, loaded on first use.
-    const tokenizers = createTokenizers({ rootDir: options.rootDir });
+    // The request layer and token routes share one counter. Local tokenizers load and run in a worker on first use.
+    const tokenizers = createWorkerTokenizers({ rootDir: options.rootDir });
     const tokenCounter = createTokenCounter({ tokenizers });
     // Memory on the server: the embedding vectors are a cache in a file of their own (in no snapshot
     // or archive; `save/data/`, `save/models/`, and `save/cache/` are not storage namespaces), and the local models
@@ -338,6 +493,18 @@ export function createServerContext(options: {
         savePath,
         assetsPath: path.join(savePath, "assets"),
     });
+    const assetLifecycle = createAssetLifecycle({
+        ...options.assetLifecycle,
+        savePath,
+        store: resources,
+        snapshots,
+        exportHolds: upstreamExportStaging,
+        thumbnails,
+        inlaysKind: resourceKinds.get(RESOURCE_KIND.inlays),
+        graceDays,
+        clockOffsetMs,
+    });
+    let assetOffsetLogged = false;
     const thumbnailSweepController = new AbortController();
     let thumbnailSweep: Promise<void> | undefined;
     const embeddings = createEmbeddings({ cache: vectorCache, transformers });
@@ -376,6 +543,7 @@ export function createServerContext(options: {
     // The vectors belong to the data: when a maintenance replaced it (a new epoch), the cache is
     // emptied as the maintenance ends, and a write of work that began before is dropped.
     snapshots.onMaintenance(async () => () => vectorCache.sync(resources.epoch()));
+    snapshots.onMaintenance(async () => () => generationReceipts.sync(resources.epoch()));
     // The remote MCP clients of the jobs: their sessions and tokens live in this process and belong
     // to the data they were made with.
     const mcpRegistry = createMcpRegistry({ store: resources, kinds: resourceKinds });
@@ -392,9 +560,12 @@ export function createServerContext(options: {
     const push = createPushService({
         savePath,
         ...(options.pushTransport ? { transport: options.pushTransport } : {}),
+        diagnostics,
+        writer,
     });
-    // The HypaV3 memory tasks, which write a chat's summaries after a send on the request layer and
-    // the script workers; a context whose resource kinds have no characters (tests) has none.
+    const completionHolds = createCompletionHolds({ push });
+    // The memory tasks, which write HypaV3 summaries or Structured Memory records after a send on
+    // the request layer and script workers; a context whose resource kinds have no characters (tests) has none.
     const memoryTasks: MemoryTasks | null = resourceKinds.get(RESOURCE_KIND.characters)
         ? createMemoryTasks({
               store: resources,
@@ -434,6 +605,7 @@ export function createServerContext(options: {
         lock: generationLock,
         translations: translationRunner,
         push,
+        completionHolds,
         diagnostics,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
         ...(options.generationEffectClock ? { effectClock: options.generationEffectClock } : {}),
@@ -444,6 +616,8 @@ export function createServerContext(options: {
         ...(runnerMemoryTasks ? { memoryTasks: runnerMemoryTasks } : {}),
     };
     const defaultRunner = createGenerationRunner(runnerDeps);
+    // A chat's records follow its messages whether or not a service runs the writer.
+    resources.onMessagesChanged((notice) => reconcileMessageChanges(resources, notice));
     if (memoryTasks) {
         // After the live-update sockets' listener, so the clients get the `epoch` frame before any
         // status of the new registry. A superseded epoch (a newer one was published inside this
@@ -497,6 +671,7 @@ export function createServerContext(options: {
         keyOf: clientIp,
     });
 
+    // Non-strict routing: a path with a trailing slash matches its route.
     const app = new Hono<AppEnv>({ strict: false });
     let shuttingDown = false;
     let disposing: Promise<void> | undefined;
@@ -507,6 +682,8 @@ export function createServerContext(options: {
         }
         shuttingDown = true;
         thumbnailSweepController.abort();
+        assetLifecycle.beginShutdown();
+        chatTrashPurge.beginShutdown();
         diagnostics.record({ kind: "lifecycle", phase: "shutdown" });
         // The memory tasks end `cancelled` (`shutdown`) first, before the jobs' aborts release their
         // writer leases and the request layer fails the tasks' requests; their terminals reach the
@@ -516,12 +693,16 @@ export function createServerContext(options: {
         generationJobs.beginShutdown();
         translationRunner.beginShutdown();
         llmRequests.beginShutdown();
+        completionHolds.close();
         push.close();
         // The staged Realm imports waiting for their commit are removed (a running commit is tracked).
         void realmStaging.close();
         // A running upstream prepare ends now (its worker is terminated), not after the HTTP drain, and
-        // the prepared imports are removed (a running commit is tracked).
+        // the prepared imports are removed (a running commit is tracked, and stops before its install).
         void upstreamStaging.close();
+        // So does a snapshot restore that has not reached its install: its worker is terminated, and
+        // one still waiting ends at its turn.
+        restoreShutdown.abort(new MaintenanceError("The server is shutting down"));
         // A running upstream export prepare ends now (its worker is terminated), and the prepared
         // exports waiting for their download are removed (a running download is tracked).
         void upstreamExportStaging.close();
@@ -531,6 +712,7 @@ export function createServerContext(options: {
         upgradeListeners.clear();
         // Before the snapshot manager stops: the clients see the server going away (1001) and reconnect.
         eventSockets.close();
+        remoteCommands.close();
         authenticatedRouteLimiter.dispose();
         storageRouteLimiter.dispose();
         authRouteLimiter.dispose();
@@ -579,20 +761,31 @@ export function createServerContext(options: {
         }
     });
 
+    // Wrap shutdown refusal too; the preview route does not apply assetHeaders a second time.
+    app.use(`${ASSET_PREVIEW_PATH}/*`, assetHeaders);
+
     // Admit resource handlers before their first await (including body parsing and auth). Tracking
     // them also makes in-process dispose safe; maintenance only waits for storage-gate admissions.
     app.use(async (c, next) => {
         // The credential writes (`/api/llm-secrets`) are resource writes too, and the message search
         // reads the resource store between yields (shutdown waits for it before closing the store).
         // The memory task routes read the store and change the memory task registry; every answer of
-        // theirs is `no-store`, the limiter's 429 and the body limit's 413 included.
+        // theirs is `no-store`, the limiter's 429 and the body limit's 413 included. The structured
+        // memory routes are admitted and answered the same way.
         const memoryTask = c.req.path === MEMORY_TASKS_PATH || c.req.path.startsWith(`${MEMORY_TASKS_PATH}/`);
+        const structuredMemory =
+            c.req.path === STRUCTURED_MEMORY_PATH || c.req.path.startsWith(`${STRUCTURED_MEMORY_PATH}/`);
         const checkpoint = c.req.path === CHAT_CHECKPOINTS_PATH || c.req.path.startsWith(`${CHAT_CHECKPOINTS_PATH}/`);
+        const chatTrash = c.req.path === CHAT_TRASH_PATH || c.req.path.startsWith(`${CHAT_TRASH_PATH}/`);
+        const remoteCommand = c.req.path === REMOTE_COMMANDS_PATH || c.req.path.startsWith(`${REMOTE_COMMANDS_PATH}/`);
         const resource =
             /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
             c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH ||
             memoryTask ||
-            checkpoint;
+            structuredMemory ||
+            checkpoint ||
+            chatTrash ||
+            remoteCommand;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
         const fileImportRoute = c.req.path.replace(/\/+$/, "");
@@ -609,17 +802,35 @@ export function createServerContext(options: {
             c.req.path.startsWith(`${REQUEST_HISTORY_PATH}/`) ||
             c.req.path.replace(/\/+$/, "") === DIAGNOSTICS_PATH ||
             c.req.path.startsWith(`${DIAGNOSTICS_PATH}/`);
+        const assetLifecycleRoute =
+            fileImportRoute === ASSET_REPORT_PATH ||
+            fileImportRoute === ASSET_STATUS_PATH ||
+            fileImportRoute === ASSET_SCAN_PATH ||
+            fileImportRoute === ASSET_SWEEP_PATH ||
+            c.req.path.startsWith(`${ASSET_PREVIEW_PATH}/`);
         const tokenRoute = fileImportRoute === TOKEN_COUNT_PATH || fileImportRoute === TOKEN_ENCODE_PATH;
+        // The login, the password set, and the subscription writes end in a durable write that dispose
+        // must wait for, so they are refused and tracked like resource handlers.
+        const stateWrite =
+            (c.req.method === "POST" && (fileImportRoute === LOGIN_PATH || fileImportRoute === SET_PASSWORD_PATH)) ||
+            ((c.req.method === "PUT" || c.req.method === "DELETE") && fileImportRoute === PUSH_SUBSCRIPTION_PATH);
+        // During shutdown every answer closes its connection (`Connection: close`), and a request of the
+        // families above or a token route is refused with 503 `Retry-After: 5`, `no-store`. Every answer
+        // of the history, diagnostics, memory task, structured memory, token, and checkpoint routes is
+        // `no-store`, a 429 or 413 included.
         if (shuttingDown) {
             c.header("Connection", "close");
         }
         try {
-            if (shuttingDown && (resource || backup || fileImport || history || tokenRoute)) {
+            if (
+                shuttingDown &&
+                (resource || backup || fileImport || history || tokenRoute || stateWrite || assetLifecycleRoute)
+            ) {
                 c.header("Retry-After", "5");
                 c.header("Cache-Control", "no-store");
                 return c.json({ error: "The server is shutting down" }, 503);
             }
-            if (resource) {
+            if (resource || stateWrite || assetLifecycleRoute) {
                 await snapshots.track(next);
             } else {
                 await next();
@@ -628,19 +839,32 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history || memoryTask || tokenRoute || checkpoint) {
+            if (
+                history ||
+                memoryTask ||
+                structuredMemory ||
+                tokenRoute ||
+                checkpoint ||
+                chatTrash ||
+                assetLifecycleRoute ||
+                remoteCommand
+            ) {
                 c.header("Cache-Control", "no-store");
             }
         }
     });
 
-    // The backup (version-2 and upstream), module, and CharX imports stream their bodies to disk with
-    // their own cap; Hono's limiter would buffer them.
-    const limitBody = limitedBody(MAX_BODY_BYTES);
+    // The backup (version-2 and upstream), module, and CharX imports stream their bodies to disk under
+    // their own cap, which must not count against this 100 MiB.
+    const limitBody = limitedBody(options.routeLimits?.bodyBytes ?? MAX_BODY_BYTES);
     // The script transform's, the translation's, the push subscription's, the diagnostic report's, the
     // request history share's, the Realm import's routes (prepare, commit, cancel), the boot read's, the
-    // message search's, the memory task start's, the checkpoint POSTs' and policy PUT's, and the token routes cap their bodies themselves
-    // (8 MiB, 16 KiB, 16 KiB, 1 MiB, 4 KiB, 4 KiB, 2 MiB, 4 KiB, 4 KiB, 16 KiB, 2 MiB).
+    // resource read's, the login, crypto, and set-password routes', the message search's, the memory
+    // task start's, the structured memory POSTs', the checkpoint POSTs' and policy PUT's, the token
+    // routes', and the missing asset check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB,
+    // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB (256 KiB for revisions and health)
+    // and a restore's 32 MiB, 16 KiB, 2 MiB, 64 KiB).
+    // Every remote-command POST also caps its own body at 1 MiB after authentication.
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -656,9 +880,18 @@ export function createServerContext(options: {
                     route === DIAGNOSTICS_REPORT_PATH ||
                     route === MESSAGE_SEARCH_PATH ||
                     route === MEMORY_TASKS_PATH ||
+                    route === REMOTE_COMMANDS_PATH ||
+                    route.startsWith(`${REMOTE_COMMANDS_PATH}/`) ||
+                    route.startsWith(`${STRUCTURED_MEMORY_PATH}/`) ||
                     route.startsWith(`${CHAT_CHECKPOINTS_PATH}/`) ||
+                    route.startsWith(`${CHAT_TRASH_PATH}/`) ||
                     route === TOKEN_COUNT_PATH ||
                     route === TOKEN_ENCODE_PATH ||
+                    route === ASSET_MISSING_PATH ||
+                    route === RESOURCE_READ_PATH ||
+                    route === LOGIN_PATH ||
+                    route === CRYPTO_PATH ||
+                    route === SET_PASSWORD_PATH ||
                     TRANSFORM_PATHS.includes(route))) ||
             (c.req.method === "POST" && c.req.path === RESOURCE_BOOT_PATH) ||
             ((c.req.method === "PUT" || c.req.method === "DELETE") && route === PUSH_SUBSCRIPTION_PATH) ||
@@ -667,14 +900,15 @@ export function createServerContext(options: {
         return ownLimit ? next() : limitBody(c, next);
     });
 
-    // Serves the client with the flag that makes `isNodeServer` true. Without it the client shows only a
-    // "self-host server required" notice, so `/index.html` must not fall through to the raw static file.
+    // Serves the client with the flag that makes `isNodeServer` true, and the AI disclosure flag beside
+    // it. Without the first the client shows only a "self-host server required" notice, so
+    // `/index.html` must not fall through to the raw static file.
     const serveIndex = async (c: Context<AppEnv>) => {
         const clientIP =
             c.req.header("x-forwarded-for") || clientIp(c) || c.env?.incoming?.socket?.remoteAddress || "Unknown IP";
         console.log(`[Server] ${new Date().toISOString()} | Connection from: ${clientIP}`);
 
-        return serveCachedIndex(c, path.join(distPath, "index.html"));
+        return serveCachedIndex(c, path.join(distPath, "index.html"), aiDisclosure);
     };
     app.get("/", serveIndex);
     app.get("/index.html", serveIndex);
@@ -727,7 +961,19 @@ export function createServerContext(options: {
             };
         },
     });
-    registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerGenerationRoutes(app, {
+        jobs: generationJobs,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        holds: completionHolds,
+    });
+    registerRemoteCommandRoutes(app, {
+        commands: remoteCommands,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        epoch: () => resources.epoch(),
+        bodyBytes: options.remoteCommandOptions?.limits?.bodyBytes,
+    });
     registerTransformRoutes(app, {
         transforms,
         store: resources,
@@ -746,6 +992,42 @@ export function createServerContext(options: {
         store: resources,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
+    });
+    // A job of any kind holds the chat, and a generation job owns its message.
+    const chatHeld = (characterId: string, chatId: string) =>
+        generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0;
+    const chatTrashPurge = createChatTrashPurge({
+        ...options.chatTrashPurge,
+        store: resources,
+        gate: snapshots.gate,
+        uiKind: resourceKinds.get(RESOURCE_KIND.ui),
+        chatHeld,
+    });
+    registerStructuredMemoryRoutes(app, {
+        tokens: tokenCounter,
+        store: resources,
+        maintenance: snapshots.gate,
+        kinds: resourceKinds,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        packageRoundBytes: options.routeLimits?.memoryPackageRoundBytes ?? MAX_READ_RESPONSE_BYTES,
+        restoreBodyBytes: options.routeLimits?.memoryRestoreBodyBytes ?? MEMORY_RESTORE_BODY_BYTES,
+        // The chat's task, and a job too: a send's gap run writes with no task status, and
+        // the writer's retry after a revision conflict reapplies an old answer over a person's edit. A
+        // rebuild's run too, stopped or not: the swap would lose what such a write leaves.
+        // A trashed chat is read-only.
+        fenced: (characterId, chatId) => {
+            const task = memoryTasks?.status({ chaId: characterId, chatId })?.state;
+            return (
+                task === "queued" ||
+                task === "running" ||
+                chatHeld(characterId, chatId) ||
+                resources.chatTrashState(characterId, chatId)?.trashedAt != null ||
+                resources.memory.rebuild.status(characterId, chatId) !== null
+            );
+        },
+        chatHeld,
+        cancelTask: (characterId, chatId) => memoryTasks?.cancel({ chaId: characterId, chatId }),
     });
     registerPushRoutes(app, { push, auth, limiter: authenticatedRouteLimiter.middleware });
     registerLlmRoutes(app, {
@@ -798,10 +1080,12 @@ export function createServerContext(options: {
     });
     registerResourceRoutes(app, {
         store: resources,
+        streaming: () => generationJobs.streamingSnapshot(),
         kinds: resourceKinds,
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
+        readBodyBytes: options.routeLimits?.readBodyBytes,
     });
     registerMessageSearchRoutes(app, {
         store: resources,
@@ -812,8 +1096,8 @@ export function createServerContext(options: {
     });
     const checkpoints = createCheckpointService({
         store: resources,
-        busy: (characterId, chatId) =>
-            generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0,
+        busy: chatHeld,
+        loadLocked: resources.memory.rebuild.rebuilding,
         memoryTasks,
     });
     registerChatCheckpointRoutes(app, {
@@ -821,6 +1105,13 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
+    });
+    registerChatTrashRoutes(app, {
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+        chatHeld,
     });
     registerLlmSecretRoutes(app, {
         store: resources,
@@ -831,7 +1122,21 @@ export function createServerContext(options: {
     });
     // One archive import at a time: the version-2 import and the upstream prepare and commit share it.
     const backupImportSlot = createImportSlot();
+    const restoreHeapMb = parsePositiveInteger(
+        "RISU_RESTORE_HEAP_MB",
+        process.env.RISU_RESTORE_HEAP_MB,
+        DEFAULT_RESTORE_HEAP_MB,
+    );
+    registerAssetLifecycleRoutes(app, {
+        auth,
+        limiter: storageRouteLimiter.middleware,
+        lifecycle: assetLifecycle,
+        savePath,
+        thumbnails,
+    });
     registerBackupRoutes(app, {
+        statfs: options.assetLifecycle?.statfs,
+        exportHolds: upstreamExportStaging,
         savePath,
         store: resources,
         snapshots,
@@ -841,6 +1146,10 @@ export function createServerContext(options: {
         diagnostics,
         slot: backupImportSlot,
         maxArchiveRecords: options.routeLimits?.archiveRecords,
+        restoreRunner:
+            options.restore?.runner ??
+            (options.resourceKinds ? inProcessRestoreRunner(resourceKinds) : workerRestoreRunner(restoreHeapMb)),
+        restoreSignal: restoreShutdown.signal,
     });
     const maxUpstreamDatabaseBytes = parsePositiveInteger(
         "RISU_MAX_UPSTREAM_DB_BYTES",
@@ -848,6 +1157,7 @@ export function createServerContext(options: {
         DEFAULT_MAX_UPSTREAM_DB_BYTES,
     );
     registerUpstreamImportRoutes(app, {
+        statfs: options.assetLifecycle?.statfs,
         savePath,
         store: resources,
         snapshots,
@@ -867,6 +1177,7 @@ export function createServerContext(options: {
     });
     // Reads one copy of the store and writes nothing live, so it takes no import slot.
     registerUpstreamExportRoutes(app, {
+        statfs: options.assetLifecycle?.statfs,
         savePath,
         store: resources,
         snapshots,
@@ -909,7 +1220,8 @@ export function createServerContext(options: {
     });
 
     diagnostics.record({ kind: "lifecycle", phase: "boot" });
-    diagnostics.writeState();
+    // Synchronous: nothing is served yet.
+    diagnostics.writeStateSync();
 
     return {
         app,
@@ -917,18 +1229,22 @@ export function createServerContext(options: {
         scriptWorkers,
         beginShutdown,
         generationJobs,
+        generationReceipts,
         llmRequests,
         requestHistory,
         translationRunner,
         thumbnails,
-        /** The HypaV3 memory task service (null without a characters kind), the default runner's unless a test replaces it. */
+        /** The memory task service for both kinds (null without a characters kind), the default runner's unless a test replaces it. */
         memoryTasks,
         push,
         eventSockets,
+        remoteCommands,
         diagnostics,
         realmStaging,
         upstreamStaging,
         upstreamExportStaging,
+        assetLifecycle,
+        chatTrashPurge,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -948,11 +1264,22 @@ export function createServerContext(options: {
             server.on("upgrade", listener);
             upgradeListeners.set(server, listener);
         },
+        /**
+         * Starts job garbage collection, the snapshot and diagnostics timers, the thumbnail cache
+         * sweep, the daily read-only asset scan, and the hourly chat trash purge. The sweep, scan,
+         * and purge start once per context and stop at shutdown. `main.ts` calls this after `serve()`.
+         */
         startBackgroundTasks: () => {
             generationJobs.startGc();
             snapshots.start();
             diagnostics.start();
             if (!shuttingDown) {
+                assetLifecycle.start();
+                chatTrashPurge.start();
+                if (!assetOffsetLogged && clockOffsetMs !== 0) {
+                    assetOffsetLogged = true;
+                    console.log(`[Server] Development asset clock offset: ${clockOffsetMs} ms`);
+                }
                 thumbnailSweep ??= thumbnails.sweep(thumbnailSweepController.signal).catch((error: unknown) => {
                     console.error("Thumbnail cache sweep failed:", error);
                 });
@@ -961,10 +1288,14 @@ export function createServerContext(options: {
         /**
          * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
          * their abort deadline), disposes the script workers, waits for admitted resource handlers
-         * and backup operations, then closes the store. The diagnostics' timers stop and its final
-         * `state.json` is written once the jobs and the admitted operations ended, while the stores it
-         * reads are open; a failure is a `runtime` event and another state. The HTTP entrypoint drains connections before
-         * calling this; in-process callers can use it alone. Calling it again returns the same promise.
+         * and backup operations, drains the chat trash purge and the asset scan, closes the asset
+         * ledger, then closes the resource store.
+         * Once the jobs and the admitted operations ended, the subscription writes they left are
+         * waited for, the diagnostics' timers stop, what it has queued is written (`finish`, bounded
+         * by its own deadline), and its final `state.json`
+         * is published last, while the stores it reads are open; a failure is a `runtime` event and
+         * another state. The HTTP entrypoint drains connections before calling this; in-process callers
+         * can use it alone. Calling it again returns the same promise.
          */
         dispose: () => {
             beginShutdown();
@@ -973,36 +1304,61 @@ export function createServerContext(options: {
                 translationRunner.drain(),
                 memoryTasks?.drain(),
                 llmRequests.dispose(),
+                chatTrashPurge.close(),
                 transforms.close(),
                 thumbnailSweep,
             ])
                 .then(() => generationJobs.dispose())
+                // An admitted scene-budget read can return its saved page once its queued count rejects.
+                .then(() => tokenizers.dispose())
                 // Admitted resource handlers and backup operations end here (a restore or an import
                 // too), while every store is open: the diagnostics' final state follows them.
                 .then(() => snapshots.stop())
                 .then(() => realmStaging.close())
                 .then(() => upstreamStaging.close())
                 .then(() => upstreamExportStaging.close())
-                .then(() => {
-                    diagnostics.close();
-                    diagnostics.writeState();
-                })
-                .then(() => tokenizers.dispose())
+                .then(() => push.drain())
+                .then(() => diagnostics.finish())
                 .then(() => scriptWorkers.dispose())
                 .then(() => transformers.dispose())
                 .then(() => mcpRegistry.dispose())
                 .then(() => vectorCache.close())
                 .then(() => requestHistory.close())
+                .then(() => generationReceipts.close())
+                .then(() => assetLifecycle.close())
                 .then(() => resources.close())
-                .catch((error: unknown) => {
-                    diagnostics.close();
+                .catch(async (error: unknown) => {
                     diagnostics.record({ kind: "runtime", origin: "dispose", ...errorFields(error) });
-                    diagnostics.writeState();
+                    await diagnostics.finish();
+                    // After a `finish` that had already run, the event landed on its own and needs this state.
+                    await diagnostics.writeState();
                     throw error;
                 });
             return disposing;
         },
     };
+}
+
+/** Asset retention grace in whole days; blank uses the default and values below the minimum are refused. */
+function parseAssetGraceDays(raw: string | undefined): number {
+    const value = raw?.trim();
+    if (!value) {
+        return ASSET_GRACE_DEFAULT_DAYS;
+    }
+    const days = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(days) || days < ASSET_GRACE_MIN_DAYS) {
+        throw new Error(`Invalid RISU_ASSET_GRACE_DAYS: ${raw}`);
+    }
+    return days;
+}
+
+/**
+ * Whether the client shows its AI disclosure (`RISU_AI_DISCLOSURE`): `1` or `true`, trimmed and in any case, turns it
+ * on; unset or any other value leaves it off. Never throws: the default is the safe answer.
+ */
+function parseAiDisclosure(raw: string | undefined): boolean {
+    const value = raw?.trim().toLowerCase();
+    return value === "1" || value === "true";
 }
 
 /** A positive safe integer from the environment variable `name`, else `fallback` when unset or empty. */
@@ -1058,4 +1414,14 @@ function parseRequestHistoryMaxBytes(raw: string | undefined): number {
         throw new Error(`Invalid RISU_REQUEST_HISTORY_MAX_BYTES: ${raw}`);
     }
     return value;
+}
+
+function parseSqliteSynchronous(raw: string | undefined): "full" | "normal" {
+    if (raw === undefined || raw === "") {
+        return "full";
+    }
+    if (raw !== "full" && raw !== "normal") {
+        throw new Error(`Invalid RISU_SQLITE_SYNCHRONOUS: ${raw}`);
+    }
+    return raw;
 }

@@ -9,10 +9,10 @@ import { createEmbeddings, type EmbeddingEnv } from "../prompt/embeddings.ts";
 import { type EmotionHost, runEmotionMode, runInlayScreen } from "../prompt/postProcess.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
 
-// `server/src/prompt/postProcess.ts`, the client's `runInlayScreen` and the two automatic emotion
-// modes of `sendChatInner` on an `EmotionHost`. The inlay rewrite: the emotion tag, the image
+// `server/src/prompt/postProcess.ts`: the inlay rewrite and the two automatic emotion modes on
+// an `EmotionHost`. The inlay rewrite: the emotion tag, the image
 // commands of both forms shown as `[Generating...]` at once and asked one after the other in the
-// client's pass order (one form, then the other), the prompt with the command in `{{slot}}` and
+// regex order (one form, then the other), the prompt with the command in `{{slot}}` and
 // the character's negative, a command without an image removed, the other views untouched. The
 // submodel mode: the +10 biases from the main tokenizer, the recent emotions trimmed to four in
 // the job's own list before anything is scored (also when nothing is chosen: a failed request, an

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxHost } from "./factory";
 
-// `SandboxHost.startup` (safe boot, `plugins-mcp.md`): how the guest's start ended. `ready` on
+// `SandboxHost.startup` (safe boot, `plugin-sandbox.md`): how the guest's start ended. `ready` on
 // `SCRIPT_SETTLED`, `failed` on `SCRIPT_SETTLED` with `failed: true` (the script threw or never ran),
 // `stopped` when terminated before either; the first answer stays. A started guest with open work is
 // still `ready`, and a failed one is still idle. The guest is simulated: its messages arrive as window

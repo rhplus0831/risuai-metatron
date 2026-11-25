@@ -18,4 +18,5 @@ function getMacroData(): { [key: string]: { isBlock: boolean; args: string[] } }
     });
     return dictionary;
 }
+/** Does nothing: Monaco has no CBS language, completion, or highlighting, and `getMacroData` is never called. */
 export function registerCBSMonaco() {}

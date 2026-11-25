@@ -1,20 +1,22 @@
-// The settings search: where each registry item lives, and a ranked search over the items, their
-// sections, and the settings pages. Pure: no runes, no DOM. The location table is built from the
-// same leaf arrays and sections the pages render, never from copies, so an item that moves page
-// moves its location with it.
 import type { SettingContext, SettingItem, SettingSection } from "./types";
+import { legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
 import { matchText, prepareQuery, MATCH_SCORE, type PreparedQuery } from "../util/koreanSearch";
-import { activeMainProfile } from "../storage/settingsViews.svelte";
+import { editedMainProfile } from "../storage/settingsViews.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
+    CREDITS_SETTINGS_MENU,
+    DEVICE_LINK_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
+    INPUT_HOOKS_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
     MEMORY_SETTINGS_MENU,
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     PROMPT_SETTINGS_MENU,
+    REQUEST_INTERCEPTION_SETTINGS_MENU,
+    STORAGE_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
     VOICE_SETTINGS_MENU,
 } from "../settingsMenu";
@@ -22,6 +24,7 @@ import { accessibilitySettingsHeader, accessibilitySettingsSections } from "./ac
 import { advancedSettingsHeader, advancedSettingsSections } from "./advancedSettingsData";
 import { allBasicParameterItems, modelParameterItems } from "./botSettingsParamsData";
 import { chatFormatSettingsItems } from "./chatFormatSettingsData";
+import { deviceLinkSettingsHeader, deviceLinkSettingsSections } from "./deviceLinkSettingsData";
 import { displaySettingsTabs } from "./displaySettingsData.svelte";
 import { interactionSettingsHeader, interactionSettingsSections } from "./interactionSettingsData";
 import { languageSettingsItems } from "./languageSettingsData.svelte";
@@ -30,11 +33,32 @@ import { modelAdditionalParamsItems, modelSettingsSections } from "./modelSettin
 import { promptSettingsSections } from "./promptSettingsData";
 import { translationSettingsHeader, translationSettingsSections } from "./translationSettingsData";
 import { voiceSettingsItems } from "./voiceSettingsData";
-import { checkCondition, getFullSettingsData, getLabel, languageText, sectionHasVisibleItems } from "./utils";
+import { storageSettingsHeader, storageSettingsSections } from "./storageSettingsData";
+import {
+    checkCondition,
+    getFullSettingsData,
+    getLabel,
+    languageText,
+    resolveLanguageText,
+    sectionHasVisibleItems,
+} from "./utils";
+
+/**
+ * Settings locations and ranked search, with no runes or DOM work. Locations reuse the pages' header
+ * arrays, leaf arrays, and sections: adding a leaf item to its section's `itemsById` list indexes it.
+ * A new leaf array/page needs `placeItems`/`placeSections`; `src/ts/setting/searchIndex.test.ts` checks
+ * every catalog item except headers/accordions has exactly one location.
+ */
 
 type Language = typeof languageEnglish;
 
-/** A handwritten accordion that must start open for its item to show. */
+/**
+ * Handwritten accordions `model.additionalParams` and `profile.chatFormat`; a collapsible section opens
+ * itself for an available jump. Chat-format items target Connections, though
+ * `src/lib/Setting/Pages/OobaSettings.svelte` also renders them.
+ * Add an opener here and to `placeItems`; its page reads `currentJump()` at mount and passes
+ * `startOpen` for an available jump, as `src/lib/Setting/Pages/ModelSettings.svelte` does.
+ */
 export type SettingOpener = "model.additionalParams" | "profile.chatFormat";
 
 /** Where a jump goes: the page (`SettingsMenuIndex`), its tab, section, and accordion. */
@@ -50,13 +74,22 @@ export interface SettingTarget {
 /** An item's one canonical destination. */
 export interface SettingLocation extends SettingTarget {
     itemId: string;
-    /** The parents' conditions the registry does not carry (a handwritten page's `{#if}` chain). */
+    /**
+     * Parent gates absent from the registry: only `adv.remPunc`, matching the Structured Memory/
+     * Hanurai/HypaV2/HypaV3/SupaMemory chain in `src/lib/Setting/Pages/MemorySettings.svelte`, including
+     * its leading Structured Memory gate. Voice's emotion method gates nothing.
+     */
     available?: (ctx: SettingContext) => boolean;
 }
 
-/** Why a hit is listed but cannot be shown. */
+/** `hidden`: an own/parent/section condition fails; `noMainProfile`: Connections has no main-slot profile. */
 export type SettingUnavailableReason = "hidden" | "noMainProfile";
 
+/**
+ * A labelled destination with breadcrumbs, including unavailable hits with a `reason`. Unlabelled
+ * items use their section title; Connections items use `editedMainProfile` from
+ * `src/ts/storage/settingsViews.svelte.ts` for conditions and carry its `profileId` when present.
+ */
 export interface SettingHit {
     kind: "item" | "section" | "page";
     /** The item id, the section id, or `page:<menu>` (a navigation entry) / `tab:<menu>` (a Model tab). */
@@ -73,6 +106,7 @@ export interface SettingHit {
     score: number;
 }
 
+/** At most 50 hits from `searchSettings`, after ranking. */
 export const SETTING_HIT_LIMIT = 50;
 
 /** The Prompt preset page's `submenu` values. */
@@ -102,26 +136,24 @@ function placeSections(sections: readonly SettingSection[], target: SettingTarge
     }
 }
 
-// `MemorySettings.svelte`'s chain: Hanurai, then HypaV2, then HypaV3, then the SupaMemory block
-// (the only renderer of `memorySupaMemoryItems`), whose own test is transcribed as written.
-const supaMemoryBranch = (ctx: SettingContext): boolean => {
-    const media = ctx.settings.memoryTranslateMedia;
-    return (
-        !media.hanuraiEnable &&
-        !media.hypav2 &&
-        !media.hypaV3 &&
-        media.supaModelType !== "none" &&
-        media.hypav2 === false &&
-        media.hypaV3 === false
-    );
-};
+// Only Legacy's SupaMemory selection renders these registry items. HypaV3 and Structured Memory
+// have always-visible handwritten sections in `MemorySettings.svelte`.
+const supaMemoryBranch = (ctx: SettingContext): boolean =>
+    legacyMemoryAlgorithm({
+        ...ctx.settings.memoryTranslateMedia,
+        memoryAlgorithmType: ctx.settings.ui.memoryAlgorithmType,
+    }) === "supaMemory";
 
 placeItems(accessibilitySettingsHeader, { menu: 11 });
 placeSections(accessibilitySettingsSections, { menu: 11 });
 placeItems(interactionSettingsHeader, { menu: INTERACTION_SETTINGS_MENU });
 placeSections(interactionSettingsSections, { menu: INTERACTION_SETTINGS_MENU });
+placeItems(deviceLinkSettingsHeader, { menu: DEVICE_LINK_SETTINGS_MENU });
+placeSections(deviceLinkSettingsSections, { menu: DEVICE_LINK_SETTINGS_MENU });
 placeItems(advancedSettingsHeader, { menu: 6 });
 placeSections(advancedSettingsSections, { menu: 6 });
+placeItems(storageSettingsHeader, { menu: STORAGE_SETTINGS_MENU });
+placeSections(storageSettingsSections, { menu: STORAGE_SETTINGS_MENU });
 placeItems(translationSettingsHeader, { menu: TRANSLATION_SETTINGS_MENU });
 placeSections(translationSettingsSections, { menu: TRANSLATION_SETTINGS_MENU });
 for (const tab of displaySettingsTabs) {
@@ -141,12 +173,13 @@ placeSections(memorySettingsSections, { menu: MEMORY_SETTINGS_MENU });
 placeItems(voiceSettingsItems, { menu: VOICE_SETTINGS_MENU });
 placeItems(languageSettingsItems, { menu: 10 });
 
-/** Every non-header, non-accordion registry item's location, in page order. */
+/** Every non-header, non-accordion registry item's one location, from the rendered arrays in page order. */
 export const SETTING_LOCATIONS: readonly SettingLocation[] = locations;
 
 const locationById = new Map(locations.map((location) => [location.itemId, location]));
 const sectionById = new Map(sectionPlaces.map((place) => [place.section.id, place.section]));
 
+/** The item's canonical destination, or undefined for an unplaced id. */
 export function settingLocation(itemId: string): SettingLocation | undefined {
     return locationById.get(itemId);
 }
@@ -165,16 +198,21 @@ const PAGES: PageEntry[] = [
     { menu: IMAGE_GENERATION_SETTINGS_MENU, label: (lang) => lang.imageGeneration },
     { menu: VOICE_SETTINGS_MENU, label: (lang) => lang.voiceSettings },
     { menu: TRANSLATION_SETTINGS_MENU, label: (lang) => lang.translationSettings },
+    { menu: INPUT_HOOKS_SETTINGS_MENU, label: (lang) => lang.inputHooks.title },
+    { menu: REQUEST_INTERCEPTION_SETTINGS_MENU, label: (lang) => lang.requestInterception.title },
     { menu: 14, label: (lang) => lang.modules },
     { menu: 4, label: (lang) => lang.plugin },
+    { menu: DEVICE_LINK_SETTINGS_MENU, label: (lang) => lang.deviceLink.title },
     { menu: 3, label: (lang) => lang.display },
     { menu: INTERACTION_SETTINGS_MENU, label: (lang) => lang.interactionSettings },
     { menu: 11, label: (lang) => lang.accessibility },
     { menu: 10, label: (lang) => lang.language },
     { menu: 15, label: (lang) => lang.hotkey },
     { menu: 0, label: (lang) => lang.backups },
+    { menu: STORAGE_SETTINGS_MENU, label: (lang) => lang.storagePage.title },
     { menu: 6, label: (lang) => lang.advancedSettings },
     { menu: 77, label: (lang) => lang.supporterThanks },
+    { menu: CREDITS_SETTINGS_MENU, label: (lang) => lang.creditsPage.title },
 ];
 
 // The Model menu's tabs (`ModelMenuTabs.svelte`), which share its one navigation entry.
@@ -190,8 +228,7 @@ const PROMPT_TABS: Record<number, (lang: Language) => string> = {
 };
 
 function englishText(key: string | undefined): string {
-    const value = key ? (languageEnglish as Record<string, unknown>)[key] : undefined;
-    return typeof value === "string" ? value : "";
+    return resolveLanguageText(languageEnglish, key);
 }
 
 function englishLabel(item: SettingItem): string {
@@ -224,7 +261,7 @@ function bestMatch(texts: readonly string[], query: PreparedQuery): number {
     return best;
 }
 
-/** A label match outranks every keyword or section-title match. */
+/** Page/tab/section labels and items' own labels outrank item keyword/containing-section matches. */
 const LABEL_RANK = MATCH_SCORE.exact;
 
 interface Candidate {
@@ -238,7 +275,11 @@ interface Candidate {
  * its label (current language and English), its keywords, and its section's title; equal scores
  * keep that order. `ctx` is the context the pages render with; a Connections item is checked
  * against the main slot's profile instead, and a hit whose own or parents' condition fails stays
- * listed as unavailable.
+ * listed as unavailable. `src/ts/util/koreanSearch.ts`'s `matchText` ranks matches: a page, tab, or
+ * section label or an item's own label (current language or English) outranks item keyword and
+ * containing-section matches. A section title an unlabelled item displays still scores as a section
+ * match. `PAGES` and `MODEL_TABS` mirror labels in
+ * `src/lib/Setting/Settings.svelte` and `src/lib/Setting/Pages/Model/ModelMenuTabs.svelte`.
  */
 export function searchSettings(query: string, ctx: SettingContext): SettingHit[] {
     const prepared = prepareQuery(query);
@@ -340,12 +381,12 @@ function itemHit(
     if (location.menu === MODEL_PROFILES_SETTINGS_MENU) {
         // Connections edits the profile it selects; the jump selects the main slot's, so the
         // conditions read that one. A dangling main slot gets no substitute.
-        const profileId = activeMainProfile.id;
+        const profileId = editedMainProfile.id;
         if (profileId === undefined) {
             return { ...hit, available: false, reason: "noMainProfile" };
         }
         hit.profileId = profileId;
-        itemCtx = { ...ctx, modelProfile: activeMainProfile };
+        itemCtx = { ...ctx, modelProfile: editedMainProfile };
     }
     const available =
         checkCondition(item, itemCtx) &&

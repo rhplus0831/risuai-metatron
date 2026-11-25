@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import type { loreBook } from "../../../shared/database.ts";
 import type { CallbackName, CallbackResult, GenerationQuestion } from "../../../shared/jobs.ts";
 import { NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { RPCToolCallContent } from "../../../shared/llm/request.ts";
@@ -16,6 +17,7 @@ import { loadJobScope } from "../jobs/jobScope.ts";
 import type { JobRequestSpec } from "../llm/requests.ts";
 import { createLuaBindings, LuaJobFatalError } from "../lua/bindings.ts";
 import { createJobToolState, MAX_JOB_TOOL_CALLS } from "../mcp/jobTools.ts";
+import * as jobTools from "../mcp/jobTools.ts";
 import { createMcpRegistry } from "../mcp/registry.ts";
 import { createEmbeddings, type EmbeddingEnv, type EmbeddingsService } from "../prompt/embeddings.ts";
 import type { TransformersService } from "../prompt/transformers.ts";
@@ -368,7 +370,67 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService; le
     };
 }
 
+it("disables configured tools for a null detached tool set and allows them for an ordinary send", async () => {
+    const s = setup();
+    const arg = { formated: [{ role: "user", content: "go" }], bias: {} } as const;
+    await s.bindings.services.request(arg as never, "model", s.ctx, "mcp", { toolSet: null });
+    expect(s.log.requests.at(-1)!.arg.allowConfiguredTools).toBe(false);
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+
+    await s.bindings.services.request(arg as never, "model", s.ctx, "send", {
+        toolSet: { descriptors: [], routes: new Map() },
+    });
+    expect(s.log.requests.at(-1)!.arg.allowConfiguredTools).toBe(true);
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+});
+
+it("reuses a prepared tool set, including an empty set, and lists only when none was supplied", async () => {
+    const create = jobTools.createJobTools;
+    const lists: MockInstance<jobTools.JobTools["list"]>[] = [];
+    vi.spyOn(jobTools, "createJobTools").mockImplementation((deps) => {
+        const tools = create(deps);
+        lists.push(vi.spyOn(tools, "list"));
+        return tools;
+    });
+    const s = setup();
+    const prepared = await s.bindings.listTools(s.ctx);
+    expect(prepared!.descriptors.map((tool) => tool.name).sort()).toEqual(["readMemory", "runLLM", "writeMemory"]);
+    const request = (meta?: { toolSet?: jobTools.JobToolSet | null }) =>
+        s.bindings.services.request(
+            { formated: [{ role: "user", content: "go" }], bias: {} } as never,
+            "model",
+            s.ctx,
+            "mcp",
+            meta,
+        );
+
+    await request({ toolSet: prepared });
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual(prepared!.descriptors);
+    await request({ toolSet: { descriptors: [], routes: new Map() } });
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+    await request({ toolSet: null });
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+    expect(lists[0]).toHaveBeenCalledTimes(1);
+
+    await request();
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual(prepared!.descriptors);
+    expect(lists[0]).toHaveBeenCalledTimes(2);
+});
+
 describe("internal:risuai on the server: reads", () => {
+    it("excludes groups before counting and skipping characters in the tool's pages", async () => {
+        const s = setup();
+        s.put(RESOURCE_KIND.characters, "o", { ...s.stored("o"), type: "group", characters: ["c"] });
+        const list = async (count: number, offset: number) =>
+            JSON.parse(s.text(await s.tool("risu-list-characters", { count, offset })));
+
+        expect(await list(2, 0)).toEqual([
+            { id: "c", name: "Owner", type: "character" },
+            { id: "tz", name: "Twin", type: "character" },
+        ]);
+        expect(await list(1, 2)).toEqual([{ id: "ta", name: "Twin", type: "character" }]);
+    });
+
     it("is call-only when no module names it, reads the job's character for an empty id, the first stored match of a name, and the store's order", async () => {
         const s = setup();
         let offered: string[] = [];
@@ -493,6 +555,37 @@ describe("internal:risuai on the server: reads", () => {
 });
 
 describe("internal:risuai on the server: consent and writes", () => {
+    it("rebuilds a lore entry write against current stored entries after a revision conflict", () => {
+        const s = setup();
+        const target: loreBook = { ...lore("target", "before"), mode: "normal", id: "target-id" };
+        const other: loreBook = { ...lore("other", "before"), mode: "normal", id: "other-id" };
+        s.put("characters", "c", { ...s.stored("c"), globalLore: [target, other] });
+        s.hooks.beforeApply = (attempt) => {
+            if (attempt === 0)
+                s.put("characters", "c", {
+                    ...s.stored("c"),
+                    globalLore: [
+                        { ...other, content: "concurrent" },
+                        { ...target, alwaysActive: true },
+                    ],
+                });
+        };
+        expect(
+            s.bindings.services.patchCharacter({}, s.ctx, {
+                type: "set",
+                index: 0,
+                before: target,
+                set: { content: "from-trigger" },
+            }),
+        ).toBe(true);
+        expect(s.log.conflicts).toBe(1);
+        expect(s.stored("c").globalLore).toEqual([
+            { ...other, content: "concurrent" },
+            { ...target, content: "from-trigger", alwaysActive: true },
+        ]);
+        expect(s.bindings.fatal()).toBeNull();
+    });
+
     it("asks in English, writes the confirmed patch to the stored record, refreshes the job's copy, and sends the record to the tab", async () => {
         const s = setup();
         expect(s.text(await s.tool("risu-set-character-lorebook", { id: "o", name: "A", content: "edited" }))).toBe(
@@ -833,8 +926,8 @@ describe("internal:graphmem on the server", () => {
         ];
         const cold = JSON.parse(s.text(await s.tool("readMemory", { query: ["who"] })));
         expect(cold).toEqual([{ queryTerm: "who", entries }]);
-        // The names as documents once, then the query; the connection `Bob` is searched at depth 2.
-        expect(embeddings.embedded).toEqual([["Alice", "Bob"], ["who"], ["Bob"]]);
+        // The query finds both names, so the connection `Bob` needs no further embedding.
+        expect(embeddings.embedded).toEqual([["Alice", "Bob"], ["who"]]);
 
         embeddings.embedded.length = 0;
         const warm = JSON.parse(s.text(await s.tool("readMemory", { query: ["tea"], search_depth: 1 })));
@@ -933,6 +1026,45 @@ describe("graph memory's read loop (shared/mcp/graphmem.ts)", () => {
         };
         return counter;
     }
+
+    it("searches a dense repeated frontier once per unknown term and preserves entries at each chain depth", async () => {
+        const names = ["a", "b", "c", "d"];
+        const dense = names.map((name) => ({
+            name,
+            summary: `memory ${name}`,
+            connections: [...names, ...names, "missing", "missing"],
+        }));
+        const chain = names.map((name, i) => ({
+            name,
+            summary: `memory ${name}`,
+            connections: names.slice(i + 1, i + 2),
+        }));
+        const searched: string[] = [];
+        const read = async (entries: typeof dense, answers: Record<string, string[]>, depth: number) => {
+            searched.length = 0;
+            const host = {
+                getVar: () => JSON.stringify(entries),
+                setVar: vi.fn(),
+                search: async () => async (term: string) => {
+                    searched.push(term);
+                    return answers[term] ?? [];
+                },
+            };
+            const result = await callGraphMemTool(host, "readMemory", { query: ["q"], search_depth: depth });
+            expect(host.setVar).not.toHaveBeenCalled();
+            return JSON.parse((result[0] as { text: string }).text);
+        };
+        // All four entries are already found; only the shared, unknown connection needs a search.
+        expect(await read(dense, { q: names }, 1e12)).toEqual([{ queryTerm: "q", entries: dense }]);
+        expect(searched).toEqual(["q", "missing"]);
+
+        // A search that finds one new entry at a time still expands exactly one edge per depth.
+        const answers = { q: ["a"], b: ["b"], c: ["c"], d: ["d"] };
+        for (const depth of [0, 1, 2, 3, 4, 5, 1e12]) {
+            expect(await read(chain, answers, depth)).toEqual([{ queryTerm: "q", entries: chain.slice(0, depth) }]);
+            expect(searched).toEqual(["q", "b", "c", "d"].slice(0, depth));
+        }
+    });
 
     it("stops when its frontier is empty whatever search_depth is, with the same result", async () => {
         const searched: string[] = [];

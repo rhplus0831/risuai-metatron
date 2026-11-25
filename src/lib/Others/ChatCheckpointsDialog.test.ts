@@ -49,9 +49,10 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { language } from "src/lang";
+import { noteRemoteStreaming } from "src/ts/storage/chatStore.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import ChatCheckpointsDialog from "./ChatCheckpointsDialog.svelte";
 
@@ -144,6 +145,46 @@ afterEach(async () => {
 });
 
 describe("checkpoint dialog", () => {
+    it("keeps Save and Load from opening prompts while the chat generates and restores both on release", async () => {
+        mocks.input.mockResolvedValue("");
+        mocks.confirm.mockResolvedValue(false);
+        await render();
+        select(rows[1]);
+        const actions = [
+            { label: labels.saveAs, prompt: mocks.input },
+            { label: labels.load, prompt: mocks.confirm },
+        ];
+        for (const { label } of actions) expect(button(label).disabled).toBe(false);
+        const stream = { characterId: ref.chaId, id: ref.chatId };
+        noteRemoteStreaming([{ ...stream, streaming: [{ messageId: "reply", generationId: "reply-job", seq: 0 }] }]);
+        flushSync();
+        try {
+            for (const { label, prompt } of actions) {
+                expect.soft(button(label).disabled, label).toBe(true);
+                button(label).click();
+                await settle();
+                expect.soft(prompt, label).not.toHaveBeenCalled();
+                prompt.mockClear();
+            }
+            expect(mocks.save).not.toHaveBeenCalled();
+            expect(mocks.load).not.toHaveBeenCalled();
+        } finally {
+            noteRemoteStreaming([{ ...stream, streaming: [] }]);
+            flushSync();
+        }
+        mocks.input.mockResolvedValue("Saved after the reply");
+        mocks.save.mockResolvedValue({ status: "ok", checkpoint: rows[1] });
+        mocks.confirm.mockResolvedValue(true);
+        for (const { label, prompt } of actions) {
+            expect(button(label).disabled).toBe(false);
+            button(label).click();
+            await settle();
+            expect(prompt, label).toHaveBeenCalledTimes(1);
+        }
+        expect(mocks.save).toHaveBeenCalledExactlyOnceWith(ref, "Saved after the reply");
+        expect(mocks.load).toHaveBeenCalledExactlyOnceWith(ref, rows[1].id);
+    });
+
     it("groups checkpoints as manual, auto and safety and keeps newest first within each group", async () => {
         await render();
         expect(mocks.list).toHaveBeenCalledExactlyOnceWith(ref);
@@ -262,5 +303,26 @@ describe("checkpoint dialog", () => {
         expect(target.querySelector('[role="dialog"]')).not.toBeNull();
         expect(button(labels.load).disabled).toBe(false);
         expect(mocks.list).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe("checkpoints of a trashed chat", () => {
+    it("closes the open dialog with a notice when its chat is trashed", async () => {
+        const { assembleChats, installChatTrashState } = await import("src/ts/storage/chatStore.svelte");
+        const revision = "00000000-0000-4000-8000-000000000000:1:1";
+        const rows = ["k", "other"].map((id) => ({
+            characterId: "c",
+            id,
+            revision,
+            trashedAt: null,
+            data: { id, name: id, note: "", localLore: [], message: [] },
+        }));
+        assembleChats([{ chaId: "c" }], rows, [{ characterId: "c", revision, ids: ["k", "other"] }]);
+        await render();
+        expect(close).not.toHaveBeenCalled();
+        installChatTrashState(ref, revision, 100);
+        await settle();
+        expect(close).toHaveBeenCalledOnce();
+        expect(mocks.normal).toHaveBeenCalledExactlyOnceWith(language.chatTrash.checkpointsClosed);
     });
 });

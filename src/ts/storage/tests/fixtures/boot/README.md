@@ -1,24 +1,23 @@
 # Boot and preset fixtures
 
-`boot-snapshot.json` is the hand-maintained record of fresh-boot defaults. When a default changes
-deliberately, edit its normalizer spec (or `PRESET_DEFAULTS` for a preset field) and this JSON in the
-same commit; the tests confirm that they agree. Do not re-run the capture script for a deliberate
-default change, because a new capture would also replace the fixture's random ids.
+The fixtures are maintained by hand. `boot-snapshot.json` records fresh-boot defaults: when a default
+changes deliberately, edit its normalizer spec (or `PRESET_DEFAULTS` for a preset field) and this JSON
+in the same commit, preserving unrelated values and captured ids. `default.risup` and `custom.risup`
+preserve the captured preset reader contract; change them only when that contract deliberately changes,
+comparing decoded presets. Verify changes with:
+
+```bash
+pnpm --silent test:agent src/ts/storage/tests/bootSnapshot.test.ts src/ts/storage/tests/presetIds.test.ts
+```
 
 ## Provenance
 
 The three fixtures were initially captured on 2026-09-30 from commit `4914ccc7`, before normalization
 moved to the server (the tree differs from that commit only by the Playwright tooling:
 `util/playwright/`, `playwright.config.ts`, the `test:e2e` script, and the Vitest `e2e/**` exclude,
-none of which the app loads), with:
-
-```bash
-node util/playwright/captureBootFixtures.mjs
-```
-
-The script (`util/playwright/captureBootFixtures.mjs`) starts the self-host server in a fresh
-temporary working directory (empty `save/`) and the Vite dev server in front of it, opens a fresh
-headless Chrome context, answers the password prompt, and waits for `loadedStore`. Then:
+none of which the app loads). The original capture used the self-host server in a fresh temporary
+working directory (empty `save/`) and the Vite dev server in front of it, with a fresh headless Chrome
+context. After answering the password prompt and waiting for `loadedStore`, it captured:
 
 - `boot-snapshot.json`: initially `getDatabase({ snapshot: true })`, taken first, before anything
   else ran. It held the effective defaults of a fresh boot, including what `checkNewFormat` changed
@@ -66,6 +65,11 @@ prompt fields; the stored `botPresets[0]` keeps the pre-split template payload, 
 Toggle presets (2026-10-17;
 retrievable at `154711858` through [the archive](../../../../../../docs/archived-plan/README.md))
 added `"togglePresets": []` by hand.
+The chat message editor's auto popup (2026-10-27) added the `ui` default `disableAutoPopupMessageEditor`
+`false` by hand.
+The OOC session's forced toggles (2026-11-14) added the prompt preset default `oocToggles` `{}` to the root by hand
+(a forwarded prompt field, like the context size override; the `.risup` fixtures predate it, so an import adds it).
 
-Re-running the script overwrites all three files. Across captures, the snapshot's ids and the
-`.risup` bytes differ while the decoded presets are equal, so compare decoded presets, never bytes.
+The original capture driver was removed after its flat `Database` API became obsolete. Fresh captures
+would replace random ids and change `.risup` bytes even when the decoded presets are equal; preserve the
+existing fixtures and compare decoded values when maintaining them.

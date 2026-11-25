@@ -12,6 +12,7 @@
         LanguagesIcon,
         Laugh,
         MenuIcon,
+        MessageCircleQuestionIcon,
         MicOffIcon,
         PackageIcon,
         PinIcon,
@@ -36,7 +37,9 @@
         chatBindingDialog,
     } from "../../ts/stores.svelte";
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
-    import { chatOrphanedOverrideEntries, chatLoreOverrideRefusalText } from "src/ts/process/loreOverrides";
+    import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
+    import { askLoreBudgetStop, wantsLoreBudgetStop } from "src/ts/process/loreBudgetStop";
+    import type { ServerSendResult } from "src/ts/process/serverGeneration";
     import { onDestroy, tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import {
@@ -46,30 +49,49 @@
         previousGreetingIndex,
     } from "../../../shared/greetings.ts";
     import { GENERATION_STAGES } from "../../../shared/jobs.ts";
+    import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import { ChatStyleRegistry, setChatStyleRegistry } from "../../ts/parser/chatStyles";
     import { type Message } from "../../ts/storage/database.svelte";
     import {
         appendMessage,
+        isActiveChat,
         chatOwnerToken,
         type ChatRef,
         currentChatRef,
+        ensureChatLoaded,
         findChat,
-        restoreUnsentRemoval,
+        pinChat,
         retrySelectedChatLoad,
         setChatMeta,
-        setMessageText,
         selectedChat,
         selectedChatLoad,
     } from "../../ts/storage/chatStore.svelte";
     import { editChatSync } from "../../ts/storage/chatEdits";
+    import { memoryEditorWriteFence } from "../../ts/storage/chatFieldDraft.svelte";
     import { getCharImage } from "../../ts/characters";
     import { sendChat } from "../../ts/process/index.svelte";
-    import { chatStatusKey, generatingChatKeys, isChatBusy } from "src/ts/process/chatStatus.svelte";
-    import { isLocalSend, localSends } from "src/ts/process/localSends";
+    import {
+        chatStatusKey,
+        generatingChatKeys,
+        foreignJobChatKeys,
+        isChatBusy,
+        memoryHealthStates,
+    } from "src/ts/process/chatStatus.svelte";
+    import { beginLocalSend, isLocalSend, localSends } from "src/ts/process/localSends";
+    import { openOocPanel } from "src/ts/ooc/oocPanel.svelte";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
-    import { followedJobs, followedJobsOf } from "src/ts/process/serverCommands";
-    import { jobStages, chatStageOf } from "src/ts/process/jobStages";
-    import { abortGenerationJob } from "src/ts/network/generationJobs";
+    import { createInputHookRuns } from "src/ts/process/inputHookRuns.svelte";
+    import { runInputHook } from "src/ts/process/inputHooks";
+    import { draftHookOf, type InputHook } from "../../../shared/inputHooks.ts";
+    import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
+    import HandoffControls from "./HandoffControls.svelte";
+    import RemoteSendMarker from "./RemoteSendMarker.svelte";
+    import InputHookPicker from "./InputHookPicker.svelte";
+    import { jobStages, jobRetries, chatStageOf } from "src/ts/process/jobStages";
+    import { foreignGeneration } from "src/ts/process/generationProgress.svelte";
+    import { abortGenerationJob, generationClientId } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
     import { isExpTranslator, translate } from "../../ts/translator/translator";
@@ -90,14 +112,28 @@
         withFileSrcFetch,
     } from "src/ts/globalApi.svelte";
     import { v4 } from "uuid";
-    import { PreUnreroll, Prereroll } from "src/ts/process/prereroll";
+    import { neighborCandidateId, rerollCarrier, switchCandidate } from "src/ts/process/rerollCandidates";
+    import { rerollTurnStart, restoredScriptstate } from "../../../shared/rerollCandidates.ts";
+    import { awaitServerRerollsInPlace, serverRerollsInPlace } from "src/ts/network/eventFeed";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
-    import { createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
+    import { composerSendText, createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
+    import { createComposer } from "src/ts/process/composerDrafts.svelte";
+    import { pageDraftJournal } from "src/ts/storage/draftJournal";
+    import { getResourceEpoch } from "src/ts/storage/resourceClient";
+    import { holdUnloadWarning } from "src/ts/storage/resourceSync.svelte";
+    import {
+        createInputTranslation,
+        handleMainComposerKeydown,
+        handleTranslationComposerKeydown,
+    } from "src/ts/process/inputTranslation.svelte";
     import { processMultiCommand } from "src/ts/process/command";
     import { postChatFile } from "src/ts/process/files/multisend";
     import { getInlayAsset } from "src/ts/process/files/inlays";
+    import { composerPlaceholder } from "./composerPlaceholder";
     import Chats from "./Chats.svelte";
     import ContextMeter from "./ContextMeter.svelte";
+    import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
+    import { memoryHealthText } from "../SideBars/chatStatus";
     import Button from "../UI/GUI/Button.svelte";
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { getAdditionalChatLoadPages, getInitialChatLoadPages } from "src/ts/chatLoadPages";
@@ -111,9 +147,39 @@
         pendingMessageJump,
     } from "src/ts/messageSearch.svelte";
     import { runMessageJump } from "./messageJump";
-    import { SCREENSHOT_CAPTURE_OPTIONS } from "./screenshotCapture";
+    import { prepareScreenshotCapture } from "./screenshotCapture";
+    import { composeScreenshot, measureScreenshotRow, planScreenshotPages } from "./screenshotExport";
+
+    /**
+     * The chat screen inside the layout of `ChatScreen.svelte`: the composers, send/reroll, and the menus. It shows
+     * the home menu or the playground menu without a selected character, `ClosedChatScreen.svelte` while
+     * `selection.chatOpen` is false (the playground chat is always open), a loading or load-failure state while the
+     * selected chat loads, and otherwise the chat.
+     *
+     * The screen owns the transcript's row window (`loadPages`); `Chats.svelte` renders it and asks for trims
+     * (`onTrim`), which the screen refuses during a screenshot, a message jump, or an unbounded window. The chat
+     * scroller publishes `settings.ui.chatScreenWidth` as `--chat-screen-width`; the transcript, the composer, and
+     * the rows around them carry `chat-screen-content-width` (`src/styles.css`), and a new row in the scroller gets
+     * the class too.
+     */
 
     const subModel = $derived(getModelInfoForMode("submodel").id);
+    /**
+     * Which memory view the menu row opens. Structured memory and HypaV3 always get the row; HypaV2's alert
+     * stays behind `showMenuHypaMemoryModal`.
+     */
+    const memoryMenuKind = $derived.by(() => {
+        const algorithm = chatMemoryAlgorithm(chatMemorySettings(), selectedChat());
+        if (algorithm === STRUCTURED_MEMORY_ALGORITHM) return "structuredMemory";
+        if (algorithm === "hypaMemoryV3") return "hypaV3";
+        if (algorithm === "hypaMemoryV2") return settings.ui.showMenuHypaMemoryModal ? "hypaV2" : null;
+        return null;
+    });
+    /** The open chat's memory health state, shown above the composer and opening the panel like the menu row. */
+    const memoryHealth = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? (memoryHealthStates().get(chatStatusKey(ref)) ?? null) : null;
+    });
 
     const loadPlaygroundMenu = () => import("../Playground/PlaygroundMenu.svelte").then((m) => m.default);
 
@@ -123,22 +189,54 @@
         customStyle?: string;
     }
 
-    let messageInput: string = $state("");
-    let messageInputTranslate: string = $state("");
+    const sendDrafts = createSendDrafts();
+    const inputHookRuns = createInputHookRuns();
+    const isScreenBusy = (ref: ChatRef) => isChatBusy(ref) || inputHookRuns.kindOf(ref) !== null;
+    const composer = createComposer({
+        journal: pageDraftJournal(),
+        epoch: getResourceEpoch,
+        adopt: (key, draft) => {
+            const [chaId, chatId] = key.split("\u0000");
+            sendDrafts.adopt({ chaId, chatId }, draft);
+        },
+        clearRetry: sendDrafts.clearRetry,
+        retryIdFor: (key, draft) => {
+            const [chaId, chatId] = key.split("\u0000");
+            return sendDrafts.retryIdFor({ chaId, chatId }, draft);
+        },
+    });
+    let displayGeneration = 0;
+    onDestroy(() => {
+        displayGeneration++;
+        composer.destroy();
+    });
     let openMenu = $state(false);
     const rerollHistory = createRerollHistory();
-    const sendDrafts = createSendDrafts();
+    /** A reroll press is waiting for the feed's hello; further presses do nothing until it is answered. */
+    let rerollAwaitsHello = false;
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
+    let btwPicker: { ref: ChatRef; hooks: InputHook[] } | null = $state.raw(null);
+    let btwResults: ReadonlyMap<string, string> = $state.raw(new Map());
+    const btwResult = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref && ref.chaId !== "§playground" ? btwResults.get(chatKeyOf(ref)) : undefined;
+    });
     let toggleStickers: boolean = $state(false);
-    let fileInput: string[] = $state([]);
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
+    /**
+     * `Chats.revealing`: the opening's reveal is still running (some of its rows may already show). The separate
+     * greeting row (`pendingReveal`) stays hidden until it ends, by visibility, so its layout does not change.
+     */
     let revealing = $state(false);
+    // Rows added above the view wait out the reader's scroll; loading more meanwhile would only
+    // stack more of them while the transcript's top stays in reach (held rows add no height).
+    let rowsHeld = $state(false);
     let greetingInstance: { whenRendered: () => Promise<void> } | undefined = $state();
-    // Running jumps to a message (the bookmark's by index, a search hit's by id): trimming waits for them.
+    // Running jumps to a message: trimming waits for them.
     let scrollingToMessage = $state(0);
     const isScrollingToMessage = $derived(scrollingToMessage > 0);
-    /** The chat scroller (`.default-chat-screen`): a search jump looks its row and images up under it. */
+    /** The chat scroller (`.default-chat-screen`): jumps look their rows and images up under it. */
     let chatScroller: HTMLElement | undefined = $state();
     let takingScreenshot = $state(false);
     // The chat rows' shared stylesheets: one per distinct CSS, after the rows.
@@ -156,9 +254,19 @@
     let chatShown = $derived(
         currentCharacter !== undefined && (selection.chatOpen || currentCharacter.chaId === "§playground"),
     );
+    const showDraft = $derived(
+        currentCharacter?.chaId !== "§playground" &&
+            (!!draftHookOf(settings.inputHooks ?? [], currentChat?.draftHookId) || composer.draft !== ""),
+    );
     // While the selected chat loads (null when it is loaded or nothing is selected).
     let selectedLoad = $derived(selectedChatLoad());
-    // The selected chat cannot be sent until its binding is complete: the send button sets it up.
+    /**
+     * The selected chat cannot be sent until its binding is complete: the send button sets it up, and both
+     * composers are `readonly`, not `disabled`, so they keep their text, focus, and the focus hotkey, and Enter
+     * still opens the setup. Nothing can be typed meanwhile, and a pasted image is ignored. Text other controls
+     * add (a suggestion, an additional asset) still lands in the draft, which a send keeps until the setup is
+     * done; a `/` command line still runs first and is consumed.
+     */
     let bindingIncomplete = $derived.by(() => {
         const ref = currentChatRef();
         return ref !== null && chatBinding(ref)?.ok === false;
@@ -169,20 +277,76 @@
         const ref = currentChatRef();
         return ref === null ? null : chatKeyOf(ref);
     });
-    // How many messages render from the end; load more grows it, an append at the bottom may trim it.
+    const inputTranslation = createInputTranslation({
+        translate,
+        isExperimental: isExpTranslator,
+        enabled: () => settings.memoryTranslateMedia.useAutoTranslateInput,
+        getText: (field) => (field === "main" ? composer.input : composer.translate),
+        setText: (field, text) => {
+            if (field === "main") composer.input = text;
+            else composer.translate = text;
+        },
+        getChatKey: () => chatKey,
+    });
+    onDestroy(() => inputTranslation.invalidate());
+    $effect(() => {
+        if (!settings.memoryTranslateMedia.useAutoTranslateInput) {
+            inputTranslation.invalidate();
+        }
+    });
+    /**
+     * How many messages render from the end (or from the fold); load more grows it, an append at the bottom may
+     * trim it. Unfolding (the show-all button) adds `messages.length - foldedIndex`, so the folded window's oldest
+     * row stays shown.
+     */
     let loadPages = $derived.by(() => {
         chatKey;
         return untrack(() => getInitialChatLoadPages(settings.ui));
     });
     $effect(() => {
         chatKey;
+        chatShown;
+        displayGeneration++;
+    });
+    $effect(() => {
+        chatKey;
+        inputTranslation.invalidate();
         untrack(() => {
+            composer.switchTo(chatKey);
             const ref = currentChatRef();
-            if (ref && messageInput === "") {
-                const draft = sendDrafts.takeUnplaced(ref);
+            if (ref) {
+                const draft = sendDrafts.takeUnplaced(ref, (send) => composerEmptyFor(ref, send));
                 if (draft) {
-                    messageInput = draft.input;
+                    composer.placeSend(chatKeyOf(ref), draft);
                 }
+            }
+            if (ref) {
+                void composer
+                    .restore(chatKeyOf(ref), {
+                        landed: async (userMessageId) => {
+                            try {
+                                const chat = await ensureChatLoaded(ref);
+                                return chat?.message.some(
+                                    (message) => message.role === "user" && message.chatId === userMessageId,
+                                );
+                            } catch {
+                                return undefined;
+                            }
+                        },
+                    })
+                    .then((draft) => {
+                        if (draft)
+                            sendDrafts.adopt(
+                                ref,
+                                {
+                                    input: draft.text,
+                                    userMessageId: draft.userMessageId,
+                                    requestId: draft.requestId,
+                                    ...(draft.composer ? { composer: draft.composer } : {}),
+                                },
+                                draft.sharedId,
+                            );
+                    });
             }
         });
     });
@@ -198,74 +362,37 @@
             void tick().then(() => chatsInstance?.scrollToLatestMessage());
         }
     });
+    /**
+     * A bookmark's jump (`ScrollToMessageStore`, an index into the selected chat). The index names its message
+     * id once, when the jump starts; from there the jump follows the id, as a search hit's does.
+     */
+    let pendingBookmark: Pick<MessageJump, "ref" | "messageId"> | null = null;
     $effect(() => {
-        if (ScrollToMessageStore.value !== -1) {
-            const index = ScrollToMessageStore.value;
+        const index = ScrollToMessageStore.value;
+        if (index !== -1) {
             ScrollToMessageStore.value = -1;
-            scrollToMessage(index);
+            untrack(() => {
+                stopOwnedJump();
+                const ref = currentChatRef();
+                const messageId = messages[index]?.chatId;
+                pendingBookmark = ref && messageId ? { ref, messageId } : null;
+            });
         }
+        const ref = currentChatRef();
+        const shown = chatShown;
+        const chats = chatsInstance;
+        const scroller = chatScroller;
+        const jump = pendingBookmark;
+        if (!jump) return;
+        if (!shown || ref?.chaId !== jump.ref.chaId || ref.chatId !== jump.ref.chatId) {
+            pendingBookmark = null;
+            return;
+        }
+        // Keep the captured id while a bookmark opened from the closed chat waits for its transcript.
+        if (!chats || !scroller) return;
+        pendingBookmark = null;
+        untrack(() => void scrollToMessageId(jump));
     });
-
-    async function scrollToMessage(index: number) {
-        // Forces the loading of past messages not rendered on the screen
-        scrollingToMessage += 1;
-        try {
-            const totalMessages = messages.length;
-            const neededLoadPages = totalMessages - index + 5;
-
-            if (loadPages < neededLoadPages) {
-                loadPages = neededLoadPages;
-                await tick();
-            }
-
-            let element: Element | null = null;
-            // Poll for element existence (max 5 seconds)
-            for (let i = 0; i < 50; i++) {
-                element = document.querySelector(`[data-chat-index="${index}"]`);
-                if (element) break;
-                await sleep(100);
-            }
-
-            const preIndex = Math.max(0, index - 3);
-            const preElement = document.querySelector(`[data-chat-index="${preIndex}"]`);
-            if (preElement) {
-                preElement.scrollIntoView({ behavior: "instant", block: "start" });
-            } else {
-                element?.scrollIntoView({ behavior: "instant", block: "start" });
-            }
-            await sleep(50);
-
-            if (element) {
-                // Wait for images to load to prevent layout shift
-                const chatContainer = document.querySelector(".default-chat-screen");
-                if (chatContainer) {
-                    const images = Array.from(chatContainer.querySelectorAll("img"));
-                    const promises = images.map((img) => {
-                        if (img.complete) return Promise.resolve();
-                        return new Promise((resolve) => {
-                            img.onload = () => resolve(null);
-                            img.onerror = () => resolve(null);
-                        });
-                    });
-                    // Wait for all images or timeout after 4 seconds
-                    await Promise.race([Promise.all(promises), sleep(4000)]);
-                }
-
-                element.scrollIntoView({ behavior: "instant", block: "start" });
-
-                // Small delay and scroll again to ensure position is correct after any final layout adjustments
-                await sleep(50);
-                element.scrollIntoView({ behavior: "instant", block: "start" });
-
-                element.classList.add("ring-2", "ring-blue-500");
-                setTimeout(() => {
-                    element.classList.remove("ring-2", "ring-blue-500");
-                }, 2000);
-            }
-        } finally {
-            scrollingToMessage -= 1;
-        }
-    }
 
     // A search hit's jump (`src/ts/messageSearch.svelte.ts`): claimed once its chat is selected,
     // loaded and shown, before any await, so it runs once.
@@ -294,13 +421,26 @@
     });
 
     let destroyed = false;
-    /** The token of the jump this screen runs, cancelled when the screen goes away. */
-    let ownedJump: number | null = null;
+    /** Bookmark and search jumps share one owner, including a way to release pending waits. */
+    let ownedJump: { stop(): void; isCurrent(): boolean } | null = null;
+    function stopOwnedJump() {
+        pendingBookmark = null;
+        const previous = ownedJump;
+        ownedJump = null;
+        previous?.stop();
+    }
     onDestroy(() => {
         destroyed = true;
-        if (ownedJump !== null) {
-            cancelMessageJump(ownedJump);
-        }
+        stopOwnedJump();
+    });
+    $effect.pre(() => {
+        chatKey;
+        chatShown;
+        chatsInstance;
+        chatScroller;
+        untrack(() => {
+            if (ownedJump && !ownedJump.isCurrent()) stopOwnedJump();
+        });
     });
 
     /** Waits until the scroller's images loaded or failed, at most 4 s or until `stopped`. */
@@ -335,32 +475,47 @@
     }
 
     /**
-     * Runs a claimed search jump (`messageJump.ts`): it owns the screen by its token and stops once the
-     * token is replaced, its chat is no longer the selected and shown one, or the transcript was
-     * replaced; the message is found by id in the selected chat after every await.
+     * Runs a bookmark or claimed search jump through `runMessageJump` (`messageJump.ts`), as the screen's one
+     * owned jump. A newer jump, a chat switch, a replaced transcript, or the screen's destruction stops it; after
+     * every await the chat must still be selected and shown. Messages are found by id; a greeting target
+     * loads the full history and finds the row at -1. While it runs,
+     * trimming is suspended and the transcript's scroll anchor is released.
      */
-    async function scrollToMessageId(jump: MessageJump) {
+    async function scrollToMessageId(jump: Pick<MessageJump, "ref" | "messageId"> & { token?: number }) {
         const { token, ref, messageId } = jump;
+        stopOwnedJump();
         const chats = chatsInstance;
         const scroller = chatScroller;
         if (!chats || !scroller) {
-            cancelMessageJump(token);
+            if (token !== undefined) cancelMessageJump(token);
             return;
         }
-        ownedJump = token;
-        scrollingToMessage += 1;
-        const stopped = messageJumpStopped(token);
-        const isCurrent = () => {
-            const now = untrack(() => currentChatRef());
-            return (
-                !destroyed &&
-                isMessageJumpCurrent(token) &&
-                now?.chaId === ref.chaId &&
-                now.chatId === ref.chatId &&
-                untrack(() => chatShown && chatsInstance === chats && chatScroller === scroller) &&
-                scroller.isConnected
-            );
+        let stop!: () => void;
+        const localStopped = new Promise<void>((resolve) => {
+            stop = resolve;
+        });
+        const owner = {
+            stop: () => {
+                stop();
+                if (token !== undefined) cancelMessageJump(token);
+            },
+            isCurrent: () => {
+                const now = untrack(() => currentChatRef());
+                return (
+                    !destroyed &&
+                    ownedJump === owner &&
+                    (token === undefined || isMessageJumpCurrent(token)) &&
+                    now?.chaId === ref.chaId &&
+                    now.chatId === ref.chatId &&
+                    untrack(() => chatShown && chatsInstance === chats && chatScroller === scroller) &&
+                    scroller.isConnected
+                );
+            },
         };
+        ownedJump = owner;
+        scrollingToMessage += 1;
+        const stopped = token === undefined ? localStopped : Promise.race([localStopped, messageJumpStopped(token)]);
+        const isCurrent = owner.isCurrent;
         try {
             const outcome = await runMessageJump(messageId, {
                 isCurrent,
@@ -389,19 +544,22 @@
                     }, 2000);
                 },
             });
-            if (outcome === "stopped" || !isCurrent()) {
-                cancelMessageJump(token);
-            } else {
-                completeMessageJump(token);
-                if (outcome === "gone") {
-                    alertNormal(language.messageSearch.messageGone);
+            if (token !== undefined) {
+                if (outcome === "stopped" || !isCurrent()) {
+                    cancelMessageJump(token);
+                } else {
+                    completeMessageJump(token);
+                    if (outcome === "gone") {
+                        alertNormal(language.messageSearch.messageGone);
+                    }
                 }
             }
         } catch (error) {
-            cancelMessageJump(token);
-            console.error("[MessageSearch] The jump to the message failed", error);
+            if (token !== undefined) cancelMessageJump(token);
+            console.error("The jump to the message failed", error);
         } finally {
-            if (ownedJump === token) {
+            owner.stop();
+            if (ownedJump === owner) {
                 ownedJump = null;
             }
             scrollingToMessage -= 1;
@@ -415,6 +573,139 @@
         return sendMain(true);
     }
 
+    /** A whole draft snapshot may replace only an entirely empty composer; ordinary sends need only the main box. */
+    function composerEmptyFor(ref: ChatRef, send: SendDraft): boolean {
+        const draft = composer.at(chatKeyOf(ref));
+        return (
+            draft.input === "" &&
+            (!send.composer || (draft.draft === "" && draft.translate === "" && draft.files.length === 0))
+        );
+    }
+
+    async function runDraftHook(ref: ChatRef, hook: InputHook) {
+        if (isChatBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const run = inputHookRuns.begin(ref, "draft");
+        if (!run) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const { signal, release } = sendAborts.begin(ref);
+        const key = chatKeyOf(ref);
+        const revision = composer.textRevision(key);
+        const display = displayGeneration;
+        const eligible = () =>
+            !signal.aborted &&
+            chatShown &&
+            selection.chatOpen &&
+            chatKey === key &&
+            displayGeneration === display &&
+            !!findChat(ref) &&
+            composer.textRevision(key) === revision;
+        try {
+            const draft = composer.at(key);
+            const result = await runInputHook(hook, { ref, content: draft.input, draft: draft.draft, signal });
+            if (!eligible()) return;
+            if (!result.trim()) {
+                alertError(language.errors.emptyText);
+                return;
+            }
+            composer.at(key).draft = result;
+        } catch (error) {
+            if (eligible()) alertError(error instanceof Error ? error.message : String(error));
+        } finally {
+            release();
+            run.end();
+        }
+    }
+
+    function chooseBtwHook() {
+        openMenu = false;
+        const ref = currentChatRef();
+        const hooks = (settings.inputHooks ?? []).filter((hook) => hook.type === "btw");
+        if (!ref || ref.chaId === "§playground" || hooks.length === 0) return;
+        if (hooks.length === 1) {
+            void runBtwHook(ref, hooks[0]);
+        } else {
+            btwPicker = { ref, hooks };
+        }
+    }
+
+    function runPickedBtwHook(hook: InputHook) {
+        const picker = btwPicker;
+        if (!picker) return;
+        btwPicker = null;
+        void runBtwHook(picker.ref, hook);
+    }
+
+    /** Keeps a BTW answer for its chat without changing any composer field or persisted record. */
+    async function runBtwHook(ref: ChatRef, hook: InputHook) {
+        if (!findChat(ref)) return;
+        if (isChatBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const run = inputHookRuns.begin(ref, "btw");
+        if (!run) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const { signal, release } = sendAborts.begin(ref);
+        const key = chatKeyOf(ref);
+        const display = displayGeneration;
+        const eligible = () =>
+            !signal.aborted &&
+            chatShown &&
+            selection.chatOpen &&
+            chatKey === key &&
+            displayGeneration === display &&
+            !!findChat(ref);
+        try {
+            const draft = composer.at(key);
+            const result = (await runInputHook(hook, { ref, content: draft.input, draft: draft.draft, signal })).trim();
+            if (signal.aborted || !findChat(ref)) return;
+            if (!result) {
+                if (eligible()) alertError(language.errors.emptyText);
+                return;
+            }
+            btwResults = new Map(btwResults).set(key, result);
+        } catch (error) {
+            if (eligible()) alertError(error instanceof Error ? error.message : String(error));
+        } finally {
+            release();
+            run.end();
+        }
+    }
+
+    function dismissBtwResult() {
+        const ref = currentChatRef();
+        if (!ref) return;
+        const next = new Map(btwResults);
+        next.delete(chatKeyOf(ref));
+        btwResults = next;
+    }
+
+    /**
+     * Send (`send`) and Continue (`sendContinue`) from the selected chat's composer. The checks run in
+     * this order, all before the composer or reroll history is consumed:
+     * the chat busy or running a hook (`isScreenBusy`), a slash command (`processMultiCommand`, which
+     * reserves the chat and consumes its line only if unchanged), the chat busy again after a line that is not
+     * a command, an incomplete binding (`chatBindingDialog`), then orphaned lore overrides. A chosen Draft hook runs on nonblank main text and returns without
+     * consuming anything; Continue, commands, blank main text, and the playground keep the send path.
+     * While the binding is incomplete the send button reads "Set up this chat" and keeps the
+     * `button-icon-send` class, so the send hotkey opens the setup too, and the composers are read-only.
+     * The send text is `composerSendText`, which appends the queued
+     * `{{inlayed::id}}` tags; an empty one (Continue included) appends "*says nothing*" only with
+     * `useSayNothing` on, outside a group, and when the last message is not the user's. Consuming the
+     * input clears the chat's bundle history, and nothing awaits between it and the send's admission.
+     *
+     * The send asks to stop over the lore budget (`sendChatMain`'s `askLoreStop`). A stop opens the dialog
+     * (`offerLoreStop`) when the chat holds the send's user message or there was no input; a stop whose
+     * text went back to the composer shows the job's message as an alert instead. The repeat sends the same
+     * input under the same `userMessageId` and a new request id, and never reads the composer again.
+     */
     async function sendMain(continueResponse: boolean) {
         // The chat this send writes to, captured before any await; everything after an await
         // resolves it again by id (and stops when it is gone).
@@ -422,23 +713,41 @@
         if (!ref) {
             return;
         }
+        const draft = composer.at(chatKeyOf(ref));
         // Only this chat's own work refuses the send (a send of this tab, a followed job, or a lock),
         // before the text, translation draft, attachments, or reroll history are consumed; other chats
         // send at the same time.
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
         const characterOf = () => characterList().find((character) => character?.chaId === ref.chaId);
 
-        if (messageInput.startsWith("/")) {
-            const commandProcessed = await processMultiCommand(messageInput);
-            if (commandProcessed !== false) {
-                messageInput = "";
+        if (draft.input.startsWith("/")) {
+            const submitted = draft.input;
+            const release = beginLocalSend(ref);
+            if (!release) {
+                alertError(language.chatGenerating);
                 return;
             }
+            try {
+                const commandProcessed = await processMultiCommand(submitted, ref);
+                if (commandProcessed !== false) {
+                    if (draft.input === submitted) {
+                        draft.input = "";
+                        inputTranslation.invalidate();
+                    }
+                    return;
+                }
+            } catch (error) {
+                alertError(error);
+                return;
+            } finally {
+                release();
+            }
+            if (draft.input !== submitted) return;
             // Not a command: the chat may have started work meanwhile.
-            if (isChatBusy(ref)) {
+            if (isScreenBusy(ref)) {
                 alertError(language.chatGenerating);
                 return;
             }
@@ -449,27 +758,31 @@
             return;
         }
         // An incomplete binding opens its setup before anything is consumed (also for Continue): the
-        // text, the translation draft, and the attachments stay in the composer.
+        // text, the translation draft, and the attachments stay in this chat's composer.
         if (chatBinding(ref)?.ok === false) {
             chatBindingDialog.set(ref);
             return;
         }
-        const orphans = chatOrphanedOverrideEntries(ref);
-        if (orphans.length > 0) {
-            alertError(chatLoreOverrideRefusalText(orphans));
+        if (refuseOrphanedOverrides(ref)) {
             return;
         }
 
-        if (fileInput.length > 0) {
-            for (const file of fileInput) {
-                messageInput += `{{inlayed::${file}}}`;
-            }
-            fileInput = [];
+        const hook = draftHookOf(settings.inputHooks ?? [], findChat(ref)?.draftHookId);
+        if (!continueResponse && ref.chaId !== "§playground" && draft.input.trim() && hook) {
+            await runDraftHook(ref, hook);
+            return;
         }
 
+        const snapshot = {
+            input: draft.input,
+            draft: draft.draft,
+            translate: draft.translate,
+            files: [...draft.files],
+        };
+        const input = composerSendText(snapshot);
         // The job runs the input stage and appends the user message.
         let serverInput: SendDraft | null = null;
-        if (messageInput === "") {
+        if (input === "") {
             if (char.type !== "group") {
                 if (cha.length === 0 || cha[cha.length - 1].role !== "user") {
                     if (settings.ui.useSayNothing) {
@@ -479,14 +792,136 @@
             }
         } else {
             // Retried text keeps its id: the server skips an input it already appended under it.
-            serverInput = { input: messageInput, userMessageId: sendDrafts.idFor(ref, messageInput) };
+            serverInput = { input, ...sendDrafts.idsFor(ref, input, !continueResponse) };
+            composer.beginSend(chatKeyOf(ref), {
+                snapshot,
+                userMessageId: serverInput.userMessageId,
+                requestId: continueResponse ? undefined : serverInput.requestId,
+            });
         }
-        messageInput = "";
-        messageInputTranslate = "";
+        draft.files = [];
+        draft.input = "";
+        draft.translate = "";
+        inputTranslation.invalidate();
         rerollHistory.clear(ref);
         // The send is admitted without another await after the input is consumed.
         void sleep(10).then(updateInputSizeAll);
-        await sendChatMain(continueResponse, ref, serverInput);
+        return sendConsumed(continueResponse, ref, serverInput);
+    }
+
+    /** Sends the draft box through the ordinary path, retaining the whole composer for a failed send. */
+    async function sendDraftMessage() {
+        const ref = currentChatRef();
+        if (!ref || ref.chaId === "§playground") return;
+        if (isScreenBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        if (!characterList().some((character) => character?.chaId === ref.chaId) || !findChat(ref)?.message) return;
+        if (chatBinding(ref)?.ok === false) {
+            chatBindingDialog.set(ref);
+            return;
+        }
+        if (refuseOrphanedOverrides(ref)) return;
+        const draft = composer.at(chatKeyOf(ref));
+        if (!draft.draft.trim()) return;
+        const snapshot = {
+            input: draft.input,
+            draft: draft.draft,
+            translate: draft.translate,
+            files: [...draft.files],
+        };
+        const input = composerSendText(snapshot, "draft");
+        const hook = draftHookOf(settings.inputHooks ?? [], findChat(ref)?.draftHookId);
+        const serverInput: SendDraft = {
+            input,
+            ...sendDrafts.idsFor(ref, input, true, snapshot),
+            composer: snapshot,
+            ...(hook?.translation === true && snapshot.input.trim() !== "" ? { inputOriginal: snapshot.input } : {}),
+        };
+        composer.beginSend(chatKeyOf(ref), {
+            snapshot,
+            userMessageId: serverInput.userMessageId,
+            requestId: serverInput.requestId,
+            sent: "draft",
+        });
+        draft.input = "";
+        draft.draft = "";
+        draft.translate = "";
+        draft.files = [];
+        inputTranslation.invalidate();
+        rerollHistory.clear(ref);
+        void sleep(10).then(updateInputSizeAll);
+        return sendConsumed(false, ref, serverInput);
+    }
+
+    /** Admits a consumed composer immediately and handles the lore-stop choice for either sent box. */
+    async function sendConsumed(continueResponse: boolean, ref: ChatRef, serverInput: SendDraft | null) {
+        const end = await sendChatMain(continueResponse, ref, serverInput, undefined, { askLoreStop: true });
+        if (!end.loreStop) {
+            return;
+        }
+        const owner = chatOwnerToken(ref.chaId);
+        const release = pinChat(ref);
+        try {
+            if (serverInput && !holdsUserMessage(ref, serverInput.userMessageId)) {
+                // The text is back in the composer (or kept for it): sending it again asks again.
+                alertError(end.loreStop.message);
+                return;
+            }
+            // The user message is in the chat and its draft is gone, so the repeat names both ids itself:
+            // the server skips an input the chat already holds under that id. The stopped request's id
+            // would replay its stop.
+            const repeated: SendDraft | null = serverInput && {
+                ...serverInput,
+                requestId: v4(),
+                requestUncertain: false,
+            };
+            await offerLoreStop(ref, owner, end.loreStop, serverInput !== null, () =>
+                sendChatMain(continueResponse, ref, repeated),
+            );
+        } finally {
+            release();
+        }
+    }
+
+    type LoreStop = NonNullable<ServerSendResult["loreStop"]>;
+
+    /** Whether the loaded chat holds the user message a send appends under `userMessageId`. */
+    function holdsUserMessage(ref: ChatRef, userMessageId: string): boolean {
+        return (
+            findChat(ref)?.message.some((message) => message.chatId === userMessageId && message.role === "user") ??
+            false
+        );
+    }
+
+    /**
+     * Asks what to do about a send of `ref` that stopped over the lore budget, once the caller has put the chat
+     * back as its failed send leaves it. On "Don't warn in this chat and send" it sets the chat's
+     * `loreBudgetWarnOff` and runs `resend`, the caller's own request again (which asks for no stop); any other
+     * choice sends nothing. The dialog is awaited, so nothing here reads the selected chat. `owner` is the
+     * `chatOwnerToken` the caller took when it saw the stop: the choice is dropped when the character's chats
+     * were replaced since, or the chat left the list. The caller keeps `ref` pinned from the stop until this
+     * returns, since the flag can be set only on a loaded chat.
+     */
+    async function offerLoreStop(
+        ref: ChatRef,
+        owner: string,
+        stop: LoreStop,
+        messageKept: boolean,
+        resend: () => Promise<unknown>,
+    ) {
+        const choice = await askLoreBudgetStop(ref, stop.lore, { messageKept });
+        if (choice !== "warnOffAndSend" || chatOwnerToken(ref.chaId) !== owner || !isActiveChat(ref)) {
+            return;
+        }
+        try {
+            setChatMeta(ref, { loreBudgetWarnOff: true });
+        } catch (error) {
+            alertError(error);
+            return;
+        }
+        await resend();
     }
 
     // A swiped reply reads from its start, like a new one, while the reader follows the newest
@@ -506,28 +941,38 @@
         if (now?.chaId === ref.chaId && now.chatId === ref.chatId) chatsInstance?.scrollToLatestMessage();
     }
 
+    /**
+     * Refused while the selected chat is busy. Tries the carrier's next candidate, then bundle history.
+     * A new reroll checks lore overrides and regenerates a single reply in place when the connection
+     * supports it; while the feed is still connecting it waits for the hello first
+     * (`awaitServerRerollsInPlace`), and the press is dropped when the chat changed meanwhile. Other tails
+     * use removal, a send, and the bundle history's guarded restoration (`rerollByRemoval`). Both ask to
+     * stop over the lore budget; an in-place reroll that stopped always opens the dialog (`offerLoreStop`)
+     * and repeats with the same message id and speaker.
+     */
     async function reroll() {
         const ref = currentChatRef();
-        // Nothing while the selected chat loads.
-        if (!ref || !currentChat) {
+        // Nothing while the selected chat loads, or while an earlier press waits for the hello.
+        if (!ref || !currentChat || rerollAwaitsHello) {
             return;
         }
         // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
         // the last reply stays locked until its server job releases it).
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage = currentChat.message.at(-1);
-        const genId = lastMessage?.generationInfo?.generationId;
-        if (genId) {
-            const r = Prereroll(genId);
-            if (r !== null) {
-                const follow = followsSwap();
-                setMessageText(ref, lastMessage.chatId, r);
+        let carrier = rerollCarrier(currentChat);
+        const next = neighborCandidateId(carrier, 1);
+        if (next) {
+            const follow = followsSwap();
+            try {
+                await switchCandidate(ref, carrier.chatId, next);
                 void showSwappedReply(ref, follow);
-                return;
+            } catch (error) {
+                alertError(error);
             }
+            return;
         }
         if (rerollHistory.canForward(ref)) {
             const follow = followsSwap();
@@ -535,49 +980,138 @@
             void showSwappedReply(ref, follow);
             return;
         }
-        const orphans = chatOrphanedOverrideEntries(ref);
-        if (orphans.length > 0) {
-            alertError(chatLoreOverrideRefusalText(orphans));
+        if (carrier && !serverRerollsInPlace()) {
+            // The socket is replaced whenever the page comes back: a press right then waits for the hello
+            // that is a moment away, so the reply is rerolled in place instead of removed.
+            const pressed = carrier.chatId;
+            openMenu = false;
+            rerollAwaitsHello = true;
+            try {
+                await awaitServerRerollsInPlace();
+            } finally {
+                rerollAwaitsHello = false;
+            }
+            const now = currentChatRef();
+            carrier = currentChat ? rerollCarrier(currentChat) : null;
+            if (
+                now?.chaId !== ref.chaId ||
+                now.chatId !== ref.chatId ||
+                isScreenBusy(ref) ||
+                carrier?.chatId !== pressed ||
+                neighborCandidateId(carrier, 1) ||
+                rerollHistory.canForward(ref)
+            ) {
+                return;
+            }
+        }
+        if (refuseOrphanedOverrides(ref)) {
             return;
         }
-        let cha = safeStructuredClone(currentChat.message) as Message[];
-        if (cha.length === 0) {
+        if (carrier && serverRerollsInPlace()) {
+            openMenu = false;
+            const rerollTarget = {
+                rerollMessageId: carrier.chatId,
+                ...(carrier.saying ? { speakerChaId: carrier.saying } : {}),
+            };
+            const end = await sendChatMain(false, ref, null, rerollTarget, { askLoreStop: true });
+            if (!end.loreStop) {
+                return;
+            }
+            const owner = chatOwnerToken(ref.chaId);
+            const release = pinChat(ref);
+            try {
+                await offerLoreStop(ref, owner, end.loreStop, false, () =>
+                    sendChatMain(false, ref, null, rerollTarget),
+                );
+            } finally {
+                release();
+            }
+            return;
+        }
+        if (!currentChat || currentChat.message.length === 0) {
             return;
         }
         openMenu = false;
-        const saying = cha[cha.length - 1].saying;
-        let sayingQu = 2;
-        const removed: Message[] = [];
-        while (cha.length > 0 && cha[cha.length - 1].role !== "user") {
-            if (cha[cha.length - 1].saying === saying) {
-                sayingQu -= 1;
-                if (sayingQu === 0) {
-                    break;
-                }
-            }
-            let msg = cha.pop();
-            if (!msg) {
-                return;
-            }
-            removed.push(msg);
+        await rerollByRemoval(ref, true);
+    }
+
+    /**
+     * The reroll of a tail that is not regenerated in place: removes `ref`'s replies after its last user
+     * message and sends again; a send that brought no reply puts them back (`rerollHistory.restore`). It reads
+     * the chat by `ref`, never the selected one, and makes the reroll's checks itself before it removes
+     * anything (the chat busy, orphaned lore overrides), because it also runs as the repeat after a lore
+     * budget stop, when another chat may be selected.
+     *
+     * `askLoreStop`: the send asks to stop over the lore budget. A stop opens the dialog (`offerLoreStop`) once
+     * the removed replies are back, or when there were none to remove; its repeat is this function again
+     * without the ask. A stop whose replies could not be put back shows the job's message as an alert instead
+     * (and the unsafe-restoration alert after it).
+     */
+    async function rerollByRemoval(ref: ChatRef, askLoreStop: boolean) {
+        if (isScreenBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
         }
-        removed.reverse();
+        if (refuseOrphanedOverrides(ref)) {
+            return;
+        }
+        const chat = findChat(ref);
+        if (!chat) {
+            return;
+        }
+        if (chat.message.length === 0) {
+            return;
+        }
+        const start = rerollTurnStart(chat.message);
+        const cha = chat.message.slice(0, start);
+        const removed = safeStructuredClone(chat.message.slice(start)) as Message[];
         const anchor = cha.at(-1)?.chatId ?? null;
         rerollHistory.begin(ref, anchor, removed);
         // The replies after the last user message go, then the send runs again.
         const owner = chatOwnerToken(ref.chaId);
         const kept = new Set(cha.map((message) => message.chatId));
-        editChatSync(ref, (chat) => {
-            chat.message = chat.message.filter((message) => kept.has(message.chatId));
-        });
-        if (!(await sendChatMain(false, ref)).ran) {
-            // The send did not run (a flush refused for another tab's generation, which
-            // `runServerJob` already alerted as `chatGenerating`, or another refusal before the
-            // save): the replies come back while their removal is still unsent.
-            restoreUnsentRemoval(ref, owner, anchor, removed);
+        const checkpoint = removed.findLast((message) => !message.isComment)?.scriptstateCheckpoint;
+        const before = safeStructuredClone(chat.scriptstate ?? null);
+        // Queue variables before the removal so a refused send can still withdraw its final remove op.
+        if (checkpoint?.after !== undefined) {
+            editChatSync(ref, (draft) => {
+                draft.scriptstate = restoredScriptstate(checkpoint.before, checkpoint.after, draft.scriptstate);
+            });
+        }
+        const variables = { before, after: safeStructuredClone(findChat(ref)?.scriptstate ?? null) };
+        // Until the send ends only this tab can put the removed replies back: leaving the page meanwhile asks.
+        const releaseUnload = removed.length > 0 ? holdUnloadWarning() : null;
+        let release: (() => void) | null = null;
+        try {
+            editChatSync(ref, (draft) => {
+                draft.message = draft.message.filter((message) => kept.has(message.chatId));
+            });
+            // A send that brought no reply (refused, failed, or stopped before one) puts the replies back.
+            const end = await sendChatMain(false, ref, null, undefined, { askLoreStop });
+            const stop = end.loreStop;
+            // From the stop on the chat stays loaded (the dialog's first choice sets a chat flag), and the
+            // choice is checked against the owner the chat has now.
+            const stopOwner = chatOwnerToken(ref.chaId);
+            release = stop ? pinChat(ref) : null;
+            const restored = await rerollHistory.restore(ref, owner, anchor, removed, end, undefined, variables);
+            releaseUnload?.();
+            if (stop && (restored === "restored" || removed.length === 0)) {
+                await offerLoreStop(ref, stopOwner, stop, false, () => rerollByRemoval(ref, false));
+                return;
+            }
+            if (stop) {
+                alertError(stop.message);
+            }
+            if (restored === "unsafe") {
+                alertError(language.rerollRepliesNotRestored);
+            }
+        } finally {
+            releaseUnload?.();
+            release?.();
         }
     }
 
+    /** Refused while busy; switches to the previous stored candidate, then falls back to bundle history. */
     async function unReroll() {
         const ref = currentChatRef();
         // Nothing while the selected chat loads.
@@ -586,78 +1120,155 @@
         }
         // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
         // the last reply stays locked until its server job releases it).
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
-        const lastMessage = currentChat.message.at(-1);
-        const genId = lastMessage?.generationInfo?.generationId;
-        if (genId) {
-            const r = PreUnreroll(genId);
-            if (r !== null) {
-                const follow = followsSwap();
-                setMessageText(ref, lastMessage.chatId, r);
+        const carrier = rerollCarrier(currentChat);
+        const previous = neighborCandidateId(carrier, -1);
+        if (previous) {
+            const follow = followsSwap();
+            try {
+                await switchCandidate(ref, carrier.chatId, previous);
                 void showSwappedReply(ref, follow);
-                return;
+            } catch (error) {
+                alertError(error);
             }
+            return;
         }
         const follow = followsSwap();
         if (rerollHistory.back(ref)) void showSwappedReply(ref, follow);
     }
 
-    // This screen's sends by chat: Stop aborts the selected chat's.
+    // This screen's sends and hook runs by chat: Stop aborts the selected chat's.
     const sendAborts = createSendAborts();
     // Stop shows for this screen's send in the selected chat or any followed job of it.
     const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
-    // The selected chat's own job stage.
+    const retryCount = $derived.by(() => {
+        for (let i = ownedJobIds.length - 1; i >= 0; i--) {
+            const count = $jobRetries.get(ownedJobIds[i]);
+            if (count !== undefined) return count;
+        }
+        return null;
+    });
+    const loadingJobChat = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref !== null && followedJobsOf($loadingJobChats, ref).length > 0;
+    });
+    const foreignProgress = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? foreignGeneration(ref.chaId, ref.chatId, generationClientId()) : null;
+    });
+    const foreignProcessStage = $derived(
+        foreignProgress?.stage ? GENERATION_STAGES.indexOf(foreignProgress.stage) + 1 : 0,
+    );
+    const foreignStoppable = $derived.by(() => {
+        const ref = currentChatRef();
+        return !stoppable && ref !== null && (foreignJobChatKeys().has(chatStatusKey(ref)) || foreignProgress !== null);
+    });
+    /**
+     * The Stop button's `chat-process-stage-<n>`: 1 to 4 for the stage (`GENERATION_STAGES` order) of the selected
+     * chat's newest own staged job, falling back to its foreign job's stage while a remote send runs, else 0.
+     * Another chat's job never colors it.
+     */
     const processStage = $derived.by(() => {
         const ref = currentChatRef();
         const stage = ref ? chatStageOf($jobStages, ref) : null;
-        return stage === null ? 0 : GENERATION_STAGES.indexOf(stage) + 1;
+        return stage === null ? foreignProcessStage : GENERATION_STAGES.indexOf(stage) + 1;
     });
 
     /**
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
      * `serverInput`: the input a server job appends (its user message is not part of the reroll).
+     * `rerollTarget`: regenerates the named carrier in place, without recording a removed bundle.
+     * Without input, Continue names the last message seen now; it and in-place rerolls get a fresh
+     * request id for remote eligibility on every call. Other no-input sends stay local. With input,
+     * Continue uses the input's fresh ids and continues the user message its job appends.
      * `ran`: false for a refusal or an ambiguous create (the job may exist); it does not prove no job ran.
      * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
+     * `settled`: nothing of the send writes to the chat any more (`sendChat`'s `onEnd`; false when it threw).
+     * `blockedChats`: the chats a flush refused for a generation waited on.
+     * It rechecks `target`'s busy state including hook runs, takes the chat's Stop controller (`sendAborts`, from
+     * `createSendAborts`), and calls `sendChat` with `target` and `serverInput`'s ids. An input that
+     * neither landed nor succeeded keeps its text and `userMessageId` (`sendDrafts.settle`), and the text
+     * goes back only to an empty main input for its chat. A draft send restores its whole raw composer
+     * only when all four parts are empty. Both restore at once when selected, else when shown next
+     * (`takeUnplaced`). The raw snapshot never reaches `sendChat`. Auto mode is `runAutoMode`.
+     *
+     * `options.askLoreStop`: the send asks its job to stop before the model request when the lore budget
+     * leaves an activated entry out, while the setting is on and the chat has not turned the warning off
+     * (`wantsLoreBudgetStop`, read right before the send). Only the send and continue, the in-place reroll,
+     * and the reroll by removal pass it; auto mode and the repeat after a stop do not.
+     * `loreStop`: the job stopped that way and no alert was raised for it (`sendChat`'s `onEnd`): the entries
+     * left out and the job's English message, for the caller to show (`offerLoreStop`) after its own
+     * failure handling.
      */
     async function sendChatMain(
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
         serverInput: SendDraft | null = null,
-    ): Promise<{ ran: boolean; ok: boolean }> {
+        rerollTarget?: { rerollMessageId: string; speakerChaId?: string },
+        options: { askLoreStop?: boolean } = {},
+    ): Promise<{
+        ran: boolean;
+        ok: boolean;
+        settled: boolean;
+        blockedChats: readonly ChatRef[];
+        loreStop?: LoreStop;
+    }> {
         if (!target) {
-            return { ran: false, ok: false };
+            return { ran: false, ok: false, settled: true, blockedChats: [] };
         }
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
         let ran = true;
+        let end: {
+            settled: boolean;
+            blockedChats: readonly ChatRef[];
+            requestUncertain?: boolean;
+            loreStop?: LoreStop;
+        } = {
+            settled: false,
+            blockedChats: [],
+        };
         let releaseAbort: (() => void) | null = null;
         try {
             // Only this chat's own work refuses it; `sendChat` takes the chat's entry synchronously
             // right after this check.
-            if (isChatBusy(target)) {
+            if (isScreenBusy(target)) {
                 alertError(language.chatGenerating);
-                return { ran: false, ok: false };
+                end = {
+                    settled: !serverInput?.requestUncertain,
+                    blockedChats: [],
+                    requestUncertain: serverInput?.requestUncertain === true,
+                };
+                return { ran: false, ok: false, ...end };
             }
             const { signal, release } = sendAborts.begin(target);
             releaseAbort = release;
+            const { composer: consumedComposer, ...sendInput } = serverInput ?? {};
             ok = await sendChat(-1, {
                 target,
                 signal,
                 continue: continued,
-                ...serverInput,
+                ...sendInput,
+                ...(!serverInput && ((continued && anchor !== null) || rerollTarget) ? { requestId: v4() } : {}),
+                ...(!serverInput && continued && anchor !== null ? { continueMessageId: anchor } : {}),
+                ...rerollTarget,
+                ...(options.askLoreStop && wantsLoreBudgetStop(target) ? { stopOverLoreBudget: true } : {}),
                 onServerRefused: () => {
                     ran = false;
                 },
+                onEnd: (sendEnd) => {
+                    end = sendEnd;
+                },
             });
             if (!ran) {
-                return { ran, ok };
+                return { ran, ok, ...end };
             }
             const messages = findChat(target)?.message ?? [];
             const anchorIndex = anchor === null ? -1 : messages.findIndex((message) => message.chatId === anchor);
-            if ((anchor === null || anchorIndex !== -1) && anchorIndex + 1 < messages.length) {
+            if (!rerollTarget && (anchor === null || anchorIndex !== -1) && anchorIndex + 1 < messages.length) {
                 rerollHistory.record(target, anchor, messages.slice(anchorIndex + 1));
             }
         } catch (error) {
@@ -667,19 +1278,29 @@
         } finally {
             releaseAbort?.();
             if (serverInput) {
-                const landed =
-                    findChat(target)?.message.some(
-                        (message) => message.chatId === serverInput.userMessageId && message.role === "user",
-                    ) ?? false;
+                const landed = holdsUserMessage(target, serverInput.userMessageId);
                 const selected = currentChatRef();
                 const result = sendDrafts.settle(target, serverInput, {
                     landed,
                     ok,
+                    requestUncertain: !continued && (end.requestUncertain ?? !end.settled),
                     selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
-                    composerEmpty: messageInput === "",
+                    composerEmpty: composerEmptyFor(target, serverInput),
+                });
+                composer.settleSend(chatKeyOf(target), serverInput.userMessageId, result === "drop", {
+                    requestId: continued ? undefined : serverInput.requestId,
+                    retainedRequestId: sendDrafts.retryIdFor(
+                        target,
+                        serverInput.composer ?? {
+                            input: serverInput.input,
+                            draft: "",
+                            translate: "",
+                            files: [],
+                        },
+                    )?.requestId,
                 });
                 if (result === "restore") {
-                    messageInput = serverInput.input;
+                    composer.placeSend(chatKeyOf(target), serverInput);
                 }
             }
         }
@@ -687,7 +1308,7 @@
             const audio = new Audio(sendSound);
             audio.play().catch(() => {});
         }
-        return { ran, ok };
+        return { ran, ok, ...end };
     }
 
     function abortChat() {
@@ -723,6 +1344,12 @@
         autoRun = null;
     });
 
+    /**
+     * Auto mode: rounds of `sendChatMain` in the chat it started in, one after another. It ends on Stop
+     * (`abortChat`), an unsuccessful round (`ok` false: refused, failed, lost, or stopped), toggling it
+     * again, leaving or closing that chat (the `autoRun` effect), or the screen's destruction. Its rounds
+     * never ask to stop over the lore budget: nobody is asked between them.
+     */
     async function runAutoMode() {
         const ref = currentChatRef();
         if (!ref) {
@@ -760,15 +1387,30 @@
             userIcon: persona?.icon,
         };
     });
+    let inputPlaceholder = $derived(
+        composerPlaceholder({
+            setupNeeded: bindingIncomplete,
+            playground: currentCharacter?.chaId === "§playground",
+            persona: currentUsername,
+            character: currentCharacter?.name ?? "",
+        }),
+    );
 
     let inputHeight = $state("44px");
     let inputEle: HTMLTextAreaElement = $state();
     let inputTranslateHeight = $state("44px");
     let inputTranslateEle: HTMLTextAreaElement = $state();
+    let inputDraftHeight = $state("44px");
+    let inputDraftEle: HTMLTextAreaElement = $state();
 
     function updateInputSizeAll() {
         updateInputSize();
         updateInputTranslateSize();
+        if (inputDraftEle) {
+            inputDraftEle.style.height = "0";
+            inputDraftHeight = inputDraftEle.scrollHeight + "px";
+            inputDraftEle.style.height = inputDraftHeight;
+        }
     }
 
     function updateInputTranslateSize() {
@@ -789,48 +1431,20 @@
     $effect.pre(() => {
         updateInputSizeAll();
     });
+    $effect(() => {
+        composer.draft;
+        showDraft;
+        void tick().then(updateInputSizeAll);
+    });
 
-    async function updateInputTransateMessage(reverse: boolean) {
-        if (!settings.memoryTranslateMedia.useAutoTranslateInput) {
-            return;
-        }
-        if (isExpTranslator()) {
-            if (!reverse) {
-                messageInputTranslate = "";
-                return;
-            }
-            if (messageInputTranslate === "") {
-                messageInput = "";
-                return;
-            }
-            const lastMessageInputTranslate = messageInputTranslate;
-            await sleep(1500);
-            if (lastMessageInputTranslate === messageInputTranslate) {
-                translate(reverse ? messageInputTranslate : messageInput, reverse).then((translatedMessage) => {
-                    if (translatedMessage) {
-                        if (reverse) messageInput = translatedMessage;
-                        else messageInputTranslate = translatedMessage;
-                    }
-                });
-            }
-            return;
-        }
-        if (reverse && messageInputTranslate === "") {
-            messageInput = "";
-            return;
-        }
-        if (!reverse && messageInput === "") {
-            messageInputTranslate = "";
-            return;
-        }
-        translate(reverse ? messageInputTranslate : messageInput, reverse).then((translatedMessage) => {
-            if (translatedMessage) {
-                if (reverse) messageInput = translatedMessage;
-                else messageInputTranslate = translatedMessage;
-            }
-        });
-    }
-
+    /**
+     * Captures the transcript as whole-row PNG Blob pages. `loadPages = Infinity` mounts every row (while folded,
+     * every row up to the fold), which `Chats.svelte` takes as a capture: no staging, reveal batch, held rows, or
+     * containment, and `takingScreenshot` suspends trimming.
+     * The capture starts only once every row and the greeting have rendered their current markdown
+     * (`whenRendered`). The previous window and scroll offset come back in `finally`, only while the same chat is
+     * still open.
+     */
     async function screenShot() {
         const previousWindow = loadPages;
         const capturedChat = chatKey;
@@ -842,55 +1456,26 @@
             await tick();
             const html2canvas = await import("html-to-image");
             await Promise.all([chatsInstance?.whenRendered(), greetingInstance?.whenRendered()]);
-            const chats = document.querySelectorAll(".default-chat-screen .risu-chat");
+            const chats = document.querySelectorAll<HTMLElement>(".default-chat-screen .risu-chat");
+            const pages = planScreenshotPages(chats, measureScreenshotRow);
             alertWait("Taking screenShot...");
-            let canvases: HTMLCanvasElement[] = [];
-
             await withFileSrcFetch(async () => {
-                for (const chat of chats) {
-                    const cnv = await html2canvas.toCanvas(chat as HTMLElement, SCREENSHOT_CAPTURE_OPTIONS);
-                    alertWait("Taking screenShot... " + canvases.length + "/" + chats.length);
-                    canvases.push(cnv);
-                }
-            });
-
-            canvases.reverse();
-
-            alertWait("Merging images...");
-
-            let mergedCanvas = document.createElement("canvas");
-            mergedCanvas.width = 0;
-            mergedCanvas.height = 0;
-            let mergedCtx = mergedCanvas.getContext("2d");
-
-            let totalHeight = 0;
-            let maxWidth = 0;
-            for (let i = 0; i < canvases.length; i++) {
-                let canvas = canvases[i];
-                totalHeight += canvas.height;
-                maxWidth = Math.max(maxWidth, canvas.width);
-
-                mergedCanvas.width = maxWidth;
-                mergedCanvas.height = totalHeight;
-            }
-
-            mergedCtx.fillStyle = "var(--risu-theme-bgcolor)";
-            mergedCtx.fillRect(0, 0, maxWidth, totalHeight);
-            let indh = 0;
-            for (let i = 0; i < canvases.length; i++) {
-                let canvas = canvases[i];
-                indh += canvas.height;
-                mergedCtx.drawImage(canvas, 0, indh - canvas.height);
-                canvases[i].remove();
-            }
-
-            if (mergedCanvas) {
-                await downloadFile(
-                    `chat-${v4()}.png`,
-                    Buffer.from(mergedCanvas.toDataURL("png").split(",").at(-1), "base64"),
+                const capture = await prepareScreenshotCapture(
+                    html2canvas,
+                    pages.flatMap((page) => page.rows.map(({ row }) => row)),
                 );
-                mergedCanvas.remove();
-            }
+                return composeScreenshot({
+                    pages,
+                    background:
+                        getComputedStyle(document.documentElement).getPropertyValue("--risu-theme-bgcolor").trim() ||
+                        "#282a36",
+                    capture,
+                    createCanvas: () => document.createElement("canvas"),
+                    download: downloadFile,
+                    baseName: `chat-${v4()}`,
+                    onProgress: (done, total) => alertWait("Taking screenShot... " + done + "/" + total),
+                });
+            });
             alertNormal(language.screenshotSaved);
         } catch (error) {
             console.error(error);
@@ -998,6 +1583,10 @@
         <ClosedChatScreen character={currentCharacter} />
     {:else if currentChat}
         {@const displayedChat = currentChatRef()}
+        {@const screenBusy =
+            displayedChat !== null && (isLocalSend(displayedChat, $localSends) || isScreenBusy(displayedChat))}
+        {@const canContinue = currentChat.message.length >= 2 && currentChat.message.at(-1)?.role === "char"}
+        {@const draftSendDisabled = !composer.draft.trim() || screenBusy}
         {#if displayedChat}
             <div class="chat-screen-content-width" style:--chat-screen-width="{settings.ui.chatScreenWidth ?? 900}px">
                 <RefusedDataBanner form="chat" chaId={displayedChat.chaId} chatId={displayedChat.chatId} />
@@ -1011,7 +1600,7 @@
             onscroll={(e) => {
                 //@ts-expect-error scrollHeight/clientHeight/scrollTop don't exist on EventTarget, but target is HTMLElement here
                 const scrolled = e.target.scrollHeight - e.target.clientHeight + e.target.scrollTop;
-                if (scrolled < 100 && (currentChat?.message.length ?? 0) > loadPages) {
+                if (scrolled < 100 && !rowsHeld && (currentChat?.message.length ?? 0) > loadPages) {
                     loadPages += getAdditionalChatLoadPages(settings.ui);
                 }
                 const chatTarget = e.target as HTMLElement;
@@ -1031,266 +1620,344 @@
             <div
                 class="{settings.ui.fixedChatTextarea
                     ? 'sticky pt-2 pb-2 right-0 bottom-0 bg-bgcolor'
-                    : 'relative mt-2 mb-2'} chat-screen-content-width flex items-stretch w-full"
+                    : 'relative mt-2 mb-2'} chat-screen-content-width flex flex-col w-full"
                 style={settings.ui.fixedChatTextarea ? "z-index:29;" : ""}
             >
-                {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
-                    <div
-                        onclick={() => {
-                            toggleStickers = !toggleStickers;
-                        }}
-                        class={"ml-4 bg-textcolor2 flex justify-center items-center  w-12 h-12 rounded-md hover:bg-blue-500 transition-colors " +
-                            (toggleStickers ? "text-green-500" : "text-textcolor")}
-                    >
-                        <Laugh />
-                    </div>
-                {/if}
-
-                <textarea
-                    class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:text-sm"
-                    bind:value={messageInput}
-                    bind:this={inputEle}
-                    onkeydown={(e) => {
-                        if (e.key.toLocaleLowerCase() === "enter" && !e.isComposing) {
-                            if (settings.ui.sendWithEnter && !e.shiftKey) {
-                                send();
-                                e.preventDefault();
-                            } else if (!settings.ui.sendWithEnter && e.shiftKey) {
-                                send();
-                                e.preventDefault();
-                            }
-                        }
-                        if (e.key.toLocaleLowerCase() === "m" && e.ctrlKey) {
-                            reroll();
-                            e.preventDefault();
-                        }
-                    }}
-                    onpaste={(e) => {
-                        const items = e.clipboardData?.items;
-                        if (!items) {
-                            return;
-                        }
-                        let canceled = false;
-
-                        for (const item of items) {
-                            if (item.kind === "file" && item.type.startsWith("image")) {
-                                if (!canceled) {
-                                    e.preventDefault();
-                                    canceled = true;
-                                }
-                                const file = item.getAsFile();
-                                if (file) {
-                                    const reader = new FileReader();
-                                    reader.onload = async (e) => {
-                                        const buf = e.target?.result as ArrayBuffer;
-                                        const uint8 = new Uint8Array(buf);
-                                        const results = await postChatFile({
-                                            name: file.name,
-                                            data: uint8,
-                                        });
-                                        if (!results) return;
-                                        for (const res of results) {
-                                            if (res?.type === "asset") {
-                                                fileInput.push(res.data);
-                                            }
-                                            if (res?.type === "text") {
-                                                messageInput += `{{file::${res.name}::${res.data}}}`;
-                                            }
-                                        }
-                                        updateInputSizeAll();
-                                    };
-                                    reader.readAsArrayBuffer(file);
-                                }
-                            }
-                        }
-                    }}
-                    oninput={() => {
-                        updateInputSizeAll();
-                        updateInputTransateMessage(false);
-                    }}
-                    style:height={inputHeight}></textarea>
-
-                {#if displayedChat}
-                    {#key chatKey}
-                        <ContextMeter
-                            chatRef={displayedChat}
-                            group={currentCharacter.type === "group"}
-                            height={inputHeight}
-                            draft={messageInput}
-                            generating={stoppable ||
-                                isLocalSend(displayedChat, $localSends) ||
-                                generatingChatKeys().has(chatStatusKey(displayedChat))}
-                        />
-                    {/key}
-                {/if}
-
-                {#if stoppable}
-                    <button
-                        aria-labelledby="cancel"
-                        class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-blue-500 hover:text-white transition-colors"
-                        onclick={abortChat}
-                        style:height={inputHeight}
-                    >
-                        <div class="loadmove chat-process-stage-{processStage}" class:autoload={autoMode}></div>
-                    </button>
-                {:else if bindingIncomplete}
-                    <!-- Keeps `button-icon-send`: the send hotkey clicks it and opens the setup too. -->
-                    <button
-                        onclick={() => {
-                            const ref = currentChatRef();
-                            if (ref) {
-                                chatBindingDialog.set(ref);
-                            }
-                        }}
-                        class="flex justify-center border-y border-darkborderc items-center text-draculared text-sm p-3 peer-focus:border-textcolor hover:bg-blue-500 hover:text-white transition-colors button-icon-send whitespace-nowrap"
-                        style:height={inputHeight}
-                    >
-                        {language.chatBinding.setUp}
-                    </button>
-                {:else}
-                    <button
-                        onclick={send}
-                        class="flex justify-center border-y border-darkborderc items-center text-textcolor p-3 peer-focus:border-textcolor hover:bg-blue-500 hover:text-white transition-colors button-icon-send"
-                        style:height={inputHeight}
-                    >
-                        <Send />
-                    </button>
-                {/if}
-                {#if currentCharacter?.chaId !== "§playground"}
-                    <button
-                        onclick={(e) => {
-                            openMenu = !openMenu;
-                            e.stopPropagation();
-                        }}
-                        class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
-                        style:height={inputHeight}
-                    >
-                        <MenuIcon />
-                    </button>
-                {:else}
-                    <div
-                        onclick={(e) => {
-                            const ref = currentChatRef();
-                            if (ref) {
-                                appendMessage(ref, { role: "char", data: "" });
-                            }
-                        }}
-                        class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
-                        style:height={inputHeight}
-                    >
-                        <Plus />
-                    </div>
-                {/if}
-
-                <!-- Anchored to the composer row so it opens above the menu button inside the chat column. -->
-                {#if openMenu}
-                    <div
-                        class="absolute right-2 bottom-full mb-2 z-30 p-5 bg-darkbg flex flex-col gap-3 text-textcolor rounded-md"
-                        onclick={(e) => {
-                            e.stopPropagation();
-                        }}
-                    >
-                        {#if currentCharacter.type === "group"}
-                            <div
-                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                onclick={runAutoMode}
+                <!-- One line above the composer row: the remote send marker and the health badge on the left, the
+                     meter on the right. Too narrow for all of them, the meter wraps above the others. -->
+                <div class="flex min-w-0 flex-wrap-reverse items-center">
+                    {#if currentCharacter?.chaId !== "§playground"}
+                        <RemoteSendMarker />
+                    {/if}
+                    {#if displayedChat && memoryHealth}
+                        <!-- The memory health badge, left of the meter's chip; shown with the meter off too. -->
+                        <div class="mb-1 ml-4 flex min-w-0">
+                            <button
+                                type="button"
+                                class="flex max-w-full min-w-0 items-center hover:underline"
+                                title={memoryHealthText(memoryHealth)}
+                                onclick={() => ($hypaV3ModalOpen = true)}
+                                data-memory-health-badge={memoryHealth}
                             >
-                                <DicesIcon />
-                                <span class="ml-2">{language.autoMode}</span>
-                            </div>
-                        {/if}
-
-                        <!-- svelte-ignore block_empty -->
-                        {#if currentCharacter.ttsMode}
-                            <div
-                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                onclick={() => {
-                                    stopTTS();
-                                }}
-                            >
-                                <MicOffIcon />
-                                <span class="ml-2">{language.ttsStop}</span>
-                            </div>
-                        {/if}
-
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            class:text-textcolor2={currentChat.message.length < 2 ||
-                                currentChat.message[currentChat.message.length - 1].role !== "char"}
-                            onclick={() => {
-                                if (
-                                    currentChat.message.length < 2 ||
-                                    currentChat.message[currentChat.message.length - 1].role !== "char"
-                                ) {
-                                    return;
-                                }
-                                sendContinue();
-                            }}
-                        >
-                            <StepForwardIcon />
-                            <span class="ml-2">{language.continueResponse}</span>
+                                <ChatStatusBadge
+                                    status="health"
+                                    health={memoryHealth}
+                                    inline
+                                    label={memoryHealthText(memoryHealth)}
+                                />
+                            </button>
                         </div>
-
+                    {/if}
+                    {#if displayedChat}
+                        {#key chatKey}
+                            <ContextMeter
+                                chatRef={displayedChat}
+                                group={currentCharacter.type === "group"}
+                                height={inputHeight}
+                                draft={composer.input}
+                                generating={stoppable ||
+                                    isLocalSend(displayedChat, $localSends) ||
+                                    generatingChatKeys().has(chatStatusKey(displayedChat))}
+                            />
+                        {/key}
+                    {/if}
+                </div>
+                {#if btwResult}
+                    <div class="chat-screen-content-width px-4 mb-2">
+                        <section
+                            class="flex flex-col gap-2 rounded-md border border-darkborderc bg-darkbg p-3 text-textcolor"
+                            aria-label={language.inputHooks.btwResult}
+                        >
+                            <div class="flex items-center gap-2">
+                                <h2 class="m-0 text-sm font-medium text-textcolor2">{language.inputHooks.btwResult}</h2>
+                                <button
+                                    type="button"
+                                    class="ml-auto text-textcolor2 hover:text-textcolor transition-colors"
+                                    aria-label={language.inputHooks.btwDismiss}
+                                    onclick={dismissBtwResult}
+                                >
+                                    <XIcon size={18} />
+                                </button>
+                            </div>
+                            <div class="max-h-[30vh] overflow-y-auto whitespace-pre-wrap break-words text-sm">
+                                {btwResult}
+                            </div>
+                        </section>
+                    </div>
+                {/if}
+                <div class="relative flex items-stretch w-full">
+                    {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
                         <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                            onclick={() => {
+                                toggleStickers = !toggleStickers;
+                            }}
+                            class={"ml-4 bg-textcolor2 flex justify-center items-center  w-12 h-12 rounded-md hover:bg-blue-500 transition-colors " +
+                                (toggleStickers ? "text-green-500" : "text-textcolor")}
+                        >
+                            <Laugh />
+                        </div>
+                    {/if}
+
+                    <textarea
+                        class="peer text-input-area focus:border-textcolor transition-colors outline-hidden text-textcolor p-2 min-w-0 border border-r-0 bg-transparent rounded-md rounded-r-none input-text text-xl grow ml-4 border-darkborderc resize-none overflow-y-hidden overflow-x-hidden max-w-full placeholder:whitespace-pre placeholder:overflow-hidden placeholder:text-ellipsis read-only:cursor-not-allowed"
+                        placeholder={inputPlaceholder}
+                        readonly={bindingIncomplete}
+                        bind:value={composer.input}
+                        bind:this={inputEle}
+                        oncompositionstart={() => inputTranslation.compositionStart("main")}
+                        oncompositionend={() => inputTranslation.compositionEnd("main")}
+                        onkeydown={(e) =>
+                            handleMainComposerKeydown(e, { sendWithEnter: settings.ui.sendWithEnter, send, reroll })}
+                        onpaste={(e) => {
+                            const ref = currentChatRef();
+                            if (!ref || bindingIncomplete) return;
+                            const items = e.clipboardData?.items;
+                            if (!items) {
+                                return;
+                            }
+                            let canceled = false;
+
+                            for (const item of items) {
+                                if (item.kind === "file" && item.type.startsWith("image")) {
+                                    if (!canceled) {
+                                        e.preventDefault();
+                                        canceled = true;
+                                    }
+                                    const file = item.getAsFile();
+                                    if (file) {
+                                        const reader = new FileReader();
+                                        reader.onload = async (e) => {
+                                            const buf = e.target?.result as ArrayBuffer;
+                                            const uint8 = new Uint8Array(buf);
+                                            const results = await postChatFile(
+                                                {
+                                                    name: file.name,
+                                                    data: uint8,
+                                                },
+                                                ref,
+                                            );
+                                            if (!results) return;
+                                            const draft = composer.at(chatKeyOf(ref));
+                                            for (const res of results) {
+                                                if (res?.type === "asset") {
+                                                    draft.addFile(res.data);
+                                                }
+                                                if (res?.type === "text") {
+                                                    draft.input += `{{file::${res.name}::${res.data}}}`;
+                                                }
+                                            }
+                                            updateInputSizeAll();
+                                        };
+                                        reader.readAsArrayBuffer(file);
+                                    }
+                                }
+                            }
+                        }}
+                        oninput={() => {
+                            updateInputSizeAll();
+                            inputTranslation.run(false);
+                        }}
+                        style:height={inputHeight}></textarea>
+
+                    {#if stoppable}
+                        <button
+                            aria-labelledby="cancel"
+                            class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-blue-500 hover:text-white transition-colors"
+                            onclick={abortChat}
+                            style:height={inputHeight}
+                        >
+                            <div class="loadmove chat-process-stage-{processStage}" class:autoload={autoMode}></div>
+                            {#if inputHookRuns.kindOf(currentChatRef()) === "draft"}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.inputHooks.runningDraft}</span
+                                >
+                            {:else if inputHookRuns.kindOf(currentChatRef()) === "btw"}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.inputHooks.runningBtw}</span
+                                >
+                            {/if}
+                            {#if loadingJobChat}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.serverJob.chatLoading}</span
+                                >
+                            {/if}
+                            {#if retryCount !== null}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.serverJob.retried.replace("{count}", () => String(retryCount))}</span
+                                >
+                            {/if}
+                        </button>
+                        <HandoffControls jobIds={ownedJobIds} height={inputHeight} />
+                    {:else if bindingIncomplete}
+                        <!-- Keeps `button-icon-send`: the send hotkey clicks it and opens the setup too. -->
+                        <button
                             onclick={() => {
                                 const ref = currentChatRef();
                                 if (ref) {
-                                    if (currentChat.pinned === true) {
-                                        setChatMeta(ref, {}, ["pinned"]);
-                                    } else {
-                                        setChatMeta(ref, { pinned: true });
-                                    }
+                                    chatBindingDialog.set(ref);
                                 }
-                                openMenu = false;
+                            }}
+                            class="flex justify-center border-y border-darkborderc items-center text-draculared text-sm p-3 peer-focus:border-textcolor hover:bg-blue-500 hover:text-white transition-colors button-icon-send whitespace-nowrap"
+                            style:height={inputHeight}
+                        >
+                            {language.chatBinding.setUp}
+                        </button>
+                    {:else}
+                        <button
+                            onclick={send}
+                            class="flex justify-center border-y border-darkborderc items-center text-textcolor p-3 peer-focus:border-textcolor hover:bg-blue-500 hover:text-white transition-colors button-icon-send"
+                            style:height={inputHeight}
+                        >
+                            <Send />
+                        </button>
+                    {/if}
+                    {#if foreignStoppable}
+                        <button
+                            aria-label={language.serverJob.stopOther.label}
+                            title={language.serverJob.stopOther.label}
+                            class="peer-focus:border-textcolor flex justify-center border-y border-darkborderc items-center text-textcolor p-3 hover:bg-darkbutton transition-colors"
+                            onclick={() => {
+                                const ref = currentChatRef();
+                                if (ref) void stopChatJob(ref);
+                            }}
+                            style:height={inputHeight}
+                        >
+                            <div class="loadmove chat-process-stage-{foreignProcessStage}"></div>
+                            {#if loadingJobChat}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.serverJob.chatLoading}</span
+                                >
+                            {/if}
+                        </button>
+                    {/if}
+                    {#if currentCharacter?.chaId !== "§playground"}
+                        <button
+                            onclick={(e) => {
+                                openMenu = !openMenu;
+                                e.stopPropagation();
+                            }}
+                            class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
+                            style:height={inputHeight}
+                        >
+                            <MenuIcon />
+                        </button>
+                    {:else}
+                        <div
+                            onclick={(e) => {
+                                const ref = currentChatRef();
+                                if (ref) {
+                                    appendMessage(ref, { role: "char", data: "" });
+                                }
+                            }}
+                            class="peer-focus:border-textcolor mr-2 flex border-y border-r border-darkborderc justify-center items-center text-textcolor p-3 rounded-r-md hover:bg-blue-500 hover:text-white transition-colors"
+                            style:height={inputHeight}
+                        >
+                            <Plus />
+                        </div>
+                    {/if}
+
+                    <!-- Anchored to the composer row so it opens above the menu button inside the chat column. -->
+                    {#if openMenu}
+                        <div
+                            class="absolute right-2 bottom-full mb-2 z-30 p-5 bg-darkbg flex flex-col gap-3 text-textcolor rounded-md"
+                            onclick={(e) => {
+                                e.stopPropagation();
                             }}
                         >
-                            <PinIcon />
-                            <span class="ml-2"
-                                >{currentChat.pinned === true ? language.unpinChat : language.pinChat}</span
-                            >
-                        </div>
+                            {#if currentCharacter.type === "group"}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={runAutoMode}
+                                >
+                                    <DicesIcon />
+                                    <span class="ml-2">{language.autoMode}</span>
+                                </div>
+                            {/if}
 
-                        {#if settings.ui.showMenuChatList}
-                            <div
-                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                onclick={() => {
-                                    openChatList = true;
-                                    openMenu = false;
-                                }}
-                            >
-                                <DatabaseIcon />
-                                <span class="ml-2">{language.chatList}</span>
-                            </div>
-                        {/if}
-
-                        {#each additionalChatMenu as menu}
-                            <div
-                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                onclick={() => {
-                                    menu.callback();
-                                    openMenu = false;
-                                }}
-                            >
-                                <PluginDefinedIcon ico={menu} />
-                                <span class="ml-2">{menu.name}</span>
-                            </div>
-                        {/each}
-
-                        {#if settings.ui.showMenuHypaMemoryModal}
-                            {#if (settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2) || settings.memoryTranslateMedia.hypaV3}
+                            <!-- svelte-ignore block_empty -->
+                            {#if currentCharacter.ttsMode}
                                 <div
                                     class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
                                     onclick={() => {
-                                        if (settings.memoryTranslateMedia.hypav2) {
+                                        stopTTS();
+                                    }}
+                                >
+                                    <MicOffIcon />
+                                    <span class="ml-2">{language.ttsStop}</span>
+                                </div>
+                            {/if}
+
+                            <button
+                                type="button"
+                                class="flex items-center enabled:hover:text-green-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={screenBusy || !canContinue}
+                                onclick={() => {
+                                    if (canContinue) void sendContinue();
+                                }}
+                            >
+                                <StepForwardIcon />
+                                <span class="ml-2">{language.continueResponse}</span>
+                            </button>
+
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={() => {
+                                    const ref = currentChatRef();
+                                    if (ref) {
+                                        if (currentChat.pinned === true) {
+                                            setChatMeta(ref, {}, ["pinned"]);
+                                        } else {
+                                            setChatMeta(ref, { pinned: true });
+                                        }
+                                    }
+                                    openMenu = false;
+                                }}
+                            >
+                                <PinIcon />
+                                <span class="ml-2"
+                                    >{currentChat.pinned === true ? language.unpinChat : language.pinChat}</span
+                                >
+                            </div>
+
+                            {#if settings.ui.showMenuChatList}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        openChatList = true;
+                                        openMenu = false;
+                                    }}
+                                >
+                                    <DatabaseIcon />
+                                    <span class="ml-2">{language.chatList}</span>
+                                </div>
+                            {/if}
+
+                            {#each additionalChatMenu as menu}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        menu.callback();
+                                        openMenu = false;
+                                    }}
+                                >
+                                    <PluginDefinedIcon ico={menu} />
+                                    <span class="ml-2">{menu.name}</span>
+                                </div>
+                            {/each}
+
+                            {#if memoryMenuKind}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        if (memoryMenuKind === "hypaV2") {
                                             const ref = currentChatRef();
-                                            if (ref && !findChat(ref)?.hypaV2Data) {
+                                            if (ref && !findChat(ref)?.hypaV2Data && !memoryEditorWriteFence(ref)) {
                                                 setChatMeta(ref, {
                                                     hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
                                                 });
                                             }
                                             showHypaV2Alert();
-                                        } else if (settings.memoryTranslateMedia.hypaV3) {
+                                        } else {
                                             $hypaV3ModalOpen = true;
                                         }
 
@@ -1299,94 +1966,155 @@
                                 >
                                     <BrainIcon />
                                     <span class="ml-2">
-                                        {settings.memoryTranslateMedia.hypav2
-                                            ? language.hypaMemoryV2Modal
-                                            : language.hypaMemoryV3Modal}
+                                        {memoryMenuKind === "structuredMemory"
+                                            ? language.structuredMemory.panel.title
+                                            : memoryMenuKind === "hypaV2"
+                                              ? language.hypaMemoryV2Modal
+                                              : language.hypaMemoryV3Modal}
                                     </span>
                                 </div>
                             {/if}
-                        {/if}
 
-                        {#if settings.memoryTranslateMedia.translator !== ""}
-                            <div
-                                class={"flex items-center cursor-pointer " +
-                                    (settings.memoryTranslateMedia.useAutoTranslateInput
-                                        ? "text-green-500"
-                                        : "lg:hover:text-green-500")}
-                                onclick={() => {
-                                    settings.memoryTranslateMedia.useAutoTranslateInput =
-                                        !settings.memoryTranslateMedia.useAutoTranslateInput;
-                                }}
-                            >
-                                <GlobeIcon />
-                                <span class="ml-2">{language.autoTranslateInput}</span>
-                            </div>
-                        {/if}
+                            {#if currentCharacter?.type !== "group"}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        openOocPanel();
+                                        openMenu = false;
+                                    }}
+                                >
+                                    <MessageCircleQuestionIcon />
+                                    <span class="ml-2">{language.oocPanel.title}</span>
+                                </div>
+                            {/if}
 
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={() => {
-                                screenShot();
-                            }}
-                        >
-                            <CameraIcon />
-                            <span class="ml-2">{language.screenshot}</span>
-                        </div>
+                            {#if currentCharacter.chaId !== "§playground" && (settings.inputHooks ?? []).some((hook) => hook.type === "btw")}
+                                <button
+                                    type="button"
+                                    class="flex items-center hover:text-green-500 transition-colors"
+                                    onclick={chooseBtwHook}
+                                >
+                                    <MessageCircleQuestionIcon />
+                                    <span class="ml-2">{language.inputHooks.btw}</span>
+                                </button>
+                            {/if}
 
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={async () => {
-                                const results = await postChatFile(messageInput);
-                                if (!results) return;
-                                for (const res of results) {
-                                    if (res?.type === "asset") {
-                                        fileInput.push(res.data);
-                                    }
-                                    if (res?.type === "text") {
-                                        messageInput += `{{file::${res.name}::${res.data}}}`;
-                                    }
-                                }
-                                updateInputSizeAll();
-                            }}
-                        >
-                            <ImagePlusIcon />
-                            <span class="ml-2">{language.postFile}</span>
-                        </div>
+                            {#if settings.memoryTranslateMedia.translator !== ""}
+                                <div
+                                    class={"flex items-center cursor-pointer " +
+                                        (settings.memoryTranslateMedia.useAutoTranslateInput
+                                            ? "text-green-500"
+                                            : "lg:hover:text-green-500")}
+                                    onclick={() => {
+                                        settings.memoryTranslateMedia.useAutoTranslateInput =
+                                            !settings.memoryTranslateMedia.useAutoTranslateInput;
+                                    }}
+                                >
+                                    <GlobeIcon />
+                                    <span class="ml-2">{language.autoTranslateInput}</span>
+                                </div>
+                            {/if}
 
-                        <div
-                            class={"flex items-center cursor-pointer " +
-                                (settings.ui.useAutoSuggestions ? "text-green-500" : "lg:hover:text-green-500")}
-                            onclick={async () => {
-                                settings.ui.useAutoSuggestions = !settings.ui.useAutoSuggestions;
-                            }}
-                        >
-                            <ReplyIcon />
-                            <span class="ml-2">{language.autoSuggest}</span>
-                        </div>
-
-                        <div
-                            class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                            onclick={() => {
-                                openModuleList = true;
-                                openMenu = false;
-                            }}
-                        >
-                            <PackageIcon />
-                            <span class="ml-2">{language.modules}</span>
-                        </div>
-
-                        {#if settings.ui.sideMenuRerollButton}
                             <div
                                 class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                onclick={reroll}
+                                onclick={() => {
+                                    screenShot();
+                                }}
                             >
-                                <RefreshCcwIcon />
-                                <span class="ml-2">{language.reroll}</span>
+                                <CameraIcon />
+                                <span class="ml-2">{language.screenshot}</span>
                             </div>
-                        {/if}
-                    </div>
-                {/if}
+
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={async () => {
+                                    const ref = currentChatRef();
+                                    if (!ref) return;
+                                    const results = await postChatFile(composer.at(chatKeyOf(ref)).input, ref);
+                                    if (!results) return;
+                                    const draft = composer.at(chatKeyOf(ref));
+                                    for (const res of results) {
+                                        if (res?.type === "asset") {
+                                            draft.addFile(res.data);
+                                        }
+                                        if (res?.type === "text") {
+                                            draft.input += `{{file::${res.name}::${res.data}}}`;
+                                        }
+                                    }
+                                    updateInputSizeAll();
+                                }}
+                            >
+                                <ImagePlusIcon />
+                                <span class="ml-2">{language.postFile}</span>
+                            </div>
+
+                            <div
+                                class={"flex items-center cursor-pointer " +
+                                    (settings.ui.useAutoSuggestions ? "text-green-500" : "lg:hover:text-green-500")}
+                                onclick={async () => {
+                                    settings.ui.useAutoSuggestions = !settings.ui.useAutoSuggestions;
+                                }}
+                            >
+                                <ReplyIcon />
+                                <span class="ml-2">{language.autoSuggest}</span>
+                            </div>
+
+                            <div
+                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                onclick={() => {
+                                    openModuleList = true;
+                                    openMenu = false;
+                                }}
+                            >
+                                <PackageIcon />
+                                <span class="ml-2">{language.modules}</span>
+                            </div>
+
+                            {#if settings.ui.sideMenuRerollButton}
+                                <button
+                                    type="button"
+                                    class="flex items-center enabled:hover:text-green-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled={screenBusy}
+                                    onclick={reroll}
+                                >
+                                    <RefreshCcwIcon />
+                                    <span class="ml-2">{language.reroll}</span>
+                                </button>
+                            {/if}
+                        </div>
+                    {/if}
+                </div>
             </div>
+            {#if showDraft}
+                <div class="chat-screen-content-width flex flex-col gap-2 mt-2 mb-2 px-4">
+                    <label for="messageInputDraft" class="text-textcolor">{language.inputHooks.draft}</label>
+                    <div class="flex items-end gap-2">
+                        <textarea
+                            id="messageInputDraft"
+                            class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full read-only:cursor-not-allowed"
+                            readonly={bindingIncomplete}
+                            bind:value={composer.draft}
+                            bind:this={inputDraftEle}
+                            onkeydown={(event) =>
+                                handleTranslationComposerKeydown(event, {
+                                    sendWithEnter: settings.ui.sendWithEnter,
+                                    send: () => {
+                                        if (!draftSendDisabled) void sendDraftMessage();
+                                    },
+                                    reroll,
+                                })}
+                            oninput={updateInputSizeAll}
+                            placeholder={language.inputHooks.draftPlaceholder}
+                            style:height={inputDraftHeight}></textarea>
+                        <button
+                            type="button"
+                            class="p-3 rounded-md border border-darkborderc text-textcolor hover:bg-darkbutton transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={draftSendDisabled}
+                            onclick={sendDraftMessage}>{language.inputHooks.sendDraft}</button
+                        >
+                    </div>
+                </div>
+            {/if}
             {#if settings.memoryTranslateMedia.useAutoTranslateInput && currentCharacter?.chaId !== "§playground"}
                 <div class="chat-screen-content-width flex items-center mt-2 mb-2">
                     <label for="messageInputTranslate" class="text-textcolor ml-4">
@@ -1394,35 +2122,32 @@
                     </label>
                     <textarea
                         id="messageInputTranslate"
-                        class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow ml-4 mr-2 border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full"
-                        bind:value={messageInputTranslate}
+                        class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow ml-4 mr-2 border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full read-only:cursor-not-allowed"
+                        readonly={bindingIncomplete}
+                        bind:value={composer.translate}
                         bind:this={inputTranslateEle}
-                        onkeydown={(e) => {
-                            if (e.key.toLocaleLowerCase() === "enter" && !e.shiftKey) {
-                                if (settings.ui.sendWithEnter) {
-                                    send();
-                                    e.preventDefault();
-                                }
-                            }
-                            if (e.key.toLocaleLowerCase() === "m" && e.ctrlKey) {
-                                reroll();
-                                e.preventDefault();
-                            }
-                        }}
+                        oncompositionstart={() => inputTranslation.compositionStart("translation")}
+                        oncompositionend={() => inputTranslation.compositionEnd("translation")}
+                        onkeydown={(e) =>
+                            handleTranslationComposerKeydown(e, {
+                                sendWithEnter: settings.ui.sendWithEnter,
+                                send,
+                                reroll,
+                            })}
                         oninput={() => {
                             updateInputSizeAll();
-                            updateInputTransateMessage(true);
+                            inputTranslation.run(true);
                         }}
                         placeholder={language.enterMessageForTranslateToEnglish}
                         style:height={inputTranslateHeight}></textarea>
                 </div>
             {/if}
 
-            {#if fileInput.length > 0}
+            {#if composer.files.length > 0}
                 <div
                     class="chat-screen-content-width flex items-center ml-4 flex-wrap p-2 m-2 border-darkborderc border rounded-md"
                 >
-                    {#each fileInput as file, i}
+                    {#each composer.files as file, i}
                         {#await getInlayAsset(file) then inlayAsset}
                             <div class="relative">
                                 {#if inlayAsset.type === "image"}
@@ -1448,7 +2173,7 @@
                                 <button
                                     class="absolute -right-1 -top-1 p-1 bg-darkbg text-textcolor rounded-md transition-colors hover:text-draculared focus:text-draculared"
                                     onclick={() => {
-                                        fileInput.splice(i, 1);
+                                        composer.removeFileAt(i);
                                         updateInputSizeAll();
                                     }}
                                 >
@@ -1471,7 +2196,7 @@
                                 if (fileExtension === "mp4" || fileExtension === "webm") fileType = "video";
                                 else if (fileExtension === "mp3" || fileExtension === "wav") fileType = "audio";
                             }
-                            messageInput += `<span class='notranslate' translate='no'>{{${fileType}::${additionalAsset[0]}}}</span> *${additionalAsset[0]} added*`;
+                            composer.input += `<span class='notranslate' translate='no'>{{${fileType}::${additionalAsset[0]}}}</span> *${additionalAsset[0]} added*`;
                             updateInputSizeAll();
                         }}
                     />
@@ -1481,7 +2206,7 @@
             {#if settings.ui.useAutoSuggestions}
                 <Suggestion
                     messageInput={(msg) =>
-                        (messageInput =
+                        (composer.input =
                             (subModel === "textgen_webui" || subModel === "mancer" || subModel.startsWith("local_")) &&
                             settings.ui.autoSuggestClean
                                 ? msg.replace(/ +\(.+?\) *$| - [^"'*]*?$/, "")
@@ -1493,11 +2218,13 @@
             {#if chatPanelStore.length > 0}
                 <div class="chat-screen-content-width mx-4 my-2 flex flex-col gap-2">
                     {#each chatPanelStore as panel (panel.id)}
+                        <!-- Keep plugin positioning inside the panel and plugin attributes off its containment boundary. -->
                         <section
-                            class={`rounded-md border border-darkborderc bg-darkbg/80 p-3 text-textcolor ${panel.className ?? ""}`}
-                            data-plugin-chat-panel={panel.id}
+                            class="contain-paint rounded-md border border-darkborderc bg-darkbg/80 p-3 text-textcolor"
                         >
-                            {@html panel.html}
+                            <div class={panel.className ?? ""} data-plugin-chat-panel={panel.id}>
+                                {@html panel.html}
+                            </div>
                         </section>
                     {/each}
                 </div>
@@ -1520,6 +2247,7 @@
             <Chats
                 bind:this={chatsInstance}
                 bind:revealing
+                bind:holding={rowsHeld}
                 {messages}
                 {loadPages}
                 suspendTrim={takingScreenshot || isScrollingToMessage}
@@ -1529,6 +2257,7 @@
                     return keep;
                 }}
                 onReroll={reroll}
+                rerollBusy={screenBusy}
                 {unReroll}
                 {currentCharacter}
                 {currentUsername}
@@ -1556,6 +2285,7 @@
                             )}
                             idx={-1}
                             altGreeting={currentCharacter.alternateGreetings.length > 0}
+                            rerollBusy={screenBusy}
                             largePortrait={currentCharacter.largePortrait}
                             firstMessage={true}
                             onReroll={() => {
@@ -1623,6 +2353,10 @@
     {/if}
 </div>
 
+{#if btwPicker}
+    <InputHookPicker hooks={btwPicker.hooks} onchoose={runPickedBtwHook} onclose={() => (btwPicker = null)} />
+{/if}
+
 {#if additionalFloatingActionButtons.length > 0}
     <div class="fixed top-4 right-4 flex flex-col gap-3 z-50">
         {#each additionalFloatingActionButtons as button}
@@ -1639,6 +2373,9 @@
 {/if}
 
 <style>
+    /* The Stop button's ring by job stage: preparing, memory, generating, finishing. `.autoload` (auto mode)
+       is declared after them, so it wins over every stage. The class names and colors stay as they are:
+       `display.customCSS` can target them. */
     .chat-process-stage-1 {
         border-top: 0.4rem solid #60a5fa;
         border-left: 0.4rem solid #60a5fa;

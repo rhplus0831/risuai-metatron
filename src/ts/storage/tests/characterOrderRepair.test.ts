@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { client, stores } = vi.hoisted(() => {
     const stores = {
-        characters: [] as { chaId: string; trashTime?: number }[],
+        characters: [] as { chaId: string; type?: "character" | "group"; trashTime?: number }[],
         order: [] as unknown[],
         /** Every assignment of `settings.characterOrder`, as assigned. */
         assignments: [] as unknown[],
@@ -24,7 +24,12 @@ const { client, stores } = vi.hoisted(() => {
     return { client: { readRefs: vi.fn() }, stores: Object.assign(stores, { settings }) };
 });
 
-vi.mock("../resourceClient", () => ({ readRefs: (...args: unknown[]) => client.readRefs(...args) }));
+vi.mock("../resourceClient", async () =>
+    (await import("../tests/resourceClientMock")).createResourceClientMock({
+        readRefs: (...args: unknown[]) => client.readRefs(...args),
+    }),
+);
+vi.mock("../serverAuth", async () => (await import("./serverAuthMock")).createServerAuthMock());
 vi.mock("../characterStore.svelte", () => ({ characterList: () => stores.characters }));
 vi.mock("../settingsViews.svelte", () => ({ settings: stores.settings }));
 
@@ -76,11 +81,15 @@ async function load(options: { characters?: string[]; order?: unknown[]; held?: 
 }
 
 beforeEach(() => {
+    // The repair's reads carry a 30 s deadline (`readWithDeadline`); the clock is faked so no real
+    // production deadline races the test (V3). `vi.waitFor` advances the fake timers as it polls.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     client.readRefs.mockReset();
 });
 
@@ -151,6 +160,25 @@ describe("local and boot character order repair", () => {
         expect(stores.assignments).toEqual([[]]);
     });
 
+    it("removes groups at boot, drops the emptied folder on the next repair and leaves a settled order alone", async () => {
+        const folder = { id: "f", name: "Folder", color: "", data: ["member-group"] };
+        const { checkCharOrderAtBoot, checkCharOrder, plain } = await load({
+            characters: ["solo"],
+            order: ["root-group", "solo", folder],
+        });
+        stores.characters.push({ chaId: "root-group", type: "group" }, { chaId: "member-group", type: "group" });
+        checkCharOrderAtBoot();
+        const first = ["solo", { ...folder, data: [] }];
+        expect(plain()).toEqual(first);
+        checkCharOrderAtBoot();
+        expect(plain()).toEqual(["solo"]);
+        checkCharOrderAtBoot();
+        stores.characters.push({ chaId: "imported-group", type: "group" });
+        checkCharOrder();
+        expect(plain()).toEqual(["solo"]);
+        expect(stores.assignments).toEqual([first, ["solo"]]);
+    });
+
     it("boot drops never-observed ids against the complete inventory and appends only live unordered characters", async () => {
         const folder = { id: "f", name: "Folder", color: "", data: ["unread-member", "live-member", "trash"] };
         const { checkCharOrderAtBoot, plain } = await load({
@@ -168,6 +196,22 @@ describe("local and boot character order repair", () => {
 });
 
 describe("queueRemoteCharOrderRepair", () => {
+    it("preserves an incoming group id and appends only characters live both here and on the server", async () => {
+        const { queue, plain } = await load({
+            characters: ["group-there", "solo"],
+            order: ["ordered-group", "unread"],
+        });
+        stores.characters.push({ chaId: "ordered-group", type: "group" }, { chaId: "group-here", type: "group" });
+        const pending = pendingReads();
+        queue();
+        await awaitReads(pending, 1);
+        answer(pending[0], (id) =>
+            id === "group-there" ? { ...live(id), data: { chaId: id, type: "group" } } : live(id),
+        );
+        await vi.waitFor(() => expect(stores.assignments).toHaveLength(1));
+        expect(plain()).toEqual(["ordered-group", "unread", "solo"]);
+    });
+
     it("reads nothing and writes nothing when every live character is ordered", async () => {
         const { queue } = await load({ characters: ["c", "p", "§playground"], order: ["c", { id: "f", data: ["p"] }] });
         pendingReads();

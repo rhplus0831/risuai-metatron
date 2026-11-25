@@ -55,17 +55,6 @@ vi.mock("./process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-vi.mock("./rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 async function boot() {
     vi.resetModules();
@@ -120,6 +109,13 @@ async function moduleBytes(booted: Awaited<ReturnType<typeof boot>>, lorebook: u
     return booted.modules.exportModuleLegacy(
         { name: "Shared module", description: "", id: "source-id", lorebook, regex: [], trigger: [] } as any,
         { saveData: false, alertEnd: false },
+    );
+}
+
+function presetHash(bytes: Uint8Array) {
+    vi.stubGlobal(
+        "location",
+        new URL(`http://local/#import_preset=${encodeURIComponent(Buffer.from(bytes).toString("base64"))}`),
     );
 }
 
@@ -330,4 +326,37 @@ describe("characterURLImport pending shares", () => {
             expect(share.fetch).not.toHaveBeenCalled();
         },
     );
+});
+
+describe("characterURLImport preset hashes", () => {
+    it("leaves settings closed and the menu unchanged when a hash preset import returns no id", async () => {
+        const app = await boot();
+        const before = plain(app.settings.presets);
+        app.stores.SettingsMenuIndex.set(app.stores.MODEL_SETTINGS_MENU);
+        const importer = vi.spyOn(app.presets, "importPreset").mockResolvedValue(undefined);
+        presetHash(new Uint8Array([251, 255]));
+
+        await app.cards.characterURLImport();
+
+        expect(importer).toHaveBeenCalledOnce();
+        expect(get(app.stores.settingsOpen)).toBe(false);
+        expect(get(app.stores.SettingsMenuIndex)).toBe(app.stores.MODEL_SETTINGS_MENU);
+        expect(plain(app.settings.presets)).toEqual(before);
+    });
+
+    it("opens prompt settings after importing a preset from the hash", async () => {
+        const app = await boot();
+        const ids = app.settings.presets.map((preset) => preset.id);
+        const bytes = new Uint8Array(readFileSync(path.resolve(__dirname, "storage/tests/fixtures/boot/custom.risup")));
+        const { decodeRPack } = await import("./rpack/rpack_js");
+        presetHash(await decodeRPack(bytes));
+
+        await app.cards.characterURLImport();
+
+        expect(app.settings.presets).toHaveLength(ids.length + 1);
+        expect(app.settings.presets.at(-1).name).toBe("커스텀 プリセット ✓");
+        expect(ids).not.toContain(app.settings.presets.at(-1).id);
+        expect(get(app.stores.settingsOpen)).toBe(true);
+        expect(get(app.stores.SettingsMenuIndex)).toBe(app.stores.PROMPT_SETTINGS_MENU);
+    });
 });

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
-import { CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
+import { COMPLETION_WAIT_MAX_SECONDS, CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
 import {
     accessibilitySettingsHeader,
     accessibilitySettingsItems,
     accessibilitySettingsSections,
 } from "./accessibilitySettingsData";
 import { advancedSettingsHeader, advancedSettingsItems, advancedSettingsSections } from "./advancedSettingsData";
+import {
+    deviceLinkSettingsHeader,
+    deviceLinkSettingsItems,
+    deviceLinkSettingsSections,
+} from "./deviceLinkSettingsData";
 import { displaySettingsItems, displaySettingsSections, displaySettingsTabs } from "./displaySettingsData.svelte";
 import {
     interactionSettingsHeader,
@@ -17,13 +22,14 @@ import { memorySettingsItems, memorySettingsSections, memorySupaMemoryItems } fr
 import { modelAdditionalParamsItems, modelSettingsItems, modelSettingsSections } from "./modelSettingsData";
 import { promptSettingsItems, promptSettingsSections } from "./promptSettingsData";
 import { itemsById } from "./sections";
+import { storageSettingsHeader, storageSettingsItems, storageSettingsSections } from "./storageSettingsData";
 import {
     translationSettingsHeader,
     translationSettingsItems,
     translationSettingsSections,
 } from "./translationSettingsData";
 import type { SettingContext, SettingItem, SettingSection } from "./types";
-import { getFullSettingsData } from "./utils";
+import { getFullSettingsData, resolveLanguageText } from "./utils";
 import { voiceSettingsItems } from "./voiceSettingsData";
 
 // A sectioned page builds its sections by id from its leaf arrays, so every leaf item is placed
@@ -49,6 +55,12 @@ const PAGES: SectionedPage[] = [
         leaves: [advancedSettingsItems],
         header: advancedSettingsHeader,
         sections: advancedSettingsSections,
+    },
+    {
+        name: "storage",
+        leaves: [storageSettingsItems],
+        header: storageSettingsHeader,
+        sections: storageSettingsSections,
     },
     {
         name: "translation",
@@ -101,6 +113,13 @@ const PAGES: SectionedPage[] = [
         header: accessibilitySettingsHeader,
         sections: accessibilitySettingsSections,
     },
+    // The remote host and job handoff controls, moved from Display's notification section.
+    {
+        name: "deviceLink",
+        leaves: [deviceLinkSettingsItems],
+        header: deviceLinkSettingsHeader,
+        sections: deviceLinkSettingsSections,
+    },
 ];
 
 /** Item pairs whose second item's condition reads the first: they must share a section. */
@@ -136,11 +155,19 @@ const DEPENDENT_PAIRS: [string, string][] = [
     ["display.customQuotes", "display.trailingSingleQuote"],
     ["interaction.contextMeterEnabled", "interaction.contextMeterTurnUnit"],
     ["interaction.contextMeterEnabled", "interaction.contextMeterFixedWarn"],
+    ["interaction.contextMeterEnabled", "interaction.contextMeterLookahead"],
 ];
 
 const duplicates = (ids: string[]) => ids.filter((id, index) => ids.indexOf(id) !== index);
 
 describe("settings page sections", () => {
+    it("keeps the global lore token budget nonnegative with no obsolete upper limit", () => {
+        const budget = memorySettingsItems.find((item) => item.bindKey === "loreBookToken")!;
+        expect(budget.type).toBe("number");
+        expect(budget.options?.min).toBe(0);
+        expect(budget.options?.max).toBeUndefined();
+    });
+
     it("keeps item ids unique across the catalog", () => {
         expect(duplicates(getFullSettingsData().map((item) => item.id))).toEqual([]);
     });
@@ -210,6 +237,26 @@ describe("settings page sections", () => {
         ]);
     });
 
+    it("places the bounded plugin completion wait number immediately after Notifications with English label and help", () => {
+        const item = displaySettingsItems.find((entry) => entry.id === "display.completionWaitMaxSeconds")!;
+        expect(item).toMatchObject({ type: "number", bindKey: "completionWaitMaxSeconds" });
+        expect([item.options?.min, item.options?.max]).toEqual([
+            COMPLETION_WAIT_MAX_SECONDS.min,
+            COMPLETION_WAIT_MAX_SECONDS.max,
+        ]);
+        expect(resolveLanguageText(languageEnglish, item.labelKey).trim()).not.toBe("");
+        expect(resolveLanguageText(languageEnglish.help, item.helpKey).trim()).not.toBe("");
+
+        const itemIds = displaySettingsItems.map((entry) => entry.id);
+        expect(itemIds).toContain("display.notification");
+        expect(itemIds[itemIds.indexOf("display.notification") + 1]).toBe(item.id);
+        const tab = displaySettingsTabs.find((entry) => entry.labelKey === "displayTabSoundNotifications")!;
+        const section = tab.sections.find((entry) => entry.id === "display.sound.notifications")!;
+        const sectionIds = section.items.map((entry) => entry.id);
+        expect(sectionIds).toContain("display.notification");
+        expect(sectionIds[sectionIds.indexOf("display.notification") + 1]).toBe(item.id);
+    });
+
     it("takes Advanced apart: only its own sections' items stay, and the local network controls left the catalog", () => {
         const advancedIds = advancedSettingsSections.flatMap((section) => section.items.map((item) => item.id));
         for (const moved of [
@@ -260,6 +307,21 @@ describe("settings page sections", () => {
         expect(ids[ids.indexOf("display.showMemoryLimit") + 1]).toBe("display.memoryLimitThickness");
     });
 
+    it("offers an unconditional generation progress window checkbox on the Interaction page", () => {
+        const item = interactionSettingsSections
+            .flatMap((section) => section.items)
+            .find((entry) => entry.id === "interaction.generationProgressWindow");
+        expect(item).toMatchObject({ type: "check", bindKey: "generationProgressWindow" });
+        expect(item?.condition).toBeUndefined();
+    });
+
+    it("offers the lore budget checkbox in Interaction input independently of the context meter", () => {
+        const section = interactionSettingsSections.find((entry) => entry.id === "interaction.input")!;
+        const item = section.items.find((entry) => entry.id === "interaction.loreBudgetStop");
+        expect(item).toMatchObject({ type: "check", bindKey: "loreBudgetStop" });
+        expect(item?.condition).toBeUndefined();
+    });
+
     it("puts the context meter's settings in their own Interaction section, the basis settings shown only while the meter is on", () => {
         const section = interactionSettingsSections.find((entry) => entry.id === "interaction.contextMeter")!;
         expect(section.collapsible).toBeFalsy();
@@ -267,12 +329,14 @@ describe("settings page sections", () => {
             "interaction.contextMeterEnabled",
             "interaction.contextMeterTurnUnit",
             "interaction.contextMeterFixedWarn",
+            "interaction.contextMeterLookahead",
         ]);
-        const [enabled, turnUnit, fixedWarn] = section.items;
+        const [enabled, turnUnit, fixedWarn, lookahead] = section.items;
         expect(enabled.bindKey).toBe("contextMeter");
         expect(enabled.condition).toBeUndefined();
         const ctx = (ui: Record<string, unknown>) => ({ settings: { ui } }) as unknown as SettingContext;
-        for (const item of [turnUnit, fixedWarn]) {
+        expect(lookahead).toMatchObject({ type: "check", bindKey: "contextMeterLookahead" });
+        for (const item of [turnUnit, fixedWarn, lookahead]) {
             expect(item.condition!(ctx({ contextMeter: true })), item.id).toBe(true);
             expect(item.condition!(ctx({ contextMeter: false })), item.id).toBe(false);
         }
@@ -303,8 +367,8 @@ describe("settings page sections", () => {
                 [section.labelKey, section.descriptionKey, section.badgeKey].filter((key) => key !== undefined),
             ),
         );
-        const english = languageEnglish as Record<string, unknown>;
-        expect(keys.filter((key) => typeof english[key] !== "string" || english[key] === "")).toEqual([]);
+        // Keys may be dotted paths into nested objects (`storagePage.overview.title`).
+        expect(keys.filter((key) => resolveLanguageText(languageEnglish, key) === "")).toEqual([]);
     });
 
     it("keeps each dependent pair in one section", () => {

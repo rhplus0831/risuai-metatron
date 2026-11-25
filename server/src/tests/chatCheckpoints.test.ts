@@ -9,6 +9,7 @@ import { CHECKPOINT_CHAT_FIELDS } from "../../../shared/chatCheckpoints.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import { COUNT_USER_TURNS_SQL } from "../data/chatStore.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
@@ -17,6 +18,8 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -114,13 +117,30 @@ function pages(db: DatabaseSync): Record<string, string> {
         ).map((row) => [row.hash, row.text]),
     );
 }
+function loadCheckpoint(store: ResourceStore, id: string) {
+    return createCheckpointService({ store, busy: () => false, memoryTasks: null }).load({
+        epoch: store.epoch(),
+        body: { characterId: "c", chatId: "k", id, chatBaseRevision: store.chatRevision("c", "k") },
+    });
+}
+function memoryTexts(db: DatabaseSync) {
+    return Object.fromEntries(
+        memoryKinds.map((kind) => [
+            kind,
+            (db.prepare(`SELECT data FROM memory_${kind} ORDER BY seq`).all() as { data: string }[]).map(
+                ({ data }) => data,
+            ),
+        ]),
+    );
+}
 function expectMessagePages(db: DatabaseSync, id: string, groups: string[][]) {
     const texts = groups.map((rows) => "[" + rows.join(",") + "]");
     const hashes = texts.map(sha256);
     expect(checkpoint(db, id).pages).toEqual(hashes);
     const stored = pages(db);
     for (let i = 0; i < hashes.length; i++) {
-        expect(Buffer.from(stored[hashes[i]], "utf8")).toEqual(Buffer.from(texts[i], "utf8"));
+        // Strings, not Buffers: `toEqual` walks a Buffer byte by byte, two seconds for a one-MiB page.
+        expect(stored[hashes[i]]).toBe(texts[i]);
     }
     return hashes;
 }
@@ -187,6 +207,7 @@ const kept = {
     promptPresetId: "prompt-old",
     modelPresetId: "model-old",
     bindingReview: true,
+    draftHookId: "hook-old",
     togglePresetId: "toggles-old",
     translatorPresetId: "translator-old",
     autoTranslate: true,
@@ -195,7 +216,17 @@ const kept = {
     bilingualEmphasis: "original",
     bilingualSentences: 2,
     memoryTrimAck: 3,
+    memoryEnabled: false,
+    memoryMode: "hypaV3",
+    memoryPresetId: "memory-preset-old",
+    memoryProfileId: "memory-profile-old",
+    loreBudgetWarnOff: true,
+    structuredMemoryLanguage: "language-old",
+    structuredMemoryHighlight: "none",
     modules: ["module-old"],
+    oocLog: { old: { id: "old", segment: "segment-old", anchorMessageId: "past", question: "Why?", time: 1 } },
+    oocSegment: { id: "segment-old", anchorMessageId: "past" },
+    oocToggles: { mode: "old" },
 } satisfies Partial<Chat>;
 const storyVariables = { bonus: "5", toggle: "story", Toggle_upper: "story too" };
 function fullChat(): Required<Chat> {
@@ -226,6 +257,358 @@ function fullChat(): Required<Chat> {
 }
 
 describe("chat checkpoints", () => {
+    it("keeps the current OOC log, segment, and toggles when loading a checkpoint", () => {
+        const { store } = fileStore();
+        seed(store, {
+            name: "K",
+            note: "Saved note",
+            localLore: [],
+            message: [m("a")],
+            oocLog: {
+                old: { id: "old", segment: "old-segment", anchorMessageId: "a", question: "Old?", time: 1 },
+            },
+            oocSegment: { id: "old-segment", anchorMessageId: "a" },
+            oocToggles: { mode: "old" },
+        });
+        const saved = save(store);
+        const currentOoc = {
+            oocLog: {
+                current: {
+                    id: "current",
+                    segment: "current-segment",
+                    anchorMessageId: "a",
+                    question: "Current?",
+                    answer: "Yes.",
+                    time: 2,
+                },
+            },
+            oocSegment: { id: "current-segment", anchorMessageId: "a" },
+            oocToggles: { mode: "current" },
+        };
+        edit(store, [{ op: "meta", set: { note: "Current note", ...currentOoc } }]);
+
+        expect(loadCheckpoint(store, saved.id).status).toBe(200);
+        const loaded = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data;
+        expect(loaded).toMatchObject({ note: "Saved note", ...currentOoc });
+        expect(loaded?.oocLog).toEqual(currentOoc.oocLog);
+    });
+
+    it("loads every memory kind in storage order with exact row text and restores pre-load memory from safety", () => {
+        const { store, db, file } = fileStore();
+        seed(store, { name: "K", note: "note", localLore: [], message: [m("saved")] });
+        const records = memoryRecords(["z", "a"], 'Saved 한글 😀 "quoted"\nline');
+        records.runs[0].result = "failed";
+        records.runs[0].patchInput = 'Patch 한글 😀 "quoted"\nline';
+        delete records.runs[1].input;
+        writeMemory(store, "c", "k", records);
+        // Legal stored JSON whose whitespace and escapes would be lost by reserialization.
+        const expected = Object.fromEntries(
+            memoryKinds.map((kind) => [
+                kind,
+                records[kind].map((record) =>
+                    ` \n${JSON.stringify(kind === "events" ? { ...record, createdRevision: 1 } : record, null, 2)}\t`.replaceAll(
+                        "한",
+                        "\\uD55C",
+                    ),
+                ),
+            ]),
+        );
+        const writer = new DatabaseSync(file);
+        try {
+            for (const kind of memoryKinds) {
+                const update = writer.prepare(`UPDATE memory_${kind} SET data = ? WHERE id = ?`);
+                records[kind].forEach((record, index) => update.run(expected[kind][index], record.id));
+            }
+        } finally {
+            writer.close();
+        }
+        const saved = save(store);
+        writeMemory(store, "c", "k", {
+            ...memoryRecords(["z", "later"], "Before loading"),
+            remove: { pages: ["a"], events: ["a"], threads: ["a"], runs: ["a"] },
+        });
+        edit(store, [{ op: "setText", id: "saved", text: "Before loading" }]);
+        const before = memoryTexts(db);
+        const oldRevision = store.memory.readContents("c", "k")!.revision;
+        const loaded = loadCheckpoint(store, saved.id);
+        expect(loaded.status).toBe(200);
+        if (loaded.status !== 200) throw new Error("load refused");
+        expect(memoryTexts(db)).toEqual(expected);
+        const contents = store.memory.readContents("c", "k")!;
+        expect(contents.revision).not.toBe(oldRevision);
+        for (const kind of memoryKinds) {
+            expect(contents[kind].map(({ id }) => id)).toEqual(["z", "a"]);
+            expect(store.memory.readRecord("c", "k", kind, "later")).toBeNull();
+            for (const record of records[kind]) {
+                expect(store.memory.readRecord("c", "k", kind, record.id)).toEqual({
+                    revision: contents.revision,
+                    data: kind === "events" ? { ...record, createdRevision: 1 } : record,
+                });
+            }
+        }
+        expect(() =>
+            store.memory.write("c", "k", { epoch: store.epoch(), baseRevision: oldRevision }, memoryRecords(["stale"])),
+        ).toThrow(ResourceConflictError);
+        expect(memoryTexts(db)).toEqual(expected);
+        expect(loadCheckpoint(store, loaded.body.safety.id).status).toBe(200);
+        expect(memoryTexts(db)).toEqual(before);
+        expect(store.memory.readContents("c", "k")!.revision).not.toBe(contents.revision);
+    });
+
+    it("loading an empty memory checkpoint clears all kinds and advances even an empty chat's memory revision", () => {
+        const { store, db } = fileStore();
+        seed(store);
+        const empty = save(store);
+        for (const changes of [{}, memoryRecords(["later"])]) {
+            writeMemory(store, "c", "k", changes);
+            const oldRevision = store.memory.readContents("c", "k")!.revision;
+            expect(loadCheckpoint(store, empty.id).status).toBe(200);
+            expect(memoryTexts(db)).toEqual({ pages: [], events: [], threads: [], runs: [] });
+            expect(store.memory.readContents("c", "k")).toEqual({
+                revision: expect.any(String),
+                pages: [],
+                trash: [],
+                events: [],
+                threads: [],
+                runs: [],
+            });
+            expect(store.memory.readContents("c", "k")!.revision).not.toBe(oldRevision);
+            expect(() =>
+                store.memory.write(
+                    "c",
+                    "k",
+                    { epoch: store.epoch(), baseRevision: oldRevision },
+                    memoryRecords(["stale"]),
+                ),
+            ).toThrow(ResourceConflictError);
+        }
+    });
+
+    it.each(["delete", "prune"] as const)(
+        "%s frees only unshared memory chunks and manifests after incremental saves",
+        (action) => {
+            const { store, db } = fileStore();
+            const [anchor] = messageIds(true, 1);
+            const [tail, appended] = messageIds(false, 2);
+            seed(store, { name: "K", note: "note", localLore: [], message: [m(anchor), m(tail)] });
+            const records = memoryRecords([anchor]);
+            records.pages.push(...memoryRecords([tail]).pages);
+            writeMemory(store, "c", "k", records);
+            const first = save(store, "First", "auto");
+            const firstPages = pages(db);
+            const manifestHash = checkpoint(db, first.id).fields.structuredMemoryRecords;
+            const manifest = JSON.parse(firstPages[manifestHash]) as Record<(typeof memoryKinds)[number], string[]>;
+            expect(manifest).toEqual({
+                pages: [expect.any(String), expect.any(String)],
+                events: [expect.any(String)],
+                threads: [expect.any(String)],
+                runs: [expect.any(String)],
+            });
+            for (const kind of memoryKinds) {
+                expect(manifest[kind].map((hash) => JSON.parse(firstPages[hash]))).toEqual(
+                    records[kind].map((record) => [
+                        JSON.stringify(kind === "events" ? { ...record, createdRevision: 1 } : record),
+                    ]),
+                );
+            }
+            const messages = rowTexts(db);
+            const messageHashes = expectMessagePages(db, first.id, [[messages[0]], [messages[1]]]);
+            const unchanged = save(store, "Unchanged");
+            expect(pages(db)).toEqual(firstPages);
+            expect(checkpoint(db, unchanged.id).fields.structuredMemoryRecords).toBe(manifestHash);
+
+            const added = memoryRecords([appended]).pages[0];
+            writeMemory(store, "c", "k", { pages: [added] });
+            const next = save(store, "Appended");
+            const allPages = pages(db);
+            const nextManifestHash = checkpoint(db, next.id).fields.structuredMemoryRecords;
+            const nextManifest = JSON.parse(allPages[nextManifestHash]) as typeof manifest;
+            expect(nextManifest).toEqual({
+                ...manifest,
+                pages: [manifest.pages[0], expect.any(String)],
+            });
+            expect(JSON.parse(allPages[nextManifest.pages[1]])).toEqual([
+                JSON.stringify(records.pages[1]),
+                JSON.stringify(added),
+            ]);
+            expect(Object.keys(allPages).sort()).toEqual(
+                [...Object.keys(firstPages), nextManifest.pages[1], nextManifestHash].sort(),
+            );
+            for (const [hash, text] of Object.entries(firstPages)) expect(allPages[hash]).toBe(text);
+            expect(expectMessagePages(db, next.id, [[messages[0]], [messages[1]]])).toEqual(messageHashes);
+
+            store.checkpoints.delete("c", "k", unchanged.id, unchanged.revision);
+            expect(pages(db)).toEqual(allPages);
+            const removed =
+                action === "delete"
+                    ? store.checkpoints.delete("c", "k", first.id, first.revision)
+                    : store.checkpoints.prune("c", "k", "auto", 0);
+            expect(removed).toEqual({ deleted: action === "delete" ? true : 1, pagesRemoved: 2 });
+            expect(pages(db)).toEqual(
+                Object.fromEntries(
+                    Object.entries(allPages).filter(([hash]) => hash !== manifest.pages[1] && hash !== manifestHash),
+                ),
+            );
+            expect(store.checkpoints.list("c", "k")).toEqual([next]);
+            expect(loadCheckpoint(store, next.id).status).toBe(200);
+            expect(store.memory.readContents("c", "k")!.pages.map(({ id }) => id)).toEqual([anchor, tail, appended]);
+        },
+    );
+
+    it("saves counts, ordered previews and page hashes while parsing at most two message rows", () => {
+        const { store, db } = fileStore();
+        const [anchor] = messageIds(true, 1);
+        const [tail, insertedUser, insertedReply] = messageIds(false, 3);
+        seed(store, {
+            name: "K",
+            note: "note",
+            localLore: captured.localLore,
+            scriptstate: { chapter: 3, ready: true },
+            hypaV3Data: captured.hypaV3Data,
+            message: [],
+        });
+        const capture = (
+            messageCount: number,
+            userTurns: number,
+            messages: { role: Message["role"]; text: string }[],
+            groups: string[][],
+        ) => {
+            const texts = new Set(rowTexts(db));
+            const { meta } = db.prepare("SELECT meta FROM chats WHERE characterId = 'c' AND id = 'k'").get() as {
+                meta: string;
+            };
+            const parse = vi.spyOn(JSON, "parse");
+            let saved;
+            try {
+                saved = save(store);
+                expect(parse.mock.calls.filter(([text]) => texts.has(text)).length).toBeLessThanOrEqual(2);
+                expect(parse.mock.calls.filter(([text]) => text === meta)).toHaveLength(1);
+            } finally {
+                parse.mockRestore();
+            }
+            const preview = { messages, summaries: 1, loreEntries: 1, variables: 2 };
+            expect(saved).toMatchObject({ messageCount, userTurns, preview });
+            expect(store.checkpoints.list("c", "k")![0]).toEqual(saved);
+            expectMessagePages(db, saved.id, groups);
+        };
+        capture(0, 0, [], []);
+
+        edit(store, [{ op: "append", anchor: { end: true }, messages: [m(anchor, "Older reply", "char")] }]);
+        capture(1, 0, [{ role: "char", text: "Older reply" }], [rowTexts(db)]);
+
+        edit(store, [
+            { op: "append", anchor: { end: true }, messages: [m(tail, "Latest question")] },
+            {
+                op: "append",
+                anchor: { start: true },
+                messages: [m(insertedUser, "Inserted question"), m(insertedReply, "Inserted reply", "char")],
+            },
+        ]);
+        const rows = rowTexts(db);
+        capture(
+            4,
+            2,
+            [
+                { role: "char", text: "Older reply" },
+                { role: "user", text: "Latest question" },
+            ],
+            [rows.slice(0, 3), rows.slice(3)],
+        );
+    });
+
+    it.each(["prune", "delete"] as const)(
+        "%s removes only its freed message and field pages and leaves unrelated orphans for reopening",
+        (action) => {
+            const { store, db, file } = fileStore();
+            const [anchor] = messageIds(true, 1);
+            const [privateId] = messageIds(false, 1);
+            const shared = m(anchor, "Shared reply", "char");
+            seed(store, { name: "K", note: "Private note", localLore: [], message: [shared, m(privateId)] });
+            const target = save(store, "Target", "auto");
+            const rows = rowTexts(db);
+            const [sharedMessage, privateMessage] = expectMessagePages(db, target.id, [[rows[0]], [rows[1]]]);
+            const privateField = sha256(JSON.stringify("Private note"));
+            expect(checkpoint(db, target.id).fields).toMatchObject({ note: privateField, localLore: sha256("[]") });
+
+            seed(store, { name: "Other", note: "Surviving note", localLore: [], message: [shared] }, "other");
+            const survivor = store.checkpoints.save("other", "k", "Survivor", "manual")!;
+            expect(checkpoint(db, survivor.id)).toMatchObject({
+                pages: [sharedMessage],
+                fields: { localLore: sha256("[]") },
+            });
+
+            seed(store, { name: "Orphan", note: "Orphan note", localLore: [], message: [] }, "orphan");
+            store.checkpoints.save("orphan", "k", "Orphan", "manual");
+            // A spare active chat lets `k` go to the trash and be deleted.
+            store.applyChanges({ chats: [group(null, [{ op: "create", chat: {} as never }], "orphan", "spare")] });
+            deleteChatThroughTrash(store, "orphan", "k");
+            const orphanHash = sha256(JSON.stringify("Orphan note"));
+            expect(pages(db)[orphanHash]).toBe(JSON.stringify("Orphan note"));
+            expect(db.prepare("SELECT hash FROM checkpointPageRefs WHERE hash = ?").all(orphanHash)).toEqual([]);
+            const before = pages(db);
+
+            const result =
+                action === "prune"
+                    ? store.checkpoints.prune("c", "k", "auto", 0)
+                    : store.checkpoints.delete("c", "k", target.id, target.revision);
+            expect(result).toEqual({ deleted: action === "prune" ? 1 : true, pagesRemoved: 2 });
+            expect(store.checkpoints.list("c", "k")).toEqual([]);
+            expect(store.checkpoints.list("other", "k")).toEqual([survivor]);
+            const remaining = Object.fromEntries(
+                Object.entries(before).filter(([hash]) => hash !== privateMessage && hash !== privateField),
+            );
+            expect(pages(db)).toEqual(remaining);
+
+            store.close();
+            const reopened = createResourceStore({ file, kinds });
+            stores.push(reopened);
+            expect(reopened.checkpoints.list("other", "k")).toEqual([survivor]);
+            expect(pages(db)).toEqual(
+                Object.fromEntries(Object.entries(remaining).filter(([hash]) => hash !== orphanHash)),
+            );
+        },
+    );
+
+    it("creates a missing role index on open and counts user turns through message changes", () => {
+        const { store, db, file } = fileStore();
+        seed(store, {
+            name: "K",
+            note: "note",
+            localLore: [],
+            message: [m("u1"), m("reply", "Reply", "char"), m("reply-extra", "Extra reply", "char")],
+        });
+        store.close();
+        const writer = new DatabaseSync(file);
+        try {
+            writer.exec("DROP INDEX IF EXISTS messages_role");
+        } finally {
+            writer.close();
+        }
+        const index = () =>
+            db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'messages_role'").get();
+        expect(index()).toBeUndefined();
+        const reopened = createResourceStore({ file, kinds });
+        stores.push(reopened);
+        expect(index()).toEqual({
+            sql: expect.stringMatching(/ON messages\s*\(chatSeq,\s*json_extract\(data,\s*'\$\.role'\)\)/),
+        });
+        const { seq } = db.prepare("SELECT seq FROM chats WHERE characterId = 'c' AND id = 'k'").get() as {
+            seq: number;
+        };
+        const plan = db.prepare(`EXPLAIN QUERY PLAN ${COUNT_USER_TURNS_SQL}`).all(seq) as { detail: string }[];
+        expect(plan.map(({ detail }) => detail).join("\n")).toContain("messages_role");
+        expect(reopened.countUserTurns("c", "k")).toBe(1);
+        edit(reopened, [
+            { op: "append", anchor: { end: true }, messages: [m("u2"), m("reply2", "Another reply", "char")] },
+        ]);
+        expect(reopened.countUserTurns("c", "k")).toBe(2);
+        edit(reopened, [{ op: "setText", id: "u2", text: "Edited question" }]);
+        expect(reopened.countUserTurns("c", "k")).toBe(2);
+        edit(reopened, [{ op: "remove", ids: ["u1", "reply2"] }]);
+        expect(reopened.countUserTurns("c", "k")).toBe(1);
+        expect(reopened.countUserTurns("c", "missing")).toBeNull();
+    });
+
     it("loads saved lore overrides and removes current overrides when the checkpoint had none", () => {
         const { store } = fileStore();
         seed(store);
@@ -269,11 +652,13 @@ describe("chat checkpoints", () => {
         const record = checkpoint(db, saved.id);
         const content = pages(db);
         const expectedFields = { ...captured, GLGlobalVariables: storyVariables };
-        expect(record.fields).toEqual(
+        const { structuredMemoryRecords: memoryManifest, ...capturedFields } = record.fields;
+        expect(capturedFields).toEqual(
             Object.fromEntries(
                 Object.entries(expectedFields).map(([key, value]) => [key, sha256(JSON.stringify(value))]),
             ),
         );
+        expect(JSON.parse(content[memoryManifest])).toEqual({ pages: [], events: [], threads: [], runs: [] });
         for (const [key, value] of Object.entries(expectedFields)) {
             expect(content[record.fields[key]]).toBe(JSON.stringify(value));
         }
@@ -424,8 +809,11 @@ describe("chat checkpoints", () => {
             const survivingHashes = new Set([...otherRecord.pages, ...Object.values(otherRecord.fields)]);
             const beforePages = pages(db);
 
-            if (owner === "chat") edit(store, [{ op: "delete" }]);
-            else store.delete(characters, "c", seeded.results[0].revision!);
+            if (owner === "chat") {
+                // A spare active chat lets `k` go to the trash and be deleted.
+                store.applyChanges({ chats: [group(null, [{ op: "create", chat: {} as never }], "c", "spare")] });
+                deleteChatThroughTrash(store, "c", "k");
+            } else store.delete(characters, "c", seeded.results[0].revision!);
             expect(store.checkpoints.list("c", "k")).toBeNull();
             expect(store.checkpoints.readPolicy("c", "k")).toBeNull();
             expect(db.prepare("SELECT id FROM chatCheckpoints").all()).toEqual([{ id: other.id }]);
@@ -537,6 +925,7 @@ describe("chat checkpoints", () => {
             promptPresetId: "prompt-new",
             modelPresetId: "model-new",
             bindingReview: false,
+            draftHookId: "hook-new",
             togglePresetId: "toggles-new",
             translatorPresetId: "translator-new",
             autoTranslate: false,
@@ -545,12 +934,25 @@ describe("chat checkpoints", () => {
             bilingualEmphasis: "translation",
             bilingualSentences: 4,
             memoryTrimAck: 9,
+            memoryEnabled: true,
+            memoryMode: "structuredMemory",
+            memoryPresetId: "memory-preset-new",
+            memoryProfileId: "memory-profile-new",
+            structuredMemoryLanguage: "language-new",
+            structuredMemoryHighlight: "all",
             modules: ["module-new"],
+            oocLog: { new: { id: "new", segment: "segment-new", anchorMessageId: "past", question: "How?", time: 2 } },
+            oocSegment: { id: "segment-new", anchorMessageId: "past" },
+            oocToggles: { mode: "new" },
         } satisfies Partial<Chat>;
         edit(store, [
             {
                 op: "meta",
-                unset: Object.keys(captured).filter((key) => !["note", "localLore", "fmIndex", "sdData"].includes(key)),
+                // A kept field removed since the save stays removed.
+                unset: [
+                    ...Object.keys(captured).filter((key) => !["note", "localLore", "fmIndex", "sdData"].includes(key)),
+                    "loreBudgetWarnOff",
+                ],
                 set: {
                     ...currentKept,
                     note: "Changed",
@@ -611,5 +1013,45 @@ describe("chat checkpoints", () => {
         }
         store.checkpoints.writePolicy("c", "k", null);
         expect(store.checkpoints.readPolicy("c", "k")).toBeNull();
+    });
+});
+
+describe("legacy candidate fields in named checkpoints", () => {
+    it("loads a checkpoint page with malformed candidates without losing the reply or its valid baseline", () => {
+        const { store, file } = fileStore();
+        seed(store, { name: "K", note: "", localLore: [], message: [m("r", "Saved reply", "char")] });
+        const saved = save(store);
+        const writer = new DatabaseSync(file);
+        try {
+            const legacy = JSON.stringify([
+                {
+                    ...m("r", "Saved reply", "char"),
+                    candidates: [{ id: "only", data: "orphan" }],
+                    selected: 3,
+                    scriptstateCheckpoint: { before: null },
+                },
+            ]);
+            const hash = sha256(legacy);
+            writer.prepare("INSERT INTO checkpointPages (hash, text) VALUES (?, ?)").run(hash, legacy);
+            writer.prepare("UPDATE chatCheckpoints SET pages = ? WHERE id = ?").run(JSON.stringify([hash]), saved.id);
+            writer
+                .prepare(
+                    "DELETE FROM checkpointPageRefs WHERE checkpointSeq = (SELECT seq FROM chatCheckpoints WHERE id = ?)",
+                )
+                .run(saved.id);
+            writer
+                .prepare(
+                    "INSERT INTO checkpointPageRefs (checkpointSeq, hash) SELECT seq, ? FROM chatCheckpoints WHERE id = ?",
+                )
+                .run(hash, saved.id);
+        } finally {
+            writer.close();
+        }
+        edit(store, [{ op: "setText", id: "r", text: "Changed" }]);
+        expect(loadCheckpoint(store, saved.id).status).toBe(200);
+        const loaded = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
+        expect(loaded.data?.message).toEqual([
+            { ...m("r", "Saved reply", "char"), scriptstateCheckpoint: { before: null } },
+        ]);
     });
 });

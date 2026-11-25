@@ -1,10 +1,10 @@
 /**
- * Keep the tab audible to Chrome with a quiet, looping 20 Hz tone.
- * Chrome measures the output signal against -72.25 dBFS, so the roughly -57 dBFS
- * level is baked into the PCM waveform and played at full volume. The 10-second
- * clip also exceeds the 5-second transient-media limit for persistent media
- * and Android's media notification.
+ * Keeps the tab audible to Chrome with a quiet, looping tone. Chrome counts a tab as playing audio by its measured
+ * output (silence below -72.25 dBFS), not by the element's `volume`, so the level (about -57 dBFS) is baked into the
+ * samples and played at full volume. Chrome treats media of 5 s or less as transient (on Android: no media
+ * notification, no foreground service), so the clip is longer than that.
  */
+
 function createAudio() {
     const sampleRate = 8000;
     const seconds = 10;
@@ -44,6 +44,13 @@ function createAudio() {
     return audio;
 }
 
+/**
+ * The controller of "Keep Session Alive: Via Sound" (`src/App.svelte` holds one). The element is created at the first
+ * `start()`. `start()` is a no-op while active; the element's `pause` event (for example the OS or another app took
+ * audio focus) or a rejected `play()` makes it inactive, so the next `start()` plays the same element again. Each play
+ * counts as an attempt, so a rejection of an earlier play cannot deactivate a later restart. Where the Media Session
+ * API exists, `start()` sets `navigator.mediaSession.metadata` (title "Risuai") and `stop()` clears it.
+ */
 export function createKeepAliveAudio() {
     let audio: HTMLAudioElement | null = null;
     let active = false;

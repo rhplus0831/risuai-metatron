@@ -23,6 +23,8 @@ export const UPSTREAM_EXPORT_CONVERTED_CODES = [
     "trash-time-refreshed",
     /** A list or entry upstream's boot would fail on was repaired in the export; the examples are paths. */
     "shape-repaired",
+    /** Structured memory written as plain `hypaV3Data`; counted per chat, the examples are character names. */
+    "memory-projected",
 ] as const;
 
 /** Data the exporter did not export. */
@@ -41,6 +43,8 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
     "chat-fields",
     /** Stored message translations; counted per message. */
     "message-translations",
+    /** Reroll candidates of a reply and its variable checkpoint; counted per message with candidates. */
+    "message-candidates",
     /** Persona module links; the examples are persona names. */
     "persona-modules",
     /** Translator pipeline settings upstream has no place for; the examples are preset names. */
@@ -49,6 +53,15 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
     "plugin-storage",
     /** Chats with inlay references; the inlays are not exported. The examples are character names. */
     "inlays",
+    /**
+     * Chats exported as stored because their structured memory could not be read: a record that cannot
+     * be projected, or memory tables the export could not read, which leaves every chat so. Counted per
+     * chat, the examples are character names.
+     */
+    "memory-unreadable",
+    /** Structured Memory pages and threads have no upstream representation; counted per record. */
+    "memory-pages",
+    "memory-threads",
     /**
      * Referenced assets whose file name a RisuAI backup record cannot hold (a `/`, or a name upstream's
      * restore reads as its database or as cold storage); added by the export route, the examples are keys.
@@ -74,6 +87,12 @@ export type UpstreamExportCounts = {
     assets: number;
 };
 
+/**
+ * Preview of an upstream-compatible export (`server/src/data/upstream/exportDatabase.ts`): counts,
+ * reshaped/omitted items in the import report's code/count/name-examples shape, and absent referenced
+ * assets by first owner/role. Missing assets are not truncated here; presentation limits belong to
+ * `src/ts/drive/backuplocal.ts`.
+ */
 export type UpstreamExportReport = {
     counts: UpstreamExportCounts;
     converted: UpstreamReportEntry<UpstreamExportConvertedCode>[];
@@ -116,6 +135,7 @@ export type UpstreamExportRequest = {
 /** The prepare's answer. */
 export type UpstreamExportPrepared = { token: string; report: UpstreamExportReport };
 
+/** A fresh report for one export; its mutable counts and lists must not be reused by another export. */
 export function createUpstreamExportReport(): UpstreamExportReport {
     return {
         counts: {

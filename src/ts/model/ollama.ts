@@ -3,6 +3,15 @@ import { globalFetch } from "../globalApi.svelte";
 import { auxFetch } from "../network/auxFetch";
 import type { ModelGridItem } from "./modelGrid";
 
+/**
+ * Ollama model discovery for the model picker. The cloud tag list goes through `auxFetch`
+ * (`src/ts/network/auxFetch.ts`) with the edited profile, so the server sends that profile's bound Ollama key, or the
+ * flat default key when it binds none; a refused binding fails on the server (`server/src/llm/auxOps.ts`
+ * `planAuxOp`) and reads as an empty list, never a default-account list. A local host's tags go through
+ * `globalFetch` with no provider credential.
+ */
+
+/** Whether discovery reads a configured host or the fixed Ollama cloud endpoint. */
 export type OllamaModelSource = "local" | "cloud";
 
 type OllamaTagModel = {
@@ -24,7 +33,8 @@ type OllamaTagModel = {
 
 /**
  * The models of an Ollama host. The cloud list uses the stored Ollama key on the server
- * (`auxFetch`); a local host is read as before.
+ * (`auxFetch`); a local host is read through `globalFetch`. Non-OK responses and fetch/parsing/mapping failures
+ * return an empty list.
  */
 export async function getOllamaModels(
     host: string,
@@ -57,6 +67,7 @@ export async function getOllamaModels(
     }
 }
 
+/** Maps tag metadata to a grid row with no prices or known context length; local rows sort before cloud rows. */
 export function toModelGridItem(model: OllamaTagModel, source: OllamaModelSource): ModelGridItem {
     const id = model.model || model.name || "";
     const details = model.details;

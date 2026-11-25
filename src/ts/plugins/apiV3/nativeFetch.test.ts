@@ -1,6 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-type Api = { nativeFetch: (url: string, options?: RequestInit) => Promise<Response> };
+type Api = {
+    nativeFetch: (url: string, options?: RequestInit) => Promise<Response>;
+    risuFetch: (url: string) => Promise<unknown>;
+};
 const captured = vi.hoisted(() => ({ api: null as Api | null }));
 vi.mock("./factory", () => ({
     SandboxHost: class {
@@ -10,17 +13,10 @@ vi.mock("./factory", () => ({
         run() {}
         terminate() {}
     },
+    // Called directly, not through the bridge: no host call is in progress.
+    hostCallSignal: () => undefined,
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: vi.fn(async () => true),
@@ -34,13 +30,15 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuUnescape: (s: string) => s,
 }));
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [], getModuleMcps: () => [] }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(),
+    }),
+);
 
-import { fetchNative } from "src/ts/globalApi.svelte";
+import { fetchNative, globalFetch } from "src/ts/globalApi.svelte";
 import { executePluginV3, loadV3Plugins } from "./v3.svelte";
 
 const url = "https://example.test/plugin";
@@ -50,6 +48,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
     vi.mocked(fetchNative).mockReset().mockResolvedValue(new Response("reply"));
+    vi.mocked(globalFetch).mockClear();
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -128,6 +127,47 @@ describe("plugin nativeFetch RequestInit adapter", () => {
                 captured.api!.nativeFetch(url, { method: "POST", body: body as BodyInit }),
             ).rejects.toBeInstanceOf(TypeError);
         }
+        expect(fetchNative).not.toHaveBeenCalled();
+    });
+});
+
+describe.each([
+    ["risuFetch", globalFetch],
+    ["nativeFetch", fetchNative],
+] as const)("plugin %s URL validation", (method, transport) => {
+    beforeEach(() => {
+        vi.spyOn(location, "href", "get").mockReturnValue("https://example.test/plugins/page");
+    });
+    // risuFetch throws synchronously; nativeFetch rejects its promise.
+    const request = (input: unknown) => Promise.resolve().then(() => captured.api![method](input as string));
+
+    it("refuses blocked hosts and subdomains before reaching either transport", async () => {
+        for (const [input, blocked, pageUrl] of [
+            ["https://risuai.xyz/x", "risuai.xyz"],
+            ["https://api.risuai.net/x", "risuai.net"],
+            ["https://sionyw.com./x", "sionyw.com"],
+            ["https://RisuAI.XYZ/x", "risuai.xyz"],
+            ["//risuai.xyz/x", "risuai.xyz"],
+            ["/api/x", "risuai.net", "https://risuai.net/plugins/page"],
+        ]) {
+            if (pageUrl) vi.spyOn(location, "href", "get").mockReturnValue(pageUrl);
+            await expect(request(input)).rejects.toThrow(
+                new Error(`Requests to ${blocked} are blocked for security reasons.`),
+            );
+        }
+        expect(globalFetch).not.toHaveBeenCalled();
+        expect(fetchNative).not.toHaveBeenCalled();
+    });
+
+    it("forwards allowed URLs unchanged, including blocked names in paths or queries and page-relative paths", async () => {
+        const inputs = ["https://example.test/risuai.xyz?next=sionyw.com", "https://notrisuai.xyz/x", "/api/x"];
+        for (const input of inputs) await request(input);
+        expect(vi.mocked(transport).mock.calls.map(([input]) => input)).toEqual(inputs);
+    });
+
+    it("rejects non-string URLs with Invalid URL before reaching either transport", async () => {
+        await expect(request(new URL(url))).rejects.toThrow(new Error("Invalid URL"));
+        expect(globalFetch).not.toHaveBeenCalled();
         expect(fetchNative).not.toHaveBeenCalled();
     });
 });

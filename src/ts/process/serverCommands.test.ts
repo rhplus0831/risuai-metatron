@@ -1,51 +1,78 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GenerationEvent, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { loreBudgetTerminal } from "./tests/loreBudgetStopFixture";
+import type { SendReport } from "../../../shared/remoteCommands.ts";
+import type { GenerationEvent, GenerationStatus, GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import type { createFollowStub } from "../network/tests/generationJobsMock";
+import { ResourceEpochMismatchError, ResourceRequestError } from "../storage/resourceClient";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 // The tab's side of a server Lua button (`serverCommands.ts`) over a stubbed transport: one
 // lifecycle per job shared by every caller (a button, a busy job of this tab, the boot resume), the
-// bounded reattach after a socket closed without the terminal (a failed status read retried, a job
-// the server no longer knows released as lost), the end reported once, the boot discovery joining
-// an active follow and never releasing it, and `runServerButton`'s preflight (ids before the flush,
-// a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
+// bounded reattach after a socket closed without the terminal (growing waits, a failed status read
+// retried, an opened socket the transport replaced on the page's return attached again at once and
+// not counted, a socket that delivered a frame starting the budget again, a close while the page is
+// hidden or offline not counted), the end read from the job's status (the
+// server's kept outcome of a collected job, or the last ended status when the attaches run out), a
+// job the server no longer knows (gone: no lost alert, the chat read again, then the `endedAway`
+// toast) told from a server that stays unreachable (lost), the chat read again after a lost or gone
+// follow with its one retry at the next visible or online (a lost follow leaving `followedJobs`
+// before that read; one chat's recovery reads one at a time, each marking the chat stale first), the
+// chat read again for a completion push (`refreshChatAfterPush`) and for a lost chat viewed
+// (`readChatAgain`), the end reported once, the boot discovery
+// joining an active follow and never releasing it, and `runServerButton`'s preflight (ids before the
+// flush, a discarding or rejected flush runs nothing, a saved revision, the owned-busy path). Also
 // `runServerJob` itself: the send kinds with their context, the `unknown` outcome of a create
-// request without an answer, the abort signal (a DELETE for a started job, for a followed busy job,
-// and for a signal that fired during the create; nothing posted after an abort before the flush
-// ends), and a plugin call's identity.
+// request without an answer, the abort signal (passed to the create, which cancels by request id; a
+// DELETE for a started job, for a followed busy job, and for a job the create answered as the signal
+// fired, none for a job its cancel answered; nothing posted after an abort before the flush ends),
+// and a plugin call's identity.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 const ref = { chaId: "c", chatId: "k" };
 
-type Follow = {
-    jobId: string;
+type Follow = ReturnType<typeof createFollowStub> & {
     onEvent: (event: GenerationEvent) => void;
-    end: (terminal: GenerationTerminalEvent | null) => void;
+    options: Parameters<Transport["followGenerationJob"]>[2];
 };
+type Transport = typeof import("../network/generationJobs");
 
 const stubs = vi.hoisted(() => ({
     follows: [] as unknown[],
-    create: vi.fn<(body: unknown) => Promise<string>>(),
+    attached: undefined as (() => void) | undefined,
+    chat: vi.fn<() => unknown>(() => undefined),
+    current: vi.fn<() => typeof ref | null>(() => null),
+    create: vi.fn<Transport["createGenerationJob"]>(),
     abort: vi.fn<(jobId: string) => Promise<void>>(async () => {}),
-    read: vi.fn<(jobId: string) => Promise<unknown>>(),
+    read: vi.fn<Transport["readGenerationJob"]>(),
+    detach: vi.fn<Transport["detachGenerationJob"]>(),
     release: vi.fn(),
     saved: vi.fn<() => string[]>(() => []),
     apply: vi.fn(),
     alertError: vi.fn(),
     /** `alertJobError`: a job's error terminal with its failure fields. */
     alertJobError: vi.fn(),
-    flush: vi.fn<() => Promise<{ discarded: string[] }>>(),
+    /** `alertToast`: the nonmodal notice of a gone job's chat read again. */
+    alertToast: vi.fn(),
+    /** `sleep`: immediate, its requested waits recorded. */
+    sleep: vi.fn<(ms: number) => Promise<void>>(async () => {}),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
+    refused: vi.fn<(typeof import("../storage/resourceSync.svelte"))["refusedItems"]>(() => []),
     /** `refreshStaleChat`: the pre-send read of a chat this tab knows is behind; true once it is current. */
-    refresh: vi.fn<(ref: unknown) => Promise<boolean>>(),
+    refresh: vi.fn<typeof import("../storage/resourceSync.svelte").refreshStaleChat>(),
     /** `generatingNoticeCount`: how many times the save adapter showed `chatGenerating`. */
-    notices: vi.fn<() => number>(() => 0),
+    notices: vi.fn<typeof import("../storage/resourceSync.svelte").generatingNoticeCount>(() => 0),
     /** `watchForRestore`: whether a restore replaced the data (a job ended by `maintenance` waits on it). */
-    restored: vi.fn<() => Promise<boolean>>(async () => false),
+    restored: vi.fn<typeof import("../storage/resourceSync.svelte").watchForRestore>(async () => false),
     /** `ensureChatLoaded`: the target chat, loaded; `undefined` for a chat that is not listed. */
     load: vi.fn<() => Promise<unknown>>(async () => ({})),
     /** `pinChat`: a release per pin, so the runner's pin/release pairs run as the real ones do. */
     pin: vi.fn(() => vi.fn()),
     held: vi.fn<() => string | null>(() => "e:1:1"),
+    /** `markChatStale`: true for a chat this tab holds. */
+    markStale: vi.fn<() => boolean>(() => true),
+    /** `isChatStale`: whether the stale mark is still there when a retry fires. */
+    stale: vi.fn<() => boolean>(() => true),
     /**
      * `chatEntry`: the target chat's list entry, whose binding the runner sends; `undefined` for a
      * chat that is not listed. The default binds the records installed below.
@@ -55,56 +82,60 @@ const stubs = vi.hoisted(() => ({
     loadChat: vi.fn<() => Promise<unknown>>(async () => ({})),
     /** `recordClientEvent`: the follow's diagnostics. */
     record: vi.fn<(input: unknown) => void>(),
+    /** `replaySkippedListeners`: the listeners a `done` lists as skipped, run after the chat read. */
+    replay: vi.fn<(ref: unknown, terminal: unknown) => Promise<void>>(),
+    /** `holdGenerationPluginWork`: the hold a follow takes for listeners it runs late, and its release. */
+    hold: vi.fn<() => () => void>(),
+    unhold: vi.fn(),
 }));
 /** The seeded chat's binding: the one prompt and model preset (`preset`) and the selected persona. */
 const BOUND = { modelPresetId: "preset", promptPresetId: "preset", bindedPersona: "selected" };
 
-class BusyError extends Error {
-    constructor(readonly jobId: string) {
-        super("busy");
-    }
-}
-/** The job transport's 409 `chatBindingIncomplete` / `chatBindingMismatch` (`ChatBindingRefusedError`). */
-class BindingRefusedError extends Error {
-    constructor(
-        readonly code: "chatBindingIncomplete" | "chatBindingMismatch",
-        readonly problems: { field: string; reason?: string }[] = [],
-    ) {
-        super(code);
-    }
-}
-class LoreOverrideOrphanedError extends Error {
-    constructor(readonly entries: readonly { id: string; name: string }[]) {
-        super("chatLoreOverrideOrphaned");
-        this.name = "ChatLoreOverrideOrphanedError";
-    }
-}
+/** The job transport's typed refusals (the mock's classes, which the product code's `instanceof` sees). */
+let BusyError: Transport["GenerationBusyError"];
+let BindingRefusedError: Transport["ChatBindingRefusedError"];
+let LoreOverrideOrphanedError: Transport["ChatLoreOverrideOrphanedError"];
 /** `flushResources` refused because a change it must save waits for a generation. */
 class BlockedError extends Error {
-    constructor() {
+    constructor(readonly chats: readonly { chaId: string; chatId: string }[] = []) {
         super("A character is still being generated; try again when it finishes");
         this.name = "GenerationBlockedError";
-    }
-}
-/** The resource client's error: `status` 0 is a request without an answer. */
-class RequestError extends Error {
-    constructor(
-        readonly status: number,
-        message: string,
-    ) {
-        super(message);
     }
 }
 
 vi.mock("src/lang", () => ({
     language: {
         chatGenerating: "generating",
+        resourceSaveTimedOut: "command save response timed out",
         serverJob: {
+            stoppedElsewhere: "stopped elsewhere",
+            stopOther: {
+                idle: "idle",
+                confirm: "Stop {kind} ({stage})?",
+                kinds: { send: "send" },
+                stages: { generating: "generating" },
+                running: "running",
+                lookupTimedOut: "Current job lookup timed out",
+                stopTimedOut: "Stop request timed out",
+            },
             lost: "job lost",
+            memoryRebuilding: "memory rebuilding",
+            groupArchived: "This group chat is archived.",
+            endedAway: "ended away",
+            hooksSkipped: "hooks skipped: {hooks}",
+            handoff: {
+                takenBy: "taken by {name}",
+                takenByOther: "taken by another device",
+                missedCallback: "output callback missed",
+                pending: "waiting for {character}",
+                working: "working for {character}",
+            },
             discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
             saveFailed: "save failed: {0}",
+            sendSaveTimedOut: "save response timed out",
             chatLoadFailed: "load failed: {0}",
             chatNotSaved: "not saved",
+            refusedDraft: "the server still refuses this local draft",
         },
         chatBinding: {
             refused: "cannot send",
@@ -124,53 +155,142 @@ vi.mock("../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: stubs.alertError,
         alertJobError: stubs.alertJobError,
+        alertToast: stubs.alertToast,
     }),
 );
-vi.mock("../network/generationJobs", () => ({
-    abortGenerationJob: (jobId: string) => stubs.abort(jobId),
-    applyGenerationEvent: stubs.apply,
-    createGenerationJob: stubs.create,
-    followGenerationJob: (jobId: string, onEvent: (event: GenerationEvent) => void) => {
-        let end!: (terminal: GenerationTerminalEvent | null) => void;
-        const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
-            end = (terminal) => resolve({ terminal });
-        });
-        stubs.follows.push({ jobId, onEvent, end });
-        return { closed, send: () => true, close() {} };
-    },
-    ChatBindingRefusedError: BindingRefusedError,
-    ChatLoreOverrideOrphanedError: LoreOverrideOrphanedError,
-    GenerationBusyError: BusyError,
-    readGenerationJob: stubs.read,
-    releaseGenerationJob: stubs.release,
-    savedGenerationJobIds: stubs.saved,
+vi.mock("../network/jobChannel", () => ({
+    replaySkippedListeners: (ref: unknown, terminal: unknown) => stubs.replay(ref, terminal),
 }));
-vi.mock("../storage/chatStore.svelte", () => ({
-    chatEntry: stubs.entry,
-    ensureChatLoaded: stubs.load,
-    heldChatRevision: stubs.held,
-    loadChat: stubs.loadChat,
-    pinChat: stubs.pin,
-}));
-vi.mock("../storage/resourceClient", () => ({ getResourceEpoch: () => EPOCH, ResourceRequestError: RequestError }));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: stubs.flush,
-    refreshStaleChat: stubs.refresh,
-    GenerationBlockedError: BlockedError,
-    generatingNoticeCount: stubs.notices,
-    watchForRestore: stubs.restored,
-}));
-vi.mock("../util", () => ({ sleep: async () => {} }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
+vi.mock("../network/generationJobs", async () => {
+    const { createGenerationJobsMock, createFollowStub } = await import("../network/tests/generationJobsMock");
+    return createGenerationJobsMock({
+        abortGenerationJob: (jobId: string) => stubs.abort(jobId),
+        applyGenerationEvent: stubs.apply,
+        holdGenerationPluginWork: () => stubs.hold(),
+        createGenerationJob: stubs.create,
+        followGenerationJob: (jobId, onEvent, options) => {
+            const stub = createFollowStub(jobId);
+            stubs.follows.push({ ...stub, onEvent, options });
+            stubs.attached?.();
+            return stub.follow;
+        },
+        readGenerationJob: stubs.read,
+        detachGenerationJob: stubs.detach,
+        releaseGenerationJob: stubs.release,
+        savedGenerationJobIds: stubs.saved,
+    });
+});
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        chatEntry: stubs.entry,
+        /** By default no chat is open: replies land away from the open chat. */
+        currentChatRef: stubs.current,
+        findChat: stubs.chat,
+        ensureChatLoaded: stubs.load,
+        heldChatRevision: stubs.held,
+        isChatStale: stubs.stale,
+        loadChat: stubs.loadChat,
+        markChatStale: stubs.markStale,
+        pinChat: stubs.pin,
+    }),
+);
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        getResourceEpoch: () => EPOCH,
+    }),
+);
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: stubs.flush,
+        refusedItems: stubs.refused,
+        refreshStaleChat: stubs.refresh,
+        GenerationBlockedError: BlockedError,
+        generatingNoticeCount: stubs.notices,
+        watchForRestore: stubs.restored,
+    }),
+);
+vi.mock("../util", () => ({ sleep: (ms: number) => stubs.sleep(ms) }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => stubs.record(input),
+    }),
+);
 
 type Module = typeof import("./serverCommands");
 let commands: Module;
 
 const follows = () => stubs.follows as Follow[];
-const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+/** Resolves on the transport's attach, including one that already happened. */
+function whenAttached(count = follows().length + 1): Promise<void> {
+    if (follows().length >= count) return Promise.resolve();
+    return new Promise((resolve) => {
+        const previous = stubs.attached;
+        stubs.attached = () => {
+            previous?.();
+            if (follows().length >= count) {
+                stubs.attached = previous;
+                resolve();
+            }
+        };
+    });
+}
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => (resolve = done));
+    return { promise, resolve };
+}
+
+/** A recovery read signals its start and stays out until the test supplies its answer. */
+function holdRefresh() {
+    const started = deferred();
+    const answer = deferred<boolean>();
+    stubs.refresh.mockImplementationOnce(() => {
+        started.resolve();
+        return answer.promise;
+    });
+    return { started: started.promise, resolve: answer.resolve };
+}
+
+/** A create signals dispatch before the test aborts or answers it. */
+function holdCreate() {
+    const started = deferred();
+    const answer = deferred<Awaited<ReturnType<Transport["createGenerationJob"]>>>();
+    stubs.create.mockImplementationOnce(() => {
+        started.resolve();
+        return answer.promise;
+    });
+    return { started: started.promise, resolve: answer.resolve };
+}
+
+/** The pin's release signals completion of a void readChatAgain/refreshChatAfterPush call. */
+async function whenReleased(release: ReturnType<typeof vi.fn>) {
+    if (release.mock.calls.length) return;
+    await new Promise<void>((resolve) => release.mockImplementationOnce(resolve));
+}
+/**
+ * Negative observations have no completion event: drain ready continuations so an incorrect
+ * follow/read/notice can show up, while every production deadline stays at the current fake time.
+ */
+const drainContinuations = () => vi.advanceTimersByTimeAsync(0);
 const done: GenerationTerminalEvent = { type: "done", epoch: EPOCH, revision: "e:1:2" };
 const failed: GenerationTerminalEvent = { type: "error", epoch: EPOCH, message: "boom", status: 500, reason: "failed" };
-const status = { jobId: "j", kind: "command", characterId: "c", chatId: "k", epoch: EPOCH, state: "running" };
+const status: GenerationStatus = {
+    jobId: "j",
+    kind: "command",
+    characterId: "c",
+    chatId: "k",
+    epoch: EPOCH,
+    state: "running",
+};
+/** The server's kept outcome of the collected job `j` (its status after the job was collected). */
+const kept = (terminal: GenerationTerminalEvent): GenerationStatus => ({
+    ...status,
+    state: "ended",
+    kept: true,
+    terminal,
+});
+/** The waits `sleep` was asked for, in order. */
+const sleeps = () => stubs.sleep.mock.calls.map(([ms]) => ms);
 /** Delivers the terminal through the follow's events and closes its socket, as the real follow does. */
 const endWith = (follow: Follow, terminal: GenerationTerminalEvent) => {
     follow.onEvent(terminal);
@@ -183,9 +303,16 @@ beforeAll(
 );
 
 beforeEach(async () => {
+    // Recovery and held-read deadlines advance only in the cases that exercise them.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     vi.resetModules();
+    localStorage.clear();
     stubs.follows.length = 0;
+    stubs.attached = undefined;
+    stubs.chat.mockReset().mockReturnValue(undefined);
+    stubs.current.mockReset().mockReturnValue(null);
     stubs.read.mockReset();
+    stubs.record.mockReset();
     stubs.create.mockReset();
     stubs.saved.mockReset().mockReturnValue([]);
     stubs.held.mockReset().mockReturnValue("e:1:1");
@@ -193,11 +320,18 @@ beforeEach(async () => {
     stubs.pin.mockReset().mockImplementation(() => vi.fn());
     stubs.entry.mockReset().mockReturnValue({ ...BOUND });
     stubs.loadChat.mockReset().mockResolvedValue({});
-    stubs.flush.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
+    stubs.refused.mockReset().mockReturnValue([]);
     stubs.refresh.mockReset().mockResolvedValue(true);
     stubs.notices.mockReset().mockReturnValue(0);
     stubs.restored.mockReset().mockResolvedValue(false);
     stubs.abort.mockReset().mockResolvedValue(undefined);
+    stubs.markStale.mockReset().mockReturnValue(true);
+    stubs.stale.mockReset().mockReturnValue(true);
+    stubs.sleep.mockReset().mockResolvedValue(undefined);
+    stubs.replay.mockReset().mockResolvedValue(undefined);
+    stubs.unhold.mockReset();
+    stubs.hold.mockReset().mockImplementation(() => stubs.unhold);
     vi.spyOn(console, "error").mockImplementation(() => {});
     // The records the chat's binding names (`chatBinding` checks that they exist): the prompt preset
     // `preset` (and the model preset of the same id it implies), the personas `selected` and `bound`.
@@ -210,18 +344,59 @@ beforeEach(async () => {
         ],
     });
     commands = await import("./serverCommands");
+    ({
+        GenerationBusyError: BusyError,
+        ChatBindingRefusedError: BindingRefusedError,
+        ChatLoreOverrideOrphanedError: LoreOverrideOrphanedError,
+    } = await import("../network/generationJobs"));
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
 });
 
 describe("followJobToEnd", () => {
+    it("notifies the owner when another client stopped its job and keeps other aborts silent", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            for (const abortedBy of [undefined, "other"] as const) {
+                stubs.alertToast.mockClear();
+                const attached = new Promise<void>((resolve) => {
+                    stubs.attached = resolve;
+                });
+                const end = commands.followJobToEnd(abortedBy ?? "self", ref);
+                await attached;
+                follows().at(-1)!.onEvent({ type: "handoff", epoch: EPOCH, owner: "other" });
+                stubs.alertToast.mockClear();
+                const terminal: GenerationTerminalEvent = {
+                    type: "error",
+                    epoch: EPOCH,
+                    status: 499,
+                    message: "aborted",
+                    reason: "aborted",
+                    ...(abortedBy ? { abortedBy } : {}),
+                };
+                endWith(follows().at(-1)!, terminal);
+                expect(await end).toEqual(terminal);
+                if (abortedBy) {
+                    expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("stopped elsewhere");
+                } else {
+                    expect(stubs.alertToast).not.toHaveBeenCalled();
+                }
+                expect(stubs.alertError).not.toHaveBeenCalled();
+                expect(stubs.alertJobError).not.toHaveBeenCalled();
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("shares one lifecycle per job: two callers get one socket and the same terminal, applied once, with no release or alert for `done`", async () => {
         const first = commands.followJobToEnd("j", ref);
         const second = commands.followJobToEnd("j", ref);
-        await flush();
+        await whenAttached(1);
         expect(follows()).toHaveLength(1);
         endWith(follows()[0], done);
         expect(await first).toEqual(done);
@@ -232,21 +407,19 @@ describe("followJobToEnd", () => {
         expect(stubs.alertError).not.toHaveBeenCalled();
         // The lifecycle is over: a later call starts a new one.
         void commands.followJobToEnd("j", ref);
-        await flush();
+        await whenAttached(2);
         expect(follows()).toHaveLength(2);
     });
 
     it("attaches again after a socket closed without the terminal, retrying a failed status read, and reports an error terminal once", async () => {
         stubs.read.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
-        await flush();
+        await whenAttached(1);
         follows()[0].end(null);
-        await flush();
-        await flush();
+        await whenAttached(2);
         expect(follows()).toHaveLength(2);
         follows()[1].end(null);
-        await flush();
-        await flush();
+        await whenAttached(3);
         expect(follows()).toHaveLength(3);
         endWith(follows()[2], failed);
         expect(await end).toEqual(failed);
@@ -257,42 +430,84 @@ describe("followJobToEnd", () => {
         expect(stubs.release).not.toHaveBeenCalled();
     });
 
-    it("releases a job the server no longer knows (or of another epoch) as lost, with one alert, and does not alert an aborted end", async () => {
+    it("releases a job the server no longer knows (or of another epoch) as gone: no lost alert, the chat marked stale and read again, then the `endedAway` toast with its `notice` event; the caller gets `lost`; an aborted end is not alerted", async () => {
         stubs.read.mockResolvedValueOnce(null);
-        const lost = commands.followJobToEnd("j", ref);
-        await flush();
+        const gone = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
         follows()[0].end(null);
-        expect(await lost).toBe("lost");
+        expect(await gone).toBe("lost");
         expect(stubs.release).toHaveBeenCalledWith("j");
-        expect(stubs.alertError).toHaveBeenCalledTimes(1);
-        expect(stubs.alertError.mock.calls[0][0]).toBe("job lost");
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
+        expect(stubs.record.mock.calls.map(([input]) => input)).toEqual([
+            { kind: "jobLink", phase: "gone", jobId: "j" },
+            { kind: "jobLink", phase: "recovered", jobId: "j" },
+            { kind: "notice", notice: "serverJobEndedAway" },
+        ]);
+        // Read before the toast: the toast tells of a chat already reloaded.
+        expect(stubs.refresh.mock.invocationCallOrder[0]).toBeLessThan(stubs.alertToast.mock.invocationCallOrder[0]);
 
         stubs.read.mockResolvedValueOnce({ ...status, epoch: "other" });
         const other = commands.followJobToEnd("j2", ref);
-        await flush();
+        await whenAttached(2);
         follows()[1].end(null);
         expect(await other).toBe("lost");
         expect(stubs.release).toHaveBeenCalledWith("j2");
+        expect(stubs.alertToast).toHaveBeenCalledTimes(2);
 
         const aborted = commands.followJobToEnd("j3", ref);
-        await flush();
+        await whenAttached(3);
         endWith(follows()[2], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
         await aborted;
-        expect(stubs.alertError).toHaveBeenCalledTimes(2);
+        expect(stubs.alertError).not.toHaveBeenCalled();
         expect(stubs.alertJobError).not.toHaveBeenCalled();
+        // A live end: nothing to read again.
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
     });
 
-    it("gives up after the bounded number of attaches and releases the job", async () => {
+    it("detaches an unreachable job as lost but releases a gone job, keeping the lost diagnostic, alert and recovery read", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        // Every attach closes without an answer; only the status read distinguishes lost from gone.
+        stubs.attached = () => follows().at(-1)!.end(null);
+        stubs.read.mockRejectedValue(new Error("offline"));
+        expect(await commands.followJobToEnd("unreachable", ref)).toBe("lost");
+        expect(get(commands.followedJobs).has("unreachable")).toBe(false);
+
+        const goneRef = { chaId: "c", chatId: "gone-chat" };
+        stubs.read.mockResolvedValue(null);
+        expect(await commands.followJobToEnd("gone", goneRef)).toBe("lost");
+
+        expect(stubs.detach.mock.calls).toEqual([["unreachable"]]);
+        expect(stubs.release.mock.calls).toEqual([["gone"]]);
+        expect(stubs.record).toHaveBeenCalledWith({ kind: "jobLink", phase: "lost", jobId: "unreachable" });
+        expect(stubs.record).toHaveBeenCalledWith({ kind: "jobLink", phase: "gone", jobId: "gone" });
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh.mock.calls).toEqual([[ref], [goneRef]]);
+    });
+
+    it("gives up after the bounded number of attaches, waiting 1, 2, 4, then 8 s between them, detaches the job as lost with its alert, and reads the chat again", async () => {
         stubs.read.mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
-            await flush();
-            await flush();
+            await whenAttached(attach + 1);
             follows()[attach].end(null);
         }
         expect(await end).toBe("lost");
         expect(follows()).toHaveLength(5);
-        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
+        // Each status read is bounded.
+        expect(stubs.read).toHaveBeenCalledTimes(5);
+        expect(stubs.read).toHaveBeenCalledWith("j", { deadlineMs: 10_000 });
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
     });
 
     it("leaves a job a restore or import ended (`maintenance`) to the restore watch: no alert when the data was replaced, its error once when nothing was, timed at the terminal's receipt", async () => {
@@ -310,7 +525,7 @@ describe("followJobToEnd", () => {
             }),
         );
         const replaced = commands.followJobToEnd("j", ref);
-        await flush();
+        await whenAttached(1);
         endWith(follows()[0], maintenance);
         expect(await replaced).toEqual(maintenance);
         expect(stubs.restored).toHaveBeenCalledTimes(1);
@@ -318,13 +533,13 @@ describe("followJobToEnd", () => {
         expect(stubs.alertError).not.toHaveBeenCalled();
         expect(stubs.alertJobError).not.toHaveBeenCalled();
         answer(true);
-        await flush();
+        await drainContinuations();
         expect(stubs.alertError).not.toHaveBeenCalled();
         expect(stubs.alertJobError).not.toHaveBeenCalled();
 
         // Nothing replaced: the job's error, with the time the terminal arrived, not the time the
         // restore watch (up to minutes) gave up.
-        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         try {
             vi.setSystemTime(1_000_000);
             let giveUp!: (replaced: boolean) => void;
@@ -334,12 +549,14 @@ describe("followJobToEnd", () => {
                 }),
             );
             const unchanged = commands.followJobToEnd("j2", ref);
-            await flush();
+            await whenAttached(2);
             endWith(follows()[1], maintenance);
             await unchanged;
             vi.setSystemTime(1_120_000);
+            const reported = deferred();
+            stubs.alertJobError.mockImplementationOnce(() => reported.resolve());
             giveUp(false);
-            await flush();
+            await reported.promise;
             expect(stubs.restored).toHaveBeenCalledTimes(2);
             expect(stubs.alertJobError).toHaveBeenCalledTimes(1);
             expect(stubs.alertJobError).toHaveBeenCalledWith("j2", maintenance, 1_000_000);
@@ -351,14 +568,19 @@ describe("followJobToEnd", () => {
 });
 
 describe("resumeServerJobs (boot)", () => {
-    it("discovers a saved job's chat from its status, retrying a failed read inside the shared lifecycle, and releases it as lost when the reads keep failing", async () => {
+    it("discovers a saved job's chat from its status, retrying a failed read inside the shared lifecycle with growing waits, and detaches it as lost when the reads keep failing", async () => {
         stubs.saved.mockReturnValue(["j"]);
         stubs.read.mockRejectedValue(new Error("offline"));
         await commands.resumeServerJobs();
         expect(stubs.read).toHaveBeenCalledTimes(5);
+        expect(stubs.read).toHaveBeenCalledWith("j", { deadlineMs: 10_000 });
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
         expect(follows()).toHaveLength(0);
-        expect(stubs.release).toHaveBeenCalledWith("j");
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
+        // No chat is known: nothing to read again.
+        expect(stubs.refresh).not.toHaveBeenCalled();
     });
 
     it("joins an active follow of the job instead of discovering it, and never releases it", async () => {
@@ -366,7 +588,7 @@ describe("resumeServerJobs (boot)", () => {
         stubs.saved.mockReturnValue(["j"]);
         stubs.read.mockRejectedValue(new Error("would have failed"));
         const boot = commands.resumeServerJobs();
-        await flush();
+        await whenAttached(1);
         expect(stubs.read).not.toHaveBeenCalled();
         expect(follows()).toHaveLength(1);
         endWith(follows()[0], done);
@@ -382,11 +604,10 @@ describe("resumeServerJobs (boot)", () => {
         stubs.saved.mockReturnValue(["j"]);
         const boot = commands.resumeServerJobs();
         const button = commands.followJobToEnd("j", ref);
-        await flush();
+        await drainContinuations();
         expect(follows()).toHaveLength(0);
         answer(status);
-        await flush();
-        await flush();
+        await whenAttached(1);
         expect(follows()).toHaveLength(1);
         endWith(follows()[0], done);
         expect(await button).toEqual(done);
@@ -394,6 +615,86 @@ describe("resumeServerJobs (boot)", () => {
         expect(stubs.read).toHaveBeenCalledTimes(1);
         expect(stubs.release).not.toHaveBeenCalled();
     });
+
+    it("ends a job with the outcome its discovery read when the server is unreachable afterwards: a kept outcome without an attach, an ended one after the attaches run out or when its chat cannot be loaded", async () => {
+        const shutdown: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            status: 503,
+            reason: "shutdown",
+            message: "The server stopped while this job ran",
+        };
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValueOnce(kept(shutdown)).mockRejectedValue(new Error("offline"));
+        await commands.resumeServerJobs();
+        expect(follows()).toHaveLength(0);
+        expect(stubs.read).toHaveBeenCalledTimes(1);
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, shutdown);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", shutdown);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        stubs.read.mockReset().mockResolvedValueOnce({ ...status, state: "ended", terminal: done });
+        stubs.read.mockRejectedValue(new Error("offline"));
+        stubs.attached = () => queueMicrotask(() => follows().at(-1)!.end(null));
+        await commands.resumeServerJobs();
+        expect(follows()).toHaveLength(5);
+        expect(stubs.apply).toHaveBeenLastCalledWith("j", ref, done);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        stubs.read.mockReset().mockResolvedValueOnce({ ...status, state: "ended", terminal: failed });
+        stubs.load.mockRejectedValue(new Error("offline"));
+        await commands.resumeServerJobs();
+        expect(follows()).toHaveLength(5);
+        expect(stubs.apply).toHaveBeenLastCalledWith("j", ref, failed);
+        expect(stubs.alertJobError).toHaveBeenLastCalledWith("j", failed);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+});
+
+describe("stopChatJob", () => {
+    it.each(["lookup", "stop"] as const)(
+        "releases the chat after a %s timeout so another Stop looks it up again",
+        async (phase) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            const actual = await vi.importActual<Transport>("../network/generationJobs");
+            const mocked = await import("../network/generationJobs");
+            vi.mocked(mocked.readChatGeneration).mockImplementation(actual.readChatGeneration);
+            vi.mocked(mocked.stopChatGeneration).mockImplementation(actual.stopChatGeneration);
+            const { alertConfirm } = await import("../alert");
+            vi.mocked(alertConfirm).mockResolvedValue(true);
+            const auth = await import("../storage/serverAuth");
+            const post = vi.spyOn(auth, "authFetch");
+            if (phase === "stop")
+                post.mockResolvedValueOnce(
+                    Response.json({ jobId: "confirmed-job", kind: "send", owned: false, state: "running" }),
+                );
+            post.mockImplementationOnce(() => new Promise<Response>(() => {}));
+            const ended = vi.fn();
+            const run = commands.stopChatJob(ref).then(ended);
+            try {
+                await vi.advanceTimersByTimeAsync(0);
+                const calls = phase === "lookup" ? 1 : 2;
+                expect(post).toHaveBeenCalledTimes(calls);
+                await commands.stopChatJob(ref);
+                expect(post).toHaveBeenCalledTimes(calls);
+                await vi.advanceTimersByTimeAsync(10_000);
+                expect(ended).toHaveBeenCalledTimes(1);
+                await run;
+                expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(
+                    phase === "lookup" ? "Current job lookup timed out" : "Stop request timed out",
+                );
+                post.mockResolvedValueOnce(Response.json(null));
+                await commands.stopChatJob(ref);
+                expect(post).toHaveBeenCalledTimes(calls + 1);
+                expect(post.mock.calls.at(-1)![0]).toContain("/api/generations/current?");
+                expect(mocked.readChatGeneration).toHaveBeenNthCalledWith(2, ref);
+                if (phase === "stop")
+                    expect(mocked.stopChatGeneration).toHaveBeenCalledExactlyOnceWith(ref, "confirmed-job");
+            } finally {
+                vi.useRealTimers();
+            }
+        },
+    );
 });
 
 describe("runServerButton", () => {
@@ -401,11 +702,11 @@ describe("runServerButton", () => {
 
     it("takes the target and the chat's binding before the flush, saves first, and runs a command job it then follows", async () => {
         stubs.entry.mockReturnValue({ ...BOUND, bindedPersona: "bound" });
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerButton(char, "go", ref);
         // The binding was read: a change before the flush ends does not move the job.
         stubs.entry.mockReturnValue({ ...BOUND });
-        await flush();
+        await whenAttached(1);
         expect(stubs.create).toHaveBeenCalledTimes(1);
         const body = stubs.create.mock.calls[0][0] as {
             kind: string;
@@ -436,11 +737,11 @@ describe("runServerButton", () => {
     it("reads a chat this tab knows is behind the server after the flush and before the create, saving and reading once more when the first read did not bring it current, and goes on after two attempts; a failed read runs nothing", async () => {
         const order = (fn: { mock: { invocationCallOrder: number[] } }, index = 0) =>
             fn.mock.invocationCallOrder[index];
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         // Behind after the first read (a change landed meanwhile): saved and read once more.
         stubs.refresh.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
         let run = commands.runServerButton(char, "go", ref);
-        await flush();
+        await whenAttached(1);
         expect(stubs.refresh.mock.calls).toEqual([[ref], [ref]]);
         expect(stubs.flush).toHaveBeenCalledTimes(2);
         expect(stubs.create).toHaveBeenCalledTimes(1);
@@ -456,7 +757,7 @@ describe("runServerButton", () => {
         stubs.refresh.mockClear();
         stubs.create.mockClear();
         run = commands.runServerButton(char, "go", ref);
-        await flush();
+        await whenAttached(2);
         expect(stubs.flush).toHaveBeenCalledTimes(1);
         expect(stubs.refresh).toHaveBeenCalledTimes(1);
         expect(stubs.create).toHaveBeenCalledTimes(1);
@@ -468,7 +769,7 @@ describe("runServerButton", () => {
         stubs.create.mockClear();
         stubs.refresh.mockResolvedValue(false);
         run = commands.runServerButton(char, "go", ref);
-        await flush();
+        await whenAttached(3);
         expect(stubs.flush).toHaveBeenCalledTimes(2);
         expect(stubs.refresh).toHaveBeenCalledTimes(2);
         expect(stubs.create).toHaveBeenCalledTimes(1);
@@ -486,7 +787,7 @@ describe("runServerButton", () => {
 
     it("runs nothing for a group, a discarding or rejected flush, a chat gone meanwhile, or an unsaved chat", async () => {
         await commands.runServerButton({ chaId: "g", type: "group" } as never, "go", ref);
-        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
         await commands.runServerButton(char, "go", ref);
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         await commands.runServerButton(char, "go", ref);
@@ -506,8 +807,7 @@ describe("runServerButton", () => {
         stubs.create.mockRejectedValueOnce(new BusyError("mine"));
         stubs.read.mockResolvedValueOnce(status);
         const own = commands.runServerButton(char, "go", ref);
-        await flush();
-        await flush();
+        await whenAttached(1);
         expect(follows()[0]?.jobId).toBe("mine");
         endWith(follows()[0], done);
         await own;
@@ -521,19 +821,67 @@ describe("runServerButton", () => {
     });
 });
 
+describe("command jobs waiting for a save response", () => {
+    it.each([
+        { interruption: "Stop", reports: [] },
+        { interruption: "the save deadline", reports: [{ kind: "error", text: "command save response timed out" }] },
+    ])("refuses a command on $interruption while the save is still pending", async ({ interruption, reports }) => {
+        const save = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+        stubs.flush.mockReturnValueOnce(save.promise);
+        const controller = new AbortController();
+        const actualReports: SendReport[] = [];
+        const settled = vi.fn();
+        const char = { chaId: "c", type: "character" } as never;
+        const command = commands
+            .runServerJob(
+                char,
+                ref,
+                { kind: "command", label: "button", command: { type: "button", data: "go" } },
+                { signal: controller.signal, reports: actualReports },
+            )
+            .then(settled);
+        try {
+            await drainContinuations();
+            expect(stubs.flush).toHaveBeenCalledExactlyOnceWith();
+            expect(settled).not.toHaveBeenCalled();
+
+            if (interruption === "Stop") {
+                controller.abort();
+                await drainContinuations();
+            } else {
+                await vi.advanceTimersByTimeAsync(29_999);
+                expect(settled).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1);
+            }
+            expect(settled).toHaveBeenCalledExactlyOnceWith({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: false,
+            });
+            expect(actualReports).toEqual(reports);
+            expect(stubs.refresh).not.toHaveBeenCalled();
+            expect(stubs.create).not.toHaveBeenCalled();
+        } finally {
+            save.resolve({ discarded: [], refused: [] });
+            await command;
+        }
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+});
+
 // A manual trigger through the same preflight and follow, with its typed outcome and `onStart` (the
 // tab sets `CurrentTriggerIdStore` there: only once the job exists).
 describe("runServerManualTrigger", () => {
     const char = { chaId: "c", type: "character" } as never;
 
     it("posts a manual command with the trigger id in the context, calls onStart once the job exists and before the follow, and reports `started`", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const onStart = vi.fn(() => {
             expect(stubs.create).toHaveBeenCalledTimes(1);
             expect(follows()).toHaveLength(0);
         });
         const run = commands.runServerManualTrigger(char, "greet", ref, { triggerId: "btn-1", onStart });
-        await flush();
+        await whenAttached(1);
         const body = stubs.create.mock.calls[0][0] as {
             kind: string;
             command: unknown;
@@ -558,9 +906,9 @@ describe("runServerManualTrigger", () => {
     });
 
     it("omits an absent trigger id and reports `started` for an error terminal too (the follow alerts it)", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerManualTrigger(char, "greet", ref);
-        await flush();
+        await whenAttached(1);
         const body = stubs.create.mock.calls[0][0] as { context: Record<string, unknown> };
         expect("triggerId" in body.context).toBe(false);
         endWith(follows()[0], failed);
@@ -574,7 +922,7 @@ describe("runServerManualTrigger", () => {
         outcomes.push(
             await commands.runServerManualTrigger({ chaId: "g", type: "group" } as never, "greet", ref, { onStart }),
         );
-        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
         outcomes.push(await commands.runServerManualTrigger(char, "greet", ref, { onStart }));
@@ -601,12 +949,122 @@ describe("runServerManualTrigger", () => {
         stubs.create.mockRejectedValueOnce(new BusyError("mine"));
         stubs.read.mockResolvedValueOnce(status);
         const run = commands.runServerManualTrigger(char, "greet", ref, { triggerId: "btn-1", onStart });
-        await flush();
-        await flush();
+        await whenAttached(1);
         expect(follows()[0]?.jobId).toBe("mine");
         endWith(follows()[0], done);
         expect(await run).toBe("followed");
         expect(onStart).not.toHaveBeenCalled();
+    });
+});
+
+describe("local sends waiting for a save response", () => {
+    const deadline = 30_000;
+    type SendArg = NonNullable<Parameters<typeof import("./index.svelte").sendChat>[1]>;
+    let sendChat: typeof import("./index.svelte").sendChat;
+    let isLocalSend: typeof import("./localSends").isLocalSend;
+    let answerSave: () => void;
+
+    beforeAll(() => warmModules(() => import("./index.svelte")));
+    beforeEach(async () => {
+        const { installFlatDatabase } = await import("../storage/tests/installFlatDatabase");
+        installFlatDatabase({
+            characters: [{ chaId: ref.chaId, type: "character", name: "c" }],
+            botPresets: [{ id: "preset", name: "preset" }],
+            personas: [{ id: "selected", name: "Selected", personaPrompt: "", icon: "", note: "" }],
+        });
+        ({ sendChat } = await import("./index.svelte"));
+        ({ isLocalSend } = await import("./localSends"));
+        const flush = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+        stubs.flush.mockReturnValue(flush.promise);
+        answerSave = () => flush.resolve({ discarded: [], refused: [] });
+    });
+    afterEach(async () => {
+        answerSave();
+        await drainContinuations();
+    });
+
+    function start(extra: SendArg = {}) {
+        const reports: SendReport[] = [];
+        const onEnd = vi.fn<NonNullable<SendArg["onEnd"]>>();
+        const promise = sendChat(-1, {
+            target: ref,
+            localOnly: true,
+            input: "Composer text",
+            userMessageId: "message",
+            requestId: "request",
+            ...extra,
+            reports,
+            onEnd,
+        });
+        return { promise, onEnd, reports };
+    }
+
+    async function refused(sending: ReturnType<typeof start>, uncertain = false) {
+        await drainContinuations();
+        expect(sending.onEnd).toHaveBeenCalledExactlyOnceWith({
+            outcome: "refused",
+            settled: !uncertain,
+            requestUncertain: uncertain,
+            blockedChats: [],
+        });
+        expect(await sending.promise).toBe(false);
+        expect(isLocalSend(ref)).toBe(false);
+        expect(stubs.create).not.toHaveBeenCalled();
+    }
+
+    it("releases the send reservation on Stop while the save response is still pending", async () => {
+        const controller = new AbortController();
+        const sending = start({ signal: controller.signal });
+        await drainContinuations();
+        expect(stubs.flush).toHaveBeenCalledExactlyOnceWith();
+        expect(isLocalSend(ref)).toBe(true);
+
+        controller.abort();
+        await refused(sending);
+        expect(sending.reports).toEqual([]);
+
+        answerSave();
+        await drainContinuations();
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { request: "a fresh request", uncertain: false },
+        { request: "an uncertain request", uncertain: true },
+    ])("refuses $request at the save deadline and ignores a late save response", async ({ uncertain }) => {
+        const sending = start({ requestUncertain: uncertain });
+        await vi.advanceTimersByTimeAsync(deadline + 1);
+        await refused(sending, uncertain);
+        expect(sending.reports).toEqual([{ kind: "error", text: "save response timed out" }]);
+
+        answerSave();
+        await drainContinuations();
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it("gives a retry its own deadline while it waits for the same save response", async () => {
+        const first = start();
+        await vi.advanceTimersByTimeAsync(deadline + 1);
+        await refused(first);
+
+        const retry = start({ requestId: "retry" });
+        await vi.advanceTimersByTimeAsync(deadline - 1);
+        expect(stubs.flush).toHaveBeenCalledTimes(2);
+        expect(isLocalSend(ref)).toBe(true);
+        expect(retry.onEnd).not.toHaveBeenCalled();
+        expect(stubs.create).not.toHaveBeenCalled();
+
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        answerSave();
+        await drainContinuations();
+        expect(stubs.create).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ requestId: "retry" }),
+            expect.anything(),
+        );
+        expect(follows()).toHaveLength(1);
+        endWith(follows()[0], done);
+        expect(await retry.promise).toBe(true);
+        expect(isLocalSend(ref)).toBe(false);
     });
 });
 
@@ -619,10 +1077,525 @@ describe("runServerJob", () => {
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
 
+    it.each([
+        { name: "job error", terminal: failed, expected: [{ kind: "error", text: "boom" }] },
+        {
+            name: "skipped hooks and missed callbacks",
+            terminal: {
+                ...done,
+                skipped: [
+                    { name: "editoutput" },
+                    { name: "editoutput" },
+                    { name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } },
+                ],
+                missed: [{ name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } }],
+            },
+            expected: [{ kind: "notice", text: "hooks skipped: editoutput output callback missed" }],
+        },
+        {
+            name: "stopped elsewhere notice",
+            terminal: {
+                type: "error",
+                epoch: EPOCH,
+                reason: "aborted",
+                abortedBy: "other",
+                status: 499,
+                message: "aborted",
+            },
+            expected: [{ kind: "notice", text: "stopped elsewhere" }],
+        },
+    ] satisfies { name: string; terminal: GenerationTerminalEvent; expected: SendReport[] }[])(
+        "collects its own $name without showing it on the host",
+        async ({ terminal, expected }) => {
+            const reports: SendReport[] = [];
+            stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+            const run = send({}, { reports });
+            await whenAttached(1);
+            endWith(follows()[0], terminal);
+            const result = await run;
+            expect(result).toMatchObject({ outcome: "started", terminal });
+            expect(result).not.toHaveProperty("reportShownElsewhere");
+            expect(reports).toEqual(expected);
+            expect(stubs.alertError).not.toHaveBeenCalled();
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertToast).not.toHaveBeenCalled();
+        },
+    );
+
+    it("collects a lost follow as an error while leaving the request uncertain", async () => {
+        const reports: SendReport[] = [];
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        stubs.read.mockResolvedValue(status);
+        const run = send({}, { reports });
+        for (let attach = 0; attach < 5; attach++) {
+            await whenAttached(attach + 1);
+            follows()[attach].end(null);
+        }
+        expect(await run).toMatchObject({ outcome: "started", terminal: "lost", requestUncertain: true });
+        expect(reports).toEqual([{ kind: "error", text: "job lost" }]);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("collects admission refusal text from a discarded save and a server refusal without alerting", async () => {
+        const reports: SendReport[] = [];
+        stubs.flush.mockResolvedValueOnce({ discarded: ["chats/c/k"], refused: [] });
+        expect(await send({}, { reports })).toMatchObject({ outcome: "refused", requestUncertain: false });
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(reports).toEqual([{ kind: "error", text: "discarded: send" }]);
+        reports.length = 0;
+        stubs.create.mockRejectedValueOnce(
+            new ResourceRequestError(503, "The server is not accepting generations now"),
+        );
+        expect(await send({}, { reports })).toMatchObject({ outcome: "refused", requestUncertain: false });
+        expect(reports).toEqual([{ kind: "error", text: "The server is not accepting generations now" }]);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("collects a blocked flush even when the save layer already showed its generation notice", async () => {
+        const reports: SendReport[] = [];
+        stubs.notices.mockReturnValueOnce(0).mockReturnValue(1);
+        stubs.flush.mockRejectedValueOnce(new BlockedError([ref]));
+        expect(await send({}, { reports })).toMatchObject({
+            outcome: "refused",
+            blockedChats: [ref],
+            requestUncertain: false,
+        });
+        expect(reports).toEqual([{ kind: "error", text: "generating" }]);
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("omits preferred handoff for a host create while preserving this tab's preference", async () => {
+        const { preferHandoff } = await import("../network/handoff");
+        preferHandoff.set(true);
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = send({}, { noHandoffPreference: true, reports: [] });
+        await whenAttached(1);
+        expect(stubs.create.mock.calls[0][0]).not.toHaveProperty("handoff");
+        expect(get(preferHandoff)).toBe(true);
+        endWith(follows()[0], done);
+        expect(await run).toMatchObject({ outcome: "started", terminal: done });
+    });
+
+    it("marks another follow's displayed error without marking its done, stop or caller-owned lore stop", async () => {
+        for (const [terminal, shown, loreStopCaller] of [
+            [failed, true, false],
+            [done, false, false],
+            [{ type: "error", epoch: EPOCH, reason: "aborted", status: 499, message: "aborted" }, false, false],
+            [loreBudgetTerminal(EPOCH), false, true],
+        ] as const) {
+            stubs.alertJobError.mockClear();
+            const reports: SendReport[] = [];
+            const prior = commands.followJobToEnd("j", ref, undefined, { loreStopCaller });
+            await whenAttached(follows().length + 1);
+            stubs.create.mockResolvedValueOnce({ outcome: "replayed", jobId: "j", owned: true, status });
+            const run = send({}, { reports });
+            await drainContinuations();
+            endWith(follows().at(-1)!, terminal);
+            await prior;
+            const result = await run;
+            expect(result).toMatchObject({ outcome: "replayed", terminal });
+            if (shown) {
+                expect(result).toHaveProperty("reportShownElsewhere", true);
+                expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", failed);
+            } else {
+                expect(result).not.toHaveProperty("reportShownElsewhere");
+                expect(stubs.alertJobError).not.toHaveBeenCalled();
+            }
+            expect(reports).toEqual([]);
+        }
+    });
+
+    it("keeps handoff attribution, maintenance restoration and gone-job recovery notices on the host", async () => {
+        const reports: SendReport[] = [];
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
+        const run = send({}, { reports });
+        await whenAttached(1);
+        follows()[0].onEvent({ type: "handoff", epoch: EPOCH, owner: "other" });
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("taken by another device");
+        const maintenance: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            reason: "maintenance",
+            status: 503,
+            message: "The server is under maintenance",
+        };
+        endWith(follows()[0], maintenance);
+        await run;
+        await drainContinuations();
+        expect(stubs.restored).toHaveBeenCalledTimes(1);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", maintenance, expect.any(Number));
+        expect(reports).toEqual([]);
+        stubs.alertToast.mockClear();
+        stubs.alertJobError.mockClear();
+        stubs.read.mockResolvedValue(null);
+        const gone = send({}, { reports });
+        await whenAttached(2);
+        follows()[1].end(null);
+        expect(await gone).toMatchObject({ terminal: "lost" });
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("ended away");
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        expect(reports).toEqual([]);
+    });
+
+    const oocEnd: Extract<GenerationTerminalEvent, { type: "error" }> = {
+        type: "error",
+        epoch: EPOCH,
+        code: "oocMemoryAhead",
+        message: "Memory moved past the OOC anchor",
+        status: 500,
+        reason: "failed",
+    };
+    const oocPreview = () =>
+        commands.runServerJob(char, ref, {
+            kind: "preview",
+            label: "send",
+            context: { oocExchangeId: "exchange" },
+            callerErrorCodes: ["oocMemoryAhead"],
+        });
+
+    it.each(["started", "replayed"] as const)(
+        "hands a registered OOC error to the caller of its own %s preview without a global alert",
+        async (outcome) => {
+            stubs.create.mockResolvedValueOnce(
+                outcome === "started"
+                    ? { outcome: "created", jobId: "j" }
+                    : { outcome: "replayed", jobId: "j", owned: true, status },
+            );
+            const run = oocPreview();
+            await whenAttached(1);
+            expect(stubs.create.mock.calls[0][0]).toMatchObject({
+                kind: "preview",
+                context: { oocExchangeId: "exchange" },
+            });
+            endWith(follows()[0], oocEnd);
+            expect(await run).toMatchObject({ outcome, terminal: oocEnd, callerErrorFollow: true });
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        },
+    );
+
+    it("still alerts for an OOC error the preview caller did not register", async () => {
+        const terminal: GenerationTerminalEvent = { ...oocEnd, code: "oocAnchorGone" };
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = oocPreview();
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        expect(await run).toMatchObject({ outcome: "started", terminal });
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("keeps an earlier follow's OOC error alert when a caller joins with that code", async () => {
+        const earlier = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = oocPreview();
+        await drainContinuations();
+        expect(follows()).toHaveLength(1);
+        endWith(follows()[0], oocEnd);
+        expect(await earlier).toEqual(oocEnd);
+        const result = await run;
+        expect(result).toMatchObject({ outcome: "started", terminal: oocEnd });
+        expect(result).not.toHaveProperty("callerErrorFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", oocEnd);
+    });
+
+    it("keeps a busy job's OOC error alert instead of assigning it to the refused preview", async () => {
+        stubs.create.mockRejectedValueOnce(new BusyError("j"));
+        stubs.read.mockResolvedValueOnce(status);
+        const run = oocPreview();
+        await whenAttached(1);
+        endWith(follows()[0], oocEnd);
+        const result = await run;
+        expect(result).toMatchObject({ outcome: "followed", terminal: oocEnd });
+        expect(result).not.toHaveProperty("callerErrorFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", oocEnd);
+    });
+
+    it("alerts for an OOC error when a saved job is resumed after reload", async () => {
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        const boot = commands.resumeServerJobs();
+        await whenAttached(1);
+        endWith(follows()[0], oocEnd);
+        await boot;
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", oocEnd);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it.each(["started", "replayed"] as const)(
+        "hands a lore budget end to the waiting caller of a %s job without an ordinary alert",
+        async (outcome) => {
+            const terminal = loreBudgetTerminal(EPOCH);
+            stubs.create.mockResolvedValueOnce(
+                outcome === "started"
+                    ? { outcome: "created" as const, jobId: "j" }
+                    : {
+                          outcome: "replayed",
+                          jobId: "j",
+                          owned: true,
+                          status,
+                      },
+            );
+            const run = send({ stopOverLoreBudget: true });
+            await whenAttached(1);
+            endWith(follows()[0], terminal);
+            expect(await run).toMatchObject({ outcome, terminal, loreStopFollow: true });
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        },
+    );
+
+    it("alerts for a lore budget end resumed at boot without a waiting caller", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        const boot = commands.resumeServerJobs();
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        await boot;
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("keeps an existing follow's ordinary alert when a requesting call joins it", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        const existing = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = send({ stopOverLoreBudget: true });
+        await drainContinuations();
+        endWith(follows()[0], terminal);
+        expect(await existing).toEqual(terminal);
+        expect(await run).not.toHaveProperty("loreStopFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+    });
+
+    it("alerts for another action's followed job and returns no lore stop ownership", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        stubs.create.mockRejectedValueOnce(new BusyError("j"));
+        stubs.read.mockResolvedValueOnce(status);
+        const run = send({ stopOverLoreBudget: true });
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        const result = await run;
+        expect(result).toMatchObject({ outcome: "followed", terminal });
+        expect(result).not.toHaveProperty("loreStopFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+    });
+
+    it("alerts for an unparseable lore payload even when its caller asked for a stop", async () => {
+        const terminal = {
+            ...loreBudgetTerminal(EPOCH),
+            lore: { budget: "invalid" },
+        } as unknown as GenerationTerminalEvent;
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = send({ stopOverLoreBudget: true });
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        const result = await run;
+        expect(result.terminal).toEqual(terminal);
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+    });
+
+    it.each([
+        { refusal: "maintenance", message: "The server is not accepting generations now" },
+        { refusal: "shutdown", message: "The server is shutting down" },
+        { refusal: "busy", message: "generating" },
+        { refusal: "binding", message: "cannot send\nPrompt preset: deleted" },
+        { refusal: "orphaned override", message: "overrides lost their entries\nLost entry\n\ndelete or move them" },
+    ])(
+        "keeps an uncertain $refusal refusal and its own alert without following another job",
+        async ({ refusal, message }) => {
+            const { GenerationCreateError } = await import("../network/generationJobs");
+            const cause =
+                refusal === "busy"
+                    ? new BusyError("busy-job")
+                    : refusal === "binding"
+                      ? new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }])
+                      : refusal === "orphaned override"
+                        ? new LoreOverrideOrphanedError([{ id: "lost", name: "Lost entry" }])
+                        : new ResourceRequestError(503, message);
+            stubs.create.mockRejectedValueOnce(new GenerationCreateError(cause, true));
+            // Even if the busy job is this tab's, this request must stay an ambiguous refusal.
+            stubs.read.mockResolvedValue({ ...status, jobId: "busy-job" });
+            const onStart = vi.fn();
+            const result = await send({ input: "same text" }, { onStart });
+            expect(result).toEqual({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: true,
+                ...(refusal === "busy" ? { blockedChats: [ref] } : {}),
+            });
+            expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(message);
+            expect(stubs.read).not.toHaveBeenCalled();
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+        },
+    );
+
+    it("follows a running replay once and calls onStart once after a lost create answer", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const transport = await vi.importActual<Transport>("../network/generationJobs");
+        const { NO_GENERATION_HOOKS } = await import("../../../shared/jobs.ts");
+        const auth = await import("../storage/serverAuth");
+        const post = vi
+            .spyOn(auth, "authFetch")
+            .mockRejectedValueOnce(new TypeError("answer lost"))
+            .mockResolvedValueOnce(Response.json({ jobId: "j", replayed: true, owned: true, status }));
+        stubs.create.mockImplementation((body, options) =>
+            transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }, options),
+        );
+        const onStart = vi.fn();
+        try {
+            const run = commands.runServerJob(
+                char,
+                ref,
+                {
+                    kind: "send",
+                    label: "send",
+                    requestId: "send-request",
+                    context: { input: "hello", userMessageId: "user-one" },
+                },
+                { onStart },
+            );
+            await vi.advanceTimersByTimeAsync(0);
+            expect(post).toHaveBeenCalledTimes(1);
+            expect(onStart).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(post).toHaveBeenCalledTimes(2);
+            expect(post.mock.calls[1][1]!.body).toBe(post.mock.calls[0][1]!.body);
+            expect(JSON.parse(String(post.mock.calls[1][1]!.body)).requestId).toBe("send-request");
+            expect(follows()).toHaveLength(1);
+            expect(onStart).toHaveBeenCalledTimes(1);
+            endWith(follows()[0], done);
+            expect(await run).toEqual({ outcome: "replayed", terminal: done, requestUncertain: false });
+            expect(follows()).toHaveLength(1);
+            expect(onStart).toHaveBeenCalledTimes(1);
+        } finally {
+            transport.releaseGenerationJob("j");
+            vi.useRealTimers();
+        }
+    });
+
+    it("returns an owned replay terminal even when subsequent chat reads fail, and refuses a foreign running replay", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            const terminal: GenerationTerminalEvent = { ...done, result: ["kept preview"] };
+            stubs.create.mockResolvedValueOnce({
+                outcome: "replayed",
+                jobId: "j",
+                owned: true,
+                status: kept(terminal),
+            });
+            stubs.refresh.mockResolvedValueOnce(true).mockRejectedValue(new Error("chat read offline"));
+            stubs.read.mockRejectedValue(new Error("status read offline"));
+            const onStart = vi.fn();
+            const result = await send({ input: "hello" }, { onStart });
+            expect(result).toEqual({ outcome: "replayed", terminal, requestUncertain: false });
+            expect(stubs.apply).toHaveBeenCalledWith("j", ref, terminal);
+            expect(stubs.refresh).toHaveBeenCalledTimes(2);
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+            stubs.load.mockResolvedValue({});
+            stubs.refresh.mockResolvedValue(true);
+            window.dispatchEvent(new Event("online"));
+            await vi.advanceTimersByTimeAsync(0);
+            stubs.create.mockResolvedValueOnce({
+                outcome: "replayed",
+                jobId: "foreign",
+                owned: false,
+                status: { ...status, jobId: "foreign" },
+            });
+            expect(await send({ input: "hello" }, { onStart })).toMatchObject({
+                outcome: "refused",
+                terminal: null,
+                blockedChats: [ref],
+            });
+            expect(follows()).toHaveLength(0);
+            expect(onStart).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("blocks send, button, and trigger jobs for refused targets or orders while allowing healthy chats", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            const { language } = await import("src/lang");
+            const refusals = [
+                { kind: "chat", chaId: "c", chatId: "k", key: "chats\u0000c\u0000k", reason: "invalid chat" },
+                { kind: "order", chaId: "c", key: "chatOrder\u0000c", reason: "invalid order" },
+            ] satisfies ReturnType<typeof stubs.refused>;
+            // An unexpected create answers immediately, so a missing guard fails without waiting
+            // for a job terminal that a refused caller should never need.
+            stubs.create.mockRejectedValue(new ResourceRequestError(400, "unexpected job creation"));
+            for (const item of refusals) {
+                const key = item.kind === "chat" ? "chats/c/k" : "chats/c";
+                for (const source of ["inventory", "flush"] as const) {
+                    stubs.refused.mockReturnValue(source === "inventory" ? [item] : []);
+                    stubs.flush.mockResolvedValue({ discarded: [], refused: source === "flush" ? [key] : [] });
+                    stubs.alertError.mockClear();
+                    expect(await send({ input: "hi" })).toEqual({
+                        outcome: "refused",
+                        terminal: null,
+                        requestUncertain: false,
+                    });
+                    expect(await commands.runServerButton(char, "go", ref)).toBe("refused");
+                    expect(await commands.runServerManualTrigger(char, "greet", ref)).toBe("refused");
+                    expect(stubs.create).not.toHaveBeenCalled();
+                    expect(stubs.alertError.mock.calls).toEqual([
+                        [language.serverJob.refusedDraft],
+                        [language.serverJob.refusedDraft],
+                        [language.serverJob.refusedDraft],
+                    ]);
+                }
+            }
+
+            stubs.alertError.mockClear();
+            for (const item of refusals) {
+                // A sibling chat is healthy despite k's refusal; an order refusal belongs only
+                // to its character, even when another character uses the same chat id.
+                const healthy = item.kind === "chat" ? { chaId: "c", chatId: "j" } : { chaId: "other", chatId: "k" };
+                stubs.refused.mockReturnValue([item]);
+                stubs.flush.mockResolvedValue({
+                    discarded: [],
+                    refused: [item.kind === "chat" ? "chats/c/k" : "chats/c"],
+                });
+                stubs.create.mockReset().mockResolvedValue({ outcome: "created", jobId: `job-${item.kind}` });
+                stubs.follows.length = 0;
+                const run = commands.runServerJob({ chaId: healthy.chaId, type: "character" } as never, healthy, {
+                    kind: "send",
+                    label: "send",
+                    context: { input: "hi" },
+                });
+                await whenAttached(1);
+                expect(follows()).toHaveLength(1);
+                expect(stubs.create).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        context: expect.objectContaining({ characterId: healthy.chaId, chatId: healthy.chatId }),
+                    }),
+                    { signal: undefined, requestUncertain: undefined },
+                );
+                endWith(follows()[0], done);
+                expect(await run).toEqual({ outcome: "started", terminal: done, requestUncertain: false });
+            }
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        } finally {
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
+
     it("posts the kind with the caller's context fields and no command, and reports `started` with the terminal", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = send({ input: "hi", userMessageId: "u1", continueMessageId: "m9" });
-        await flush();
+        await whenAttached(1);
         const body = stubs.create.mock.calls[0][0] as {
             kind: string;
             command?: unknown;
@@ -643,17 +1616,17 @@ describe("runServerJob", () => {
             chatRevision: "e:1:1",
         });
         endWith(follows()[0], done);
-        expect(await run).toEqual({ outcome: "started", terminal: done });
+        expect(await run).toEqual({ outcome: "started", terminal: done, requestUncertain: false });
         expect(stubs.abort).not.toHaveBeenCalled();
     });
 
     it("takes a plugin call's captured ids as the identity instead of the binding, once the chat's binding is complete", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = send(
             { input: "" },
             { identity: { presetId: "plug-preset", modelPresetId: "plug-model", personaId: "plug-persona" } },
         );
-        await flush();
+        await whenAttached(1);
         const body = stubs.create.mock.calls[0][0] as { context: Record<string, unknown> };
         expect(body.context).toMatchObject({
             presetId: "plug-preset",
@@ -669,13 +1642,13 @@ describe("runServerJob", () => {
     // create, never on the tab's selection; the server's 409s are shown the same way.
     it("refuses a chat whose binding is not complete before the flush, listing each problem, and never falls back to the selection", async () => {
         stubs.entry.mockReturnValue({ bindedPersona: "nope", bindingReview: true });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(
             await send(
                 { input: "hi" },
                 { identity: { presetId: "preset", modelPresetId: "preset", personaId: "selected" } },
             ),
-        ).toEqual({ outcome: "refused", terminal: null });
+        ).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(await commands.runServerButton(char, "go", ref)).toBe("refused");
         expect(await commands.runServerManualTrigger(char, "greet", ref, { triggerId: "t" })).toBe("refused");
         expect(stubs.flush).not.toHaveBeenCalled();
@@ -693,21 +1666,21 @@ describe("runServerJob", () => {
         );
         // A chat that is not listed: refused with the header alone (no fields to list).
         stubs.entry.mockReturnValue(undefined);
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError).toHaveBeenLastCalledWith("cannot send");
         expect(stubs.create).not.toHaveBeenCalled();
     });
 
     it("shows the server's 409 binding refusals: a mismatch reads the chat again and asks to send again, an incomplete binding lists its problems", async () => {
         stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.loadChat).toHaveBeenCalledTimes(1);
         expect(stubs.loadChat).toHaveBeenCalledWith(ref);
         expect(stubs.alertError).toHaveBeenLastCalledWith("binding changed");
         stubs.create.mockRejectedValueOnce(
             new BindingRefusedError("chatBindingIncomplete", [{ field: "promptPresetId", reason: "gone" }]),
         );
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.loadChat).toHaveBeenCalledTimes(1);
         expect(stubs.alertError).toHaveBeenLastCalledWith("cannot send\nPrompt preset: deleted");
         expect(follows()).toHaveLength(0);
@@ -715,9 +1688,15 @@ describe("runServerJob", () => {
         // A failed re-read is logged, not shown twice.
         stubs.loadChat.mockRejectedValueOnce(new Error("offline"));
         stubs.create.mockRejectedValueOnce(new BindingRefusedError("chatBindingMismatch"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
-        await flush();
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError).toHaveBeenCalledTimes(3);
+    });
+
+    it("ends a send refused with the localized group archive message", async () => {
+        const { language } = await import("src/lang");
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(409, "groupArchived"));
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
+        expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(language.serverJob.groupArchived);
     });
 
     it("reports refused for orphaned lore overrides and alerts once with localized text naming every entry", async () => {
@@ -729,7 +1708,11 @@ describe("runServerJob", () => {
         stubs.create.mockRejectedValueOnce(new LoreOverrideOrphanedError(entries));
         const onStart = vi.fn();
 
-        expect(await send({ input: "hi" }, { onStart })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" }, { onStart })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            requestUncertain: false,
+        });
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         const [message] = stubs.alertError.mock.calls[0];
         expect(message).toContain("overrides lost their entries");
@@ -741,47 +1724,153 @@ describe("runServerJob", () => {
         expect(follows()).toHaveLength(0);
     });
 
+    it.each([
+        { answer: "a directly answered create", uncertain: false },
+        { answer: "a retry after an unanswered create", uncertain: true },
+    ])(
+        "shows the localized memory rebuild refusal for $answer with requestUncertain=$uncertain",
+        async ({ uncertain }) => {
+            const { GenerationCreateError } = await import("../network/generationJobs");
+            const refusal = new ResourceRequestError(409, "memoryRebuilding");
+            stubs.create.mockRejectedValueOnce(uncertain ? new GenerationCreateError(refusal, true) : refusal);
+            const onStart = vi.fn();
+
+            expect(await send({ input: "hi" }, { onStart })).toEqual({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: uncertain,
+            });
+            expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith("memory rebuilding");
+            expect(onStart).not.toHaveBeenCalled();
+            expect(follows()).toHaveLength(0);
+        },
+    );
+
+    it("keeps an earlier uncertainty through a stale or binding-mismatch refusal and shows the refusal's own text", async () => {
+        // Another creator of the request id (a remote host) may still admit it: this refusal must not release the id.
+        const { GenerationCreateError, GenerationStaleError } = await import("../network/generationJobs");
+        const kept = { outcome: "refused", terminal: null, requestUncertain: true };
+        stubs.create.mockRejectedValueOnce(new GenerationCreateError(new GenerationStaleError(), true));
+        expect(await send({ input: "hi" })).toEqual(kept);
+        expect(stubs.alertError).toHaveBeenLastCalledWith("The chat changed on the server; reload it and send again");
+        stubs.create.mockRejectedValueOnce(
+            new GenerationCreateError(new BindingRefusedError("chatBindingMismatch"), true),
+        );
+        expect(await send({ input: "hi" })).toEqual(kept);
+        expect(stubs.loadChat).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(stubs.alertError).toHaveBeenLastCalledWith("binding changed");
+        expect(stubs.alertError).toHaveBeenCalledTimes(2);
+        expect(follows()).toHaveLength(0);
+    });
+
     it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {
+        const { GenerationCreateError, GenerationStaleError } = await import("../network/generationJobs");
+        const uncertain = { outcome: "unknown", terminal: null, requestUncertain: true };
+        const definite = { outcome: "refused", terminal: null, requestUncertain: false };
+        // The transport's retries ended with no answer (or an answer the registry did not give).
+        stubs.create.mockRejectedValueOnce(
+            new GenerationCreateError(new ResourceRequestError(0, "fetch failed"), true),
+        );
+        expect(await send({ input: "hi" })).toEqual(uncertain);
+        stubs.create.mockRejectedValueOnce(
+            new GenerationCreateError(new ResourceRequestError(429, "Too many requests"), true),
+        );
+        expect(await send({ input: "hi" })).toEqual(uncertain);
         stubs.create.mockRejectedValueOnce(new TypeError("fetch failed"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "unknown", terminal: null });
-        stubs.create.mockRejectedValueOnce(new RequestError(0, "The network is unreachable"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "unknown", terminal: null });
-        stubs.create.mockRejectedValueOnce(new RequestError(400, "context.userMessageId must be an id"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
-        stubs.create.mockRejectedValueOnce(new RequestError(409, "stale"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual(uncertain);
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(0, "The network is unreachable"));
+        expect(await send({ input: "hi" })).toEqual(uncertain);
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(400, "context.userMessageId must be an id"));
+        expect(await send({ input: "hi" })).toEqual(definite);
+        stubs.create.mockRejectedValueOnce(new ResourceRequestError(409, "stale"));
+        expect(await send({ input: "hi" })).toEqual(definite);
+        // The registry's stale refusal and the restore's 412 are answers too: nothing ran.
+        stubs.create.mockRejectedValueOnce(new GenerationStaleError());
+        expect(await send({ input: "hi" })).toEqual(definite);
+        stubs.create.mockRejectedValueOnce(new ResourceEpochMismatchError("other"));
+        expect(await send({ input: "hi" })).toEqual(definite);
         expect(follows()).toHaveLength(0);
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
+            "job lost",
+            "job lost",
             "fetch failed",
             "The network is unreachable",
             "context.userMessageId must be an id",
             "stale",
+            "The chat changed on the server; reload it and send again",
+            "The server data was replaced by a restore",
         ]);
     });
 
-    it("aborts the job it started when the signal fires, and one aborted during the create as soon as it exists", async () => {
-        stubs.create.mockResolvedValue("j");
+    it("aborts the job it started when the signal fires, and one created as the signal fired as soon as it exists; a create answered by its cancel is not aborted again", async () => {
+        const stopped: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            message: "stopped",
+            status: 499,
+            reason: "aborted",
+        };
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const controller = new AbortController();
         const run = send({ input: "hi" }, { signal: controller.signal });
-        await flush();
+        await whenAttached(1);
+        // The transport gets the signal: it cancels a dispatched create by its request id.
+        expect(stubs.create).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({ signal: controller.signal }),
+        );
         expect(follows()[0]?.jobId).toBe("j");
         controller.abort();
-        await flush();
         expect(stubs.abort).toHaveBeenCalledWith("j");
-        endWith(follows()[0], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
+        endWith(follows()[0], stopped);
         expect((await run).outcome).toBe("started");
 
-        let answer!: (jobId: string) => void;
-        stubs.create.mockReturnValueOnce(new Promise<string>((resolve) => (answer = resolve)));
+        // A job the create answered as the signal fired is aborted once it exists.
+        const lateCreate = holdCreate();
         const during = new AbortController();
         const late = send({ input: "hi" }, { signal: during.signal });
-        await flush();
+        await lateCreate.started;
         during.abort();
-        answer("j2");
-        await flush();
+        lateCreate.resolve({ outcome: "created", jobId: "j2" });
+        await whenAttached(2);
         expect(stubs.abort).toHaveBeenLastCalledWith("j2");
-        endWith(follows()[1], { type: "error", epoch: EPOCH, message: "stopped", status: 499, reason: "aborted" });
+        endWith(follows()[1], stopped);
         expect((await late).outcome).toBe("started");
+
+        // The transport's cancel found this request's own job and aborted it: followed as a replay to
+        // its terminal, without onStart and without a second abort.
+        stubs.abort.mockClear();
+        const onStart = vi.fn();
+        const replayCreate = holdCreate();
+        const cancelling = new AbortController();
+        const replayed = send({ input: "hi" }, { signal: cancelling.signal, onStart });
+        await replayCreate.started;
+        cancelling.abort();
+        replayCreate.resolve({
+            outcome: "replayed",
+            jobId: "j3",
+            owned: true,
+            status: { ...status, jobId: "j3" },
+            cancelled: true,
+        });
+        await whenAttached(3);
+        expect(follows()[2]?.jobId).toBe("j3");
+        endWith(follows()[2], stopped);
+        expect(await replayed).toEqual({ outcome: "replayed", terminal: stopped, requestUncertain: false });
+        expect(onStart).not.toHaveBeenCalled();
+        expect(stubs.abort).not.toHaveBeenCalled();
+
+        // The cancel answered before any job existed: nothing ran, and nothing is followed or aborted.
+        const cancelledCreate = holdCreate();
+        const before = new AbortController();
+        const none = send({ input: "hi" }, { signal: before.signal, onStart });
+        await cancelledCreate.started;
+        before.abort();
+        cancelledCreate.resolve({ outcome: "cancelled" });
+        expect(await none).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
+        expect(follows()).toHaveLength(3);
+        expect(onStart).not.toHaveBeenCalled();
+        expect(stubs.abort).not.toHaveBeenCalled();
     });
 
     it("aborts this tab's busy job it follows instead, reporting `followed` without onStart", async () => {
@@ -790,14 +1879,12 @@ describe("runServerJob", () => {
         const onStart = vi.fn();
         const controller = new AbortController();
         const run = send({ input: "hi" }, { signal: controller.signal, onStart });
-        await flush();
-        await flush();
+        await whenAttached(1);
         expect(follows()[0]?.jobId).toBe("mine");
         controller.abort();
-        await flush();
         expect(stubs.abort).toHaveBeenCalledWith("mine");
         endWith(follows()[0], done);
-        expect(await run).toEqual({ outcome: "followed", terminal: done });
+        expect(await run).toEqual({ outcome: "followed", terminal: done, requestUncertain: false });
         expect(onStart).not.toHaveBeenCalled();
     });
 
@@ -805,11 +1892,12 @@ describe("runServerJob", () => {
         const controller = new AbortController();
         stubs.flush.mockImplementationOnce(async () => {
             controller.abort();
-            return { discarded: [] };
+            return { discarded: [], refused: [] };
         });
         expect(await send({ input: "hi" }, { signal: controller.signal })).toEqual({
             outcome: "refused",
             terminal: null,
+            requestUncertain: false,
         });
         expect(stubs.create).not.toHaveBeenCalled();
         expect(stubs.abort).not.toHaveBeenCalled();
@@ -819,8 +1907,15 @@ describe("runServerJob", () => {
     // `chatGenerating`, not as a save error, and only once with the adapter's.
     it("shows chatGenerating for a flush refused for a generation unless the adapter's recovery showed it during the flush, and posts nothing", async () => {
         // Refused at once (no recovery during this flush): the send shows the notice itself.
-        stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        // The chats the flush waited on are passed on (a reroll restores its replies unless its own chat waits).
+        const other = { chaId: "c2", chatId: "k2" };
+        stubs.flush.mockRejectedValueOnce(new BlockedError([other]));
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [other],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         // The flush's conflict recovery showed it (the count moved during the flush): no second alert.
         let count = 0;
@@ -829,11 +1924,21 @@ describe("runServerJob", () => {
             count += 1;
             throw new BlockedError();
         });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         // Another explicit send in the same episode (the adapter does not show it again): feedback again.
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
         expect(stubs.create).not.toHaveBeenCalled();
         expect(follows()).toHaveLength(0);
@@ -843,9 +1948,9 @@ describe("runServerJob", () => {
         stubs.flush.mockRejectedValueOnce(
             new Error("A character is still being generated; try again when it finishes"),
         );
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.flush.mockRejectedValueOnce(new Error("offline"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
             "save failed: A character is still being generated; try again when it finishes",
             "save failed: offline",
@@ -854,14 +1959,14 @@ describe("runServerJob", () => {
     });
 
     it("shows a send's refusals as `language.serverJob` entries, the error's text in their `{0}` taken literally", async () => {
-        stubs.flush.mockResolvedValueOnce({ discarded: ["x"] });
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        stubs.flush.mockResolvedValueOnce({ discarded: ["x"], refused: [] });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.flush.mockRejectedValueOnce(new Error("quota $& {0} $1"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.refresh.mockRejectedValueOnce(new Error("offline $'"));
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         stubs.held.mockReturnValueOnce(null);
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null, requestUncertain: false });
         expect(stubs.alertError.mock.calls.map((call) => String(call[0]))).toEqual([
             "discarded: send",
             "save failed: quota $& {0} $1",
@@ -875,111 +1980,611 @@ describe("runServerJob", () => {
         let count = 3;
         stubs.notices.mockImplementation(() => count);
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         count = 4;
         stubs.flush.mockRejectedValueOnce(new BlockedError());
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"], ["generating"]]);
     });
 
-    it("still reports another tab's busy job at the create as chatGenerating after a successful flush", async () => {
+    it("still reports another tab's busy job at the create as chatGenerating after a successful flush, naming the target as blocked", async () => {
         stubs.create.mockRejectedValueOnce(new BusyError("theirs"));
         stubs.read.mockResolvedValueOnce(null);
-        expect(await send({ input: "hi" })).toEqual({ outcome: "refused", terminal: null });
+        // Its job may hold no lock this tab knows of yet: a reroll must not restore into the chat.
+        expect(await send({ input: "hi" })).toEqual({
+            outcome: "refused",
+            terminal: null,
+            blockedChats: [ref],
+            requestUncertain: false,
+        });
         expect(stubs.alertError.mock.calls).toEqual([["generating"]]);
         expect(follows()).toHaveLength(0);
     });
 });
 
-const followUpStubs = vi.hoisted(() => ({
-    runMultisend: vi.fn<(ref: unknown, clear: boolean, parts: readonly string[]) => Promise<boolean>>(),
-}));
-vi.mock("./command", () => ({ runMultisend: followUpStubs.runMultisend }));
-
-describe("`/multisend` follow-ups of a command job", () => {
-    /** Lets the follow-up chain (a dynamic import, one await per part) run out. */
-    const settle = async () => {
-        for (let round = 0; round < 8; round += 1) {
-            await flush();
-        }
+// After a socket closed without the terminal, the follow reads the job's status: the server's kept
+// outcome of a collected job is the end (applied as the socket's terminal would be), a job the server
+// no longer knows is gone, a failed read attaches again. After a lost or gone follow, and after an end
+// read from the status that this tab's copy may lack, the chat is marked stale and read again within
+// the step deadline, with one retry at the next visible or online.
+describe("the end read from the job's status, and the chat read after the follow", () => {
+    const links = () => stubs.record.mock.calls.map(([input]) => input);
+    /** Closes the newest follow without a terminal, so the status is read. */
+    const closeLatest = async () => {
+        await whenAttached();
+        follows().at(-1)!.end(null);
     };
-    const withParts = (...followUps: { clear: boolean; parts: string[] }[]): GenerationTerminalEvent => ({
-        ...done,
-        followUps,
-    });
+    const unseen = async () => get((await import("src/ts/process/chatStatus.svelte")).unseenChatKeys);
 
-    beforeEach(() => {
-        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
-    });
-
-    it("sends a done terminal's follow-ups through the tab's `/multisend` in order on the job's chat, stopping at the first that does not send, and hands the terminal to the caller unchanged", async () => {
-        const terminal = withParts(
-            { clear: false, parts: ["one", "two"] },
-            { clear: true, parts: ["three"] },
-            { clear: false, parts: ["never"] },
-        );
-        followUpStubs.runMultisend.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    it("runs the listeners a `done` lists as skipped once this tab holds its revision (after a read when it does not, a socket terminal included), under a plugin-work hold from before the terminal's application until after; names the other skipped hooks once in a toast; runs none after a read that did not take", async () => {
+        const held = `${EPOCH}:1:1`;
+        const newer = `${EPOCH}:1:2`;
+        stubs.held.mockReturnValue(held);
+        // The read brings this tab's copy to the terminal's revision.
+        stubs.refresh.mockImplementation(async () => {
+            stubs.held.mockReturnValue(newer);
+            return true;
+        });
+        const listeners = { name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } } as const;
+        const done = {
+            type: "done",
+            epoch: EPOCH,
+            revision: newer,
+            messageId: "reply",
+            skipped: [listeners, { name: "editoutput" }, { name: "replacerafterRequest" }, { name: "editoutput" }],
+        } satisfies GenerationTerminalEvent;
+        stubs.read.mockResolvedValueOnce(kept(done));
         const end = commands.followJobToEnd("j", ref);
-        await flush();
-        endWith(follows()[0], terminal);
-        expect(await end).toEqual(terminal);
-        await settle();
-        expect(followUpStubs.runMultisend.mock.calls).toEqual([
-            [ref, false, ["one", "two"]],
-            [ref, true, ["three"]],
-        ]);
+        await closeLatest();
+        expect(await end).toEqual(done);
+        // The listeners need the reply: they run after the chat read brought it.
+        expect(stubs.replay).toHaveBeenCalledExactlyOnceWith(ref, done);
+        expect(stubs.refresh.mock.invocationCallOrder[0]).toBeLessThan(stubs.replay.mock.invocationCallOrder[0]);
+        // Plugin work is held from before the terminal's application (no reload empties the
+        // registry meanwhile) until the listeners ran.
+        expect(stubs.hold).toHaveBeenCalledTimes(1);
+        expect(stubs.hold.mock.invocationCallOrder[0]).toBeLessThan(stubs.apply.mock.invocationCallOrder[0]);
+        expect(stubs.unhold).toHaveBeenCalledTimes(1);
+        expect(stubs.unhold.mock.invocationCallOrder[0]).toBeGreaterThan(stubs.replay.mock.invocationCallOrder[0]);
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("hooks skipped: editoutput, replacerafterRequest");
+        expect(stubs.alertError).not.toHaveBeenCalled();
+
+        // A socket terminal (applied as it came) whose final hydration did not take: this tab is
+        // behind the terminal's revision, so the chat is read first; listeners only, nothing to name.
+        for (const mock of [stubs.replay, stubs.alertToast, stubs.refresh, stubs.markStale, stubs.hold, stubs.unhold]) {
+            mock.mockClear();
+        }
+        stubs.held.mockReturnValue(held);
+        const live = commands.followJobToEnd("j2", ref);
+        await whenAttached(2);
+        endWith(follows().at(-1)!, { ...done, skipped: [listeners] });
+        await live;
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.replay).toHaveBeenCalledExactlyOnceWith(ref, { ...done, skipped: [listeners] });
+        expect(stubs.hold.mock.invocationCallOrder[0]).toBeLessThan(stubs.apply.mock.invocationCallOrder.at(-1)!);
+        expect(stubs.unhold).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+
+        // The read did not take within the deadline: the listeners do not run (the chat is read
+        // again later, without the job), and the hold is still released.
+        for (const mock of [stubs.replay, stubs.hold, stubs.unhold]) {
+            mock.mockClear();
+        }
+        stubs.held.mockReturnValue(held);
+        stubs.refresh.mockReset().mockResolvedValue(false);
+        stubs.read.mockResolvedValueOnce(kept(done));
+        const stale = commands.followJobToEnd("j3", ref);
+        await closeLatest();
+        await stale;
+        expect(stubs.replay).not.toHaveBeenCalled();
+        expect(stubs.unhold).toHaveBeenCalledTimes(1);
+
+        // A done without the field, the common case: nothing runs, nothing is held, nothing is shown.
+        for (const mock of [stubs.alertToast, stubs.hold]) {
+            mock.mockClear();
+        }
+        stubs.refresh.mockReset().mockResolvedValue(true);
+        stubs.read.mockResolvedValueOnce(kept({ type: "done", epoch: EPOCH, revision: newer, messageId: "reply" }));
+        const plain = commands.followJobToEnd("j4", ref);
+        await closeLatest();
+        await plain;
+        expect(stubs.replay).not.toHaveBeenCalled();
+        expect(stubs.hold).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("applies a kept `done` as the job's end: the unseen reply marked, the chat read again only when the terminal's revision is newer than the held one, no notice", async () => {
+        // Real revision tokens, so the comparison is the shared one (not "incomparable, so newer").
+        const held = `${EPOCH}:1:1`;
+        const newer = `${EPOCH}:1:2`;
+        stubs.held.mockReturnValue(held);
+        const done = { type: "done", epoch: EPOCH, revision: newer } satisfies GenerationTerminalEvent;
+        stubs.read.mockResolvedValueOnce(kept(done));
+        const end = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await end).toEqual(done);
+        expect(follows()).toHaveLength(1);
+        // Released as the socket's terminal would release it, not as a lost job.
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, done);
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(await unseen()).toEqual(new Set());
+        expect(links()).toEqual([{ kind: "jobLink", phase: "kept", jobId: "j" }]);
+        // Newer than the held revision: read again, silently.
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+
+        // A reply the tab did not see: the sidebar's unseen mark needs the message id.
+        stubs.read.mockResolvedValueOnce(kept({ ...done, messageId: "reply" }));
+        stubs.refresh.mockClear();
+        const marked = commands.followJobToEnd("j2", ref);
+        await closeLatest();
+        await marked;
+        expect(await unseen()).toEqual(new Set(["c\u0000k"]));
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+
+        // The held revision already: nothing to read.
+        stubs.refresh.mockClear();
+        stubs.markStale.mockClear();
+        stubs.read.mockResolvedValueOnce(kept({ ...done, revision: held }));
+        const same = commands.followJobToEnd("j3", ref);
+        await closeLatest();
+        expect(await same).toEqual({ ...done, revision: held });
+        stubs.read.mockResolvedValueOnce(kept({ ...done, revision: null }));
+        const none = commands.followJobToEnd("j4", ref);
+        await closeLatest();
+        await none;
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.refresh).not.toHaveBeenCalled();
         expect(stubs.alertError).not.toHaveBeenCalled();
     });
 
-    it("starts a job's follow-ups once per tab: the same terminal seen again (a later follow of the job) does not send them again, another job's do; none for a done without follow-ups", async () => {
-        const terminal = withParts({ clear: false, parts: ["a"] });
-        const first = commands.followJobToEnd("j", ref);
-        await flush();
-        endWith(follows()[0], terminal);
-        await first;
-        await settle();
-        // The job is followed again (its terminal is retained on the server): nothing is resent.
-        const again = commands.followJobToEnd("j", ref);
-        await flush();
-        endWith(follows()[1], terminal);
-        expect(await again).toEqual(terminal);
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
-        // Two callers of one follow share the one start.
-        const shared = commands.followJobToEnd("j2", ref);
-        const sharing = commands.followJobToEnd("j2", ref);
-        await flush();
-        endWith(follows()[2], withParts({ clear: true, parts: ["b"] }));
-        await Promise.all([shared, sharing]);
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(2);
-        expect(followUpStubs.runMultisend).toHaveBeenLastCalledWith(ref, true, ["b"]);
-        const plain = commands.followJobToEnd("j3", ref);
-        await flush();
-        endWith(follows()[3], done);
-        await plain;
-        const errored = commands.followJobToEnd("j4", ref);
-        await flush();
-        endWith(follows()[4], failed);
-        await errored;
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(2);
+    it("applies a kept `error` as the job's end: the same alert as when watched live, and the chat read again", async () => {
+        stubs.read.mockResolvedValueOnce(kept(failed));
+        const end = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await end).toEqual(failed);
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, failed);
+        expect(stubs.alertJobError).toHaveBeenCalledTimes(1);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", failed);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "kept", jobId: "j" }]);
     });
 
-    it("runs the follow-ups of a job discovered at boot on the chat its status names, and logs a send that throws", async () => {
-        stubs.read.mockResolvedValue(status);
-        followUpStubs.runMultisend.mockRejectedValueOnce(new Error("send broke"));
-        const end = commands.followJobToEnd("j");
-        await flush();
-        await flush();
-        endWith(follows()[0], withParts({ clear: false, parts: ["x"] }, { clear: false, parts: ["y"] }));
-        expect(await end).toMatchObject({ type: "done" });
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
-        expect(followUpStubs.runMultisend).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, false, ["x"]);
-        expect(console.error).toHaveBeenCalledWith("[Generation]", expect.any(Error));
+    it("keeps an ended status's terminal as the end when a later read finds the job unknown (the server restarted) or the attaches run out, applying it once; another epoch's terminal is not kept", async () => {
+        // Ended but still live on the server (inside its grace): attached again for its final records;
+        // the next read answers 404.
+        stubs.read.mockResolvedValueOnce({ ...status, state: "ended", terminal: failed }).mockResolvedValueOnce(null);
+        const restarted = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        follows()[0].end(null);
+        await whenAttached(2);
+        expect(follows()).toHaveLength(2);
+        follows()[1].end(null);
+        expect(await restarted).toEqual(failed);
+        expect(stubs.apply).toHaveBeenCalledTimes(1);
+        expect(stubs.apply).toHaveBeenCalledWith("j", ref, failed);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", failed);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
         expect(stubs.release).not.toHaveBeenCalled();
+        expect(links().filter((link) => (link as { phase: string }).phase !== "reattach")).toEqual([]);
+
+        // Ended and live through every attach (sockets that never deliver): the last read's terminal.
+        stubs.apply.mockClear();
+        stubs.refresh.mockClear();
+        stubs.read.mockReset().mockResolvedValue({ ...status, state: "ended", terminal: done });
+        const exhausted = commands.followJobToEnd("j2", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await whenAttached(3 + attach);
+            follows()[2 + attach].end(null);
+        }
+        expect(await exhausted).toEqual(done);
+        expect(stubs.apply).toHaveBeenCalledTimes(1);
+        expect(stubs.apply).toHaveBeenCalledWith("j2", ref, done);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.refresh).toHaveBeenCalledWith(ref);
+        expect(links().filter((link) => (link as { phase: string }).phase === "lost")).toEqual([]);
+
+        // The terminal read names another epoch: a 404 after it is a gone job, not that end.
+        stubs.apply.mockClear();
+        stubs.read
+            .mockReset()
+            .mockResolvedValueOnce({ ...status, state: "ended", terminal: { ...failed, epoch: "other" } })
+            .mockResolvedValueOnce(null);
+        const replaced = commands.followJobToEnd("j3", ref);
+        await whenAttached(8);
+        follows()[7].end(null);
+        await whenAttached(9);
+        follows()[8].end(null);
+        expect(await replaced).toBe("lost");
+        expect(stubs.apply).not.toHaveBeenCalled();
+        expect(stubs.release).toHaveBeenCalledWith("j3");
+        expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
+    });
+
+    it("attaches again at once, not counting the attach, after the transport replaced an opened socket on the page's return (`resumed`); a close the transport gave up counts and waits", async () => {
+        stubs.read.mockResolvedValue(status);
+        const end = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        expect(follows()).toHaveLength(1);
+        // Four replaced sockets: a status read each, no wait, nothing of the budget spent.
+        for (let replaced = 0; replaced < 4; replaced += 1) {
+            follows().at(-1)!.resume();
+            await whenAttached(2 + replaced);
+            expect(follows()).toHaveLength(2 + replaced);
+        }
+        expect(stubs.read).toHaveBeenCalledTimes(4);
+        expect(sleeps()).toEqual([]);
+        expect(links().filter((link) => (link as { phase: string }).phase === "reattach")).toEqual(
+            Array(4).fill({ kind: "jobLink", phase: "reattach", jobId: "j", attempt: 0 }),
+        );
+        // Five closes the transport gave up spend the whole budget with the growing waits: lost.
+        for (let attach = 0; attach < 5; attach += 1) {
+            follows().at(-1)!.end(null);
+            if (attach < 4) await whenAttached(6 + attach);
+        }
+        expect(await end).toBe("lost");
+        expect(follows()).toHaveLength(9);
+        expect(stubs.read).toHaveBeenCalledTimes(9);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+    });
+
+    const reattachAttempts = () =>
+        links()
+            .filter((link) => (link as { phase: string }).phase === "reattach")
+            .map((link) => (link as { attempt: number }).attempt);
+    const closedAway = () => links().filter((link) => (link as { phase: string }).phase === "closedAway");
+    /** Closes the newest socket without a terminal and lets the follow read the status and attach again. */
+    const cut = async () => {
+        const attached = whenAttached();
+        follows().at(-1)!.end(null);
+        await attached;
+    };
+
+    it("starts the attach budget again after a socket that delivered a frame: only links that failed in a row count", async () => {
+        stubs.read.mockResolvedValue(status);
+        const end = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        // Four failed links spend four of the five attaches.
+        for (let failed = 0; failed < 4; failed += 1) {
+            await cut();
+        }
+        expect(follows()).toHaveLength(5);
+        // The fifth socket opens and gets a frame before the network cuts it: the server was reached,
+        // so this close spends nothing and the next attach waits the first wait again.
+        const reached = follows().at(-1)!;
+        reached.open();
+        reached.frame();
+        await cut();
+        expect(follows()).toHaveLength(6);
+        expect(reattachAttempts()).toEqual([1, 2, 3, 4, 0]);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000, 1000]);
+        // Five failed links in a row again before the follow is lost.
+        for (let failed = 0; failed < 4; failed += 1) {
+            await cut();
+        }
+        follows().at(-1)!.end(null);
+        expect(await end).toBe("lost");
+        expect(follows()).toHaveLength(10);
+        expect(reattachAttempts()).toEqual([1, 2, 3, 4, 0, 1, 2, 3, 4]);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000, 1000, 1000, 2000, 4000, 8000]);
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(closedAway()).toEqual([]);
+    });
+
+    it("does not count a close while the page is hidden or the browser is offline (`closedAway`): the follow keeps attaching on the schedule, and the budget applies once the page is back", async () => {
+        stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
+        try {
+            const end = commands.followJobToEnd("j", ref);
+            await whenAttached(1);
+            // Seven links fail while the page is hidden: none counted, the last wait repeated.
+            for (let failed = 0; failed < 7; failed += 1) {
+                await cut();
+            }
+            expect(follows()).toHaveLength(8);
+            expect(closedAway()).toEqual(Array(7).fill({ kind: "jobLink", phase: "closedAway", jobId: "j" }));
+            expect(reattachAttempts()).toEqual(Array(7).fill(0));
+            expect(sleeps()).toEqual([1000, 2000, 4000, 8000, 8000, 8000, 8000]);
+            // Visible but offline: not counted either.
+            visibility.mockReturnValue("visible");
+            online.mockReturnValue(false);
+            await cut();
+            expect(follows()).toHaveLength(9);
+            expect(closedAway()).toHaveLength(8);
+            // Back online in front of the user: five failed links spend the budget.
+            online.mockReturnValue(true);
+            for (let failed = 0; failed < 4; failed += 1) {
+                await cut();
+            }
+            follows().at(-1)!.end(null);
+            expect(await end).toBe("lost");
+            expect(follows()).toHaveLength(13);
+            expect(closedAway()).toHaveLength(8);
+            expect(reattachAttempts().slice(8)).toEqual([1, 2, 3, 4]);
+            expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        } finally {
+            visibility.mockRestore();
+            online.mockRestore();
+        }
+    });
+
+    it("a lost follow leaves `followedJobs` before its recovery read, so a completion push meanwhile reads the chat again: one chat's recovery reads run one at a time, the newer after the older's copy settled and marking the chat stale again first", async () => {
+        // The recovery reads' 10 s deadlines stay on the fake clock: no read here may lose to one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
+        const firstRead = holdRefresh();
+        const end = commands.followJobToEnd("j", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await whenAttached(attach + 1);
+            follows()[attach].end(null);
+        }
+        await firstRead.started;
+        // Lost: detached and no longer listed while its recovery read is still out.
+        expect(stubs.detach).toHaveBeenCalledWith("j");
+        expect(stubs.release).not.toHaveBeenCalledWith("j");
+        expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual([]);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        // The push of the job that finished meanwhile: read again, after the pending read.
+        stubs.markStale.mockClear();
+        commands.refreshChatAfterPush({ ...ref });
+        await drainContinuations();
+        expect(links()).toContainEqual({ kind: "push", phase: "chatRefresh" });
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        const nextRead = deferred();
+        stubs.refresh.mockImplementationOnce(async () => {
+            nextRead.resolve();
+            return true;
+        });
+        firstRead.resolve(true);
+        await nextRead.promise;
+        // Marked stale again right before its own read (the older copy may have cleared the mark).
+        expect(stubs.markStale).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(await end).toBe("lost");
+        // The push's read is no recovery of its own: the lost recovery still reports its read.
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j" });
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+    });
+
+    it("readChatAgain reads a chat again once, pinned meanwhile, with no notice and no record, and a gone job's pending recovery keeps its notice", async () => {
+        // The recovery reads' 10 s deadlines stay on the fake clock: no read here may lose to one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        // A gone job's recovery read is out when the chat is viewed: the view's read waits behind it,
+        // and the recovery's `endedAway` toast still shows once its own read took.
+        const goneRead = holdRefresh();
+        stubs.read.mockResolvedValue(null);
+        const gone = commands.followJobToEnd("g", ref);
+        await closeLatest();
+        await goneRead.started;
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        commands.readChatAgain({ ...ref });
+        await drainContinuations();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        const viewedRelease = stubs.pin.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>;
+        goneRead.resolve(true);
+        expect(await gone).toBe("lost");
+        await whenReleased(viewedRelease);
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("ended away");
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        stubs.refresh.mockClear();
+        stubs.markStale.mockClear();
+        stubs.record.mockClear();
+        stubs.alertToast.mockClear();
+
+        stubs.pin.mockClear();
+        commands.readChatAgain({ ...ref });
+        expect(stubs.pin).toHaveBeenCalledExactlyOnceWith(ref);
+        const release = stubs.pin.mock.results[0].value as ReturnType<typeof vi.fn>;
+        await whenReleased(release);
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(links()).toEqual([]);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        // Not held: nothing read.
+        stubs.markStale.mockReturnValueOnce(false);
+        commands.readChatAgain({ ...ref });
+        await whenReleased(stubs.pin.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshChatAfterPush reads a chat again for a completion push, pinned meanwhile and recording `chatRefresh`, unless a follow of this tab covers it or the tab does not hold it", async () => {
+        const quiet: GenerationTerminalEvent = { type: "done", epoch: EPOCH, revision: null };
+        const end = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        commands.refreshChatAfterPush({ ...ref });
+        await drainContinuations();
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        endWith(follows()[0], quiet);
+        expect(await end).toEqual(quiet);
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        stubs.pin.mockClear();
+        commands.refreshChatAfterPush({ ...ref });
+        expect(stubs.pin).toHaveBeenCalledExactlyOnceWith(ref);
+        const release = stubs.pin.mock.results[0].value as ReturnType<typeof vi.fn>;
+        expect(release).not.toHaveBeenCalled();
+        await whenReleased(release);
+        expect(stubs.markStale).toHaveBeenCalledWith(ref);
+        expect(stubs.refresh).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(links()).toEqual([{ kind: "push", phase: "chatRefresh" }]);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        // Not held: nothing read.
+        stubs.markStale.mockReturnValueOnce(false);
+        commands.refreshChatAfterPush({ ...ref });
+        await whenReleased(stubs.pin.mock.results.at(-1)!.value as ReturnType<typeof vi.fn>);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports an unreachable server as lost and reads the chat once more at the next `online` or visible, once, unless the stale mark is gone by then", async () => {
+        stubs.read.mockRejectedValue(new ResourceRequestError(0, "offline"));
+        stubs.refresh.mockResolvedValueOnce(false);
+        const end = commands.followJobToEnd("j", ref);
+        for (let attach = 0; attach < 5; attach++) {
+            await whenAttached(attach + 1);
+            follows()[attach].end(null);
+        }
+        expect(await end).toBe("lost");
+        expect(stubs.alertError.mock.calls).toEqual([["job lost"]]);
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "lost", jobId: "j" });
+        expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j" });
+        // Hidden: not yet.
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.dispatchEvent(new Event("online"));
+        await drainContinuations();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        const recovered = deferred();
+        stubs.record.mockImplementation((event) => {
+            if ((event as { phase?: string }).phase === "recovered") recovered.resolve();
+        });
+        visibility.mockReturnValue("visible");
+        window.dispatchEvent(new Event("online"));
+        await recovered.promise;
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j" });
+        // Once: the listeners are gone.
+        window.dispatchEvent(new Event("online"));
+        document.dispatchEvent(new Event("visibilitychange"));
+        await drainContinuations();
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        visibility.mockRestore();
+
+        // A gone job whose read did not take: its toast waits for the retry's read.
+        stubs.refresh.mockClear();
+        stubs.read.mockReset().mockResolvedValue(null);
+        stubs.refresh.mockResolvedValueOnce(false);
+        const gone = commands.followJobToEnd("j2", ref);
+        await whenAttached(6);
+        follows()[5].end(null);
+        expect(await gone).toBe("lost");
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        const noticed = deferred();
+        stubs.alertToast.mockImplementationOnce(() => noticed.resolve());
+        document.dispatchEvent(new Event("visibilitychange"));
+        await noticed.promise;
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(stubs.alertToast).toHaveBeenCalledWith("ended away");
+
+        // The stale mark gone by the retry (the chat was read another way): no read, no toast.
+        stubs.refresh.mockClear();
+        stubs.alertToast.mockClear();
+        stubs.refresh.mockResolvedValueOnce(false);
+        const elsewhere = commands.followJobToEnd("j3", ref);
+        await whenAttached(7);
+        follows()[6].end(null);
+        await elsewhere;
+        stubs.stale.mockReturnValue(false);
+        window.dispatchEvent(new Event("online"));
+        await drainContinuations();
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("does not read a chat this tab does not hold, and runs one chat's recovery reads one at a time: a newer recovery ends the older's reporting and reads after its copy settled, marking the chat stale again first", async () => {
+        // The recovery reads' 10 s deadlines stay on the fake clock: no read here may lose to one.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        stubs.markStale.mockReturnValueOnce(false);
+        stubs.read.mockResolvedValue(null);
+        const unheld = commands.followJobToEnd("j", ref);
+        await closeLatest();
+        expect(await unheld).toBe("lost");
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(links()).toEqual([{ kind: "jobLink", phase: "gone", jobId: "j" }]);
+
+        const firstRead = holdRefresh();
+        const first = commands.followJobToEnd("j2", ref);
+        await whenAttached(2);
+        follows()[1].end(null);
+        await firstRead.started;
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        const second = commands.followJobToEnd("j3", ref);
+        await whenAttached(3);
+        follows()[2].end(null);
+        await drainContinuations();
+        // The newer recovery waits for the older's read: nothing read or reported yet.
+        expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        stubs.markStale.mockClear();
+        firstRead.resolve(true);
+        expect(await second).toBe("lost");
+        // Marked stale again before its own read, which took: the gone toast, `recovered` for j3 only.
+        expect(stubs.markStale).toHaveBeenCalledTimes(1);
+        expect(stubs.refresh).toHaveBeenCalledTimes(2);
+        expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j3" });
+        expect(await first).toBe("lost");
+        expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
+    });
+
+    it("bounds the chat's read to 10 s: a kept outcome's follow ends at the deadline while its read has not taken, a lost follow's late read still counts", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const tick = () => vi.advanceTimersByTimeAsync(0);
+            let answer!: (current: boolean) => void;
+            stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
+            stubs.read.mockResolvedValueOnce(kept(done));
+            const end = commands.followJobToEnd("j", ref);
+            let ended = false;
+            void end.then(() => (ended = true));
+            await tick();
+            follows()[0].end(null);
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect(ended).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await end).toEqual(done);
+            expect(stubs.alertError).not.toHaveBeenCalled();
+            answer(true);
+            await tick();
+
+            stubs.refresh.mockReset();
+            let late!: (current: boolean) => void;
+            stubs.refresh.mockReturnValueOnce(new Promise<boolean>((resolve) => (late = resolve)));
+            stubs.read.mockReset().mockRejectedValue(new ResourceRequestError(0, "offline"));
+            const lost = commands.followJobToEnd("j2", ref);
+            for (let attach = 0; attach < 5; attach++) {
+                await tick();
+                follows()[1 + attach].end(null);
+            }
+            await vi.advanceTimersByTimeAsync(10_000);
+            expect(await lost).toBe("lost");
+            expect(links()).not.toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
+            late(true);
+            await tick();
+            expect(links()).toContainEqual({ kind: "jobLink", phase: "recovered", jobId: "j2" });
+            // Recovered: the retry listeners are gone.
+            window.dispatchEvent(new Event("online"));
+            await tick();
+            expect(stubs.refresh).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 
@@ -993,16 +2598,114 @@ describe("the job's chat", () => {
     const pinsBalanced = () =>
         stubs.pin.mock.results.every((result) => (result.value as ReturnType<typeof vi.fn>).mock.calls.length === 1);
     const order = (fn: { mock: { invocationCallOrder: number[] } }, index = 0) => fn.mock.invocationCallOrder[index];
-    const settle = async () => {
-        for (let round = 0; round < 8; round += 1) {
-            await flush();
-        }
-    };
+
+    it("keeps a boot-discovered chat loading and stoppable across a failed read and retry, then clears loading before attaching", async () => {
+        const reading = deferred();
+        const first = deferred<unknown>();
+        const retrying = deferred();
+        const retry = deferred();
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        stubs.load.mockImplementationOnce(() => {
+            reading.resolve();
+            return first.promise.then(() => {
+                throw new Error("offline");
+            });
+        });
+        stubs.sleep.mockImplementationOnce(() => {
+            retrying.resolve();
+            return retry.promise;
+        });
+        const boot = commands.resumeServerJobs();
+        await reading.promise;
+        expect([...get(commands.loadingJobChats)]).toEqual([["j", "c\u0000k"]]);
+        expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual(["j"]);
+        // This is the same cancellation entrypoint the participant Stop uses during the load.
+        await (await import("../network/generationJobs")).abortGenerationJob("j");
+        expect(stubs.abort).toHaveBeenCalledExactlyOnceWith("j");
+        first.resolve(undefined);
+        await retrying.promise;
+        expect([...get(commands.loadingJobChats)]).toEqual([["j", "c\u0000k"]]);
+        retry.resolve();
+        await whenAttached(1);
+        expect(get(commands.loadingJobChats).size).toBe(0);
+        expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual(["j"]);
+        endWith(follows()[0], done);
+        await boot;
+        // An authoritative replay never starts a load or leaves a loading marker behind.
+        stubs.load.mockClear();
+        expect(await commands.followJobToEnd("replay", ref, kept(done))).toEqual(done);
+        expect(stubs.load).not.toHaveBeenCalled();
+        expect(get(commands.loadingJobChats).size).toBe(0);
+    });
+
+    it.each(["gone", "rejected"] as const)(
+        "clears a discovered chat's loading marker after %s reads",
+        async (outcome) => {
+            const reading = deferred();
+            const answer = deferred();
+            stubs.read.mockResolvedValue(status);
+            stubs.load.mockImplementation(async () => {
+                reading.resolve();
+                await answer.promise;
+                if (outcome === "rejected") throw new Error("offline");
+                return undefined;
+            });
+            const end = commands.followJobToEnd("j");
+            await reading.promise;
+            expect([...get(commands.loadingJobChats)]).toEqual([["j", "c\u0000k"]]);
+            answer.resolve();
+            expect(await end).toBe("lost");
+            expect(stubs.load).toHaveBeenCalledTimes(outcome === "gone" ? 1 : 5);
+            expect(get(commands.loadingJobChats).size).toBe(0);
+            expect(get(commands.followedJobs).size).toBe(0);
+        },
+    );
+
+    it("clears only the settled job's loading marker when two jobs share a chat and another chat loads", async () => {
+        const answers = [deferred<unknown>(), deferred<unknown>(), deferred<unknown>()];
+        const started = [deferred(), deferred(), deferred()];
+        for (let i = 0; i < answers.length; i++)
+            stubs.load.mockImplementationOnce(() => {
+                started[i].resolve();
+                return answers[i].promise;
+            });
+        const other = { chaId: "c", chatId: "other" };
+        const ends = [
+            commands.followJobToEnd("old", ref),
+            commands.followJobToEnd("new", ref),
+            commands.followJobToEnd("other", other),
+        ];
+        await Promise.all(started.map((gate) => gate.promise));
+        expect([...get(commands.loadingJobChats)]).toEqual([
+            ["old", "c\u0000k"],
+            ["new", "c\u0000k"],
+            ["other", "c\u0000other"],
+        ]);
+        answers[0].resolve({});
+        await whenAttached(1);
+        expect([...get(commands.loadingJobChats)]).toEqual([
+            ["new", "c\u0000k"],
+            ["other", "c\u0000other"],
+        ]);
+        endWith(follows()[0], done);
+        await ends[0];
+        answers[2].resolve({});
+        await whenAttached(2);
+        expect([...get(commands.loadingJobChats)]).toEqual([["new", "c\u0000k"]]);
+        endWith(follows()[1], done);
+        await ends[2];
+        answers[1].resolve({});
+        await whenAttached(3);
+        endWith(follows()[2], done);
+        await ends[1];
+        expect(get(commands.loadingJobChats).size).toBe(0);
+    });
 
     it("pins the target before the flush, loads it after the flush and before the create, holds the pin while the job runs, and releases it once on every exit", async () => {
-        stubs.create.mockResolvedValue("j");
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerButton(char, "go", ref);
-        await flush();
+        await whenAttached(1);
         expect(stubs.pin).toHaveBeenCalledWith(ref);
         expect(order(stubs.pin)).toBeLessThan(order(stubs.flush));
         expect(stubs.load).toHaveBeenCalledWith(ref);
@@ -1030,10 +2733,10 @@ describe("the job's chat", () => {
         expect(pinsBalanced()).toBe(true);
     });
 
-    it("followJobToEnd loads the job's chat before attaching, retrying a failed load; a load that keeps failing, or a chat that is not listed, releases the job as lost", async () => {
+    it("followJobToEnd loads the job's chat before attaching, retrying a failed load; a load that keeps failing, or a chat that is not listed, detaches the job as lost", async () => {
         stubs.load.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({});
         const end = commands.followJobToEnd("j", ref);
-        await settle();
+        await whenAttached(1);
         expect(stubs.load).toHaveBeenCalledTimes(2);
         expect(follows()).toHaveLength(1);
         // Pinned before the load, loaded before the attach.
@@ -1044,10 +2747,13 @@ describe("the job's chat", () => {
         expect(pinsBalanced()).toBe(true);
 
         stubs.load.mockReset().mockRejectedValue(new Error("offline"));
+        stubs.sleep.mockClear();
         expect(await commands.followJobToEnd("j2", ref)).toBe("lost");
         expect(stubs.load).toHaveBeenCalledTimes(5);
+        expect(sleeps()).toEqual([1000, 2000, 4000, 8000]);
         expect(follows()).toHaveLength(1);
-        expect(stubs.release).toHaveBeenCalledWith("j2");
+        expect(stubs.detach).toHaveBeenCalledWith("j2");
+        expect(stubs.release).not.toHaveBeenCalledWith("j2");
         expect(stubs.alertError).toHaveBeenCalledTimes(1);
         expect(stubs.alertError.mock.calls[0][0]).toBe("job lost");
         expect(pinsBalanced()).toBe(true);
@@ -1055,25 +2761,22 @@ describe("the job's chat", () => {
         stubs.load.mockReset().mockResolvedValue(undefined);
         expect(await commands.followJobToEnd("j3", ref)).toBe("lost");
         expect(stubs.load).toHaveBeenCalledTimes(1);
-        expect(stubs.release).toHaveBeenCalledWith("j3");
+        expect(stubs.detach).toHaveBeenCalledWith("j3");
+        expect(stubs.release).not.toHaveBeenCalledWith("j3");
         expect(pinsBalanced()).toBe(true);
     });
 
-    it("a job discovered at boot pins its chat once the status names it; the follow-ups take their own pin, released after they ran", async () => {
+    it("a job discovered at boot pins its chat once the status names it, and releases the pin at the end", async () => {
         stubs.read.mockResolvedValue(status);
-        followUpStubs.runMultisend.mockReset().mockResolvedValue(true);
         const end = commands.followJobToEnd("j");
-        await settle();
+        await whenAttached(1);
         expect(stubs.pin).toHaveBeenCalledTimes(1);
         expect(stubs.pin).toHaveBeenCalledWith({ chaId: "c", chatId: "k" });
         expect(order(stubs.read)).toBeLessThan(order(stubs.pin));
         expect(stubs.load).toHaveBeenCalledWith({ chaId: "c", chatId: "k" });
-        endWith(follows()[0], { ...done, followUps: [{ clear: false, parts: ["x"] }] });
+        endWith(follows()[0], done);
         await end;
-        await settle();
-        expect(followUpStubs.runMultisend).toHaveBeenCalledTimes(1);
-        // The follow's pin and the follow-ups' pin, both released.
-        expect(stubs.pin).toHaveBeenCalledTimes(2);
+        expect(stubs.pin).toHaveBeenCalledTimes(1);
         expect(pinsBalanced()).toBe(true);
     });
 });
@@ -1081,12 +2784,11 @@ describe("the job's chat", () => {
 describe("the follow's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
-    it("records `reattach` with its attempt before every attach after the first, and `lost` once when the attaches run out", async () => {
+    it("records `reattach` with its attempt before every attach after the first, `lost` once when the attaches run out with the `serverJobLost` notice it alerts, and `recovered` when the chat's read after it took", async () => {
         stubs.read.mockResolvedValue(status);
         const end = commands.followJobToEnd("j", ref);
         for (let attach = 0; attach < 5; attach++) {
-            await flush();
-            await flush();
+            await whenAttached(attach + 1);
             follows()[attach].end(null);
         }
         expect(await end).toBe("lost");
@@ -1096,21 +2798,30 @@ describe("the follow's diagnostics", () => {
             { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 3 },
             { kind: "jobLink", phase: "reattach", jobId: "j", attempt: 4 },
             { kind: "jobLink", phase: "lost", jobId: "j" },
+            { kind: "notice", notice: "serverJobLost" },
+            { kind: "jobLink", phase: "recovered", jobId: "j" },
         ]);
+        expect(stubs.alertError).toHaveBeenCalledTimes(1);
     });
 
-    it("records `lost` once for a job the server does not know and for a chat that cannot be loaded, and nothing for a job that ends", async () => {
+    it("records `gone` once for a job the server does not know at boot, `lost` for a chat that cannot be loaded, and nothing for a job that ends", async () => {
         stubs.read.mockResolvedValue(null);
         expect(await commands.followJobToEnd("gone")).toBe("lost");
-        expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "gone" }]);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "gone", jobId: "gone" }]);
         stubs.record.mockClear();
         stubs.load.mockResolvedValue(undefined);
+        // A chat that could not be loaded is not held: nothing is marked or read again.
+        stubs.markStale.mockReturnValueOnce(false);
         expect(await commands.followJobToEnd("unloaded", ref)).toBe("lost");
-        expect(links()).toEqual([{ kind: "jobLink", phase: "lost", jobId: "unloaded" }]);
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "lost", jobId: "unloaded" },
+            { kind: "notice", notice: "serverJobLost" },
+        ]);
+        expect(stubs.refresh).not.toHaveBeenCalled();
         stubs.record.mockClear();
         stubs.load.mockResolvedValue({});
         const end = commands.followJobToEnd("fine", ref);
-        await flush();
+        await whenAttached(1);
         endWith(follows().at(-1)!, failed);
         expect(await end).toEqual(failed);
         expect(links()).toEqual([]);
@@ -1124,8 +2835,7 @@ describe("the follow's diagnostics", () => {
             { kind: "jobLink", phase: "resume", jobId: "a" },
             { kind: "jobLink", phase: "resume", jobId: "b" },
         ]);
-        await flush();
-        await flush();
+        await whenAttached(2);
         expect(follows()).toHaveLength(2);
         for (const follow of follows()) {
             endWith(follow, done);
@@ -1142,7 +2852,7 @@ describe("followedJobs", () => {
     it("lists a followed job under its chat from the follow's start until its end, for done and for an error, and drops its stage with it", async () => {
         const { jobStages, setJobStage } = await import("./jobStages");
         const end = commands.followJobToEnd("j", ref);
-        await flush();
+        await whenAttached(1);
         setJobStage("j", ref, "finishing");
         expect(jobsOf(ref)).toEqual(["j"]);
         expect(jobsOf({ chaId: "c", chatId: "other" })).toEqual([]);
@@ -1152,7 +2862,7 @@ describe("followedJobs", () => {
         expect(get(jobStages).has("j")).toBe(false);
 
         const failing = commands.followJobToEnd("j2", ref);
-        await flush();
+        await whenAttached(2);
         setJobStage("j2", ref, "generating");
         expect(jobsOf(ref)).toEqual(["j2"]);
         endWith(follows()[1], failed);
@@ -1166,11 +2876,10 @@ describe("followedJobs", () => {
         stubs.saved.mockReturnValue(["j"]);
         stubs.read.mockResolvedValue(status);
         const boot = commands.resumeServerJobs();
-        await flush();
-        await flush();
+        await whenAttached(1);
         setJobStage("j", ref, "memory");
         expect(jobsOf({ chaId: status.characterId, chatId: status.chatId })).toEqual(["j"]);
-        // The socket closes without a terminal and the server no longer knows the job: lost.
+        // The socket closes without a terminal and the server no longer knows the job: gone.
         stubs.read.mockResolvedValue(null);
         follows()[0].end(null);
         await boot;
@@ -1181,10 +2890,10 @@ describe("followedJobs", () => {
     it("keeps a newer job of the same chat listed, with its stage, when the older follow ends after it started", async () => {
         const { jobStages, setJobStage, chatStageOf } = await import("./jobStages");
         const older = commands.followJobToEnd("old", ref);
-        await flush();
+        await whenAttached(1);
         setJobStage("old", ref, "finishing");
         const newer = commands.followJobToEnd("new", ref);
-        await flush();
+        await whenAttached(2);
         setJobStage("new", ref, "generating");
         expect(jobsOf(ref).sort()).toEqual(["new", "old"]);
         endWith(follows()[0], done);
@@ -1214,5 +2923,350 @@ describe("followedJobs", () => {
         await boot;
         expect(get(commands.followedJobs).size).toBe(0);
         expect(get(jobStages).has("gone")).toBe(false);
+    });
+});
+
+describe("handoff lifecycles", () => {
+    const attached = () =>
+        new Promise<void>((resolve) => {
+            stubs.attached = resolve;
+        });
+    const role = (owner: "self" | "other", extra: { pending?: true; clientName?: string } = {}): GenerationEvent => ({
+        type: "handoff",
+        epoch: EPOCH,
+        owner,
+        ...extra,
+    });
+
+    const expectQuietDetach = async (jobId: string) => {
+        const { foreignJobs, recoveryChatKeys } = await import("./chatStatus.svelte");
+        expect(stubs.detach).toHaveBeenCalledExactlyOnceWith(jobId);
+        expect(stubs.release).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        for (const phase of ["gone", "lost"]) {
+            expect(stubs.record).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "jobLink", phase }));
+        }
+        expect(get(recoveryChatKeys).size).toBe(0);
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(stubs.loadChat).not.toHaveBeenCalled();
+        expect(stubs.load).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(get(foreignJobs).get("c\u0000k")).toBe(jobId);
+        expect(get(commands.followedJobs).has(jobId)).toBe(false);
+        expect(stubs.pin.mock.results[0].value).toHaveBeenCalledTimes(1);
+    };
+
+    it("quietly detaches a former worker whose viewer reconnect finds no accessible job status", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { readChatGeneration } = await import("../network/generationJobs");
+        stubs.read.mockResolvedValueOnce(status).mockResolvedValueOnce(null);
+        let ready = attached();
+        const end = commands.followJobToEnd("j", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.open();
+        worker.frame();
+        worker.onEvent(role("self"));
+        expect(get(commands.followedJobs).get("j")).toBe("c\u0000k");
+        worker.onEvent(role("other"));
+        ready = attached();
+        worker.end(null);
+        await ready;
+        const viewer = follows().at(-1)!;
+        expect(viewer).not.toBe(worker);
+        expect(viewer.options).toEqual({ initiallyViewing: true });
+        viewer.end(null);
+
+        expect(await end).toBe("lost");
+        expect(stubs.read).toHaveBeenCalledTimes(2);
+        expect(readChatGeneration).not.toHaveBeenCalled();
+        await expectQuietDetach("j");
+    });
+
+    it("quietly detaches an uncertain owner when the chat's current view still names the same job", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { readChatGeneration } = await import("../network/generationJobs");
+        vi.mocked(readChatGeneration).mockResolvedValueOnce({ jobId: "j", kind: "command", owned: false });
+        stubs.read.mockResolvedValueOnce(null);
+        const ready = attached();
+        const end = commands.followJobToEnd("j", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.open();
+        worker.onEvent(role("self"));
+        worker.end(null);
+
+        expect(await end).toBe("lost");
+        expect(readChatGeneration).toHaveBeenCalledExactlyOnceWith(ref);
+        await expectQuietDetach("j");
+    });
+
+    it.each(["another job", "no job"] as const)(
+        "keeps gone handling for an uncertain owner when the chat's current view names %s",
+        async (current) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            const { readChatGeneration } = await import("../network/generationJobs");
+            const { recoveryChatKeys } = await import("./chatStatus.svelte");
+            vi.mocked(readChatGeneration).mockResolvedValueOnce(
+                current === "another job" ? { jobId: "another", kind: "command", owned: false } : null,
+            );
+            stubs.read.mockResolvedValueOnce(null);
+            const ready = attached();
+            const end = commands.followJobToEnd("j", ref, undefined, { ticket: "worker-ticket" });
+            await ready;
+            const worker = follows().at(-1)!;
+            worker.open();
+            worker.onEvent(role("self"));
+            worker.end(null);
+
+            expect(await end).toBe("lost");
+            expect(readChatGeneration).toHaveBeenCalledExactlyOnceWith(ref);
+            expect(stubs.release).toHaveBeenCalledExactlyOnceWith("j");
+            expect(stubs.detach).not.toHaveBeenCalled();
+            expect(stubs.markStale).toHaveBeenCalledWith(ref);
+            expect(stubs.refresh).toHaveBeenCalledExactlyOnceWith(ref);
+            expect(get(recoveryChatKeys).get("c\u0000k")).toBe("j");
+            expect(stubs.alertError).not.toHaveBeenCalled();
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("ended away");
+            expect(stubs.record).toHaveBeenCalledWith({ kind: "jobLink", phase: "gone", jobId: "j" });
+        },
+    );
+
+    it("tracks creator viewers for Take back and reuses their follow when a ticket returns ownership", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        let ready = attached();
+        const end = commands.followJobToEnd("take-back", ref);
+        await ready;
+        const viewer = follows().at(-1)!;
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        viewer.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual(["take-back"]);
+        ready = attached();
+        expect(commands.followJobToEnd("take-back", ref, undefined, { ticket: "take-back-ticket" })).toBe(end);
+        await ready;
+        const owner = follows().at(-1)!;
+        expect(owner).not.toBe(viewer);
+        expect(owner.options).toEqual({ ticket: "take-back-ticket", initiallyViewing: true });
+        owner.onEvent(role("self"));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        owner.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual(["take-back"]);
+        endWith(owner, done);
+        await end;
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+
+        ready = attached();
+        const foreign = commands.followJobToEnd("foreign-job", ref, undefined, { ticket: "worker-ticket" });
+        await ready;
+        const worker = follows().at(-1)!;
+        worker.onEvent(role("other", { pending: true }));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        worker.onEvent(role("other"));
+        expect([...get(commands.viewingJobs)]).toEqual([]);
+        endWith(worker, done);
+        await foreign;
+    });
+
+    it("releases a refused or closed pending takeover without chat recovery or loss notices", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { recoveryChatKeys } = await import("./chatStatus.svelte");
+        for (const pending of [false, true]) {
+            const ready = attached();
+            const end = commands.followJobToEnd(`worker-${pending}`, ref, undefined, { ticket: "claim" });
+            await ready;
+            const socket = follows().at(-1)!;
+            expect(socket.options?.ticket).toBe("claim");
+            if (pending) {
+                socket.open();
+                socket.onEvent(role("other", { pending: true }));
+            }
+            socket.end(null);
+            expect(await end).toBe("lost");
+            expect(stubs.pin.mock.results.at(-1)!.value).toHaveBeenCalledTimes(1);
+            expect(get(commands.followedJobs).size).toBe(0);
+        }
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.markStale).not.toHaveBeenCalled();
+        expect(get(recoveryChatKeys).size).toBe(0);
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+    });
+
+    it("switches the creator's viewer socket with a ticket and resumes viewing after a lost claim in the same lifecycle", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { acceptHandoffs } = await import("../network/handoff");
+        acceptHandoffs.set(false);
+        for (const pending of [false, true]) {
+            stubs.pin.mockClear();
+            stubs.alertToast.mockClear();
+            const jobId = `creator-${pending}`;
+            let ready = attached();
+            const end = commands.followJobToEnd(jobId, ref);
+            await ready;
+            const viewer = follows().at(-1)!;
+            const other = role("other", pending ? {} : { clientName: "Desk worker" });
+            viewer.onEvent(other);
+            viewer.onEvent(other);
+            expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith(
+                pending ? "taken by another device" : "taken by Desk worker",
+            );
+            expect(get(commands.followedJobs).get(jobId)).toBe("c\u0000k");
+            ready = attached();
+            expect(commands.followJobToEnd(jobId, ref, undefined, { ticket: "expired" })).toBe(end);
+            await ready;
+            const claim = follows().at(-1)!;
+            expect(claim).not.toBe(viewer);
+            expect(claim.options).toEqual({ ticket: "expired", initiallyViewing: true });
+            if (pending) claim.onEvent(role("other", { pending: true }));
+            ready = attached();
+            claim.end(null);
+            await ready;
+            const resumed = follows().at(-1)!;
+            expect(resumed.options).toEqual({ initiallyViewing: true });
+            resumed.onEvent(other);
+            expect(commands.followJobToEnd(jobId, ref)).toBe(end);
+            ready = attached();
+            expect(commands.followJobToEnd(jobId, ref, undefined, { ticket: "take-back" })).toBe(end);
+            await ready;
+            const owner = follows().at(-1)!;
+            expect(owner.options?.ticket).toBe("take-back");
+            owner.onEvent(role("self"));
+            endWith(owner, done);
+            expect(await end).toEqual(done);
+            expect(stubs.pin).toHaveBeenCalledTimes(1);
+            expect(stubs.pin.mock.results[0].value).toHaveBeenCalledTimes(1);
+            expect(stubs.alertToast).toHaveBeenCalledTimes(1);
+        }
+        expect(stubs.refresh).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("shows pending and working status and ends a never-promoted worker as a viewer", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { handoffWork } = await import("../network/handoff");
+        const { mount, unmount, flushSync } = await import("svelte");
+        const { default: HandoffStatus } = await import("../../lib/Others/HandoffStatus.svelte");
+        const target = document.createElement("div");
+        const component = mount(HandoffStatus, { target });
+        try {
+            for (const promote of [false, true]) {
+                const jobId = `pending-${promote}`;
+                const ready = attached();
+                const end = commands.followJobToEnd(jobId, ref, undefined, { ticket: "ticket" });
+                await ready;
+                const socket = follows().at(-1)!;
+                socket.onEvent(role("other", { pending: true }));
+                flushSync();
+                expect(get(handoffWork).get(jobId)).toEqual({ jobId, characterName: "c", phase: "pending" });
+                expect(target.querySelector('[role="status"]')?.textContent?.trim()).toBe("waiting for c");
+                expect(get(commands.followedJobs).has(jobId)).toBe(false);
+                if (promote) {
+                    socket.onEvent(role("self"));
+                    flushSync();
+                    expect(get(handoffWork).get(jobId)?.phase).toBe("working");
+                    expect(target.querySelector('[role="status"]')?.textContent?.trim()).toBe("working for c");
+                }
+                const terminal: GenerationTerminalEvent = {
+                    ...done,
+                    messageId: "reply",
+                    skipped: [],
+                    missed: [{ name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } }],
+                };
+                endWith(socket, terminal);
+                expect(await end).toEqual(terminal);
+                flushSync();
+                expect(get(handoffWork).size).toBe(0);
+                expect(target.querySelector('[role="status"]')).toBeNull();
+                expect(stubs.pin.mock.results.at(-1)!.value).toHaveBeenCalledTimes(1);
+            }
+            expect(stubs.refresh).not.toHaveBeenCalled();
+            expect(stubs.replay).not.toHaveBeenCalled();
+            expect(stubs.alertToast).not.toHaveBeenCalled();
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        } finally {
+            await unmount(component);
+        }
+    });
+
+    it("resumes a handed-off saved job as a viewer and follows the first role event", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue({ ...status, handedOff: true });
+        const ready = attached();
+        const boot = commands.resumeServerJobs();
+        await ready;
+        const socket = follows()[0];
+        expect(socket.options).toEqual({ initiallyViewing: true });
+        const { handoffWork } = await import("../network/handoff");
+        socket.onEvent(role("other", { pending: true }));
+        expect(get(handoffWork).get("j")?.phase).toBe("pending");
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+        socket.onEvent(role("other"));
+        expect(get(handoffWork).size).toBe(0);
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("taken by another device");
+        endWith(socket, done);
+        await boot;
+        expect(follows()).toHaveLength(1);
+        expect(stubs.pin.mock.results[0].value).toHaveBeenCalledTimes(1);
+    });
+
+    it("warns the creator once about missed callbacks from live and resumed ends, combining skipped-hook text and replaying only skipped listeners", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const listener = { name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } } as const;
+        for (const source of ["live", "boot"] as const) {
+            for (const skipped of [[], [listener, { name: "editoutput" as const }]]) {
+                stubs.alertToast.mockClear();
+                stubs.replay.mockClear();
+                stubs.held.mockReturnValue(`${EPOCH}:1:2`);
+                const terminal: GenerationTerminalEvent = {
+                    ...done,
+                    revision: `${EPOCH}:1:2`,
+                    missed: [listener],
+                    skipped,
+                };
+                if (source === "live") {
+                    const ready = attached();
+                    const end = commands.followJobToEnd("missed", ref);
+                    const joined = commands.followJobToEnd("missed", ref);
+                    await ready;
+                    endWith(follows().at(-1)!, terminal);
+                    await Promise.all([end, joined]);
+                } else {
+                    stubs.saved.mockReturnValue(["missed"]);
+                    stubs.read.mockResolvedValue({ ...kept(terminal), jobId: "missed", handedOff: true });
+                    await commands.resumeServerJobs();
+                }
+                expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith(
+                    skipped.length ? "hooks skipped: editoutput output callback missed" : "output callback missed",
+                );
+                if (skipped.length) expect(stubs.replay).toHaveBeenCalledExactlyOnceWith(ref, terminal);
+                else expect(stubs.replay).not.toHaveBeenCalled();
+            }
+        }
+    });
+
+    it("adds the local handoff preference to new jobs only while enabled", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const { preferHandoff } = await import("../network/handoff");
+        for (const enabled of [false, true]) {
+            preferHandoff.set(enabled);
+            stubs.stale.mockReturnValue(false);
+            stubs.create.mockResolvedValue({ outcome: "created", jobId: `create-${enabled}` });
+            const ready = attached();
+            const run = commands.runServerJob({ chaId: "c", type: "character" } as never, ref, {
+                kind: "send",
+                label: "send",
+            });
+            await ready;
+            const body = stubs.create.mock.calls.at(-1)![0];
+            if (enabled) expect(body).toHaveProperty("handoff", "prefer");
+            else expect(body).not.toHaveProperty("handoff");
+            endWith(follows().at(-1)!, done);
+            expect((await run).outcome).toBe("started");
+        }
     });
 });

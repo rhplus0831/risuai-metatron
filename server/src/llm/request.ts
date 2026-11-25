@@ -1,12 +1,7 @@
-// The server request layer: a port of `src/ts/process/request/request.ts`'s `requestChatDataMain`
-// and its per-format functions. The client keeps the outer `requestChatData` loop (replacers, the
-// request trigger, retries) and the formats that run in the tab (`Plugin`, `WebLLM`);
-// `POST /api/llm/request` runs this for every other format. The client's module reads
-// (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
-// are the request context's (`arg.ctx`).
 import { Ollama } from "ollama";
 import type { ModelProfile } from "../../../shared/database.ts";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
+import { applyRequestInterceptions } from "../../../shared/llm/interception.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
 import { applyReverseProxyOverride } from "../../../shared/llm/reverseProxy.ts";
@@ -29,14 +24,38 @@ import { NovelAIBadWordIds, stringlizeNAIChat } from "./nai.ts";
 import { requestClaude } from "./anthropic.ts";
 import { requestGoogleCloudVertex } from "./google.ts";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./openAI/requests.ts";
+import { providerFetch } from "./providerFetch.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
 import type { RequestDb } from "./settings.ts";
 import { getStopStrings, stringlizeAINChat, unstringlizeAIN, unstringlizeChat } from "./stringlize.ts";
 import { deferFirstByte, watchFirstByte } from "./transport.ts";
 import { sleep } from "./util.ts";
 
+/**
+ * The server request layer: a port of `src/ts/process/request/request.ts`'s `requestChatDataMain`
+ * and its per-format functions. The tab keeps its outer `requestChatData` loop (its retries and plugin replacers)
+ * and the formats that run in the tab (`Plugin`, `WebLLM`); `POST /api/llm/request` runs this for every other format.
+ * A job's request runs the character's request trigger through `server/src/llm/outer.ts`. The client's module reads
+ * (`getDatabase`, `globalFetch`, the selected character, `getUserName`, `risuChatParser`, ...)
+ * are the request context's (`arg.ctx`).
+ * The provider adapters exist only on the server: this file's per-format functions, `server/src/llm/anthropic.ts`,
+ * `server/src/llm/google.ts`, and `server/src/llm/openAI/` (with the helpers `server/src/llm/nai.ts` and
+ * `server/src/llm/openrouter.ts`). An adapter reads nothing outside `arg.ctx` and its arguments, so a provider change
+ * goes into them.
+ *
+ * A job's WebLLM request uses the server's `ctx.localGeneration`; its Plugin request uses `ctx.pluginProvider` in the
+ * job's tab (`server/src/llm/context.ts`).
+ * Adapters receive a request-local settings overlay and a cloned prompt/descriptor. Shared English refusal and
+ * HTTP-prefix strings come from `server/src/llm/messages.ts`; provider-specific failures retain the adapter's text.
+ * `server/src/llm/requests.ts` redacts failed results, previews, notices, and thrown errors before exposing them, while
+ * generated answers pass through unchanged. Streams carry cumulative snapshots, which that layer converts to wire
+ * patches (legacy Ooba's cumulative strings travel separately); an adapter's returned stream is still live work.
+ */
+
+/** The shared cumulative stream snapshot shape exposed by the server adapters. */
 export type { StreamResponseChunk };
 
+/** A tool's name and serialized arguments. */
 export type ToolCall = {
     name: string;
     arguments: string;
@@ -45,7 +64,7 @@ export type ToolCall = {
 /** The client's `RequestDataArgumentExtended`, built from the request body and the context. */
 export interface RequestDataArgumentExtended extends RequestArgs {
     ctx: RequestContext;
-    tools: ToolDescriptor[];
+    tools?: ToolDescriptor[];
     aiModel: string;
     multiGen?: boolean;
     abortSignal?: AbortSignal | null;
@@ -66,6 +85,10 @@ export interface RequestDataArgumentExtended extends RequestArgs {
  */
 export type JobRequestInfo = { id: string; providerCode: string | null };
 
+/**
+ * A buffered answer/failure or a live stream of cumulative snapshots, optionally carrying its admitted job request's
+ * history identity. Server-local refusal details stay on buffered failures for the job's outer loop.
+ */
 export type requestDataResponse = (
     | (BufferedResponse & {
           /** A server-local failure, preserved through the job's request loop. */
@@ -241,6 +264,12 @@ function normalizeOllamaStreamResponse(response: Response): Response {
     });
 }
 
+/**
+ * Reshapes the prompt from the model flags. The leading system block kept with `hasFirstSystemPrompt` is left out of
+ * the role alternation and the start-with-user handling, and is put back in front afterwards.
+ * Message objects are mutated. Empty and all-system prompts still apply start-with-user handling and return with
+ * any collected system block restored at the front.
+ */
 export function reformater(
     formated: OpenAIChat[],
     modelInfo: LLMModel | LLMFlags[],
@@ -252,7 +281,7 @@ export function reformater(
 
     if (!flags.includes(LLMFlags.hasFullSystemPrompt)) {
         if (flags.includes(LLMFlags.hasFirstSystemPrompt)) {
-            while (formated[0].role === "system") {
+            while (formated.length > 0 && formated[0].role === "system") {
                 if (systemPrompt) {
                     systemPrompt.content += "\n\n" + formated[0].content;
                 } else {
@@ -375,7 +404,13 @@ export type ResolvedRequestModel =
     | { kind: "refused"; result: string }
     | { kind: "resolved"; db: RequestDb; profile: ModelProfile | undefined; aiModel: string; modelInfo: LLMModel };
 
-/** Slot → profile → descriptor, as `requestChatDataMain` resolves them. */
+/**
+ * Slot → profile → descriptor, as `requestChatDataMain` resolves them. Every mode, an auxiliary one included, gets a
+ * request-local `db`: a copy of the context's with the resolved profile's roots forwarded as detached copies
+ * (`shared/sections.ts` `forwardProfileRoots`; schema defaults without a profile). Every mode runs on that
+ * request-local profile overlay (`ctx.db`); the resolved descriptor and custom URL go to the adapter on the request
+ * argument. The job's frozen database and a captured profile are never mutated.
+ */
 export function resolveRequestModel(
     ctx: Pick<RequestContext, "db" | "getModelInfo">,
     model: ModelModeExtended,
@@ -436,14 +471,29 @@ export function resolveJobRequestModel(
 /**
  * `requestChatDataMain` on the server: shared slot resolution, a request-local profile overlay,
  * argument defaults, reverse-proxy/custom-model overrides, `reformater`, then the format's function.
+ * The prompt is cloned per attempt and the request interception rules of the request's mode
+ * (`db.requestInterceptions`, `shared/llm/interception.ts`) are inserted into the clone, so
+ * `reformater` and the adapters treat an inserted message as any other and a retry holds one copy.
  * Missing or required profiles refuse before dispatch; the job's captured settings stay unchanged.
  * `Plugin` (a plugin provider model) is called in the job's tab through `ctx.pluginProvider`, and
  * `WebLLM` (a local Transformers.js model) runs on the server (`ctx.localGeneration`): both for a
  * job's request only; a tab runs them itself and its transport never sends them. Dynamic provider
  * models resolve from their ids through the shared catalogue.
+ *
+ * The named key (`server/src/llm/credentials.ts` `resolveCredential`) is resolved before `reformater` and dispatch: a
+ * refusal fails with `noRetry`, a bound Vertex account populates `vertexCredential`, and any other bound key replaces
+ * `arg.key`, which the adapters prefer over the flat default.
+ *
+ * Dispatch is by the resolved `LLMFormat`: OpenAICompatible/Mistral/NanoGPT use `requestOpenAI`;
+ * OpenAIResponseAPI/NanoGPTResponses use `requestOpenAIResponseAPI`; OpenAILegacyInstruct/NanoGPTLegacy use
+ * `requestOpenAILegacyInstruct` (all in `server/src/llm/openAI/requests.ts`). Anthropic/AnthropicLegacy/AWSBedrockClaude/
+ * NanoGPTMessages use `server/src/llm/anthropic.ts` `requestClaude`; GoogleCloud/VertexAIGemini use
+ * `server/src/llm/google.ts` `requestGoogleCloudVertex`. NovelAI, OobaLegacy, Ooba, Kobold, NovelList, Ollama, Cohere,
+ * Horde, Echo, WebLLM, and Plugin use this module's corresponding functions. An unhandled format returns the
+ * `server/src/llm/messages.ts` unknown-model failure.
  */
 export async function requestChatDataMain(
-    arg: RequestArgs & { tools: ToolDescriptor[] },
+    arg: RequestArgs & { tools?: ToolDescriptor[] },
     model: ModelModeExtended,
     ctx: RequestContext,
 ): Promise<requestDataResponse> {
@@ -453,9 +503,20 @@ export async function requestChatDataMain(
     }
     const { db, profile, aiModel } = resolved;
     const getModelInfo = ctx.getModelInfo;
+    const tools = ctx.tools;
+    const offeredNames = new Set(arg.tools?.map((tool) => tool.name));
     ctx = {
         ...ctx,
         db,
+        tools: {
+            ...tools,
+            call: async (name, args) => {
+                if (!offeredNames.has(name)) {
+                    return [{ type: "text", text: `Tool ${name} not found on any MCP` }];
+                }
+                return tools.call(name, args);
+            },
+        },
         // Dynamic and plugin descriptors keep the context's resolution rules. Clone the result
         // before adapters change its format, internal id, or flags, including a captured plugin model.
         getModelInfo: (id) => structuredClone(getModelInfo(id, db)),
@@ -467,6 +528,7 @@ export async function requestChatDataMain(
         modelInfo: resolved.modelInfo,
         mode: model,
     };
+    targ.saveSignatures = model === "model" && db.saveSignatures === true;
 
     // On the format dispatch calls (a reverse proxy's `customAPIFormat` included).
     if (
@@ -480,7 +542,8 @@ export async function requestChatDataMain(
         };
     }
 
-    targ.formated = structuredClone(arg.formated);
+    const intercepted = applyRequestInterceptions(structuredClone(arg.formated), db.requestInterceptions, model);
+    targ.formated = intercepted.formated;
     targ.maxTokens = arg.maxTokens ?? db.maxResponse;
     targ.temperature = arg.temperature ?? db.temperature / 100;
     targ.bias = arg.bias;
@@ -505,6 +568,7 @@ export async function requestChatDataMain(
         profileId: profile?.id ?? null,
         profileName: profile?.name ?? null,
         provider: formatName(targ.modelInfo.format),
+        ...(intercepted.applied > 0 ? { interceptions: intercepted.applied } : {}),
     });
 
     const credential = resolveCredential(db, targ.aiModel, targ.modelInfo, profile);
@@ -590,10 +654,10 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
     const db = arg.ctx.db;
     const isV3Model = arg.aiModel.startsWith("pluginmodel:::");
     const responseModel = isV3Model ? arg.aiModel : "custom";
+    const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const model = isV3Model ? arg.aiModel.replace("pluginmodel:::", "") : db.currentPluginProvider;
 
         if (arg.previewBody) {
             return {
@@ -661,9 +725,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         }
         return {
             type: "fail",
-            result:
-                `Plugin Error from ${db.currentPluginProvider}: ` +
-                (error instanceof Error ? error.message : JSON.stringify(error)),
+            result: `Plugin Error from ${model}: ` + (error instanceof Error ? error.message : JSON.stringify(error)),
             model: responseModel,
         };
     }
@@ -1352,7 +1414,7 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
         fetch: isCloud
             ? ollamaCloudFetch(arg.ctx.transport)
             : (input: string | URL | Request, init: RequestInit = {}) =>
-                  fetch(input, {
+                  providerFetch(input, {
                       ...init,
                       signal: init.signal ? AbortSignal.any([init.signal, arg.ctx.signal]) : arg.ctx.signal,
                   }).then((response) => {
@@ -1693,6 +1755,7 @@ async function requestHorde(arg: RequestDataArgumentExtended): Promise<requestDa
     }
 }
 
+/** Optional sampler fields accepted by a Kobold generation body. */
 export interface KoboldSamplerSettingsSchema {
     rep_pen?: number;
     rep_pen_range?: number;
@@ -1705,6 +1768,7 @@ export interface KoboldSamplerSettingsSchema {
     temperature?: number;
 }
 
+/** A Kobold generation body: prompt and generation count with optional context, formatting, and sampler settings. */
 export interface KoboldGenerationInputSchema extends KoboldSamplerSettingsSchema {
     prompt: string;
     use_memory?: boolean;

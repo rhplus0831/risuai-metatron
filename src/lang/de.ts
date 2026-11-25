@@ -1,3 +1,4 @@
+/** German `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageGerman = {
     formating: {
         main: "Haupt-Anweisung",
@@ -125,7 +126,7 @@ export const languageGerman = {
             "Stark zeigt den gestreamten Text unverarbeitet an, ohne ihn zu rendern, und rendert die Nachricht normal, sobald der Stream beendet ist. Dieser Modus verringert die Last am stärksten und kann auf Mobilgeräten oder leistungsschwachen Geräten helfen.\n\n" +
             "Dies ist eine experimentelle Funktion. Dadurch können sich einige Funktionen unerwartet verhalten.",
         imageCompression:
-            "Wenn aktiviert, werden Bilder beim Exportieren des Charakters komprimiert. Wenn animierte Bilder nicht funktionieren, versuchen Sie, diese Option zu deaktivieren.",
+            "Wenn aktiviert, werden Bilder beim Exportieren von Charakteren und Modulen komprimiert. Wenn animierte Bilder nicht funktionieren, versuchen Sie, diese Option zu deaktivieren.",
         useExperimental: "Wenn aktiviert, werden einige experimentelle Funktionen angezeigt.",
         forcePlainFetch:
             "Wenn aktiviert, wird die Browser-Fetch-API anstelle der nativen HTTP-Anfrage verwendet. Dies kann zu CORS-Fehlern führen.",
@@ -201,10 +202,6 @@ export const languageGerman = {
             'Wenn es nicht leer ist, werden bestimmte JSON-Daten aus der Antwort extrahiert. Wenn Sie beispielsweise `response.text[0]` in der Antwort `{"response": {"text": ["hallo"]}}` extrahieren möchten, können Sie `response.text.0` eingeben.',
         translatorNote:
             "Hier können Sie für jeden Charakter eine eindeutige Übersetzungsanweisung hinzufügen. Diese Option gilt nur bei Verwendung des Ax.-Modells für die Übersetzung. Fügen Sie dazu `{{slot::tnote}}` in die Spracheinstellungen ein. Es funktioniert nicht in Gruppenchats.",
-        groupInnerFormat:
-            "Dies definiert ein Format, das im Gruppenchat für Charaktere verwendet wird, die nicht Sprecher sind. Wenn es nicht leer ist, wird dieses Format anstelle des Standardformats verwendet. Wenn `Rolle des anderen Gruppen-Bots` `assistant` ist, wird es auch auf den Sprecher angewendet.",
-        groupOtherBotRole:
-            "Dies definiert eine Rolle, die im Gruppenchat für Charaktere verwendet wird, die nicht Sprecher sind.",
         chatHTML:
             "Ein HTML, das als jeder Chat eingefügt wird.\n\nSie können CBS und spezielle Tags verwenden.\n- `<risutextbox>`: ein Textfeld, das zum Rendern von Text verwendet wird\n- `<risuicon>`: ein Symbol für Benutzer oder Assistent\n- `<risubuttons>`: Symbolschaltflächen für Chat-Bearbeitung, Übersetzungen usw.\n- `<risugeninfo>`: Schaltfläche für Generierungsinformationen.",
         systemContentReplacement:
@@ -665,7 +662,6 @@ export const languageGerman = {
     autoTranslation: "Automatische Übersetzung",
     playMessage: "Nachrichten-Ton abspielen",
     iconSize: "Icon-Größe",
-    createGroup: "Gruppenchat erstellen",
     groupIcon: "Gruppenicon",
     single: "Einzel",
     multiple: "Mehrere",
@@ -743,7 +739,6 @@ export const languageGerman = {
     creator: "Ersteller",
     CharVersion: "Charakterversion",
     Speech: "Sprache",
-    ToggleSuperMemory: "SupaMemory umschalten",
     SuperMemory: "SupaMemory",
     useExperimental: "Experimentelle Funktionen aktivieren",
     showMemoryLimit: "Speicherlimit anzeigen",
@@ -845,7 +840,6 @@ export const languageGerman = {
     customInnerFormat: "Benutzerdefiniertes Inner-Format",
     innerFormat: "Inner-Format",
     HypaMemory: "HypaMemory",
-    ToggleHypaMemory: "HypaMemory umschalten",
     resetPromptTemplateConfirm: "Möchten Sie die Anweisungsvorlage wirklich zurücksetzen?",
     emotionMethod: "Emotionsmethode",
     continueResponse: "Antwort fortsetzen",
@@ -860,8 +854,7 @@ export const languageGerman = {
     importPersona: "Profil importieren",
     export: "Exportieren",
     import: "Importieren",
-    supporterThanks: "Dankessagung",
-    supporterThanksDesc: "Danke für Ihre Unterstützung!",
+    supporterThanks: "RisuAI-Unterstützer",
     donatorPatreonDesc:
         "Standardmäßig wird es nicht in der Liste angezeigt, um die Privatsphäre zu wahren. Wenn Sie Ihren Spitznamen anzeigen möchten, gehen Sie auf die Risuai Patreon-Seite und klicken Sie auf den 'Link' Button",
     useNamePrefix: "Einen Präfix vor dem Namen verwenden",
@@ -1017,8 +1010,10 @@ export const languageGerman = {
     select: "Auswählen",
     options: "Optionen",
     alertContent: "Alarminhalt",
-    lowLevelAccessConfirm:
-        "Dieser Inhalt verwendet Low-Level-Zugriff. Das bedeutet, dass dieser Inhalt direkt auf das KI-Modell und Ihren Speicher zugreifen kann. Möchten Sie diesen Inhalt wirklich importieren?",
+    lowLevelAccessImportQuestion:
+        "Dieser Inhalt verwendet Low-Level-Zugriff. Das bedeutet, dass dieser Inhalt direkt auf das KI-Modell und Ihren Speicher zugreifen kann. Mit oder ohne Low-Level-Zugriff importieren? Ohne ihn funktionieren die Teile, die ihn benötigen, nicht; Sie können ihn später in den Einstellungen aktivieren.",
+    lowLevelAccessImportWith: "Mit Low-Level-Zugriff importieren",
+    lowLevelAccessImportWithout: "Ohne Low-Level-Zugriff importieren",
     extractRegex: "Text mit Regex extrahieren",
     runImgGen: "Bildgenerierung ausführen",
     cutChat: "Chat schneiden",
@@ -1048,7 +1043,6 @@ export const languageGerman = {
     blockMode: "Block",
     helpBlock: "Hilfe",
     hideChatIcon: "Icon-UI ausblenden",
-    loadInternalBackup: "Internes Backup laden",
     createCopy: "Kopie erstellen",
     chatOptions: "Chat-Optionen",
     parameters: "Parameter",
@@ -1080,8 +1074,6 @@ export const languageGerman = {
     trailingDoubleQuote: "Nachfolgendes doppeltes Anführungszeichen",
     translatorNote: "Anmerkung des Übersetzers",
     formatGroupInSingle: "Gruppenformat im Einzelmodus formatieren",
-    groupInnerFormat: "Inneres Format für Nicht-Sprecher",
-    groupOtherBotRole: "Nicht-Sprecher-Rolle in Gruppe",
     chatHTML: "Chat-HTML",
     logShare: "Teilen-Log-Button anzeigen",
     preview: "Vorschau",
@@ -1285,7 +1277,7 @@ export const languageGerman = {
     useTokenizerCaching: "Tokenizer-Caching verwenden",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
-    showMenuHypaMemoryModal: "Menü Hypa Modal anzeigen",
+    showMenuHypaMemoryModal: "Menü HypaV2 Modal anzeigen",
     promptInfoInsideChat: "Anweisungsinformationen zum Chat hinzufügen",
     promptTextInfoInsideChat: "Anweisungstext zum Chat hinzufügen",
     promptInfoEmptyMessage: "Für diese Nachricht sind keine Anweisungsinformationen verfügbar.",
@@ -1333,8 +1325,6 @@ export const languageGerman = {
     translate: "Code-Adresse übersetzen",
     apply: "Anwenden",
     add: "Hinzufügen",
-    nightlyWarning:
-        "## Nightly Builds\n\nSie verbinden sich mit einem Nightly Build der Software. Diese Version ist zu Testzwecken gedacht und enthält höchstwahrscheinlich Fehler. **In dieser Version unterstützen wir die Lösung von Problemen nicht direkt, auch wenn Sie auf Probleme stoßen.**",
     generatedByAIDisclaimer:
         "Dieser Inhalt wurde von einer KI generiert und kann Ungenauigkeiten oder Verzerrungen enthalten.",
     aiGenerationWarning:

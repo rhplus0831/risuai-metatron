@@ -1,0 +1,5571 @@
+// @vitest-environment happy-dom
+import { flushSync, mount, unmount } from "svelte";
+import { zipSync, strToU8 } from "fflate";
+import { activateLore } from "../../../../shared/lore/activation.ts";
+import { fromStore, get, writable } from "svelte/store";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import type { ContextReport } from "../../../../shared/contextReport.ts";
+import { previewChat, previewChatReport } from "src/ts/process/index.svelte";
+import type { Chat, Message } from "../../../../shared/database.ts";
+import { language } from "src/lang";
+import { characterList } from "src/ts/storage/characterStore.svelte";
+import {
+    findChat,
+    applyRemoteCollection,
+    currentChatRef,
+    hydrateChat,
+    loadChat,
+    seedChats,
+    selectChat,
+    setMessageText,
+    setChatMeta,
+    patchMessage,
+    hasChatWork,
+    takeChatWork,
+    ackChatWork,
+} from "src/ts/storage/chatStore.svelte";
+import { selection, setChatOpen, selectCharacter } from "src/ts/storage/selection.svelte";
+import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { settings } from "src/ts/storage/settingsViews.svelte";
+import { closePopupEditorSession, hypaV3ModalOpen, loadedStore, popUpEditorStore } from "src/ts/stores.svelte";
+import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
+import { followedJobs } from "src/ts/process/serverCommands";
+import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
+import { alertConfirm, alertError, alertToast } from "src/ts/alert";
+import { pendingMessageJump } from "src/ts/messageSearch.svelte";
+import {
+    requestMemoryPanelTarget,
+    memoryMessageHash,
+    memoryGreetingHash,
+    type MemoryPanelTarget,
+} from "src/ts/process/structuredMemory.svelte";
+import {
+    ADOPTED_WRITER_RUN,
+    MEMORY_FIND_HITS_MAX,
+    MEMORY_FIND_QUERY_CHARS,
+    memoryCostTokens,
+    sealHypaV3Data,
+    memoryChapterMark,
+    STRUCTURED_MEMORY_LIMITS,
+    writerFailing,
+    writerPaused,
+    type MemoryChapter,
+    type MemoryEvent,
+    type MemoryManifestItem,
+    type MemoryPage,
+    type MemoryThread,
+    type StructuredMemoryContentsAnswer,
+    type StructuredMemoryCostAnswer,
+    type MemoryRun,
+} from "../../../../shared/structuredMemory.ts";
+import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
+import PreviewTab from "./PreviewTab.svelte";
+import PagesTab from "./PagesTab.svelte";
+
+const io = vi.hoisted(() => ({
+    selectSingleFileHandle: vi.fn<typeof import("src/ts/util").selectSingleFileHandle>(),
+    runServerJob: vi.fn<typeof import("src/ts/process/serverCommands").runServerJob>(),
+    authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
+    downloadFile: vi.fn<typeof import("src/ts/globalApi.svelte").downloadFile>(),
+}));
+vi.mock("src/ts/util", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/util")>()),
+    selectSingleFileHandle: io.selectSingleFileHandle,
+}));
+vi.mock("src/ts/process/serverCommands", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/process/serverCommands")>()),
+    runServerJob: io.runServerJob,
+}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: io.authFetch }),
+);
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ downloadFile: io.downloadFile }),
+);
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+
+const ref = { chaId: "c", chatId: "k" };
+const chaptersRoute = "/api/memory/structured/c/k/chapters";
+const chapterCostRoute = `${chaptersRoute}/cost`;
+const epoch = "0f3d4b9a-0000-4000-8000-000000000001";
+const revision = (n: number) => `${epoch}:1:${n}`;
+const message = (id: string, role: "user" | "char", data = id): Message => ({ chatId: id, role, data });
+const facts = (id = "event", messageIds = ["u0"]) => ({
+    revision: "r1",
+    events: [{ id, title: id, status: "active", messageIds }],
+    runs: [],
+    next: null,
+});
+const logRound = (id = "run", next: number | null = null, revision = "r1") => ({
+    revision,
+    runs: [{ id, result: "pending", window: [], model: id }],
+    total: 2,
+    next,
+});
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+// Drain the known promise-only transport and Svelte effects. No clock or polling deadline.
+async function settle() {
+    for (let i = 0; i < 80; i++) {
+        await Promise.resolve();
+        flushSync();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 80; i++) {
+        await Promise.resolve();
+        flushSync();
+    }
+}
+let target: HTMLDivElement;
+let instance: ReturnType<typeof mount> | undefined;
+const releases: (() => void)[] = [];
+const query = (selector: string) => target.querySelector<HTMLElement>(selector);
+const click = (selector: string) => {
+    expect(query(selector)).not.toBeNull();
+    query(selector)!.click();
+    flushSync();
+};
+const reads = (route = "coverage") => io.authFetch.mock.calls.filter(([url]) => url.includes(`/${route}`));
+async function open() {
+    instance = mount(StructuredMemoryPanel, { target });
+    flushSync();
+    await settle();
+}
+function install(
+    messages = [message("u0", "user"), message("a0", "char"), message("u1", "user"), message("a1", "char")],
+    hypaV3Data?: Chat["hypaV3Data"],
+) {
+    installFlatDatabaseWithChats({
+        characters: [
+            {
+                chaId: "c",
+                type: "character",
+                name: "C",
+                firstMessage: "",
+                supaMemory: true,
+                chats: [
+                    { id: "k", name: "K", note: "", localLore: [], message: messages, hypaV3Data },
+                    { id: "other", name: "Other", note: "", localLore: [], message: [message("other", "char")] },
+                ],
+            },
+        ],
+        memoryAlgorithmType: "structuredMemory",
+        aiModel: "gpt4om",
+        useTokenizerCaching: false,
+        hypaV3Presets: [{ id: "memory", name: "Memory", settings: { structured: { windowTurns: 1 } } }],
+        hypaV3PresetId: "memory",
+    });
+    selectCharacter("c");
+    selectChat("c", "k");
+}
+beforeAll(async () => {
+    await import("diff");
+});
+
+beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    io.authFetch.mockReset().mockImplementation(async (url, init) => {
+        if (url === "/api/tokens/count")
+            return Response.json({ counts: JSON.parse(init!.body as string).texts.map(() => 1) });
+        if (url.includes("/coverage")) return Response.json(facts());
+        if (url.includes("/runs")) return Response.json(logRound());
+        if (url === chaptersRoute) return Response.json({ revision: facts().revision, chapters: [] });
+        if (url === chapterCostRoute) return Response.json({ units: 0 });
+        if (url.includes("/cost?")) return Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 });
+        throw new Error(`Unexpected request: ${url}`);
+    });
+    io.runServerJob.mockReset();
+    vi.mocked(alertConfirm).mockReset();
+    vi.mocked(alertError).mockClear();
+    vi.mocked(alertToast).mockClear();
+    io.downloadFile.mockReset().mockResolvedValue(undefined);
+    resetMemoryTasks();
+    followedJobs.set(new Map());
+    install();
+    hypaV3ModalOpen.set(true);
+    target = document.createElement("div");
+    document.body.append(target);
+});
+afterEach(async () => {
+    if (instance) await unmount(instance);
+    instance = undefined;
+    for (const release of releases.splice(0)) release();
+    await settle();
+    resetMemoryTasks();
+    followedJobs.set(new Map());
+    hypaV3ModalOpen.set(false);
+    target.remove();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+});
+
+it("switches Coverage and Log with SegmentedControl and refreshes after each chat fence falls", async () => {
+    seedChats(
+        [{ characterId: "c", id: "k", revision: revision(1) }],
+        [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+    );
+    await open();
+    await chooseTab("coverage");
+    expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(7);
+    expect(query('[data-segment-btn][aria-pressed="true"]')?.textContent).toBe(
+        language.structuredMemory.panel.coverage,
+    );
+    const assertFence = (held: boolean) => {
+        expect(!!query("[data-memory-panel-read-only]")).toBe(held);
+        expect(query("[data-memory-coverage]")?.dataset.readOnly).toBe(String(held));
+    };
+    assertFence(false);
+    const foreign = beginLocalSend({ ...ref, chatId: "other" })!;
+    releases.push(foreign);
+    flushSync();
+    assertFence(false);
+    foreign();
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    flushSync();
+    assertFence(true);
+    let count = reads().length;
+    release();
+    await settle();
+    assertFence(false);
+    expect(reads()).toHaveLength(count + 1);
+    followedJobs.set(new Map([["job", chatStatusKey(ref)]]));
+    flushSync();
+    assertFence(true);
+    count = reads().length;
+    followedJobs.set(new Map());
+    await settle();
+    assertFence(false);
+    expect(reads()).toHaveLength(count + 1);
+    noteMemoryTaskFrame({
+        characterId: "c",
+        chatId: "k",
+        status: { taskId: "task", state: "running", done: 0, total: 1 },
+    });
+    flushSync();
+    assertFence(true);
+    count = reads().length;
+    noteMemoryTaskFrame({
+        characterId: "c",
+        chatId: "k",
+        status: {
+            taskId: "task",
+            state: "done",
+            done: 1,
+            total: 1,
+            terminalRevision: revision(2),
+            lastCommittedRevision: revision(2),
+        },
+    });
+    await settle();
+    assertFence(true);
+    expect(reads()).toHaveLength(count);
+    hydrateChat({ characterId: "c", id: "k", revision: revision(2), data: JSON.parse(JSON.stringify(findChat(ref))) });
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    assertFence(false);
+    expect(reads()).toHaveLength(count + 1);
+    count = reads().length;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(reads()).toHaveLength(count + 1);
+    await chooseTab("log");
+    expect(query('[data-memory-panel="log"]')).not.toBeNull();
+    expect(query("[data-memory-log]")?.dataset.readOnly).toBe("false");
+    count = reads("runs").length;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(reads("runs")).toHaveLength(count + 1);
+    click("[data-memory-panel-close]");
+    expect(get(hypaV3ModalOpen)).toBe(false);
+});
+
+it("shows rows before token counts and ignores counts from an older coverage join", async () => {
+    const tokenAnswers: { texts: string[]; answer: ReturnType<typeof deferred<Response>> }[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url !== "/api/tokens/count") return fetch(url, init, options);
+        const answer = deferred<Response>();
+        tokenAnswers.push({ texts: JSON.parse(init!.body as string).texts, answer });
+        return answer.promise;
+    });
+    await open();
+    await chooseTab("coverage");
+    expect(query('[data-memory-coverage-row="covered"]')).not.toBeNull();
+    expect(tokenAnswers.flatMap(({ texts }) => texts).sort()).toEqual(["a0", "u0"]);
+    expect(query("[data-memory-coverage-gap]")?.textContent).toContain(
+        language.structuredMemory.coverage.countingTokens,
+    );
+    const old = tokenAnswers.splice(0);
+    setMessageText(ref, "u0", "new covered text");
+    await settle();
+    expect(tokenAnswers.flatMap(({ texts }) => texts).sort()).toEqual(["a0", "new covered text"]);
+    for (const { texts, answer } of tokenAnswers)
+        answer.resolve(Response.json({ counts: texts.map((text) => (text === "a0" ? 7 : 19)) }));
+    await settle();
+    expect(query("[data-memory-coverage-gap]")?.textContent).toContain(
+        language.structuredMemory.coverage.aboutTokens(7),
+    );
+    expect(query("[data-memory-coverage-leaving]")?.textContent).toContain(
+        language.structuredMemory.coverage.aboutTokens(19),
+    );
+    for (const { texts, answer } of old) answer.resolve(Response.json({ counts: texts.map(() => 999) }));
+    await settle();
+    expect(query("[data-memory-coverage-leaving]")?.textContent).toContain(
+        language.structuredMemory.coverage.aboutTokens(19),
+    );
+    characterList().find(({ chaId }) => chaId === "c")!.supaMemory = false;
+    await settle();
+    for (const { texts, answer } of tokenAnswers) answer.resolve(Response.json({ counts: texts.map(() => 7) }));
+    await settle();
+    expect(query("[data-memory-coverage-off]")).not.toBeNull();
+    expect(query("[data-memory-coverage-leaving]")?.textContent).toContain(
+        language.structuredMemory.coverage.aboutTokens(0),
+    );
+});
+
+it.each(["coverage", "log"] as const)(
+    "ignores older %s reads and another chat's answers, and replaces rows with failures",
+    async (tab) => {
+        const pending: ReturnType<typeof deferred<Response>>[] = [];
+        const fetch = io.authFetch.getMockImplementation()!;
+        const route = tab === "coverage" ? "coverage" : "runs";
+        io.authFetch.mockImplementation((url, init, options) => {
+            if (!url.includes(`/${route}`)) return fetch(url, init, options);
+            const answer = deferred<Response>();
+            pending.push(answer);
+            return answer.promise;
+        });
+        await open();
+        await chooseTab(tab);
+        click("[data-memory-panel-refresh]");
+        await settle();
+        const body = (id: string) => (tab === "coverage" ? facts(id, ["u0"]) : logRound(id));
+        pending[1].resolve(Response.json(body("newest-answer")));
+        await settle();
+        expect(target.textContent).toContain("newest-answer");
+        pending[0].resolve(Response.json(body("obsolete-answer")));
+        await settle();
+        expect(target.textContent).not.toContain("obsolete-answer");
+        expect(target.textContent).toContain("newest-answer");
+        click("[data-memory-panel-refresh]");
+        await settle();
+        selectChat("c", "other");
+        await settle();
+        pending[3].resolve(Response.json(tab === "coverage" ? facts("other-chat", ["other"]) : logRound("other-chat")));
+        await settle();
+        pending[2].resolve(Response.json(body("foreign-answer")));
+        await settle();
+        expect(target.textContent).toContain("other-chat");
+        expect(target.textContent).not.toContain("foreign-answer");
+        click("[data-memory-panel-refresh]");
+        await settle();
+        pending[4].resolve(Response.json({ reason: "chatGone" }, { status: 404 }));
+        await settle();
+        expect(query("[data-memory-panel-failure]")).not.toBeNull();
+        expect(target.querySelectorAll("[data-memory-coverage-row], [data-memory-run]")).toHaveLength(0);
+    },
+);
+
+it("pages a long coverage group and renders message text literally", async () => {
+    const literal = '<img src=x onerror="alert(1)"> **message**';
+    install(
+        Array.from({ length: 405 }, (_, index) =>
+            message(`m${index}`, "user", index === 0 ? literal : `Message ${index}`),
+        ),
+    );
+    await open();
+    await chooseTab("coverage");
+    click("[data-memory-coverage-group]");
+    expect(target.querySelectorAll("[data-memory-coverage-row]")).toHaveLength(200);
+    expect(target.textContent).toContain(literal);
+    expect(target.querySelector("img, strong")).toBeNull();
+    const more = [...target.querySelectorAll("button")].find(
+        (button) => button.textContent.trim() === language.structuredMemory.panel.showMore(205),
+    )!;
+    expect(more).toBeDefined();
+    more.click();
+    flushSync();
+    expect(target.querySelectorAll("[data-memory-coverage-row]")).toHaveLength(400);
+    expect(target.textContent).toContain("Message 399");
+    expect(target.textContent).not.toContain("Message 400");
+});
+
+it("shows run metrics and extracted items beside their verified or unverified quotes as plain text, and exports JSON", async () => {
+    const literal = '<img src=x onerror="alert(1)">';
+    const run = {
+        id: "extracted",
+        result: "failed",
+        model: literal,
+        window: [{ index: 2 }, { index: 5 }],
+        inputTokens: 23,
+        outputTokens: 17,
+        durationMs: 1250,
+        error: "provider failure",
+        analysis: {
+            event: {
+                title: "Extracted title",
+                summary: "**summary**",
+                storyTime: { text: "", date: { month: 10, day: 15 } },
+                keyLines: [{ speaker: "Speaker", text: "verbatim" }],
+                stateChanges: [
+                    { pageId: "door", section: "state", before: "closed", after: "open", quote: "door quote" },
+                ],
+                knowledge: [{ pageId: "secret", fact: "the fact", stance: "believes", quote: literal, knowers: [] }],
+            },
+        },
+        receipt: { state: "failed", unverified: [{ kind: "knowledge", text: literal, reason: "quoteNotFound" }] },
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/runs")
+            ? Promise.resolve(Response.json({ revision: "export-revision", total: 1, runs: [run], next: null }))
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("log");
+    const row = query('[data-memory-run="failed"]')!;
+    expect(row.textContent).toContain(language.structuredMemory.log.range(2, 5, 2));
+    expect(row.textContent).toContain(language.structuredMemory.receipt.tokens(23, 17));
+    expect(row.textContent).toContain(language.structuredMemory.log.seconds(1250));
+    expect(row.textContent).toContain("provider failure");
+    expect(row.textContent).toContain(literal);
+    click("[data-memory-run] button");
+    const quotes = [...row.querySelectorAll("blockquote")];
+    expect(quotes.map((quote) => quote.dataset.memoryQuote)).toEqual([undefined, undefined, "unverified"]);
+    expect(quotes.map((quote) => quote.previousElementSibling?.textContent?.trim())).toEqual([
+        "Speaker",
+        "door / state: closed → open",
+        expect.stringContaining("the fact"),
+    ]);
+    expect(row.textContent).toContain("Extracted title");
+    expect(row.textContent).toContain("**summary**");
+    expect([...row.querySelectorAll("p")].map((paragraph) => paragraph.textContent?.trim())).toContain(
+        `${language.structuredMemory.log.storyTime}: 10-15`,
+    );
+    expect(row.querySelector("img, strong")).toBeNull();
+    const exportButton = [...target.querySelectorAll("button")].find(
+        (button) => button.textContent.trim() === language.structuredMemory.log.export,
+    )!;
+    exportButton.click();
+    await settle();
+    expect(io.downloadFile).toHaveBeenCalledTimes(1);
+    const [name, bytes] = io.downloadFile.mock.calls[0];
+    expect(name).toMatch(/\.json$/);
+    expect(JSON.parse(new TextDecoder().decode(bytes as Uint8Array))).toEqual({
+        logVersion: expect.any(Number),
+        revision: "export-revision",
+        runs: [run],
+    });
+});
+
+it("restarts Log pagination on a changed revision without keeping older rows", async () => {
+    const fetch = io.authFetch.getMockImplementation()!;
+    let requests = 0;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (!url.includes("/runs")) return fetch(url, init, options);
+        requests++;
+        return Promise.resolve(
+            requests === 1
+                ? Response.json(logRound("discarded", 1))
+                : requests === 2
+                  ? Response.json({ revision: "r2" }, { status: 409 })
+                  : Response.json(logRound("replacement", null, "r2")),
+        );
+    });
+    await open();
+    await chooseTab("log");
+    const more = [...target.querySelectorAll("button")].find(
+        (button) => button.textContent.trim() === language.structuredMemory.log.loadMore,
+    )!;
+    more.click();
+    await settle();
+    expect(reads("runs").map(([url]) => url)).toEqual([
+        "/api/memory/structured/c/k/runs?cursor=0",
+        "/api/memory/structured/c/k/runs?cursor=1&revision=r1",
+        "/api/memory/structured/c/k/runs?cursor=0",
+    ]);
+    expect(target.textContent).toContain("replacement");
+    expect(target.textContent).not.toContain("discarded");
+    expect(target.querySelectorAll("[data-memory-run]")).toHaveLength(1);
+});
+
+it("App mounts the structured panel only for structuredMemory and keeps the legacy modal for another algorithm", async () => {
+    loadedStore.set(false);
+    const { default: App } = await import("../../../App.svelte");
+    instance = mount(App, { target });
+    flushSync();
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-risu-memory-task]")).toBeNull();
+    settings.ui.memoryAlgorithmType = "hypaV3";
+    flushSync();
+    await settle();
+    expect(query("[data-memory-panel]")).toBeNull();
+    expect(query("[data-risu-memory-task]")).not.toBeNull();
+});
+
+const context = (memory: ContextReport["memory"]): ContextReport => ({
+    v: 1,
+    maxContext: 1000,
+    maxResponse: 100,
+    input: 300,
+    sections: [],
+    adjustment: 300,
+    attributionExact: true,
+    history: { total: 8, kept: 4, totalUser: 4, keptUser: 2, droppedTokens: 100 },
+    lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+    tokenScope: "scope",
+    historyDigest: "digest",
+    memory,
+});
+const included = (id: string, verified = true) => ({
+    id,
+    kind: "event" as const,
+    lane: "flow" as const,
+    tokens: 20,
+    reason: "recent",
+    verified,
+});
+const memoryReport = (items: NonNullable<ContextReport["memory"]>["items"] = [included("used")]) =>
+    context({ kind: "structuredMemory", tokens: 80, coverage: "covered", items });
+
+it("badges only verified events from the newest valid report on Coverage rows, closed groups and committed Log runs", async () => {
+    const ids = ["used", "unverified", "page", "older"];
+    install([
+        ...ids.flatMap((id) => [message(`${id}-u`, "user"), message(`${id}-a`, "char")]),
+        {
+            ...message("latest", "char"),
+            generationInfo: {
+                context: memoryReport([
+                    included("used"),
+                    included("unverified", false),
+                    { ...included("page"), kind: "page" },
+                ] as NonNullable<ContextReport["memory"]>["items"]),
+            },
+        } as Message,
+        { ...message("malformed", "char"), generationInfo: { context: { v: 99 } } } as unknown as Message,
+    ]);
+    patchMessage(ref, "older-a", { generationInfo: { context: memoryReport([included("older")]) } });
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url.includes("/coverage"))
+            return Promise.resolve(
+                Response.json({
+                    revision: "r1",
+                    runs: [],
+                    next: null,
+                    events: ids.map((id) => ({ id, title: id, status: "active", messageIds: [`${id}-u`, `${id}-a`] })),
+                }),
+            );
+        if (url.includes("/runs"))
+            return Promise.resolve(
+                Response.json({
+                    revision: "r1",
+                    total: 4,
+                    next: null,
+                    runs: ids.map((eventId) => ({
+                        id: `run-${eventId}`,
+                        eventId,
+                        model: eventId,
+                        result: "recorded",
+                        window: [],
+                        analysis: { event: { id: "different-extracted-id", title: "Extraction" } },
+                    })),
+                }),
+            );
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("coverage");
+    const group = query('[data-memory-coverage-group="covered"]')!;
+    expect(group.querySelectorAll("[data-memory-used]")).toHaveLength(1);
+    click('[data-memory-coverage-group="covered"]');
+    expect(group.querySelector("[data-memory-used]")).toBeNull();
+    const badgedRows = () =>
+        [...target.querySelectorAll("[data-memory-coverage-row]")].filter((row) =>
+            row.querySelector("[data-memory-used]"),
+        );
+    expect(badgedRows()).toHaveLength(2);
+    expect(badgedRows().map((row) => row.textContent)).toEqual([
+        expect.stringContaining("used-u"),
+        expect.stringContaining("used-a"),
+    ]);
+    await chooseTab("log");
+    const runs = [...target.querySelectorAll("[data-memory-run]")];
+    expect(runs.map((row) => !!row.querySelector("[data-memory-used]"))).toEqual([true, false, false, false]);
+    // A newer valid report of another kind stops the search; the older structured reports remain stored.
+    patchMessage(ref, "malformed", {
+        generationInfo: { context: context({ kind: "hypaV3", tokens: 20, coverage: "covered" }) },
+    });
+    await settle();
+    expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
+    await chooseTab("coverage");
+    expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
+    click('[data-memory-coverage-group="covered"]');
+    expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
+});
+
+const previewAnswer = (result: unknown): Awaited<ReturnType<typeof io.runServerJob>> => ({
+    outcome: "started",
+    terminal: { type: "done", epoch: "e", revision: null, result },
+});
+
+it("runs Preview only on its button and keeps the job's memory block and manifest across its own fence refresh", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
+    releases.push(() => pending.resolve(previewAnswer({ messages: [], context: memoryReport() })));
+    io.runServerJob.mockReturnValueOnce(pending.promise);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url === "/api/memory/structured/c/k"
+            ? Promise.resolve(
+                  Response.json({
+                      revision: "r1",
+                      pages: [],
+                      threads: [],
+                      runs: [],
+                      events: [{ id: "used", title: "Remembered promise" }],
+                  }),
+              )
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("preview");
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    click("[data-memory-preview-run]");
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledTimes(1);
+    expect(io.runServerJob.mock.calls[0][1]).toEqual(ref);
+    expect(io.runServerJob.mock.calls[0][2]).toMatchObject({ kind: "preview", context: { input: "" } });
+    expect(query("[data-memory-panel-read-only]")).not.toBeNull();
+    const messages = [
+        { role: "system", content: "<b>A promise</b>" },
+        { role: "system", content: "An unrelated old memory", memo: "supaMemory" },
+        { role: "user", content: "Next question" },
+    ];
+    pending.resolve(previewAnswer({ messages, context: memoryReport(), memoryBlock: [0] }));
+    await settle();
+    expect(query("[data-memory-panel-read-only]")).toBeNull();
+    expect([...target.querySelectorAll("[data-memory-preview-entry]")].map((row) => row.textContent?.trim())).toEqual([
+        "<b>A promise</b>",
+    ]);
+    expect(query("[data-memory-preview-block] b")).toBeNull();
+    expect(query("[data-memory-manifest-item]")?.textContent).toContain("Remembered promise");
+    expect(query('[data-memory-manifest-verified="true"]')).not.toBeNull();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledTimes(1);
+    expect(query("[data-memory-preview-entry]")).not.toBeNull();
+    // Both public preview consumers still unpack the server's new result envelope.
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: memoryReport(), memoryBlock: [0] }));
+    expect(await previewChat("preview", ref)).toEqual(messages);
+    expect(await previewChatReport(ref)).toEqual({ messages, report: memoryReport(), memoryBlock: [0] });
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: { v: 99 } }));
+    expect(await previewChatReport(ref)).toEqual({ messages, report: null });
+});
+
+it("shows the story-date anchor with the separately placed dated event in Preview", async () => {
+    serveMemory([{ id: "old", title: "Bridge crossing", status: "active", bytes: 100 }]);
+    const eventText = "(2 days ago) Bridge crossing: We crossed the bridge.";
+    // Use the real card text in the job mock. A computed import keeps the server type graph out of svelte-check.
+    const cardPath = "../../../../server/src/prompt/memory/structured/card.ts";
+    const { buildMemoryCard } = await import(/* @vite-ignore */ cardPath);
+    const card:
+        | { type: "card"; stable: string; volatile: string; items: MemoryManifestItem[] }
+        | {
+              type: "requiredOverLimit";
+          } = await buildMemoryCard(
+        { tokenizeChat: async ({ content }: { content: string }) => content.length },
+        {
+            maximum: 1000,
+            storyDate: { year: 2025, month: 4, day: 3 },
+            volatileBeforeLastUser: true,
+            lanes: [
+                {
+                    lane: "events",
+                    target: 1000,
+                    items: [
+                        {
+                            id: "old",
+                            lane: "events",
+                            kind: "event",
+                            reason: "selected",
+                            score: 1,
+                            order: 0,
+                            line: `[m:old] ${eventText}`,
+                            relativeDate: true,
+                        },
+                    ],
+                },
+            ],
+        },
+    );
+    if (card.type !== "card") throw new Error("The memory card refused");
+    io.runServerJob.mockResolvedValueOnce(
+        previewAnswer({
+            messages: [
+                { role: "system", content: card.stable },
+                { role: "system", content: card.volatile.replace("[m:old] ", "") },
+                { role: "user", content: "Do you remember the bridge?" },
+            ],
+            context: memoryReport(card.items.map((item) => ({ ...item, verified: true }))),
+            memoryBlock: [1],
+        }),
+    );
+    await open();
+    await chooseTab("preview");
+    click("[data-memory-preview-run]");
+    await settle();
+
+    const anchor = 'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.';
+    expect([...target.querySelectorAll("[data-memory-preview-entry]")].map((row) => row.textContent?.trim())).toEqual([
+        `${anchor}\n\nEarlier events:\n${eventText}`,
+    ]);
+});
+
+it("never displays a pending preview's answer after the user switches chats", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
+    releases.push(() => pending.resolve(previewAnswer({ messages: [], context: memoryReport() })));
+    io.runServerJob.mockReturnValueOnce(pending.promise);
+    io.authFetch.mockImplementation(async (url) => {
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({ revision: "r1", pages: [], events: [], threads: [], runs: [] });
+        throw new Error(`Unexpected request: ${url}`);
+    });
+    const selectedRef = writable(ref);
+    const state = fromStore(selectedRef);
+    instance = mount(PreviewTab, {
+        target,
+        props: {
+            get chatRef() {
+                return state.current;
+            },
+            readOnly: false,
+            refresh: 0,
+        },
+    });
+    flushSync();
+    click("[data-memory-preview-run]");
+    await settle();
+    selectedRef.set({ chaId: "c", chatId: "other" });
+    selectChat("c", "other");
+    await settle();
+    pending.resolve(
+        previewAnswer({
+            messages: [{ role: "system", content: "Foreign memory" }],
+            context: memoryReport(),
+            memoryBlock: [0],
+        }),
+    );
+    await settle();
+    expect(query("[data-memory-preview]")).not.toBeNull();
+    expect(query("[data-memory-preview-block]")).toBeNull();
+    expect(query("[data-memory-manifest]")).toBeNull();
+    expect(target.textContent).not.toContain("Foreign memory");
+    expect(io.runServerJob).toHaveBeenCalledTimes(1);
+});
+
+const editablePage = (): MemoryPage => ({
+    id: "p",
+    title: "The gate",
+    type: "location",
+    aliases: [],
+    contextMode: "auto",
+    sections: [
+        {
+            heading: "Facts",
+            body: "Original memory",
+            provenance: ["event"],
+            sources: [{ messageId: "u0", hash: "hash", index: 0 }],
+            locked: true,
+            updatedAt: 1,
+        },
+    ],
+    history: [],
+    links: [],
+    retrieval: { keywords: [] },
+});
+const editableThread = (): MemoryThread => ({
+    id: "t",
+    title: "A promise",
+    state: "done",
+    who: ["p"],
+    openedBy: "event",
+    closedBy: "event",
+});
+const storyRoute = "/api/memory/structured/c/k/story";
+/** One story round carrying each stored event's display fields as stored. */
+const storyAnswer = (revision: string, events: readonly Partial<MemoryEvent>[]) =>
+    Response.json({
+        revision,
+        events: events.map(({ id, summary, storyTime, participants, grade }) => ({
+            id,
+            summary,
+            storyTime,
+            participants,
+            grade,
+        })),
+        next: null,
+    });
+function serveMemory(
+    eventIndex: StructuredMemoryContentsAnswer["events"] = [
+        { id: "event", title: "Opening", status: "active", bytes: 100 },
+    ],
+) {
+    const state = {
+        page: editablePage(),
+        thread: editableThread(),
+        event: { id: "event", summary: "The gate opened", participants: ["p"] } as Partial<MemoryEvent>,
+        revision: "read-revision",
+        runs: [] as { id: string; result: string }[],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                pages: [
+                    { id: "p", title: "The gate", type: "location", bytes: 100 },
+                    { id: "scene", title: "Current scene", type: "scene", bytes: 100 },
+                ],
+                events: eventIndex,
+                threads: [{ id: "t", title: "A promise", state: state.thread.state, bytes: 100 }],
+                runs: state.runs,
+                health: {
+                    paused: writerPaused(state.runs as MemoryRun[]),
+                    lastRunFailed: writerFailing(state.runs as MemoryRun[]),
+                    storedStale: 0,
+                    pendingRepairs: 0,
+                    unsupportedSections: 0,
+                    overBudgetSections: 0,
+                },
+            });
+        if (url.endsWith("/records/pages/p")) return Response.json({ revision: state.revision, data: state.page });
+        if (url.endsWith("/records/pages/scene"))
+            return Response.json({
+                revision: state.revision,
+                data: { ...state.page, id: "scene", type: "scene", contextMode: "always" },
+            });
+        if (url.startsWith("/api/memory/structured/c/k/find?page="))
+            return Response.json({ revision: state.revision, hits: [], next: null });
+        if (url.endsWith("/records/threads/t")) return Response.json({ revision: state.revision, data: state.thread });
+        if (url.endsWith("/records/events/event"))
+            return Response.json({ revision: state.revision, data: state.event });
+        if (url === chaptersRoute) return Response.json({ revision: state.revision, chapters: [] });
+        if (url.startsWith(storyRoute)) return storyAnswer(state.revision, [state.event]);
+        return fetch(url, init, options);
+    });
+    return state;
+}
+async function chooseTab(name: "pages" | "timeline" | "threads" | "coverage" | "preview" | "log" | "settings") {
+    const button = [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.panel[name],
+    );
+    expect(button).toBeDefined();
+    button!.click();
+    await settle();
+    expect(query(`[data-memory-panel="${name}"]`)).not.toBeNull();
+}
+
+const pageViewButton = (view: "read" | "manage") =>
+    [...target.querySelectorAll<HTMLButtonElement>("[data-memory-page-detail] [data-segment-btn]")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.pages.views[view],
+    );
+async function choosePageView(view: "read" | "manage") {
+    const button = pageViewButton(view);
+    expect(button).toBeDefined();
+    button!.click();
+    await settle();
+    expect(button!.getAttribute("aria-pressed")).toBe("true");
+}
+
+it("opens Pages by default and Timeline for a pending target, with reading tabs first", async () => {
+    serveMemory();
+    await open();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.textContent).toContain("The gate");
+    const tabs = language.structuredMemory.panel;
+    const tabLabels = () =>
+        [
+            ...target.querySelectorAll<HTMLButtonElement>(
+                `[role="group"][aria-label="${tabs.sections}"] [data-segment-btn]`,
+            ),
+        ].map((button) => button.textContent?.trim());
+    expect(tabLabels()).toEqual([
+        tabs.pages,
+        tabs.timeline,
+        tabs.threads,
+        tabs.coverage,
+        tabs.preview,
+        tabs.log,
+        tabs.settings,
+    ]);
+
+    await unmount(instance!);
+    instance = undefined;
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "event" });
+    await open();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-panel="pages"]')).toBeNull();
+    expect(target.textContent).toContain("The gate opened");
+
+    serveUnsupported();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(tabLabels()).toEqual([
+        tabs.pages,
+        tabs.timeline,
+        tabs.threads,
+        `${tabs.unsupported} (3)`,
+        tabs.coverage,
+        tabs.preview,
+        tabs.log,
+        tabs.settings,
+    ]);
+});
+
+it("searches page and event text, selects hits, and restores the tree when cleared", async () => {
+    const state = serveMemory();
+    state.page.sections[0].heading = "Watch";
+    state.page.sections[0].body = "A <b>beacon</b> shines.\nWait here.";
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?q=")) {
+            expect(new URL(url, "http://memory.test").searchParams.get("q")).toBe("beacon");
+            return Response.json({
+                revision: state.revision,
+                hits: [
+                    {
+                        kind: "page",
+                        id: "p",
+                        title: "The gate",
+                        heading: "Watch",
+                        excerpt: state.page.sections[0].body,
+                    },
+                    { kind: "event", id: "event", title: "Opening", sourceIndex: 0, excerpt: "The beacon went dark." },
+                ],
+                next: null,
+            });
+        }
+        return fetch(url, init, options);
+    });
+    const setFilter = async (value: string) => {
+        const input = target.querySelector<HTMLInputElement>("[data-memory-page-filter] input")!;
+        expect(input).not.toBeNull();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+    };
+
+    await open();
+    click('[data-memory-page="scene"]');
+    await settle();
+    // The search action is offered only for typed text whose hits are not already showing.
+    expect(query("[data-memory-search-text]")).toBeNull();
+    await setFilter("beacon");
+    expect(reads("find?q=")).toHaveLength(0);
+    expect(query("[data-memory-search-text]")?.textContent?.trim()).toBe(language.structuredMemory.pages.searchText);
+    click("[data-memory-search-text]");
+    await settle();
+    expect(reads("find?q=")).toHaveLength(1);
+    expect(query("[data-memory-search-text]")).toBeNull();
+    expect(query("[data-memory-page]")).toBeNull();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-find-id]")].map((hit) => [
+            hit.dataset.memoryFindKind,
+            hit.dataset.memoryFindId,
+        ]),
+    ).toEqual([
+        ["page", "p"],
+        ["event", "event"],
+    ]);
+    const pageHit = query('[data-memory-find-id="p"]')!;
+    for (const text of ["The gate", "Watch", state.page.sections[0].body]) expect(pageHit.textContent).toContain(text);
+    expect(pageHit.querySelector("b")).toBeNull();
+    expect(query('[data-memory-find-id="event"]')?.textContent).toContain("Opening");
+    expect(query('[data-memory-find-id="event"]')?.textContent).toContain("The beacon went dark.");
+
+    click('[data-memory-find-id="p"]');
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
+    expect(query("[data-memory-page-detail]")?.textContent).toContain(state.page.sections[0].body);
+    await setFilter("");
+    expect(query("[data-memory-find-hits]")).toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query('[data-memory-page="scene"]')).not.toBeNull();
+    expect(reads("find?q=")).toHaveLength(1);
+
+    await setFilter("beacon");
+    query("[data-memory-page-filter]")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(reads("find?q=")).toHaveLength(2);
+    click('[data-memory-find-id="event"]');
+    await settle();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-event="event"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="event"]')?.textContent).toContain("The gate opened");
+});
+
+it("reads what events and threads say of a page, keeps a long event list short, and links to Timeline", async () => {
+    const state = serveMemory();
+    const pages = language.structuredMemory.pages;
+    const mention = { grade: 3, storyTime: "", knowledge: [], shifts: [] };
+    // Storage order, as the route answers: the tab's read orders them newest first, unanchored last.
+    const events = [
+        { id: "unanchored", title: "Undated rumor", sourceIndex: null, mention },
+        { id: "e0", title: "Mira arrives", sourceIndex: 0, mention: { ...mention, grade: 6 } },
+        { id: "e1", title: "A quiet meal", sourceIndex: 1, mention },
+        {
+            id: "e2",
+            title: "First doubts",
+            sourceIndex: 2,
+            mention: { ...mention, shifts: [{ from: "scene", to: "p", direction: "wary", note: "" }] },
+        },
+        { id: "e3", title: "The patrol", sourceIndex: 3, mention },
+        {
+            id: "e4",
+            title: "A letter sent",
+            sourceIndex: 4,
+            mention: { ...mention, shifts: [{ from: "p", to: "gone", direction: "distant", note: "" }] },
+        },
+        {
+            id: "e5",
+            title: "The rescue",
+            sourceIndex: 5,
+            mention: {
+                ...mention,
+                shifts: [{ from: "scene", to: "p", direction: "warmer", note: "after the rescue" }],
+            },
+        },
+        {
+            id: "e6",
+            title: "Gate opens",
+            sourceIndex: 6,
+            mention: {
+                ...mention,
+                storyTime: "Dawn",
+                knowledge: [
+                    { fact: "The <b>hinge</b> is weak", stance: "believes", secret: true },
+                    { fact: "The gate opens at dawn", stance: "knows", secret: false },
+                ],
+            },
+        },
+    ];
+    const threads = [
+        { kind: "thread", id: "t-done", title: "Old debt", state: "done" },
+        { kind: "thread", id: "t", title: "A promise", state: "open" },
+    ];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?")) {
+            expect(new URL(url, "http://memory.test").searchParams.get("page")).toBe("p");
+            return Response.json({
+                revision: state.revision,
+                hits: [...events.map((event) => ({ kind: "event", ...event, excerpt: "" })), ...threads],
+                next: null,
+            });
+        }
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: state.revision,
+                events: events.map(({ mention: _, ...event }) => ({ ...event, status: "active", messageIds: [] })),
+                runs: [],
+                next: null,
+            });
+        const stored = (event: (typeof events)[number]) => ({ ...event, summary: `Details: ${event.title}.` });
+        const event = events.find(({ id }) => url.endsWith(`/records/events/${id}`));
+        if (event) return Response.json({ revision: state.revision, data: stored(event) });
+        if (url.startsWith(storyRoute)) return storyAnswer(state.revision, events.map(stored));
+        return fetch(url, init, options);
+    });
+    const eventLinks = () =>
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page-event]")].map(
+            (link) => link.dataset.memoryPageEvent,
+        );
+    const rows = (selector: string) =>
+        [...target.querySelectorAll<HTMLElement>(selector)].map((row) => row.textContent?.replace(/\s+/g, " ").trim());
+
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(reads("find")).toHaveLength(1);
+    // Read asks at once: the newest five and the one graded important, newest first.
+    expect(eventLinks()).toEqual(["e6", "e5", "e4", "e3", "e2", "e0"]);
+    expect(query("[data-memory-page-events] > button[aria-expanded]")).toBeNull();
+    const first = query('[data-memory-page-event="e6"]')!.closest("li")!;
+    expect(first.textContent).toContain("Dawn");
+    expect(first.querySelector("[data-memory-page-event-important]")).toBeNull();
+    expect(
+        query('[data-memory-page-event="e0"]')!.closest("li")!.querySelector("[data-memory-page-event-important]")
+            ?.textContent,
+    ).toContain(pages.eventImportant);
+    expect(query("[data-memory-page-events-all]")?.textContent?.trim()).toBe(pages.showAll(8));
+    click("[data-memory-page-events-all]");
+    expect(eventLinks()).toEqual(["e6", "e5", "e4", "e3", "e2", "e1", "e0", "unanchored"]);
+    expect(query("[data-memory-page-events-all]")?.textContent?.trim()).toBe(pages.showFewer);
+    click("[data-memory-page-events-all]");
+    expect(eventLinks()).toHaveLength(6);
+
+    expect(rows("[data-memory-page-knowledge] li")).toEqual([
+        `The <b>hinge</b> is weak ${pages.believes} ${pages.secret} Gate opens`,
+        "The gate opens at dawn Gate opens",
+    ]);
+    expect(query("[data-memory-page-knowledge] b")).toBeNull();
+    // The newest shift of each direction with each other page; a page that is gone shows its id, disabled.
+    expect(rows("[data-memory-page-shift]")).toEqual(["← Current scene warmer (after the rescue)", "→ gone distant"]);
+    expect(query('[data-memory-page-shift="out"] button')?.hasAttribute("disabled")).toBe(true);
+    expect(rows("[data-memory-page-thread]")).toEqual([
+        `A promise ${language.structuredMemory.threads.states.open}`,
+        `Old debt ${language.structuredMemory.threads.states.done}`,
+    ]);
+
+    // Manage keeps the events alone behind its closed row, from the same answer.
+    await choosePageView("manage");
+    expect(query("[data-memory-page-events] > button[aria-expanded]")?.getAttribute("aria-expanded")).toBe("false");
+    expect(query("[data-memory-page-events] > button[aria-expanded]")?.textContent).toContain(pages.eventsNaming);
+    expect(eventLinks()).toHaveLength(0);
+    for (const block of ["knowledge", "shift", "thread"]) expect(query(`[data-memory-page-${block}]`)).toBeNull();
+    click("[data-memory-page-events] > button[aria-expanded]");
+    await settle();
+    expect(eventLinks()).toHaveLength(6);
+    expect(reads("find")).toHaveLength(1);
+
+    click('[data-memory-page-event="e6"]');
+    await settle();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-event="e6"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="e6"]')?.textContent).toContain("Details: Gate opens.");
+});
+
+it("asks what events say of a page in Manage only when the row opens", async () => {
+    serveMemory();
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    click('[data-memory-page="scene"]');
+    await settle();
+    expect(reads("find?page=scene")).toHaveLength(0);
+    click("[data-memory-page-events] > button[aria-expanded]");
+    await settle();
+    expect(reads("find?page=scene")).toHaveLength(1);
+    expect(query("[data-memory-page-events]")?.textContent).toContain(language.structuredMemory.pages.eventsNamingNone);
+});
+
+it("rereads what events say of a page on refresh, keeping its rows meanwhile, and drops answers that came late", async () => {
+    const state = serveMemory();
+    const lookups: { page: string | null; answer: ReturnType<typeof deferred<Response>> }[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?page=")) {
+            const answer = deferred<Response>();
+            lookups.push({ page: new URL(url, "http://memory.test").searchParams.get("page"), answer });
+            return answer.promise;
+        }
+        return fetch(url, init, options);
+    });
+    const naming = (id: string) =>
+        Response.json({
+            revision: state.revision,
+            hits: [{ kind: "event", id, title: id, sourceIndex: 0, excerpt: "" }],
+            next: null,
+        });
+    const eventLinks = () =>
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page-event]")].map(
+            (link) => link.dataset.memoryPageEvent,
+        );
+
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    click('[data-memory-page="scene"]');
+    await settle();
+    expect(lookups.map(({ page }) => page)).toEqual(["p", "scene"]);
+    // The answer for the page left behind changes nothing.
+    lookups[0].answer.resolve(naming("for-the-page-left"));
+    await settle();
+    expect(eventLinks()).toEqual([]);
+    lookups[1].answer.resolve(naming("first"));
+    await settle();
+    expect(eventLinks()).toEqual(["first"]);
+
+    click("[data-memory-panel-refresh]");
+    await settle();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(lookups.map(({ page }) => page)).toEqual(["p", "scene", "scene", "scene"]);
+    // The rows stay while the reread is out, and the older refresh's answer is dropped.
+    expect(eventLinks()).toEqual(["first"]);
+    lookups[2].answer.resolve(naming("older-refresh"));
+    await settle();
+    expect(eventLinks()).toEqual(["first"]);
+    lookups[3].answer.resolve(naming("newest"));
+    await settle();
+    expect(eventLinks()).toEqual(["newest"]);
+});
+
+it("says when a page's lookup fails and when its event list was cut", async () => {
+    const state = serveMemory();
+    let fail = true;
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.startsWith("/api/memory/structured/c/k/find?page=")) return fetch(url, init, options);
+        if (fail) return Response.json({ error: "Unavailable" }, { status: 500 });
+        return Response.json({
+            revision: state.revision,
+            hits: Array.from({ length: MEMORY_FIND_HITS_MAX + 1 }, (_, index) => ({
+                kind: "event",
+                id: `e${index}`,
+                title: `Event ${index}`,
+                sourceIndex: index,
+                excerpt: "",
+            })),
+            next: null,
+        });
+    });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-page-events-failure]")?.getAttribute("role")).toBe("alert");
+    expect(query("[data-memory-page-event]")).toBeNull();
+
+    fail = false;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-page-events-failure]")).toBeNull();
+    // The cut drops the oldest event, and the line says the list holds the newest.
+    expect(query("[data-memory-page-event]")?.dataset.memoryPageEvent).toBe(`e${MEMORY_FIND_HITS_MAX}`);
+    click("[data-memory-page-events-all]");
+    expect(target.querySelectorAll("[data-memory-page-event]")).toHaveLength(MEMORY_FIND_HITS_MAX);
+    expect(query('[data-memory-page-event="e0"]')).toBeNull();
+    expect(query("[data-memory-page-events-more]")?.textContent).toBe(
+        language.structuredMemory.pages.eventsMore(MEMORY_FIND_HITS_MAX),
+    );
+});
+
+it("shows a page with nothing said of it without empty blocks, the current state first, a replaced value's line folded", async () => {
+    const state = serveMemory();
+    state.page.sections[0].body = "The gate is open.\n(was: The gate is shut.)\n(was: The gate is barred.)";
+    state.page.sections.push({ ...state.page.sections[0], heading: "currentState", body: "Guarded." });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(reads("find?page=p")).toHaveLength(1);
+    for (const block of ["knowledge", "shifts", "threads", "events"])
+        expect(query(`[data-memory-page-${block}]`)).toBeNull();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-section]")].map(
+            (section) => section.dataset.memorySection,
+        ),
+    ).toEqual(["currentState", "Facts"]);
+    const parts = () =>
+        [...target.querySelectorAll<HTMLElement>('[data-memory-section="Facts"] [data-memory-section-body] p')].map(
+            (part) => [part.textContent, part.classList.contains("text-textcolor2")],
+        );
+    const toggle = () => query('[data-memory-section="Facts"] [data-memory-section-was]');
+    expect(query('[data-memory-section="currentState"] [data-memory-section-was]')).toBeNull();
+    expect(parts()).toEqual([["The gate is open.", false]]);
+    expect(toggle()?.textContent?.trim()).toBe(language.structuredMemory.pages.wasLines(2));
+    expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+    click('[data-memory-section="Facts"] [data-memory-section-was]');
+    expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+    expect(parts()).toEqual([
+        ["The gate is open.", false],
+        ["(was: The gate is shut.)\n(was: The gate is barred.)", true],
+    ]);
+    // Another page starts folded, and so does this one when it is selected again.
+    click('[data-memory-page="scene"]');
+    await settle();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+    expect(parts()).toEqual([["The gate is open.", false]]);
+});
+
+it("reads page text without editing controls and remembers Manage across page selections", async () => {
+    const state = serveUnsupported();
+    const page = state.pages[0];
+    page.aliases = ["North entrance", "Old gate"];
+    page.sections = [
+        {
+            ...page.sections[0],
+            body: "The <em>gate</em> stays shut.\nWait for dawn.",
+            disputed: true,
+            userCorrected: true,
+        },
+        { ...page.sections[0], heading: "Blank", body: " \n\t", unsupported: false },
+    ];
+    page.history = [
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: false,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 1,
+        },
+    ];
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("The <em>gate</em> stays shut.\nWait for dawn.");
+    expect(query("[data-memory-section-edit]")).toBeNull();
+    expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
+    expect(query("[data-memory-page-detail] [data-memory-page-type]")?.textContent?.trim()).toBe(
+        language.structuredMemory.pages.types.location,
+    );
+    expect(query("[data-memory-page-aliases]")?.textContent).toContain("North entrance, Old gate");
+    expect(query('[data-memory-section="Facts"] h3')?.textContent).toBe("Facts");
+    expect(query('[data-memory-section="Blank"]')).toBeNull();
+    expect(query("[data-memory-section-body] em")).toBeNull();
+    for (const flag of ["disputed", "unsupported", "userCorrected"] as const) {
+        const badge = query(`[data-memory-flag="${flag}"]`);
+        expect(badge?.textContent?.trim()).toBe(language.structuredMemory.pages.flags[flag]);
+        expect(badge?.closest("button")).toBeNull();
+    }
+    expect(query('[data-memory-section="Facts"]')?.textContent).toContain(language.structuredMemory.pages.locked);
+    for (const selector of [
+        '[data-memory-section] input[type="checkbox"]',
+        "[data-memory-provenance]",
+        "[data-memory-source]",
+        "[data-memory-page-tools]",
+        "[data-memory-page-mode]",
+        "[data-memory-page-grade]",
+        "[data-memory-history-id]",
+    ]) {
+        expect(query(selector)).toBeNull();
+    }
+
+    await choosePageView("manage");
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+    expect(query('[data-memory-section] input[type="checkbox"]')).not.toBeNull();
+    expect(query('[data-memory-provenance="event"]')).not.toBeNull();
+    expect(query('[data-memory-source="u0"]')).not.toBeNull();
+    expect(query("[data-memory-page-tools]")).not.toBeNull();
+    expect(query('[data-memory-history-id="writer-change"]')).not.toBeNull();
+    click('[data-memory-page="clear"]');
+    await settle();
+    expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+
+    await choosePageView("read");
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-edit]")).toBeNull();
+    click('[data-memory-trash-page="trash"]');
+    await settle();
+    expect(query("[data-memory-page-detail] [data-segment-btn]")).toBeNull();
+    expect(query("[data-memory-page-tools]")).not.toBeNull();
+    expect(query("[data-memory-untrash]")).not.toBeNull();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+
+    await chooseUnsupported();
+    expect(query("[data-memory-page-detail] [data-segment-btn]")).toBeNull();
+    expect(query("[data-memory-page-filter]")).toBeNull();
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+    expect(query("[data-memory-section-keep]")).not.toBeNull();
+});
+
+it("opens Manage and the requested history diff for a page history target", async () => {
+    const state = serveMemory();
+    state.page.history = [
+        {
+            id: "older-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: false,
+            before: { body: "First memory", provenance: [], sources: [] },
+            at: 1,
+        },
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: false,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 2,
+        },
+    ];
+    requestMemoryPanelTarget(ref, { tab: "pages", id: "p", historyId: "writer-change" });
+    await open();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+    const row = '[data-memory-history-id="writer-change"]';
+    expect(query(`${row} button[aria-expanded]`)?.getAttribute("aria-expanded")).toBe("true");
+    expect(query(`${row} [data-memory-history-diff] [data-memory-diff="removed"]`)?.textContent).toBe("Earlier");
+    expect(query(`${row} [data-memory-history-diff] [data-memory-diff="added"]`)?.textContent).toBe("Original");
+    expect(query('[data-memory-history-id="older-change"] button[aria-expanded]')?.getAttribute("aria-expanded")).toBe(
+        "false",
+    );
+    expect(query('[data-memory-history-id="older-change"] [data-memory-history-diff]')).toBeNull();
+});
+
+it("filters page titles without case or surrounding spaces and removes empty type groups", async () => {
+    const state = servePageTools();
+    state.pages[1].aliases = ["Gate"];
+    state.pages[1].sections[0].body = "Gate is mentioned only in this body";
+    state.pages[2].title = "Current scene";
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="target"]');
+    await settle();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Gate is mentioned only in this body");
+    const input = target.querySelector<HTMLInputElement>("[data-memory-page-filter] input")!;
+    expect(input).not.toBeNull();
+    expect(
+        query("[data-memory-page-filter]")!.compareDocumentPosition(query("[data-memory-page]")!) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(query('[data-memory-page-group="scene"]')).not.toBeNull();
+    expect(query('[data-memory-page-group="location"]')).not.toBeNull();
+    const filter = async (value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+    };
+    await filter("  GaTe  ");
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),
+    ).toEqual(["p"]);
+    expect(query('[data-memory-page="p"]')?.textContent).toContain("The gate");
+    expect(query('[data-memory-page-group="location"]')).not.toBeNull();
+    expect(query('[data-memory-page-group="scene"]')).toBeNull();
+    expect(query("[data-memory-page-filter-none]")).toBeNull();
+
+    await filter("no such title");
+    expect(target.querySelectorAll("[data-memory-page]")).toHaveLength(0);
+    expect(target.querySelectorAll("[data-memory-page-group]")).toHaveLength(0);
+    expect(target.querySelectorAll("[data-memory-page-filter-none]")).toHaveLength(1);
+    expect(query("[data-memory-page-filter-none]")?.textContent).toBe(language.structuredMemory.pages.filterNone);
+
+    await filter(" \t ");
+    expect(target.querySelectorAll("[data-memory-page]")).toHaveLength(3);
+    expect(query('[data-memory-page-group="scene"]')).not.toBeNull();
+    expect(query("[data-memory-page-filter-none]")).toBeNull();
+});
+
+it("follows live page links by title in both views and disables unknown page ids", async () => {
+    const state = servePageTools();
+    state.pages[0].links = ["target", "missing-page"];
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    for (const view of ["read", "manage"] as const) {
+        if (view === "manage") await choosePageView(view);
+        expect(pageViewButton(view)?.getAttribute("aria-pressed")).toBe("true");
+        const live = target.querySelector<HTMLButtonElement>(
+            '[data-memory-page-links] [data-memory-page-link="target"]',
+        )!;
+        const missing = target.querySelector<HTMLButtonElement>(
+            '[data-memory-page-links] [data-memory-page-link="missing-page"]',
+        )!;
+        expect(live?.textContent).toBe("The harbor");
+        expect(live?.disabled).toBe(false);
+        expect(missing?.textContent).toBe("missing-page");
+        expect(missing?.disabled).toBe(true);
+        missing.click();
+        await settle();
+        expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+        click('[data-memory-page-link="target"]');
+        await settle();
+        expect(query('[data-memory-page="target"]')?.getAttribute("aria-current")).toBe("true");
+        expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The harbor");
+        expect(query("[data-memory-page-links]")).toBeNull();
+        click('[data-memory-page="p"]');
+        await settle();
+    }
+});
+
+it.each(["pages", "threads"] as const)("makes exactly one contents request per refresh with %s open", async (tab) => {
+    const state = serveMemory();
+    await open();
+    await chooseTab(tab);
+    const fetch = io.authFetch.getMockImplementation()!;
+    const pending = deferred<Response>();
+    const contentsPath = "/api/memory/structured/c/k";
+    io.authFetch.mockImplementation((url, init, options) =>
+        url === contentsPath ? pending.promise.then((response) => response.clone()) : fetch(url, init, options),
+    );
+    io.authFetch.mockClear();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    const contentsRequests = () => io.authFetch.mock.calls.filter(([url]) => url === contentsPath);
+    try {
+        expect(contentsRequests()).toHaveLength(1);
+        expect(contentsRequests()[0][1]?.method ?? "GET").toBe("GET");
+    } finally {
+        // Every caller gets its own Response when sharing is broken, so body reuse cannot mask the count.
+        const response = await fetch(contentsPath);
+        pending.resolve(response);
+        await settle();
+    }
+    expect(contentsRequests()).toHaveLength(1);
+    expect(query(`[data-memory-panel="${tab}"]`)?.textContent).toContain(
+        tab === "pages" ? state.page.title : state.thread.title,
+    );
+});
+
+it("rereads contents and the active tab when the open chat is installed, and when switching chats", async () => {
+    // As with an idle checkpoint load, the fixture's local work has already been saved.
+    const pending = takeChatWork(new Set());
+    ackChatWork(
+        pending,
+        pending.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: revision(1) })),
+        [],
+    );
+    seedChats(
+        [{ characterId: "c", id: "k", revision: revision(1) }],
+        [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+    );
+    const contents = serveAdoptionContents();
+    const contentsPath = "/api/memory/structured/c/k";
+    const contentsRequests = (path = contentsPath) => io.authFetch.mock.calls.filter(([url]) => url === path);
+    let runId = "before-load";
+    const loadedChat = { ...JSON.parse(JSON.stringify(findChat(ref))), note: "Loaded checkpoint" };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url.includes("/runs")) return Promise.resolve(Response.json(logRound(runId)));
+        if (url === "/api/memory/structured/c/other") return Promise.resolve(Response.json(contents));
+        if (url === "/api/resources/read")
+            return Promise.resolve(
+                Response.json({
+                    epoch,
+                    items: [],
+                    chats: [{ characterId: "c", id: "k", revision: revision(2), trashedAt: null, data: loadedChat }],
+                }),
+            );
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("coverage");
+    expect(contentsRequests()).toHaveLength(1);
+    expect(reads("coverage")).toHaveLength(1);
+    await chooseTab("log");
+    expect(contentsRequests()).toHaveLength(1);
+    expect(reads("runs")).toHaveLength(1);
+    expect(query('[data-memory-panel="log"]')?.textContent).toContain("before-load");
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+
+    runId = "loaded-record";
+    contents.revision = revision(2);
+    contents.adoption.adoptable = 0;
+    await loadChat(ref);
+    await settle();
+    expect(findChat(ref)?.note).toBe("Loaded checkpoint");
+    expect(contentsRequests()).toHaveLength(2);
+    expect(reads("runs")).toHaveLength(2);
+    expect(query('[data-memory-panel="log"]')?.textContent).toContain("loaded-record");
+    expect(target.textContent).not.toContain("before-load");
+    expect(query("[data-memory-adopt]")).toBeNull();
+
+    runId = "other-chat-record";
+    selectChat("c", "other");
+    await settle();
+    expect(contentsRequests("/api/memory/structured/c/other")).toHaveLength(1);
+    expect(reads("runs")).toHaveLength(3);
+    expect(query('[data-memory-panel="log"]')?.textContent).toContain("other-chat-record");
+    expect(target.textContent).not.toContain("loaded-record");
+});
+
+function press(selector: string) {
+    const button = query(selector)?.closest("button");
+    expect(button).toBeDefined();
+    expect(button!.disabled).toBe(false);
+    button!.click();
+    flushSync();
+}
+function changeSelect(selector: string, value: string) {
+    const input = target.querySelector<HTMLSelectElement>(selector)!;
+    expect(input).not.toBeNull();
+    expect(input.disabled).toBe(false);
+    input.value = value;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    flushSync();
+}
+function typeSection(value: string) {
+    const input = target.querySelector("textarea")!;
+    expect(input).not.toBeNull();
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+}
+const sentEdits = () => reads("edits").map(([, init]) => JSON.parse(init!.body as string));
+
+it("shows the saved scene charge and warns only above the required-page limit", async () => {
+    const state = serveMemory();
+    const scene = {
+        ...state.page,
+        id: "scene",
+        type: "scene",
+        contextMode: "always",
+        sections: [{ ...state.page.sections[0], heading: "place", body: "돌다리" }],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    const route = "/api/memory/structured/c/k/records/pages/scene";
+    const limit = 14;
+    const charges = new Map([
+        ["돌다리", limit],
+        ["돌다리 A", limit + 1],
+    ]);
+    let savedRevision = 1;
+    let data = scene;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === route) return Response.json({ revision: state.revision, data });
+        if (url === `${route}?sceneBudget=1`) {
+            const tokens = charges.get(data.sections[0].body);
+            return Response.json({
+                revision: state.revision,
+                data,
+                ...(tokens === undefined ? {} : { sceneBudget: { tokens, requiredTokens: tokens, limit } }),
+            });
+        }
+        if (url.endsWith("/edits")) {
+            const { edit } = JSON.parse(init!.body as string);
+            data = { ...scene, sections: [{ ...scene.sections[0], body: edit.body }] };
+            state.revision = revision(++savedRevision);
+            return Response.json({ revision: state.revision, kind: "pages", data });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    click('[data-memory-page="scene"]');
+    await settle();
+    await choosePageView("manage");
+
+    const budget = () => query("[data-memory-scene-budget]")?.textContent ?? "";
+    const warning = "Required pages exceed their token limit. Shorten the scene or raise the limit in Memory settings.";
+    expect(budget()).toContain("Saved scene: 14 / 14 required-page tokens");
+    expect(budget()).not.toContain(warning);
+
+    const save = async (body: string) => {
+        press("[data-memory-section-edit]");
+        typeSection(body);
+        press("[data-memory-section-save]");
+        await settle();
+        expect(query("[data-memory-section-body]")?.textContent).toBe(body);
+    };
+    await save("돌다리 A");
+    expect(budget()).toContain("Saved scene: 15 / 14 required-page tokens");
+    expect(budget()).toContain(warning);
+
+    await save("돌다리 B");
+    expect(query("[data-memory-scene-budget]")).toBeNull();
+    expect(target.textContent).toContain("Saved scene token count unavailable.");
+});
+
+it("shows the long scene field badge only above 600 characters while editing", async () => {
+    const state = serveMemory();
+    state.page.sections[0] = { ...state.page.sections[0], heading: "state", body: "S".repeat(600), locked: false };
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="scene"]');
+    await settle();
+    await choosePageView("manage");
+    const badge =
+        "Over 600 characters: prompts get longer. The memory writer may rewrite this field up to this length.";
+    expect(target.textContent).not.toContain(badge);
+    press("[data-memory-section-edit]");
+    typeSection("S".repeat(601));
+    expect(target.textContent).toContain(badge);
+    expect(query("[data-memory-section-count]")?.textContent?.trim()).toBe(
+        language.structuredMemory.pages.characters(601, 4000),
+    );
+    typeSection("S".repeat(600));
+    expect(target.textContent).not.toContain(badge);
+});
+
+it("sends one page change with the copy revision and uses each successful answer for the next edit", async () => {
+    const state = serveMemory();
+    const fetch = io.authFetch.getMockImplementation()!;
+    const corrected = {
+        ...state.page,
+        sections: [{ ...state.page.sections[0], body: "Corrected memory", userCorrected: true }],
+    };
+    const unlocked = { ...corrected, sections: [{ ...corrected.sections[0], locked: false }] };
+    const hidden = { ...unlocked, contextMode: "never" };
+    const answers = [corrected, unlocked, hidden, { ...hidden, grade: 3, gradeByUser: true }, hidden];
+    let index = 0;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits")
+            ? Promise.resolve(Response.json({ revision: `saved-${++index}`, kind: "pages", data: answers[index - 1] }))
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map((row) => row.dataset.memoryPage),
+    ).toEqual(["scene", "p"]);
+    click('[data-memory-page="scene"]');
+    await settle();
+    await choosePageView("manage");
+    expect(query("[data-memory-page-mode]")).toBeNull();
+    click('[data-memory-page="p"]');
+    await settle();
+    press("[data-memory-section-edit]");
+    typeSection(" \n");
+    expect(query("[data-memory-section-save]")!.closest("button")!.disabled).toBe(true);
+    typeSection("x".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars + 1));
+    expect(query("[data-memory-section-save]")!.closest("button")!.disabled).toBe(true);
+    typeSection("Corrected memory");
+    press("[data-memory-section-save]");
+    await settle();
+    expect(query("textarea")).toBeNull();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Corrected memory");
+    click('[data-memory-section] input[type="checkbox"]');
+    await settle();
+    changeSelect("[data-memory-page-mode]", "never");
+    await settle();
+    changeSelect("[data-memory-page-grade]", "3");
+    await settle();
+    changeSelect("[data-memory-page-grade]", "");
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "read-revision",
+            edit: { kind: "section", pageId: "p", heading: "Facts", body: "Corrected memory" },
+        },
+        { revision: "saved-1", edit: { kind: "sectionLock", pageId: "p", heading: "Facts", locked: false } },
+        { revision: "saved-2", edit: { kind: "page", pageId: "p", contextMode: "never" } },
+        { revision: "saved-3", edit: { kind: "page", pageId: "p", grade: 3 } },
+        { revision: "saved-4", edit: { kind: "page", pageId: "p", grade: null } },
+    ]);
+});
+
+it("releases a corrected section from its badge only after the person confirms", async () => {
+    const state = serveMemory();
+    state.page.sections[0].userCorrected = true;
+    const { userCorrected, ...released } = state.page.sections[0];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits")
+            ? Promise.resolve(
+                  Response.json({ revision: "released", kind: "pages", data: { ...state.page, sections: [released] } }),
+              )
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    const badge = '[data-memory-flag="userCorrected"]';
+    expect(query(badge)?.textContent?.trim()).toBe(language.structuredMemory.pages.flags.userCorrected);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press(badge);
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(
+        language.structuredMemory.pages.releaseConfirm(language.structuredMemory.pages.headings.Facts ?? "Facts"),
+    );
+    expect(sentEdits()).toEqual([]);
+    expect(query(badge)).not.toBeNull();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press(badge);
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "read-revision", edit: { kind: "sectionRelease", pageId: "p", heading: "Facts" } },
+    ]);
+    expect(query(badge)).toBeNull();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Original memory");
+});
+
+it.each(["pages", "threads"] as const)(
+    "undoes a refused %s edit, gives notice, rereads and retains the next successful revision",
+    async (tab) => {
+        const state = serveMemory();
+        const refusal = deferred<Response>();
+        const reread = deferred<Response>();
+        const fetch = io.authFetch.getMockImplementation()!;
+        let holdingRead = false;
+        let edits = 0;
+        io.authFetch.mockImplementation((url, init, options) => {
+            if (url.endsWith("/edits")) {
+                edits++;
+                if (edits === 1) return refusal.promise;
+                return Promise.resolve(
+                    Response.json({
+                        revision: "success-revision",
+                        kind: tab,
+                        data:
+                            tab === "pages"
+                                ? { ...state.page, contextMode: edits === 2 ? "never" : "auto" }
+                                : { ...state.thread, state: edits === 2 ? "open" : "done", closedBy: undefined },
+                    }),
+                );
+            }
+            if (
+                holdingRead &&
+                (tab === "pages" ? url.endsWith("/records/pages/p") : url === "/api/memory/structured/c/k")
+            )
+                return reread.promise;
+            return fetch(url, init, options);
+        });
+        await open();
+        await chooseTab(tab);
+        if (tab === "pages") {
+            click('[data-memory-page="p"]');
+            await settle();
+            await choosePageView("manage");
+        } else {
+            click("[data-memory-thread] button");
+            await settle();
+        }
+        const selector = tab === "pages" ? "[data-memory-page-mode]" : "[data-memory-thread-state]";
+        const value = () => target.querySelector<HTMLSelectElement>(selector)!.value;
+        const before = tab === "pages" ? "auto" : "done";
+        const attempted = tab === "pages" ? "never" : "open";
+        changeSelect(selector, attempted);
+        expect(value()).toBe(attempted);
+        expect(target.querySelector<HTMLSelectElement>(selector)!.disabled).toBe(true);
+        holdingRead = true;
+        const reason = tab === "pages" ? "changed" : "fenced";
+        refusal.resolve(Response.json({ reason, revision: "newer" }, { status: 409 }));
+        await settle();
+        expect(value()).toBe(before);
+        expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused[reason]);
+        expect(
+            io.authFetch.mock.calls.filter(([url]) =>
+                tab === "pages" ? url.endsWith("/records/pages/p") : url === "/api/memory/structured/c/k",
+            ).length,
+        ).toBeGreaterThanOrEqual(2);
+        reread.resolve(
+            Response.json(
+                tab === "pages"
+                    ? { revision: "reread-revision", data: state.page }
+                    : {
+                          revision: "reread-revision",
+                          pages: [],
+                          events: [],
+                          runs: [],
+                          threads: [{ ...state.thread, bytes: 100 }],
+                      },
+            ),
+        );
+        await settle();
+        changeSelect(selector, attempted);
+        await settle();
+        expect(value()).toBe(attempted);
+        changeSelect(selector, before);
+        await settle();
+        const edit = (value: string) =>
+            tab === "pages"
+                ? { kind: "page", pageId: "p", contextMode: value }
+                : { kind: "thread", threadId: "t", state: value };
+        expect(sentEdits()).toEqual([
+            { revision: "read-revision", edit: edit(attempted) },
+            { revision: "reread-revision", edit: edit(attempted) },
+            { revision: "success-revision", edit: edit(before) },
+        ]);
+    },
+);
+
+it("keeps a section draft selectable through the writer fence and saves the same text after release", async () => {
+    const state = serveMemory();
+    const answer = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits") ? answer.promise : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-section-edit]");
+    const text = "My pending section revision";
+    typeSection(text);
+    const field = () => target.querySelector("textarea")!;
+    const save = () => query("[data-memory-section-save]")!.closest("button")!;
+    expect(field().readOnly).toBe(false);
+    expect(save().disabled).toBe(false);
+
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect.soft(field().readOnly).toBe(true);
+    field().select();
+    expect(field().value.slice(field().selectionStart, field().selectionEnd)).toBe(text);
+    expect(save().disabled).toBe(true);
+    save().click();
+    await settle();
+    expect(sentEdits()).toEqual([]);
+
+    release();
+    await settle();
+    expect(field().readOnly).toBe(false);
+    expect(field().value).toBe(text);
+    expect(save().disabled).toBe(false);
+    save().click();
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "read-revision", edit: { kind: "section", pageId: "p", heading: "Facts", body: text } },
+    ]);
+    expect.soft(field().readOnly, "pending save").toBe(true);
+    answer.resolve(
+        Response.json({
+            revision: "saved-revision",
+            kind: "pages",
+            data: { ...state.page, sections: [{ ...state.page.sections[0], body: text }] },
+        }),
+    );
+    await settle();
+    expect(query("[data-memory-section-body]")?.textContent).toBe(text);
+});
+
+it("closes an overtaken section draft with a changed notice when the writer fence falls", async () => {
+    const state = serveMemory();
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-section-edit]");
+    typeSection("My unsaved draft");
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(target.querySelector("textarea")!.value).toBe("My unsaved draft");
+    expect(query("[data-memory-section-save]")!.closest("button")!.disabled).toBe(true);
+    state.revision = "writer-revision";
+    state.page = { ...state.page, sections: [{ ...state.page.sections[0], body: "New writer text" }] };
+    release();
+    await settle();
+    expect(query("textarea")).toBeNull();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("New writer text");
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused.changed);
+    expect(sentEdits()).toEqual([]);
+});
+
+it("badges only verified Pages and Timeline records from the newest valid report", async () => {
+    install([
+        message("u0", "user"),
+        message("a0", "char"),
+        message("u1", "user"),
+        message("a1", "char"),
+        message("invalid", "char"),
+    ]);
+    serveMemory();
+    patchMessage(ref, "a0", {
+        generationInfo: { context: memoryReport([{ ...included("scene"), kind: "page" }, included("older")]) },
+    });
+    patchMessage(ref, "a1", {
+        generationInfo: {
+            context: memoryReport([
+                included("event"),
+                included("unverified", false),
+                { ...included("p"), kind: "page" },
+                { ...included("scene", false), kind: "page" },
+            ]),
+        },
+    });
+    // An invalid later report does not hide the newest valid one.
+    patchMessage(ref, "invalid", { generationInfo: { context: { v: 99 } as unknown as ContextReport } });
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/coverage")
+            ? Promise.resolve(
+                  Response.json({
+                      revision: "r1",
+                      runs: [],
+                      next: null,
+                      events: ["older", "unverified", "event", "p"].map((id) => ({
+                          id,
+                          title: id,
+                          status: "active",
+                          messageIds: ["u0"],
+                      })),
+                  }),
+              )
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    const badged = (selector: string, attribute: string) =>
+        [...target.querySelectorAll(selector)]
+            .filter((row) => row.querySelector("[data-memory-used]"))
+            .map((row) => row.getAttribute(attribute));
+    expect(badged("[data-memory-page]", "data-memory-page")).toEqual(["p"]);
+    // The row carries a dot that names itself, and one legend line counts the pages the send used.
+    const dot = query('[data-memory-page="p"] [data-memory-used]')!;
+    expect(dot.textContent).toBe("");
+    expect(dot.getAttribute("aria-label")).toBe(language.structuredMemory.panel.usedInLastSend);
+    expect(query("[data-memory-used-legend]")?.textContent?.trim()).toBe(language.structuredMemory.pages.usedLegend(1));
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    expect(badged("[data-memory-event]", "data-memory-event")).toEqual(["event"]);
+    patchMessage(ref, "a1", {
+        generationInfo: { context: context({ kind: "hypaV3", tokens: 10, coverage: "covered" }) },
+    });
+    await settle();
+    expect(query("[data-memory-used]")).toBeNull();
+    await chooseTab("pages");
+    expect(query("[data-memory-used]")).toBeNull();
+    expect(query("[data-memory-used-legend]")).toBeNull();
+});
+
+it("follows record links between tabs and opens the chat and closes the panel for a message link", async () => {
+    serveMemory();
+    setChatOpen(false);
+    await open();
+    await chooseTab("threads");
+    click("[data-memory-thread] button");
+    await settle();
+    click('[data-memory-link="p"]');
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Original memory");
+    await choosePageView("manage");
+    click('[data-memory-provenance="event"]');
+    await settle();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-event="event"] button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(target.textContent).toContain("The gate opened");
+    click('[data-memory-participant="p"]');
+    await settle();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    await choosePageView("manage");
+    click('[data-memory-source="u0"]');
+    expect(selection.chatOpen).toBe(true);
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: "u0" });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+    setChatOpen(false);
+    hypaV3ModalOpen.set(true);
+    await chooseTab("timeline");
+    click('[data-memory-event="event"] button');
+    await settle();
+    click('[data-memory-source="u0"]');
+    expect(selection.chatOpen).toBe(true);
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: "u0" });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+});
+
+it("derives the writer line from current state and dispatches record and resume through the job client", async () => {
+    install([
+        message("u0", "user"),
+        message("a0", "char"),
+        message("u1", "user"),
+        message("a1", "char"),
+        message("latest-question", "user"),
+    ]);
+    const state = serveMemory();
+    const owner = characterList().find(({ chaId }) => chaId === "c")!;
+    const action = () => query("[data-memory-writer-action]");
+    const line = () => query("[data-memory-writer-line]");
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    await open();
+    expect(action()?.dataset.memoryWriterAction).toBe("record");
+    press("[data-memory-writer-action]");
+    await settle();
+    expect(io.runServerJob.mock.calls[0]).toEqual([
+        owner,
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRecord", messageId: "a1" },
+            label: "memoryRecord",
+            context: { mode: "manual" },
+        },
+    ]);
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "manual";
+    await settle();
+    expect(line()?.textContent).toContain(language.structuredMemory.notAutomaticReasons.manual);
+    patchMessage(ref, "a1", { generationInfo: { memory: { state: "notAutomatic", reason: "pluginModel" } } });
+    await settle();
+    expect(line()?.textContent).toContain(language.structuredMemory.notAutomaticReasons.pluginModel);
+    state.runs = Array.from({ length: STRUCTURED_MEMORY_LIMITS.consecutiveFailures }, (_, i) => ({
+        id: String(i),
+        result: "failed",
+    }));
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(action()?.dataset.memoryWriterAction).toBe("resume");
+    press("[data-memory-writer-action]");
+    await settle();
+    expect(io.runServerJob.mock.calls[1]).toEqual([
+        owner,
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRecord" },
+            label: "memoryRecord",
+            context: { mode: "manual" },
+        },
+    ]);
+    state.runs = [];
+    patchMessage(ref, "a1", { generationInfo: { memory: { state: "skipped", reason: "writerPaused" } } });
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(action()?.dataset.memoryWriterAction).toBe("resume");
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(action()!.closest("button")!.disabled).toBe(true);
+    action()!.closest("button")!.click();
+    expect(io.runServerJob).toHaveBeenCalledTimes(2);
+    release();
+    owner.supaMemory = false;
+    await settle();
+    expect(line()?.dataset.memoryWriterLine).toBe("memoryOff");
+    expect(action()).toBeNull();
+});
+
+it("asks before recording a marked greeting repair and a confirmed turn and cancels when declined", async () => {
+    install([message("u0", "user", "Hello"), message("a0", "char", "Welcome")]);
+    serveMemory();
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "어서 오세요";
+    setChatMeta(ref, { fmIndex: -1 });
+    const chat = findChat(ref)!;
+    const repair = {
+        id: "greeting",
+        status: "active",
+        sources: [],
+        greeting: { fmIndex: -1, hash: memoryGreetingHash(owner.firstMessage) },
+        rerecord: true,
+    };
+    const store = {
+        readChatSource: () => ({ data: chat }),
+        get: () => ({ data: owner }),
+        memory: {
+            readContents: () => ({ events: [repair] }),
+            readRecord: () => ({ data: repair }),
+            readWriterSettings: () => ({ screening: { refusal: [], format: [] }, omitUserMessages: false }),
+        },
+    };
+    // Keep the server module graph out of the client type check.
+    const serverPath = "../../../../server/src/prompt/memory/structured/rebuild.ts";
+    const { memoryWorkCost } = await import(/* @vite-ignore */ serverPath);
+    const costRoute = "/api/memory/structured/c/k/cost?mode=record&turns=1&through=a0";
+    serveResponseAt(costRoute, async () => {
+        const cost: StructuredMemoryCostAnswer | null = await memoryWorkCost(
+            store,
+            ref,
+            { mode: "record", turns: 1, through: "a0" },
+            { name: "characters" },
+        );
+        return Response.json(cost);
+    });
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+
+    await open();
+    click('[data-memory-writer-action="record"]');
+    await settle();
+
+    const estimatedTokens = memoryCostTokens(new TextEncoder().encode("HelloWelcome" + owner.firstMessage).length, 2);
+    expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(
+        language.structuredMemory.receipt.recordCost(2, estimatedTokens),
+    );
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+/** Coverage, record and story I/O for the real Timeline; anchors come from the initial held chat. */
+function serveAnchoredEvent() {
+    const messages = findChat(ref)!.message;
+    const event: MemoryEvent = {
+        id: "e",
+        title: "Gate opened",
+        summary: "The gate opened",
+        status: "active",
+        sources: messages.slice(0, 2).map((m, index) => ({ messageId: m.chatId!, index, hash: memoryMessageHash(m) })),
+        participants: [],
+        storyTime: { text: "" },
+        keyLines: [],
+        stateChanges: [],
+        knowledge: [],
+        relationshipShifts: [],
+        openThreads: { add: [], close: [], transitions: [] },
+        writerRun: "r",
+        createdRevision: 1,
+    };
+    const state = { event, revision: "seen-revision" };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: state.revision,
+                events: [{ ...state.event, messageIds: ["u0", "a0"], sourceIndex: 0 }],
+                runs: [],
+                next: null,
+            });
+        if (url.endsWith("/records/events/e")) return Response.json({ revision: state.revision, data: state.event });
+        if (url === chaptersRoute) return Response.json({ revision: state.revision, chapters: [] });
+        if (url.startsWith(storyRoute)) return storyAnswer(state.revision, [state.event]);
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                events: [{ id: "e", title: state.event.title, status: state.event.status, bytes: 100 }],
+                pages: [],
+                threads: [],
+                runs: [],
+            });
+        return fetch(url, init, options);
+    });
+    return state;
+}
+
+const timelineViewButton = (view: "read" | "manage") =>
+    [...target.querySelectorAll<HTMLButtonElement>("[data-memory-timeline] [data-segment-btn]")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.timeline.views[view],
+    );
+/** Timeline opens in Read on each mount; edits, repairs, badges and retracted events live in Manage. */
+async function chooseTimelineView(view: "read" | "manage") {
+    const button = timelineViewButton(view);
+    expect(button).toBeDefined();
+    button!.click();
+    await settle();
+    expect(button!.getAttribute("aria-pressed")).toBe("true");
+}
+
+it("sends an opened event's edited title and summary at the coverage revision and displays the new text", async () => {
+    const state = serveAnchoredEvent();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        state.event = {
+            ...state.event,
+            title: "Gate stayed closed",
+            summary: "Mira could not enter.",
+            userCorrected: true,
+        };
+        state.revision = "corrected-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    press("[data-memory-event-edit]");
+    const title = target.querySelector<HTMLInputElement>("[data-memory-event-editor] input")!;
+    const summary = target.querySelector<HTMLTextAreaElement>("[data-memory-event-editor] textarea")!;
+    expect(title.value).toBe("Gate opened");
+    expect(summary.value).toBe("The gate opened");
+    title.value = "Gate stayed closed";
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    summary.value = "Mira could not enter.";
+    summary.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    press("[data-memory-event-save]");
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "seen-revision",
+            edit: { kind: "eventText", eventId: "e", title: "Gate stayed closed", summary: "Mira could not enter." },
+        },
+    ]);
+    expect(query('[data-memory-event="e"] > button')?.textContent).toContain("Gate stayed closed");
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("Mira could not enter.");
+    expect(query("[data-memory-event-editor]")).toBeNull();
+    expect(query("[data-memory-event-corrected]")).not.toBeNull();
+});
+
+it("releases an event's correction badge only after confirmation and keeps its text", async () => {
+    const state = serveAnchoredEvent();
+    state.event.userCorrected = true;
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        const { userCorrected, ...released } = state.event;
+        state.event = released;
+        state.revision = "released-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const badge = "[data-memory-event-corrected]";
+    expect(query(badge)?.textContent?.trim()).toBe(language.structuredMemory.timeline.userCorrected);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press(badge);
+    await settle();
+    expect(sentEdits()).toEqual([]);
+    expect(query(badge)).not.toBeNull();
+    const confirmation = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReturnValueOnce(confirmation.promise);
+    press(badge);
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.timeline.releaseConfirm("Gate opened"));
+    expect(sentEdits()).toEqual([]);
+    confirmation.resolve(true);
+    await settle();
+    expect(sentEdits()).toEqual([{ revision: "seen-revision", edit: { kind: "eventRelease", eventId: "e" } }]);
+    expect(query(badge)).toBeNull();
+    expect(query('[data-memory-event="e"] > button')?.textContent).toContain("Gate opened");
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
+});
+
+it("shows a retracted event's details without an Edit control", async () => {
+    const state = serveAnchoredEvent();
+    state.event.status = "retracted";
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
+    expect(query("[data-memory-event-edit]")).toBeNull();
+});
+
+it("shows a recorded date without story text when a Timeline title is opened", async () => {
+    const state = serveAnchoredEvent();
+    state.event.storyTime = { text: "", date: { year: 2025, month: 4, day: 3 } };
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const row = query('[data-memory-event="e"]')!;
+    expect([...row.querySelectorAll("p")].map((paragraph) => paragraph.textContent?.trim())).toContain(
+        `${language.structuredMemory.log.storyTime}: 2025-04-03`,
+    );
+});
+
+it("reads story once per refresh in Read, grouping unretracted summaries by recorded date and keeping retracted events in Manage and titles on failure", async () => {
+    serveMemory();
+    const messages = findChat(ref)!.message;
+    // A backfilled early event comes after the later event in storage and in both route answers.
+    const events = [
+        { id: "later", title: "Gate opens", status: "active", index: 2 },
+        { id: "retracted", title: "Withdrawn rumor", status: "retracted", index: 1 },
+        { id: "earlier", title: "Mira arrives", status: "active", index: 0 },
+        { id: "missing", title: "An untold ending", status: "active", index: 3 },
+    ];
+    const earlySummary = "The <em>gate</em> waited.\n**Mira arrived.**";
+    let storyFails = false;
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: "r1",
+                events: events.map(({ index, ...event }) => ({
+                    ...event,
+                    messageIds: [messages[index].chatId],
+                    sourceIndex: index,
+                    sources: [{ messageId: messages[index].chatId, index, hash: memoryMessageHash(messages[index]) }],
+                })),
+                runs: [],
+                next: null,
+            });
+        if (url.includes("/story")) {
+            if (storyFails) throw new Error("story offline");
+            return Response.json({
+                revision: "r1",
+                events: [
+                    {
+                        id: "later",
+                        summary: "The gate opened.",
+                        storyTime: { text: "", date: { month: 10, day: 15 } },
+                        participants: [],
+                    },
+                    { id: "retracted", summary: "A discarded rumor.", storyTime: { text: "Night" }, participants: [] },
+                    {
+                        id: "earlier",
+                        summary: earlySummary,
+                        storyTime: { text: "Dawn", ordinal: 3, date: { year: 2025, month: 4, day: 3 } },
+                        participants: ["mira"],
+                    },
+                ],
+                next: null,
+            });
+        }
+        if (url.endsWith("/records/events/earlier"))
+            return Response.json({
+                revision: "r1",
+                data: {
+                    id: "earlier",
+                    summary: "Details of Mira's arrival.",
+                    storyTime: { text: "Dawn", ordinal: 3, date: { year: 2025, month: 4, day: 3 } },
+                },
+            });
+        return fetch(url, init, options);
+    });
+    const rowIds = () =>
+        [...target.querySelectorAll<HTMLElement>("[data-memory-event]")].map((row) => row.dataset.memoryEvent);
+    const summaries = () =>
+        [...target.querySelectorAll("[data-memory-event-summary]")].map((summary) => summary.textContent?.trim());
+    const groupHeads = () => [...target.querySelectorAll<HTMLButtonElement>("[data-memory-group] > button")];
+
+    await open();
+    await chooseTab("timeline");
+    expect(timelineViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    expect(reads("story")).toHaveLength(1);
+    expect(query("[data-memory-panel-failure]")).toBeNull();
+    // Message order runs 2025-04-03 (earlier), then 10-15 (later, with the undated event after it).
+    // The newest group comes first and alone opens; events keep message order inside it.
+    expect(groupHeads().map((head) => head.getAttribute("aria-expanded"))).toEqual(["true", "false"]);
+    expect(groupHeads()[0].textContent).toContain("10-15");
+    expect(groupHeads()[1].textContent).toContain("2025-04-03");
+    expect(rowIds()).toEqual(["later", "missing"]);
+    expect(summaries()).toEqual(["The gate opened."]);
+    expect(query('[data-memory-event="missing"]')?.textContent).toContain("An untold ending");
+    expect(query('[data-memory-event="missing"] [data-memory-event-summary]')).toBeNull();
+    groupHeads()[1].click();
+    await settle();
+    expect(rowIds()).toEqual(["later", "missing", "earlier"]);
+    expect(rowIds()).not.toContain("retracted");
+    expect(summaries()).toEqual(["The gate opened.", earlySummary]);
+    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Mira arrives");
+    expect(query('[data-memory-event="earlier"] [data-memory-event-summary]')?.childElementCount).toBe(0);
+
+    click('[data-memory-event="earlier"] > button');
+    await settle();
+    expect(query('[data-memory-event="earlier"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(
+        [...query('[data-memory-event="earlier"]')!.querySelectorAll("p")].map((paragraph) =>
+            paragraph.textContent?.trim(),
+        ),
+    ).toContain(`${language.structuredMemory.log.storyTime}: 2025-04-03 · Dawn (3)`);
+    // Manage keeps the open event and shows the record's own summary.
+    await chooseTimelineView("manage");
+    expect(query('[data-memory-event="earlier"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Details of Mira's arrival.");
+    click('[data-memory-event="earlier"] > button');
+    expect(summaries()).toEqual([]);
+    expect(rowIds()).toEqual(["missing", "later", "retracted", "earlier"]);
+    await chooseTimelineView("read");
+    expect(reads("story")).toHaveLength(1);
+    expect(summaries()).toEqual(["The gate opened.", earlySummary]);
+
+    storyFails = true;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(reads("story")).toHaveLength(2);
+    expect(query("[data-memory-panel-failure]")?.textContent).toContain("story offline");
+    // Without dates every title falls into one date-less group, in message order.
+    expect(groupHeads()).toHaveLength(1);
+    expect(groupHeads()[0].getAttribute("aria-expanded")).toBe("true");
+    expect(groupHeads()[0].textContent).not.toMatch(/\d{2}-\d{2}/);
+    expect(rowIds()).toEqual(["earlier", "later", "missing"]);
+    for (const title of ["Mira arrives", "Gate opens", "An untold ending"]) expect(target.textContent).toContain(title);
+    expect(summaries()).toEqual([]);
+});
+
+/** Serve the same events through the coverage, story and record routes, each with its own fields. */
+function serveTimelineEvents(events: (Partial<MemoryEvent> & { id: string; sourceIndex?: number })[]) {
+    const { revision } = serveMemory(
+        events.map(({ id, title = id, status = "active" }) => ({ id, title, status, bytes: 100 })),
+    );
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision,
+                runs: [],
+                next: null,
+                events: events.map(({ id, title = id, status = "active", sources = [], sourceIndex, rerecord }) => ({
+                    id,
+                    title,
+                    status,
+                    sources,
+                    rerecord,
+                    messageIds: sources.map(({ messageId }) => messageId),
+                    sourceIndex: sourceIndex ?? sources[0]?.index ?? null,
+                })),
+            });
+        if (url.startsWith(storyRoute)) return storyAnswer(revision, events);
+        if (url.includes("/records/events/")) {
+            const event = events.find(({ id }) => url.endsWith(`/records/events/${id}`));
+            if (event) return Response.json({ revision, data: event });
+        }
+        return fetch(url, init, options);
+    });
+    return revision;
+}
+
+const timelineRow = (id: string) => `li[data-memory-event="${id}"][data-memory-event-status]`;
+const eventToggle = (id: string) => `${timelineRow(id)} > button[aria-expanded]`;
+function spyOnRowScroll() {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    releases.push(() => scroll.mockRestore());
+    return scroll;
+}
+
+/** Members as they were when the server stored the synopsis. */
+function chapter(id: string, ...members: (Pick<MemoryEvent, "id"> & Partial<MemoryEvent>)[]): MemoryChapter {
+    return {
+        id,
+        title: `Chapter ${id}`,
+        synopsis: `Synopsis of ${id}`,
+        events: members.map(({ id, title, summary, storyTime }) => ({
+            id,
+            mark: memoryChapterMark(title ?? id, summary, storyTime?.date),
+        })),
+    };
+}
+
+function serveResponseAt(route: string, answer: () => Response | Promise<Response>) {
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url === route ? answer() : fetch(url, init, options),
+    );
+}
+
+function expectChapterCommand(fields: { remake: string } | { limit: number }) {
+    expect(io.runServerJob).toHaveBeenCalledExactlyOnceWith(
+        characterList()[0],
+        ref,
+        expect.objectContaining({
+            kind: "command",
+            command: { type: "memoryChapters", ...fields },
+            label: "memoryChapters",
+        }),
+    );
+}
+
+const chapterBox = (id: string) => `[data-memory-chapter="${id}"]`;
+const makeSynopses = "[data-memory-chapters-make]";
+
+it("interleaves loose runs with chapters at their first surviving member and opens only the newest", async () => {
+    const ids = ["withdrawn", "before", "boat", "between", "arrival", "landing"];
+    const messages = ids.map((id) => message(id, "char"));
+    install(messages);
+    const events = ids.map((id, index) => ({
+        id,
+        status: id === "withdrawn" ? ("retracted" as const) : ("active" as const),
+        sources: [{ index, messageId: id, hash: memoryMessageHash(messages[index]) }],
+        storyTime: { text: "", date: { month: 4, day: id === "landing" ? 4 : 3 } },
+    }));
+    const revision = serveTimelineEvents(events);
+    const voyage = {
+        ...chapter("voyage", events[2]),
+        title: "The <b>voyage</b>",
+        synopsis: "A <em>quiet</em> crossing.",
+    };
+    const arrival = chapter("shore", events[0], events[4], events[5]);
+    serveResponseAt(chaptersRoute, () =>
+        Response.json({
+            revision,
+            chapters: [voyage, arrival, chapter("lost", { id: "missing" })],
+        }),
+    );
+    await open();
+    await chooseTab("timeline");
+
+    const elements = [...target.querySelectorAll<HTMLElement>("[data-memory-group], [data-memory-chapter]")];
+    expect(elements.map((el) => el.dataset.memoryChapter ?? "group")).toEqual(["shore", "group", "voyage", "group"]);
+    const heads = elements.map((el) => el.querySelector<HTMLButtonElement>("button[aria-expanded]")!);
+    expect(heads.map((head) => head.getAttribute("aria-expanded"))).toEqual(["true", "false", "false", "false"]);
+    const rowIds = (el: HTMLElement) =>
+        [...el.querySelectorAll<HTMLElement>("[data-memory-event]")].map((row) => row.dataset.memoryEvent);
+    const synopses = (el: HTMLElement) => [...el.querySelectorAll<HTMLElement>("[data-memory-chapter-synopsis]")];
+    const eventsToggle = (el: HTMLElement) => el.querySelector<HTMLButtonElement>("[data-memory-chapter-events]");
+    const { timeline } = language.structuredMemory;
+    for (const label of [arrival.title, "04-03", "04-04", timeline.eventCount(2), timeline.turnsAgoRange(1, 2)])
+        expect(heads[0].textContent).toContain(label);
+    // An open chapter reads as its synopsis, below the heading; its events wait behind their own toggle.
+    expect(synopses(elements[0]).map((el) => el.textContent?.trim())).toEqual([arrival.synopsis]);
+    expect(heads[0].contains(synopses(elements[0])[0])).toBe(false);
+    expect(rowIds(elements[0])).toEqual([]);
+    expect(eventsToggle(elements[0])?.getAttribute("aria-expanded")).toBe("false");
+    expect(eventsToggle(elements[0])?.textContent?.trim()).toBe(timeline.eventCount(2));
+    expect(elements[0].querySelector("[data-memory-chapter-remove]")?.getAttribute("aria-label")).toBe("Remove");
+    // A closed chapter keeps only a preview of the synopsis, inside the heading that opens it.
+    expect(heads[2].textContent).toContain(voyage.title);
+    expect(synopses(elements[2]).map((el) => el.textContent?.trim())).toEqual([voyage.synopsis]);
+    expect(heads[2].contains(synopses(elements[2])[0])).toBe(true);
+    for (const control of ["remake", "remove", "events"])
+        expect(elements[2].querySelector(`[data-memory-chapter-${control}]`), control).toBeNull();
+    for (const index of [1, 2, 3]) heads[index].click();
+    await settle();
+    expect(elements.map(rowIds)).toEqual([[], ["between"], [], ["before"]]);
+    expect(heads[2].contains(synopses(elements[2])[0])).toBe(false);
+    for (const index of [0, 2]) eventsToggle(elements[index])!.click();
+    await settle();
+    expect(elements.map(rowIds)).toEqual([["arrival", "landing"], ["between"], ["boat"], ["before"]]);
+    expect(eventsToggle(elements[0])?.getAttribute("aria-expanded")).toBe("true");
+    // Closing the chapter folds its events with it; reopening shows them as they were left.
+    heads[0].click();
+    await settle();
+    expect(rowIds(elements[0])).toEqual([]);
+    heads[0].click();
+    await settle();
+    expect(rowIds(elements[0])).toEqual(["arrival", "landing"]);
+
+    await chooseTimelineView("manage");
+    expect(query("[data-memory-chapter]")).toBeNull();
+    expect(query(makeSynopses)).toBeNull();
+    expect(query(timelineRow("withdrawn"))).not.toBeNull();
+});
+
+it("withholds the out-of-date label until coverage, story and chapters agree on a revision", async () => {
+    const state = serveAnchoredEvent();
+    const stored = chapter("gate", { ...state.event, title: "Before the edit" });
+    let chapterRevision = state.revision;
+    let storyRevision = state.revision;
+    serveResponseAt(chaptersRoute, () => Response.json({ revision: chapterRevision, chapters: [stored] }));
+    serveResponseAt(storyRoute, () => storyAnswer(storyRevision, [state.event]));
+    await open();
+    await chooseTab("timeline");
+    expect(query("[data-memory-chapter-stale]")?.textContent?.trim()).toBe("Out of date");
+    expect(query("[data-memory-chapter-remake]")?.textContent?.trim()).toBe("Make again");
+    for (const [coverage, story, chapters] of [
+        ["r2", "r1", "r1"],
+        ["r1", "r2", "r1"],
+        ["r1", "r1", "r2"],
+    ]) {
+        state.revision = coverage;
+        storyRevision = story;
+        chapterRevision = chapters;
+        click("[data-memory-panel-refresh]");
+        await settle();
+        expect(query(chapterBox(stored.id))?.textContent).toContain(stored.synopsis);
+        expect(query("[data-memory-chapter-stale]"), [coverage, story, chapters].join("/")).toBeNull();
+        expect(query("[data-memory-chapter-remake]")).toBeNull();
+    }
+});
+
+it.each(["replaced", "removed", "kept"] as const)(
+    "reports a %s remake and displays the reread chapters",
+    async (remade) => {
+        const current = { id: "boat", title: "The boat sailed" };
+        const revision = serveTimelineEvents([current]);
+        const old = chapter("moored", { ...current, title: "The boat docked" });
+        const fresh = chapter("sailed", current);
+        let stored = [old];
+        const getChapters = vi.fn(() => Response.json({ revision, chapters: stored }));
+        serveResponseAt(chaptersRoute, getChapters);
+        const job = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
+        io.runServerJob.mockReturnValueOnce(job.promise);
+        await open();
+        await chooseTab("timeline");
+        expect(query(`${chapterBox(old.id)} [data-memory-chapter-stale]`)?.textContent?.trim()).toBe("Out of date");
+        // Another tab can have removed the displayed chapter before the remake reaches the server.
+        if (remade === "removed") stored = [];
+        click(`${chapterBox(old.id)} [data-memory-chapter-remake]`);
+        await settle();
+        expectChapterCommand({ remake: old.id });
+        if (remade === "replaced") stored = [fresh];
+        job.resolve(previewAnswer({ kind: "memoryChapters", remade }));
+        await settle();
+        expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.timeline.chapters[remade]);
+        if (remade === "kept") expect(query(chapterBox(old.id))?.textContent).toContain(old.synopsis);
+        else expect(query(chapterBox(old.id))).toBeNull();
+        if (remade === "replaced") {
+            expect(query(chapterBox(fresh.id))?.textContent).toContain(fresh.synopsis);
+            expect(query("[data-memory-chapter-stale]")).toBeNull();
+        }
+        if (remade === "removed") expect(query(`[data-memory-group] ${timelineRow("boat")}`)).not.toBeNull();
+        expect(getChapters).toHaveBeenCalledTimes(2);
+    },
+);
+
+it("removes only after confirmation and ignores a pre-removal read that finishes after the reread", async () => {
+    const event = { id: "boat" };
+    const revision = serveTimelineEvents([event, { id: "pier" }]);
+    const old = chapter("voyage", event);
+    const remaining = chapter("harbor", { id: "pier" });
+    const held = deferred<Response>();
+    const getChapters = vi
+        .fn<() => Response | Promise<Response>>()
+        .mockImplementationOnce(() => Response.json({ revision, chapters: [old] }))
+        .mockReturnValueOnce(held.promise)
+        .mockImplementation(() => Response.json({ revision, chapters: [remaining] }));
+    serveResponseAt(chaptersRoute, getChapters);
+    serveResponseAt(`${chaptersRoute}/remove`, () => Response.json({ removed: 1 }));
+    const confirmation = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReturnValueOnce(confirmation.promise);
+
+    await open();
+    await chooseTab("timeline");
+    expect(query(chapterBox(old.id))?.textContent).toContain(old.title);
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(getChapters).toHaveBeenCalledTimes(2);
+    // The loose event after it is the newest element, so the chapter starts closed, without its actions.
+    expect(query(`${chapterBox(old.id)} [data-memory-chapter-remove]`)).toBeNull();
+    click(`${chapterBox(old.id)} > button`);
+    click(`${chapterBox(old.id)} [data-memory-chapter-remove]`);
+    await settle();
+    expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(old.title));
+    expect(reads("chapters/remove")).toHaveLength(0);
+    confirmation.resolve(true);
+    await settle();
+    const posts = reads("chapters/remove");
+    expect(posts).toHaveLength(1);
+    expect(posts[0][1]?.method).toBe("POST");
+    expect(JSON.parse(posts[0][1]!.body as string)).toEqual({ ids: [old.id] });
+    expect(getChapters).toHaveBeenCalledTimes(3);
+    expect(query(chapterBox(old.id))).toBeNull();
+    expect(query(chapterBox(remaining.id))?.textContent).toContain(remaining.synopsis);
+
+    held.resolve(Response.json({ revision, chapters: [old] }));
+    await settle();
+    expect(query(chapterBox(old.id))).toBeNull();
+    expect(query(chapterBox(remaining.id))?.textContent).toContain(remaining.synopsis);
+
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    click(`${chapterBox(remaining.id)} [data-memory-chapter-remove]`);
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(expect.stringContaining(remaining.title));
+    expect(reads("chapters/remove")).toHaveLength(1);
+    expect(query(chapterBox(remaining.id))).not.toBeNull();
+});
+
+it("disables Make synopses while read-only or when chat memory is off", async () => {
+    serveTimelineEvents([]);
+    await open();
+    await chooseTab("timeline");
+    const button = () => target.querySelector<HTMLButtonElement>(makeSynopses)!;
+    expect(button().textContent?.trim()).toBe("Make synopses");
+    expect(button().disabled).toBe(false);
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(button().disabled).toBe(true);
+    button().click();
+    release();
+    await settle();
+    expect(button().disabled).toBe(false);
+    setChatMeta(ref, { memoryEnabled: false });
+    await settle();
+    expect(button().disabled).toBe(true);
+    button().click();
+    await settle();
+    expect(reads("chapters/cost")).toHaveLength(0);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("explains an empty or failed chapter cost without asking or sending a command", async () => {
+    serveTimelineEvents([]);
+    const confirm = vi.mocked(alertConfirm);
+    await open();
+    await chooseTab("timeline");
+    click(makeSynopses);
+    await settle();
+    expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.timeline.chapters.nothing);
+
+    io.runServerJob.mockResolvedValue(previewAnswer({ kind: "memoryChapters", made: 1, failed: 0, left: 0 }));
+    serveResponseAt(chapterCostRoute, () => Response.json({ error: "Chapter count offline" }, { status: 503 }));
+    click(makeSynopses);
+    await settle();
+    expect(alertError).toHaveBeenCalledWith(expect.stringContaining("Chapter count offline"));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("sends one due chapter request on a single press without confirmation", async () => {
+    serveTimelineEvents([]);
+    serveResponseAt(chapterCostRoute, () => Response.json({ units: 1 }));
+    const confirm = vi.mocked(alertConfirm);
+    io.runServerJob.mockResolvedValueOnce(previewAnswer({ kind: "memoryChapters", made: 1, failed: 0, left: 0 }));
+    await open();
+    await chooseTab("timeline");
+    click(makeSynopses);
+    await settle();
+    const cost = reads("chapters/cost");
+    expect(cost).toHaveLength(1);
+    expect(cost[0][0]).toBe(chapterCostRoute);
+    expect(cost[0][1]?.method ?? "GET").toBe("GET");
+    expect(confirm).not.toHaveBeenCalled();
+    expectChapterCommand({ limit: 1 });
+    expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.timeline.chapters.result(1, 0, 0));
+});
+
+it.each([
+    [2, 2],
+    [21, 20],
+])("quotes and sends only the confirmed limit when %i chapter requests are due", async (units, limit) => {
+    serveTimelineEvents([]);
+    serveResponseAt(chapterCostRoute, () => Response.json({ units }));
+    const confirm = vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    const text = language.structuredMemory.timeline.chapters;
+    const result = { kind: "memoryChapters", made: limit - 2, failed: 2, left: units - limit };
+    io.runServerJob.mockResolvedValueOnce(previewAnswer(result));
+    await open();
+    await chooseTab("timeline");
+    click(makeSynopses);
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const [question] = confirm.mock.calls[0];
+    expect(question).toMatch(new RegExp(`\\b${limit}\\b`));
+    expect(question).toMatch(/chapter requests/i);
+    if (units > limit) expect(question).toContain(text.more);
+    else expect(question).not.toContain(text.more);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+
+    confirm.mockResolvedValueOnce(true);
+    click(makeSynopses);
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expectChapterCommand({ limit });
+    expect(alertToast).toHaveBeenCalledWith(text.result(result.made, result.failed, result.left));
+});
+
+it.each(["together", "after the story"])(
+    "opens and scrolls to a focused chapter event when chapters arrive %s",
+    async (arrival) => {
+        const member = { id: "boat", sourceIndex: 0 };
+        const revision = serveTimelineEvents([member, { id: "shore", sourceIndex: 1 }]);
+        const response = Response.json({ revision, chapters: [chapter("voyage", member)] });
+        const held = deferred<Response>();
+        serveResponseAt(chaptersRoute, () => (arrival === "together" ? response : held.promise));
+        const scroll = spyOnRowScroll();
+        requestMemoryPanelTarget(ref, { tab: "timeline", id: "boat" });
+        await open();
+        if (arrival === "after the story") {
+            // Scrolling to the loose row now would consume the focus before its chapter arrives.
+            expect(scroll.mock.contexts.some((el) => el instanceof Element && el.matches(timelineRow("boat")))).toBe(
+                false,
+            );
+            held.resolve(response);
+            await settle();
+        }
+        expect(query(`${chapterBox("voyage")} > button`)?.getAttribute("aria-expanded")).toBe("true");
+        expect(query(`${chapterBox("voyage")} ${eventToggle("boat")}`)?.getAttribute("aria-expanded")).toBe("true");
+        expect(scroll.mock.contexts).toContain(query(timelineRow("boat")));
+    },
+);
+
+it("reveals a retracted event in Manage while the chapters read is pending", async () => {
+    const revision = serveTimelineEvents([{ id: "retired", status: "retracted" }]);
+    const held = deferred<Response>();
+    const getChapters = vi.fn(() => held.promise);
+    serveResponseAt(chaptersRoute, getChapters);
+    const scroll = spyOnRowScroll();
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "retired" });
+    await open();
+    expect(getChapters).toHaveBeenCalledTimes(1);
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("retired"))?.getAttribute("aria-expanded")).toBe("true");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("retired")));
+    held.resolve(Response.json({ revision, chapters: [] }));
+    await settle();
+});
+
+it("keeps dated groups and their events readable when a chapters read fails", async () => {
+    const event = { id: "boat", storyTime: { text: "", date: { month: 4, day: 3 } } };
+    const revision = serveTimelineEvents([event]);
+    const stored = chapter("voyage", event);
+    serveResponseAt(chaptersRoute, () => Response.json({ revision, chapters: [stored] }));
+    await open();
+    await chooseTab("timeline");
+    expect(query(chapterBox(stored.id))).not.toBeNull();
+    serveResponseAt(chaptersRoute, () => Response.json({ error: "Chapters offline" }, { status: 503 }));
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-chapters-failure]")?.textContent).toContain("Chapters offline");
+    expect(query(chapterBox(stored.id))).toBeNull();
+    expect(query("[data-memory-group] > button")?.textContent).toContain("04-03");
+    expect(query(`[data-memory-group] ${timelineRow("boat")}`)?.textContent).toContain("boat");
+});
+
+function serveTextSearch(answer: (query: string) => Response) {
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?q="))
+            return answer(new URL(url, "http://memory.test").searchParams.get("q")!);
+        return fetch(url, init, options);
+    });
+}
+
+const timelineInput = "[data-memory-timeline-search] input";
+async function searchTimeline(value: string) {
+    typePageField(timelineInput, value);
+    click("[data-memory-timeline-search] [data-memory-search-text]");
+    await settle();
+}
+
+it("replaces Timeline groups with submitted text hits, restores them on clear, and opens an event in its group", async () => {
+    const revision = serveTimelineEvents([
+        { id: "watch", title: "Morning watch", summary: "The watch saw the signal." },
+    ]);
+    const hits = [
+        { kind: "event", id: "watch", title: "Morning watch", sourceIndex: 0, excerpt: "The beacon went dark." },
+        { kind: "page", id: "p", title: "The gate", heading: "Signals", excerpt: "A <b>beacon</b> shines." },
+        { kind: "thread", id: "t", title: "The missing beacon", state: "open" },
+    ];
+    serveTextSearch((q) => Response.json({ revision, hits: q === "beacon" ? hits : [], next: null }));
+    await open();
+    await chooseTab("timeline");
+
+    typePageField(timelineInput, "  beacon  ");
+    const input = target.querySelector<HTMLInputElement>(timelineInput)!;
+    await settle();
+    expect(reads("find?q=")).toHaveLength(0);
+    input.dispatchEvent(new Event("compositionstart", { bubbles: true }));
+    input.form!.requestSubmit();
+    await settle();
+    expect(reads("find?q=")).toHaveLength(0);
+    input.dispatchEvent(new Event("compositionend", { bubbles: true }));
+    // Enter in a native text field submits the form.
+    input.form!.requestSubmit();
+    await settle();
+    expect(query("[data-memory-group]")).toBeNull();
+    const list = query("[data-memory-find-hits]");
+    expect(list?.querySelectorAll("[data-memory-find-kind]")).toHaveLength(2);
+    expect(list?.textContent).not.toContain("The missing beacon");
+    const eventHit = query('[data-memory-find-kind="event"][data-memory-find-id="watch"]');
+    expect(eventHit?.textContent).toContain("Morning watch");
+    expect(eventHit?.textContent).toContain("The beacon went dark.");
+    const pageHit = query('[data-memory-find-kind="page"][data-memory-find-id="p"]');
+    for (const text of ["The gate", "Signals", "A <b>beacon</b> shines."]) expect(pageHit?.textContent).toContain(text);
+
+    click("[data-memory-search-clear]");
+    await settle();
+    expect(target.querySelector<HTMLInputElement>(timelineInput)?.value).toBe("");
+    expect(query("[data-memory-find-hits]")).toBeNull();
+    expect(query(`[data-memory-group] ${eventToggle("watch")}`)?.getAttribute("aria-expanded")).toBe("false");
+    // Hide the group so revealing a hit has to open both the group and its event.
+    click("[data-memory-group] > button");
+    expect(query(eventToggle("watch"))).toBeNull();
+    await searchTimeline("beacon");
+    click('[data-memory-find-id="watch"]');
+    await settle();
+    expect(target.querySelector<HTMLInputElement>(timelineInput)?.value).toBe("");
+    expect(query("[data-memory-find-hits]")).toBeNull();
+    expect(query(`[data-memory-group] ${eventToggle("watch")}`)?.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("rereads coverage before reporting a missing Timeline hit and opens a retracted hit in Manage", async () => {
+    const revision = serveTimelineEvents([{ id: "retired", status: "retracted", summary: "An earlier account." }]);
+    const hits = ["missing", "retired"].map((id) => ({
+        kind: "event",
+        id,
+        title: id,
+        sourceIndex: 0,
+        excerpt: "gate",
+    }));
+    serveTextSearch(() => Response.json({ revision, hits, next: null }));
+    await open();
+    await chooseTab("timeline");
+    await searchTimeline("gate");
+
+    const reread = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/coverage") ? reread.promise : fetch(url, init, options),
+    );
+    const before = reads().length;
+    click('[data-memory-find-id="missing"]');
+    await settle();
+    expect(reads()).toHaveLength(before + 1);
+    expect(query("[data-memory-event-gone]")).toBeNull();
+    reread.resolve(
+        Response.json({
+            revision,
+            runs: [],
+            next: null,
+            events: [{ id: "retired", title: "Earlier account", status: "retracted", messageIds: [] }],
+        }),
+    );
+    await settle();
+    expect(query("[data-memory-event-gone]")?.textContent?.trim()).toBe(language.structuredMemory.timeline.eventGone);
+    expect(reads()).toHaveLength(before + 1);
+
+    await searchTimeline("gate");
+    click('[data-memory-find-id="retired"]');
+    await settle();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("retired"))?.getAttribute("aria-expanded")).toBe("true");
+    expect(query("[data-memory-event-gone]")).toBeNull();
+});
+
+it("searches Timeline with pages and no events, shows search notices, and opens the matched page", async () => {
+    const revision = serveTimelineEvents([]);
+    const { pages, panel } = language.structuredMemory;
+    serveTextSearch((q) => {
+        if (q === "offline") return Response.json({ error: "Find offline" }, { status: 503 });
+        if (q !== "gate") return Response.json({ revision, hits: [], next: null });
+        const hits = Array.from({ length: MEMORY_FIND_HITS_MAX }, (_, i) => ({
+            kind: "page",
+            id: "p",
+            title: "The gate",
+            heading: `Watch ${i + 1}`,
+            excerpt: "Keeping watch at the gate.",
+        }));
+        return Response.json({ revision, hits, next: MEMORY_FIND_HITS_MAX });
+    });
+    await open();
+    await chooseTab("timeline");
+    expect(query("[data-memory-group]")).toBeNull();
+    const input = target.querySelector<HTMLInputElement>(timelineInput);
+    expect(input, "Timeline search with no events").toBeInstanceOf(HTMLInputElement);
+    expect(input!.maxLength).toBe(MEMORY_FIND_QUERY_CHARS);
+
+    await searchTimeline("absent");
+    expect(query("[data-memory-find-hits]")?.textContent?.trim()).toBe(pages.searchNone);
+    await searchTimeline("offline");
+    expect(query("[data-memory-find-failure]")?.textContent?.trim()).toBe(panel.readFailed("Find offline"));
+
+    await searchTimeline("gate");
+    expect(query("[data-memory-find-more]")?.textContent?.trim()).toBe(pages.findMore(MEMORY_FIND_HITS_MAX));
+    click('[data-memory-find-kind="page"][data-memory-find-id="p"]');
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
+});
+
+it("splits a story day using the chat's preset and regroups Read without server requests when its size changes", async () => {
+    const { createHypaV3Preset } = await import("../../../../shared/hypaV3Presets.ts");
+    settings.hypaV3Presets.items.push(
+        createHypaV3Preset("Chat timeline", { structured: { eventsPerGroup: 4 } }, "chat-timeline"),
+    );
+    setChatMeta(ref, { memoryPresetId: "chat-timeline" });
+    serveTimelineEvents(
+        Array.from({ length: 10 }, (_, index) => ({
+            id: `e${index}`,
+            sourceIndex: index,
+            storyTime: { text: "", date: { month: 4, day: 3 } },
+        })),
+    );
+    const expectParts = (sizes: number[]) => {
+        const heads = [...target.querySelectorAll("[data-memory-group] > button")];
+        expect(heads).toHaveLength(sizes.length);
+        for (const [index, count] of sizes.entries()) {
+            expect(heads[index].textContent).toContain(`04-03 (${sizes.length - index})`);
+            expect(heads[index].textContent).toContain(language.structuredMemory.timeline.eventCount(count));
+        }
+    };
+
+    await open();
+    await chooseTab("timeline");
+    expect(timelineViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    // Ten events at a maximum of four make three parts, newest first.
+    expectParts([3, 3, 4]);
+    const requests = io.authFetch.mock.calls.length;
+
+    settings.hypaV3Presets.items.find(({ id }) => id === "chat-timeline")!.settings.structured.eventsPerGroup = 6;
+    await settle();
+    expectParts([5, 5]);
+    expect(io.authFetch).toHaveBeenCalledTimes(requests);
+});
+
+it("stars Read events at grades six and above", async () => {
+    serveTimelineEvents([5, 6, 7].map((grade) => ({ id: `grade-${grade}`, grade })));
+    await open();
+    await chooseTab("timeline");
+    for (const grade of [5, 6, 7]) {
+        const row = query(timelineRow(`grade-${grade}`));
+        expect(row?.textContent).toContain(`grade-${grade}`);
+        const star = row!.querySelector("[data-memory-event-star]");
+        expect(star !== null, `grade ${grade}`).toBe(grade >= 6);
+        if (star) {
+            const afterStar = document.createRange();
+            afterStar.selectNodeContents(row!);
+            afterStar.setStartAfter(star);
+            expect(afterStar.toString()).toContain(`grade-${grade}`);
+        }
+    }
+});
+
+it("counts each event needing a check once and reveals the first in Manage with unplaced rows last", async () => {
+    const sources = (index: number) => {
+        const msg = findChat(ref)!.message[index];
+        return [{ index, messageId: msg.chatId!, hash: memoryMessageHash(msg) }];
+    };
+    serveTimelineEvents([
+        { id: "unplaced", status: "retracted", rerecord: true },
+        { id: "marked", sources: sources(0), rerecord: true },
+        { id: "stale", sources: sources(1) },
+        { id: "both", sources: sources(2), rerecord: true },
+        { id: "healthy", sources: sources(3) },
+    ]);
+    const scroll = spyOnRowScroll();
+    await open();
+    await chooseTab("timeline");
+    const notice = "[data-memory-check-notice]";
+    expect(query(notice)?.textContent).toContain(language.structuredMemory.timeline.checkNotice(3));
+    setMessageText(ref, "a0", "A different reply");
+    await settle();
+    expect(query(notice)?.textContent).toContain(language.structuredMemory.timeline.checkNotice(4));
+    setMessageText(ref, "u1", "A different question");
+    await settle();
+    expect(query(notice)?.textContent).toContain(language.structuredMemory.timeline.checkNotice(4));
+    expect(query("[data-memory-event-badge]")).toBeNull();
+    click(`${notice} button`);
+    await settle();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    const rows = target.querySelectorAll("li[data-memory-event][data-memory-event-status]");
+    expect(rows[rows.length - 1].getAttribute("data-memory-event")).toBe("unplaced");
+    expect(query(eventToggle("both"))?.getAttribute("aria-expanded")).toBe("false");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("both")));
+});
+
+it("offers the changed greeting jump alone in Read and its label and repairs in Manage", async () => {
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "Welcome back.";
+    setChatMeta(ref, { fmIndex: -1 });
+    const { event } = serveAnchoredEvent();
+    event.greeting = { fmIndex: -1, hash: memoryGreetingHash("Welcome home.") };
+    await open();
+    await chooseTab("timeline");
+    click(eventToggle("e"));
+    await settle();
+
+    const { greeting, timeline, rebuild } = language.structuredMemory;
+    const citation = '[data-memory-greeting-source="e"]';
+    const actions = () =>
+        [...target.querySelectorAll(`${citation} button`)].map((button) => button.textContent?.trim());
+    expect(query("[data-memory-check-notice]")).toBeNull();
+    expect(query("[data-memory-greeting-changed]")).toBeNull();
+    expect(actions()).toEqual([greeting.source]);
+
+    await chooseTimelineView("manage");
+    expect(query(`${citation} [data-memory-greeting-changed]`)?.textContent?.trim()).toBe(greeting.changed);
+    expect(actions()).toEqual(
+        expect.arrayContaining([greeting.source, timeline.repairs.rerecord, rebuild.rebuild, greeting.keep]),
+    );
+
+    await chooseTimelineView("read");
+    click(`${citation} button`);
+    await settle();
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: { greeting: true } });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+});
+
+it("keeps the edited Read summary when a pre-edit story arrives after returning from Manage", async () => {
+    const state = serveAnchoredEvent();
+    const oldStory = deferred<Response>();
+    const original = storyAnswer(state.revision, [state.event]);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith(storyRoute) && reads("story").length === 1) return oldStory.promise;
+        if (url.endsWith("/edits")) {
+            state.event.summary = JSON.parse(init!.body as string).edit.summary;
+            state.revision = "edited";
+            return Response.json({ revision: state.revision, kind: "events", data: state.event });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click(eventToggle("e"));
+    await settle();
+    press("[data-memory-event-edit]");
+    typePageField("[data-memory-event-editor] textarea", "The gate stayed locked.");
+    press("[data-memory-event-save]");
+    await settle();
+    expect(reads("story")).toHaveLength(1);
+    await chooseTimelineView("read");
+
+    const summary = () => query(`${timelineRow("e")} [data-memory-event-summary]`)?.textContent?.trim();
+    expect(summary()).toBe("The gate stayed locked.");
+    oldStory.resolve(original);
+    await settle();
+    expect(summary()).toBe("The gate stayed locked.");
+});
+
+it("scrolls a focus to its dated group beyond the first 30 and opens the same event beyond 200 rows in Manage", async () => {
+    // Seven events a day put the oldest event in group 31 in Read and row 211 in Manage.
+    const events = Array.from({ length: 211 }, (_, i) => ({
+        id: `e${i}`,
+        title: `Entry ${i}`,
+        summary: `Summary ${i}`,
+        sourceIndex: i,
+        storyTime: { text: "", date: { month: 1, day: 1 + Math.floor(i / 7) } },
+    }));
+    const revision = serveTimelineEvents(events);
+    await open();
+    await chooseTab("timeline");
+    expect(target.querySelectorAll("[data-memory-group]")).toHaveLength(30);
+    await chooseTimelineView("manage");
+    expect(target.querySelectorAll("li[data-memory-event]")).toHaveLength(200);
+    expect(query(timelineRow("e0"))).toBeNull();
+    await unmount(instance!);
+
+    const story = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.startsWith(storyRoute) ? story.promise : fetch(url, init, options),
+    );
+    const scroll = spyOnRowScroll();
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "e0" });
+    await open();
+    // Count scrolls to the final dated row even if it reuses a node from the undated list.
+    scroll.mockClear();
+    story.resolve(storyAnswer(revision, events));
+    await settle();
+
+    expect(timelineViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    const row = query(timelineRow("e0"));
+    expect(query(eventToggle("e0"))?.getAttribute("aria-expanded"), "focused Read event e0").toBe("true");
+    const heading = row?.closest("[data-memory-group]")?.querySelector(":scope > button[aria-expanded]");
+    expect(heading?.textContent).toContain("01-01");
+    expect(heading?.getAttribute("aria-expanded")).toBe("true");
+    expect(scroll.mock.contexts).toContain(row);
+
+    scroll.mockClear();
+    click(`${timelineRow("e0")} [data-memory-open-in-manage]`);
+    await settle();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("e0"))?.getAttribute("aria-expanded"), "event e0 opened in Manage").toBe("true");
+    expect(query(timelineRow("e0"))?.textContent).toContain("Summary 0");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("e0")));
+});
+
+it("opens a focused retracted event in Manage when the coverage reread finds it", async () => {
+    const { event } = serveAnchoredEvent();
+    event.status = "retracted";
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage") && reads().length === 1) return Response.json({ ...facts(), events: [] });
+        return fetch(url, init, options);
+    });
+    const scroll = spyOnRowScroll();
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "e" });
+    await open();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("e"))?.getAttribute("aria-expanded")).toBe("true");
+    expect(query(timelineRow("e"))?.textContent).toContain("The gate opened");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("e")));
+});
+
+it.each([
+    {
+        outcome: "confirms the event is gone",
+        response: () => Response.json(facts()),
+        gone: ["This event is no longer recorded."],
+        failure: null,
+    },
+    {
+        outcome: "reports the coverage error",
+        response: () => Response.json({ error: "Coverage offline" }, { status: 500 }),
+        gone: [],
+        failure: language.structuredMemory.panel.readFailed("Coverage offline"),
+    },
+])("rereads coverage for a missing focus and $outcome", async ({ response, gone, failure }) => {
+    serveMemory();
+    const reread = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/coverage") && reads().length > 1 ? reread.promise : fetch(url, init, options),
+    );
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "missing" });
+    await open();
+    expect(reads()).toHaveLength(2);
+    expect(query("[data-memory-event-gone]")).toBeNull();
+    reread.resolve(response());
+    await settle();
+    expect([...target.querySelectorAll("[data-memory-event-gone]")].map((line) => line.textContent?.trim())).toEqual(
+        gone,
+    );
+    expect(query("[data-memory-panel-failure]")?.textContent?.trim() ?? null).toBe(failure);
+    expect(reads()).toHaveLength(2);
+});
+
+it("shows an opened Timeline event's changes below its key lines, using page and thread titles with id fallbacks", async () => {
+    const state = serveAnchoredEvent();
+    state.event.keyLines = [{ speaker: "Mira", text: "I opened the gate and kept my promise." }];
+    state.event.stateChanges = [
+        { pageId: "gate-page", section: "state", before: "closed", after: "open", quote: "I opened the gate" },
+        { pageId: "missing-page", section: "state", before: "locked", after: "unlocked", quote: "" },
+    ];
+    state.event.knowledge = [
+        {
+            pageId: "secret-page",
+            fact: "The watch changes at dawn",
+            stance: "believes",
+            knowers: ["mira-page", "missing-knower"],
+            quote: "The watch changes at dawn",
+        },
+    ];
+    state.event.relationshipShifts = [
+        { from: "mira-page", to: "captain-page", direction: "trust increases", note: "the promise was kept" },
+    ];
+    state.event.openThreads = {
+        add: [],
+        close: ["promise-thread", "missing-thread"],
+        transitions: [{ threadId: "search-thread", to: "progress" }],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage")) return Response.json({ ...facts("e", ["u0", "a0"]), revision: state.revision });
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                pages: [
+                    { id: "gate-page", title: "The gate", type: "location", bytes: 100 },
+                    { id: "secret-page", title: "Watch schedule", type: "concept", bytes: 100 },
+                    { id: "mira-page", title: "Mira", type: "character", bytes: 100 },
+                    { id: "captain-page", title: "The captain", type: "character", bytes: 100 },
+                ],
+                threads: [
+                    { id: "promise-thread", title: "A promise", state: "done", bytes: 100 },
+                    { id: "search-thread", title: "Find the key", state: "progress", bytes: 100 },
+                ],
+                events: [{ id: "e", title: state.event.title, status: "active", bytes: 100 }],
+                runs: [],
+            });
+        return fetch(url, init, options);
+    });
+
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+
+    const row = query('[data-memory-event="e"]')!;
+    expect(row.querySelector("button")?.getAttribute("aria-expanded")).toBe("true");
+    expect(row.textContent).toContain("I opened the gate and kept my promise.");
+    const changes = [
+        "The gate / state: closed → open",
+        "missing-page / state: locked → unlocked",
+        "Watch schedule (believes): The watch changes at dawn",
+        `${language.structuredMemory.log.knowers}: Mira, missing-knower`,
+        "Mira → The captain: trust increases (the promise was kept)",
+        `${language.structuredMemory.log.threadClosed}: A promise`,
+        `${language.structuredMemory.log.threadClosed}: missing-thread`,
+        "Find the key → progress",
+    ];
+    const paragraphs = [...row.querySelectorAll("p")].map((paragraph) => paragraph.textContent?.trim());
+    expect(paragraphs).toEqual(expect.arrayContaining(changes));
+    for (const change of changes) {
+        expect(row.textContent!.indexOf(change)).toBeGreaterThan(
+            row.textContent!.indexOf("I opened the gate and kept my promise."),
+        );
+    }
+    for (const id of ["gate-page", "secret-page", "mira-page", "captain-page", "promise-thread", "search-thread"]) {
+        expect(row.textContent).not.toContain(id);
+    }
+});
+
+it("moves edited held sources from covered to stale in Coverage and Timeline without rereading memory", async () => {
+    serveAnchoredEvent();
+    await open();
+    await chooseTab("coverage");
+    expect(query('[data-memory-coverage-count="covered"]')?.textContent).toContain("2");
+    const requests = reads().length;
+    setMessageText(ref, "a0", "Edited reply");
+    await settle();
+    expect(query('[data-memory-coverage-count="stale"]')?.textContent).toContain("2");
+    expect(query('[data-memory-coverage-count="covered"]')?.textContent).toContain("0");
+    click('[data-memory-coverage-group="stale"]');
+    expect(query('[data-memory-coverage-row="stale"]')?.textContent).toContain(
+        language.structuredMemory.coverage.reasons.changed,
+    );
+    expect(query("[data-memory-coverage-leaving]")?.textContent).toContain(
+        language.structuredMemory.coverage.leaving(1, 0, language.structuredMemory.coverage.aboutTokens(0)),
+    );
+    expect(reads()).toHaveLength(requests);
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
+    expect(query('[data-memory-event-badge="stale"]')?.textContent).toContain(
+        language.structuredMemory.coverage.reasons.changed,
+    );
+    const timelineReads = io.authFetch.mock.calls.length;
+    setMessageText(ref, "a0", "a0");
+    await settle();
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("active");
+    setMessageText(ref, "a0", "Another edit");
+    await settle();
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
+    expect(io.authFetch).toHaveBeenCalledTimes(timelineReads);
+});
+
+it("sends the seen keep state, explains a refusal, and confirms before retracting a stale event", async () => {
+    const state = serveAnchoredEvent();
+    setMessageText(ref, "a0", "Edited reply");
+    const fetch = io.authFetch.getMockImplementation()!;
+    let edits = 0;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        edits++;
+        if (edits === 1) {
+            state.revision = "fresh-revision";
+            return Response.json({ reason: "changed", error: "Chat moved on" }, { status: 409 });
+        }
+        state.event = { ...state.event, status: "retracted" };
+        state.revision = "retired-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const held = findChat(ref)!.message;
+    const expectedState = JSON.stringify([
+        ["u0", memoryMessageHash(held[0]), 0],
+        ["a0", memoryMessageHash(held[1]), 1],
+    ]);
+    press('[data-memory-repair="keep"]');
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "seen-revision", edit: { kind: "event", eventId: "e", repair: "keep", state: expectedState } },
+    ]);
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused.changed);
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press('[data-memory-repair="retract"]');
+    await settle();
+    expect(sentEdits()).toHaveLength(1);
+    const confirmation = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReturnValueOnce(confirmation.promise);
+    press('[data-memory-repair="retract"]');
+    await settle();
+    expect(sentEdits()).toHaveLength(1);
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.timeline.repairs.retractConfirm);
+    confirmation.resolve(true);
+    await settle();
+    expect(sentEdits()[1]).toEqual({
+        revision: "fresh-revision",
+        edit: { kind: "event", eventId: "e", repair: "retract" },
+    });
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("retracted");
+    // A retracted event has one control left: taking it out of the records.
+    expect(target.querySelectorAll("[data-memory-repair]")).toHaveLength(1);
+    expect(query('[data-memory-repair="remove"]')).not.toBeNull();
+});
+
+it("deletes retracted events after asking, sweeps the ones whose messages are gone, and warns when the source remains", async () => {
+    const state = serveAnchoredEvent();
+    const repairs = language.structuredMemory.timeline.repairs;
+    let events = [
+        { ...state.event, status: "retracted" as const, messageIds: ["u0", "a0"], sourceIndex: 0 },
+        {
+            ...state.event,
+            id: "o",
+            title: "Left behind",
+            status: "retracted" as const,
+            sources: [{ messageId: "gone", index: 7, hash: "v3:gone" }],
+            messageIds: ["gone"],
+            sourceIndex: 7,
+        },
+    ];
+    const sent: { revision: string; ids: string[] }[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage")) {
+            return Response.json({ revision: state.revision, events, runs: [], next: null });
+        }
+        if (url.endsWith("/events/remove")) {
+            const body = JSON.parse(String(init?.body)) as { revision: string; ids: string[] };
+            sent.push(body);
+            const before = events.length;
+            events = events.filter(({ id }) => !body.ids.includes(id));
+            state.revision = `after-${sent.length}`;
+            return Response.json({ revision: state.revision, removed: before - events.length });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    expect(query("[data-memory-retracted-events]")?.textContent).toContain(repairs.retractedCount(2));
+    expect(query("[data-memory-remove-orphans]")?.textContent?.trim()).toBe(repairs.removeOrphans(1));
+
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press("[data-memory-remove-orphans]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(repairs.removeOrphansConfirm(1));
+    expect(sent).toEqual([]);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press("[data-memory-remove-orphans]");
+    await settle();
+    // Only the event nothing in the chat stands behind goes with the sweep.
+    expect(sent).toEqual([{ revision: "seen-revision", ids: ["o"] }]);
+    expect(alertToast).toHaveBeenLastCalledWith(repairs.removed(1));
+    expect(query('[data-memory-event="o"]')).toBeNull();
+    expect(query("[data-memory-remove-orphans]")).toBeNull();
+    expect(query("[data-memory-retracted-events]")?.textContent).toContain(repairs.retractedCount(1));
+
+    click('[data-memory-event="e"] > button');
+    await settle();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press('[data-memory-repair="remove"]');
+    await settle();
+    // Its messages are still held, so the question says they can be recorded again.
+    expect(alertConfirm).toHaveBeenLastCalledWith(repairs.removeConfirmSources);
+    expect(sent[1]).toEqual({ revision: "after-1", ids: ["e"] });
+    expect(query('[data-memory-event="e"]')).toBeNull();
+    expect(query("[data-memory-retracted-events]")).toBeNull();
+});
+
+it("marks before pressing rerecord, retries a marked event, and disables it when the last eligible source is a user", async () => {
+    const state = serveAnchoredEvent();
+    setMessageText(ref, "a0", "Edited reply");
+    const marked = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits") ? marked.promise : fetch(url, init, options),
+    );
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    press('[data-memory-repair="rerecord"]');
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "seen-revision", edit: { kind: "event", eventId: "e", repair: "rerecord" } },
+    ]);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    state.event = { ...state.event, rerecord: true };
+    state.revision = "marked-revision";
+    marked.resolve(Response.json({ revision: state.revision, kind: "events", data: state.event }));
+    await settle();
+    expect(io.runServerJob.mock.calls[0][2]).toMatchObject({
+        kind: "command",
+        command: { type: "memoryRecord", messageId: "a0" },
+    });
+    expect(query('[data-memory-event-badge="rerecord"]')).not.toBeNull();
+    press('[data-memory-repair="rerecord"]');
+    await settle();
+    expect(sentEdits()).toHaveLength(1);
+    expect(io.runServerJob).toHaveBeenCalledTimes(2);
+    patchMessage(ref, "a0", { disabled: true });
+    await settle();
+    const button = query('[data-memory-repair="rerecord"]')!.closest("button")!;
+    expect(button.disabled).toBe(true);
+    button.click();
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledTimes(2);
+});
+
+it("shows a send's stale reason in the panel manifest", async () => {
+    serveAnchoredEvent();
+    const context = memoryReport();
+    context.memory = {
+        kind: "structuredMemory",
+        tokens: 0,
+        coverage: "gap",
+        items: [],
+        excluded: [{ id: "e", kind: "event", lane: "events", reason: "stale", staleReason: "moved" }],
+        excludedTotal: 1,
+    };
+    io.runServerJob.mockResolvedValue(previewAnswer({ messages: [], context }));
+    await open();
+    await chooseTab("preview");
+    click("[data-memory-preview-run]");
+    await settle();
+    expect(query('[data-memory-manifest-excluded="stale"]')?.textContent).toContain("Gate opened");
+    expect(query('[data-memory-manifest-stale-reason="moved"]')?.textContent).toBe(
+        language.structuredMemory.coverage.reasons.moved,
+    );
+});
+
+const heldSummaries = () => ({
+    summaries: [{ text: "The gate opened.", chatMemos: ["u0", "a0"], isImportant: true }],
+});
+function holdHypaV3Data(hypaV3Data: Chat["hypaV3Data"]) {
+    install(undefined, hypaV3Data);
+    flushSync();
+}
+function serveAdoptionContents() {
+    const contents: StructuredMemoryContentsAnswer = {
+        revision: revision(1),
+        pages: [],
+        trash: [],
+        events: [],
+        threads: [],
+        runs: [{ id: "failed", result: "failed", bytes: 100 }],
+        adoption: { adoptable: 1, declined: false, resettable: false },
+        rebuild: null,
+        recordedLanguage: null,
+        health: {
+            paused: false,
+            lastRunFailed: false,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        },
+        unsupportedPages: [],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url === "/api/memory/structured/c/k" ? Promise.resolve(Response.json(contents)) : fetch(url, init, options),
+    );
+    return contents;
+}
+
+it("offers adoption only after the contents are read and only while the server says the chat waits, whatever the tab holds", async () => {
+    holdHypaV3Data(heldSummaries());
+    const contents = serveAdoptionContents();
+    const pending = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    let contentsPending = true;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url === "/api/memory/structured/c/k" && contentsPending) {
+            contentsPending = false;
+            return pending.promise;
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    expect(query("[data-memory-adopt]")).toBeNull();
+    pending.resolve(Response.json(contents));
+    await settle();
+    expect(query("[data-memory-adopt]")?.textContent).toContain("No model is called");
+    io.authFetch.mockImplementation(fetch);
+    contents.adoption.adoptable = 0;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-adopt]")).toBeNull();
+    contents.adoption.adoptable = 1;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+    for (const data of [sealHypaV3Data(heldSummaries()), { summaries: [] }, undefined]) {
+        holdHypaV3Data(data);
+        await settle();
+        expect(query("[data-memory-adopt]")).not.toBeNull();
+    }
+});
+
+it("disables adoption while read-only, posts once without a body, then toasts and rereads so the offer disappears", async () => {
+    holdHypaV3Data(heldSummaries());
+    const contents = serveAdoptionContents();
+    const response = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/adopt") ? response.promise : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("coverage");
+    const held = JSON.parse(JSON.stringify(findChat(ref)));
+    const button = () => query("[data-memory-adopt-action]")!.closest("button")!;
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    flushSync();
+    expect(button().disabled).toBe(true);
+    button().click();
+    await settle();
+    expect(reads("adopt")).toHaveLength(0);
+    release();
+    await settle();
+    expect(button().disabled).toBe(false);
+    button().click();
+    button().click();
+    await settle();
+    expect(button().disabled).toBe(true);
+    expect(reads("adopt")).toHaveLength(1);
+    const [url, init] = reads("adopt")[0];
+    expect(url).toBe("/api/memory/structured/c/k/adopt");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBeUndefined();
+    const coverageReads = reads().length;
+    const contentsReads = io.authFetch.mock.calls.filter(([url]) => url === "/api/memory/structured/c/k").length;
+    contents.events = [{ id: "adopted", title: "The gate opened.", status: "active", bytes: 100 }];
+    contents.revision = revision(2);
+    contents.adoption.adoptable = 0;
+    response.resolve(Response.json({ revision: revision(2), adopted: 1, stale: 0 }));
+    await settle();
+    expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.adopt.done(1, 0));
+    expect(reads()).toHaveLength(coverageReads + 1);
+    expect(io.authFetch.mock.calls.filter(([url]) => url === "/api/memory/structured/c/k")).toHaveLength(
+        contentsReads + 1,
+    );
+    expect(query("[data-memory-adopt]")).toBeNull();
+    expect(findChat(ref)).toEqual(held);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("shows an adoption refusal without changing the held chat or showing a success toast", async () => {
+    holdHypaV3Data(heldSummaries());
+    serveAdoptionContents();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/adopt")
+            ? Promise.resolve(Response.json({ reason: "fenced", error: "Writer holds the chat" }, { status: 409 }))
+            : fetch(url, init, options),
+    );
+    await open();
+    const held = JSON.parse(JSON.stringify(findChat(ref)));
+    press("[data-memory-adopt-action]");
+    await settle();
+    expect(reads("adopt")).toHaveLength(1);
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.panel.readRefused.fenced);
+    expect(alertToast).not.toHaveBeenCalled();
+    expect(findChat(ref)).toEqual(held);
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+    expect(query("[data-memory-adopt-action]")?.closest("button")?.disabled).toBe(false);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("shows Originally adopted only in an open event whose writer run is the adoption marker", async () => {
+    const state = serveAnchoredEvent();
+    state.event.writerRun = ADOPTED_WRITER_RUN;
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    expect(query("[data-memory-event-adopted]")).toBeNull();
+    click('[data-memory-event="e"] > button');
+    await settle();
+    expect(query("[data-memory-event-adopted]")?.textContent).toBe(language.structuredMemory.adopt.adoptedEvent);
+    state.event.writerRun = "ordinary-writer-run";
+    click('[data-memory-event="e"] > button');
+    click('[data-memory-event="e"] > button');
+    await settle();
+    expect(query("[data-memory-event-adopted]")).toBeNull();
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
+});
+
+it("places the adoption choice above the writer line and confirms decline before restoring Record now", async () => {
+    holdHypaV3Data(heldSummaries());
+    const contents = serveAdoptionContents();
+    contents.runs = Array.from({ length: 5 }, (_, index) => ({ id: `failed-${index}`, result: "failed", bytes: 100 }));
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "manual";
+    patchMessage(ref, "a1", { generationInfo: { memory: { state: "notAutomatic", reason: "awaitingAdoption" } } });
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) => {
+        if (url.endsWith("/decline")) {
+            contents.adoption = { adoptable: 0, declined: true, resettable: false };
+            contents.runs = [];
+            return Promise.resolve(Response.json({ revision: revision(2), declined: true }));
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    expect(
+        query("[data-memory-adopt]")!.compareDocumentPosition(query("[data-memory-writer-line]")!) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(query("[data-memory-writer-line]")?.textContent).toContain(
+        language.structuredMemory.notAutomaticReasons.awaitingAdoption,
+    );
+    expect(query("[data-memory-writer-action]")).toBeNull();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press("[data-memory-decline-action]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.adopt.declineConfirm);
+    expect(reads("decline")).toHaveLength(0);
+    expect(query("[data-memory-adopt]")).not.toBeNull();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press("[data-memory-decline-action]");
+    await settle();
+    expect(reads("decline")).toHaveLength(1);
+    expect(reads("decline")[0][1]).toMatchObject({ method: "POST" });
+    expect(reads("decline")[0][1]?.body).toBeUndefined();
+    expect(query("[data-memory-adopt]")).toBeNull();
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
+    expect(query("[data-memory-writer-line]")?.textContent).toContain(
+        language.structuredMemory.notAutomaticReasons.manual,
+    );
+    expect(findChat(ref)?.hypaV3Data).toEqual(heldSummaries());
+});
+
+it("shows Reset only on the server's offer, confirms it and rereads held summaries after every successful answer without a chat write", async () => {
+    for (const [reset, newerSummary] of [
+        [true, false],
+        [true, true],
+        [false, false],
+    ]) {
+        holdHypaV3Data(heldSummaries());
+        // Settle the fixture's previous edits as a completed server save before testing an idle refresh.
+        const pending = takeChatWork(new Set());
+        ackChatWork(
+            pending,
+            pending.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: revision(1) })),
+            [],
+        );
+        seedChats(
+            [{ characterId: "c", id: "k", revision: revision(1) }],
+            [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+        );
+        const original = JSON.parse(JSON.stringify(findChat(ref))) as Chat;
+        const contents = serveAdoptionContents();
+        contents.adoption = { adoptable: 0, declined: false, resettable: false };
+        const replacement = newerSummary
+            ? { summaries: [{ text: "Written after reset", chatMemos: ["a1"], isImportant: false }] }
+            : sealHypaV3Data(heldSummaries(), revision(1));
+        const fetch = io.authFetch.getMockImplementation()!;
+        io.authFetch.mockImplementation((url, init, options) => {
+            if (url.endsWith("/reset-summaries")) {
+                contents.adoption.resettable = false;
+                return Promise.resolve(Response.json({ chatRevision: revision(2), reset }));
+            }
+            if (url === "/api/resources/read")
+                return Promise.resolve(
+                    Response.json({
+                        epoch,
+                        items: [],
+                        chats: [
+                            {
+                                characterId: "c",
+                                id: "k",
+                                revision: revision(newerSummary ? 3 : 2),
+                                trashedAt: null,
+                                data: { ...original, hypaV3Data: replacement },
+                            },
+                        ],
+                    }),
+                );
+            return fetch(url, init, options);
+        });
+        await open();
+        expect(query("[data-memory-reset]")).toBeNull();
+        contents.adoption.resettable = true;
+        click("[data-memory-panel-refresh]");
+        await settle();
+        expect(query("[data-memory-reset]")).not.toBeNull();
+        const requests = reads("reset-summaries").length;
+        vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+        press("[data-memory-reset-action]");
+        await settle();
+        expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.adopt.resetConfirm);
+        expect(reads("reset-summaries")).toHaveLength(requests);
+        expect(findChat(ref)?.hypaV3Data).toEqual(heldSummaries());
+        expect(hasChatWork()).toBe(false);
+        const chatReads = reads("resources/read").length;
+        vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+        press("[data-memory-reset-action]");
+        await settle();
+        expect(reads("reset-summaries")).toHaveLength(requests + 1);
+        expect(reads("reset-summaries").at(-1)![1]).toMatchObject({ method: "POST" });
+        expect(reads("reset-summaries").at(-1)![1]?.body).toBeUndefined();
+        expect(reads("resources/read")).toHaveLength(chatReads + 1);
+        expect(findChat(ref)?.hypaV3Data).toEqual(replacement);
+        expect(hasChatWork()).toBe(false);
+        expect(io.authFetch.mock.calls.filter(([url]) => url === "/api/resources/batch")).toEqual([]);
+        expect(query("[data-memory-reset]")).toBeNull();
+        await unmount(instance!);
+        instance = undefined;
+    }
+});
+
+function serveRebuildContents() {
+    const state: StructuredMemoryContentsAnswer = {
+        revision: "r1",
+        pages: [],
+        trash: [],
+        events: [],
+        threads: [],
+        runs: [],
+        adoption: { adoptable: 0, declined: false, resettable: false },
+        rebuild: null,
+        recordedLanguage: "English",
+        health: {
+            paused: false,
+            lastRunFailed: false,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        },
+        unsupportedPages: [],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k") return Response.json(state);
+        if (url.includes("/cost?")) return Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 });
+        if (url === "/api/memory/tasks/c/k" && init?.method === "DELETE") return Response.json({ cancelled: true });
+        if (url.endsWith("/rebuild/abandon")) {
+            state.rebuild = null;
+            return Response.json({ revision: "r1", abandoned: true });
+        }
+        return fetch(url, init, options);
+    });
+    return state;
+}
+
+it("shows nothing to record only when a backfill has neither calls nor folds", async () => {
+    serveRebuildContents();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url.includes("/cost?")
+            ? Response.json({ calls: 0, messages: 0, estimatedTokens: 0, folds: 0 })
+            : fetch(url, init, options),
+    );
+    vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
+    await open();
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    expect(alertToast).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.rebuild.nothing);
+    expect(alertConfirm).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("confirms a fold-only backfill without a model cost and starts it only on yes", async () => {
+    serveRebuildContents();
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url.includes("/cost?")
+            ? Response.json({ calls: 0, messages: 0, estimatedTokens: 0, folds: 3 })
+            : fetch(url, init, options),
+    );
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    await open();
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    const text = language.structuredMemory.rebuild;
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(text.confirmBackfillFolds(3));
+    expect(confirm.mock.calls[0][0]).toContain("No model is called.");
+    expect(alertToast).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    confirm.mockResolvedValue(true);
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledExactlyOnceWith(
+        characterList().find(({ chaId }) => chaId === "c"),
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRebuild", mode: "backfill", turns: 1 },
+            label: "memoryRebuild",
+            context: { mode: "manual" },
+        },
+    );
+    expect(alertToast).not.toHaveBeenCalledWith(text.nothing);
+});
+
+it("includes both model cost and folds in a mixed backfill confirmation", async () => {
+    serveRebuildContents();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url.includes("/cost?")
+            ? Response.json({ calls: 2, messages: 4, estimatedTokens: 6400, folds: 3 })
+            : fetch(url, init, options),
+    );
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    await open();
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    const text = language.structuredMemory.rebuild;
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(text.confirmBackfill(`${text.cost(2, 6400)} ${text.folds(3)}`));
+    expect(alertToast).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("starts over a chat with no turn to record by clearing its records, asking first and starting no job", async () => {
+    const state = serveRebuildContents();
+    state.events = [{ id: "e", title: "Left behind", status: "retracted", bytes: 10 }];
+    const cleared: unknown[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/cost?")) return Response.json({ calls: 0, messages: 0, estimatedTokens: 0 });
+        if (url.endsWith("/clear")) {
+            cleared.push(JSON.parse(String(init?.body)));
+            state.events = [];
+            state.revision = "r2";
+            return Response.json({ revision: "r2", cleared: true });
+        }
+        return fetch(url, init, options);
+    });
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    const text = language.structuredMemory.rebuild;
+    await open();
+    press('[data-memory-rebuild-action="fresh"]');
+    await settle();
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(text.confirmFreshEmpty);
+    expect(cleared).toEqual([]);
+    confirm.mockResolvedValue(true);
+    press('[data-memory-rebuild-action="fresh"]');
+    await settle();
+    expect(cleared).toEqual([{ revision: "r1" }]);
+    expect(alertToast).toHaveBeenLastCalledWith(text.cleared);
+    // A rebuild of the same chat still has nothing to do, and so has a start over once no record is left.
+    for (const mode of ["rebuild", "fresh"] as const) {
+        vi.mocked(alertToast).mockClear();
+        press(`[data-memory-rebuild-action="${mode}"]`);
+        await settle();
+        expect(alertToast).toHaveBeenCalledExactlyOnceWith(text.nothing);
+    }
+    expect(cleared).toHaveLength(1);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("offers a language rebuild without starting it and confirms rebuild, start over, and fill gaps even for one call, hiding them while held", async () => {
+    const state = serveRebuildContents();
+    settings.hypaV3Presets.items[0].settings.structured!.language = "Korean";
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    await open();
+    expect(query("[data-memory-rebuild-language]")?.textContent).toContain("English");
+    expect(query("[data-memory-rebuild-language]")?.textContent).toContain("Korean");
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    const text = language.structuredMemory.rebuild;
+    const questions = { rebuild: text.confirmRebuild, fresh: text.confirmFresh, backfill: text.confirmBackfill };
+    for (const mode of ["rebuild", "fresh", "backfill"] as const) {
+        confirm.mockResolvedValue(false);
+        const prior = io.runServerJob.mock.calls.length;
+        press(`[data-memory-rebuild-action="${mode}"]`);
+        await settle();
+        expect(confirm).toHaveBeenLastCalledWith(questions[mode](text.cost(1, 1700)));
+        expect(io.runServerJob).toHaveBeenCalledTimes(prior);
+        confirm.mockResolvedValue(true);
+        press(`[data-memory-rebuild-action="${mode}"]`);
+        await settle();
+        expect(io.runServerJob).toHaveBeenLastCalledWith(
+            characterList().find(({ chaId }) => chaId === "c"),
+            ref,
+            {
+                kind: "command",
+                command: { type: "memoryRebuild", mode, turns: 1 },
+                label: "memoryRebuild",
+                context: { mode: "manual" },
+            },
+        );
+        expect(alertToast).toHaveBeenLastCalledWith(text.started[mode]);
+    }
+    state.adoption.adoptable = 1;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-rebuild-offer]")).toBeNull();
+});
+
+it("shows run progress and pause or resumable controls and always permits abandon while read-only", async () => {
+    const state = serveRebuildContents();
+    state.rebuild = { mode: "rebuild", done: 1, total: 5, resumable: true, reason: "cancelled" };
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
+    await open();
+    expect(query("[data-memory-panel-read-only]")?.textContent?.trim()).toBe(
+        language.structuredMemory.rebuild.readOnly.rebuild,
+    );
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(language.structuredMemory.rebuild.progress(1, 5));
+    state.rebuild = { ...state.rebuild, mode: "fresh" };
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(
+        language.structuredMemory.rebuild.freshProgress(1, 5),
+    );
+    expect(query("[data-memory-panel-read-only]")?.textContent?.trim()).toBe(
+        language.structuredMemory.rebuild.readOnly.fresh,
+    );
+    state.rebuild = { ...state.rebuild, mode: "rebuild" };
+    press("[data-memory-rebuild-resume]");
+    await settle();
+    expect(io.runServerJob).toHaveBeenLastCalledWith(
+        characterList().find(({ chaId }) => chaId === "c"),
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRebuild", resume: true },
+            label: "memoryRebuild",
+            context: { mode: "manual" },
+        },
+    );
+    noteMemoryTaskFrame({
+        type: "memoryTask",
+        epoch,
+        characterId: "c",
+        chatId: "k",
+        status: { taskId: "rebuild", kind: "structuredMemory", state: "running", done: 3, total: 5 },
+    });
+    await settle();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(language.structuredMemory.rebuild.progress(3, 5));
+    expect(query("[data-memory-rebuild-resume]")).toBeNull();
+    press("[data-memory-rebuild-pause]");
+    await settle();
+    expect(io.authFetch.mock.calls).toContainEqual([
+        "/api/memory/tasks/c/k",
+        expect.objectContaining({ method: "DELETE" }),
+    ]);
+    expect(query("[data-memory-rebuild-abandon]")!.closest("button")!.disabled).toBe(false);
+    state.rebuild = { mode: "backfill", done: 3, total: 5, resumable: false };
+    noteMemoryTaskFrame({
+        type: "memoryTask",
+        epoch,
+        characterId: "c",
+        chatId: "k",
+        status: {
+            taskId: "rebuild",
+            kind: "structuredMemory",
+            state: "cancelled",
+            done: 3,
+            total: 5,
+            terminalRevision: null,
+        },
+    });
+    await settle();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-rebuild-resume]")).toBeNull();
+    expect(query("[data-memory-rebuild-pause]")).toBeNull();
+    expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(
+        language.structuredMemory.rebuild.backfillProgress(3, 5),
+    );
+    // A fill gaps is named as one wherever the run is: the same words under a rebuild's name read as a
+    // rebuild being abandoned.
+    expect(query("[data-memory-panel-read-only]")?.textContent?.trim()).toBe(
+        language.structuredMemory.rebuild.readOnly.backfill,
+    );
+    expect(query("[data-memory-rebuild-stop]")?.textContent).toBe(language.structuredMemory.rebuild.replaced.backfill);
+    press("[data-memory-rebuild-abandon]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandonConfirm.backfill);
+    expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandoned.backfill);
+    expect(query("[data-memory-rebuild]")).toBeNull();
+    expect(query("[data-memory-panel-read-only]")).toBeNull();
+});
+
+it("opens a requested page history diff, scrolls only that jump, and reverts from history", async () => {
+    const state = serveMemory();
+    const before = { body: "Earlier memory", provenance: ["old"], sources: [] };
+    state.page.history = [
+        { id: "writer-change", heading: "Facts", kind: "change", eventId: "event", highlighted: true, before, at: 1 },
+    ];
+    const scrolls: HTMLElement[] = [];
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+        scrolls.push(this);
+    });
+    releases.push(() => scroll.mockRestore());
+    requestMemoryPanelTarget(ref, { tab: "pages", id: "p", historyId: "writer-change" });
+    await open();
+    const row = '[data-memory-history-id="writer-change"]';
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query(`${row} [data-memory-history-diff]`)?.textContent).toContain("Earlier");
+    expect(query(`${row} [data-memory-history-diff]`)?.textContent).toContain("Original");
+    expect(scrolls).toEqual([query(row)]);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    scroll.mockClear();
+    click(`${row} button[aria-expanded]`);
+    await settle();
+    click(`${row} button[aria-expanded]`);
+    await settle();
+    expect(query(`${row} [data-memory-history-diff]`)).not.toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/revert")) return fetch(url, init, options);
+        state.page = {
+            ...state.page,
+            sections: [{ ...state.page.sections[0], ...before }],
+            history: [
+                { ...state.page.history[0], revertedBy: "user" },
+                {
+                    id: "undo",
+                    heading: "Facts",
+                    kind: "revert",
+                    highlighted: false,
+                    at: 2,
+                    before: { body: "Original memory", provenance: ["event"], sources: [] },
+                },
+            ],
+        };
+        state.revision = "reverted-revision";
+        return Response.json({ revision: state.revision, data: state.page, reverted: true, laterEvents: 1 });
+    });
+    press(`${row} [data-memory-history-revert]`);
+    await settle();
+    expect(reads("revert").map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+        { revision: "read-revision", pageId: "p", historyId: "writer-change" },
+    ]);
+    expect(query(`${row} [data-memory-history-reverted]`)).not.toBeNull();
+    expect(query(`${row} [data-memory-history-revert]`)).toBeNull();
+    expect(query('[data-memory-history-id="undo"] [data-memory-history-revert]')).toBeNull();
+    expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.revert.done(1));
+});
+
+it("scrolls the requested history row exactly once after delayed contents render", async () => {
+    const state = serveMemory();
+    state.page.history = [
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: true,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 1,
+        },
+    ];
+    const contents = deferred<void>();
+    releases.push(() => contents.resolve());
+    const fetch = io.authFetch.getMockImplementation()!;
+    let recordAnswered = false;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k") await contents.promise;
+        const answer = await fetch(url, init, options);
+        if (url.endsWith("/records/pages/p")) recordAnswered = true;
+        return answer;
+    });
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    releases.push(() => scroll.mockRestore());
+    requestMemoryPanelTarget(ref, { tab: "pages", id: "p", historyId: "writer-change" });
+    await open();
+    expect(recordAnswered).toBe(true);
+    expect(query("[data-memory-page-detail]")).toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+
+    contents.resolve();
+    await settle();
+    const row = query('[data-memory-history-id="writer-change"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe("true");
+    expect(row!.querySelector("[data-memory-history-diff]")?.textContent).toContain("Earlier");
+    expect(row!.querySelector("[data-memory-history-diff]")?.textContent).toContain("Original");
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+    expect(scroll.mock.contexts).toEqual([row]);
+    await settle();
+    expect(scroll).toHaveBeenCalledTimes(1);
+});
+
+it("cancels a pending history scroll when a new target omits the history entry", async () => {
+    const state = serveMemory();
+    state.page.history = [
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: true,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 1,
+        },
+    ];
+    const contents = deferred<void>();
+    releases.push(() => contents.resolve());
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k") await contents.promise;
+        return fetch(url, init, options);
+    });
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    releases.push(() => scroll.mockRestore());
+    const focus = fromStore(writable<MemoryPanelTarget>({ tab: "pages", id: "p", historyId: "writer-change" }));
+    instance = mount(PagesTab, {
+        target,
+        props: {
+            chatRef: ref,
+            readOnly: false,
+            refresh: 0,
+            get focus() {
+                return focus.current;
+            },
+            open: vi.fn(),
+            jump: vi.fn(),
+        },
+    });
+    await settle();
+    expect(query("[data-memory-page-detail]")).toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+    focus.current = { tab: "pages", id: "p" };
+    await settle();
+
+    contents.resolve();
+    await settle();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query('[data-memory-history-id="writer-change"] [data-memory-history-diff]')).not.toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+});
+
+it("writes and clears the chat highlight override from Settings without changing another chat", async () => {
+    serveMemory();
+    await open();
+    await chooseTab("settings");
+    const selector = "[data-memory-highlight-mode]";
+    expect(target.querySelector<HTMLSelectElement>(selector)!.value).toBe("");
+    for (const mode of ["none", "important", "all"]) {
+        changeSelect(selector, mode);
+        expect(findChat(ref)!.structuredMemoryHighlight).toBe(mode);
+        expect(findChat({ ...ref, chatId: "other" })!.structuredMemoryHighlight).toBeUndefined();
+    }
+    changeSelect(selector, "");
+    expect(findChat(ref)!.structuredMemoryHighlight).toBeUndefined();
+});
+
+it("shows the current custom mode on the panel and the stored custom mode on Log rows", async () => {
+    const structured = settings.hypaV3Presets.items[0].settings.structured!;
+    structured.fineTuning = true;
+    io.authFetch.mockImplementation(async (url) => {
+        if (url.includes("/coverage")) return Response.json(facts());
+        if (url.includes("/runs"))
+            return Response.json({
+                revision: "r1",
+                total: 1,
+                next: null,
+                runs: [{ id: "custom", result: "failed", customPrompt: true, error: "Missing scene", window: [] }],
+            });
+        throw new Error(`Unexpected request: ${url}`);
+    });
+    await open();
+    expect(query("[data-memory-custom-prompt]")?.textContent).toContain("Custom prompt");
+    structured.fineTuning = false;
+    flushSync();
+    expect(query("[data-memory-custom-prompt]")).toBeNull();
+    await chooseTab("log");
+    expect(query('[data-memory-run="failed"]')?.textContent).toContain("Custom prompt");
+});
+
+function servePageTools() {
+    const state = {
+        revision: "before-tool",
+        pages: [
+            editablePage(),
+            { ...editablePage(), id: "target", title: "The harbor" },
+            { ...editablePage(), id: "scene", type: "scene" as const },
+        ],
+        trash: [] as MemoryPage[],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                pages: state.pages.map(({ id, title, type }) => ({ id, title, type, bytes: 100 })),
+                trash: state.trash.map(({ id, title }) => ({ id, title, bytes: 100 })),
+                events: [],
+                threads: [],
+                runs: [],
+            });
+        if (url.includes("/records/pages/"))
+            return Response.json({
+                revision: state.revision,
+                data: [...state.pages, ...state.trash].find(({ id }) => url.endsWith(`/${id}`)),
+            });
+        return fetch(url, init, options);
+    });
+    return state;
+}
+
+function typePageField(selector: string, value: string) {
+    const input = target.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+    expect(input).not.toBeNull();
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+}
+
+const personalNote = (): MemoryPage => ({
+    id: "note",
+    type: "note",
+    title: "Travel notes",
+    aliases: [],
+    contextMode: "auto",
+    namedByUser: true,
+    sections: [
+        {
+            heading: "Route",
+            body: "Bring a map.",
+            provenance: [],
+            sources: [],
+            locked: false,
+            userCorrected: true,
+            updatedAt: 1,
+        },
+    ],
+    links: [],
+    retrieval: { keywords: [] },
+    history: [{ id: "created", kind: "create", heading: null, before: null, highlighted: false, at: 1 }],
+});
+
+function fillNewNote() {
+    press("[data-memory-new-note]");
+    typePageField("[data-memory-new-note-title] input", "Travel notes");
+    typePageField("[data-memory-new-note-heading] input", "Route");
+    typePageField("[data-memory-new-note-body] textarea", "Bring a map.");
+}
+
+it("creates a note at the contents revision, selects it in manage and submits an added section", async () => {
+    const state = servePageTools();
+    state.pages = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.endsWith("/page-tools")) {
+            state.pages = [personalNote()];
+            state.revision = "after-create";
+            return Response.json({ revision: state.revision, data: state.pages[0] });
+        }
+        if (url.endsWith("/edits")) {
+            state.pages[0] = {
+                ...state.pages[0],
+                sections: [
+                    ...state.pages[0].sections,
+                    { ...state.pages[0].sections[0], heading: "Supplies", body: "Pack water." },
+                ],
+            };
+            state.revision = "after-add";
+            return Response.json({ revision: state.revision, kind: "pages", data: state.pages[0] });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    fillNewNote();
+    press("[data-memory-new-note-save]");
+    await settle();
+    expect(reads("page-tools")).toHaveLength(1);
+    const [url, init] = reads("page-tools")[0];
+    expect(url).toBe("/api/memory/structured/c/k/page-tools");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init!.body as string)).toEqual({
+        revision: "before-tool",
+        tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+    });
+    expect(query("[data-memory-new-note-form]")).toBeNull();
+    expect(query('[data-memory-page="note"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("Travel notes");
+    expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Bring a map.");
+
+    press("[data-memory-section-add]");
+    typePageField("[data-memory-section-add-heading] input", "Supplies");
+    typePageField("[data-memory-section-add-body] textarea", "Pack water.");
+    press("[data-memory-section-add-save]");
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "after-create",
+            edit: { kind: "sectionAdd", pageId: "note", heading: "Supplies", body: "Pack water." },
+        },
+    ]);
+    expect(query("[data-memory-section-add-form]")).toBeNull();
+    expect([...target.querySelectorAll("[data-memory-section-body]")].map((node) => node.textContent)).toEqual([
+        "Bring a map.",
+        "Pack water.",
+    ]);
+    expect(alertError).not.toHaveBeenCalled();
+});
+
+it("offers section addition on ordinary pages but hides it on character pages, the scene and trash", async () => {
+    const state = servePageTools();
+    state.pages.push({ ...editablePage(), id: "character", type: "character" });
+    state.trash = [{ ...editablePage(), id: "trashed", trashedAt: 1 }];
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    expect(query("[data-memory-section-add]")).not.toBeNull();
+    for (const selector of [
+        '[data-memory-page="character"]',
+        '[data-memory-page="scene"]',
+        '[data-memory-trash-page="trashed"]',
+    ]) {
+        click(selector);
+        await settle();
+        expect(query("[data-memory-section-add]"), selector).toBeNull();
+        expect(query("[data-memory-section-add-form]"), selector).toBeNull();
+    }
+});
+
+it("creates a note using the accepted section edit revision while the contents refresh is pending", async () => {
+    const state = servePageTools();
+    const fetch = io.authFetch.getMockImplementation()!;
+    const pending = deferred<Response>();
+    let holdContents = false;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k" && holdContents) return (await pending.promise).clone();
+        if (url.endsWith("/edits")) {
+            state.pages[0] = {
+                ...state.pages[0],
+                sections: [{ ...state.pages[0].sections[0], body: "Corrected memory", userCorrected: true }],
+            };
+            state.revision = "after-edit";
+            holdContents = true;
+            return Response.json({ revision: state.revision, kind: "pages", data: state.pages[0] });
+        }
+        if (url.endsWith("/page-tools")) {
+            if (JSON.parse(init!.body as string).revision !== "after-edit") {
+                return Response.json({ error: "RevisionConflict", revision: "after-edit" }, { status: 409 });
+            }
+            state.pages.push(personalNote());
+            state.revision = "after-create";
+            return Response.json({ revision: state.revision, data: state.pages.at(-1) });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-section-edit]");
+    typeSection("Corrected memory");
+    press("[data-memory-section-save]");
+    try {
+        await settle();
+        expect(query("[data-memory-section-body]")?.textContent).toBe("Corrected memory");
+        fillNewNote();
+        press("[data-memory-new-note-save]");
+        await settle();
+        expect(reads("page-tools")).toHaveLength(1);
+        expect(JSON.parse(reads("page-tools")[0][1]!.body as string)).toEqual({
+            revision: "after-edit",
+            tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+        });
+        expect(query("[data-memory-page-detail] h2")?.textContent).toBe("Travel notes");
+        expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+        expect(alertError).not.toHaveBeenCalled();
+    } finally {
+        holdContents = false;
+        pending.resolve(await fetch("/api/memory/structured/c/k"));
+        await settle();
+    }
+});
+
+it("selects the page named by a merge answer and rereads contents, then restores a refused tool's copy", async () => {
+    const state = servePageTools();
+    vi.mocked(alertConfirm).mockResolvedValue(true);
+    const fetch = io.authFetch.getMockImplementation()!;
+    let refuse = false;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/page-tools")) return fetch(url, init, options);
+        if (refuse) return Response.json({ error: "Try again later" }, { status: 400 });
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "before-tool",
+            tool: { kind: "merge", sourceId: "p", targetId: "target" },
+        });
+        state.pages = state.pages.filter(({ id }) => id !== "p");
+        state.pages[0] = {
+            ...state.pages[0],
+            sections: [{ ...state.pages[0].sections[0], body: "Combined harbor memory" }],
+        };
+        state.trash = [{ ...editablePage(), trashedAt: 1 }];
+        state.revision = "after-tool";
+        return Response.json({ revision: state.revision, data: state.pages[0] });
+    });
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    const select = target.querySelector<HTMLSelectElement>("[data-memory-merge-target]")!;
+    const querySelector = select.querySelector.bind(select);
+    // happy-dom does not implement :checked for a select's selected option.
+    const selectedOption = vi
+        .spyOn(select, "querySelector")
+        .mockImplementation((selector) =>
+            selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector),
+        );
+    changeSelect("[data-memory-merge-target]", "target");
+    selectedOption.mockRestore();
+    await settle();
+    press("[data-memory-merge]");
+    await settle();
+    expect(query('[data-memory-page="target"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query('[data-memory-page="p"]')).toBeNull();
+    expect(query('[data-memory-trash-page="p"]')).not.toBeNull();
+    expect(target.textContent).toContain("Combined harbor memory");
+    refuse = true;
+    press("[data-memory-trash]");
+    await settle();
+    expect(query('[data-memory-page="target"]')?.getAttribute("aria-current")).toBe("true");
+    expect(target.textContent).toContain("Combined harbor memory");
+    expect(query("[data-memory-trashed]")).toBeNull();
+    expect(alertError).toHaveBeenCalledWith(language.structuredMemory.pages.tools.refused("Try again later"));
+});
+
+it("sends rename and alias drafts through page tools and displays the answered page", async () => {
+    const state = servePageTools();
+    state.pages[0].aliases = ["Gatehouse"];
+    const fetch = io.authFetch.getMockImplementation()!;
+    const requests: unknown[] = [];
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/page-tools")) return fetch(url, init, options);
+        expect(url).toBe("/api/memory/structured/c/k/page-tools");
+        expect(init?.method).toBe("POST");
+        const body = JSON.parse(init!.body as string);
+        requests.push(body);
+        if (requests.length === 1) {
+            state.pages[0] = {
+                ...state.pages[0],
+                title: "North gate",
+                aliases: ["Gatehouse", "The gate"],
+                namedByUser: true,
+            };
+            state.revision = "after-rename";
+        } else {
+            state.pages[0] = { ...state.pages[0], aliases: ["The gate", "Watchtower"], namedByUser: true };
+            state.revision = "after-aliases";
+        }
+        return Response.json({ revision: state.revision, data: state.pages[0] });
+    });
+    const type = (selector: string, value: string) => {
+        const input = target.querySelector<HTMLInputElement>(selector)!;
+        expect(input).not.toBeNull();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    };
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-rename]")).toBeNull();
+    expect(query("[data-memory-aliases-edit]")).toBeNull();
+    await choosePageView("manage");
+
+    press("[data-memory-rename]");
+    type("[data-memory-rename-input] input", "Discarded name");
+    press("[data-memory-rename-cancel]");
+    expect(query("[data-memory-rename-input]")).toBeNull();
+    expect(requests).toEqual([]);
+    press("[data-memory-rename]");
+    expect(target.querySelector<HTMLInputElement>("[data-memory-rename-input] input")!.value).toBe("The gate");
+    type("[data-memory-rename-input] input", "North gate");
+    press("[data-memory-rename-save]");
+    await settle();
+    expect(requests).toEqual([{ revision: "before-tool", tool: { kind: "rename", pageId: "p", title: "North gate" } }]);
+    expect(query("[data-memory-rename-input]")).toBeNull();
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("North gate");
+    expect(query("[data-memory-page-detail]")?.textContent).toContain("Gatehouse, The gate");
+    expect(query('[data-memory-page="p"]')?.textContent).toContain("North gate");
+
+    press("[data-memory-aliases-edit]");
+    press('[data-memory-alias-remove="0"]');
+    type("[data-memory-alias-input] input", "Discarded alias");
+    press("[data-memory-alias-add]");
+    press("[data-memory-aliases-cancel]");
+    expect(query("[data-memory-alias-input]")).toBeNull();
+    expect(requests).toHaveLength(1);
+    expect(query("[data-memory-page-detail]")?.textContent).toContain("Gatehouse, The gate");
+
+    press("[data-memory-aliases-edit]");
+    press('[data-memory-alias-remove="0"]');
+    type("[data-memory-alias-input] input", "Watchtower");
+    press("[data-memory-alias-add]");
+    press("[data-memory-aliases-save]");
+    await settle();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual({
+        revision: "after-rename",
+        tool: { kind: "aliases", pageId: "p", aliases: ["The gate", "Watchtower"] },
+    });
+    expect(query("[data-memory-alias-input]")).toBeNull();
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("North gate");
+    expect(query("[data-memory-page-detail]")?.textContent).toContain("The gate, Watchtower");
+    expect(query("[data-memory-page-detail]")?.textContent).not.toContain("Gatehouse");
+    expect(alertError).not.toHaveBeenCalled();
+});
+
+it("offers only restore and permanent deletion for trash and only export as a scene page tool", async () => {
+    const state = servePageTools();
+    const corrected = editablePage();
+    corrected.sections[0].userCorrected = true;
+    state.trash = [{ ...corrected, id: "trashed", trashedAt: 1 }];
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-trash-page="trashed"]');
+    await settle();
+    expect(query('[data-memory-flag="userCorrected"]')?.tagName).toBe("SPAN");
+    expect(query("[data-memory-untrash]")?.textContent).toBe(language.structuredMemory.pages.tools.restore);
+    expect(query("[data-memory-purge]")?.textContent).toBe(language.structuredMemory.pages.tools.purge);
+    expect(target.querySelectorAll("[data-memory-page-tools] button")).toHaveLength(2);
+    expect(query("[data-memory-section-edit]")).toBeNull();
+    expect(query("[data-memory-page-mode]")).toBeNull();
+    expect(query("[data-memory-export-lore]")).toBeNull();
+    expect(query("[data-memory-rename]")).toBeNull();
+    expect(query("[data-memory-aliases-edit]")).toBeNull();
+    click('[data-memory-page="scene"]');
+    await settle();
+    await choosePageView("manage");
+    expect(target.querySelectorAll("[data-memory-page-tools] button")).toHaveLength(1);
+    expect(query("[data-memory-export-lore]")).not.toBeNull();
+    expect(query("[data-memory-trash]")).toBeNull();
+    expect(query("[data-memory-split-open]")).toBeNull();
+    expect(query("[data-memory-merge]")).toBeNull();
+    expect(query("[data-memory-rename]")).toBeNull();
+    expect(query("[data-memory-aliases-edit]")).toBeNull();
+});
+
+it("appends an inactive lore entry that cannot activate even when a section names the activate decorator", async () => {
+    const state = servePageTools();
+    state.pages[0].sections[0] = { ...state.pages[0].sections[0], heading: "@@activate", body: "Page secret" };
+    const existing = {
+        key: "gate",
+        secondkey: "",
+        comment: "Existing lore",
+        content: "Existing text",
+        insertorder: 100,
+        mode: "normal" as const,
+        alwaysActive: true,
+        selective: false,
+    };
+    setChatMeta(ref, { localLore: [existing] });
+    const ownerBefore = structuredClone(characterList()[0].globalLore);
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-export-lore]");
+    await settle();
+    const chat = JSON.parse(JSON.stringify(findChat(ref)!)) as Chat;
+    expect(chat.localLore).toHaveLength(2);
+    expect(chat.localLore[0]).toEqual(existing);
+    expect(chat.localLore[1]).toMatchObject({
+        comment: "The gate",
+        key: "The gate",
+        alwaysActive: false,
+        content: "@@dont_activate\n\n## @@activate\nPage secret",
+    });
+    expect(characterList()[0].globalLore).toEqual(ownerBefore);
+    const activation = await activateLore(
+        {
+            character: { name: "C", globalLore: [], loreSettings: undefined },
+            chat: { ...chat, message: [message("match", "user", "The gate")] },
+            moduleLorebooks: [],
+            userName: "User",
+            loreBookDepth: 10,
+            loreBookToken: 10_000,
+        },
+        {
+            clone: structuredClone,
+            findCharacterName: () => undefined,
+            getChatVar: () => "null",
+            setChatVar: () => {},
+            pickHashRand: () => 0,
+            parseCBS: (text) => text,
+            tokenize: async (text) => text.length,
+            testRegex: (pattern, flags, text) => new RegExp(pattern, flags).test(text),
+        },
+    );
+    expect(activation.actives.map(({ prompt }) => prompt)).toEqual(["Existing text"]);
+});
+
+it("imports only into an empty Pages tab and displays every refused file", async () => {
+    const state = servePageTools();
+    state.pages = [];
+    state.trash = [{ ...editablePage(), trashedAt: 1 }];
+    await open();
+    await chooseTab("pages");
+    expect(query("[data-memory-import]")).toBeNull();
+    state.trash = [];
+    await chooseTab("timeline");
+    await chooseTab("pages");
+    expect(query("[data-memory-import]")).not.toBeNull();
+    const zip = zipSync({ "pages/location/ok.md": strToU8("page text") });
+    io.selectSingleFileHandle.mockResolvedValue(new File([zip], "memory.zip"));
+    vi.mocked(alertConfirm).mockResolvedValue(true);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/import")) return fetch(url, init, options);
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "before-tool",
+            files: [{ path: "pages/location/ok.md", text: "page text" }],
+        });
+        state.pages = [editablePage()];
+        return Response.json({
+            revision: "imported",
+            imported: { pages: 1, events: 0, threads: 0 },
+            refusals: [
+                { file: "bad.md", reason: "unreadable", detail: "bad header" },
+                { file: "new.md", reason: "newerVersion" },
+            ],
+        });
+    });
+    press("[data-memory-import]");
+    await settle();
+    expect(query("[data-memory-import]")).toBeNull();
+    expect(query('[data-memory-page="p"]')).not.toBeNull();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-import-refusal]")].map(
+            (row) => row.dataset.memoryImportRefusal,
+        ),
+    ).toEqual(["bad.md", "new.md"]);
+    expect(query('[data-memory-import-refusal="bad.md"]')?.textContent).toContain("bad header");
+    expect(query('[data-memory-import-refusal="new.md"]')?.textContent).toContain(
+        language.structuredMemory.pages.tools.importReasons.newerVersion,
+    );
+});
+
+it.each(["retract", "purge", "merge", "split"] as const)(
+    "keeps a pending %s request on the confirmed chat after the panel switches chats",
+    async (action) => {
+        if (action === "retract") {
+            serveAnchoredEvent();
+            setMessageText(ref, "a0", "Edited after recording");
+        } else {
+            const state = servePageTools();
+            state.trash = [{ ...editablePage(), id: "trashed", trashedAt: 1 }];
+            state.pages[0].sections.push({ ...state.pages[0].sections[0], heading: "Access", body: "By boat" });
+        }
+        const fetch = io.authFetch.getMockImplementation()!;
+        io.authFetch.mockImplementation(async (url, init, options) => {
+            if (init?.method === "POST")
+                return Response.json({ error: "Memory changed", reason: "revisionConflict" }, { status: 409 });
+            if (url === "/api/memory/structured/c/other")
+                return Response.json({
+                    revision: "other-revision",
+                    pages: [],
+                    trash: [],
+                    events: [],
+                    threads: [],
+                    runs: [],
+                });
+            return fetch(url, init, options);
+        });
+        await open();
+        if (action === "retract") {
+            await chooseTab("timeline");
+            await chooseTimelineView("manage");
+            click('[data-memory-event="e"] > button');
+        } else {
+            await chooseTab("pages");
+            click(action === "purge" ? '[data-memory-trash-page="trashed"]' : '[data-memory-page="p"]');
+        }
+        await settle();
+        if (action === "merge" || action === "split") await choosePageView("manage");
+        if (action === "merge") {
+            const select = target.querySelector<HTMLSelectElement>("[data-memory-merge-target]")!;
+            const querySelector = select.querySelector.bind(select);
+            // happy-dom does not implement :checked for a select's selected option.
+            const selected = vi
+                .spyOn(select, "querySelector")
+                .mockImplementation((selector) =>
+                    selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector),
+                );
+            changeSelect("[data-memory-merge-target]", "target");
+            selected.mockRestore();
+        }
+        if (action === "split") {
+            press("[data-memory-split-open]");
+            click('[data-memory-split-heading="Access"] input');
+            typePageField("[data-memory-split-title] input", "New note");
+        }
+        const answer = deferred<boolean>();
+        vi.mocked(alertConfirm).mockReturnValueOnce(answer.promise);
+        press(action === "retract" ? '[data-memory-repair="retract"]' : `[data-memory-${action}]`);
+        expect(alertConfirm).toHaveBeenCalled();
+        expect(io.authFetch.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([]);
+        const other = { ...ref, chatId: "other" };
+        const before = JSON.parse(JSON.stringify(findChat(other)));
+        selectChat("c", "other");
+        await settle();
+        answer.resolve(true);
+        await settle();
+        const writes = io.authFetch.mock.calls.filter(([, init]) => init?.method === "POST");
+        expect(writes.map(([url]) => url)).toEqual([
+            `/api/memory/structured/c/k/${action === "retract" ? "edits" : "page-tools"}`,
+        ]);
+        const body = JSON.parse(writes[0][1]!.body as string);
+        expect(action === "retract" ? body.edit : body.tool).toEqual(
+            action === "retract"
+                ? { kind: "event", eventId: "e", repair: "retract" }
+                : action === "purge"
+                  ? { kind: "purge", pageId: "trashed" }
+                  : action === "merge"
+                    ? { kind: "merge", sourceId: "p", targetId: "target" }
+                    : { kind: "split", pageId: "p", headings: ["Access"], aliases: [], title: "New note" },
+        );
+        expect(findChat(other)).toEqual(before);
+        expect(currentChatRef()).toEqual(other);
+    },
+);
+
+it("keeps a package import on its saved chat and revision when remote deletion selects a fallback during the picker", async () => {
+    const state = servePageTools();
+    state.pages = [];
+    seedChats(
+        ["k", "other"].map((id) => ({ characterId: "c", id, revision: revision(1) })),
+        [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+    );
+    const other = { ...ref, chatId: "other" };
+    const before = JSON.parse(JSON.stringify(findChat(other)));
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.endsWith("/import")) return Response.json({ error: "Deleted chat" }, { status: 404 });
+        if (url === "/api/memory/structured/c/other")
+            return Response.json({
+                revision: "fallback-revision",
+                pages: [],
+                trash: [],
+                events: [],
+                threads: [],
+                runs: [],
+            });
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("pages");
+    const picker = deferred<File>();
+    io.selectSingleFileHandle.mockReturnValueOnce(picker.promise);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press("[data-memory-import]");
+    expect(io.selectSingleFileHandle).toHaveBeenLastCalledWith(["zip"]);
+    // The fixture's chat defaults have been saved, as in an idle persisted chat receiving a live update.
+    const pending = takeChatWork(new Set());
+    ackChatWork(
+        pending,
+        pending.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: revision(1) })),
+        [],
+    );
+    expect(hasChatWork()).toBe(false);
+    expect(
+        applyRemoteCollection({
+            characterId: "c",
+            order: { characterId: "c", revision: revision(2), ids: ["other"] },
+            chats: [{ characterId: "c", id: "other", revision: revision(1), trashedAt: null, data: before }],
+        }),
+    ).toBe(true);
+    await settle();
+    expect(currentChatRef()).toEqual(other);
+    picker.resolve(new File([zipSync({ "pages/location/p.md": strToU8("page text") })], "memory.zip"));
+    await settle();
+    const writes = io.authFetch.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(writes.map(([url]) => url)).toEqual(["/api/memory/structured/c/k/import"]);
+    expect(JSON.parse(writes[0][1]!.body as string)).toEqual({
+        revision: "before-tool",
+        files: [{ path: "pages/location/p.md", text: "page text" }],
+    });
+    expect(findChat(ref)).toBeUndefined();
+    expect(findChat(other)).toEqual(before);
+    expect(currentChatRef()).toEqual(other);
+});
+
+it("sends only selected headings and aliases from the split form and opens the new page", async () => {
+    const state = servePageTools();
+    state.pages[0].aliases = ["Boat", "Gate"];
+    state.pages[0].sections.push({ ...state.pages[0].sections[0], heading: "Access", body: "By boat" });
+    vi.mocked(alertConfirm).mockResolvedValue(true);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/page-tools")) return fetch(url, init, options);
+        expect(JSON.parse(init!.body as string)).toEqual({
+            revision: "before-tool",
+            tool: { kind: "split", pageId: "p", headings: ["Access"], aliases: ["Boat"], title: "Landing" },
+        });
+        const created = {
+            ...state.pages[0],
+            id: "new",
+            title: "Landing",
+            aliases: ["Boat"],
+            sections: [state.pages[0].sections[1]],
+        };
+        state.pages.push(created);
+        state.pages[0] = { ...state.pages[0], aliases: ["Gate"], sections: [state.pages[0].sections[0]] };
+        state.revision = "after-split";
+        return Response.json({ revision: state.revision, data: created });
+    });
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-split-open]");
+    click('[data-memory-split-heading="Access"] input');
+    click('[data-memory-split-alias="Boat"] input');
+    const title = target.querySelector<HTMLInputElement>("[data-memory-split-title] input")!;
+    title.value = "Landing";
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    press("[data-memory-split]");
+    await settle();
+    expect(query('[data-memory-page="new"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-split-form]")).toBeNull();
+    expect(target.textContent).toContain("By boat");
+    expect(target.textContent).not.toContain("Original memory");
+});
+
+it("writes and clears the chat language through chat edits and locks both Settings overrides while read-only", async () => {
+    serveMemory();
+    await open();
+    await chooseTab("pages");
+    expect(query("[data-memory-highlight-mode]")).toBeNull();
+    await chooseTab("settings");
+    const input = target.querySelector<HTMLInputElement>("[data-memory-language] input")!;
+    const setLanguage = (value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    setLanguage("  Korean  ");
+    expect(findChat(ref)!.structuredMemoryLanguage).toBe("Korean");
+    expect(findChat({ ...ref, chatId: "other" })!.structuredMemoryLanguage).toBeUndefined();
+    expect(hasChatWork()).toBe(true);
+    setLanguage("   ");
+    expect(findChat(ref)!.structuredMemoryLanguage).toBeUndefined();
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(input.disabled).toBe(true);
+    const highlight = target.querySelector<HTMLSelectElement>("[data-memory-highlight-mode]")!;
+    expect(highlight.disabled).toBe(true);
+    setLanguage("Blocked");
+    highlight.value = "all";
+    highlight.dispatchEvent(new Event("change", { bubbles: true }));
+    flushSync();
+    expect(findChat(ref)!.structuredMemoryLanguage).toBeUndefined();
+    expect(findChat(ref)!.structuredMemoryHighlight).toBeUndefined();
+});
+
+it("writes and clears the owner's instructions on its character and shows them as text while read-only", async () => {
+    serveMemory();
+    await open();
+    await chooseTab("settings");
+    const owner = () => characterList().find(({ chaId }) => chaId === ref.chaId)!;
+    const field = () => target.querySelector<HTMLTextAreaElement>("[data-memory-owner-instructions] textarea");
+    const type = (value: string) => {
+        field()!.value = value;
+        field()!.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    const limit = STRUCTURED_MEMORY_LIMITS.ownerInstructionsChars;
+    const count = () => query("[data-memory-owner-instructions-count]")!;
+    type("Always record HP and MP.\n");
+    expect(owner().structuredMemoryInstructions).toBe("Always record HP and MP.\n");
+    expect(count().textContent).toContain(`25 / ${limit}`);
+    expect(count().className).not.toContain("text-draculared");
+    type("x".repeat(limit + 1));
+    expect(count().className).toContain("text-draculared");
+    type(" \n");
+    expect(owner()).not.toHaveProperty("structuredMemoryInstructions");
+    // The writer sends the text as written, so its popup must not preview it through CBS.
+    target.querySelector<HTMLButtonElement>("[data-memory-owner-instructions] button")!.click();
+    flushSync();
+    expect(popUpEditorStore).toMatchObject({ open: true, mode: "literal" });
+    closePopupEditorSession(popUpEditorStore.sessionId);
+    flushSync();
+    type("Kept while locked");
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(field()).toBeNull();
+    expect(query("[data-memory-owner-instructions] p")!.textContent).toContain("Kept while locked");
+});
+
+it("shows pending repairs from health on the writer line below paused", async () => {
+    const contents = serveAdoptionContents();
+    contents.adoption.adoptable = 0;
+    const health = {
+        paused: false,
+        lastRunFailed: false,
+        storedStale: 0,
+        pendingRepairs: 1,
+        unsupportedSections: 0,
+        overBudgetSections: 0,
+    };
+    contents.health = health;
+    await open();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("repair");
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
+    health.paused = true;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("paused");
+});
+
+it("shows the paused writer from contents runs when health is unavailable", async () => {
+    const contents = serveAdoptionContents();
+    contents.adoption.adoptable = 0;
+    contents.health = "unavailable";
+    contents.runs = Array.from({ length: STRUCTURED_MEMORY_LIMITS.consecutiveFailures }, (_, i) => ({
+        id: `failed-${i}`,
+        result: "failed",
+        bytes: 100,
+    }));
+    await open();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("paused");
+    expect(query("[data-memory-writer-line]")?.textContent).toContain(language.structuredMemory.receipt.paused);
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("resume");
+
+    contents.runs.push({ id: "recorded", result: "recorded", bytes: 100 });
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("none");
+    expect(query("[data-memory-writer-line]")?.textContent).not.toContain(
+        language.structuredMemory.receipt.repairPending,
+    );
+});
+
+it("shows a new chat's request-trigger writer warning from contents before its first send", async () => {
+    install([]);
+    const fetch = io.authFetch.getMockImplementation()!;
+    let writerBlockingReason: "requestTrigger" | null = "requestTrigger";
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url === "/api/memory/structured/c/k"
+            ? Response.json({ revision: "r1", pages: [], events: [], threads: [], runs: [], writerBlockingReason })
+            : fetch(url, init, options),
+    );
+    await open();
+    expect(query("[data-memory-writer-line]")?.textContent ?? "").toContain(
+        language.structuredMemory.notAutomaticReasons.requestTrigger,
+    );
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("notAutomatic");
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    writerBlockingReason = null;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-writer-line]")?.textContent ?? "").not.toContain(
+        language.structuredMemory.notAutomaticReasons.requestTrigger,
+    );
+});
+
+function serveUnsupported() {
+    const state = servePageTools();
+    const p = editablePage();
+    p.sections = [
+        { ...p.sections[0], unsupported: true },
+        { ...p.sections[0], heading: "Rumor", body: "Unconfirmed rumor", unsupported: true },
+        { ...p.sections[0], heading: "Safe", body: "Supported text" },
+    ];
+    state.pages = [
+        p,
+        { ...editablePage(), id: "clear" },
+        { ...editablePage(), id: "q", sections: [{ ...p.sections[0] }] },
+    ];
+    state.trash = [{ ...p, id: "trash", trashedAt: 1 }];
+    const events: StructuredMemoryContentsAnswer["events"] = [
+        { id: "event", title: "Retracted turn", status: "retracted", bytes: 100 },
+        { id: "standing", title: "Standing turn", status: "active", bytes: 100 },
+    ];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url !== "/api/memory/structured/c/k") return fetch(url, init, options);
+        const contents: StructuredMemoryContentsAnswer = {
+            revision: state.revision,
+            pages: state.pages.map(({ id, title, type }) => ({ id, title, type, bytes: 100 })),
+            trash: state.trash.map(({ id, title }) => ({ id, title, bytes: 100 })),
+            events,
+            threads: [],
+            runs: [],
+            adoption: { adoptable: 0, declined: false, resettable: false },
+            rebuild: null,
+            recordedLanguage: null,
+            health: {
+                paused: false,
+                lastRunFailed: false,
+                storedStale: 0,
+                pendingRepairs: 0,
+                unsupportedSections: state.pages
+                    .flatMap(({ sections }) => sections)
+                    .filter(({ unsupported }) => unsupported).length,
+                overBudgetSections: 0,
+            },
+            unsupportedPages: state.pages
+                .filter(({ sections }) => sections.some(({ unsupported }) => unsupported))
+                .map(({ id }) => id),
+        };
+        return Response.json(contents);
+    });
+    return state;
+}
+const unsupportedButton = () =>
+    [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find((button) =>
+        button.textContent?.startsWith(language.structuredMemory.panel.unsupported),
+    );
+async function chooseUnsupported() {
+    expect(unsupportedButton()).toBeDefined();
+    unsupportedButton()!.click();
+    await settle();
+    expect(query('[data-memory-panel="unsupported"]')).not.toBeNull();
+}
+const preserveCheckbox = () =>
+    target.querySelector<HTMLInputElement>(`input[alt="${language.structuredMemory.pages.unsupported.preserve}"]`)!;
+
+it("filters missing evidence, keeps with the tab preference, advances pages and retains the resolved tab until leaving it", async () => {
+    const state = serveUnsupported();
+    const fetch = io.authFetch.getMockImplementation()!;
+    let saved = 0;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        const { edit } = JSON.parse(init!.body as string);
+        const p = state.pages.find(({ id }) => id === edit.pageId)!;
+        const section = p.sections.find(({ heading }) => heading === edit.heading)!;
+        delete section.unsupported;
+        section.provenance = [];
+        if (edit.preserve) section.userCorrected = true;
+        state.revision = `kept-${++saved}`;
+        return Response.json({ revision: state.revision, kind: "pages", data: p });
+    });
+    await open();
+    const labels = [...target.querySelectorAll("[data-segment-btn]")].map((button) => button.textContent?.trim());
+    expect(
+        labels.slice(
+            labels.indexOf(language.structuredMemory.panel.threads),
+            labels.indexOf(language.structuredMemory.panel.threads) + 2,
+        ),
+    ).toEqual([language.structuredMemory.panel.threads, `${language.structuredMemory.panel.unsupported} (3)`]);
+    await chooseUnsupported();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),
+    ).toEqual(["p", "q"]);
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-section]")].map(({ dataset }) => dataset.memorySection),
+    ).toEqual(["Facts", "Rumor"]);
+    expect(query("[data-memory-trash-group]")).toBeNull();
+    expect(query("[data-memory-import]")).toBeNull();
+    expect(
+        target.querySelectorAll(`input[alt="${language.structuredMemory.pages.unsupported.preserve}"]`),
+    ).toHaveLength(1);
+    expect(preserveCheckbox().checked).toBe(true);
+    press('[data-memory-section="Facts"] [data-memory-section-keep]');
+    await settle();
+    expect(unsupportedButton()?.textContent).toContain("(2)");
+    preserveCheckbox().click();
+    flushSync();
+    press('[data-memory-section="Rumor"] [data-memory-section-keep]');
+    await settle();
+    expect(query('[data-memory-page="q"]')?.getAttribute("aria-current")).toBe("true");
+    expect(preserveCheckbox().checked).toBe(false);
+    press("[data-memory-section-keep]");
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "before-tool", edit: { kind: "sectionKeep", pageId: "p", heading: "Facts", preserve: true } },
+        { revision: "kept-1", edit: { kind: "sectionKeep", pageId: "p", heading: "Rumor", preserve: false } },
+        { revision: "kept-2", edit: { kind: "sectionKeep", pageId: "q", heading: "Facts", preserve: false } },
+    ]);
+    expect(unsupportedButton()).toBeDefined();
+    expect(unsupportedButton()?.textContent).toContain("(0)");
+    expect(query("[data-memory-unsupported-resolved]")?.textContent).toBe(
+        language.structuredMemory.pages.unsupported.resolved,
+    );
+    expect(query("[data-memory-import]")).toBeNull();
+    await chooseTab("pages");
+    expect(unsupportedButton()).toBeUndefined();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),
+    ).toEqual(["p", "clear", "q"]);
+    expect(query('[data-memory-trash-page="trash"]')).not.toBeNull();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(target.querySelectorAll("[data-memory-section]")).toHaveLength(3);
+    expect(query("[data-memory-section-keep]")).toBeNull();
+    expect(query("[data-memory-section-revert]")).toBeNull();
+    expect(query("[data-memory-keep-all]")).toBeNull();
+    expect(preserveCheckbox()).toBeNull();
+});
+
+it("offers a section revert only for its newest standing revertable writer change from a retracted or removed event", async () => {
+    const state = serveUnsupported();
+    const p = state.pages[0];
+    const headings = ["Writer", "Person", "Active", "Reverted", "Compacted", "Orphan compact", "Removed"];
+    p.sections = headings.map((heading) => ({ ...p.sections[0], heading }));
+    const entry = (id: string, heading: string, eventId = "event"): MemoryPage["history"][number] => ({
+        id,
+        heading,
+        eventId,
+        kind: "change",
+        highlighted: false,
+        at: 1,
+        before: { body: "Before the turn", provenance: ["standing"], sources: [] },
+    });
+    p.history = [
+        entry("writer", "Writer"),
+        { ...entry("undone-later", "Writer", "standing"), revertedBy: "user" },
+        { ...entry("person-revert", "Writer"), kind: "revert" },
+        entry("old-writer", "Person"),
+        { ...entry("person", "Person"), kind: "edit", eventId: undefined },
+        entry("old-active", "Active"),
+        entry("active", "Active", "standing"),
+        { ...entry("reverted", "Reverted"), revertedBy: "user" },
+        entry("compact-patch", "Compacted"),
+        { ...entry("compact", "Compacted"), kind: "compact" },
+        { ...entry("orphan", "Orphan compact"), kind: "compact" },
+        // A person deleted this retracted event: the flagged section's change is as unsupported as before.
+        entry("removed", "Removed", "deleted-since"),
+    ];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/revert")) return fetch(url, init, options);
+        state.revision = "reverted";
+        p.sections[0] = { ...p.sections[0], body: "Before the turn", provenance: ["standing"], unsupported: false };
+        return Response.json({ revision: state.revision, data: p, reverted: true, laterEvents: 0 });
+    });
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-section-revert]")).toBeNull();
+    expect(query("[data-memory-section-keep]")).toBeNull();
+    await chooseUnsupported();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-section-revert]")].map(
+            (button) => button.closest<HTMLElement>("[data-memory-section]")!.dataset.memorySection,
+        ),
+    ).toEqual(["Writer", "Compacted", "Removed"]);
+    expect(target.querySelectorAll("[data-memory-section-keep]")).toHaveLength(7);
+    press('[data-memory-section="Writer"] [data-memory-section-revert]');
+    await settle();
+    expect(reads("revert").map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+        { revision: "before-tool", pageId: "p", historyId: "writer" },
+    ]);
+    expect(query('[data-memory-section="Writer"]')).toBeNull();
+});
+
+it("confirms Keep all, sends keeps sequentially with returned revisions and stops on a refusal", async () => {
+    const state = serveUnsupported();
+    state.pages[0].sections = ["First", "Second", "Third"].map((heading) => ({
+        ...state.pages[0].sections[0],
+        heading,
+    }));
+    const confirm = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReset().mockReturnValueOnce(confirm.promise).mockResolvedValue(true);
+    const first = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    let attempts = 0;
+    const kept = (heading: string) => {
+        delete state.pages[0].sections.find((section) => section.heading === heading)!.unsupported;
+        state.revision = `batch-${attempts}`;
+        return Response.json({ revision: state.revision, kind: "pages", data: state.pages[0] });
+    };
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        attempts++;
+        if (attempts === 1) return first.promise;
+        if (attempts === 2)
+            return Response.json({ error: "Memory changed", reason: "revisionConflict" }, { status: 409 });
+        return kept(JSON.parse(init!.body as string).edit.heading);
+    });
+    await open();
+    await chooseUnsupported();
+    preserveCheckbox().click();
+    flushSync();
+    press("[data-memory-keep-all]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(
+        language.structuredMemory.pages.unsupported.keepAllConfirm(state.pages[0].title),
+    );
+    expect(sentEdits()).toEqual([]);
+    confirm.resolve(true);
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "before-tool", edit: { kind: "sectionKeep", pageId: "p", heading: "First", preserve: false } },
+    ]);
+    first.resolve(kept("First"));
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "before-tool", edit: { kind: "sectionKeep", pageId: "p", heading: "First", preserve: false } },
+        { revision: "batch-1", edit: { kind: "sectionKeep", pageId: "p", heading: "Second", preserve: false } },
+    ]);
+    expect(alertError).toHaveBeenCalled();
+    // Retry the two unresolved headings; the successful batch must use its own answers too.
+    press("[data-memory-keep-all]");
+    await settle();
+    expect(sentEdits().slice(2)).toEqual([
+        { revision: "batch-1", edit: { kind: "sectionKeep", pageId: "p", heading: "Second", preserve: false } },
+        { revision: "batch-3", edit: { kind: "sectionKeep", pageId: "p", heading: "Third", preserve: false } },
+    ]);
+    expect(query('[data-memory-page="q"]')?.getAttribute("aria-current")).toBe("true");
+});
+
+it("uses the chat switch for the writer notice when it disagrees with the owner", async () => {
+    serveMemory();
+    const owner = characterList().find(({ chaId }) => chaId === "c")!;
+    setChatMeta(ref, { memoryEnabled: false });
+    await open();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("memoryOff");
+    expect(query("[data-memory-writer-action]")).toBeNull();
+    owner.supaMemory = false;
+    setChatMeta(ref, { memoryEnabled: true });
+    await settle();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).not.toBe("memoryOff");
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
+});
+
+it("App mounts the selected chat's panel despite the opposing global algorithm", async () => {
+    loadedStore.set(false);
+    setChatMeta(ref, { memoryMode: "structuredMemory" });
+    setChatMeta({ ...ref, chatId: "other" }, { memoryMode: "hypaV3" });
+    settings.ui.memoryAlgorithmType = "hypaV3";
+    Object.assign(settings.memoryTranslateMedia, {
+        hypaV3: true,
+        hypav2: false,
+        hanuraiEnable: false,
+        supaModelType: "none",
+    });
+    const { default: App } = await import("../../../App.svelte");
+    instance = mount(App, { target });
+    flushSync();
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-risu-memory-task]")).toBeNull();
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    selectChat("c", "other");
+    flushSync();
+    await settle();
+    expect(query("[data-memory-panel]")).toBeNull();
+    expect(query("[data-risu-memory-task]")).not.toBeNull();
+    selectChat("c", "k");
+    flushSync();
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-risu-memory-task]")).toBeNull();
+});
+
+it("shows the chat preset's manual cadence and follows the default when its preset is deleted", async () => {
+    const { createHypaV3Preset } = await import("../../../../shared/hypaV3Presets.ts");
+    serveMemory();
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    settings.hypaV3Presets.items.push(
+        createHypaV3Preset("Manual chat", { structured: { cadence: "manual" } }, "manual-chat"),
+    );
+    setChatMeta(ref, { memoryPresetId: "manual-chat" });
+    await open();
+    const line = () => query("[data-memory-writer-line]")?.textContent;
+    expect(line()).toContain(language.structuredMemory.notAutomaticReasons.manual);
+    settings.hypaV3Presets.items = settings.hypaV3Presets.items.filter(({ id }) => id !== "manual-chat");
+    await settle();
+    expect(line()).not.toContain(language.structuredMemory.notAutomaticReasons.manual);
+    expect(findChat(ref)).toHaveProperty("memoryPresetId", "manual-chat");
+    expect(settings.hypaV3Presets.selectedId).toBe("memory");
+});
+
+it("labels changed greeting citations without changing history and hides the label only for the kept greeting", async () => {
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "Welcome home.";
+    owner.alternateGreetings = ["Welcome home.", "Welcome elsewhere."];
+    setChatMeta(ref, { fmIndex: -1 });
+    const state = serveAnchoredEvent();
+    state.event.greeting = { fmIndex: -1, hash: memoryGreetingHash("Welcome home.") };
+    const original = structuredClone(state.event);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        state.event = { ...state.event, greetingKept: { fmIndex: 0, hash: memoryGreetingHash("Welcome home.") } };
+        state.revision = "kept-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const source = () => query('[data-memory-greeting-source="e"]');
+    const changed = () => query("[data-memory-greeting-changed]");
+    expect(source()).not.toBeNull();
+    expect(source()!.textContent).toContain(language.structuredMemory.greeting.source);
+    expect(source()?.textContent).not.toContain(language.structuredMemory.pages.messageGone);
+    expect(changed()).toBeNull();
+    owner.firstMessage = '<b class="new">Welcome home.</b>';
+    await settle();
+    expect(changed()).toBeNull();
+    owner.firstMessage = "Welcome back.";
+    await settle();
+    expect(changed()?.textContent).toBe(language.structuredMemory.greeting.changed);
+    owner.firstMessage = "Welcome home.";
+    await settle();
+    expect(changed()).toBeNull();
+    setChatMeta(ref, { fmIndex: 0 });
+    await settle();
+    expect(changed()?.textContent).toBe(language.structuredMemory.greeting.changed);
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("active");
+    const actions = [...source()!.querySelectorAll("button")].map((button) => button.textContent?.trim());
+    expect(actions).toEqual(
+        expect.arrayContaining([
+            language.structuredMemory.timeline.repairs.rerecord,
+            language.structuredMemory.rebuild.rebuild,
+            language.structuredMemory.greeting.keep,
+        ]),
+    );
+    expect(state.event).toEqual(original);
+    expect(sentEdits()).toEqual([]);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    await chooseTab("coverage");
+    expect(query('[data-memory-greeting-source="e"] [data-memory-greeting-changed]')).not.toBeNull();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    if (!source()) {
+        click('[data-memory-event="e"] > button');
+        await settle();
+    }
+    const keep = [...source()!.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.greeting.keep,
+    )!;
+    keep.click();
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "seen-revision",
+            edit: {
+                kind: "event",
+                eventId: "e",
+                repair: "keepGreeting",
+                greeting: { fmIndex: 0, hash: memoryGreetingHash("Welcome home.") },
+            },
+        },
+    ]);
+    expect(changed()).toBeNull();
+    expect(state.event).toEqual({
+        ...original,
+        greetingKept: { fmIndex: 0, hash: memoryGreetingHash("Welcome home.") },
+    });
+    setChatMeta(ref, { fmIndex: 1 });
+    await settle();
+    expect(changed()?.textContent).toBe(language.structuredMemory.greeting.changed);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("shows a page's provenance greeting as a Greeting source and jumps to the chat opening", async () => {
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "Welcome home.";
+    setChatMeta(ref, { fmIndex: -1 });
+    const state = serveMemory();
+    state.page.sections[0].sources = [];
+    const greeting = { fmIndex: -1, hash: memoryGreetingHash("Welcome home.") };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: state.revision,
+                events: [{ id: "event", title: "Opening", status: "active", messageIds: [], greeting }],
+                runs: [],
+                next: null,
+            });
+        return fetch(url, init, options);
+    });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    const source = query('[data-memory-greeting-source="event"]');
+    expect(source).not.toBeNull();
+    expect(source!.textContent).toContain(language.structuredMemory.greeting.source);
+    expect(source?.textContent).not.toContain(language.structuredMemory.pages.messageGone);
+    source!.querySelector("button")!.click();
+    await settle();
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: { greeting: true } });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+});
+
+it("keeps Make again disabled on a stale chapter while the chat's memory is off", async () => {
+    const current = { id: "boat", title: "New title" };
+    const revision = serveTimelineEvents([current]);
+    const old = chapter("old", { ...current, title: "Old title" });
+    serveResponseAt(chaptersRoute, () => Response.json({ revision, chapters: [old] }));
+    setChatMeta(ref, { memoryEnabled: false });
+    await open();
+    await chooseTab("timeline");
+    expect((query("[data-memory-chapters-make]") as HTMLButtonElement).disabled).toBe(true);
+    const remake = query("[data-memory-chapter-remake]") as HTMLButtonElement;
+    expect(remake.disabled).toBe(true);
+    remake.click();
+    await settle();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    // Remove needs no writer call and stays available.
+    expect((query(`${chapterBox("old")} [data-memory-chapter-remove]`) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("releases the chapter buttons when a newer refresh installs before a removal's own reread", async () => {
+    const current = { id: "boat", sourceIndex: 1 };
+    const earlier = { id: "dock", sourceIndex: 0 };
+    const revision = serveTimelineEvents([earlier, current]);
+    const stale = chapter("old", current);
+    const fresh = chapter("fresh", earlier);
+    const held = deferred<Response>();
+    let count = 0;
+    serveResponseAt(chaptersRoute, () => {
+        ++count;
+        if (count === 2) return held.promise;
+        return Response.json({ revision, chapters: count === 1 ? [fresh, stale] : [fresh] });
+    });
+    serveResponseAt(chaptersRoute + "/remove", () => Response.json({ removed: 1 }));
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    await open();
+    await chooseTab("timeline");
+    click(chapterBox("old") + " [data-memory-chapter-remove]");
+    await settle();
+    expect(count).toBe(2);
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(count).toBe(3);
+    expect(query(chapterBox("old"))).toBeNull();
+    const make = () => query("[data-memory-chapters-make]") as HTMLButtonElement;
+    expect(make().disabled).toBe(false);
+    // The superseded reread changes nothing when it lands.
+    held.resolve(Response.json({ revision, chapters: [fresh, stale] }));
+    await settle();
+    expect(make().disabled).toBe(false);
+    expect(query(chapterBox("old"))).toBeNull();
+});

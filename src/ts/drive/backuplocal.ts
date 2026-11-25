@@ -4,8 +4,17 @@ import { buildBackupInventory, type BackupInventory } from "../storage/snapshots
 import { language } from "src/lang";
 import { type BackupArchiveManifest, RESOURCE_KIND } from "../../../shared/resources.ts";
 import { selectPartialBackupAssets } from "../../../shared/backups.ts";
-import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
-import { flushResources } from "../storage/resourceSync.svelte";
+import {
+    exportBackup,
+    importBackup,
+    isGatewayFailureStatus,
+    ResourceEpochMismatchError,
+    ResourceRequestError,
+} from "../storage/resourceClient";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
+import { flushResources, refusedItems } from "../storage/resourceSync.svelte";
+import { findCharacter } from "../storage/characterStore.svelte";
+import { chatEntry } from "../storage/chatStore.svelte";
 import type { UpstreamExportCounts, UpstreamExportReport } from "../../../shared/upstreamExportReport.ts";
 
 /**
@@ -19,7 +28,11 @@ import type { UpstreamExportCounts, UpstreamExportReport } from "../../../shared
 
 type AssetInfo = { charName: string; assetName: string };
 
-/** Assets the characters and settings reference, for the missing-asset report. */
+/**
+ * Full-backup missing warnings cover this tab's character/group images and emotions, character
+ * additional/VITS/card assets, selected user icon, and background. Other resource references are
+ * outside this inventory; the server's full export still includes every existing asset file.
+ */
 function referencedAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
     for (const char of db.characters ?? []) {
@@ -62,7 +75,10 @@ function referencedAssets(db: BackupInventory): Map<string, AssetInfo> {
     return assetMap;
 }
 
-/** The profile images a partial backup keeps. */
+/**
+ * Labels only: `shared/backups.ts` owns the categories and `server/src/routes/backups.ts` selects
+ * from the archived snapshot. A manifest key absent from this tab's inventory remains "Unknown Asset".
+ */
 function partialAssets(db: BackupInventory): Map<string, AssetInfo> {
     const assetMap = new Map<string, AssetInfo>();
     const entries = selectPartialBackupAssets([
@@ -104,18 +120,19 @@ function tryReadManifest(head: Uint8Array): BackupArchiveManifest | null {
 }
 
 /**
- * Saves every change, asks the server for an archive, and streams it to a file. Returns the manifest
- * with the keys whose local edits the pre-backup flush replaced (`flushResources`' `discarded`): the
- * archive holds the other writer's version of those, so the success report says so.
+ * Flushes changes, asks the server for an archive, and streams it to a file. Returns the manifest
+ * with the flush's discarded and refused keys: the archive holds the server's copy of those,
+ * so the success report says which local changes it lacks.
  */
 async function downloadArchive(
     label: string,
     partial?: true | string[],
-): Promise<{ manifest: BackupArchiveManifest; discarded: string[] } | null> {
+): Promise<{ manifest: BackupArchiveManifest; discarded: string[]; refused: string[] } | null> {
     alertWait(`${label}...`);
     let discarded: string[];
+    let refused: string[];
     try {
-        ({ discarded } = await flushResources());
+        ({ discarded, refused } = await waitForResourceFlush(flushResources()));
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return null;
@@ -138,7 +155,7 @@ async function downloadArchive(
             }
         }
     });
-    return saved && read.manifest ? { manifest: read.manifest, discarded } : null;
+    return saved && read.manifest ? { manifest: read.manifest, discarded, refused } : null;
 }
 
 /**
@@ -184,14 +201,54 @@ async function streamToFile(
     }
 }
 
-/** The backup's result: success, the assets it skipped, and whether its pre-backup flush discarded a change. */
-function reportMissing(missing: string[], assetMap: Map<string, AssetInfo>, intro: string, discarded: string[]) {
-    const discardNote = discarded.length > 0 ? language.backupDiscardedChanges : "";
+/**
+ * Uses the refusal banner's chat/order labels (`src/ts/storage/resourceSync.svelte.ts` `refusedItems`),
+ * falling back to ids or unmatched report keys. Refused keys returned by a successful flush do not
+ * stop the backup; the warning says it holds the server's copy without those local changes.
+ * A snapshot supplies its own introduction because it is not an archive file.
+ */
+export function backupRefusedNote(refused: string[], intro = language.backupRefusedChanges): string {
+    if (refused.length === 0) return "";
+    const labels = new Map<string, string>();
+    for (const item of refusedItems()) {
+        if (item.kind === "chat" || item.kind === "order") {
+            const characterName = findCharacter(item.chaId)?.name || item.chaId;
+            if (item.kind === "order") {
+                labels.set(`chats/${item.chaId}`, language.refusedData.orderLabel(characterName));
+            } else {
+                const entry = chatEntry(item);
+                labels.set(
+                    `chats/${item.chaId}/${item.chatId}`,
+                    entry
+                        ? language.refusedData.chatLabel(entry.name || item.chatId, characterName)
+                        : language.refusedData.deletedChat(characterName, item.chatId),
+                );
+            }
+        }
+    }
+    return [intro, ...refused.map((key) => `- ${labels.get(key) ?? key}`)].join("\n");
+}
+
+/**
+ * Discarded/refused flush warnings precede missing assets, or accompany success when none are missing.
+ * A discarded edit was replaced by another writer's server copy; a key absent from the inventory is
+ * "Unknown Asset". `src/ts/alert.ts` keeps reload notices in a separate store.
+ */
+function reportMissing(
+    missing: string[],
+    assetMap: Map<string, AssetInfo>,
+    intro: string,
+    discarded: string[],
+    refused: string[],
+) {
+    const saveNote = [discarded.length > 0 ? language.backupDiscardedChanges : "", backupRefusedNote(refused)]
+        .filter(Boolean)
+        .join("\n\n");
     if (missing.length === 0) {
-        alertNormal(discardNote ? `Success\n\n${discardNote}` : "Success");
+        alertNormal(saveNote ? `Success\n\n${saveNote}` : "Success");
         return;
     }
-    let message = discardNote ? `${discardNote}\n\n${intro}` : intro;
+    let message = saveNote ? `${saveNote}\n\n${intro}` : intro;
     for (const key of missing) {
         const assetInfo = assetMap.get(key);
         if (assetInfo) {
@@ -231,7 +288,13 @@ export async function readFirstRecordName(file: Blob): Promise<string | null> {
     }
 }
 
-/** A full backup: the resource database and every asset on the server. */
+/**
+ * A full archive of the server's resource snapshot and every server asset, inlays included
+ * (`server/src/routes/backups.ts`). The tab's missing-asset inventory is captured before the flush
+ * in `downloadArchive` and compared with the returned manifest, rather than rebuilt from the archived
+ * resource snapshot. Inventoried references absent from the manifest's assets are reported with
+ * discarded/refused keys returned by the successful flush.
+ */
 export async function SaveLocalBackup() {
     try {
         const assetMap = referencedAssets(buildBackupInventory());
@@ -246,6 +309,7 @@ export async function SaveLocalBackup() {
             assetMap,
             "Backup Successful, but the following assets were missing and skipped:\n\n",
             result.discarded,
+            result.refused,
         );
     } catch (error) {
         console.error(error);
@@ -254,13 +318,10 @@ export async function SaveLocalBackup() {
 }
 
 /**
- * Saves a partial local backup with only critical assets.
- *
- * Differences from SaveLocalBackup:
- * - Only includes profile images for characters/groups (excludes emotion images, additional assets, VITS files, CC assets, inlays)
- * - Additionally includes: persona icons, folder images, bot preset images
- * - Faster and more efficient for quick backups
- * - Ideal for backing up core visual identity without bulk data
+ * Both `partialBackupFirstConfirm` and `partialBackupSecondConfirm` must be accepted before flushing
+ * and requesting `{ partial: true }`. The resource snapshot is retained; only assets are restricted,
+ * by `shared/backups.ts` `selectPartialBackupAssets` on the server's archived copy
+ * (`server/src/routes/backups.ts`). The tab's `partialAssets` labels the manifest's missing entries.
  */
 export async function SavePartialLocalBackup() {
     // First confirmation: Explain the difference from regular backup
@@ -288,6 +349,7 @@ export async function SavePartialLocalBackup() {
             assetMap,
             "Partial backup successful, but the following profile images were missing and skipped:\n\n",
             result.discarded,
+            result.refused,
         );
     } catch (error) {
         console.error(error);
@@ -298,8 +360,12 @@ export async function SavePartialLocalBackup() {
 /** How many missing assets the RisuAI-compatible backup's report lists by name. */
 const UPSTREAM_EXPORT_MISSING_SHOWN = 20;
 
-/** The RisuAI-compatible backup's report (`shared/upstreamExportReport.ts`) as plain text, ending in the download question. */
-function upstreamExportReportText(report: UpstreamExportReport, discarded: string[]): string {
+/**
+ * The confirmation for `shared/upstreamExportReport.ts`: counts, localized codes with counts/name
+ * examples, the first 20 missing assets by owner/role, and discarded/refused flush warnings that the
+ * archive holds the server's copy. Ends with "Download it now?"; only yes starts the download.
+ */
+function upstreamExportReportText(report: UpstreamExportReport, discarded: string[], refused: string[]): string {
     const text = language.upstreamExport;
     const lines: string[] = [text.intro, ""];
     for (const key of Object.keys(text.counts) as (keyof UpstreamExportCounts)[]) {
@@ -322,6 +388,11 @@ function upstreamExportReportText(report: UpstreamExportReport, discarded: strin
     };
     entries(text.convertedTitle, report.converted, text.converted);
     entries(text.excludedTitle, report.excluded, text.excluded);
+    const pages = report.excluded.find((entry) => entry.code === "memory-pages")?.count ?? 0;
+    const threads = report.excluded.find((entry) => entry.code === "memory-threads")?.count ?? 0;
+    if (pages > 0 || threads > 0) {
+        lines.push("", text.memoryOmitted(pages, threads));
+    }
     if (report.missing.length > 0) {
         lines.push("", text.missingTitle);
         for (const asset of report.missing.slice(0, UPSTREAM_EXPORT_MISSING_SHOWN)) {
@@ -334,6 +405,9 @@ function upstreamExportReportText(report: UpstreamExportReport, discarded: strin
     }
     if (discarded.length > 0) {
         lines.push("", language.backupDiscardedChanges);
+    }
+    if (refused.length > 0) {
+        lines.push("", backupRefusedNote(refused));
     }
     lines.push("", text.downloadQuestion);
     return lines.join("\n");
@@ -348,17 +422,19 @@ export function upstreamBackupFileName(date: Date = new Date()): string {
 /**
  * A RisuAI-compatible backup: a `.bin` upstream RisuAI's "Load Backup" restores. Asks whether to
  * include the API keys (every key, the auxiliary services', the characters' TTS keys, and the MCP
- * OAuth secrets included), saves every change, has the server prepare the file from one copy of the
- * store with this tab's selection and open chat, shows the report, and on a yes streams the download
- * to `RisuAI-backup-<date>.bin`. A declined report cancels the prepared export. The file carries no
+ * OAuth secrets included; No is recommended). A failed flush stops preparation; discarded/refused
+ * edits appear as warnings. The server prepares one copy of the store with this tab's selection
+ * and open chat (`src/ts/drive/upstreamBackupClient.ts`). A yes to the report streams the download
+ * to `RisuAI-backup-<date>.bin`; a declined report cancels the prepared export. The file carries no
  * manifest; nothing is read from the stream.
  */
 export async function SaveUpstreamLocalBackup() {
     const includeSecrets = await alertConfirm(language.upstreamExport.includeKeys);
     alertWait(language.upstreamExport.preparing);
     let discarded: string[];
+    let refused: string[];
     try {
-        ({ discarded } = await flushResources());
+        ({ discarded, refused } = await waitForResourceFlush(flushResources()));
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return;
@@ -378,7 +454,7 @@ export async function SaveUpstreamLocalBackup() {
         alertError(failureText(error));
         return;
     }
-    if (!(await alertConfirm(upstreamExportReportText(prepared.report, discarded)))) {
+    if (!(await alertConfirm(upstreamExportReportText(prepared.report, discarded, refused)))) {
         void client.cancelUpstreamExport(prepared.token);
         return;
     }
@@ -394,6 +470,26 @@ export async function SaveUpstreamLocalBackup() {
         return;
     }
     alertNormal(language.upstreamExport.success);
+}
+
+/**
+ * The alert for a failed restore upload. A 413 without the server's JSON text came from a proxy or
+ * tunnel in front of the server. A lost answer (a dispatched request without an answer, or a
+ * gateway status without the server's text, such as a proxy's timeout) is not a failure: the server
+ * validates the whole archive before it answers and may finish the restore after the tab stopped
+ * waiting, so the tab says to reload and check. The server's own answers, a plain-text 500 included,
+ * and a request that failed before it was sent show as they are.
+ */
+function restoreErrorText(error: unknown): string {
+    if (error instanceof ResourceRequestError && error.serverError === null) {
+        if (error.status === 413) {
+            return language.uploadRefusedByProxy;
+        }
+        if ((error.status === 0 && !error.notSent) || isGatewayFailureStatus(error.status)) {
+            return language.backupRestoreUnconfirmed;
+        }
+    }
+    return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -430,7 +526,7 @@ export function LoadLocalBackup() {
                     return;
                 }
                 console.error(error);
-                alertError(error instanceof Error ? error.message : String(error));
+                alertError(restoreErrorText(error));
                 return;
             }
             alertStore.set({

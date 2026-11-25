@@ -1,3 +1,5 @@
+import { PLUGIN_STORAGE_DICTIONARIES } from "../../../shared/pluginStorage.ts";
+import type { RecordWritePatchOptions } from "../../../shared/recordPatch.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { isAssetStorageKey } from "../routes/storage.ts";
 import {
@@ -10,7 +12,10 @@ import {
     normalizeGlobalscript,
     normalizeHotkeys,
     normalizeHypaV3Presets,
+    normalizeInputHooks,
     normalizeLoreBook,
+    normalizeModuleFolders,
+    normalizePersonaFolders,
     normalizeStatics,
     normalizeTogglePresets,
     normalizeTranslatorPresets,
@@ -34,9 +39,10 @@ import { ResourceValidationError } from "./resourceStore.ts";
 
 /**
  * A resource kind: its name, the schema version stored with each record, and a pure normalizer that
- * runs on every write and in the store's startup pass. `normalize` returns the value to persist, or
+ * runs on every write and in the store's normalization pass. `normalize` returns the value to persist, or
  * throws `ResourceValidationError` to reject the write with a 400; it must be idempotent (normalizing
- * its own output returns the same JSON), or the startup pass rewrites the record on every start. A
+ * its own output returns the same JSON), or each run of the normalization pass (an open whose
+ * normalization stamp differs) rewrites the record. A
  * singleton kind has exactly one record, `SINGLETON_RESOURCE_ID`, which cannot be deleted. A
  * `materialize` kind is a singleton the store creates as `normalize(undefined)` whenever it is missing
  * (at startup and after a restore), so a client always finds it.
@@ -46,8 +52,11 @@ import { ResourceValidationError } from "./resourceStore.ts";
  * and a plain write's data is `prepareWrite(incoming, stored)` before it is normalized (it may refuse
  * with `ResourceValidationError`). Both run in the same synchronous block as the write, so they are
  * atomic with its revision check.
+ *
+ * `nestedFields` declares dictionaries that write patches may change one entry at a time. `itemKey`
+ * allows an explicit alternative array-item key in a write patch; patches without it still use `id`.
  */
-export interface ResourceKind<T = unknown> {
+export interface ResourceKind<T = unknown> extends RecordWritePatchOptions {
     readonly name: string;
     readonly schemaVersion: number;
     readonly singleton?: boolean;
@@ -141,12 +150,14 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     },
     {
         name: RESOURCE_KIND.plugins,
+        itemKey: "name",
         schemaVersion: 1,
         singleton: true,
         normalize: (input) => requireArrayOfObjects(input, "plugins"),
     },
     {
         name: RESOURCE_KIND.pluginStorage,
+        nestedFields: PLUGIN_STORAGE_DICTIONARIES,
         schemaVersion: 1,
         singleton: true,
         shallowNormalize: true,
@@ -165,6 +176,18 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
             }
             if (!Object.values(lastGrantTime).every((value) => typeof value === "number")) {
                 throw new ResourceValidationError("pluginPermissions.lastGrantTime values must be numbers");
+            }
+            if (record.resets !== undefined) {
+                const resets = requireObject(record.resets, "pluginPermissions.resets");
+                if (!Object.values(resets).every((value) => typeof value === "number")) {
+                    throw new ResourceValidationError("pluginPermissions.resets values must be numbers");
+                }
+            }
+            if (record.standing !== undefined) {
+                const standing = requireObject(record.standing, "pluginPermissions.standing");
+                if (!Object.values(standing).every((value) => value === true)) {
+                    throw new ResourceValidationError("pluginPermissions.standing values must be true");
+                }
             }
             return record;
         },
@@ -233,9 +256,12 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     settingsKind(RESOURCE_KIND.hypaV3Presets, normalizeHypaV3Presets),
     settingsKind(RESOURCE_KIND.togglePresets, normalizeTogglePresets),
     settingsKind(RESOURCE_KIND.customModels, normalizeCustomModels),
+    settingsKind(RESOURCE_KIND.inputHooks, normalizeInputHooks),
     settingsKind(RESOURCE_KIND.credentials, normalizeCredentials),
     settingsKind(RESOURCE_KIND.enabledModules, normalizeEnabledModules),
     settingsKind(RESOURCE_KIND.statics, normalizeStatics),
     settingsKind(RESOURCE_KIND.modelPresets, normalizeModelPresetCollection),
     settingsKind(RESOURCE_KIND.modelProfiles, normalizeModelProfileCollection),
+    settingsKind(RESOURCE_KIND.moduleFolders, normalizeModuleFolders),
+    settingsKind(RESOURCE_KIND.personaFolders, normalizePersonaFolders),
 ];

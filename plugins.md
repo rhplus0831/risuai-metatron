@@ -98,15 +98,46 @@ It must be placed at the very top of your plugin script.
 
   Unlike `//@name`, this can be changed freely without breaking installations.
 
-- **`//@arg`** - Define plugin arguments
+- **`//@risu-arg`** (alias **`//@arg`**) - Define plugin arguments
 
   ```javascript
-  //@arg setting_name string Description of the setting
+  //@risu-arg setting_name string Description of the setting
   //@arg max_items int Maximum number of items
+  //@risu-arg api_key string Your API key {{password}} {{placeholder::Paste key}}
   ```
 
-  Supported types: `string`, `int`
-  Syntax: `//@arg <name> <type> <description and optional metadata>`
+  Syntax: `//@risu-arg <name> <type> <description and optional metadata>` (the alias uses the same syntax).
+  Only `int` and `string` are accepted; their initial values are `0` and `""`, respectively. These are fixed defaults:
+  metadata does not set the initial value. Argument names are one token.
+
+  `importPlugin` recognizes these headers only at the start of a line. It trims the line and splits on literal spaces
+  (`split(" ")`), without collapsing repeated spaces or treating tabs as separators. Use one space between the header,
+  name and type. Fewer than three tokens stops import with
+  `plugin argument is incorrect, did you put space in argument name?`; any other type stops import with
+  `plugin argument type is "<type>", which is an unknown type.`
+
+  Tokens after the type are joined with spaces. The parser removes brace metadata matching
+  `/{{(.+?)(::?(.+?))?}}/g`: `{{key}}` stores `"1"`, and `{{key:value}}` or `{{key::value}}` stores the value as a string.
+  Later occurrences of a key replace earlier ones. The remaining trimmed text becomes `description`, overriding a
+  `{{description::...}}` value when that text is nonempty. Metadata is stored in `argMeta[name]`; without tokens after
+  the type, no metadata object is created.
+
+- **`//@allowed-ipc`** - Allow plugin channel communication with named plugins
+
+  ```javascript
+  //@allowed-ipc other_plugin another_plugin
+  ```
+
+  Values are internal `//@name` names. As with arguments, the header must start the line; the parser trims the line,
+  splits on literal spaces, and appends every token after the header to `allowedIPC`. Repeated headers accumulate;
+  repeated spaces produce empty entries, tabs do not split values, and commas are not separators. A header without
+  a value stops import with `plugin allowed IPC declaration is incorrect, did you put space after //@allowed-ipc?`.
+
+  `Risuai.postPluginChannelMessage(pluginName, channelName, message)` requires both sides to allow each other:
+  the receiver's `allowedIPC` must include the sender's internal name, and the sender's must include the receiver's.
+  Missing permission on either side logs a warning and returns without delivering the message; a missing receiver also
+  warns and returns. With both checks passed, a registered channel listener receives the message and
+  `{ sender, channel }`.
 
 - **`//@link`** - Add custom links
 
@@ -349,7 +380,7 @@ Use dedicated methods for standard attributes:
 
 ```javascript
 // For links, use createAnchorElement
-const link = rootDoc.createAnchorElement("https://example.com");
+const link = await rootDoc.createAnchorElement("https://example.com");
 
 // For styles, use style methods
 await element.setStyle("color", "red");
@@ -510,6 +541,12 @@ const observer = await Risuai.createMutationObserver(async (mutations) => {
     for (const node of addedNodes) {
       console.log(`Node added: ${await node.nodeName()}`);
     }
+
+    // getRemovedNodes() also returns SafeClassArray<SafeElement>
+    const removedNodes = await Risuai.unwarpSafeArray(await mutation.getRemovedNodes());
+    for (const node of removedNodes) {
+      console.log(`Node removed: ${await node.nodeName()}`);
+    }
   }
 });
 
@@ -523,9 +560,11 @@ await observer.observe(body, {
 });
 ```
 
+`getAddedNodes()` and `getRemovedNodes()` include only `HTMLElement` nodes. Text nodes and SVG elements are excluded.
+
 ### SafeClassArray
 
-`SafeClassArray<T>` is a secure array-like container used in several APIs (e.g., mutation observer callbacks, `getAddedNodes()`). Use `unwarpSafeArray()` to convert it to a standard JavaScript array:
+`SafeClassArray<T>` is a secure array-like container used in several APIs (e.g., mutation observer callbacks, `getAddedNodes()`, `getRemovedNodes()`). Use `unwarpSafeArray()` to convert it to a standard JavaScript array:
 
 ```javascript
 // Recommended: use unwarpSafeArray for easy iteration
@@ -595,7 +634,7 @@ Add buttons and menu items to Risuai's interface:
 #### Settings Menu Item
 
 ```javascript
-Risuai.registerSetting(
+await Risuai.registerSetting(
   "My Plugin Settings",
   async () => {
     // Called when user clicks the menu item
@@ -609,7 +648,7 @@ Risuai.registerSetting(
 #### Floating Action Button
 
 ```javascript
-Risuai.registerButton(
+await Risuai.registerButton(
   {
     name: "Quick Action",
     icon: "https://example.com/icon.png", // Optional icon URL
@@ -651,6 +690,24 @@ const btn = await Risuai.registerButton(
 await Risuai.unregisterUIPart(btn.id);
 ```
 
+### Chat Panel
+
+`setChatPanel` shows a block of HTML under the chat. The HTML is sanitized; `null` or an empty string removes the
+panel, and a second call with the same `id` replaces it:
+
+```javascript
+await Risuai.setChatPanel("<p>Status: ready</p>", { id: "status" });
+await Risuai.setChatPanel(null, { id: "status" });
+```
+
+The panel is part of the main document, so the rules of a `<style>` element in it (an SVG one too) apply to the whole
+app. HTML that carries one asks the user for the `'globalStyle'` permission first. If the user declines, the panel is
+still shown, without its `<style>` elements. A panel styled with inline `style` attributes needs no permission.
+
+A panel is confined to its own box: `className` is applied to a wrapper inside the panel, and positioned content
+(`position: fixed` or `absolute`, a high `z-index`) stays inside the panel and is clipped at its edge. Content that
+must overflow the panel, such as a dropdown, belongs in the plugin's own iframe (`showContainer`), not in a chat panel.
+
 ## Data Storage
 
 ### Plugin Arguments
@@ -672,7 +729,12 @@ await Risuai.setArgument("max_retries", 5);
 
 ### Plugin Storage (Recommended)
 
-`pluginStorage` is **save-file specific** and **syncs between devices**:
+`pluginStorage` is **per plugin**, **save-file specific**, and **syncs between devices**. Two plugins can use the
+same key without overwriting each other. The owner is the plugin's internal `name`; renaming it creates a new owner.
+Values stored before per-plugin storage are still readable until claimed: writing one moves it into that plugin's
+storage. `clear()` removes only this plugin's values and stops reading legacy values, leaving them for other plugins.
+Plugin names containing U+0000 retain the shared legacy behavior. Once the plugin is removed from the plugin list,
+`setItem` rejects, so an `onUnload` handler running after removal, in this or another tab, cannot write.
 
 ```javascript
 // Every call returns a Promise (iframe message passing)
@@ -684,7 +746,7 @@ const allKeys = await Risuai.pluginStorage.keys();
 const count = await Risuai.pluginStorage.length();
 
 await Risuai.pluginStorage.removeItem("last_sync");
-await Risuai.pluginStorage.clear(); // Remove all items
+await Risuai.pluginStorage.clear(); // Remove this plugin's items and hide legacy values
 ```
 
 **Use `pluginStorage` when:**
@@ -715,8 +777,8 @@ await Risuai.onStorageDiscarded(async (event) => {
 });
 ```
 
-The event says which keys lost a value, not which plugin wrote them (the keys may be another plugin's).
-The listener is removed when the plugin unloads.
+The event lists this plugin's own lost keys without an owner prefix, plus lost legacy keys. If a discarded `clear()`
+makes legacy keys visible again, those keys are included too. The listener is removed when the plugin unloads.
 
 ### Safe Local Storage
 
@@ -764,37 +826,45 @@ Use `safeLocalStorage` for data that must stay on one device.
 
 ### Database Access
 
-Access Risuai's database for characters, personas, and more:
+Request only the data you need. Prefer summaries for character/chat lists, `getChats()` for a page of full chats, and `getCharacter()` for the current character:
 
 ```javascript
-// Get database (remember: async!)
-const db = await Risuai.getDatabase();
+const db = await Risuai.getDatabase(["characters", "personas"], { chats: "summaries" });
+if (db?.characters.length) {
+  const character = db.characters[0];
+  console.log(character.chatSummaries); // [{ id, name, lastMessageAt? }, ...]
+  const page = await Risuai.getChats(character.chaId, { offset: 0, limit: 10 });
+  console.log(page?.chats, page?.total);
 
-// Request only specific keys for better performance
-const db = await Risuai.getDatabase(["characters", "personas"]);
+  character.name = "Updated name";
+  await Risuai.setDatabaseLite(db); // Keeps these characters' chats without loading them
+}
 
-// Access allowed properties
-console.log(db.characters);
-console.log(db.personas);
-console.log(db.modules);
+const currentCharacter = await Risuai.getCharacter();
 
-// Update database
-db.characters.push(newCharacter);
-await Risuai.setDatabase(db); // Full save
-
-// Or use lite version (faster)
-await Risuai.setDatabaseLite(db);
+// Full chats remain available when needed
+const full = await Risuai.getDatabase(["characters"]);
+// Risuai.getDatabase() requests all allowed keys and every active chat in full
 ```
 
-`getDatabase()` returns `null` if the user has not granted database access consent.
+`getDatabase(includeOnly = "all", options?)` and `getChats(chaId, options?)` require the same database access consent and return `null` when it is not granted. Archived group chats stay in storage. Plugin character lists and `characterOrder` omit them, and a group `chaId` is treated as missing.
 
-`getDatabase()` builds a fresh copy each time you call it. When you ask for `characters` (or ask for every key), it first loads every chat of every character from the server and copies them all, so it can take a while and use a lot of memory with many or long chats. Ask only for the keys you need, and prefer `getCharacter()` for the current character. `getCharacter()` and `getChar()` copy one character with all its chats, loading them first. A copy is a snapshot: changing it changes nothing until you hand it back with a setter.
+With `{ chats: "summaries" }`, each returned character has `chatSummaries` instead of `chats` and `chatPage`. There is one `{ id, name, lastMessageAt? }` entry per active chat (a chat in the Trash is left out) in the character's chat order. Loaded chats supply their current name and final-message time; unloaded chats supply the summary already held by this tab. `lastMessageAt` is absent when no finite time is known. There is no message count. This mode reads, flushes, pins, and loads no chats, inside or outside a hook. All other fields keep their usual behavior, including derived `lastInteraction`, the hook's captured preset settings, and refusal when a required preset is gone. `options` must be an object when supplied; `options.chats` may be `undefined`, `"full"` (the default), or `"summaries"`. Invalid values reject with an `Error` naming the value.
 
-How `setDatabase`/`setDatabaseLite` apply what you hand back:
+`getChats(chaId, { offset, limit })` returns `{ chats, total }`, with active chats in character order and `total` equal to the character's active chat count. `offset` defaults to `0` and `limit` to all remaining chats. Both must be non-negative safe integers when supplied; invalid values reject with an `Error`. A zero limit or an offset at/past the end returns an empty page without reading chats. An unknown, archived, or deleted character returns `null`, including one archived or deleted during the call. Each chat has the same contents as in a full `getDatabase(["characters"])` result: loaded chats as this tab holds them and unloaded chats as detached server copies through the shared reuse cache. Normally only the page's unloaded chats are read. Inside a hook, the character's chats are loaded first; if a detached read cannot safely represent the held state, the page's chats are (a large page loads the character's).
+
+Without the option (or with `{ chats: "full" }`), `getDatabase()` keeps its existing behavior. It builds a fresh copy each time. When you ask for `characters` (or every key), the copy holds every active chat of every visible character (a chat in the Trash is left out): loaded chats as this tab holds them, and the others as the server holds them after this tab's queued changes were saved. Inside a hook, missing chats are loaded first. Detached reads use a few large requests and share a cache with `getChats()` (up to 64 MiB, cleared after five minutes without a full-chat read). Unchanged copies can be reused according to this tab's live updates. Returning every chat can take a while and use a lot of memory. With Enable Dev Tools on, a full all-keys call returning more than 200 chats logs a hint once per loaded plugin instance recommending scoped reads.
+
+`getCharacter()` and `getChar()` copy one character with all its active chats, loading them first. Every result is a snapshot: changing it changes nothing until you hand it back with a setter. Existing characters whose `chats` is absent or `undefined` keep their chats without loading them through `setDatabase`/`setDatabaseLite`; their other fields and any numeric `chatPage` still apply. `chatSummaries` is read-only metadata: character setters ignore it and never save it in a character record. `chats: null` or another non-array value is still invalid.
+
+In a [read-only transform continuation](#read-only-transform-continuations), both setters warn and return `undefined` without applying any keys, including custom keys. Use `pluginStorage` for plugin-private state.
+
+Outside those continuations, `setDatabase`/`setDatabaseLite` apply what you hand back as follows:
 
 - Each key is applied on its own. A key whose value is not valid is refused with a console warning (`[Plugin] Refused ...` or `[Settings] Refused ...; the previous value was kept`) and keeps its old value; the other keys still apply. Invalid means, for example, data that is not plain JSON, a value of the wrong kind for a preset setting (a string for `temperature`), or `null` for a setting that cannot be cleared.
-- `characters`: characters you changed are updated, new ones are added at the end, and characters you left out are removed (not while one is generating a reply). The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
+- `characters`: characters you changed are updated, new ones are added at the end, and visible characters you left out are removed (not while one is generating a reply). Both setters preserve archived groups. A list containing a group record or a group's `chaId` is refused. The list order you hand back does not reorder the characters; use `characterOrder` for the sidebar order.
 - `plugins`: `setDatabase` asks the user to confirm each plugin that is new or changed and installs the confirmed ones; plugins you left out stay installed. `setDatabaseLite` ignores `plugins` and leaves the installed list as it is.
+- `pluginCustomStorage`: replaces the shared custom keys; a custom key you left out is removed. The `pluginStorage` and `getLocalPluginStorage()` values (the `_pluginStorage`, `_ownedPluginStorage`, and `_safeLocalPluginStorage` keys) are kept when your object leaves those keys out, so a fresh object does not erase them; a key your object has replaces the stored values with yours.
 - `characterOrder` and `selectedPersona` are applied after the other keys, whatever order they have in your object.
 - Prompt settings (`temperature`, `maxResponse`, `frequencyPenalty`, `PresensePenalty`, ...) belong to the selected prompt preset. Model roots use the selected model preset and its profiles (the `modelProfiles` records, shown in the app as connections under Model > Connections) as described below. Inside a hook both use the presets captured when the hook's run started (see Character Operations).
 
@@ -861,11 +931,13 @@ await Risuai.setCharacter(character);
 
 **Inside a hook** (a chat output listener, a script handler, a text replacer, or a custom provider), "the current character" means the character and chat the hook runs for, not whatever the user has selected now. A reply can take a while, and the user may switch character or preset meanwhile; your listener still edits the chat that produced the reply. This applies to `getCharacter`/`setCharacter`, `getCurrentCharacterIndex`, `getCurrentChatIndex`, `getCurrentLorebookEntries`, `parseRisuChat`, `sendChat`, `runLLMModel`, and the preset settings of `getDatabase`/`setDatabase`. Inside a hook, `getCharacter()` reports the hook's chat as its `chatPage`, and handing it back to `setCharacter` does not move the user's chat selection. If the character or chat a call needs was deleted meanwhile, the call rejects with a `PluginTargetGoneError` instead of acting on something else; a deleted preset rejects only the preset settings of `getDatabase`/`setDatabase`. `runLLMModel` uses the hook's chat for its prompt parsing and for the provider hooks it triggers, not a frozen copy of the model settings. Body interceptors and TTS hooks are not called with a chat, so there these functions use the tab's selection.
 
+Each chat output listener receives the chat owner's current index among visible characters. Archived owners and speakers are skipped.
+
 Outside a hook (your own buttons, timers, and startup code), these functions use what is selected in the tab, with one exception: the host tells hooks apart per loaded plugin, not per call. While one of your hooks is still running, your own timers and UI callbacks see that hook's chat and preset too, and two of your hooks running at once both see the one that started last. Keep hook work inside the hook's own `await` chain. When your plugin is unloaded, its hooks still waiting for an answer reject with "The plugin was unloaded".
 
 ### Character & Chat by Index
 
-Access characters and chats by their position in the database, and get the currently selected indices:
+Character indexes count only visible characters, in storage order. An index saved before group chats were archived may now name another character. Re-resolve it by `chaId` before use.
 
 ```javascript
 // Get the index of the currently selected character and chat
@@ -889,16 +961,10 @@ const chat = await Risuai.getChatFromIndex(charIndex, chatIndex);
 await Risuai.setChatToIndex(charIndex, chatIndex, chat);
 ```
 
-How chat changes are saved: chats are stored message by message, so the host compares the object
-you hand back with the chat as it is **when you call the setter** and saves the differences
-(messages are matched by their `chatId`, chats by their `id`). The object you hand back wins
-wherever it differs: if you read a chat, the user then edits message B, and you hand back your copy
-with only message A changed, your old copy of B overwrites the user's edit. Read the chat right
-before changing it and hand it back without awaiting in between; this is still not an atomic
-read-modify-write. A character's `chats` list passed to `setCharacter`/`setCharacterToIndex`/
+How chat changes are saved: chats are stored message by message, so the host compares the object you hand back with the copy you **read** (`getChatFromIndex`, `getCharacterFromIndex`, `getCharacter`, `getChar`; the host keeps the last read of up to 16 chats per plugin, and a setter uses that read once) and saves the differences (messages are matched by their `chatId`, chats by their `id`). So if you read a chat, the user then edits message B, and you hand back your copy with only message A changed, the user's edit to B is kept and only A changes; where you both changed the same field, your value wins. Without a retained read (a write with no read before it, or a read evicted by 16 later ones), the comparison is against the chat as it is when you call the setter, and your old copy overwrites changes made meanwhile. A character's `chats` list passed to `setCharacter`/`setCharacterToIndex`/
 `setDatabase` works the same way: chats with a new or missing `id` are created, chats you left out
-are deleted (the last chat is always kept), the list order becomes the chat order, and `chatPage`
-selects a chat in the current tab only. While a reply is being generated, a change that touches the
+keep their slots, and the supplied active chats follow your list order. Plugins see active chats only
+and cannot delete chats. `chatPage` selects a chat from your list in the current tab only. While a reply is being generated, a change that touches the
 message being generated skips that whole chat (a warning is logged; changes to other chats still
 apply), and a character that is generating a reply is not removed and not replaced by a character with
 another `chaId` (its own fields still update); try again after the reply finishes. A `characters`
@@ -946,19 +1012,19 @@ Modify content at different processing stages:
 
 ```javascript
 // Add handler for display output
-Risuai.addRisuScriptHandler("display", async (content) => {
+await Risuai.addRisuScriptHandler("display", async (content) => {
   // Modify content before display
   return content.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 });
 
 // Add handler for user input
-Risuai.addRisuScriptHandler("input", async (content) => {
+await Risuai.addRisuScriptHandler("input", async (content) => {
   // Process user input before sending
   return content.trim();
 });
 
 // Remove handler
-Risuai.removeRisuScriptHandler("display", handlerFunction);
+await Risuai.removeRisuScriptHandler("display", handlerFunction);
 ```
 
 **Available modes:**
@@ -968,25 +1034,47 @@ Risuai.removeRisuScriptHandler("display", handlerFunction);
 - `'process'` - Modify content during processing
 - `'input'` - Modify user input
 
+#### Read-only transform continuations
+
+Handlers invoked by a tab-side `editdisplay` or `editprocess` transform cannot write durable character, chat, settings or asset data through the v3 data APIs. This includes display rendering and `parseRisuChat(text, { processRegex: true })`'s process handlers. Job-callback hooks dispatched during generation keep their normal write behavior.
+
+Refusal logs `console.warn` naming the API, returns without writing, and does not throw or fail the transform:
+
+| API                                                                                              | Result while read-only                                                                             |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `setCharacter`, `setChar`, `setCharacterToIndex`, `setChatToIndex`                               | `undefined`; no changes                                                                            |
+| `setDatabase`, `setDatabaseLite`                                                                 | `undefined`; the entire call is skipped, including plugin custom keys; use `pluginStorage` instead |
+| `changeColorScheme`, `setColorScheme`, `changeTextTheme`, `setCustomTextTheme`, `checkCharOrder` | `undefined`; no changes                                                                            |
+| `setArg("another-plugin::key", value)`                                                           | `undefined`; no changes                                                                            |
+| `sendChat`                                                                                       | `false`; no message or job is started                                                              |
+| `saveAsset`                                                                                      | `""` (no saved path); no asset is written                                                          |
+| `parseRisuChat`                                                                                  | Parsed text as usual, with `runVar` forced to `false` even if requested                            |
+
+Plugin-private state remains writable: `pluginStorage` (including its `_…PluginStorage` host aliases), the object returned by `getLocalPluginStorage()`, `safeLocalStorage` and its aliases, and your own arguments through `setArgument` or `setArg("your-plugin::key", value)`.
+
+The host checks all active contexts of the calling plugin instance at API entry. An overlapping writable hook of that same instance is also refused while a transform handler is in flight; target selection still follows the innermost context. A timed-out handler remains read-only until it settles. Exact attribution would require a call id in sandbox RPC.
+
+Accepted exclusions: `runLLMModel` remains available and its transport can persist returned inlays; `postPluginChannelMessage` does not pass the context to its receiver; `loadPlugins` creates instances that do not inherit the old context. General networking (`nativeFetch` and legacy `risuFetch`) and permission-grant bookkeeping remain available. These rules constrain the host data setters, not all indirect effects. `installPlugin` only returns a list approved by the user; saving that list requires `setDatabase`, which is refused here.
+
 ### Text Replacers
 
 Replace or modify message arrays:
 
 ```javascript
 // Add replacer before sending to AI
-Risuai.addRisuReplacer("beforeRequest", async (messages, type) => {
+await Risuai.addRisuReplacer("beforeRequest", async (messages, type) => {
   // Add system message
   return [{ role: "system", content: "You are a helpful assistant." }, ...messages];
 });
 
 // Add replacer after receiving from AI
-Risuai.addRisuReplacer("afterRequest", async (content, type) => {
+await Risuai.addRisuReplacer("afterRequest", async (content, type) => {
   // Modify response text
   return content.toUpperCase();
 });
 
 // Remove replacer
-Risuai.removeRisuReplacer("beforeRequest", replacerFunction);
+await Risuai.removeRisuReplacer("beforeRequest", replacerFunction);
 ```
 
 ### Asset Management
@@ -998,6 +1086,8 @@ const imageData = await Risuai.readImage("asset-id");
 // Save assets
 const savedPath = await Risuai.saveAsset(assetData);
 ```
+
+In a read-only transform continuation, `saveAsset` warns and resolves to `""` without writing. Check for a nonempty path before using it.
 
 #### Inlay Assets (user-attached images / audio / video)
 
@@ -1271,7 +1361,26 @@ if (granted) {
 }
 ```
 
-**Available permissions:** `'fetchLogs'`, `'db'`, `'mainDom'`, `'replacer'`
+**Available permissions:** `'fetchLogs'`, `'db'`, `'dbWrite'`, `'mainDom'`, `'replacer'`, `'provider'`, `'sendChat'`,
+`'inlay'`, `'globalStyle'`
+
+The user can also allow permissions ahead of time: the permission list is shown when a plugin is imported or updated
+and from Settings > Plugins > Permissions. A permission allowed there is not asked again, not even after three days,
+until the plugin's script changes; an update shows the list again with the previous version's permissions checked. So
+a call that needs consent may resolve without any prompt.
+
+`'dbWrite'` is requested automatically by `setDatabase`, `setDatabaseLite`, `setCharacter`, `setChar`,
+`setCharacterToIndex` and `setChatToIndex`, separately from `'db'`: a plugin that may read the database is still asked
+before its first write. Like `'db'`, the answer holds for the page load and is asked again when the last grant is older
+than three days. If the user declines, the call writes nothing, logs a warning and resolves `undefined`. The call's
+target (the selected character and presets, or the character and chat at the given indexes) is the one when the call
+was made, even if the user changes the selection while the prompt is open. A name that is not a permission answers
+`false` without a prompt.
+
+A grant is not permanent: the user can reset a plugin's permissions or change its permission list in Settings >
+Plugins, and removing a plugin revokes its grants. After a reset, `requestPluginPermission` and the APIs that need
+consent ask again; a prompt that was open during the reset, or while the permission list was saved, answers `false`.
+Saving the permission list restarts the plugin.
 
 ### Fetch Logs
 
@@ -1368,10 +1477,10 @@ Prefer `pluginStorage` over `safeLocalStorage` for syncable data:
 
 ```javascript
 //  Good - syncs across devices
-Risuai.pluginStorage.setItem("settings", JSON.stringify(settings));
+await Risuai.pluginStorage.setItem("settings", JSON.stringify(settings));
 
 // Device-specific only
-Risuai.safeLocalStorage.setItem("device_id", id);
+await Risuai.safeLocalStorage.setItem("device_id", id);
 ```
 
 ### 4. Clean Up Resources
@@ -1436,7 +1545,7 @@ Add clear comments and metadata:
 (async () => {
   try {
     // Register settings button
-    Risuai.registerSetting(
+    await Risuai.registerSetting(
       "Theme Settings",
       async () => {
         const theme = await Risuai.getArgument("theme");
@@ -1461,11 +1570,11 @@ Add clear comments and metadata:
           console.log("Theme set to dark");
         });
 
-        document.getElementById("close-btn").addEventListener("click", () => {
-          Risuai.hideContainer();
+        document.getElementById("close-btn").addEventListener("click", async () => {
+          await Risuai.hideContainer();
         });
 
-        Risuai.showContainer("fullscreen");
+        await Risuai.showContainer("fullscreen");
       },
       "https://example.com/icon_src_here.png",
       "img",
@@ -1487,7 +1596,7 @@ Add clear comments and metadata:
 
 (async () => {
   try {
-    Risuai.registerButton(
+    await Risuai.registerButton(
       {
         name: "Show Character Info",
         icon: "🛈",
@@ -1497,10 +1606,10 @@ Add clear comments and metadata:
       async () => {
         const char = await Risuai.getCharacter();
 
-        const rootDoc = Risuai.getRootDocument();
-        const body = rootDoc.querySelector("body");
+        const rootDoc = await Risuai.getRootDocument();
+        const body = await rootDoc.querySelector("body");
 
-        const infoBox = rootDoc.createElement("div");
+        const infoBox = await rootDoc.createElement("div");
         await infoBox.setStyle("position", "fixed");
         await infoBox.setStyle("top", "50%");
         await infoBox.setStyle("left", "50%");
@@ -1542,10 +1651,12 @@ Add clear comments and metadata:
 
 (async () => {
   try {
-    const rootDoc = Risuai.getRootDocument();
+    const rootDoc = await Risuai.getRootDocument();
 
     // Add a status indicator
-    const indicator = rootDoc.createElement("div");
+    const indicator = await rootDoc.createElement("div");
+    // Mark the indicator before inserting it so its own mutations can be ignored
+    await indicator.setAttribute("x-dom-monitor", "indicator");
     await indicator.setStyle("position", "fixed");
     await indicator.setStyle("bottom", "10px");
     await indicator.setStyle("right", "10px");
@@ -1555,20 +1666,44 @@ Add clear comments and metadata:
     await indicator.setStyle("borderRadius", "5px");
     await indicator.setTextContent("Plugin Active");
 
-    const body = rootDoc.querySelector("body");
+    const body = await rootDoc.querySelector("body");
     if (body) {
       await body.appendChild(indicator);
     }
 
     // Monitor DOM changes
     let changeCount = 0;
-    const observer = Risuai.createMutationObserver(async (mutations) => {
-      changeCount += mutations.length;
+    const isIndicator = async (node) => (await node.getAttribute("x-dom-monitor")) === "indicator";
+    const observer = await Risuai.createMutationObserver(async (mutations) => {
+      let counted = 0;
+      for (const mutation of await Risuai.unwarpSafeArray(mutations)) {
+        // Updating the indicator's text also produces a mutation
+        const target = await mutation.getTarget();
+        if (await isIndicator(target)) continue;
+
+        const addedNodes = await Risuai.unwarpSafeArray(await mutation.getAddedNodes());
+        const removedNodes = await Risuai.unwarpSafeArray(await mutation.getRemovedNodes());
+        const changedNodes = [...addedNodes, ...removedNodes];
+
+        // Ignore records that only add or remove the indicator, but count mixed changes
+        let indicatorOnly = changedNodes.length > 0;
+        for (const node of changedNodes) {
+          if (!(await isIndicator(node))) {
+            indicatorOnly = false;
+            break;
+          }
+        }
+        if (indicatorOnly) continue;
+
+        counted++;
+      }
+      if (counted === 0) return;
+      changeCount += counted;
       await indicator.setTextContent(`Changes: ${changeCount}`);
     });
 
     if (body) {
-      observer.observe(body, {
+      await observer.observe(body, {
         childList: true,
         subtree: true,
         attributes: false,
@@ -1592,7 +1727,7 @@ Add clear comments and metadata:
 (async () => {
   try {
     // Process AI output to convert markdown-style bold
-    Risuai.addRisuScriptHandler("output", async (content) => {
+    await Risuai.addRisuScriptHandler("output", async (content) => {
       // **bold** <strong>bold</strong>
       content = content.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
@@ -1603,9 +1738,9 @@ Add clear comments and metadata:
     });
 
     // Process user input to add timestamps
-    Risuai.addRisuScriptHandler("input", async (content) => {
+    await Risuai.addRisuScriptHandler("input", async (content) => {
       const timestamp = new Date().toLocaleTimeString();
-      Risuai.pluginStorage.setItem("last_input_time", timestamp);
+      await Risuai.pluginStorage.setItem("last_input_time", timestamp);
 
       return content;
     });
@@ -1675,10 +1810,10 @@ await element.removeEventListener("click", listenerId);
 
 ```javascript
 // For user preferences (syncs)
-Risuai.pluginStorage.setItem("preference", "value");
+await Risuai.pluginStorage.setItem("preference", "value");
 
 // For device-specific data
-Risuai.safeLocalStorage.setItem("device_id", "uuid");
+await Risuai.safeLocalStorage.setItem("device_id", "uuid");
 ```
 
 ### Script tags being removed from HTML
@@ -1691,7 +1826,7 @@ await element.setInnerHTML('<script>alert("XSS")</script>');
 // Result: empty element (script removed)
 
 // Use event listeners instead
-const button = rootDoc.createElement("button");
+const button = await rootDoc.createElement("button");
 await button.setTextContent("Click Me");
 await button.addEventListener("click", async () => {
   console.log("Button clicked!");
@@ -1704,15 +1839,17 @@ await button.addEventListener("click", async () => {
 
 ```javascript
 // L Wrong - these are separate contexts
-const rootDoc = Risuai.getRootDocument();
-rootDoc.querySelector("#my-iframe-element"); // Won't find it
+const rootDoc = await Risuai.getRootDocument();
+await rootDoc.querySelector("#my-iframe-element"); // Won't find it
+```
 
+```javascript
 //  Correct - access each separately
 // Your iframe's DOM:
 document.getElementById("my-iframe-element");
 
 // Risuai's main DOM:
-const rootDoc = Risuai.getRootDocument();
+const rootDoc = await Risuai.getRootDocument();
 await rootDoc.querySelector(".Risuai-element");
 ```
 

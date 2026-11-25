@@ -17,6 +17,8 @@ export const UPSTREAM_CONVERTED_CODES = [
     "cold-character-restored",
     /** A cold-storage chat came back from its payload, one per chat; examples are character names. */
     "cold-chat-restored",
+    /** PocketRisu/RisuBard swipes and RisuBard variable checkpoints became reroll candidates, one per message; examples are character names. */
+    "message-swipes",
     /** A plugin value came back from `_coldplugin` or an `_coldpluginIndex` entry; examples are storage keys. */
     "cold-plugin-storage-restored",
     /**
@@ -29,6 +31,12 @@ export const UPSTREAM_CONVERTED_CODES = [
     "character-id-replaced",
     /** A character's `postHistoryInstructions` moved into its selected chat's note; examples are names. */
     "post-history-instructions-to-note",
+    /**
+     * A decoded value of a kind JSON does not hold (binary data, a date, a map or set, another class
+     * instance, or an `undefined` array element) was stored in its JSON form, one per value. Examples
+     * name its storage key, setting field, or character and decoded kind, as `name (Kind)`.
+     */
+    "messagepack-value",
 ] as const;
 
 /**
@@ -94,6 +102,11 @@ export type UpstreamExcludedCode = (typeof UPSTREAM_EXCLUDED_CODES)[number];
 /** How many names an entry lists, except SaveKV namespaces; `count` still counts every occurrence. */
 export const UPSTREAM_REPORT_EXAMPLE_LIMIT = 5;
 
+/**
+ * One stable conversion/exclusion code, counted in that code's own unit. Examples are distinct
+ * names, never values: at most `UPSTREAM_REPORT_EXAMPLE_LIMIT`, except `savekv-namespace`, which
+ * lists every distinct namespace. Export reports share this shape (`shared/upstreamExportReport.ts`).
+ */
 export type UpstreamReportEntry<Code extends string = string> = {
     code: Code;
     /** Source occurrences of this conversion or exclusion, independent of credential deduplication. */
@@ -118,11 +131,12 @@ export type UpstreamAssetRole =
     | "folder"
     | "preset"
     | "module"
-    | "moduleIcon";
+    | "moduleIcon"
+    | "plugin";
 
 /**
  * One referenced `assets/...` key and its first user (a character, group, persona, folder, preset, or
- * module name, a persona's for its embedded module; "" for a setting).
+ * module name, a persona's for its embedded module, a plugin custom-storage key; "" for a setting).
  */
 export type UpstreamAssetReference = { key: string; owner: string; role: UpstreamAssetRole };
 
@@ -150,6 +164,11 @@ export type UpstreamImportCounts = {
     plugins: number;
 };
 
+/**
+ * The preview before a full replacement (`server/src/data/upstream/importDatabase.ts`): counts of
+ * converted settings/library records, conversions and exclusions by stable code, and missing assets
+ * by first owner/role. Character counts exclude groups; each code counts independently of the others.
+ */
 export type UpstreamImportReport = {
     counts: UpstreamImportCounts;
     converted: UpstreamReportEntry<UpstreamConvertedCode>[];
@@ -168,6 +187,7 @@ export type UpstreamImportSelection = {
     personaId: string;
 };
 
+/** A fresh report for one conversion; callers must not share its mutable counts or lists across imports. */
 export function createUpstreamImportReport(): UpstreamImportReport {
     return {
         counts: {

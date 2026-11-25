@@ -13,6 +13,7 @@ import {
 } from "../data/resourceStore.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 
 // The generation lock as the resource store's guard: a change that rewrites or
 // removes a message a job owns, or deletes its chat or character, is refused with
@@ -97,8 +98,8 @@ function setup() {
 }
 
 describe("the generation lock guard on chat groups", () => {
-    it("refuses every rewrite or removal of an owned message, and the replace or delete of its chat, with reason generating and nothing written", () => {
-        const { store, revisions, state, conflictsOf } = setup();
+    it("refuses every rewrite or removal of an owned message, and the replace or trash of its chat, with reason generating and nothing written; a delete group is useTrash", () => {
+        const { store, revisions, lock, state, conflictsOf } = setup();
         const before = state();
         const refused: ChatOp[][] = [
             [{ op: "setText", id: "b", text: "mine" }],
@@ -106,7 +107,6 @@ describe("the generation lock guard on chat groups", () => {
             [{ op: "remove", ids: ["b"] }],
             [{ op: "remove", ids: ["a", "b"] }],
             [{ op: "begin", id: "b", generationId: "g-client" }],
-            [{ op: "delete" }],
             [{ op: "replace", chat: { name: "K2", message: [m("a", "A")] } as never }],
             // A forged client write carrying the job's generation id grants nothing.
             [{ op: "setText", id: "b", text: "forged", generation: { id: "g1", seq: 99 } }],
@@ -120,6 +120,20 @@ describe("the generation lock guard on chat groups", () => {
             const conflicts = conflictsOf(() => store.applyChanges({ chats: [group("k", revisions.k, ops)] }));
             expect(conflicts, JSON.stringify(ops)).toEqual([refusal(revisions.k, ops)]);
         }
+        // A delete group is refused before the lock is consulted: deletion goes through the trash,
+        // which refuses a chat holding a lock as generating.
+        expect(conflictsOf(() => store.applyChanges({ chats: [group("k", revisions.k, [{ op: "delete" }])] }))).toEqual(
+            [{ kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "useTrash" }],
+        );
+        const chatHeld = (characterId: string, chatId: string) => lock.chatHolders(characterId, chatId).size > 0;
+        expect(
+            store.changeChatTrash(
+                "trash",
+                { characterId: "c", chatId: "k", revision: revisions.k },
+                store.epoch(),
+                chatHeld,
+            ),
+        ).toEqual({ error: "generating", revision: revisions.k, trashedAt: null });
         expect(state()).toBe(before);
     });
 
@@ -163,10 +177,9 @@ describe("the generation lock guard on chat groups", () => {
         ).toEqual([
             { kind: "chat", characterId: "c", id: "k", revision: revisions.k, reason: "generating", messageIds: ["a"] },
         ]);
-        // A whole-chat replace or delete of a chat holding a lock: refused, nothing named (the
-        // client keeps and retries the whole group).
+        // A whole-chat replace of a chat holding a lock: refused, nothing named (the client keeps and
+        // retries the whole group).
         for (const ops of [
-            [{ op: "delete" }] as ChatOp[],
             [{ op: "replace", chat: { name: "K2", message: [m("z", "Z")] } as never }] as ChatOp[],
             [
                 { op: "meta", set: { note: "n" } },
@@ -248,7 +261,7 @@ describe("the generation lock guard on chat groups", () => {
         }).chats[0].revision!;
         const before = state();
         for (const ops of [
-            [{ op: "delete" }] as ChatOp[],
+            [{ op: "replace", chat: { name: "K2", message: [m("a", "A")] } as never }] as ChatOp[],
             [{ op: "remove", ids: ["a", "b"] }] as ChatOp[],
             [{ op: "setText", id: "b", text: "mine" }] as ChatOp[],
             [{ op: "begin", id: "b", generationId: "g-client" }] as ChatOp[],
@@ -257,10 +270,14 @@ describe("the generation lock guard on chat groups", () => {
                 refusal(current, ops),
             ]);
         }
+        // A stale delete group is useTrash, before the lock as well.
+        expect(conflictsOf(() => store.applyChanges({ chats: [group("k", revisions.k, [{ op: "delete" }])] }))).toEqual(
+            [{ kind: "chat", characterId: "c", id: "k", revision: current, reason: "useTrash" }],
+        );
         expect(state()).toBe(before);
     });
 
-    it("lets meta, append, and ops on other messages apply, in this chat and in other chats", () => {
+    it("lets meta, append, and ops on other messages apply, in this chat and in other chats, and a free chat be deleted", () => {
         const { store, revisions, text, lock } = setup();
         const applied = store.applyChanges({
             chats: [
@@ -271,13 +288,22 @@ describe("the generation lock guard on chat groups", () => {
                     { op: "remove", ids: ["z"] },
                 ]),
                 group("j", revisions.j, [{ op: "setText", id: "x", text: "X2" }]),
-                group("q", revisions.q, [{ op: "delete" }], "d"),
+                group("q", revisions.q, [{ op: "replace", chat: { name: "Q2", message: [] } as never }], "d"),
             ],
         });
-        expect(applied.chats.map((r) => r.revision === null)).toEqual([false, false, true]);
+        expect(applied.chats.map((r) => r.revision === null)).toEqual([false, false, false]);
         expect(text("k", "a")).toBe("A2");
         expect(text("k", "b")).toBe("B");
         expect(text("j", "x")).toBe("X2");
+        expect(text("q", "y", "d")).toBeUndefined();
+        // A chat holding no lock goes through the trash and is deleted while `k`'s job runs.
+        deleteChatThroughTrash(
+            store,
+            "c",
+            "j",
+            (characterId, chatId) => lock.chatHolders(characterId, chatId).size > 0,
+        );
+        expect(store.chatRevision("c", "j")).toBeNull();
         expect(lock.ownerOf({ characterId: "c", chatId: "k", messageId: "b" })?.generationId).toBe("g1");
     });
 

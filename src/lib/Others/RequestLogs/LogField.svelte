@@ -1,8 +1,14 @@
 <script lang="ts">
-    import { CheckIcon, CopyIcon } from "@lucide/svelte";
+    import { CheckIcon, CopyIcon, XIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import type { RequestHistoryFieldCut } from "../../../../shared/requestHistory.ts";
     import { copyText, formatBytes, highlightJson } from "./requestLogView";
+
+    /**
+     * A labeled request-log field with a copy action for the supplied text and, when cut, its stored
+     * and original byte counts. JSON highlighting uses `src/lib/Others/RequestLogs/requestLogView.ts`'s
+     * escaped-text fallback for large or unhighlightable fields; plain fields use Svelte text escaping.
+     */
 
     interface Props {
         label: string;
@@ -17,15 +23,21 @@
 
     let { label, text, highlight = true, sizeClass = "", cut = null }: Props = $props();
 
-    let copied = $state(false);
-    let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+    let copyState = $state<"copied" | "failed" | null>(null);
+    let copyTimer: ReturnType<typeof setTimeout> | undefined;
+    let copyAttempt = 0;
 
     async function copy(event: MouseEvent) {
         event.stopPropagation();
-        await copyText(text);
-        copied = true;
-        clearTimeout(copiedTimer);
-        copiedTimer = setTimeout(() => (copied = false), 1500);
+        const attempt = ++copyAttempt;
+        clearTimeout(copyTimer);
+        copyState = null;
+        const copied = await copyText(text);
+        if (attempt !== copyAttempt) {
+            return;
+        }
+        copyState = copied ? "copied" : "failed";
+        copyTimer = setTimeout(() => (copyState = null), 1500);
     }
 </script>
 
@@ -41,19 +53,28 @@
                 </span>
             {/if}
         </span>
-        <button
-            class="p-1 rounded hover:bg-bgcolor transition-colors {copied
-                ? 'text-success-500'
-                : 'text-textcolor2 hover:text-textcolor'}"
-            onclick={copy}
-            title={language.copy}
-        >
-            {#if copied}
-                <CheckIcon size={14} />
-            {:else}
-                <CopyIcon size={14} />
+        <div class="flex items-center gap-2">
+            <button
+                class="p-1 rounded hover:bg-bgcolor transition-colors {copyState === 'copied'
+                    ? 'text-success-500'
+                    : copyState === 'failed'
+                      ? 'text-danger-500'
+                      : 'text-textcolor2 hover:text-textcolor'}"
+                onclick={copy}
+                title={copyState === "failed" ? language.requestLogCopyFailed : language.copy}
+            >
+                {#if copyState === "copied"}
+                    <CheckIcon size={14} />
+                {:else if copyState === "failed"}
+                    <XIcon size={14} />
+                {:else}
+                    <CopyIcon size={14} />
+                {/if}
+            </button>
+            {#if copyState === "failed"}
+                <span class="text-danger-500 text-xs" role="status">{language.requestLogCopyFailed}</span>
             {/if}
-        </button>
+        </div>
     </div>
     {#if highlight}
         <pre class="request-log-code hljs {sizeClass}">{@html highlightJson(text)}</pre>

@@ -1,14 +1,18 @@
 import { get } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // The client transport of server generation jobs (`generationJobs.ts`): the tab's identity and
-// saved jobs, the create/status/abort requests and their errors, the owner socket's lifetime
-// (cancellation before and after authentication, supersession, stamps, event filtering), the event
-// dispatcher's wiring, and the resume after a reload. The chat module, the save adapter, and the
-// channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create body's `hooks`) are
-// stubbed here; the hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
+// saved jobs, the create/status/abort requests and their errors (a status read's deadline), the
+// owner socket's lifetime (cancellation before and after authentication, `opened`, supersession,
+// stamps, event filtering), its liveness (`socketLiveness.ts`, real: the connect timeout, the
+// watchdog, the page's return, a terminal that stands), the event
+// dispatcher's wiring, and the resume after a reload. Transport-only cases stub the chat module,
+// save adapter and channel dispatcher (`jobChannel.ts`, whose `registeredHooks` fills a create
+// body's `hooks`). The retake round trip runs the real chat store and hydration adapter; further
+// hydration contracts are in `src/ts/storage/tests/resourceSyncHydration.test.ts`.
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
 
@@ -20,16 +24,20 @@ const stubs = vi.hoisted(() => ({
     /** `applyServerGenerationChunk`: false when the chat module lacks the delta's base text. */
     applyServerGenerationChunk: vi.fn<(...args: unknown[]) => boolean>(() => true),
     endServerJob: vi.fn(),
-    applyHydration: vi.fn(() => true),
-    applyPatchHydration: vi.fn<() => "applied" | "busy" | "mismatch" | "old">(() => "applied"),
+    applyHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyHydration>(() => true),
+    applyPatchHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyPatchHydration>(() => "applied"),
     /** `flushResources`: the recovery's save of the local work that kept a job chat copy out. */
-    flushResources: vi.fn<() => Promise<{ discarded: string[] }>>(async () => ({ discarded: [] })),
+    flushResources: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+        discarded: [],
+        refused: [],
+    })),
     /** `isChatStale` and `chatHydrationHold`: what the recovery reads of the chat module. */
     isChatStale: vi.fn<() => boolean>(() => false),
     chatHydrationHold: vi.fn<() => "none" | "saving" | "held">(() => "none"),
     registeredHooks: vi.fn<() => Promise<GenerationHooks>>(),
     handleChannelEvent: vi.fn(),
     rememberHydration: vi.fn(),
+    rememberJobStreaming: vi.fn(),
     endJobChannel: vi.fn(),
     changeToPreset: vi.fn(),
     /** `recordClientEvent`: the job link's diagnostics. */
@@ -45,27 +53,37 @@ vi.mock("../storage/serverAuth", async () =>
             }),
     }),
 );
-vi.mock("../storage/chatStore.svelte", () => ({
-    applyServerGeneration: stubs.applyServerGeneration,
-    applyServerGenerationChunk: stubs.applyServerGenerationChunk,
-    endServerJob: stubs.endServerJob,
-    isChatStale: stubs.isChatStale,
-    chatHydrationHold: stubs.chatHydrationHold,
-}));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    applyHydration: stubs.applyHydration,
-    applyPatchHydration: stubs.applyPatchHydration,
-    flushResources: stubs.flushResources,
-}));
+vi.mock("../alert", async () => (await import("../tests/alertMock")).createAlertMock());
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        applyServerGeneration: stubs.applyServerGeneration,
+        applyServerGenerationChunk: stubs.applyServerGenerationChunk,
+        endServerJob: stubs.endServerJob,
+        isChatStale: stubs.isChatStale,
+        chatHydrationHold: stubs.chatHydrationHold,
+    }),
+);
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        applyHydration: stubs.applyHydration,
+        applyPatchHydration: stubs.applyPatchHydration,
+        flushResources: stubs.flushResources,
+    }),
+);
 vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,
     rememberHydration: stubs.rememberHydration,
+    rememberJobStreaming: stubs.rememberJobStreaming,
     endJobChannel: stubs.endJobChannel,
 }));
 // A job's `preset` event applies the preset through the preset actions module.
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: stubs.changeToPreset }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: (input: unknown) => stubs.record(input) }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => stubs.record(input),
+    }),
+);
 
 type Transport = typeof import("./generationJobs");
 type Client = typeof import("../storage/resourceClient");
@@ -107,7 +125,14 @@ class FakeSocket {
     }
 }
 
-const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+// Drain ready continuations without spending connect, request, or liveness time.
+const flush = () => vi.advanceTimersByTimeAsync(0);
+/** Microtask-only observations while timeout and interval clocks are held. */
+const microtasks = async () => {
+    for (let turn = 0; turn < 10; turn += 1) {
+        await Promise.resolve();
+    }
+};
 const settled = async <T>(promise: Promise<T>) =>
     Promise.race([promise.then(() => "settled" as const), flush().then(() => "pending" as const)]);
 const json = (status: number, body: unknown) => Response.json(body, { status });
@@ -119,8 +144,23 @@ function deferred<T = void>() {
 
 let transport: Transport;
 let client: Client;
+const originalFollowGlobals = new Map(
+    ["WebSocket", "location", "sessionStorage", "window"].map((name) => [
+        name,
+        Object.getOwnPropertyDescriptor(globalThis, name),
+    ]),
+);
+
+/** The follows a test started: each owns a connect timer and a resume subscription, so the test's end closes them. */
+const startedFollows: ReturnType<Transport["followGenerationJob"]>[] = [];
+const startFollow: Transport["followGenerationJob"] = (jobId, onEvent, options) => {
+    const follow = transport.followGenerationJob(jobId, onEvent, options);
+    startedFollows.push(follow);
+    return follow;
+};
 
 beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.resetModules();
     stubs.auth.length = 0;
     FakeSocket.instances = [];
@@ -135,16 +175,179 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    for (const follow of startedFollows.splice(0)) {
+        follow.close();
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [name, descriptor] of originalFollowGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
+    }
     stubs.isChatStale.mockReset().mockReturnValue(false);
     stubs.chatHydrationHold.mockReset().mockReturnValue("none");
-    stubs.flushResources.mockReset().mockResolvedValue({ discarded: [] });
+    stubs.flushResources.mockReset().mockResolvedValue({ discarded: [], refused: [] });
     stubs.applyPatchHydration.mockReset().mockReturnValue("applied");
     stubs.applyHydration.mockReset().mockReturnValue(true);
     stubs.applyServerGenerationChunk.mockReset().mockReturnValue(true);
+});
+
+describe("handoff transport", () => {
+    it("posts a manual handoff for the named job with this tab, the chosen target and the loaded epoch", async () => {
+        stubs.fetch.mockResolvedValue(Response.json({ offered: true }));
+        expect(await transport.requestGenerationHandoff("job/one", "chosen-worker")).toBe("offered");
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations/job%2Fone/handoff");
+        expect(request?.method).toBe("POST");
+        expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(EPOCH);
+        expect(JSON.parse(String(request?.body))).toEqual({
+            clientId: transport.generationClientId(),
+            target: "chosen-worker",
+        });
+    });
+
+    it("posts a takeover with this client, treats 409 and 404 as unavailable, and preserves handedOff on reads", async () => {
+        const jobId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        stubs.fetch.mockResolvedValueOnce(json(200, { ticket: "one-use / ticket" }));
+        expect(await transport.takeoverGenerationJob(jobId)).toBe("one-use / ticket");
+        const [path, request] = stubs.fetch.mock.calls.at(-1)!;
+        expect(path).toBe(`/api/generations/${jobId}/takeover`);
+        expect(request?.method).toBe("POST");
+        expect(JSON.parse(String(request?.body))).toEqual({ clientId: transport.generationClientId() });
+        for (const code of [409, 404]) {
+            stubs.fetch.mockResolvedValueOnce(json(code, { error: "unavailable" }));
+            expect(await transport.takeoverGenerationJob(jobId)).toBeNull();
+        }
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId, kind: "send", owned: true, handedOff: true }));
+        expect(await transport.readChatGeneration({ chaId: "c", chatId: "k" })).toEqual({
+            jobId,
+            kind: "send",
+            owned: true,
+            handedOff: true,
+        });
+        stubs.fetch.mockResolvedValueOnce(
+            json(200, {
+                jobId,
+                kind: "send",
+                characterId: "c",
+                chatId: "k",
+                state: "running",
+                epoch: EPOCH,
+                handedOff: true,
+            }),
+        );
+        expect(await transport.readGenerationJob(jobId)).toMatchObject({ jobId, handedOff: true });
+        expect(FakeSocket.instances).toHaveLength(0);
+    });
+
+    it("reads an idle chat slot from 200 null and from an older server's 404", async () => {
+        const ref = { chaId: "c", chatId: "k" };
+        stubs.fetch.mockResolvedValueOnce(json(200, null));
+        expect(await transport.readChatGeneration(ref)).toBeNull();
+        stubs.fetch.mockResolvedValueOnce(json(404, { error: "idle" }));
+        expect(await transport.readChatGeneration(ref)).toBeNull();
+        stubs.fetch.mockResolvedValueOnce(json(200, { error: "idle" }));
+        await expect(transport.readChatGeneration(ref)).rejects.toThrow();
+    });
+
+    it("attaches with the ticket and uses the latest role for callbacks while ignoring unknown job events", async () => {
+        const ref = { chaId: "c", chatId: "k" };
+        const follow = startFollow("worker", (event) => transport.applyGenerationEvent("worker", ref, event, follow), {
+            ticket: "ticket / + ?",
+        });
+        expect(follow.viewing()).toBe(true);
+        stubs.auth[0].resolve("jwt");
+        await microtasks();
+        const ws = FakeSocket.instances[0];
+        expect(new URL(ws.url).searchParams.get("ticket")).toBe("ticket / + ?");
+        ws.open();
+        for (const [fields, role, viewing] of [
+            [{ owner: "other", pending: true }, "pending", true],
+            [{ owner: "self" }, "owner", false],
+            [{ owner: "other" }, "viewer", true],
+            [{ owner: "self" }, "owner", false],
+        ] as const) {
+            ws.message({ type: "handoff", epoch: EPOCH, ...fields });
+            expect(follow.role).toBe(role);
+            expect(follow.viewing()).toBe(viewing);
+            ws.message({
+                type: "callback",
+                epoch: EPOCH,
+                id: `callback-${stubs.handleChannelEvent.mock.calls.length}`,
+            });
+            await vi.dynamicImportSettled();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stubs.handleChannelEvent.mock.calls.at(-1)?.[2].viewing()).toBe(viewing);
+        }
+        const calls = stubs.handleChannelEvent.mock.calls.length;
+        ws.message({ type: "future-job-event", epoch: EPOCH, owner: "other", pending: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(follow.role).toBe("owner");
+        expect(follow.viewing()).toBe(false);
+        expect(stubs.handleChannelEvent).toHaveBeenCalledTimes(calls);
+        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
+        expect(stubs.endServerJob).not.toHaveBeenCalled();
+        expect(ws.closeCalls).toBe(0);
+        ws.message({ type: "done", epoch: EPOCH, revision: "e:1:2" });
+        expect((await follow.closed).terminal?.type).toBe("done");
+    });
+});
+
+describe("completion release transport", () => {
+    const runEpoch = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+
+    it.each([
+        { answer: { released: true }, released: true },
+        { answer: { released: false }, released: false },
+    ])("posts the request id and run epoch and returns $released for $answer", async ({ answer, released }) => {
+        stubs.fetch.mockReset().mockResolvedValue(json(200, answer));
+        expect(await transport.releaseCompletionHold("sender-request", runEpoch)).toBe(released);
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations/completion-release");
+        expect(request?.method).toBe("POST");
+        expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(runEpoch);
+        expect(JSON.parse(String(request?.body))).toEqual({ requestId: "sender-request" });
+    });
+
+    it("retries a completion release after a transport failure", async () => {
+        stubs.fetch
+            .mockReset()
+            .mockRejectedValueOnce(new TypeError("connection lost"))
+            .mockResolvedValue(json(200, { released: true }));
+        const released = transport.releaseCompletionHold("sender-request", runEpoch);
+        await vi.runAllTimersAsync();
+        await expect(released).resolves.toBe(true);
+        expect(stubs.fetch).toHaveBeenCalledTimes(2);
+        for (const [path, request] of stubs.fetch.mock.calls) {
+            expect(path).toBe("/api/generations/completion-release");
+            expect(request?.method).toBe("POST");
+            expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(runEpoch);
+            expect(JSON.parse(String(request?.body))).toEqual({ requestId: "sender-request" });
+        }
+    });
+
+    it.each([412, 500])("does not retry a completion release answered with HTTP %s", async (status) => {
+        stubs.fetch
+            .mockReset()
+            .mockResolvedValueOnce(json(status, { error: "refused" }))
+            .mockResolvedValue(json(200, { released: true }));
+        const released = transport.releaseCompletionHold("sender-request", runEpoch);
+        await vi.runAllTimersAsync();
+        await expect(released).resolves.toBe(false);
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns false without throwing after three unanswered completion releases", async () => {
+        stubs.fetch.mockReset().mockRejectedValue(new TypeError("offline"));
+        const released = transport.releaseCompletionHold("sender-request", runEpoch);
+        const outcome = expect(released).resolves.toBe(false);
+        await vi.runAllTimersAsync();
+        await outcome;
+        expect(stubs.fetch).toHaveBeenCalledTimes(3);
+    });
 });
 
 describe("the tab's identity and saved jobs", () => {
@@ -153,9 +356,68 @@ describe("the tab's identity and saved jobs", () => {
         expect(id).toMatch(/^[0-9a-f-]{36}$/);
         expect(transport.generationClientId()).toBe(id);
         expect(sessionStorage.getItem("risu-generation-client")).toBe(id);
+        // A reload: the old page releases the id on pagehide before the next page claims it.
+        window.dispatchEvent(new Event("pagehide"));
         vi.resetModules();
         const again: Transport = await import("./generationJobs");
         expect(again.generationClientId()).toBe(id);
+    });
+
+    it.each([
+        ["copied live page", "generationClientId"],
+        ["copied live page", "savedGenerationJobs"],
+        ["copied live page", "savedGenerationJobIds"],
+        ["reload after pagehide", "savedGenerationJobIds"],
+        ["discarded page", "savedGenerationJobIds"],
+    ] as const)("isolates copied owners and preserves recovery on a %s reading %s first", async (page, firstRead) => {
+        const originalId = transport.generationClientId();
+        transport.rememberGenerationJob({ chaId: "c", chatId: "k" }, "active-job");
+        const saved = { '["c","k"]': "active-job" };
+        if (page === "reload after pagehide") window.dispatchEvent(new Event("pagehide"));
+
+        // Each page gets its own session storage, copied by the browser before its scripts run.
+        const values = new Map<string, string>();
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i)!;
+            values.set(key, sessionStorage.getItem(key)!);
+        }
+        const copiedStorage: Storage = {
+            get length() {
+                return values.size;
+            },
+            key: (index) => [...values.keys()][index] ?? null,
+            getItem: (key) => values.get(key) ?? null,
+            setItem: (key, value) => {
+                values.set(key, value);
+            },
+            removeItem: (key) => {
+                values.delete(key);
+            },
+            clear: () => values.clear(),
+        };
+        vi.stubGlobal("sessionStorage", copiedStorage);
+        vi.stubGlobal("window", new EventTarget());
+        const discarded = Object.getOwnPropertyDescriptor(document, "wasDiscarded");
+        Object.defineProperty(document, "wasDiscarded", { configurable: true, value: page === "discarded page" });
+        try {
+            vi.resetModules();
+            const next: Transport = await import("./generationJobs");
+            const copied = page === "copied live page";
+            const first = next[firstRead]();
+            if (firstRead === "savedGenerationJobIds") expect(first).toEqual(copied ? [] : ["active-job"]);
+            if (firstRead === "savedGenerationJobs") expect(first).toEqual(copied ? {} : saved);
+            const nextId = next.generationClientId();
+            if (copied) expect(nextId).not.toBe(originalId);
+            else expect(nextId).toBe(originalId);
+            expect(next.generationClientId()).toBe(nextId);
+            expect(next.savedGenerationJobs()).toEqual(copied ? {} : saved);
+            expect(next.savedGenerationJobIds()).toEqual(copied ? [] : ["active-job"]);
+            expect(transport.generationClientId()).toBe(originalId);
+            expect(transport.savedGenerationJobs()).toEqual(saved);
+        } finally {
+            if (discarded) Object.defineProperty(document, "wasDiscarded", discarded);
+            else Reflect.deleteProperty(document, "wasDiscarded");
+        }
     });
 
     it("keys saved jobs by a JSON pair, so ids with slashes never collide, and forgets a job by its id", () => {
@@ -183,6 +445,214 @@ describe("the requests", () => {
             chatRevision: "r",
         },
     };
+
+    it("keeps the completion hold from the context in the create body", async () => {
+        stubs.fetch.mockReset().mockResolvedValue(json(200, { jobId: "held-job" }));
+        await transport.createGenerationJob({ ...body, context: { ...body.context, completionHoldMs: 55_000 } });
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations");
+        expect(JSON.parse(String(request?.body)).context).toEqual({ ...body.context, completionHoldMs: 55_000 });
+    });
+
+    it.each([
+        { status: 503, refusal: { error: "The server is not accepting generations now" }, uncertain: true },
+        { status: 503, refusal: { error: "The server is shutting down" }, uncertain: true },
+        { status: 409, refusal: { error: "chatBusy", jobId: "busy-job" }, uncertain: true },
+        { status: 409, refusal: { error: "memoryRebuilding" }, uncertain: true },
+        {
+            status: 409,
+            refusal: { error: "chatBindingIncomplete", problems: [{ field: "personaId", reason: "gone" }] },
+            uncertain: true,
+        },
+        {
+            status: 409,
+            refusal: { error: "chatLoreOverrideOrphaned", entries: [{ id: "lost", name: "Lost entry" }] },
+            uncertain: true,
+        },
+        { status: 409, refusal: { error: "requestCancelled" }, uncertain: false },
+        { status: 409, refusal: { error: "requestIdReused" }, uncertain: false },
+        { status: 409, refusal: { error: "stale" }, uncertain: false },
+        { status: 409, refusal: { error: "chatBindingMismatch" }, uncertain: false },
+        { status: 404, refusal: { error: "Chat not found" }, uncertain: false },
+    ])(
+        "keeps uncertainty=$uncertain after an unanswered create followed by $status $refusal.error",
+        async ({ status, refusal, uncertain }) => {
+            const auth = await import("../storage/serverAuth");
+            vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
+                options?.beforeDispatch?.();
+                return stubs.fetch(path, init);
+            });
+            const first = deferred<Response>();
+            stubs.fetch.mockImplementationOnce(() => first.promise).mockResolvedValueOnce(json(status, refusal));
+            const result = transport
+                .createGenerationJob({ ...body, requestId: "same-request", hooks: NO_GENERATION_HOOKS })
+                .then(
+                    () => undefined,
+                    (error: unknown) => error,
+                );
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stubs.fetch).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(11_000);
+            expect(stubs.fetch).toHaveBeenCalledTimes(2);
+            const error = await result;
+            const cause = error instanceof transport.GenerationCreateError ? error.cause : error;
+            expect(error).toBeInstanceOf(uncertain ? transport.GenerationCreateError : Error);
+            expect(error instanceof transport.GenerationCreateError && error.uncertain).toBe(uncertain);
+            const expected =
+                status === 409 && refusal.error === "chatBusy"
+                    ? { name: "GenerationBusyError", jobId: "busy-job" }
+                    : refusal.error === "stale"
+                      ? { name: "GenerationStaleError" }
+                      : refusal.error === "chatBindingIncomplete" || refusal.error === "chatBindingMismatch"
+                        ? { name: "ChatBindingRefusedError", code: refusal.error }
+                        : refusal.error === "chatLoreOverrideOrphaned"
+                          ? { name: "ChatLoreOverrideOrphanedError", entries: refusal.entries }
+                          : { name: "ResourceRequestError", status, message: refusal.error };
+            expect(cause).toMatchObject(expected);
+            expect(stubs.fetch.mock.calls[1][1]!.body).toBe(stubs.fetch.mock.calls[0][1]!.body);
+            expect(JSON.parse(String(stubs.fetch.mock.calls[1][1]!.body)).requestId).toBe("same-request");
+            first.resolve(json(200, { jobId: "late-job" }));
+            await vi.advanceTimersByTimeAsync(0);
+        },
+    );
+
+    it.each([
+        { error: "stale", uncertain: true },
+        { error: "chatBindingMismatch", uncertain: true },
+        { error: "requestCancelled", uncertain: false },
+        { error: "requestIdReused", uncertain: false },
+    ])(
+        "keeps uncertainty=$uncertain when the caller's earlier attempt was uncertain and the create answers 409 $error",
+        async ({ error, uncertain }) => {
+            // A stale revision or binding fences only this frozen request. The id's other creator, a remote
+            // host, prepares again with newer values, so only the registry's identity answers settle it.
+            stubs.fetch.mockResolvedValueOnce(json(409, { error }));
+            const failure = await transport
+                .createGenerationJob(
+                    { ...body, requestId: "same-request", hooks: NO_GENERATION_HOOKS },
+                    { requestUncertain: true },
+                )
+                .then(
+                    () => undefined,
+                    (thrown: unknown) => thrown,
+                );
+            expect(failure).toBeInstanceOf(Error);
+            expect(failure instanceof transport.GenerationCreateError && failure.uncertain).toBe(uncertain);
+            expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        },
+    );
+
+    it.each([
+        ["lookup", "authentication"],
+        ["lookup", "fetch"],
+        ["lookup", "body"],
+        ["stop", "authentication"],
+        ["stop", "fetch"],
+        ["stop", "body"],
+    ] as const)("bounds the chat %s exchange including stalled %s to ten seconds", async (operation, phase) => {
+        const auth = await import("../storage/serverAuth");
+        const authentication = deferred();
+        const fetched = deferred<Response>();
+        const parsed = deferred<unknown>();
+        const response = json(200, {});
+        const parse = vi.spyOn(response, "json").mockImplementation(() => parsed.promise);
+        const dispatch = vi.fn(() => fetched.promise);
+        vi.spyOn(auth, "authFetch").mockImplementation(async () => {
+            await authentication.promise;
+            return dispatch();
+        });
+        const observed = vi.fn();
+        const request =
+            operation === "lookup"
+                ? transport.readChatGeneration({ chaId: "c", chatId: "k" })
+                : transport.stopChatGeneration({ chaId: "c", chatId: "k" }, "confirmed-job");
+        void request.then(observed, observed);
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (phase !== "authentication") authentication.resolve();
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (phase === "body") fetched.resolve(response);
+        await vi.advanceTimersByTimeAsync(3_999);
+        expect(dispatch).toHaveBeenCalledTimes(phase === "authentication" ? 0 : 1);
+        expect(parse).toHaveBeenCalledTimes(phase === "body" ? 1 : 0);
+        expect(observed).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(observed).toHaveBeenCalledExactlyOnceWith(expect.any(client.ResourceRequestError));
+        expect(observed.mock.calls[0][0]).toMatchObject({ status: 0 });
+        authentication.resolve();
+        fetched.resolve(response);
+        parsed.resolve(
+            operation === "lookup"
+                ? { jobId: "confirmed-job", kind: "send", owned: false, state: "running" }
+                : { aborted: true },
+        );
+        await vi.advanceTimersByTimeAsync(0);
+    });
+
+    it("never saves, stages or holds a replay owned by another tab", async () => {
+        const { jobStages, chatStageOf } = await import("../process/jobStages");
+        const running = {
+            jobId: "foreign-job",
+            kind: "send",
+            characterId: "c",
+            chatId: "k",
+            epoch: EPOCH,
+            state: "running",
+        };
+        for (const status of [
+            running,
+            { ...running, state: "ended", terminal: { type: "done", epoch: EPOCH, revision: "r" } },
+            null,
+        ]) {
+            stubs.fetch.mockResolvedValueOnce(
+                json(200, { jobId: "foreign-job", replayed: true, owned: false, status }),
+            );
+            expect(await transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS })).toMatchObject({
+                outcome: "replayed",
+                owned: false,
+                status,
+            });
+            expect(transport.savedGenerationJobIds()).toEqual([]);
+            expect(sessionStorage.getItem("risu-generation-jobs") ?? "{}").toBe("{}");
+            expect(chatStageOf(get(jobStages), { chaId: "c", chatId: "k" })).toBeNull();
+            // This public lease includes liveJobs even after creation has settled.
+            expect(transport.generationPluginWorkActive()).toBe(false);
+        }
+    });
+
+    it("sends a request cancellation when stopped during create backoff and sends nothing when stopped before dispatch", async () => {
+        const auth = await import("../storage/serverAuth");
+        vi.spyOn(auth, "authFetch").mockImplementation((path, init, options) => {
+            options?.beforeDispatch?.();
+            return stubs.fetch(path, init);
+        });
+        const before = new AbortController();
+        before.abort();
+        expect(
+            await transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }, { signal: before.signal }),
+        ).toEqual({ outcome: "cancelled" });
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        stubs.fetch
+            .mockRejectedValueOnce(new TypeError("answer lost"))
+            .mockResolvedValueOnce(json(200, { state: "cancelled" }));
+        const stop = new AbortController();
+        const creating = transport.createGenerationJob(
+            { ...body, requestId: "stop-request", hooks: NO_GENERATION_HOOKS },
+            { signal: stop.signal },
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        stop.abort();
+        expect(await creating).toEqual({ outcome: "cancelled" });
+        expect(stubs.fetch.mock.calls.map(([path]) => path)).toEqual(["/api/generations", "/api/generations/cancel"]);
+        expect(JSON.parse(String(stubs.fetch.mock.calls[1][1]!.body))).toEqual({
+            requestId: "stop-request",
+            clientId: transport.generationClientId(),
+        });
+        await vi.advanceTimersByTimeAsync(7000);
+        expect(stubs.fetch).toHaveBeenCalledTimes(2);
+        expect(transport.generationPluginWorkActive()).toBe(false);
+    });
 
     it("shows preparing when creation returns, preserves a stage received before the create response, and clears each released job", async () => {
         const { jobStages, chatStageOf } = await import("../process/jobStages");
@@ -214,13 +684,15 @@ describe("the requests", () => {
         const registered: GenerationHooks = { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], mcpTools: ["plugin:t"] };
         stubs.registeredHooks.mockResolvedValueOnce(registered);
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1" }));
-        await expect(transport.createGenerationJob(body)).resolves.toBe("j1");
+        await expect(transport.createGenerationJob(body)).resolves.toEqual({ outcome: "created", jobId: "j1" });
         const [path, init] = stubs.fetch.mock.calls[0];
         expect(path).toBe("/api/generations");
         expect((init!.headers as Record<string, string>)[RESOURCE_EPOCH_HEADER]).toBe(EPOCH);
+        // A body without its own request id gets a fresh one.
         expect(JSON.parse(String(init!.body))).toEqual({
             ...body,
             hooks: registered,
+            requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
             clientId: transport.generationClientId(),
         });
         expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
@@ -247,8 +719,37 @@ describe("the requests", () => {
             status: 503,
             message: "not now",
         });
-        stubs.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-        await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ status: 0 });
+        // A request without an answer is sent again after 1, 2, and 4 s with the same body and request id,
+        // then fails as one whose outcome is not known.
+        const before = stubs.fetch.mock.calls.length;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            stubs.fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        }
+        const unanswered = transport.createGenerationJob({ ...body, hooks: NO_GENERATION_HOOKS }).then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        await microtasks();
+        expect(stubs.fetch).toHaveBeenCalledTimes(before + 1);
+        for (const [delay, attempts] of [
+            [1_000, 2],
+            [2_000, 3],
+            [4_000, 4],
+        ] as const) {
+            await vi.advanceTimersByTimeAsync(delay - 1);
+            expect(stubs.fetch).toHaveBeenCalledTimes(before + attempts - 1);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(stubs.fetch).toHaveBeenCalledTimes(before + attempts);
+        }
+        const failed = await unanswered;
+        expect(failed).toBeInstanceOf(transport.GenerationCreateError);
+        expect(failed).toMatchObject({ uncertain: true, cause: { name: "ResourceRequestError", status: 0 } });
+        const sent = stubs.fetch.mock.calls.slice(before).map(([, init]) => String(init!.body));
+        expect(new Set(sent).size).toBe(1);
+        expect(JSON.parse(sent[0]).requestId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(stubs.fetch.mock.calls.slice(before).every(([sentPath]) => sentPath === "/api/generations")).toBe(true);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(stubs.fetch).toHaveBeenCalledTimes(before + 4);
         // The saved job survives the refusals.
         expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
     });
@@ -268,6 +769,7 @@ describe("the requests", () => {
     });
 
     it("reads a status (null when the server does not know the job) and aborts (a 404 is fine)", async () => {
+        // The Stop is bounded (`boundedAttempt`): a controlled clock, so its deadline never races the test.
         stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
         await expect(transport.readGenerationJob("j1")).resolves.toMatchObject({ jobId: "j1", state: "running" });
         expect(stubs.fetch.mock.calls[0][0]).toBe(`/api/generations/j1?clientId=${transport.generationClientId()}`);
@@ -282,6 +784,70 @@ describe("the requests", () => {
         await expect(transport.abortGenerationJob("j1")).resolves.toBeUndefined();
         stubs.fetch.mockResolvedValueOnce(json(500, { error: "boom" }));
         await expect(transport.abortGenerationJob("j1")).rejects.toMatchObject({ status: 500 });
+    });
+
+    it("bounds the owner's Stop to the control deadline: a hanging DELETE is aborted and the stop fails", async () => {
+        let signal: AbortSignal | null | undefined;
+        stubs.fetch.mockImplementationOnce((_path, init) => {
+            signal = init?.signal;
+            return new Promise<Response>(() => {});
+        });
+        const outcome = transport.abortGenerationJob("j1").then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const error = await Promise.race([outcome, microtasks().then(() => "pending")]);
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect((error as InstanceType<Client["ResourceRequestError"]>).status).toBe(0);
+        expect(signal?.aborted).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("bounds a status read to its deadline (the request and its body): past it the request is aborted and the read fails as one without an answer; an answer in time leaves no timer", async () => {
+        let signal: AbortSignal | null | undefined;
+        stubs.fetch.mockImplementationOnce((_path, init) => {
+            signal = init?.signal;
+            return new Promise<Response>(() => {});
+        });
+        const outcome = transport.readGenerationJob("j1", { deadlineMs: 10_000 }).then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        // Settled by the deadline's timer, not by any answer.
+        const error = await Promise.race([outcome, microtasks().then(() => "pending")]);
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect((error as InstanceType<Client["ResourceRequestError"]>).status).toBe(0);
+        expect(signal?.aborted).toBe(true);
+        // A body that never arrives is bounded too.
+        stubs.fetch.mockResolvedValueOnce(
+            new Response(new ReadableStream({ start() {} }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            }),
+        );
+        const hanging = transport.readGenerationJob("j1", { deadlineMs: 10_000 }).then(
+            () => "answered",
+            (error: { status: number }) => error.status,
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(await Promise.race([hanging, microtasks().then(() => "pending")])).toBe(0);
+        // In time: the status, and the deadline's timer cleared; a 404 is still null.
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
+        await expect(transport.readGenerationJob("j1", { deadlineMs: 10_000 })).resolves.toMatchObject({ jobId: "j1" });
+        expect(vi.getTimerCount()).toBe(0);
+        stubs.fetch.mockResolvedValueOnce(json(404, { error: "Generation not found" }));
+        await expect(transport.readGenerationJob("j1", { deadlineMs: 10_000 })).resolves.toBeNull();
+        expect(vi.getTimerCount()).toBe(0);
+        // Without a deadline: no timer at all.
+        stubs.fetch.mockResolvedValueOnce(json(200, { jobId: "j1", state: "running" }));
+        await transport.readGenerationJob("j1");
+        expect(vi.getTimerCount()).toBe(0);
     });
 
     it("reports a cancelled callback drained to the job's route with the client id, and never fails: a 404 (the job is gone) is silent, any other failure is logged", async () => {
@@ -309,17 +875,77 @@ describe("the requests", () => {
 });
 
 describe("following a job", () => {
-    it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
+    it("advertises patch hydration beside owner liveness and echoes each ping timestamp even across an epoch filter", async () => {
+        const seen = vi.fn();
+        const follow = startFollow("j1", seen);
+        stubs.auth[0].resolve("jwt");
+        await microtasks();
+        const [socket] = FakeSocket.instances;
+        expect(new URL(socket.url).searchParams.get("liveness")).toBe("1");
+        expect(new URL(socket.url).searchParams.get("hydration")).toBe("patch");
+        socket.open();
+        // The pong uses the server timestamp, not this tab's clock or its loaded resource epoch.
+        vi.setSystemTime(new Date("2030-01-01"));
+        socket.message({ type: "ping", ts: 17 });
+        socket.message({ type: "ping", ts: 29, epoch: "another-epoch" });
+        expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+            { type: "pong", ts: 17 },
+            { type: "pong", ts: 29 },
+        ]);
+        expect(seen).not.toHaveBeenCalled();
+        follow.close();
+        await follow.closed;
+    });
+
+    it("ignores unknown job frames without changing the followed job and continues applying later frames", async () => {
         const { jobStages } = await import("../process/jobStages");
         const ref = { chaId: "c", chatId: "k" };
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        transport.rememberGenerationJob(ref, "j1");
         const dispatch = vi.fn((event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
             transport.applyGenerationEvent("j1", ref, event),
         );
-        const follow = transport.followGenerationJob("j1", dispatch);
+        const follow = startFollow("j1", dispatch);
+        stubs.auth[0].resolve("jwt");
+        await vi.advanceTimersByTimeAsync(0);
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        socket.message({ type: "stage", epoch: EPOCH, stage: "generating" });
+        expect(() =>
+            socket.message({
+                type: "future-frame",
+                epoch: EPOCH,
+                stage: "finishing",
+                revision: null,
+                data: { bad: true },
+            }),
+        ).not.toThrow();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(get(jobStages).get("j1")).toEqual({ chatKey: "c\u0000k", stage: "generating" });
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+        expect(stubs.applyHydration).not.toHaveBeenCalled();
+        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
+        expect(stubs.endServerJob).not.toHaveBeenCalled();
+        expect(stubs.handleChannelEvent).not.toHaveBeenCalled();
+        expect(socket.closeCalls).toBe(0);
+        socket.message({ type: "stage", epoch: EPOCH, stage: "finishing" });
+        expect(get(jobStages).get("j1")).toEqual({ chatKey: "c\u0000k", stage: "finishing" });
+        socket.message({ type: "done", epoch: EPOCH, revision: null });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stubs.endServerJob).toHaveBeenCalledExactlyOnceWith("j1");
+        expect(transport.savedGenerationJobs()).toEqual({});
+    });
+
+    it("drops another epoch's stage before dispatch and keeps the followed job's stage", async () => {
+        const { jobStages } = await import("../process/jobStages");
+        const ref = { chaId: "c", chatId: "k" };
+        const dispatch = vi.fn((event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
+            transport.applyGenerationEvent("j1", ref, event),
+        );
+        const follow = startFollow("j1", dispatch);
         try {
             stubs.auth[0].resolve("jwt");
-            await vi.runAllTimersAsync();
+            // Not every timer: the follow's connect timeout would give the socket up before it opens.
+            await vi.advanceTimersByTimeAsync(0);
             const [socket] = FakeSocket.instances;
             socket.open();
 
@@ -342,7 +968,7 @@ describe("following a job", () => {
 
     it("connects with a fresh JWT, the client id, and an increasing attach stamp; delivers events of this epoch and closes on the terminal", async () => {
         const seen: unknown[] = [];
-        const follow = transport.followGenerationJob("j1", (event) => seen.push(event));
+        const follow = startFollow("j1", (event) => seen.push(event));
         expect(FakeSocket.instances).toHaveLength(0);
         expect(follow.send({ x: 1 })).toBe(false);
         stubs.auth[0].resolve("jwt-1");
@@ -354,6 +980,8 @@ describe("following a job", () => {
         expect(url.pathname).toBe("/api/generations/j1/ws");
         expect(url.searchParams.get("risu-auth")).toBe("jwt-1");
         expect(url.searchParams.get("clientId")).toBe(transport.generationClientId());
+        expect(url.searchParams.get("rows")).toBe("streamed");
+        expect(url.searchParams.get("proto")).toBe("1");
         expect(socket.stamp).toBeGreaterThan(0);
         expect(follow.send({ x: 1 })).toBe(false);
         socket.open();
@@ -367,10 +995,13 @@ describe("following a job", () => {
         expect(await settled(follow.closed)).toBe("pending");
         socket.message({ type: "done", epoch: EPOCH, revision: null });
         expect(socket.closeCalls).toBe(1);
-        await expect(follow.closed).resolves.toEqual({ terminal: { type: "done", epoch: EPOCH, revision: null } });
+        await expect(follow.closed).resolves.toEqual({
+            terminal: { type: "done", epoch: EPOCH, revision: null },
+            received: true,
+        });
         expect(follow.send({ late: true })).toBe(false);
         // Another follow's stamp is higher.
-        const next = transport.followGenerationJob("j1", () => {});
+        const next = startFollow("j1", () => {});
         stubs.auth[1].resolve("jwt-2");
         await flush();
         expect(FakeSocket.instances[1].stamp).toBeGreaterThan(socket.stamp);
@@ -378,7 +1009,7 @@ describe("following a job", () => {
     });
 
     it("settles `closed` when cancelled before authentication, and never builds a socket afterwards", async () => {
-        const follow = transport.followGenerationJob("j1", () => {});
+        const follow = startFollow("j1", () => {});
         expect(await settled(follow.closed)).toBe("pending");
         follow.close();
         await expect(follow.closed).resolves.toEqual({ terminal: null });
@@ -387,22 +1018,61 @@ describe("following a job", () => {
         expect(FakeSocket.instances).toHaveLength(0);
         // A rejected authentication after cancellation is handled too; one that fails on its own
         // ends the follow with no socket.
-        const second = transport.followGenerationJob("j2", () => {});
+        const second = startFollow("j2", () => {});
         second.close();
         stubs.auth[1].reject(new Error("no auth"));
         await flush();
-        const third = transport.followGenerationJob("j3", () => {});
+        const third = startFollow("j3", () => {});
         stubs.auth[2].reject(new Error("no auth"));
         await expect(third.closed).resolves.toEqual({ terminal: null });
         expect(FakeSocket.instances).toHaveLength(0);
         expect(console.error).toHaveBeenCalled();
     });
 
+    it("settles `opened` true once the socket opens, and false when the follow ends before that: cancelled before authentication, closed while connecting, a failed authentication, or a socket the server closed unopened", async () => {
+        const open = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        expect(await settled(open.opened)).toBe("pending");
+        FakeSocket.instances[0].open();
+        expect(await settled(open.opened)).toBe("settled");
+        await expect(open.opened).resolves.toBe(true);
+        FakeSocket.instances[0].onclose!({ code: 1000 });
+        await open.closed;
+        await expect(open.opened).resolves.toBe(true);
+
+        const early = startFollow("j2", () => {});
+        early.close();
+        expect(await settled(early.opened)).toBe("settled");
+        await expect(early.opened).resolves.toBe(false);
+        stubs.auth[1].resolve("jwt");
+        await flush();
+
+        const connecting = startFollow("j3", () => {});
+        stubs.auth[2].resolve("jwt");
+        await flush();
+        expect(await settled(connecting.opened)).toBe("pending");
+        connecting.close();
+        await expect(connecting.opened).resolves.toBe(false);
+        await expect(connecting.closed).resolves.toEqual({ terminal: null });
+
+        const unauthenticated = startFollow("j4", () => {});
+        stubs.auth[3].reject(new Error("no auth"));
+        await expect(unauthenticated.opened).resolves.toBe(false);
+
+        const refused = startFollow("j5", () => {});
+        stubs.auth[4].resolve("jwt");
+        await flush();
+        FakeSocket.instances.at(-1)!.onclose!({ code: 1006 });
+        await expect(refused.opened).resolves.toBe(false);
+        await expect(refused.closed).resolves.toEqual({ terminal: null });
+    });
+
     it("lets a newer follow of the job supersede an older one, whichever authenticates first, with one usable stream", async () => {
         const seenA: unknown[] = [];
         const seenB: unknown[] = [];
-        const a = transport.followGenerationJob("j1", (event) => seenA.push(event));
-        const b = transport.followGenerationJob("j1", (event) => seenB.push(event));
+        const a = startFollow("j1", (event) => seenA.push(event));
+        const b = startFollow("j1", (event) => seenB.push(event));
         // Superseding settles the older follow at once, even before its authentication.
         await expect(a.closed).resolves.toEqual({ terminal: null });
         // The newer one authenticates first, then the older one: only the newer builds a socket.
@@ -421,12 +1091,12 @@ describe("following a job", () => {
         expect(b.send({})).toBe(true);
         // A third follow supersedes the open one: its socket is closed and its queued message ignored.
         const seenC: unknown[] = [];
-        const c = transport.followGenerationJob("j1", (event) => seenC.push(event));
+        const c = startFollow("j1", (event) => seenC.push(event));
         expect(socketB.closeCalls).toBe(1);
         socketB.message({ type: "progress", epoch: EPOCH, payload: "late for b" });
         expect(seenB).toHaveLength(1);
         expect(b.send({})).toBe(false);
-        await expect(b.closed).resolves.toEqual({ terminal: null });
+        await expect(b.closed).resolves.toEqual({ terminal: null, received: true });
         stubs.auth[2].resolve("jwt-c");
         await flush();
         expect(FakeSocket.instances).toHaveLength(2);
@@ -438,16 +1108,16 @@ describe("following a job", () => {
         // Closing the newest follow explicitly; a follow of another job is independent.
         c.close();
         expect(socketC.closeCalls).toBe(1);
-        await expect(c.closed).resolves.toEqual({ terminal: null });
+        await expect(c.closed).resolves.toEqual({ terminal: null, received: true });
     });
 
     it("cancels a socket that is still connecting when superseded", async () => {
-        const a = transport.followGenerationJob("j1", () => {});
+        const a = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt-a");
         await flush();
         const socketA = FakeSocket.instances[0];
         expect(socketA.readyState).toBe(FakeSocket.CONNECTING);
-        transport.followGenerationJob("j1", () => {});
+        startFollow("j1", () => {});
         expect(socketA.closeCalls).toBe(1);
         await expect(a.closed).resolves.toEqual({ terminal: null });
     });
@@ -455,6 +1125,188 @@ describe("following a job", () => {
 
 describe("the event dispatcher and the resume", () => {
     const ref = { chaId: "c", chatId: "k" };
+
+    const retakeAndStreamCheckpoints = async (loss: "pending takeover" | "follow") => {
+        const chat = await vi.importActual<typeof import("../storage/chatStore.svelte")>("../storage/chatStore.svelte");
+        const mockedChat = await import("../storage/chatStore.svelte");
+        // This round trip needs the real stream buffer and hydration, including their shared locks.
+        vi.spyOn(mockedChat, "applyServerGeneration").mockImplementation(chat.applyServerGeneration);
+        vi.spyOn(mockedChat, "applyServerGenerationChunk").mockImplementation(chat.applyServerGenerationChunk);
+        vi.spyOn(mockedChat, "detachServerJob").mockImplementation(chat.detachServerJob);
+        vi.spyOn(mockedChat, "endServerJob").mockImplementation(chat.endServerJob);
+        vi.spyOn(mockedChat, "hydrateChat").mockImplementation(chat.hydrateChat);
+        vi.spyOn(mockedChat, "hydrateChatPatch").mockImplementation(chat.hydrateChatPatch);
+        vi.spyOn(mockedChat, "isChatStale").mockImplementation(chat.isChatStale);
+        vi.spyOn(mockedChat, "chatHydrationHold").mockImplementation(chat.chatHydrationHold);
+        const sync = await vi.importActual<typeof import("../storage/resourceSync.svelte")>(
+            "../storage/resourceSync.svelte",
+        );
+        stubs.applyHydration.mockImplementation(sync.applyHydration);
+        stubs.applyPatchHydration.mockImplementation(sync.applyPatchHydration);
+        const server = await StoreBackedServer.create();
+        try {
+            const epoch = server.store.epoch();
+            client.setResourceEpoch(epoch);
+            server.store.applyChanges({
+                ops: [
+                    {
+                        kind: server.kind("characters"),
+                        id: "c",
+                        baseRevision: null,
+                        data: { chaId: "c", name: "C" },
+                    },
+                ],
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "k",
+                        baseRevision: null,
+                        ops: [
+                            {
+                                op: "create",
+                                chat: {
+                                    id: "k",
+                                    name: "K",
+                                    note: "",
+                                    localLore: [],
+                                    message: [{ chatId: "a", role: "char", data: "stored" }],
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+            const records = await import("../storage/records.svelte");
+            const { characterList } = await import("../storage/characterStore.svelte");
+            records.initializeRecords(records.takeRecordFields({ characters: [{ chaId: "c", name: "C" }] }));
+            const copy = server.chat("c", "k")!;
+            const order = server.order("c")!;
+            chat.seedChats([copy], [order]);
+            chat.assembleChats(characterList(), [copy], [order]);
+            chat.initializeChats();
+            const streaming = (seq: number) => [{ messageId: "a", generationId: "g", seq }];
+            const whole = (seq: number) => ({
+                type: "resource" as const,
+                epoch,
+                kind: "chats" as const,
+                ...server.chat("c", "k")!,
+                streaming: streaming(seq),
+            });
+            const accepted = (seq: number, text: string) => ({
+                type: "accepted" as const,
+                epoch,
+                jobId: "j",
+                messageId: "a",
+                generationId: "g",
+                revision: server.chat("c", "k")!.revision,
+                seq,
+                text,
+            });
+            const attach = async (ticket: string) => {
+                const follow = startFollow("j", (event) => transport.applyGenerationEvent("j", ref, event, follow), {
+                    ticket,
+                });
+                stubs.auth.at(-1)!.resolve("jwt");
+                await microtasks();
+                const socket = FakeSocket.instances.at(-1)!;
+                socket.open();
+                return { follow, socket };
+            };
+            if (loss === "pending takeover") {
+                const pending = await attach("lost-ticket");
+                pending.socket.message({ type: "handoff", epoch, owner: "other", pending: true });
+                pending.socket.message(whole(0));
+                pending.socket.message(accepted(1, "pending stream"));
+                expect(chat.findChat(ref)!.message[0].data).toBe("pending stream");
+                expect(pending.follow.role).toBe("pending");
+                pending.follow.close();
+                await pending.follow.closed;
+                transport.detachGenerationJob("j");
+            } else {
+                vi.spyOn(mockedChat, "ensureChatLoaded").mockImplementation(chat.ensureChatLoaded);
+                vi.spyOn(mockedChat, "pinChat").mockImplementation(chat.pinChat);
+                vi.spyOn(mockedChat, "markChatStale").mockImplementation(chat.markChatStale);
+                const mockedSync = await import("../storage/resourceSync.svelte");
+                vi.spyOn(mockedSync, "refreshStaleChat").mockResolvedValue(true);
+                const { followJobToEnd } = await import("../process/serverCommands");
+                const end = followJobToEnd("j", ref, undefined, { ticket: "lost-ticket" });
+                await vi.advanceTimersByTimeAsync(0);
+                stubs.auth.at(-1)!.resolve("jwt");
+                await vi.advanceTimersByTimeAsync(0);
+                const socket = FakeSocket.instances.at(-1)!;
+                socket.open();
+                socket.message({ type: "handoff", epoch, owner: "self" });
+                socket.message(whole(0));
+                socket.message(accepted(1, "worker stream"));
+                expect(chat.findChat(ref)!.message[0].data).toBe("worker stream");
+
+                // The worker loses the server, then exhausts its reconnects in this page.
+                stubs.fetch.mockRejectedValue(new Error("offline"));
+                const auth = await import("../storage/serverAuth");
+                const authenticate = vi.spyOn(auth, "getNodeServerProxyAuth").mockRejectedValue(new Error("offline"));
+                socket.close();
+                await vi.runAllTimersAsync();
+                expect(await end).toBe("lost");
+                authenticate.mockRestore();
+            }
+
+            const retaken = await attach("new-ticket");
+            retaken.socket.message({ type: "handoff", epoch, owner: "self" });
+            retaken.socket.message(whole(0));
+            retaken.socket.message(accepted(1, "retaken"));
+            expect(chat.findChat(ref)!.message[0].data).toBe("retaken");
+            let previous = "retaken";
+            for (const [step, suffix] of [" one", " two", " three"].entries()) {
+                const seq = step + 2;
+                retaken.socket.message({
+                    type: "chunk",
+                    epoch,
+                    messageId: "a",
+                    generationId: "g",
+                    base: seq - 1,
+                    seq,
+                    keep: previous.length,
+                    text: suffix,
+                });
+                const text = previous + suffix;
+                const baseRevision = server.chat("c", "k")!.revision;
+                server.chatBatch([
+                    { characterId: "c", chatId: "k", baseRevision, ops: [{ op: "setText", id: "a", text }] },
+                ]);
+                retaken.socket.message({
+                    type: "chatPatch",
+                    epoch,
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: server.chat("c", "k")!.revision,
+                    count: 1,
+                    streaming: streaming(seq),
+                    messages: [{ after: null, id: "a", streamed: { generationId: "g", seq } }],
+                });
+                expect(
+                    retaken.socket.sent
+                        .map((message) => JSON.parse(message))
+                        .filter((message) => message.type === "resync"),
+                ).toHaveLength(0);
+                expect(chat.findChat(ref)!.message[0].data).toBe(text);
+                expect(chat.heldChatRevision(ref)).toBe(server.chat("c", "k")!.revision);
+                expect(chat.isChatStale(ref)).toBe(false);
+                previous = text;
+            }
+            expect(chat.findChat(ref)!.message[0].data).toBe("retaken one two three");
+        } finally {
+            server.store.close();
+        }
+    };
+
+    it("retakes a lost pending takeover and streams three compact checkpoints without requesting a whole-chat resync", async () => {
+        await retakeAndStreamCheckpoints("pending takeover");
+    });
+
+    it("retakes a lost follow in the same page and applies accepted and chunk events through three compact checkpoints", async () => {
+        await retakeAndStreamCheckpoints("follow");
+    });
 
     it("shows preparing on accepted until the first stage event, preserves that stage on reaccept, and removes it on release", async () => {
         const { jobStages, chatStageOf } = await import("../process/jobStages");
@@ -477,21 +1329,12 @@ describe("the event dispatcher and the resume", () => {
         expect(chatStageOf(get(jobStages), ref)).toBeNull();
     });
 
-    it("drops only the released job's presentation stage, including a job resumed from saved generations", async () => {
-        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    it("drops only the released job's presentation stage, including a followed job's", async () => {
         const { jobStages, chatStageOf } = await import("../process/jobStages");
         transport.rememberGenerationJob(ref, "resumed");
-        stubs.fetch.mockResolvedValueOnce(
-            json(200, {
-                jobId: "resumed",
-                kind: "send",
-                characterId: ref.chaId,
-                chatId: ref.chatId,
-                epoch: EPOCH,
-                state: "running",
-            }),
+        const follow: ReturnType<Transport["followGenerationJob"]> = transport.followGenerationJob("resumed", (event) =>
+            transport.applyGenerationEvent("resumed", ref, event, follow),
         );
-        const follows = await transport.resumeSavedGenerations();
         try {
             stubs.auth[0].resolve("jwt");
             await vi.advanceTimersByTimeAsync(0);
@@ -507,8 +1350,62 @@ describe("the event dispatcher and the resume", () => {
             expect(chatStageOf(get(jobStages), ref)).toBeNull();
             expect([...get(jobStages)]).toEqual([["other-job", { chatKey: "other\u0000chat", stage: "memory" }]]);
         } finally {
-            follows.forEach((follow) => follow.close());
+            follow.close();
         }
+    });
+
+    it("applies retry counts independently of stages and removes them on clear, release, detach, and end", async () => {
+        const { jobRetries } = await import("../process/jobStages");
+        const other = { chaId: "other", chatId: "chat" };
+        transport.applyGenerationEvent("other-job", other, { type: "retry", epoch: EPOCH, retry: 4 });
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 1 });
+        expect(get(jobRetries).get("j1")).toBe(1);
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 3 });
+        transport.applyGenerationEvent("j1", ref, { type: "stage", epoch: EPOCH, stage: "generating" });
+        expect([...get(jobRetries)]).toEqual([
+            ["other-job", 4],
+            ["j1", 3],
+        ]);
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: null });
+        expect([...get(jobRetries)]).toEqual([["other-job", 4]]);
+
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 1 });
+        transport.releaseGenerationJob("j1");
+        expect([...get(jobRetries)]).toEqual([["other-job", 4]]);
+        // Detach must also clear a count received before any presentation stage.
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 2 });
+        transport.detachGenerationJob("j1");
+        expect([...get(jobRetries)]).toEqual([["other-job", 4]]);
+        transport.applyGenerationEvent("other-job", other, { type: "done", epoch: EPOCH, revision: null });
+        expect([...get(jobRetries)]).toEqual([]);
+    });
+
+    it("clears stale retries on each socket open before replaying a current count or a snapshot without retries", async () => {
+        const { jobRetries } = await import("../process/jobStages");
+        transport.applyGenerationEvent("resumed", ref, { type: "retry", epoch: EPOCH, retry: 4 });
+        const dispatch = (event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
+            transport.applyGenerationEvent("resumed", ref, event);
+        const first = startFollow("resumed", dispatch);
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        const firstSocket = FakeSocket.instances[0];
+        firstSocket.open();
+        expect(get(jobRetries).has("resumed")).toBe(false);
+        firstSocket.message({ type: "stage", epoch: EPOCH, stage: "generating" });
+        expect(get(jobRetries).has("resumed")).toBe(false);
+        firstSocket.message({ type: "retry", epoch: EPOCH, retry: 2 });
+        expect(get(jobRetries).get("resumed")).toBe(2);
+        first.close();
+        await first.closed;
+
+        startFollow("resumed", dispatch);
+        stubs.auth[1].resolve("jwt");
+        await flush();
+        const secondSocket = FakeSocket.instances[1];
+        secondSocket.open();
+        expect(get(jobRetries).has("resumed")).toBe(false);
+        secondSocket.message({ type: "stage", epoch: EPOCH, stage: "finishing" });
+        expect(get(jobRetries).has("resumed")).toBe(false);
     });
 
     it("records stage events under their job and chat, replacing the job's previous stage", async () => {
@@ -656,7 +1553,7 @@ describe("the event dispatcher and the resume", () => {
         expect(closed.send).toHaveBeenCalledTimes(2);
     });
 
-    it("applies a `chatPatch` through the save adapter without remembering it for the barrier, and asks the follow for the chat whole once per follow on a mismatch, until a whole job chat arrives on that follow", async () => {
+    it("applies a `chatPatch` through the save adapter and remembers only its streaming list for the barrier, and asks the follow for the chat whole once per follow on a mismatch, until a whole job chat arrives on that follow", async () => {
         const follow = { send: vi.fn(() => true) };
         const streaming = [{ messageId: "r", generationId: "g", seq: 1 }];
         const patch = {
@@ -703,6 +1600,12 @@ describe("the event dispatcher and the resume", () => {
         ]);
         await flush();
         expect(stubs.rememberHydration).not.toHaveBeenCalled();
+        expect(stubs.rememberJobStreaming).toHaveBeenCalledWith("j1", {
+            characterId: "c",
+            id: "k",
+            revision: "x",
+            streaming,
+        });
         expect(follow.send).not.toHaveBeenCalled();
         // Local work kept it out (`busy`) and nothing saves that work (the chat is held): nothing is
         // asked now, and no recovery saves anything (the recovery itself is covered below).
@@ -783,8 +1686,8 @@ describe("the event dispatcher and the resume", () => {
             let settle!: { resolve: () => void; reject: (error: unknown) => void };
             stubs.flushResources.mockImplementationOnce(
                 () =>
-                    new Promise<{ discarded: string[] }>((resolve, reject) => {
-                        settle = { resolve: () => resolve({ discarded: [] }), reject };
+                    new Promise<Awaited<ReturnType<typeof stubs.flushResources>>>((resolve, reject) => {
+                        settle = { resolve: () => resolve({ discarded: [], refused: [] }), reject };
                     }),
             );
             return () => settle;
@@ -796,7 +1699,6 @@ describe("the event dispatcher and the resume", () => {
         };
 
         beforeEach(() => {
-            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
             stubs.isChatStale.mockReturnValue(true);
             stubs.applyPatchHydration.mockReturnValue("busy");
         });
@@ -928,12 +1830,13 @@ describe("the event dispatcher and the resume", () => {
         });
 
         it("ends when the follow closes (a superseded or closed socket): its waiting try is dropped and nothing more is asked through it", async () => {
-            const follow = transport.followGenerationJob("j1", () => {});
+            const follow = startFollow("j1", () => {});
             stubs.flushResources.mockRejectedValueOnce(new Error("offline"));
             transport.applyGenerationEvent("j1", ref, patch, follow);
             await microtasks();
             expect(stubs.flushResources).toHaveBeenCalledTimes(1);
-            expect(vi.getTimerCount()).toBe(1);
+            // The recovery's wait, beside the follow's own connect timeout.
+            expect(vi.getTimerCount()).toBe(2);
             follow.close();
             await follow.closed;
             await microtasks();
@@ -946,7 +1849,7 @@ describe("the event dispatcher and the resume", () => {
             await microtasks();
             expect(stubs.flushResources).toHaveBeenCalledTimes(1);
             // A new follow of the same job recovers on its own.
-            const next = transport.followGenerationJob("j1", () => {});
+            const next = startFollow("j1", () => {});
             stubs.applyPatchHydration.mockReturnValue("busy");
             transport.applyGenerationEvent("j1", ref, patch, next);
             await microtasks();
@@ -996,7 +1899,11 @@ describe("the event dispatcher and the resume", () => {
         stubs.handleChannelEvent.mockImplementation((_jobId: string, event: { type: string }) =>
             order.push(event.type),
         );
-        stubs.endJobChannel.mockImplementation(() => order.push("end"));
+        const ended = deferred();
+        stubs.endJobChannel.mockImplementation(() => {
+            order.push("end");
+            ended.resolve();
+        });
         const resource = {
             type: "resource" as const,
             epoch: EPOCH,
@@ -1032,7 +1939,8 @@ describe("the event dispatcher and the resume", () => {
         // The hydration itself is applied at once; the dispatcher's work follows on its chain.
         expect(stubs.applyHydration).toHaveBeenCalledTimes(1);
         expect(order).toEqual([]);
-        await vi.waitFor(() => expect(order).toContain("end"));
+        await ended.promise;
+        expect(order).toContain("end");
         // The hydration is kept as the job's own copy (its id first), for that job's callback barriers.
         expect(order).toEqual(["hydration:j1:c", "notice", "callback", "cancel", "end"]);
         expect(stubs.rememberHydration).toHaveBeenCalledWith("j1", {
@@ -1049,60 +1957,228 @@ describe("the event dispatcher and the resume", () => {
         ]);
         expect(stubs.endJobChannel).toHaveBeenCalledWith("j1");
     });
+});
 
-    it("attaches again to the saved jobs the server still knows in this epoch, forgetting the others", async () => {
-        transport.rememberGenerationJob({ chaId: "c", chatId: "k" }, "known");
-        transport.rememberGenerationJob({ chaId: "c", chatId: "j" }, "gone");
-        transport.rememberGenerationJob({ chaId: "d", chatId: "q" }, "old-epoch");
-        stubs.fetch.mockImplementation(async (path) => {
-            if (path.startsWith("/api/generations/known")) {
-                return json(200, {
-                    jobId: "known",
-                    kind: "send",
-                    characterId: "c",
-                    chatId: "k",
-                    epoch: EPOCH,
-                    state: "running",
-                });
-            }
-            if (path.startsWith("/api/generations/old-epoch")) {
-                return json(200, {
-                    jobId: "old-epoch",
-                    kind: "send",
-                    characterId: "d",
-                    chatId: "q",
-                    epoch: "other",
-                    state: "running",
-                });
-            }
-            return json(404, { error: "Generation not found" });
-        });
-        const seen: [string, unknown, string][] = [];
-        const follows = await transport.resumeSavedGenerations((jobId, target, event) =>
-            seen.push([jobId, target, event.type]),
-        );
-        expect(follows).toHaveLength(1);
-        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "known" });
+// The follow's liveness (`socketLiveness.ts`, the real module, under fake timers): a socket that does
+// not open in time or goes silent is given up as the caller's `close()` would (the job stays live,
+// its channel open), the page's return replaces an opened socket (`closed` carries `resumed`), and
+// a terminal that arrived stands.
+describe("the follow's liveness", () => {
+    const ref = { chaId: "c", chatId: "k" };
+    const links = () => stubs.record.mock.calls.map(([input]) => input);
+    const tick = flush;
+    const state = settled;
+    /** What a released job would show: its end told to the chat module and the channel. */
+    const released = () => stubs.endServerJob.mock.calls.length + stubs.endJobChannel.mock.calls.length;
+    let visibility: MockInstance<() => DocumentVisibilityState>;
+    const show = (value: "visible" | "hidden") => {
+        visibility.mockReturnValue(value);
+        document.dispatchEvent(new Event("visibilitychange"));
+    };
+
+    beforeEach(() => {
+        visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    });
+
+    it("gives up a socket not open within 10 s of the follow's start, authentication included (`connectTimeout`): `closed` settles without a terminal, the job is not released, a late authentication builds no socket, and one that opened in time is left alone", async () => {
+        transport.rememberGenerationJob(ref, "j1");
+        const unauthenticated = startFollow("j1", () => {});
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(await state(unauthenticated.closed)).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(unauthenticated.closed).resolves.toEqual({ terminal: null });
+        await expect(unauthenticated.opened).resolves.toBe(false);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "connectTimeout", jobId: "j1" }]);
         stubs.auth[0].resolve("jwt");
-        await flush();
+        await tick();
+        expect(FakeSocket.instances).toHaveLength(0);
+        expect(released()).toBe(0);
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+
+        // Authenticated at 5 s and still connecting at 10 s: closed, and its own close is no `attachFailed`.
+        const connecting = startFollow("j2", () => {});
+        await vi.advanceTimersByTimeAsync(5_000);
+        stubs.auth[1].resolve("jwt");
+        await tick();
         const [socket] = FakeSocket.instances;
-        expect(socket.url).toContain("/api/generations/known/ws");
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(socket.closeCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(socket.closeCalls).toBe(1);
+        await expect(connecting.closed).resolves.toEqual({ terminal: null });
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "connectTimeout", jobId: "j1" },
+            { kind: "jobLink", phase: "connectTimeout", jobId: "j2" },
+        ]);
+
+        const opened = startFollow("j3", () => {});
+        stubs.auth[2].resolve("jwt");
+        await tick();
+        FakeSocket.instances[1].open();
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(await state(opened.closed)).toBe("pending");
+        expect(FakeSocket.instances[1].closeCalls).toBe(0);
+    });
+
+    it("gives up an opened socket with no frame for 45 s while the page is visible (`stale`): pings keep it alive, a hidden page is not checked, the job is not released", async () => {
+        transport.rememberGenerationJob(ref, "j1");
+        const follow = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
         socket.open();
-        const chunk = {
-            type: "chunk",
-            epoch: EPOCH,
-            messageId: "r",
-            generationId: "g",
-            seq: 1,
-            base: 0,
-            keep: 0,
-            text: "t",
+        // The server's pings, every 15 s, for a minute: alive.
+        for (let ping = 0; ping < 4; ping += 1) {
+            await vi.advanceTimersByTimeAsync(15_000);
+            socket.message({ type: "ping", ts: ping });
+        }
+        // Then silence: 40 s of it visible (the checks at 15 and 30 s pass), 20 s hidden (not checked),
+        // shown again after a short absence (no return): the next check sees 75 s and gives it up.
+        await vi.advanceTimersByTimeAsync(40_000);
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(socket.closeCalls).toBe(0);
+        show("visible");
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(socket.closeCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(socket.closeCalls).toBe(1);
+        await expect(follow.closed).resolves.toEqual({ terminal: null, received: true });
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "stale", jobId: "j1" },
+        ]);
+        expect(released()).toBe(0);
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+    });
+
+    it("gives an opened socket up when the page comes back (`resumeReconnect`), `closed` carrying `resumed`; a socket that had not opened closes without it; a follow started after the trigger is left alone", async () => {
+        transport.rememberGenerationJob(ref, "j1");
+        const opened = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        FakeSocket.instances[0].open();
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(30_000);
+        const connecting = startFollow("j2", () => {});
+        stubs.auth[1].resolve("jwt");
+        await tick();
+        show("visible");
+        await vi.advanceTimersByTimeAsync(249);
+        expect(await state(opened.closed)).toBe("pending");
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(opened.closed).resolves.toEqual({ terminal: null, resumed: true });
+        await expect(connecting.closed).resolves.toEqual({ terminal: null });
+        expect(FakeSocket.instances.map((socket) => socket.closeCalls)).toEqual([1, 1]);
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "resumeReconnect", jobId: "j1" },
+            { kind: "jobLink", phase: "resumeReconnect", jobId: "j2" },
+        ]);
+        expect(released()).toBe(0);
+        expect(transport.savedGenerationJobs()).toEqual({ '["c","k"]': "j1" });
+
+        // The caller's next attach, started inside the return's window, is not given up by it.
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(100);
+        const next = startFollow("j1", () => {});
+        await vi.advanceTimersByTimeAsync(150);
+        expect(await state(next.closed)).toBe("pending");
+        expect(links()).toHaveLength(3);
+    });
+
+    it("leaves a socket that fell silent while the page was away to the page's return when the stale check runs inside the return's window: `closed` carries `resumed`, no `stale`", async () => {
+        const follow = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        socket.message({ type: "ping", ts: 0 });
+        await vi.advanceTimersByTimeAsync(5_000);
+        show("hidden");
+        await vi.advanceTimersByTimeAsync(54_900);
+        // Shown again 100 ms before the check that finds 60 s of silence: a thawed page's overdue check.
+        show("visible");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(await state(follow.closed)).toBe("pending");
+        expect(socket.closeCalls).toBe(0);
+        await vi.advanceTimersByTimeAsync(150);
+        await expect(follow.closed).resolves.toEqual({ terminal: null, resumed: true, received: true });
+        await tick();
+        expect(links()).toEqual([
+            { kind: "jobLink", phase: "attach", jobId: "j1" },
+            { kind: "jobLink", phase: "resumeReconnect", jobId: "j1" },
+        ]);
+    });
+
+    for (const terminal of [
+        { type: "done", epoch: EPOCH, revision: null },
+        { type: "error", epoch: EPOCH, reason: "failed", message: "provider failed", stage: "generate", status: 500 },
+    ] as const) {
+        it(`applies ${terminal.type} before settlement and releases follow timers while socket close is held`, async () => {
+            const order: string[] = [];
+            const applied = vi.fn<Parameters<Transport["followGenerationJob"]>[1]>((event) => {
+                transport.applyGenerationEvent("j1", { chaId: "c", chatId: "k" }, event);
+                order.push("applied");
+            });
+            const follow = startFollow("j1", applied);
+            const settled = follow.closed.then((result) => {
+                order.push("settled");
+                return result;
+            });
+            stubs.auth[0].resolve("jwt");
+            await tick();
+            const socket = FakeSocket.instances[0];
+            socket.open();
+            socket.close = () => {
+                socket.closeCalls += 1;
+                socket.readyState = FakeSocket.CLOSING;
+            };
+            socket.message(terminal);
+            await microtasks();
+            expect(order).toEqual(["applied", "settled"]);
+            await expect(settled).resolves.toEqual({ terminal, received: true });
+            expect(stubs.endServerJob).toHaveBeenCalledExactlyOnceWith("j1");
+            expect(vi.getTimerCount()).toBe(0);
+            // A subscriber attached after the terminal still recovers it without a socket close.
+            await expect(follow.closed.then((result) => result.terminal)).resolves.toEqual(terminal);
+            const next = startFollow("j1", () => {});
+            stubs.auth[1].resolve("jwt");
+            await tick();
+            const replacement = FakeSocket.instances[1];
+            replacement.open();
+            socket.onclose!({ code: 1000 });
+            expect(applied).toHaveBeenCalledTimes(1);
+            expect(stubs.endServerJob).toHaveBeenCalledTimes(1);
+            expect(await state(next.closed)).toBe("pending");
+            next.close();
+            await next.closed;
+        });
+    }
+
+    it("settles a follow when its terminal arrives even if the close handshake never ends, and ignores later page and silence recovery", async () => {
+        const follow = startFollow("j1", () => {});
+        stubs.auth[0].resolve("jwt");
+        await tick();
+        const [socket] = FakeSocket.instances;
+        socket.open();
+        // The close handshake after the terminal never ends (a frozen link).
+        socket.close = () => {
+            socket.closeCalls += 1;
         };
-        socket.message(chunk);
-        expect(stubs.applyServerGenerationChunk).toHaveBeenCalledWith({ chaId: "c", chatId: "k" }, "known", chunk);
-        expect(stubs.applyServerGeneration).not.toHaveBeenCalled();
-        expect(seen).toEqual([["known", { chaId: "c", chatId: "k" }, "chunk"]]);
-        follows[0].close();
+        const done = { type: "done", epoch: EPOCH, revision: null };
+        socket.message(done);
+        expect(socket.closeCalls).toBe(1);
+        window.dispatchEvent(new Event("online"));
+        await vi.advanceTimersByTimeAsync(60_000);
+        await expect(follow.closed).resolves.toEqual({ terminal: done, received: true });
+        expect(socket.closeCalls).toBe(1);
+        expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
+        socket.onclose!({ code: 1000 });
+        await expect(follow.closed).resolves.toEqual({ terminal: done, received: true });
     });
 });
 
@@ -1110,7 +2186,7 @@ describe("the job link's diagnostics", () => {
     const links = () => stubs.record.mock.calls.map(([input]) => input);
 
     it("records `attach` once when the socket opens, and `detach` with the close code when it closes before the job's end", async () => {
-        const follow = transport.followGenerationJob("j1", () => {});
+        const follow = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         const [socket] = FakeSocket.instances;
@@ -1126,7 +2202,7 @@ describe("the job link's diagnostics", () => {
     });
 
     it("records no detach for the close after the terminal, the caller's close, or a superseding follow", async () => {
-        const first = transport.followGenerationJob("j1", () => {});
+        const first = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         const a = FakeSocket.instances[0];
@@ -1136,7 +2212,7 @@ describe("the job link's diagnostics", () => {
         await flush();
         expect(links()).toEqual([{ kind: "jobLink", phase: "attach", jobId: "j1" }]);
 
-        const second = transport.followGenerationJob("j1", () => {});
+        const second = startFollow("j1", () => {});
         stubs.auth[1].resolve("jwt");
         await flush();
         FakeSocket.instances[1].open();
@@ -1146,11 +2222,11 @@ describe("the job link's diagnostics", () => {
         expect(links()).toHaveLength(2);
         expect(links()[1]).toEqual({ kind: "jobLink", phase: "attach", jobId: "j1" });
 
-        const third = transport.followGenerationJob("j1", () => {});
+        const third = startFollow("j1", () => {});
         stubs.auth[2].resolve("jwt");
         await flush();
         FakeSocket.instances[2].open();
-        const fourth = transport.followGenerationJob("j1", () => {});
+        const fourth = startFollow("j1", () => {});
         await third.closed;
         await flush();
         expect(links()).toHaveLength(3);
@@ -1161,13 +2237,13 @@ describe("the job link's diagnostics", () => {
     });
 
     it("records `attachFailed` for a close before the socket opened (with the code) and for a failed authentication (without), never after a cancel", async () => {
-        const first = transport.followGenerationJob("j1", () => {});
+        const first = startFollow("j1", () => {});
         stubs.auth[0].resolve("jwt");
         await flush();
         FakeSocket.instances[0].onclose!({ code: 1006 });
         await first.closed;
         expect(links()).toEqual([{ kind: "jobLink", phase: "attachFailed", jobId: "j1", code: 1006 }]);
-        const second = transport.followGenerationJob("j2", () => {});
+        const second = startFollow("j2", () => {});
         stubs.auth[1].reject(new Error("no auth"));
         await second.closed;
         await flush();
@@ -1175,7 +2251,7 @@ describe("the job link's diagnostics", () => {
             { kind: "jobLink", phase: "attachFailed", jobId: "j1", code: 1006 },
             { kind: "jobLink", phase: "attachFailed", jobId: "j2" },
         ]);
-        const third = transport.followGenerationJob("j3", () => {});
+        const third = startFollow("j3", () => {});
         third.close();
         stubs.auth[2].reject(new Error("no auth"));
         await flush();

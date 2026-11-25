@@ -1,8 +1,15 @@
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { createFakeLockManager } from "./fakeLockManager";
 import { tick } from "svelte";
+import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { secretPathKey } from "../../../../shared/llmSecrets.ts";
-import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { warmMutationGraph } from "./mutationStoresHarness";
+import {
+    RESOURCE_KIND,
+    type ResourceChangesSince,
+    type ResourceRevisionListing,
+} from "../../../../shared/resources.ts";
+import { recoverOldDelete, warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // Live updates over the real server store and its real change feed: every commit "another tab" (or
@@ -48,7 +55,7 @@ vi.mock("../../alert", async () =>
 );
 vi.mock("src/lang", () => ({
     language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
-    changeLanguage: vi.fn(),
+    changeLanguage: vi.fn<(typeof import("src/lang"))["changeLanguage"]>(),
 }));
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -57,7 +64,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -69,6 +76,7 @@ type Selection = typeof import("../selection.svelte");
 type Secrets = typeof import("../llmSecrets.svelte");
 
 const KINDS = Object.values(RESOURCE_KIND);
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const chat = (id: string, messages: any[] = []) =>
     ({ id, name: id, note: "", localLore: [], message: messages }) as any;
@@ -231,7 +239,8 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    if (originalLocation) Object.defineProperty(globalThis, "location", originalLocation);
+    else Reflect.deleteProperty(globalThis, "location");
     server.current?.close();
 });
 
@@ -247,10 +256,209 @@ async function settle(fake: StoreBackedServer) {
     await vi.advanceTimersByTimeAsync(5000);
     expect({ reads: reads(fake), batches: fake.batchCount(), all: fake.requests.length }).toEqual(before);
 }
+
+describe("remote UI language replacements", () => {
+    async function languageBoot() {
+        const h = await boot({ prepare: (fake) => editUi(fake, { language: "en" }) });
+        const locale = await vi.importActual<typeof import("src/lang")>("src/lang");
+        const change = vi.mocked((await import("src/lang")).changeLanguage);
+        change.mockImplementation(locale.changeLanguage);
+        locale.changeLanguage("en");
+        (await import("../../bootstrap")).watchRemoteRecords();
+        return { ...h, locale, change };
+    }
+
+    it("applies a live UI language, ignores other records, and reapplies the same remote language after a local switch", async () => {
+        const h = await languageBoot();
+        try {
+            editUi(h.fake, { language: "ko" });
+            await settle(h.fake);
+            expect(h.settings.ui.language).toBe("ko");
+            expect(h.locale.language.settings).toBe("설정");
+
+            h.settings.ui.language = "es";
+            h.locale.changeLanguage("es");
+            await h.sync.flushResources();
+            expect(h.locale.language.settings).toBe("Configuración");
+            h.change.mockClear();
+            h.fake.set("providers", "main", {
+                ...h.fake.record("providers", "main")!.data,
+                presetChain: "remote chain",
+            });
+            await settle(h.fake);
+            expect(h.change).not.toHaveBeenCalled();
+            expect(h.locale.language.settings).toBe("Configuración");
+
+            editUi(h.fake, { language: "ko" });
+            await settle(h.fake);
+            expect(h.settings.ui.language).toBe("ko");
+            expect(h.locale.language.settings).toBe("설정");
+        } finally {
+            h.locale.changeLanguage("en");
+            h.change.mockReset();
+        }
+    });
+
+    it("applies the server language when a same-field UI conflict replaces a local language edit", async () => {
+        const h = await languageBoot();
+        try {
+            h.settings.ui.language = "es";
+            h.locale.changeLanguage("es");
+            editUi(h.fake, { language: "ko" });
+            expect((await h.sync.flushResources()).discarded).toContain("ui/main");
+            expect(h.settings.ui.language).toBe("ko");
+            expect(h.locale.language.settings).toBe("설정");
+        } finally {
+            h.locale.changeLanguage("en");
+            h.change.mockReset();
+        }
+    });
+});
 const noNotice = () => {
     expect(alerts.normal).not.toHaveBeenCalled();
     expect(alerts.error).not.toHaveBeenCalled();
 };
+
+describe("display settings synchronized between tabs", () => {
+    const scheme = (type: "dark" | "light", bgcolor: string) => ({
+        type,
+        bgcolor,
+        darkbg: "#000001",
+        borderc: "#000002",
+        selected: "#000003",
+        draculared: "#000004",
+        textcolor: "#000005",
+        textcolor2: "#000006",
+        darkBorderc: "#000007",
+        darkbutton: "#000008",
+    });
+    const textTheme = (standard: string) => ({
+        FontColorStandard: standard,
+        FontColorItalic: "#100001",
+        FontColorBold: "#100002",
+        FontColorItalicBold: "#100003",
+        FontColorQuote1: "#100004",
+        FontColorQuote2: "#100005",
+    });
+    const displaySettings = {
+        colorSchemeName: "custom",
+        colorScheme: scheme("light", "#eeeeee"),
+        textTheme: "custom",
+        customTextTheme: textTheme("#123456"),
+        font: "custom",
+        customFont: "Remote Font",
+        customCSS: ".chattext { letter-spacing: 2px; }",
+        animationSpeed: 0.7,
+        textAreaSize: 2,
+        sideBarSize: 3,
+        textAreaTextSize: 1,
+    };
+    const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+
+    async function bootWithDisplay() {
+        document.documentElement.removeAttribute("style");
+        const booted = await boot();
+        const bootstrap: Bootstrap = await import("../../bootstrap");
+        const colors = await import("../../gui/colorscheme");
+        const sizes = await import("../../gui/guisize");
+        const { updateAnimationSpeed } = await import("../../gui/animation");
+        const { CustomCSSStore } = await import("../../stores.svelte");
+        bootstrap.watchRemoteRecords();
+        const applyDisplay = () => {
+            colors.updateColorScheme();
+            colors.updateTextThemeAndCSS();
+            updateAnimationSpeed();
+            sizes.updateGuisize();
+        };
+        // The initial page paint, as at boot; remote delivery must update this page on its own.
+        applyDisplay();
+        return { ...booted, colors, sizes, CustomCSSStore, applyDisplay };
+    }
+
+    function expectDisplay({ colors, sizes, CustomCSSStore }: Awaited<ReturnType<typeof bootWithDisplay>>) {
+        for (const [name, value] of Object.entries(displaySettings.colorScheme)) {
+            if (name !== "type") {
+                const property = `--risu-theme-${name.toLowerCase()}`;
+                expect(css(property), property).toBe(value);
+            }
+        }
+        expect(document.documentElement.style.colorScheme).toBe("light");
+        expect(get(colors.ColorSchemeTypeStore)).toBe("light");
+        for (const [name, value] of Object.entries(displaySettings.customTextTheme)) {
+            expect(css(`--${name}`), name).toBe(value);
+        }
+        expect(css("--risu-font-family")).toBe("Remote Font");
+        expect(get(CustomCSSStore)).toBe(".chattext { letter-spacing: 2px; }");
+        expect(css("--risu-animation-speed")).toBe("0.7s");
+        expect(css("--sidebar-size")).toBe("36rem");
+        expect(get(sizes.textAreaSize)).toBe(2);
+        expect(get(sizes.sideBarSize)).toBe(3);
+        expect(get(sizes.textAreaTextSize)).toBe(1);
+    }
+
+    afterEach(() => document.documentElement.removeAttribute("style"));
+
+    it("repaints the page when another writer replaces the ui record", async () => {
+        const page = await bootWithDisplay();
+        const { fake, settings } = page;
+        expect(document.documentElement.style.colorScheme).toBe("dark");
+        expect(css("--risu-theme-bgcolor")).not.toBe(displaySettings.colorScheme.bgcolor);
+        const current = fake.record("ui", "main")!;
+        fake.store.applyChanges({
+            ops: [
+                {
+                    kind: fake.kind("ui"),
+                    id: "main",
+                    baseRevision: current.revision,
+                    data: { ...current.data, ...displaySettings },
+                },
+            ],
+        });
+        await settle(fake);
+
+        expect(settings.ui).toMatchObject(displaySettings);
+        expectDisplay(page);
+        expect(fake.batchCount()).toBe(0);
+        expect(location.reload).not.toHaveBeenCalled();
+    });
+
+    it("does not repaint the page when its own ui save is echoed back", async () => {
+        const page = await bootWithDisplay();
+        const { fake, sync, client, settings, live, flushFeed } = page;
+        live.paused = true;
+        Object.assign(settings.ui, displaySettings);
+        page.applyDisplay();
+        expectDisplay(page);
+        // Observe only writes after the local settings action has painted the page.
+        const writes = vi.spyOn(document.documentElement.style, "setProperty");
+        await sync.flushResources();
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.record("ui", "main")!.data).toMatchObject(displaySettings);
+        expect(live.queue).toEqual([
+            expect.objectContaining({
+                type: "change",
+                epoch: client.getResourceEpoch(),
+                changes: expect.objectContaining({
+                    resources: [
+                        expect.objectContaining({
+                            kind: "ui",
+                            id: "main",
+                            revision: fake.record("ui", "main")!.revision,
+                        }),
+                    ],
+                }),
+            }),
+        ]);
+        // Deliver the actual server echo after acknowledgement and drain the adapter's timers.
+        live.paused = false;
+        flushFeed();
+        expect(live.queue).toEqual([]);
+        await settle(fake);
+
+        expect(writes).not.toHaveBeenCalled();
+        expectDisplay(page);
+    });
+});
 
 describe("records another writer committed", () => {
     it("applies an idle record's change without a write, a notice, or a discard entry", async () => {
@@ -262,7 +470,7 @@ describe("records another writer committed", () => {
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
         noNotice();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
     });
 
     it("applies another writer's character update raw, without a write; the element and a retained nested wrapper then write into the applied copy on its revision", async () => {
@@ -320,26 +528,103 @@ describe("records another writer committed", () => {
         noNotice();
     });
 
-    it("does not apply a copy read while this tab edited the record; its save then conflicts through the 409 path with the notice", async () => {
-        const { fake, settings, intercept } = await boot();
-        const iconsize = settings.ui.iconsize;
-        intercept.hold = (path) => path === "/api/resources/read";
-        editUi(fake, { zoomsize: 200 });
-        await vi.advanceTimersByTimeAsync(100);
-        expect(intercept.release).not.toBeNull();
-        // The local edit lands while the read is out.
-        settings.ui.iconsize = 77;
-        intercept.release!();
-        await vi.advanceTimersByTimeAsync(0);
-        // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
-        const batch = fake.batchBodies()[0];
-        expect(batch?.ops?.[0]?.patch?.set?.iconsize).toBe(77);
-        await vi.advanceTimersByTimeAsync(3000);
-        // Two tabs edited one whole-record section: the later saver's edit goes, with the notice.
-        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-        expect(settings.ui.zoomsize).toBe(200);
-        expect(settings.ui.iconsize).toBe(iconsize);
-        expect(fake.record("ui", "main")!.data.iconsize).toBe(iconsize);
+    it("does not apply a copy read while this tab edited the record; its save then conflicts through the 409 path and merges the other tab's field with no notice", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, settings, intercept, sync } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        const base = fake.record("ui", "main")!;
+        try {
+            intercept.hold = (path) => path === "/api/resources/read";
+            editUi(fake, { zoomsize: 200 });
+            const theirs = fake.record("ui", "main")!.revision;
+            await vi.advanceTimersByTimeAsync(100);
+            expect(intercept.release).not.toBeNull();
+            // The local edit lands while the read is out.
+            settings.ui.iconsize = 77;
+            intercept.release!();
+            await vi.advanceTimersByTimeAsync(0);
+            // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
+            const batch = fake.batchBodies()[0];
+            expect(batch?.ops).toEqual([
+                { kind: "ui", id: "main", baseRevision: base.revision, patch: { set: { iconsize: 77 }, remove: [] } },
+            ]);
+            await vi.advanceTimersByTimeAsync(3000);
+            // Two tabs edited different fields of one section: both are kept, the merged write goes on the
+            // server's revision, with no notice and no recovery draft.
+            noNotice();
+            expect(settings.ui.zoomsize).toBe(200);
+            expect(settings.ui.iconsize).toBe(77);
+            expect(fake.record("ui", "main")!.data).toMatchObject({ zoomsize: 200, iconsize: 77 });
+            expect(fake.batchBodies().map((body) => body.ops)).toEqual([
+                batch!.ops,
+                [{ kind: "ui", id: "main", baseRevision: theirs, patch: { set: { iconsize: 77 }, remove: [] } }],
+            ]);
+            await settle(fake);
+            await sync.flushResources();
+            await vi.advanceTimersByTimeAsync(500);
+            expect(fake.batchCount()).toBe(2);
+            expect(await journal.listDrafts()).toEqual([]);
+            expect((await journal.readOwn()).filter((row) => row.target === "ui\0main")).toEqual([]);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
+    });
+
+    it("keeps a recovery draft after a held copy read meets different edits of the same ui field", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, settings, intercept, sync } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        const base = fake.record("ui", "main")!;
+        const text = JSON.stringify({ ...base.data, iconsize: 77 });
+        try {
+            intercept.hold = (path) => path === "/api/resources/read";
+            editUi(fake, { iconsize: 200 });
+            await vi.advanceTimersByTimeAsync(100);
+            expect(intercept.release).not.toBeNull();
+            // The local edit lands while the read is out.
+            settings.ui.iconsize = 77;
+            intercept.release!();
+            await vi.advanceTimersByTimeAsync(0);
+            // The fetched copy was not applied over the edit: the edit was still in the mirror when the batch left.
+            const batch = fake.batchBodies()[0];
+            expect(batch?.ops).toEqual([
+                { kind: "ui", id: "main", baseRevision: base.revision, patch: { set: { iconsize: 77 }, remove: [] } },
+            ]);
+            await vi.advanceTimersByTimeAsync(3000);
+            // Both tabs changed the same field: the server wins and the sent local text is recoverable.
+            expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+            expect(settings.ui.iconsize).toBe(200);
+            expect(fake.record("ui", "main")!.data.iconsize).toBe(200);
+            expect(fake.batchCount()).toBe(1);
+            const drafts = await journal.listDrafts();
+            expect(drafts).toHaveLength(1);
+            expect(drafts[0]).toMatchObject({
+                id: expect.any(String),
+                epoch: fake.store.epoch(),
+                scope: "record",
+                target: "ui\0main",
+            });
+            expect(
+                Object.fromEntries(Object.entries(drafts[0].layers).map(([name, layer]) => [name, layer.value])),
+            ).toEqual({
+                sent: { op: "update", baseRevision: base.revision, text, dispatched: true, inDoubt: false },
+            });
+            await settle(fake);
+            await sync.flushResources();
+            await vi.advanceTimersByTimeAsync(500);
+            expect(await journal.listDrafts()).toEqual(drafts);
+            expect((await journal.readOwn()).filter((row) => row.target === "ui\0main")).toEqual([]);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
     });
 
     it("leaves a record alone while its save is in flight and applies a later commit after the acknowledgement", async () => {
@@ -448,6 +733,42 @@ describe("records another writer committed", () => {
 });
 
 describe("characters another writer created or deleted", () => {
+    it("preserves an unsaved local character when a same-ID live read arrives, until its create conflicts", async () => {
+        const { fake, sync, character, chatIds, texts, intercept } = await boot();
+        intercept.hold = (path) => path === "/api/resources/read";
+        fake.store.applyChanges({
+            ops: [{ kind: characterKind(fake), id: "n", baseRevision: null, data: { chaId: "n", name: "Remote" } }],
+            chats: [create("n", "remote-chat")],
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(intercept.release).not.toBeNull();
+
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter({
+            chaId: "n",
+            name: "Unsaved import",
+            desc: "Local content",
+            type: "character",
+            chats: [chat("imported", [m("imported-message", "Local history")])],
+        });
+        await tick();
+        intercept.release!();
+        await vi.dynamicImportSettled();
+
+        expect(character("n")).toMatchObject({ name: "Unsaved import", desc: "Local content" });
+        expect(chatIds("n")).toEqual(["imported"]);
+        expect(texts("n", "imported")).toEqual(["Local history"]);
+        expect(fake.batchCount()).toBe(0);
+        noNotice();
+
+        expect(await sync.flushResources()).toEqual({ discarded: ["characters/n"], refused: [] });
+        await settle(fake);
+        expect(character("n").name).toBe("Remote");
+        expect(chatIds("n")).toEqual(["remote-chat"]);
+        expect(fake.chat("n", "imported")).toBeNull();
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+    });
+
     it("inserts a new character with its chats, without a write", async () => {
         const { fake, chat, character, chatIds, texts } = await boot();
         fake.store.applyChanges({
@@ -648,27 +969,16 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps the selected character after an earlier one is removed without running the selection's side effects", async () => {
-        const { fake, sync, selection, settings, characters, character } = await boot();
-        settings.memoryTranslateMedia.hypaV3 = true;
-        settings.hypaV3Presets.items = [
-            { ...(settings.hypaV3Presets.items?.[0] ?? {}), id: "h", name: "H", settings: { alwaysToggleOn: true } },
-        ] as any;
-        settings.hypaV3Presets.selectedId = "h";
+    it("keeps the selected character after an earlier one is removed without writing", async () => {
+        const { fake, selection, characters } = await boot();
         selection.selectCharacterAt(1);
-        // Selecting `d` is a selection: it switches its memory on (a write), counting the turn-on.
-        expect(character("d").supaMemory).toBe(true);
-        expect(character("d").supaMemoryOnCount).toBe(1);
-        character("d").supaMemory = false;
-        await tick();
-        await sync.flushResources();
-        expect(fake.record("characters", "d")!.data.supaMemory).toBe(false);
+        expect(selection.selection.characterId).toBe("d");
         const batches = fake.batchCount();
         fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
         await settle(fake);
+        expect(selection.selection.characterId).toBe("d");
         expect(selection.selectedIndex()).toBe(0);
         expect(characters()[0].chaId).toBe("d");
-        expect(character("d").supaMemory).toBe(false);
         expect(fake.batchCount()).toBe(batches);
     });
 });
@@ -747,7 +1057,7 @@ describe("chats and chat lists another writer changed", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps a chat deleted here out of the mirror while another writer's new chat brings the list in", async () => {
+    it("keeps a chat whose delete an earlier build journaled out of the mirror while the delete is queued, and takes it back when the server refuses the delete", async () => {
         const { fake, chat, chatIds, intercept } = await boot();
         const seen: string[][] = [];
         intercept.beforeRequest = (path) => {
@@ -756,30 +1066,30 @@ describe("chats and chat lists another writer changed", () => {
             }
         };
         // Both before the cycle: the list is read and applied while the delete is still queued.
-        chat.deleteChat({ chaId: "c", chatId: "j" });
+        recoverOldDelete(chat, { chaId: "c", chatId: "j" });
         fake.store.applyChanges({ chats: [create("c", "y")] });
         await settle(fake);
         expect(seen[0]).not.toContain("j");
-        expect(chatIds()).toEqual(["k", "y"]);
-        expect(fake.chat("c", "j")).toBeNull();
-        expect(fake.order("c")!.ids).toEqual(["k", "y"]);
-        noNotice();
+        expect(fake.batchBodies()[0].chats).toEqual([
+            expect.objectContaining({ chatId: "j", ops: [{ op: "delete" }] }),
+        ]);
+        // The server refuses a delete op (the trash route deletes chats): the chat stays and comes back.
+        expect(fake.chat("c", "j")).not.toBeNull();
+        expect(chatIds()).toEqual(["k", "j", "y"]);
+        expect(fake.order("c")!.ids).toEqual(["k", "j", "y"]);
+        // The refusal takes the ordinary conflict path: one reload notice.
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith("reloaded");
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("never writes when another writer deletes a character's only chat; its replacement then takes its place", async () => {
+    it("never writes when another writer replaces a character's only chat: the new chat joins the list, then the old one leaves it", async () => {
         const { fake, chatIds } = await boot();
-        fake.chatBatch([
-            {
-                characterId: "d",
-                chatId: "m",
-                baseRevision: fake.chat("d", "m")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
-        await settle(fake);
-        expect(chatIds("d")).toEqual(["m"]);
-        expect(fake.batchCount()).toBe(0);
+        // A chat is deleted for good only while the character has another chat outside the trash.
         fake.store.applyChanges({ chats: [create("d", "n")] });
+        await settle(fake);
+        expect(chatIds("d")).toEqual(["m", "n"]);
+        expect(fake.batchCount()).toBe(0);
+        fake.deleteChatForever("d", "m");
         await settle(fake);
         expect(chatIds("d")).toEqual(["n"]);
         expect(fake.batchCount()).toBe(0);
@@ -789,14 +1099,7 @@ describe("chats and chat lists another writer changed", () => {
     it("does not let a delayed chat-list answer remove a newer copy a job installed meanwhile", async () => {
         const { fake, sync, live, flushFeed, chatIds, texts, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         await vi.advanceTimersByTimeAsync(600);
         expect(intercept.release).not.toBeNull();
         // While the read (its answer: deleted) is out, the chat is created again and a job's event installs it.
@@ -830,14 +1133,7 @@ describe("chats and chat lists another writer changed", () => {
     it("does not let a delayed idle read's deletion answer remove a newer copy a job installed meanwhile", async () => {
         const { fake, sync, live, chatIds, texts, intercept } = await boot();
         live.paused = true;
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         // Only the chat's ref arrives (its order's ref is later): the chat's idle read is the one held.
         intercept.hold = (path) => path === "/api/resources/read";
         sync.noteRemoteChanges({
@@ -942,42 +1238,29 @@ describe("work that waits", () => {
     });
 
     it("reads at most 1,000 announced chats per request and reaches every one", async () => {
-        // 1,001 chats cross the per-request cap. They are spread over many characters: a character's
-        // membership check scans its whole chat list, so a thousand chats of one character would cost
-        // seconds of CPU the cap does not need.
-        const owners = Array.from({ length: 25 }, (_, index) => `r${index}`);
         const ids = Array.from({ length: 1001 }, (_, index) => `n${index}`);
-        const ownerOf = (index: number) => owners[index % owners.length];
         const { fake, chat, live, flushFeed, chatIds, texts } = await boot({
             prepare: (fake) =>
                 fake.store.applyChanges({
-                    ops: owners.map((id) => ({
-                        kind: fake.kind("characters"),
-                        id,
-                        baseRevision: null,
-                        data: { chaId: id, name: id },
-                    })),
-                    chats: ids.map((id, index) => create(ownerOf(index), id, [m(`${id}-m`, "old")])),
+                    chats: ids.map((id) => create("d", id, [m(`${id}-m`, "old")])),
                 }),
         });
-        expect(owners.flatMap((owner) => chatIds(owner))).toHaveLength(1001);
+        expect(chatIds("d")).toHaveLength(1002);
         // The announced chats are read whole only while they are loaded (an unloaded one is refreshed
         // through its character's summary list): loaded here, and pinned so the trim keeps them, as a
         // reader of a thousand chats would hold them.
-        const releases = owners.map((owner) => chat.pinChats(owner));
-        for (const owner of owners) {
-            await chat.loadChats(owner);
-        }
+        const release = chat.pinChats("d");
+        await chat.loadChats("d");
         fake.requests.length = 0;
         live.paused = true;
         // Whole-chat writes (`replace`): a by-id write would apply as the feed's patch with no read.
         fake.store.applyChanges({
-            chats: ids.map((id, index) => {
-                const stored = fake.chat(ownerOf(index), id)!;
+            chats: ids.map((id) => {
+                const stored = fake.chat("d", id)!;
                 const replaced = JSON.parse(JSON.stringify(stored.data));
                 replaced.message[0].data = "new";
                 return {
-                    characterId: ownerOf(index),
+                    characterId: "d",
                     chatId: id,
                     baseRevision: stored.revision,
                     ops: [{ op: "replace" as const, chat: replaced }],
@@ -993,11 +1276,9 @@ describe("work that waits", () => {
         expect(sizes.length).toBeGreaterThanOrEqual(2);
         expect(Math.max(...sizes)).toBeLessThanOrEqual(1000);
         expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(1001);
-        expect(ids.every((id, index) => texts(ownerOf(index), id)[0] === "new")).toBe(true);
+        expect(ids.every((id) => texts("d", id)[0] === "new")).toBe(true);
         expect(fake.batchCount()).toBe(0);
-        for (const release of releases) {
-            release();
-        }
+        release();
     });
 });
 
@@ -1035,21 +1316,21 @@ describe("the reconcile after a `hello`", () => {
 });
 
 describe("halting for a restore", () => {
-    it("applies nothing and sends nothing once an epoch change lands during a live read", async () => {
+    it("applies nothing and sends nothing more once an epoch change lands during a live read", async () => {
         const { fake, client, settings, character, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
         editUi(fake, { zoomsize: 190 });
-        // A local edit of another record waits for this cycle's batch, after the live read.
+        // A local edit of another record does not wait for the live read: its batch goes first.
         character().name = "C local";
         await vi.advanceTimersByTimeAsync(100);
         expect(intercept.release).not.toBeNull();
-        expect(fake.batchCount()).toBe(0);
+        expect(fake.batchCount()).toBe(1);
         client.epochMismatch("restored-epoch");
         intercept.release!();
         await vi.advanceTimersByTimeAsync(5000);
-        expect(fake.batchCount()).toBe(0);
+        expect(fake.batchCount()).toBe(1);
         expect(settings.ui.zoomsize).not.toBe(190);
-        expect(fake.record("characters", "c")!.data.name).toBe("C");
+        expect(fake.record("characters", "c")!.data.name).toBe("C local");
         expect(alerts.terminal).toHaveBeenCalledWith("restored");
     });
 
@@ -1072,7 +1353,7 @@ describe("halting for a restore", () => {
     });
 });
 
-/** A send job's write on the server: a field patch of the character at its current revision. */
+/** Another writer's write on the server: a field patch of the character at its current revision. */
 const patchCharacter = (
     fake: StoreBackedServer,
     id: string,
@@ -1082,11 +1363,12 @@ const patchCharacter = (
         ops: [{ kind: fake.kind("characters"), id, baseRevision: fake.record("characters", id)!.revision, patch }],
     }).results[0].revision!;
 
-// A change-feed entry with a `RecordFieldPatch` (a send job's `lastInteraction` stamp) is applied
-// by `applyRemotePatch` without a read when this tab holds exactly its base and has no unsent
-// change of the character; anything else is read whole as before.
+// A change-feed entry with a `RecordFieldPatch` (another writer's change of some character fields)
+// is applied by `applyRemotePatch` without a read when this tab holds exactly its base and has no
+// unsent change of the character; anything else is read whole as before. The remote-change
+// listeners hear of every patch that changed a field.
 describe("field patches another writer committed", () => {
-    it("applies a send job's stamp at once: no read, no write, no notice, no listener; the next local edit writes on the new revision", async () => {
+    it("applies a remote field patch at once: no read, no write, no notice, the listener told once; the next local edit writes on the new revision", async () => {
         const { fake, sync, character } = await boot();
         const changed: string[] = [];
         sync.onRemoteRecordApplied((kind, id) => changed.push(`${kind}/${id}`));
@@ -1097,28 +1379,29 @@ describe("field patches another writer committed", () => {
         const element = character("d");
         const entry = element.globalLore[0];
         const batches = fake.batchCount();
-        const stamped = patchCharacter(fake, "d", { set: { lastInteraction: 1234 } });
-        // Applied inside the feed's delivery, before any cycle.
+        const patched = patchCharacter(fake, "d", { set: { lastInteraction: 1234 } });
+        // Applied inside the feed's delivery, before any cycle, and announced.
         expect(element.lastInteraction).toBe(1234);
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(reads(fake)).toBe(0);
+        expect(changed).toEqual(["characters/d"]);
         await settle(fake);
         expect(reads(fake)).toBe(0);
         expect(fake.batchCount()).toBe(batches);
-        expect(changed).toEqual([]);
+        expect(changed).toEqual(["characters/d"]);
         noNotice();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
-        // The untouched subtree's wrapper still writes into the same record, on the stamped revision.
-        entry.content = "edited after the stamp";
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        // The untouched subtree's wrapper still writes into the same record, on the patched revision.
+        entry.content = "edited after the patch";
         await tick();
         await sync.flushResources();
         const last = fake.batchBodies().at(-1) as any;
-        expect(last.ops).toEqual([expect.objectContaining({ kind: "characters", id: "d", baseRevision: stamped })]);
+        expect(last.ops).toEqual([expect.objectContaining({ kind: "characters", id: "d", baseRevision: patched })]);
         expect(fake.record("characters", "d")!.data).toMatchObject({
             lastInteraction: 1234,
-            globalLore: [{ key: "k", content: "edited after the stamp" }],
+            globalLore: [{ key: "k", content: "edited after the patch" }],
         });
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1138,7 +1421,7 @@ describe("field patches another writer committed", () => {
         await settle(fake);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1163,7 +1446,7 @@ describe("field patches another writer committed", () => {
             expect(fake.batchCount()).toBe(0);
         };
         live.paused = true;
-        // A missed frame: the second of two stamps names a base this tab never held.
+        // A missed frame: the second of two patches names a base this tab never held.
         const first = patchCharacter(fake, "d", { set: { lastInteraction: 1 } });
         patchCharacter(fake, "d", { set: { lastInteraction: 2, name: "N1" } });
         const [missed, second] = live.queue.splice(0) as Extract<ServerFeedEvent, { type: "change" }>[];
@@ -1204,7 +1487,7 @@ describe("field patches another writer committed", () => {
             live.queue.length = 0;
             await readWhole(current().revision, make(base));
         }
-        // The real stamp of a field the mirror object only inherits (`toString`) is read whole too.
+        // A real patch of a field the mirror object only inherits (`toString`) is read whole too.
         live.paused = false;
         patchCharacter(fake, "d", { set: { toString: "own", lastInteraction: 77 } });
         expectedReads += 1;
@@ -1212,48 +1495,49 @@ describe("field patches another writer committed", () => {
         expect(reads(fake)).toBe(expectedReads);
         expect(sync.heldRecordRevision("characters", "d")).toBe(current().revision);
         expect(character("d").lastInteraction).toBe(77);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount()).toBe(0);
         noNotice();
     });
 
-    it("leaves a patch alone while this tab has an unsent change of the character; its save merges the stamp through the 409 without a notice", async () => {
+    it("leaves a patch alone while this tab has an unsent change of the character; its save merges the remote field through the 409 without a notice and tells the listener", async () => {
         const { fake, sync, character } = await boot();
         const changed: string[] = [];
         sync.onRemoteRecordApplied((kind, id) => changed.push(`${kind}/${id}`));
         character("d").desc = "mine";
         await tick();
-        // The stamp lands before this tab's debounced save.
+        // Another writer's patch of an independent field lands before this tab's debounced save.
         patchCharacter(fake, "d", { set: { lastInteraction: 777 } });
         expect(character("d").lastInteraction).toBeUndefined();
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.record("characters", "d")!.data).toMatchObject({ desc: "mine", lastInteraction: 777 });
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 777 });
         expect(sync.heldRecordRevision("characters", "d")).toBe(fake.record("characters", "d")!.revision);
-        // The rejected batch and the merged write; the stamp alone is not announced.
+        // The rejected batch and the merged write; the merge took the server's field, so it is announced.
         expect(fake.batchCount()).toBe(2);
-        expect(changed).toEqual([]);
+        expect(changed).toEqual(["characters/d"]);
         await settle(fake);
         expect(fake.batchCount()).toBe(2);
+        expect(changed).toEqual(["characters/d"]);
         noNotice();
     });
 
     it("holds a patch that arrives while the character's save is in flight and applies it after the acknowledgement, without a read", async () => {
         const { fake, sync, character, intercept } = await boot();
-        let stamped = "";
+        let patched = "";
         intercept.afterApply = (path) => {
             expect(path).toBe("/api/resources/batch");
-            // The job stamps right after this tab's save, before its answer arrives.
-            stamped = patchCharacter(fake, "d", { set: { lastInteraction: 55 } });
+            // Another writer patches right after this tab's save, before its answer arrives.
+            patched = patchCharacter(fake, "d", { set: { lastInteraction: 55 } });
         };
         character("d").desc = "mine";
         await settle(fake);
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 55 });
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(fake.record("characters", "d")!.data).toMatchObject({ desc: "mine", lastInteraction: 55 });
         expect(fake.batchCount()).toBe(1);
         expect(reads(fake)).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1266,8 +1550,8 @@ describe("field patches another writer committed", () => {
         const flushing = sync.flushResources();
         await vi.advanceTimersByTimeAsync(600);
         expect(intercept.release).not.toBeNull();
-        // While the save's answer is held: the stamp, then the listing that names it, then its frame.
-        const stamped = patchCharacter(fake, "d", { set: { lastInteraction: 42 } });
+        // While the save's answer is held: the patch, then the listing that names it, then its frame.
+        const patched = patchCharacter(fake, "d", { set: { lastInteraction: 42 } });
         sync.reconcileRemote(fake.store.listRevisions());
         live.paused = false;
         flushFeed();
@@ -1276,10 +1560,10 @@ describe("field patches another writer committed", () => {
         await flushing;
         await settle(fake);
         expect(character("d")).toMatchObject({ desc: "mine", lastInteraction: 42 });
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(reads(fake)).toBe(0);
         expect(fake.batchCount()).toBe(1);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1289,14 +1573,14 @@ describe("field patches another writer committed", () => {
         fake.set("characters", "d", { ...fake.record("characters", "d")!.data, name: "D remote" });
         await vi.advanceTimersByTimeAsync(100);
         expect(intercept.release).not.toBeNull();
-        const stamped = patchCharacter(fake, "d", { set: { lastInteraction: 5 } });
+        const patched = patchCharacter(fake, "d", { set: { lastInteraction: 5 } });
         intercept.release!();
         await settle(fake);
         expect(character("d")).toMatchObject({ name: "D remote", lastInteraction: 5 });
-        expect(sync.heldRecordRevision("characters", "d")).toBe(stamped);
+        expect(sync.heldRecordRevision("characters", "d")).toBe(patched);
         expect(reads(fake)).toBe(1);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 });
@@ -1379,7 +1663,7 @@ describe("the character order another writer replaced", () => {
         checkCharOrder();
         expect(plainOrder(settings)).toEqual(replaced);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1409,7 +1693,7 @@ describe("the character order another writer replaced", () => {
         expect(characters().map((entry) => entry.chaId)).toEqual(["c", "d", "e"]);
         expect(plainOrder(settings)).toEqual(patched);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1422,7 +1706,7 @@ describe("the character order another writer replaced", () => {
         expect(serverOrder(fake)).toEqual(["c", "d"]);
         expect(orderWrites(fake)).toEqual([["c", "d"]]);
         expect(fake.batchCount()).toBe(1);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1442,7 +1726,7 @@ describe("the character order another writer replaced", () => {
         expect(characters().map((entry) => entry.chaId)).toEqual(["c"]);
         expect(plainOrder(settings)).toEqual(["c"]);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1462,7 +1746,7 @@ describe("the character order another writer replaced", () => {
         expect(character("d").trashTime).toBe(1);
         expect(plainOrder(settings)).toEqual(["c"]);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1492,7 +1776,7 @@ describe("the character order another writer replaced", () => {
         await settleRepair(fake);
         expect(character("d").trashTime).toBe(1);
         expect(fake.batchCount()).toBe(0);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
     });
 
@@ -1517,7 +1801,153 @@ describe("the character order another writer replaced", () => {
         for (const write of writes) {
             expect(write[0]).toEqual(folder);
         }
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         noNotice();
+    });
+});
+
+describe("reconnecting through the revision log", () => {
+    async function connectFeed(fake: StoreBackedServer) {
+        const { FakeSocket } = await import("../../network/tests/eventSocket");
+        const { revisionDigest } = await import("../../../../shared/resources.ts");
+        // The server store's replay methods, typed structurally like `ServerStore` (no server import).
+        const store = fake.store as unknown as {
+            epoch(): string;
+            cursor(): number;
+            listChanges(since: number, until: number, epoch: string): ResourceChangesSince;
+            listRevisions(): ResourceRevisionListing;
+        };
+        const feed = await import("../../network/eventFeed");
+        FakeSocket.instances = [];
+        vi.stubGlobal("WebSocket", FakeSocket);
+        vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+        const requests: string[] = [];
+        const transport = server.current;
+        const fetch = transport.fetch.bind(transport);
+        const replay = { epoch: null as string | null };
+        transport.fetch = async (path: string, init?: RequestInit) => {
+            const url = new URL(path, "http://test");
+            if (url.pathname === "/api/resources/revisions") {
+                requests.push(path);
+                if (url.searchParams.has("since")) {
+                    return Response.json(
+                        replay.epoch
+                            ? { epoch: replay.epoch, cursor: store.cursor() }
+                            : store.listChanges(
+                                  Number(url.searchParams.get("since")),
+                                  Number(url.searchParams.get("until")),
+                                  url.searchParams.get("epoch")!,
+                              ),
+                    );
+                }
+            }
+            return fetch(path, init);
+        };
+        const hello = (ws: InstanceType<typeof FakeSocket>) =>
+            ws.frame({
+                type: "hello",
+                epoch: store.epoch(),
+                cursor: store.cursor(),
+                digest: revisionDigest(store.listRevisions()),
+                streaming: [],
+                memoryTasks: [],
+            });
+        feed.startEventFeed();
+        await vi.advanceTimersByTimeAsync(0);
+        let ws = FakeSocket.instances.at(-1)!;
+        ws.open();
+        hello(ws);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(requests).toEqual(["/api/resources/revisions"]);
+        requests.length = 0;
+        return {
+            store,
+            feed,
+            requests,
+            replay,
+            task() {
+                ws.frame({
+                    type: "memoryTask",
+                    epoch: store.epoch(),
+                    characterId: "c",
+                    chatId: "k",
+                    status: { taskId: "t", state: "running", done: 0, total: 1 },
+                });
+            },
+            async reconnect(delay = 1000) {
+                const previous = ws;
+                ws.close();
+                await vi.advanceTimersByTimeAsync(delay);
+                ws = FakeSocket.instances.at(-1)!;
+                expect(ws).not.toBe(previous);
+                ws.open();
+                hello(ws);
+                await vi.advanceTimersByTimeAsync(0);
+            },
+        };
+    }
+
+    it("replays a deletion and recreation into held chats while keeping the old incarnation fenced until hydration", async () => {
+        const { fake, live, chat, texts } = await boot();
+        live.paused = true;
+        const connection = await connectFeed(fake);
+        const tasks = await import("../../process/memoryTasks.svelte");
+        try {
+            const since = connection.store.cursor();
+            const oldRevision = chat.heldChatRevision(refK);
+            connection.task();
+            expect(tasks.memoryTaskFenced(refK)).toBe(true);
+            // A sibling that is not in the trash lets both chats be deleted for good.
+            fake.store.applyChanges({ chats: [create("c", "x")] });
+            for (const chatId of ["j", "k"]) fake.deleteChatForever("c", chatId);
+            fake.store.applyChanges({ chats: [create("c", "k", [m("new", "Recreated")])] });
+            const until = connection.store.cursor();
+            await connection.reconnect();
+            expect(connection.requests).toEqual([
+                `/api/resources/revisions?since=${since}&until=${until}&epoch=${connection.store.epoch()}`,
+            ]);
+            // Reconciliation has only advertised the new incarnation; the old loaded copy is still held.
+            expect(chat.heldChatRevision(refK)).toBe(oldRevision);
+            expect(tasks.memoryTaskFenced(refK)).toBe(true);
+            await settle(fake);
+            expect(chat.chatEntry({ chaId: "c", chatId: "j" })).toBeUndefined();
+            expect(chat.findChat({ chaId: "c", chatId: "j" })).toBeUndefined();
+            expect(texts("c", "k")).toEqual(["Recreated"]);
+            expect(chat.heldChatRevision(refK)).toBe(fake.chat("c", "k")!.revision);
+            expect(tasks.memoryTaskFenced(refK)).toBe(false);
+            expect(fake.batchCount()).toBe(0);
+            expect(connection.requests).toHaveLength(1);
+        } finally {
+            connection.feed.stopEventFeed();
+        }
+    });
+
+    it("halts on another epoch's replay, clears memory fences and advertised revisions, and sends no further writes", async () => {
+        const { fake, live, settings, sync } = await boot();
+        live.paused = true;
+        const connection = await connectFeed(fake);
+        const tasks = await import("../../process/memoryTasks.svelte");
+        try {
+            connection.task();
+            expect(tasks.memoryTaskFenced(refK)).toBe(true);
+            editUi(fake, { zoomsize: 175 });
+            connection.replay.epoch = "restored-epoch";
+            await connection.reconnect();
+            expect(connection.requests).toHaveLength(1);
+            expect(connection.requests[0]).toContain("?since=");
+            expect(tasks.memoryTaskFenced(refK)).toBe(false);
+            expect(alerts.terminal).toHaveBeenCalledExactlyOnceWith("restored");
+            expect(settings.ui.zoomsize).not.toBe(175);
+            settings.ui.iconsize = 44;
+            await expect(sync.flushResources()).rejects.toThrow("Saving stopped: the server data was restored");
+            expect(fake.batchCount()).toBe(0);
+            connection.replay.epoch = null;
+            // The failed reconcile kept the doubled backoff; its old advertised evidence is unusable.
+            await connection.reconnect(2000);
+            expect(connection.requests).toHaveLength(2);
+            expect(connection.requests[1]).toBe("/api/resources/revisions");
+        } finally {
+            connection.feed.stopEventFeed();
+        }
     });
 });

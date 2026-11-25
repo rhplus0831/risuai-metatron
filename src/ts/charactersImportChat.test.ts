@@ -1,5 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeModelProfiles } from "../../shared/presets.ts";
 import { language } from "src/lang";
+import { createHypaV3Preset } from "../../shared/hypaV3Presets.ts";
+import type { Chat } from "../../shared/database.ts";
+import {
+    MEMORY_RESTORE_BODY_BYTES,
+    sealHypaV3Data,
+    type StructuredMemoryFileRecords,
+} from "../../shared/structuredMemory.ts";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
 
 // `importChat` writes the character selected when the dialog opened, captured by id,
@@ -15,6 +23,7 @@ const { server, alerts, picker } = vi.hoisted(() => ({
     server: { current: null as any },
     alerts: {
         error: vi.fn(),
+        select: vi.fn(),
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
@@ -25,12 +34,14 @@ const { server, alerts, picker } = vi.hoisted(() => ({
 }));
 
 vi.mock("./storage/serverAuth", () => ({
+    ensureAuth: async () => {},
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
     getNodeServerProxyAuth: async () => "signed-token",
 }));
 vi.mock("./alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
+        alertSelect: alerts.select,
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertConfirm: alerts.confirm,
@@ -40,7 +51,7 @@ vi.mock("./alert", async () =>
 vi.mock("./parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
-    parseMarkdownSafe: vi.fn(),
+    parseMarkdownSafe: vi.fn((text: string) => text),
 }));
 vi.mock("./process/index.svelte", () => ({}));
 vi.mock("./translator/translator", () => ({ translateHTML: vi.fn() }));
@@ -87,6 +98,7 @@ const v2 = () => ({
     }),
 });
 const folder = (id: string, name: string) => ({ id, name, color: "", folded: false });
+const originalGlobals = { location: globalThis.location, safeStructuredClone: globalThis.safeStructuredClone };
 
 /**
  * Boots the harness with Alpha (one chat `a1`, a folder `f1`) selected and Beta (chats `b1`, `b2`, the
@@ -123,6 +135,14 @@ async function boot() {
     const util = await import("./util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     vi.spyOn(util, "selectSingleFile").mockImplementation(() => picker.answer() as any);
+    const globalApi = await import("./globalApi.svelte");
+    const downloads: { name: string; data: string }[] = [];
+    vi.spyOn(globalApi, "downloadFile").mockImplementation(async (name, data) => {
+        downloads.push({
+            name,
+            data: typeof data === "string" ? data : Buffer.from(data as Uint8Array).toString("utf8"),
+        });
+    });
     const characters = await import("./characters");
     const binding = await import("./storage/chatBinding.svelte");
     const select = (chaId: string) => selectionModule.selectCharacter(chaId);
@@ -139,7 +159,7 @@ async function boot() {
         };
         await characters.importChat();
     };
-    return { ...booted, characters, binding, alpha, beta, index, select, chatsOf, texts, run };
+    return { ...booted, characters, binding, alpha, beta, index, select, chatsOf, texts, run, downloads };
 }
 
 // The first boot compiles the module graph; done once here so no test pays for it, in the
@@ -168,11 +188,66 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    vi.stubGlobal("location", originalGlobals.location);
+    vi.stubGlobal("safeStructuredClone", originalGlobals.safeStructuredClone);
     server.current?.close();
 });
 
 describe("importChat writes the character selected when the dialog opened", () => {
+    it("refuses a JSON chat with numeric message data through the error alert and adds no chat", async () => {
+        const { run, alpha, chatsOf, sync, serverText } = await boot();
+        const before = chatsOf(alpha);
+        const serverBefore = serverText();
+
+        await run({
+            name: "invalid-data.json",
+            data: encode({
+                type: "risuChat",
+                ver: 1,
+                data: {
+                    name: "Invalid message data",
+                    note: "",
+                    localLore: [],
+                    message: [{ role: "user", data: 123 }],
+                },
+            }),
+        });
+
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error("message.data must be a string"));
+        expect(alerts.error.mock.calls[0][0].constructor).toBe(Error);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(chatsOf(alpha)).toEqual(before);
+        await sync.flushResources();
+        expect(serverText()).toBe(serverBefore);
+    });
+
+    it("refuses a JSON chat whose OOC log the server would refuse through the error alert and adds no chat", async () => {
+        const { run, alpha, chatsOf, sync, serverText } = await boot();
+        const before = chatsOf(alpha);
+        const serverBefore = serverText();
+
+        await run({
+            name: "invalid-ooc.json",
+            data: encode({
+                type: "risuChat",
+                ver: 2,
+                data: {
+                    name: "Invalid OOC log",
+                    note: "",
+                    localLore: [],
+                    message: [{ role: "user", data: "Hello" }],
+                    oocLog: { q: null },
+                },
+            }),
+        });
+
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error("a chat.oocLog entry must be a plain object"));
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(chatsOf(alpha)).toEqual(before);
+        await sync.flushResources();
+        expect(serverText()).toBe(serverBefore);
+    });
+
     it("a jsonl chat lands at the top of that character, substitutes its name, and selects it while it is still on screen", async () => {
         const { run, alpha, chatsOf, texts, character, sync, fake, activePersona } = await boot();
         await run(jsonl());
@@ -230,6 +305,31 @@ describe("importChat writes the character selected when the dialog opened", () =
             expect(fake.chat(alpha, chat.id)?.data.name).toBe(chat.name);
         }
         expect(record("characters", beta).chatFolders).toBeUndefined();
+    });
+
+    it("refuses an entire risuAllChats v2 import before writing folders or chats when its second chat is invalid", async () => {
+        const { run, alpha, chatsOf, character, sync, serverText } = await boot();
+        const chatsBefore = chatsOf(alpha);
+        const foldersBefore = plain(character(alpha).chatFolders);
+        const serverBefore = serverText();
+        await run({
+            name: "invalid-chats.json",
+            data: encode({
+                type: "risuAllChats",
+                ver: 2,
+                folders: [folder("new-folder", "New folder")],
+                data: [
+                    chatV2("Valid", "new-folder", "one"),
+                    { ...chatV2("Invalid", "new-folder", "two"), message: [{ role: "user", data: 42 }] },
+                ],
+            }),
+        });
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error("message.data must be a string"));
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(chatsOf(alpha)).toEqual(chatsBefore);
+        expect(plain(character(alpha).chatFolders)).toEqual(foldersBefore);
+        await sync.flushResources();
+        expect(serverText()).toBe(serverBefore);
     });
 
     it("a character list changed around the target (an earlier character removed) does not redirect the write", async () => {
@@ -474,15 +574,611 @@ describe("importChat prepares each imported chat's binding", () => {
         ]);
     });
 
-    it("an html export", async () => {
+    it("a legacy HTML export", async () => {
         const booted = await boot();
         const ids = existing(booted);
-        const chat = chatWith("Html", { ...ids, promptPresetId: "p-gone", bindingReview: false });
-        const html = `<html><body><div class="idat">${JSON.stringify(chat)}</div></body></html>`;
+        const chat = chatWith("Html", {
+            ...ids,
+            promptPresetId: "p-gone",
+            bindingReview: false,
+            message: [{ role: "user", data: "<tag> & text" }],
+        });
+        const payload = JSON.stringify(chat).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const html = `<html><body><div class="idat">${payload}</div></body></html>`;
         await booted.run({ name: "chat.html", data: new TextEncoder().encode(html) });
         expect(booted.chatsOf(booted.alpha)[0].name).toBe("Html");
+        expect(booted.texts(booted.alpha, 0)).toEqual(["<tag> & text"]);
         expect(await saved(booted, 1)).toEqual([
             { modelPresetId: ids.modelPresetId, bindedPersona: ids.bindedPersona, bindingReview: true },
+        ]);
+    });
+});
+
+it.each([
+    { description: "an empty note", note: "" },
+    { description: "a nonempty note", note: "Keep this note" },
+])("round-trips an HTML chat with $description and literal character references", async ({ note }) => {
+    const { alpha, beta, chat, characters, chatsOf, downloads, run, select, sync, texts } = await boot();
+    const message = "&lt;tag&gt; &amp; &#65;";
+    const source = chat.createChat(alpha, {
+        name: "HTML chat",
+        note,
+        localLore: [],
+        fmIndex: -1,
+        message: [{ role: "user", data: message }],
+    });
+    await sync.flushResources();
+    alerts.select.mockResolvedValueOnce("2").mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+
+    await characters.exportChat(source.id!);
+    expect(downloads).toHaveLength(1);
+    const [{ name, data }] = downloads;
+    select(beta);
+    await run({ name, data: new TextEncoder().encode(data) });
+
+    expect(alerts.error).not.toHaveBeenCalled();
+    expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
+    expect(chatsOf(beta)[0]).toMatchObject({ name: "HTML chat", note });
+    expect(texts(beta, 0)).toEqual([message]);
+});
+
+/** Memory HTTP is scripted only in these tests; the real save adapter and server chat store remain in use. */
+function serveMemory(
+    booted: Awaited<ReturnType<typeof boot>>,
+    answer: (chatId: string, route: string, init?: RequestInit) => Response | Promise<Response>,
+) {
+    const requests: { chatId: string; route: string; body: unknown; saved: unknown }[] = [];
+    server.current = {
+        close: () => booted.fake.close(),
+        fetch: (path: string, init?: RequestInit) => {
+            const match = new URL(path, "http://test").pathname.match(
+                /^\/api\/memory\/structured\/([^/]+)\/([^/]+)(?:\/(.*))?$/,
+            );
+            if (!match) return booted.fake.fetch(path, init);
+            const chatId = decodeURIComponent(match[2]);
+            const route = match[3] ?? "";
+            requests.push({
+                chatId,
+                route,
+                body: init?.body ? JSON.parse(init.body as string) : null,
+                saved: plain(booted.fake.chat(decodeURIComponent(match[1]), chatId)),
+            });
+            return answer(chatId, route, init);
+        },
+    };
+    return requests;
+}
+
+function fileRecords(id: string): StructuredMemoryFileRecords {
+    return {
+        pages: [
+            {
+                id: `page-${id}`,
+                type: "location",
+                title: `Place ${id}`,
+                aliases: [],
+                contextMode: "auto",
+                sections: [
+                    {
+                        heading: "Facts",
+                        body: `Body ${id}`,
+                        provenance: [`event-${id}`],
+                        sources: [],
+                        locked: false,
+                        updatedAt: 1,
+                    },
+                ],
+                links: [],
+                retrieval: { keywords: [] },
+                history: [],
+            },
+        ],
+        events: [
+            {
+                id: `event-${id}`,
+                title: `Event ${id}`,
+                summary: `Summary ${id}`,
+                status: "active",
+                participants: [],
+                storyTime: { text: "Morning" },
+                keyLines: [],
+                stateChanges: [],
+                knowledge: [],
+                relationshipShifts: [],
+                openThreads: { add: [], close: [], transitions: [] },
+                sources: [],
+                writerRun: "private-run",
+                createdRevision: 7,
+            },
+        ],
+        threads: [{ id: `thread-${id}`, title: `Return ${id}`, who: [], state: "open" }],
+    };
+}
+const pausedChat = (id: string): Chat => ({
+    id,
+    name: id,
+    note: "",
+    localLore: [],
+    fmIndex: -1,
+    hypaV3Data: { summaries: [{ text: "Real HypaV3 summary", chatMemos: ["m0"], isImportant: false }] },
+    message: [0, 1].map((i) => ({
+        chatId: `${id}-m${i}`,
+        role: "char",
+        data: `Message ${i}`,
+        generationInfo: {
+            model: "story-model",
+            generationId: `generation-${i}`,
+            memory: { state: "skipped", reason: "writerPaused", pages: [], refused: [], unverified: [], warnings: [] },
+        },
+    })),
+});
+function pausedRerollChat(id: string): Chat {
+    const chat = pausedChat(id);
+    chat.message[0].selected = 0;
+    chat.message[0].candidates = [
+        {
+            id: "selected",
+            data: "Message 0",
+            generationInfo: { ...chat.message[0].generationInfo!, inputTokens: 12 },
+        },
+        {
+            id: "paused",
+            data: "Another reply",
+            generationInfo: {
+                model: "reroll-model",
+                generationId: "reroll-generation",
+                outputTokens: 34,
+                memory: {
+                    state: "skipped",
+                    reason: "writerPaused",
+                    pages: [],
+                    refused: [],
+                    unverified: [],
+                    warnings: [],
+                },
+            },
+            scriptstateAfter: { $mood: "calm" },
+        },
+    ];
+    return chat;
+}
+function memoryRead(records: StructuredMemoryFileRecords, route: string, runs: unknown[] = []) {
+    return Response.json(
+        route === "package"
+            ? { revision: "r", pages: records.pages, events: records.events, next: null }
+            : route === "threads"
+              ? { revision: "r", threads: records.threads, next: null }
+              : { revision: "r", ...records, runs },
+    );
+}
+
+/** A read's projection in the mirror and in the detached HTTP collection read used by exportAllChats. */
+function installReadProjection(b: Awaited<ReturnType<typeof boot>>, input: Chat) {
+    const remote = b.fake.chat(b.alpha, input.id!)!;
+    const projection = sealHypaV3Data(input.hypaV3Data!);
+    b.chat.acceptRemoteChat({ ...remote, data: { ...remote.data, hypaV3Data: projection } });
+    const fetch = b.fake.fetch;
+    vi.spyOn(b.fake, "fetch").mockImplementation(async (path, init) => {
+        const response = await fetch(path, init);
+        if (new URL(path, "http://test").pathname !== "/api/resources/read") return response;
+        const body = await response.json();
+        for (const collection of body.chatCollections ?? []) {
+            const chat = collection.chats.find((chat: { id: string }) => chat.id === input.id);
+            if (chat) chat.data.hypaV3Data = projection;
+        }
+        return Response.json(body);
+    });
+}
+
+it.each([
+    { mode: "0", format: "JSON" },
+    { mode: "2", format: "HTML .idat" },
+    { mode: "all", format: "all chats" },
+])(
+    "exports $format without a sealed projection after switching algorithms, with records available",
+    async ({ mode }) => {
+        const b = await boot();
+        b.settings.ui.memoryAlgorithmType = "structuredMemory";
+        const input = pausedChat("projected");
+        b.chat.createChat(b.alpha, input);
+        await b.sync.flushResources();
+        installReadProjection(b, input);
+        b.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        serveMemory(b, (chatId, route) => memoryRead(fileRecords(chatId), route));
+        if (mode === "all") await b.characters.exportAllChats();
+        else {
+            alerts.select.mockResolvedValueOnce(mode);
+            if (mode === "2") alerts.select.mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+            await b.characters.exportChat(input.id!);
+        }
+        expect(b.downloads).toHaveLength(1);
+        const text = b.downloads[0].data;
+        const file = mode === "2" ? null : JSON.parse(text);
+        const exported = file
+            ? mode === "all"
+                ? file.data.find((chat: Chat) => chat.id === input.id)
+                : file.data
+            : JSON.parse(new DOMParser().parseFromString(text, "text/html").querySelector(".idat")!.textContent!);
+        if (file) expect(file.structuredMemory).toContainEqual({ chatId: input.id, ...fileRecords(input.id!) });
+        expect(exported).not.toHaveProperty("hypaV3Data");
+        expect(text).not.toContain("structuredMemoryProjection");
+    },
+);
+
+it.each(["structuredMemory", "hypaMemoryV3"])(
+    "exports JSON, HTML and all chats under %s after records fail, dropping sealed projections and keeping real summaries",
+    async (algorithm) => {
+        const b = await boot();
+        const projected = pausedChat("projected");
+        const real = pausedChat("real");
+        for (const input of [projected, real]) b.chat.createChat(b.alpha, input);
+        await b.sync.flushResources();
+        installReadProjection(b, projected);
+        b.settings.ui.memoryAlgorithmType = algorithm;
+        serveMemory(b, (chatId, route) =>
+            route === "threads"
+                ? Response.json({ error: "Offline" }, { status: 503 })
+                : memoryRead(fileRecords(chatId), route),
+        );
+        for (const input of [projected, real]) {
+            for (const mode of ["0", "2"]) {
+                alerts.select.mockResolvedValueOnce(mode);
+                if (mode === "2") alerts.select.mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+                const count = b.downloads.length;
+                await b.characters.exportChat(input.id!);
+                expect(b.downloads).toHaveLength(count + 1);
+                const text = b.downloads.at(-1)!.data;
+                const file = mode === "0" ? JSON.parse(text) : null;
+                const exported = file
+                    ? file.data
+                    : JSON.parse(
+                          new DOMParser().parseFromString(text, "text/html").querySelector(".idat")!.textContent!,
+                      );
+                if (file) expect(file).not.toHaveProperty("structuredMemory");
+                expect(exported).not.toHaveProperty("structuredMemory");
+                if (input === projected) expect(exported).not.toHaveProperty("hypaV3Data");
+                else expect(exported.hypaV3Data).toEqual(real.hypaV3Data);
+                expect(text).not.toContain("structuredMemoryProjection");
+            }
+        }
+        await b.characters.exportAllChats();
+        expect(b.downloads).toHaveLength(5);
+        const text = b.downloads.at(-1)!.data;
+        const file = JSON.parse(text);
+        expect(file).not.toHaveProperty("structuredMemory");
+        expect(file.data.find((chat: Chat) => chat.id === projected.id)).not.toHaveProperty("hypaV3Data");
+        expect(file.data.find((chat: Chat) => chat.id === real.id).hypaV3Data).toEqual(real.hypaV3Data);
+        expect(text).not.toContain("structuredMemoryProjection");
+    },
+);
+
+it.each(["structuredMemory", "hypaMemoryV3"])(
+    "exports JSON and HTML under %s with real summaries kept and only the receipts removed",
+    async (algorithm) => {
+        const b = await boot();
+        b.settings.ui.memoryAlgorithmType = algorithm;
+        const input = pausedChat("exported");
+        b.chat.createChat(b.alpha, input);
+        await b.sync.flushResources();
+        const records = fileRecords(input.id!);
+        serveMemory(b, (_chatId, route) =>
+            memoryRead(records, route, [{ id: "private-run", input: "PRIVATE PROMPT" }]),
+        );
+        for (const mode of ["0", "2"]) {
+            alerts.select.mockResolvedValueOnce(mode);
+            if (mode === "2") alerts.select.mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+            await b.characters.exportChat(input.id!);
+            expect(b.downloads).toHaveLength(mode === "0" ? 1 : 2);
+            const text = b.downloads.at(-1)!.data;
+            const envelope = mode === "0" ? JSON.parse(text) : null;
+            const exported = envelope
+                ? envelope.data
+                : JSON.parse(new DOMParser().parseFromString(text, "text/html").querySelector(".idat")!.textContent!);
+            if (envelope) {
+                expect(envelope).toMatchObject({
+                    type: "risuChat",
+                    ver: 2,
+                    structuredMemory: [{ chatId: input.id, ...records }],
+                });
+                expect(envelope.data).not.toHaveProperty("structuredMemory");
+                expect(envelope.structuredMemory[0]).not.toHaveProperty("runs");
+            }
+            expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
+            expect(exported.message.map((message: any) => message.generationInfo)).toEqual([
+                { model: "story-model", generationId: "generation-0" },
+                { model: "story-model", generationId: "generation-1" },
+            ]);
+            expect(text).not.toContain("PRIVATE PROMPT");
+        }
+        expect(plain(b.chat.findChat({ chaId: b.alpha, chatId: input.id! }))).toMatchObject(input);
+        expect(b.fake.chat(b.alpha, input.id!)!.data).toMatchObject(input);
+    },
+);
+
+it("exports a chat without message or reroll memory receipts while keeping their other metadata", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "structuredMemory";
+    const input = pausedRerollChat("rerolls");
+    b.chat.createChat(b.alpha, input);
+    await b.sync.flushResources();
+    serveMemory(b, (chatId, route) => memoryRead(fileRecords(chatId), route));
+
+    alerts.select.mockResolvedValueOnce("0");
+    await b.characters.exportChat(input.id!);
+
+    expect(b.downloads).toHaveLength(1);
+    const exported = JSON.parse(b.downloads[0].data).data as Chat;
+    expect(exported.message[0]).toEqual({
+        chatId: "rerolls-m0",
+        role: "char",
+        data: "Message 0",
+        selected: 0,
+        generationInfo: { model: "story-model", generationId: "generation-0" },
+        candidates: [
+            {
+                id: "selected",
+                data: "Message 0",
+                generationInfo: { model: "story-model", generationId: "generation-0", inputTokens: 12 },
+            },
+            {
+                id: "paused",
+                data: "Another reply",
+                generationInfo: { model: "reroll-model", generationId: "reroll-generation", outputTokens: 34 },
+                scriptstateAfter: { $mood: "calm" },
+            },
+        ],
+    });
+    expect(plain(b.chat.findChat({ chaId: b.alpha, chatId: input.id! }))).toMatchObject(input);
+    expect(b.fake.chat(b.alpha, input.id!)!.data).toMatchObject(input);
+});
+
+it("exports all chats with an entry for pages, events or threads, stripping receipts even from run-only chats", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "structuredMemory";
+    const kinds = ["pages", "events", "threads", "runs", "empty"] as const;
+    const inputs = kinds.map(pausedChat);
+    for (const input of inputs) b.chat.createChat(b.alpha, input);
+    await b.sync.flushResources();
+    const entries = kinds.slice(0, 3).map((kind) => ({
+        chatId: kind,
+        pages: [],
+        events: [],
+        threads: [],
+        [kind]: fileRecords(kind)[kind as keyof StructuredMemoryFileRecords],
+    }));
+    serveMemory(b, (chatId, route) =>
+        memoryRead(
+            entries.find((entry) => entry.chatId === chatId) ?? { pages: [], events: [], threads: [] },
+            route,
+            chatId === "runs" ? [{ id: "private-run", input: "PRIVATE PROMPT" }] : [],
+        ),
+    );
+    await b.characters.exportAllChats();
+    expect(b.downloads).toHaveLength(1);
+    const file = JSON.parse(b.downloads[0].data);
+    expect(file).toMatchObject({ type: "risuAllChats", ver: 2 });
+    expect(file.structuredMemory).toHaveLength(3);
+    expect(file.structuredMemory).toEqual(expect.arrayContaining(entries));
+    for (const input of inputs) {
+        const exported = file.data.find((chat: Chat) => chat.id === input.id);
+        expect(exported).not.toHaveProperty("structuredMemory");
+        expect(exported.hypaV3Data).toEqual(input.hypaV3Data);
+        expect(exported.message.map((message: any) => message.generationInfo)).toEqual(
+            input.id === "empty"
+                ? input.message.map((message) => message.generationInfo)
+                : [
+                      { model: "story-model", generationId: "generation-0" },
+                      { model: "story-model", generationId: "generation-1" },
+                  ],
+        );
+    }
+    expect(b.downloads[0].data).not.toContain("PRIVATE PROMPT");
+    expect(alerts.normal).toHaveBeenCalledWith(language.successExport);
+    expect(alerts.error).not.toHaveBeenCalled();
+});
+
+it("downloads chats after a partial memory read fails and replaces the success notice while other chats still export", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "structuredMemory";
+    const input = pausedRerollChat("failed");
+    b.chat.createChat(b.alpha, input);
+    await b.sync.flushResources();
+    serveMemory(b, (chatId, route) =>
+        chatId === "failed" && route === "threads"
+            ? Response.json({ error: "Offline" }, { status: 503 })
+            : memoryRead(fileRecords(chatId), route),
+    );
+    alerts.select.mockResolvedValueOnce("0");
+    await b.characters.exportChat(input.id!);
+    expect(b.downloads).toHaveLength(1);
+    const single = JSON.parse(b.downloads[0].data);
+    expect(single.data).toMatchObject(input);
+    expect(single).not.toHaveProperty("structuredMemory");
+    expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.memoryFile.exportedWithoutRecords);
+    expect(alerts.normal).not.toHaveBeenCalled();
+    alerts.error.mockClear();
+    await b.characters.exportAllChats();
+    expect(b.downloads).toHaveLength(2);
+    const all = JSON.parse(b.downloads[1].data);
+    expect(all.data.find((chat: Chat) => chat.id === "failed")).toMatchObject(input);
+    expect(all.structuredMemory).toEqual([{ chatId: "a1", ...fileRecords("a1") }]);
+    expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
+        language.structuredMemory.memoryFile.allExportedWithoutRecords(1),
+    );
+    expect(alerts.normal).not.toHaveBeenCalled();
+});
+
+it("imports each file entry by its old chat id after saving new chats, regardless of algorithm, and skips legacy files", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+    const requests = serveMemory(b, () => Response.json({ revision: "restored", restored: true }));
+    const inputs = ["first", "second"].map((id) => ({
+        ...chatV2(id, null, id),
+        id,
+        message: [{ chatId: `${id}-message`, role: "char", data: id }],
+    }));
+    await b.run({
+        name: "memory.json",
+        data: encode({
+            type: "risuAllChats",
+            ver: 2,
+            data: inputs,
+            structuredMemory: [
+                { chatId: "second", ...fileRecords("second") },
+                { chatId: "first", ...fileRecords("first") },
+            ],
+        }),
+    });
+    await b.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(2);
+    for (const [index, input] of inputs.entries()) {
+        const imported = b.chatsOf(b.alpha)[index];
+        expect(imported.id).toMatch(UUID_V4);
+        expect(imported.id).not.toBe(input.id);
+        expect(imported.message).toEqual(input.message);
+        expect(requests[index]).toMatchObject({
+            chatId: imported.id,
+            route: "restore",
+            body: fileRecords(input.id),
+            saved: { data: { id: imported.id, message: input.message } },
+        });
+        expect(b.fake.chat(b.alpha, imported.id)!.data).not.toHaveProperty("structuredMemory");
+    }
+    expect(alerts.error).not.toHaveBeenCalled();
+    await b.run({
+        name: "old.json",
+        data: encode({ type: "risuChat", ver: 2, data: { ...inputs[0], id: "legacy", name: "Legacy" } }),
+    });
+    await b.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(2);
+    expect(b.chatsOf(b.alpha)[0].name).toBe("Legacy");
+});
+
+it("keeps all imported chats and reports refused, unrestored and oversized records once without stopping later restores", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+    const inputs = ["Refused", "Not restored", "Oversized", "Healthy"].map((id) => ({ ...chatV2(id, null, id), id }));
+    const responses = [
+        () => Response.json({ reason: "fenced" }, { status: 409 }),
+        () => Response.json({ revision: "busy", restored: false }),
+        () => Response.json({ error: "Body too large" }, { status: 413 }),
+        () => Response.json({ revision: "restored", restored: true }),
+    ];
+    const requests = serveMemory(b, () => responses.shift()!());
+    await b.run({
+        name: "memory.json",
+        data: encode({
+            type: "risuAllChats",
+            ver: 2,
+            data: inputs,
+            structuredMemory: inputs.map(({ id }) => ({ chatId: id, ...fileRecords(id) })),
+        }),
+    });
+    await b.sync.flushResources();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requests).toHaveLength(4);
+    expect(requests.at(-1)!.body).toEqual(fileRecords("Healthy"));
+    const imported = b.chatsOf(b.alpha).slice(0, 4);
+    expect(imported.map((chat) => chat.name)).toEqual(inputs.map((chat) => chat.name));
+    for (const chat of imported) expect(b.fake.chat(b.alpha, chat.id)!.data.name).toBe(chat.name);
+    expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
+        [
+            language.structuredMemory.memoryFile.restoreFailed("Refused, Not restored"),
+            language.structuredMemory.memoryFile.restoreTooLarge(
+                "Oversized",
+                MEMORY_RESTORE_BODY_BYTES / (1024 * 1024),
+            ),
+        ].join("\n\n"),
+    );
+    expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
+});
+
+it("keeps imported memory preset ids that exist locally and drops ids of missing presets", async () => {
+    const { run, alpha, chatsOf, settings, sync, fake } = await boot();
+    settings.hypaV3Presets.items = [createHypaV3Preset("Local", {}, "local-memory")];
+    settings.hypaV3Presets.selectedId = "local-memory";
+    const inputs = ["local-memory", "missing-memory"].map((memoryPresetId) => ({
+        ...chatV2(memoryPresetId, null, "Imported message"),
+        memoryPresetId,
+    }));
+    await run({ name: "chats.json", data: encode({ type: "risuAllChats", ver: 2, folders: [], data: inputs }) });
+    const imported = chatsOf(alpha).slice(0, 2);
+    expect(imported).toHaveLength(2);
+    await sync.flushResources();
+    for (const chat of imported) {
+        for (const copy of [chat, fake.chat(alpha, chat.id)!.data]) {
+            if (chat.name === "local-memory") expect(copy).toHaveProperty("memoryPresetId", "local-memory");
+            else {
+                expect(chat.name).toBe("missing-memory");
+                expect(copy).not.toHaveProperty("memoryPresetId");
+            }
+        }
+    }
+    expect(settings.hypaV3Presets.selectedId).toBe("local-memory");
+});
+
+it("keeps imported memory connection ids that exist locally and drops ids of missing connections", async () => {
+    const { run, alpha, chatsOf, settings, sync, fake } = await boot();
+    settings.modelProfiles = normalizeModelProfiles([
+        { id: "local-memory", name: "Local memory", modelId: "gpt-4o-mini" },
+    ]);
+    const inputs = ["local-memory", "missing-memory"].map((memoryProfileId) => ({
+        ...chatV2(memoryProfileId, null, "Imported message"),
+        memoryProfileId,
+    }));
+    await run({ name: "chats.json", data: encode({ type: "risuAllChats", ver: 2, folders: [], data: inputs }) });
+    const imported = chatsOf(alpha).slice(0, 2);
+    expect(imported).toHaveLength(2);
+    await sync.flushResources();
+    for (const chat of imported) {
+        for (const copy of [chat, fake.chat(alpha, chat.id)!.data]) {
+            if (chat.name === "local-memory") expect(copy).toHaveProperty("memoryProfileId", "local-memory");
+            else {
+                expect(chat.name).toBe("missing-memory");
+                expect(copy).not.toHaveProperty("memoryProfileId");
+            }
+        }
+    }
+});
+
+describe("exports after a remote trash", () => {
+    it("omits the marked transcript and its memory from the chat archive and dataset", async () => {
+        const b = await boot();
+        b.select(b.beta);
+        b.chat.appendMessage(
+            { chaId: b.beta, chatId: "b1" },
+            { role: "user", chatId: "keep", data: "keep this transcript" },
+        );
+        b.chat.appendMessage(
+            { chaId: b.beta, chatId: "b2" },
+            { role: "user", chatId: "hidden", data: "trashed transcript" },
+        );
+        await b.sync.flushResources();
+        const { store } = b.fake;
+        const result = store.changeChatTrash(
+            "trash",
+            {
+                characterId: b.beta,
+                chatId: "b2",
+                revision: b.fake.chat(b.beta, "b2")!.revision,
+            },
+            store.epoch(),
+            b.fake.chatHeld,
+        );
+        expect(result).not.toHaveProperty("error");
+        // Only the detached server read knows about the mark.
+        const memoryRequests = serveMemory(b, (id, route) => memoryRead(fileRecords(id), route));
+        await b.characters.exportAllChats();
+        const { exportAsDataset } = await import("./storage/exportAsDataset");
+        await exportAsDataset();
+        expect(b.downloads).toHaveLength(2);
+        const archive = JSON.parse(b.downloads[0].data);
+        expect(archive.data.map((entry: Chat) => entry.id)).toEqual(["b1"]);
+        expect(memoryRequests.map((request) => request.chatId)).not.toContain("b2");
+        expect(JSON.parse(b.downloads[1].data).filter((row: { name: string }) => row.name === "Beta")).toMatchObject([
+            { chats: [{ data: "keep this transcript" }] },
         ]);
     });
 });

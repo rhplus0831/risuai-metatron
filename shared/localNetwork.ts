@@ -1,4 +1,8 @@
-// The local-network host rules of the client transport and the server request layer.
+/**
+ * Host classification shared by `src/ts/network/localNetwork.ts` and the server request layer.
+ * This recognizes local names and addresses; it does not resolve DNS or authorize a proxy target.
+ */
+
 function normalizeHost(hostname: string): string {
     return hostname
         .trim()
@@ -76,6 +80,11 @@ function isLocalIPv6(host: string): boolean {
     return false;
 }
 
+/**
+ * Recognizes private/link-local IPv4, unique-local/link-local IPv6, `.local` and bare single-label
+ * hosts, plus `localhost`, `127.0.0.1`, `0.0.0.0`, and `::1`. Other IPv4 loopback addresses are not
+ * included. Host case, surrounding whitespace, IPv6 brackets and zone suffixes are normalized.
+ */
 export function isLocalNetworkHost(hostname: string): boolean {
     const host = normalizeHost(hostname);
     if (!host) {
@@ -106,6 +115,7 @@ export function isLocalNetworkHost(hostname: string): boolean {
     return false;
 }
 
+/** Classifies an absolute URL's hostname; a malformed or relative URL is not a local-network URL. */
 export function isLocalNetworkUrl(url: string): boolean {
     try {
         const parsed = new URL(url);

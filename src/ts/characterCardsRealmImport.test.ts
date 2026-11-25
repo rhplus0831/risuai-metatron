@@ -11,6 +11,7 @@ import {
 } from "../../shared/realmImport.ts";
 import { cardV2, cardV3 } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
 
 /**
  * `downloadRisuHub` over the real records with the server's Realm import answered by the test (the
@@ -21,6 +22,7 @@ import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
  * module's fields merged, the asset keys as stored; PNG: the stored image key without a `saveAsset`,
  * an off-spec card converted; legacy JSON: the hub import with its portrait through `/hub-proxy`),
  * counts the import once for a binary answer, and alerts each failure once with the Realm texts.
+ * The RisuRealm terms start accepted; "RisuRealm terms" covers asking for them.
  */
 
 const { server, alerts } = vi.hoisted(() => {
@@ -32,7 +34,10 @@ const { server, alerts } = vi.hoisted(() => {
         wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
         clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         confirm: vi.fn(async () => true),
+        // "0" imports a card that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         input: vi.fn(async () => ""),
+        realmTerms: vi.fn(async () => false),
         store: { set: vi.fn(), subscribe: vi.fn() },
     };
     return { server: { current: null as any }, alerts };
@@ -47,9 +52,11 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertWait: alerts.wait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertStore: alerts.store,
         alertInput: alerts.input,
         alertClear: alerts.clear,
+        alertRealmTerms: alerts.realmTerms,
     }),
 );
 vi.mock("./parser/parser.svelte", () => ({
@@ -130,6 +137,10 @@ async function boot() {
     const util = await import("./util");
     vi.spyOn(util, "sleep").mockResolvedValue(undefined);
     const cards = await import("./characterCards");
+    const terms = await import("./realmTerms");
+    booted.settings.ui.realmTermsAccepted = terms.REALM_TERMS_VERSION;
+    // Saved now, so a test that fails every server request has no pending settings write.
+    await booted.sync.flushResources();
     const modules = await import("./process/modules");
     const realFetch = booted.fake.fetch.bind(booted.fake);
     const fetch = vi.spyOn(booted.fake, "fetch");
@@ -141,11 +152,12 @@ async function boot() {
      */
     const answer = (
         prepare: Response | string,
-        commit: Response | string = new Response("unexpected commit", { status: 500 }),
+        commit: Response | string | (() => Response | string) = new Response("unexpected commit", { status: 500 }),
     ) => {
         fetch.mockImplementation((url, init) => {
             if (url === route) return Promise.resolve(toResponse(prepare));
-            if (url === REALM_COMMIT_PATH) return Promise.resolve(toResponse(commit));
+            if (url === REALM_COMMIT_PATH)
+                return Promise.resolve(toResponse(typeof commit === "function" ? commit() : commit));
             if (url === REALM_CANCEL_PATH) return Promise.resolve(new Response(null, { status: 204 }));
             return realFetch(url, init);
         });
@@ -171,6 +183,7 @@ async function boot() {
     const b = {
         ...booted,
         cards,
+        terms,
         modules,
         util,
         saveAsset,
@@ -198,7 +211,7 @@ beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
     alerts.current = null;
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", new URL("http://localhost/"));
     vi.stubGlobal("safeStructuredClone", (value: unknown) =>
         value === undefined ? undefined : JSON.parse(JSON.stringify(value)),
@@ -208,6 +221,7 @@ beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     alerts.confirm.mockImplementation(async () => true);
+    alerts.select.mockImplementation(async () => lowLevelAccessAnswer.with);
     alerts.input.mockImplementation(async () => "");
 });
 afterEach(() => {
@@ -346,6 +360,71 @@ describe("Realm creator blocking", () => {
     });
 });
 
+describe("RisuRealm terms", () => {
+    const listing = (b: Awaited<ReturnType<typeof boot>>) =>
+        b.cards.getRisuHub({ search: "", page: 0, nsfw: false, sort: "download" });
+
+    it("asks before the first listing when another version was accepted, stores this one, and asks no more", async () => {
+        const b = await boot();
+        b.settings.ui.realmTermsAccepted = "2000-01-01";
+        alerts.realmTerms.mockResolvedValueOnce(true);
+        b.globalFetch.mockImplementation(async () => Response.json([]));
+
+        await listing(b);
+        await listing(b);
+
+        expect(alerts.realmTerms).toHaveBeenCalledOnce();
+        expect(b.globalFetch).toHaveBeenCalledTimes(2);
+        await b.sync.flushResources();
+        expect(b.record("ui").realmTermsAccepted).toBe(b.terms.REALM_TERMS_VERSION);
+    });
+
+    it("sends nothing to Realm for a listing, a download, or a deep link while declined", async () => {
+        const b = await boot();
+        b.settings.ui.realmTermsAccepted = "";
+        b.settings.ui.blockedRealmCreators = [{ id: "creator-a", name: "Creator A" }];
+        b.answer(line(charxPrepared(cardV3("Declined"))), line(charxCommitted()));
+        const before = b.ids();
+        const opened: unknown[] = [];
+        const unsubscribe = b.cards.showRealmInfoStore.subscribe((value) => opened.push(value));
+        try {
+            expect(await listing(b)).toEqual([]);
+            await b.cards.downloadRisuHub("declined-card");
+            await b.cards.getRealmInfo("declined-card");
+
+            expect(alerts.realmTerms).toHaveBeenCalledTimes(3);
+            expect(b.globalFetch).not.toHaveBeenCalled();
+            expect(b.downloads()).toEqual([]);
+            expect(b.ids()).toEqual(before);
+            expect(opened).toEqual([null]);
+            expect(b.settings.ui.realmTermsAccepted).toBe("");
+            expect(alerts.wait).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+        } finally {
+            unsubscribe();
+        }
+    });
+
+    it("shows one dialog to concurrent callers and lets both through on Accept", async () => {
+        const b = await boot();
+        b.settings.ui.realmTermsAccepted = "";
+        let accept!: (accepted: boolean) => void;
+        alerts.realmTerms.mockReturnValueOnce(new Promise<boolean>((resolve) => (accept = resolve)));
+        b.globalFetch.mockImplementation(async () => Response.json([]));
+
+        const first = listing(b);
+        const second = listing(b);
+        await Promise.resolve();
+        expect(alerts.realmTerms).toHaveBeenCalledOnce();
+        expect(b.globalFetch).not.toHaveBeenCalled();
+        accept(true);
+        await Promise.all([first, second]);
+
+        expect(alerts.realmTerms).toHaveBeenCalledOnce();
+        expect(b.globalFetch).toHaveBeenCalledTimes(2);
+    });
+});
+
 describe("the Realm import through the server (downloadRisuHub)", () => {
     it("sends the id, then the token, and builds a CharX card from the stored keys: module fields merged", async () => {
         const b = await boot();
@@ -369,11 +448,15 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(b.commits()[0][1].body).toBe(JSON.stringify({ token: TOKEN }));
         expect(new Headers(b.commits()[0][1].headers).get("content-type")).toBe("application/json");
         expect(b.cancels()).toEqual([]);
-        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(b.globalFetch).not.toHaveBeenCalled();
         expect(b.saveAsset).not.toHaveBeenCalled();
-        expect(alerts.store.set).toHaveBeenCalledWith({ type: "wait", msg: "Downloading..." });
-        expect(alerts.wait).toHaveBeenCalledWith("Loading... (Saving Assets 1/1)");
+        expect(alerts.wait).toHaveBeenCalledWith("Downloading...", expect.any(Function), expect.any(Function));
+        expect(alerts.wait).toHaveBeenCalledWith(
+            "Loading... (Saving Assets 1/1)",
+            expect.any(Function),
+            expect.any(Function),
+        );
         expect(alerts.error).not.toHaveBeenCalled();
         expect(b.ids()).toHaveLength(before.length + 1);
         expect(b.imports()).toBe(imports + 1);
@@ -420,15 +503,20 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(b.record("characters", id)).toMatchObject({ image: "assets/image-key.png" });
     });
 
-    it.each(["charx", "png"])(
-        "asks a %s card's lowLevelAccess before the commit, and keeps it on the character once accepted",
-        async (kind) => {
+    it.each([
+        ["charx", "with", lowLevelAccessAnswer.with, true],
+        ["png", "with", lowLevelAccessAnswer.with, true],
+        ["charx", "without", lowLevelAccessAnswer.without, false],
+        ["png", "without", lowLevelAccessAnswer.without, false],
+    ] as const)(
+        "asks a %s card's lowLevelAccess before the commit, and stores the answer (%s the access)",
+        async (kind, _choice, answer, stored) => {
             const b = await boot();
             const card = cardV3("Powerful", {}, { lowLevelAccess: true });
             const order: string[] = [];
-            alerts.confirm.mockImplementation(async () => {
+            alerts.select.mockImplementation(async () => {
                 order.push(`confirm ${b.commits().length}`);
-                return true;
+                return answer;
             });
             b.answer(
                 line(kind === "charx" ? charxPrepared(card) : pngPrepared(b64(card))),
@@ -436,14 +524,14 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
             );
             const before = b.ids();
             await b.cards.downloadRisuHub("powerful-id");
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             // Asked once, before any commit was sent.
             expect(order).toEqual(["confirm 0"]);
             expect(b.commits()).toHaveLength(1);
             expect(b.cancels()).toEqual([]);
             expect(alerts.error).not.toHaveBeenCalled();
             expect(b.ids()).toHaveLength(before.length + 1);
-            expect(plain(b.character(b.ids().at(-1)!))).toMatchObject({ name: "Powerful", lowLevelAccess: true });
+            expect(plain(b.character(b.ids().at(-1)!))).toMatchObject({ name: "Powerful", lowLevelAccess: stored });
         },
     );
 
@@ -452,12 +540,12 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         async (kind) => {
             const b = await boot();
             const card = cardV3("Declined", {}, { lowLevelAccess: true });
-            alerts.confirm.mockImplementation(async () => false);
+            alerts.select.mockImplementation(async () => lowLevelAccessAnswer.cancel);
             b.answer(line(kind === "charx" ? charxPrepared(card) : pngPrepared(b64(card))));
             const before = b.ids();
             const imports = b.imports();
             await b.cards.downloadRisuHub("declined-id");
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             expect(b.commits()).toEqual([]);
             expect(b.cancels()).toHaveLength(1);
             expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
@@ -496,9 +584,12 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         );
         const before = b.ids();
         await b.cards.downloadRisuHub("locked-id");
-        expect(alerts.input).toHaveBeenCalledExactlyOnceWith(language.inputCardPassword);
+        // A secret input: the password's keys never reach plugin key listeners.
+        expect(alerts.input).toHaveBeenCalledExactlyOnceWith(language.inputCardPassword, undefined, undefined, {
+            secret: true,
+        });
         // The decrypted card's lowLevelAccess is asked too, after the password.
-        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
         expect(alerts.error).not.toHaveBeenCalled();
         expect(b.commits()).toHaveLength(1);
         expect(b.cancels()).toEqual([]);
@@ -519,7 +610,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(alerts.input).toHaveBeenCalledOnce();
         if (message) expect(alerts.error).toHaveBeenCalledExactlyOnceWith(message());
         else expect(alerts.error).not.toHaveBeenCalled();
-        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(b.commits()).toEqual([]);
         expect(b.cancels()).toHaveLength(1);
         expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
@@ -540,7 +631,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         b.answer(line(pngPrepared(b64(tavern))), line(pngCommitted("assets/tavern.png")));
         const before = b.ids();
         await b.cards.downloadRisuHub("tavern-id");
-        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(alerts.error).not.toHaveBeenCalled();
         expect(b.saveAsset).not.toHaveBeenCalled();
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
@@ -613,12 +704,16 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         const importing = b.cards.downloadRisuHub("slow-id", { forceRedirect: true });
         await vi.advanceTimersByTimeAsync(0);
         expect(b.commits()).toHaveLength(1);
-        expect(alerts.store.set).not.toHaveBeenCalledWith({ type: "wait", msg: "Downloading..." });
-        expect(alerts.wait).not.toHaveBeenCalledWith("Loading...");
+        expect(alerts.wait.mock.calls.map(([msg]) => msg)).not.toContain("Downloading...");
+        expect(alerts.wait.mock.calls.map(([msg]) => msg)).not.toContain("Loading...");
         for (let done = 1; done <= 2; done++) {
             controller.enqueue(new TextEncoder().encode(line({ done, total: 2 })));
             await vi.advanceTimersByTimeAsync(0);
-            expect(alerts.wait).toHaveBeenLastCalledWith(`Loading... (Saving Assets ${done}/2)`);
+            expect(alerts.wait).toHaveBeenLastCalledWith(
+                `Loading... (Saving Assets ${done}/2)`,
+                expect.any(Function),
+                expect.any(Function),
+            );
             expect(b.ids()).toEqual(before);
         }
         controller.enqueue(new TextEncoder().encode(line(charxCommitted())));
@@ -629,7 +724,140 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
 
         b.answer(line(charxPrepared(cardV3("Quiet"))), line(charxCommitted()));
         await b.cards.downloadRisuHub("loud-id");
-        expect(alerts.wait).toHaveBeenLastCalledWith("Loading...");
+        expect(alerts.wait).toHaveBeenLastCalledWith("Loading...", expect.any(Function), expect.any(Function));
+    });
+
+    describe("staged cancellation and commit retries", () => {
+        it("sends one signed keepalive cancel synchronously on pagehide during a prompt, with no later normal cancel", async () => {
+            const b = await boot();
+            let settlePrompt!: (answer: string) => void;
+            alerts.select.mockReturnValueOnce(
+                new Promise<string>((resolve) => {
+                    settlePrompt = resolve;
+                }),
+            );
+            b.answer(line(charxPrepared(cardV3("Leaving", {}, { lowLevelAccess: true }))));
+            // Both cancel paths reach the fake server, while this spy identifies direct browser fetches.
+            const pagehideFetch = vi.fn((url: string, init?: RequestInit) => b.fetch(url, init));
+            vi.stubGlobal("fetch", pagehideFetch);
+            const before = b.ids();
+            const importing = b.cards.downloadRisuHub("leaving-id");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+            expect(b.commits()).toEqual([]);
+            expect(b.cancels()).toEqual([]);
+
+            window.dispatchEvent(new Event("pagehide"));
+
+            // No await between the event and the request assertion, since unload cannot wait for auth.
+            expect(pagehideFetch).toHaveBeenCalledExactlyOnceWith(
+                REALM_CANCEL_PATH,
+                expect.objectContaining({ method: "POST", keepalive: true }),
+            );
+            const request = pagehideFetch.mock.calls[0];
+            expect(new Headers(request[1]?.headers).get("risu-auth")).toBe("signed-token");
+            expect(sent(request)).toEqual({ token: TOKEN });
+            expect(b.cancels()).toHaveLength(1);
+            window.dispatchEvent(new Event("pagehide"));
+            settlePrompt(lowLevelAccessAnswer.cancel);
+            await importing;
+            await vi.advanceTimersByTimeAsync(0);
+            window.dispatchEvent(new Event("pagehide"));
+
+            expect(pagehideFetch).toHaveBeenCalledTimes(1);
+            expect(b.cancels()).toHaveLength(1);
+            expect(b.commits()).toEqual([]);
+            expect(b.ids()).toEqual(before);
+            expect(b.saveAsset).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            { name: "busy", status: 409, error: "Another import is running" },
+            { name: "maintenance", status: 503, error: "Maintenance in progress" },
+        ])(
+            "retries a $name commit refusal once after five seconds and imports on success",
+            async ({ status, error }) => {
+                const b = await boot();
+                vi.mocked(b.util.sleep).mockRestore();
+                b.answer(line(charxPrepared(cardV3("Retried"))), () =>
+                    b.commits().length === 1 ? Response.json({ error }, { status }) : line(charxCommitted()),
+                );
+                const before = b.ids();
+                const imports = b.imports();
+                const importing = b.cards.downloadRisuHub("retry-id");
+                await vi.advanceTimersByTimeAsync(0);
+                expect(b.commits()).toHaveLength(1);
+
+                await vi.advanceTimersByTimeAsync(4_999);
+                expect(b.commits()).toHaveLength(1);
+                expect(b.cancels()).toEqual([]);
+                expect(alerts.error).not.toHaveBeenCalled();
+                expect(b.ids()).toEqual(before);
+                await vi.advanceTimersByTimeAsync(1);
+                expect(b.commits()).toHaveLength(2);
+                await importing;
+
+                expect(b.commits().map(sent)).toEqual([{ token: TOKEN }, { token: TOKEN }]);
+                expect(b.ids()).toHaveLength(before.length + 1);
+                expect(plain(b.character(b.ids().at(-1)!))).toMatchObject({ name: "Retried" });
+                expect(b.imports()).toBe(imports + 1);
+                expect(alerts.error).not.toHaveBeenCalled();
+                window.dispatchEvent(new Event("pagehide"));
+                expect(b.cancels()).toEqual([]);
+                expect(b.globalFetch).not.toHaveBeenCalled();
+            },
+        );
+
+        it("alerts once and cancels once when the one commit retry is also refused", async () => {
+            const b = await boot();
+            vi.mocked(b.util.sleep).mockRestore();
+            b.answer(line(charxPrepared(cardV3("Refused twice"))), () =>
+                Response.json({ error: "Another import is running" }, { status: 409 }),
+            );
+            const before = b.ids();
+            const importing = b.cards.downloadRisuHub("retry-refused-id");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(b.commits()).toHaveLength(1);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(b.cancels()).toEqual([]);
+
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(b.commits()).toHaveLength(2);
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportBusy);
+            expect(b.cancels()).toHaveLength(1);
+            await importing;
+            await vi.advanceTimersByTimeAsync(5_000);
+            window.dispatchEvent(new Event("pagehide"));
+
+            expect(b.commits().map(sent)).toEqual([{ token: TOKEN }, { token: TOKEN }]);
+            expect(b.cancels()).toHaveLength(1);
+            expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
+            expect(b.ids()).toEqual(before);
+            expect(b.saveAsset).not.toHaveBeenCalled();
+            expect(b.globalFetch).not.toHaveBeenCalled();
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportBusy);
+        });
+
+        it("does not retry a 409 commit refusal with another error text", async () => {
+            const b = await boot();
+            vi.mocked(b.util.sleep).mockRestore();
+            b.answer(line(charxPrepared(cardV3("Conflicting"))), () =>
+                Response.json({ error: "Different conflict" }, { status: 409 }),
+            );
+            const before = b.ids();
+            const importing = b.cards.downloadRisuHub("conflict-id");
+            await vi.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(5_000);
+
+            expect(b.commits()).toHaveLength(1);
+            await importing;
+            expect(b.cancels()).toHaveLength(1);
+            expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
+            expect(alerts.error).toHaveBeenCalledTimes(1);
+            expect(b.ids()).toEqual(before);
+            expect(b.saveAsset).not.toHaveBeenCalled();
+        });
     });
 
     type Failure = {
@@ -733,7 +961,8 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
     );
 
     it.each([
-        ...failures,
+        // A busy commit refusal is retried once ("staged cancellation and commit retries").
+        ...failures.filter((testCase) => testCase.name !== "busy"),
         { name: "expired", status: 404, error: REALM_IMPORT_EXPIRED, message: () => language.realmImportExpired },
         {
             name: "malformed committed line",

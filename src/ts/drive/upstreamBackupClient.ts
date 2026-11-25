@@ -22,7 +22,12 @@ import {
     type UpstreamExportRequest,
 } from "../../../shared/upstreamExportReport.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { epochMismatch, getResourceEpoch, ResourceEpochMismatchError } from "../storage/resourceClient";
+import {
+    epochMismatch,
+    getResourceEpoch,
+    isGatewayFailureStatus,
+    ResourceEpochMismatchError,
+} from "../storage/resourceClient";
 import { beforeRestoreReload } from "../storage/resourceSync.svelte";
 import { currentChatRef } from "../storage/chatStore.svelte";
 import { tabSelectionIds } from "../storage/settingsViews.svelte";
@@ -31,8 +36,10 @@ import { authFetch } from "../storage/serverAuth";
 import {
     importOverServer,
     ServerImportAnswerError,
+    ServerImportCancelledError,
     ServerImportFailedError,
     ServerImportRequestError,
+    withServerImportWait,
 } from "../storage/serverImportClient";
 
 /**
@@ -68,14 +75,17 @@ function isSelection(value: unknown): value is UpstreamImportSelection {
 
 /**
  * Uploads `file` to the prepare route with this tab's epoch. Resolves with the prepared import's token
- * and report and selection; `onProgress` gets each progress line. Throws `ServerImportRequestError` for a refusal
+ * and report and selection. `src/ts/storage/serverImportClient.ts` `importOverServer` checks the
+ * NDJSON counts; this entrypoint checks each phase before calling `onProgress`.
+ * Throws `ServerImportRequestError` for a refusal
  * (a 400 carries the server's reason, a Risu Account backup's among them), `ServerImportFailedError`
  * when the conversion failed, `ServerImportAnswerError` for a malformed answer, and a network failure
- * as it is.
+ * as it is. Aborting `signal` stops progress and rejects with `ServerImportCancelledError`.
  */
 export function prepareUpstreamImport(
     file: Blob,
     onProgress?: (progress: UpstreamImportProgress) => void,
+    signal?: AbortSignal,
 ): Promise<UpstreamImportPrepared> {
     return importOverServer<UpstreamImportPrepared>(
         UPSTREAM_IMPORT_PREPARE_PATH,
@@ -101,6 +111,7 @@ export function prepareUpstreamImport(
             }
             return null;
         },
+        { signal },
     );
 }
 
@@ -168,11 +179,26 @@ function progressText({ phase, done, total }: UpstreamImportProgress): string {
     return total > 1 ? `${label}... (${done}/${total})` : `${label}...`;
 }
 
+/**
+ * A commit answer that may hide a commit: no answer at all, or a gateway status without the server's
+ * JSON text (a proxy's or tunnel's timeout while the server still restores). The server's own
+ * plain-text 500 is its answer.
+ */
+function commitAnswerLost(error: unknown): boolean {
+    return (
+        error instanceof TypeError ||
+        (error instanceof ServerImportRequestError &&
+            error.serverError === null &&
+            isGatewayFailureStatus(error.status))
+    );
+}
+
 /** The alert text for a failed prepare or commit. */
 function failureText(error: unknown): string {
     if (error instanceof ServerImportRequestError) {
         if (error.status === 413) {
-            return language.upstreamImport.tooLarge;
+            // Without the server's text, a proxy or tunnel in front of it refused the upload.
+            return error.serverError === null ? language.uploadRefusedByProxy : language.upstreamImport.tooLarge;
         }
         return error.serverError ?? language.upstreamImport.requestFailed(error.status);
     }
@@ -186,19 +212,28 @@ function failureText(error: unknown): string {
 }
 
 /**
- * Restores an upstream RisuAI `.bin`: prepare with progress, the report (Cancel removes the prepared
+ * Restores an upstream RisuAI `.bin`: a cancellable prepare with progress, the report (Cancel removes the prepared
  * import), then the commit with a wait state, asking again with the count while the server answers
  * that changes were saved since the preview (Restore resends with that count, Cancel cancels).
- * The selection is stored synchronously when the socket detects a restore (`beforeRestoreReload`),
- * or from the commit's answer before reloading. A refusal is shown and nothing changes; a
- * prepared import that was not committed is cancelled. A 412 reloads, as the version-2 import does.
+ * Only `alertUpstreamImportReport`'s own Restore callback authorizes each commit.
+ * Before every commit, `src/ts/storage/resourceSync.svelte.ts` `beforeRestoreReload` installs a
+ * synchronous hook to persist the prepared selection (`src/ts/storage/selection.svelte.ts`, storage
+ * only) before the terminal restore notice, without waiting for the HTTP answer. A successful answer
+ * persists its own selection and reloads. Changed-write answers and definite refusals unregister
+ * the hook (before epoch handling on 412); a lost connection retains it and warns that the commit
+ * may have happened. Every unconsumed prepare is cancelled best effort; a 412 reloads.
  */
 export async function restoreUpstreamBackup(file: Blob): Promise<void> {
-    alertWait(language.upstreamImport.uploading);
     let prepared: UpstreamImportPrepared;
     try {
-        prepared = await prepareUpstreamImport(file, (progress) => alertWait(progressText(progress)));
+        prepared = await withServerImportWait(language.upstreamImport.uploading, (signal, showWait) =>
+            prepareUpstreamImport(file, (progress) => showWait(progressText(progress)), signal),
+        );
     } catch (error) {
+        if (error instanceof ServerImportCancelledError) {
+            alertError(language.importCancelled, { log: false });
+            return;
+        }
         if (error instanceof ServerImportRequestError && error.status === 412) {
             // The server data changed since this tab loaded it; reload and try again.
             location.reload();
@@ -249,7 +284,8 @@ export async function restoreUpstreamBackup(file: Blob): Promise<void> {
             acceptWrites = outcome.changedWrites;
         }
     } catch (error) {
-        if (error instanceof ServerImportRequestError || error instanceof ServerImportAnswerError) {
+        const uncertain = commitDispatched && commitAnswerLost(error);
+        if (!uncertain && (error instanceof ServerImportRequestError || error instanceof ServerImportAnswerError)) {
             unregister?.();
         }
         if (error instanceof ResourceEpochMismatchError) {
@@ -257,11 +293,7 @@ export async function restoreUpstreamBackup(file: Blob): Promise<void> {
             return;
         }
         console.error(error);
-        alertError(
-            commitDispatched && error instanceof TypeError
-                ? language.upstreamImport.commitInterrupted
-                : failureText(error),
-        );
+        alertError(uncertain ? language.upstreamImport.commitInterrupted : failureText(error));
     } finally {
         if (!consumed) {
             void cancelUpstreamImport(prepared.token);
@@ -291,9 +323,9 @@ async function exportRefusal(res: Response): Promise<UpstreamExportRequestError>
 }
 
 /**
- * The export's request for this tab: its selection (`tabSelectionIds`, the records it resolves to,
- * ignoring the open chat's binding), its open chat (`currentChatRef`, whose character's `chatPage`
- * points at it), and the keys answer.
+ * The export uses `src/ts/storage/settingsViews.svelte.ts` `tabSelectionIds`, ignoring the open
+ * chat's bindings. `src/ts/storage/chatStore.svelte.ts` `currentChatRef` separately supplies
+ * `selectedChat` so its character's exported `chatPage` points at it. `includeSecrets` is the keys answer.
  */
 export function tabExportRequest(includeSecrets: boolean): UpstreamExportRequest {
     const ids = tabSelectionIds();

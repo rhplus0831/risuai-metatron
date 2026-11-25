@@ -4,10 +4,39 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+    afterAll,
+    afterEach,
+    beforeAll,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+    vi,
+    type MockInstance,
+} from "vitest";
 import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
-import { completionNotificationTag } from "../../../shared/notifications.ts";
+import type { Chat } from "../../../shared/database.ts";
+import type { RequestInterception } from "../../../shared/llm/interception.ts";
+import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
+import type { EventFeedFrame } from "../../../shared/events.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
+import { parseContextReport } from "../../../shared/contextReport.ts";
+import { AIACCESS_TOOLS } from "../../../shared/mcp/aiaccess.ts";
+import { LLMFormat } from "../../../shared/llm.ts";
+import { DICE_TOOLS } from "../mcp/dice.ts";
+import * as jobTools from "../mcp/jobTools.ts";
+import { createTokenizers } from "../prompt/tokenizers/index.ts";
+import * as tokenCounters from "../prompt/tokens.ts";
+import * as resourceStores from "../data/resourceStore.ts";
+import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
+import type { triggerscript } from "../../../shared/triggers.ts";
+import type { RunningJob } from "../jobs/generationJobs.ts";
+import type { requestDataResponse } from "../llm/request.ts";
+import { loadJobScope, scopeHistoryChat } from "../jobs/jobScope.ts";
+import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import * as localModels from "../prompt/transformers.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -18,10 +47,9 @@ import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 // job channel, and a fake OpenAI-compatible provider (SSE and JSON). The input stage (the input
 // trigger, `editinput` through the worker, the plugin hook as a callback, the user message under its
 // id, the retry that skips it, the id of another role refused); the streamed reply (chunks,
-// `accepted`, `done` with the alternatives, the stored raw text and its generation info, the lock
+// `accepted`, `done`, the stored raw text and its generation info, the lock
 // released); a continue extending its message while a Lua `editRequest` write to it is refused; the
-// checkpoint timer during a stalled stream and the text kept on abort; a group send under the job's
-// frozen configuration with one terminal; a non-streaming reply; a failing provider as the job's
+// checkpoint timer during a stalled stream and the text kept on abort; a non-streaming reply; a failing provider as the job's
 // error or, with `inlayErrorResponse`, a stopped send; a start trigger's stop; the request trigger's
 // effect limit ending the job before any provider call; `previewPrompt` and `preview`; `presetChain`
 // (the input stage on the admitted preset, the pick for the prompt, the `preset` event, a missing
@@ -61,6 +89,7 @@ let mode: {
     chunks: string[];
     delayMs: number;
     status?: number;
+    samples?: string[];
     /** The stream's socket is destroyed after this many chunks (a dropped connection). */
     breakAfterChunks?: number;
     /** Holds that break until the test releases it. */
@@ -98,7 +127,13 @@ const provider = http.createServer(async (req, res) => {
     if (!body.stream) {
         res.writeHead(200, { "content-type": "application/json" });
         const content = plainAnswer ? plainAnswer(body) : requestMode.chunks.join("");
-        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] }));
+        res.end(
+            JSON.stringify({
+                choices: [content, ...(requestMode.samples ?? [])].map((text) => ({
+                    message: { role: "assistant", content: text },
+                })),
+            }),
+        );
         return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -122,6 +157,10 @@ const provider = http.createServer(async (req, res) => {
     res.end();
 });
 
+let runnerStore: resourceStores.ResourceStore;
+let runnerTokens: tokenCounters.TokenCounter;
+let runnerFeed: ChangeFeed;
+let runnerStoreOptions: Parameters<typeof resourceStores.createResourceStore>[0];
 let rootDir = "";
 let server: ReturnType<typeof createTestServer>;
 let transformers: localModels.TransformersService;
@@ -209,8 +248,57 @@ const editinputScript = (comment: string) => ({
     flag: "g",
     ableFlag: true,
 });
+/** An `editprocess` script that never matches, so previews reach the script worker. */
+const editprocessScript = {
+    comment: "preset-process",
+    in: "never-matches-a-message",
+    out: "@@emo none",
+    type: "editprocess",
+    flag: "g",
+    ableFlag: true,
+};
 
 let seeded = 0;
+/** Single-token contents under the fixture's tik tokenizer; both exceed a zero lore budget. */
+const overBudgetLore = (key?: string) => ({
+    loreSettings: { tokenBudget: 0 },
+    globalLore: [
+        { id: "keep", comment: "Keep", content: "@@keep_activate_after_match\nA", insertorder: 200 },
+        { id: "dont", comment: "Dont", content: "@@dont_activate_after_match\nB", insertorder: 100 },
+    ].map((entry) => ({
+        ...entry,
+        key: key ?? "",
+        secondkey: "",
+        mode: "normal",
+        alwaysActive: key === undefined,
+        selective: false,
+    })),
+});
+const rejectedLore = {
+    budgetUsed: 0,
+    budget: 0,
+    rejectedCount: 2,
+    rejectedTokens: 2,
+    rejected: [
+        { name: "Keep", tokens: 1 },
+        { name: "Dont", tokens: 1 },
+    ],
+};
+
+/** Freeze job deadlines; a non-streaming provider needs no timer to deliver its answer. */
+async function prepareLoreBudgetJob() {
+    const providers = (await single("providers")).data;
+    const previousMode = mode;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    onTestFinished(async () => {
+        await patchProviders(providers);
+        mode = previousMode;
+        vi.useRealTimers();
+    });
+    await patchProviders({ useStreaming: false, autoContinueChat: false, inlayErrorResponse: false, presetChain: "" });
+    mode = { chunks: ["Reply."], delayMs: 0 };
+}
+
 /** A character (or a group of `members`) with one chat `k` holding `messages`. */
 async function seedCharacter(options: {
     name: string;
@@ -305,14 +393,16 @@ async function clientSetText(chaId: string, messageId: string, text: string) {
 
 let attach = 0;
 type JobOptions = {
+    command?: import("../../../shared/jobs.ts").GenerationCommand;
     /** Hold the first script worker call until attach can replay preparing. */
     observeStages?: boolean;
+    streamedRows?: boolean;
     onEvent?: (event: GenerationEvent) => void;
     abortAfterChunks?: number;
     /** Runs at every `chunk` event the owner socket gets. */
     onChunk?: () => void;
     /** Answers a `callback` event (an edit hook): the answer message's fields. */
-    answerCallback?: (event: any) => Record<string, unknown>;
+    answerCallback?: (event: any) => Record<string, unknown> | Promise<Record<string, unknown>>;
     hooks?: typeof NO_GENERATION_HOOKS;
     presetId?: string;
 };
@@ -333,8 +423,8 @@ async function job(
     const ownerAttached = socketOpen;
     const workers = server.context.scriptWorkers;
     const runScripts = workers.runScripts.bind(workers);
-    // This preset has a regex script: editinput (sends with input), or editprocess on the
-    // greeting/history (previews and groups), reaches the worker before memory or the request.
+    // This preset's regex scripts reach the worker before memory or the request: editinput (sends
+    // with input), or editprocess on the greeting/history (previews).
     const workerHold = options.observeStages
         ? vi.spyOn(workers, "runScripts").mockImplementationOnce(async (...args) => {
               await ownerAttached;
@@ -355,6 +445,7 @@ async function job(
             body: JSON.stringify({
                 kind,
                 clientId: "tab",
+                ...(options.command ? { command: options.command } : {}),
                 ...(options.hooks ? { hooks: options.hooks } : {}),
                 context: {
                     characterId: chaId,
@@ -376,32 +467,39 @@ async function job(
         const jobId = created.body.jobId as string;
         const url =
             `${base.replace("http", "ws")}/api/generations/${jobId}/ws` +
-            `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}`;
+            `?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${++attach}` +
+            (options.streamedRows ? "&rows=streamed&hydration=patch&proto=1" : "");
         const ws = new WebSocket(url);
         socket = ws;
         const events: any[] = [];
         let chunks = 0;
         // Every frame is observed from the open on: the handler is set before the provider is released.
-        const ended = new Promise<void>((resolve) => {
+        const ended = new Promise<void>((resolve, reject) => {
             fallback = setTimeout(resolve, 45_000);
             ws.onmessage = async (message) => {
-                const event = JSON.parse(String(message.data));
-                if (event.type === "ping") {
-                    return;
-                }
-                events.push(event);
-                options.onEvent?.(event);
-                if (event.type === "chunk") {
-                    options.onChunk?.();
-                }
-                if (event.type === "chunk" && ++chunks === options.abortAfterChunks) {
-                    await api(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
-                }
-                if (event.type === "callback" && options.answerCallback) {
-                    ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
-                }
-                if (event.type === "done" || event.type === "error") {
-                    resolve();
+                try {
+                    const event = JSON.parse(String(message.data));
+                    if (event.type === "ping") {
+                        return;
+                    }
+                    events.push(event);
+                    options.onEvent?.(event);
+                    if (event.type === "chunk") {
+                        options.onChunk?.();
+                    }
+                    if (event.type === "chunk" && ++chunks === options.abortAfterChunks) {
+                        await api(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
+                    }
+                    if (event.type === "callback" && options.answerCallback) {
+                        ws.send(
+                            JSON.stringify({ type: "answer", id: event.id, ...(await options.answerCallback(event)) }),
+                        );
+                    }
+                    if (event.type === "done" || event.type === "error") {
+                        resolve();
+                    }
+                } catch (error) {
+                    reject(error);
                 }
             };
         });
@@ -480,6 +578,8 @@ beforeAll(async () => {
     // An aborted job gets a ten-minute grace: no 5 s deadline races the runner's last write.
     // Capture the real service so a test can refuse local inference at the process boundary.
     const createdModels = vi.spyOn(localModels, "createTransformers");
+    const createdStore = vi.spyOn(resourceStores, "createResourceStore");
+    const createdCounter = vi.spyOn(tokenCounters, "createTokenCounter");
     try {
         server = createTestServer({
             rootDir,
@@ -489,8 +589,14 @@ beforeAll(async () => {
             cbsTimeLimits: UNHURRIED_CBS,
         });
         transformers = createdModels.mock.results[0].value;
+        runnerStore = createdStore.mock.results[0].value;
+        runnerStoreOptions = createdStore.mock.calls[0][0];
+        runnerFeed = createdStore.mock.calls[0][0].feed!;
+        runnerTokens = createdCounter.mock.results[0].value;
     } finally {
         createdModels.mockRestore();
+        createdStore.mockRestore();
+        createdCounter.mockRestore();
     }
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
@@ -551,7 +657,7 @@ beforeAll(async () => {
                         ...common,
                         mainPrompt: "Main {{char}}",
                         formatingOrder: ["main", "description", "chats", "lastChat"],
-                        regex: [editinputScript("preset")],
+                        regex: [editinputScript("preset"), editprocessScript],
                     },
                     {
                         ...presets.data[0],
@@ -580,7 +686,580 @@ afterAll(async () => {
     vi.restoreAllMocks();
 });
 
+describe("trigger stage chat copies", () => {
+    it("runOnCopy returns null without chat copies only when neither the character nor its modules have triggers", async () => {
+        const unusedModelService = () => {
+            throw new Error("A trigger without effects must not use model services");
+        };
+        for (const source of ["none", "character", "module"] as const) {
+            const trigger = trig("manual", []) as triggerscript;
+            const chaId = await seedCharacter({
+                name: "Ann",
+                triggerscript: source === "character" ? [trigger] : [],
+                messages: [
+                    { role: "char", data: "hello", chatId: "c1" },
+                    { role: "user", data: "hi", chatId: "u1" },
+                ],
+            });
+            const runJob: RunningJob = {
+                id: `trigger-copies-${chaId}`,
+                kind: "send",
+                context: {
+                    characterId: chaId,
+                    chatId: "k",
+                    presetId,
+                    modelPresetId,
+                    personaId,
+                    mode: "send",
+                    input: "",
+                    chatRevision: runnerStore.chatRevision(chaId, "k")!,
+                },
+                command: null,
+                hooks: NO_GENERATION_HOOKS,
+                epoch,
+                signal: new AbortController().signal,
+                ownerAttached: () => false,
+                channel: {
+                    notice() {},
+                    ask: async () => ({ outcome: "aborted" }),
+                    callback: async () => ({ outcome: "refused", refusal: "unregistered", error: "none" }),
+                },
+                emit() {},
+                emitRecords: () => [],
+                onClientMessage: () => () => {},
+                write() {
+                    throw new Error("A trigger without effects must not write");
+                },
+            };
+            const scope = loadJobScope(runnerStore, runnerStoreOptions.kinds, runJob.context);
+            if (source === "module") {
+                scope.db.modules = [
+                    { id: "trigger-module", name: "Trigger module", description: "", trigger: [trigger] },
+                ];
+                scope.db.enabledModules = ["trigger-module"];
+            }
+            const char = scope.db.characters.find((entry) => entry.chaId === chaId);
+            if (!char || char.type === "group") throw new Error("Expected the seeded character");
+            const setup = createRunSetup(
+                runJob,
+                {
+                    store: runnerStore,
+                    kinds: runnerStoreOptions.kinds,
+                    lock: runnerStoreOptions.guard!,
+                    rootDir,
+                    savePath: server.savePath,
+                    scriptWorkers: server.context.scriptWorkers,
+                    llm: server.context.llmRequests,
+                    tokens: { count: unusedModelService, encode: unusedModelService, countLocal: unusedModelService },
+                    embeddings: { forJob: unusedModelService },
+                    transformers,
+                },
+                createJobRunState(runJob),
+                scope,
+                { runCharacterId: chaId, engineCharacterId: chaId },
+            );
+            const chat = scopeHistoryChat(scope)!;
+            const clone = vi.spyOn(globalThis, "structuredClone");
+            try {
+                for (const mode of ["start", "input", "output", "manual"] as const) {
+                    clone.mockClear();
+                    const result = await setup.runOnCopy(char, mode, { manualName: "manual" });
+                    const label = `${source} triggers, ${mode} stage`;
+                    if (source === "none") {
+                        expect(result, label).toBeNull();
+                        expect(
+                            clone.mock.calls.filter(
+                                ([value]) =>
+                                    typeof value === "object" &&
+                                    value !== null &&
+                                    "id" in value &&
+                                    value.id === chat.id &&
+                                    "message" in value &&
+                                    Array.isArray(value.message),
+                            ),
+                            label,
+                        ).toHaveLength(0);
+                    } else {
+                        expect(result, label).toMatchObject({ chat });
+                        const baselines = clone.mock.calls.flatMap(([value], index) =>
+                            value === chat ? [clone.mock.results[index].value as typeof chat] : [],
+                        );
+                        expect(baselines, label).toHaveLength(1);
+                        expect(
+                            clone.mock.calls.filter(([value]) => value === baselines[0]),
+                            label,
+                        ).toHaveLength(1);
+                        expect(result?.chat, label).not.toBe(baselines[0]);
+                        expect(result?.chat.message[0], label).not.toBe(baselines[0].message[0]);
+                    }
+                }
+            } finally {
+                clone.mockRestore();
+            }
+        }
+    });
+});
+
+describe("stored trigger command jobs", () => {
+    it("finishes after the handler following /multisend without a provider request or chat write", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            messages: [{ role: "user", chatId: "u", data: "keep this message" }],
+            triggerscript: [
+                trig("manual", [ef("v2Command", v("/multisend a|||b"))]),
+                trig("manual", [ef("v2Command", v("/echo finished|/multisend c|/echo leaked"))]),
+            ],
+        });
+        const before = await readChat(chaId);
+        const requests = bodies.length;
+        const logs = (["log", "warn", "error"] as const).map((level) => vi.spyOn(console, level).mockClear());
+        const { terminal, events } = await job("command", chaId, {}, { command: { type: "manual", name: "manual" } });
+        expect(events.filter((event) => event.type === "notice").map(({ kind, payload }) => [kind, payload])).toEqual([
+            ["alertNormal", { message: "finished" }],
+        ]);
+        expect(bodies).toHaveLength(requests);
+        expect(terminal).toMatchObject({ type: "done", revision: before.revision });
+        expect(terminal).not.toHaveProperty("sequence");
+        expect(await readChat(chaId)).toEqual(before);
+        for (const log of logs) expect(log.mock.calls.flat().join(" ")).not.toMatch(/multisend/i);
+    });
+
+    it.each([undefined, false, true])("uses the trigger owner's /speak grant (%s)", async (lowLevelAccess) => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { lowLevelAccess },
+            triggerscript: [{ ...trig("manual", [ef("v2Command", v("/speak aloud"))]), lowLevelAccess: true }],
+        });
+        const { events, terminal } = await job("command", chaId, {}, { command: { type: "manual", name: "manual" } });
+        expect(terminal?.type).toBe("done");
+        expect(
+            events.filter((event) => event.type === "notice" && event.kind === "tts").map(({ payload }) => payload),
+        ).toEqual(lowLevelAccess ? [{ chaId, text: "aloud" }] : []);
+    });
+
+    it.each([undefined, false, true])(
+        "uses the trigger owner's grant (%s) for provider token counts",
+        async (lowLevelAccess) => {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+            onTestFinished(() => {
+                vi.useRealTimers();
+            });
+            const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+            const local = vi.spyOn(tokenizers, "encode").mockResolvedValue([1, 2, 3, 4, 5]);
+            const remote = vi.fn<typeof fetch>(async () => Response.json({ totalTokens: 7 }));
+            const counter = tokenCounters.createTokenCounter({ tokenizers, fetchImpl: remote });
+            const count = vi.spyOn(runnerTokens, "count").mockImplementation(counter.count);
+            const providers = (await single("providers")).data;
+            const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+            const secrets = runnerStoreOptions.kinds.get("llmSecrets")!;
+            const original = runnerStore.get(secrets, "main")!;
+            try {
+                runnerStore.put(
+                    secrets,
+                    "main",
+                    { ...(original.data as object), google: { accessToken: "test-key" } },
+                    original.revision,
+                );
+                await patchPreset("modelProfiles", profileId, { modelId: "gemini-2.5-flash" });
+                await patchProviders({ googleClaudeTokenizing: true, useTokenizerCaching: false });
+                const enabled = await single("providers");
+                const chaId = await seedCharacter({
+                    name: "Ann",
+                    extra: {
+                        lowLevelAccess,
+                        globalLore: [
+                            {
+                                key: "",
+                                secondkey: "",
+                                content: "lore count",
+                                comment: "Lore",
+                                insertorder: 100,
+                                mode: "normal",
+                                alwaysActive: true,
+                                selective: false,
+                            },
+                        ],
+                    },
+                    triggerscript: [
+                        {
+                            ...trig("manual", [
+                                ef("v2Tokenize", { ...v("native count"), outputVar: "nativeTokens" }),
+                                ef("v2SystemPrompt", { ...v("system count"), location: "promptend" }),
+                                ef("triggerlua", {
+                                    code: 'manual = async(function(id) local n = getTokens(id, "lua count"):await() setChatVar(id, "luaTokens", n) end)',
+                                }),
+                                ef("v2Command", v("/test_lorebook")),
+                            ]),
+                            lowLevelAccess: true,
+                        },
+                    ],
+                });
+                const { terminal } = await job("command", chaId, {}, { command: { type: "manual", name: "manual" } });
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect((await readChat(chaId)).data.scriptstate).toMatchObject({
+                    $nativeTokens: lowLevelAccess ? "7" : "5",
+                    $luaTokens: lowLevelAccess ? 7 : 5,
+                });
+                const texts = ["native count", "system count\n\n", "lua count", "lore count"].sort();
+                expect(local.mock.calls.map(([, text]) => text).sort()).toEqual(lowLevelAccess ? [] : texts);
+                expect(
+                    remote.mock.calls
+                        .map(([url, init]) => {
+                            expect(String(url)).toBe(
+                                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens?key=test-key",
+                            );
+                            return JSON.parse(String(init?.body)).contents[0].parts[0].text;
+                        })
+                        .sort(),
+                ).toEqual(lowLevelAccess ? texts : []);
+                expect(await single("providers")).toEqual(enabled);
+            } finally {
+                count.mockRestore();
+                await tokenizers.dispose();
+                runnerStore.put(secrets, "main", original.data, runnerStore.get(secrets, "main")!.revision);
+                await patchPreset("modelProfiles", profileId, profile);
+                await patchProviders(providers);
+            }
+        },
+    );
+});
+
+it.each([undefined, false, true])(
+    "uses the input trigger owner's grant (%s) to write the chat's bound persona during a send",
+    async (lowLevelAccess) => {
+        await prepareLoreBudgetJob();
+        const original = await single("personas");
+        const bound = { ...original.data[0], id: "other-persona", personaPrompt: "original prompt" };
+        const put = async (data: unknown, baseRevision: string) => {
+            expect((await batch({ ops: [{ kind: "personas", id: "main", data, baseRevision }] })).status).toBe(200);
+        };
+        await put([...original.data, bound], original.revision);
+        try {
+            const seeded = await single("personas");
+            const chaId = await seedCharacter({
+                name: "Ann",
+                extra: { lowLevelAccess },
+                chat: { bindedPersona: bound.id },
+                triggerscript: [
+                    { ...trig("input", [ef("v2SetPersonaDesc", v("updated prompt"))]), lowLevelAccess: true },
+                ],
+            });
+            const requests = bodies.length;
+            const { terminal } = await job("send", chaId, { input: "hello", personaId: bound.id });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(bodies).toHaveLength(requests + 1);
+            const after = await single("personas");
+            expect(after.data).toEqual(
+                seeded.data.map((persona: { id: string }) =>
+                    lowLevelAccess && persona.id === bound.id
+                        ? { ...persona, personaPrompt: "updated prompt" }
+                        : persona,
+                ),
+            );
+            if (!lowLevelAccess) expect(after.revision).toBe(seeded.revision);
+        } finally {
+            await put(original.data, (await single("personas")).revision);
+        }
+    },
+);
+
 describe("a send", () => {
+    it("stores whole legacy string snapshots on send and continue without character candidates", async () => {
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        await patchPreset("modelProfiles", profileId, { customAPIFormat: LLMFormat.OobaLegacy });
+        const count = vi.spyOn(runnerTokens, "countLocal");
+        try {
+            for (const scenario of [
+                { kind: "send", prefix: "", snapshots: ["Hello", "Hello world."] },
+                { kind: "continue", prefix: "Prefix. ", snapshots: ["Hello", "Hello world."] },
+                { kind: "send", prefix: "", snapshots: [""] },
+            ]) {
+                const chaId = await seedCharacter({
+                    name: "Ann",
+                    messages: [
+                        { role: "user", data: "q", chatId: "u1" },
+                        ...(scenario.prefix ? [{ role: "char", data: scenario.prefix, chatId: "r1" }] : []),
+                    ],
+                });
+                const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                    await socketOpen;
+                    return {
+                        type: "streaming",
+                        result: new ReadableStream({
+                            start(controller) {
+                                for (const text of scenario.snapshots) controller.enqueue(text);
+                                controller.close();
+                            },
+                        }),
+                    } as never;
+                });
+                count.mockClear();
+                try {
+                    const { terminal, events } = await job(scenario.kind, chaId);
+                    expect(terminal).toMatchObject({ type: "done" });
+                    const reply = (await readChat(chaId)).data.message.at(-1);
+                    expect(reply.data).toBe(scenario.prefix + scenario.snapshots.at(-1));
+                    expect(reply.candidates ?? []).toEqual([]);
+                    if (scenario.prefix) expect(reply.chatId).toBe("r1");
+                    expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(
+                        scenario.snapshots.map((text) => scenario.prefix + text),
+                    );
+                    if (scenario.snapshots[0]) expect(count.mock.calls[0][0]).toBe("Hello");
+                } finally {
+                    upstream.mockRestore();
+                }
+            }
+        } finally {
+            count.mockRestore();
+            await patchPreset("modelProfiles", profileId, profile);
+        }
+    });
+
+    it(
+        "reports growing counts of the raw first stream value before trimming and without the continue prefix",
+        async () => {
+            const providers = (await single("providers")).data;
+            await patchProviders({ removeIncompleteResponse: true, autoContinueChat: false });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [
+                    { role: "user", data: "q", chatId: "u1" },
+                    { role: "char", data: "Prefix. ", chatId: "r1" },
+                ],
+            });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            const since = Date.now();
+            let controller!: ReadableStreamDefaultController<Record<string, string>>;
+            const stream = new ReadableStream<Record<string, string>>({
+                start(value) {
+                    controller = value;
+                },
+            });
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "streaming", result: stream };
+            });
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            const chunks = [deferred<void>(), deferred<void>(), deferred<void>()];
+            let chunkIndex = 0;
+            const published: ChangeFeedEvent[] = [];
+            const unsubscribe = runnerFeed.subscribe((event) => {
+                if (event.type === "generation") published.push(event);
+            });
+            const lastCount = deferred<number>();
+            const pending = job("continue", chaId, {}, { onChunk: () => chunks[chunkIndex++].resolve() });
+            try {
+                controller.enqueue({ primary: "hello world", alternative: "This is another sample." });
+                await chunks[0].promise;
+                // A count crosses to the tokenizer worker, which answers outside the fake timers' microtask flush.
+                await count.mock.results[0].value;
+                await vi.advanceTimersByTimeAsync(0);
+                expect(server.context.generationJobs.generationSnapshot()[0].output).toEqual({
+                    tokens: 2,
+                    since,
+                    at: since,
+                });
+                await vi.advanceTimersByTimeAsync(500);
+                controller.enqueue({ primary: "hello world. hello world", alternative: "Another sample grows too." });
+                await chunks[1].promise;
+                await count.mock.results[1].value;
+                await vi.advanceTimersByTimeAsync(0);
+                expect(count.mock.calls.map(([text]) => text)).toEqual(["hello world", ". hello world"]);
+                expect(count.mock.calls.map(([, scope]) => scope)).toEqual([
+                    upstream.mock.calls[0][0].tokenScope,
+                    upstream.mock.calls[0][0].tokenScope,
+                ]);
+                expect(server.context.generationJobs.generationSnapshot()[0].output).toEqual({
+                    tokens: 5,
+                    since,
+                    at: since + 500,
+                });
+                // Finishing the reply must not wait for local telemetry still in flight.
+                count.mockImplementationOnce(() => lastCount.promise);
+                await vi.advanceTimersByTimeAsync(500);
+                controller.enqueue({ primary: "hello world. hello world. unfinished" });
+                await chunks[2].promise;
+                controller.close();
+                const result = await pending;
+                expect(result.terminal?.type).toBe("done");
+                expect(streamedTexts(result.events).map((chunk) => chunk.text)).toEqual([
+                    "Prefix.",
+                    "Prefix. hello world.",
+                    "Prefix. hello world. hello world.",
+                ]);
+                expect((await readChat(chaId)).data.message.at(-1).data).toBe("Prefix. hello world. hello world.");
+                const before = [...published];
+                lastCount.resolve(99);
+                await vi.advanceTimersByTimeAsync(1000);
+                expect(published).toEqual(before);
+            } finally {
+                try {
+                    controller.close();
+                } catch {
+                    /* The stream may already be closed. */
+                }
+                lastCount.resolve(99);
+                await pending;
+                unsubscribe();
+                count.mockRestore();
+                upstream.mockRestore();
+                vi.useRealTimers();
+                await patchProviders({
+                    removeIncompleteResponse: providers.removeIncompleteResponse ?? false,
+                    autoContinueChat: providers.autoContinueChat ?? false,
+                });
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "stores a buffered reply without counting or publishing output",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "success", result: "Buffered reply." };
+            });
+            const published: ChangeFeedEvent[] = [];
+            const unsubscribe = runnerFeed.subscribe((event) => {
+                if (event.type === "generation") published.push(event);
+            });
+            try {
+                const result = await job("send", chaId);
+                expect(result.terminal?.type).toBe("done");
+                expect((await readChat(chaId)).data.message.at(-1).data).toBe("Buffered reply.");
+                expect(count).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1000);
+                expect(published.length).toBeGreaterThan(0);
+                for (const event of published) expect(event).not.toHaveProperty("output");
+            } finally {
+                unsubscribe();
+                count.mockRestore();
+                upstream.mockRestore();
+                vi.useRealTimers();
+            }
+        },
+        SLOW,
+    );
+
+    it("keeps the user message but makes no request or lore flag write when the lore budget option ends assembly", async () => {
+        await prepareLoreBudgetJob();
+        const chaId = await seedCharacter({ name: "Ann", extra: overBudgetLore() });
+        const before = bodies.length;
+        const context = { input: "Question.", userMessageId: "u-budget" };
+        const stopped = await job("send", chaId, { ...context, stopOverLoreBudget: true });
+        expect(stopped.terminal).toMatchObject({
+            type: "error",
+            stage: "assembly",
+            code: "loreOverBudget",
+            lore: rejectedLore,
+        });
+        const chat = await readChat(chaId);
+        expect(texts(chat)).toEqual(["user:Question."]);
+        expect(chat.data.message[0].chatId).toBe("u-budget");
+        expect(Object.keys(chat.data.scriptstate ?? {}).filter((key) => key.startsWith("$__internal_"))).toEqual([]);
+        expect(bodies).toHaveLength(before);
+
+        const ordinary = await job("send", chaId, context);
+        expect(ordinary.terminal?.type, JSON.stringify(ordinary.terminal)).toBe("done");
+        const replied = await readChat(chaId);
+        expect(texts(replied)).toEqual(["user:Question.", "char:Reply."]);
+        expect(bodies).toHaveLength(before + 1);
+        expect(replied.data.message.at(-1).generationInfo.context.lore).toEqual({ ...rejectedLore, active: 0 });
+        expect(replied.data.scriptstate).toMatchObject({ $__internal_ka_keep: "true", $__internal_da_dont: "true" });
+    });
+
+    it(
+        "reconstructs a runner checkpoint from the raw stream but sends the editoutput rewrite whole at the same chunk",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", data: "q", chatId: "u1" }] });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            let controller!: ReadableStreamDefaultController<Record<string, string>>;
+            const stream = new ReadableStream<Record<string, string>>({
+                start(value) {
+                    controller = value;
+                },
+            });
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "streaming", result: stream };
+            });
+            const chunk = deferred<void>();
+            const checkpoint = deferred<Extract<GenerationEvent, { type: "chatPatch" }>>();
+            const pending = job(
+                "send",
+                chaId,
+                {},
+                {
+                    streamedRows: true,
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+                    answerCallback: () => ({ outcome: "answered", value: "Processed reply" }),
+                    onChunk: () => chunk.resolve(),
+                    onEvent: (event) => {
+                        if (event.type === "chatPatch" && event.streaming.some((entry) => entry.seq === 1)) {
+                            checkpoint.resolve(event);
+                        }
+                    },
+                },
+            );
+            const cleanup = cleanupOnce(() => {
+                upstream.mockRestore();
+                vi.useRealTimers();
+            });
+            try {
+                controller.enqueue({ "0": "Raw reply" });
+                await chunk.promise;
+                await vi.advanceTimersByTimeAsync(3000);
+                const raw = await checkpoint.promise;
+                const { messageId, generationId } = raw.streaming[0];
+                expect(raw.messages).toEqual([{ after: "u1", id: messageId, streamed: { generationId, seq: 1 } }]);
+                controller.close();
+                const result = await pending;
+                expect(result.terminal?.type).toBe("done");
+                const processed = result.events.find(
+                    (event) =>
+                        event.type === "chatPatch" &&
+                        event.streaming.some(
+                            (entry: { generationId: string; seq: number }) =>
+                                entry.generationId === generationId && entry.seq === 1,
+                        ) &&
+                        event.messages?.some(
+                            (entry: { message?: { data: string } }) => entry.message?.data === "Processed reply",
+                        ),
+                );
+                expect(processed).toBeDefined();
+                const initial = result.events.find(
+                    (event) =>
+                        event.type === "chatPatch" &&
+                        event.messages?.some(
+                            (entry: { message?: { chatId: string; data: string } }) =>
+                                entry.message?.chatId === messageId && entry.message.data === "",
+                        ),
+                );
+                const initialRow = initial.messages.find(
+                    (entry: { message?: { chatId: string } }) => entry.message?.chatId === messageId,
+                ).message;
+                expect(processed.messages).toEqual([
+                    { after: "u1", message: { ...initialRow, data: "Processed reply" } },
+                ]);
+                expect(processed.streaming).toEqual([{ messageId, generationId, seq: 1 }]);
+            } finally {
+                if (stream.locked) {
+                    try {
+                        controller.close();
+                    } catch {
+                        /* Already closed by the test. */
+                    }
+                }
+                cleanup();
+            }
+        },
+        SLOW,
+    );
+
     it("ends with status 429 and the queue-full message when SupaMemory's local summarizer is refused", async () => {
         const memorySettings = (await single("memoryTranslateMedia")).data;
         const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
@@ -768,7 +1447,6 @@ describe("a send", () => {
             ).toBe(true);
             expect(terminal).toMatchObject({
                 messageId: reply.chatId,
-                alternatives: ["Hello there."],
                 revision: chat.revision,
             });
             expect((terminal as any).stopped).toBeUndefined();
@@ -780,6 +1458,49 @@ describe("a send", () => {
         },
         SLOW,
     );
+
+    it("stores the original against the appended text after editinput and preserves it on a second job", async () => {
+        await prepareLoreBudgetJob();
+        const appendedAt = Date.now();
+        for (const [input, data] of [
+            ["Reviewed draft.", "Reviewed draft."],
+            ["hi you", "hello you"],
+        ]) {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const inputOriginal = "  원문\n 그대로  ";
+            const sent = await job("send", chaId, { input, userMessageId: "draft-user", inputOriginal });
+            expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+            const user = (await readChat(chaId)).data.message[0];
+            expect(user).toMatchObject({ role: "user", chatId: "draft-user", data, time: appendedAt });
+            expect(user.translation).toEqual({
+                text: inputOriginal,
+                sourceHash: translationSourceHash(data),
+                targetLanguage: "original",
+                translatedAt: appendedAt,
+            });
+            expect(storedTranslation(user)).toBe(inputOriginal);
+
+            vi.setSystemTime(appendedAt + 1_000);
+            const again = await job("send", chaId, {
+                input: "Replacement draft",
+                userMessageId: "draft-user",
+                inputOriginal: "Replacement original",
+            });
+            expect(again.terminal?.type).toBe("done");
+            const messages = (await readChat(chaId)).data.message;
+            expect(messages.filter((message: { chatId: string }) => message.chatId === "draft-user")).toEqual([user]);
+            vi.setSystemTime(appendedAt);
+        }
+
+        const plain = await seedCharacter({ name: "Ann" });
+        expect((await job("send", plain, { input: "hi you", userMessageId: "plain-user" })).terminal?.type).toBe(
+            "done",
+        );
+        const user = (await readChat(plain)).data.message[0];
+        expect(user.data).toBe("hello you");
+        expect(user).not.toHaveProperty("translation");
+        expect(storedTranslation(user)).toBeNull();
+    });
 
     it(
         "skips the input stage for a user message the chat already holds under the id, and refuses the id of another role",
@@ -857,8 +1578,9 @@ describe("a send", () => {
             expect(texts(chat)).toEqual(["user:q", "char:Again. More text."]);
             expect(chat.data.message[1].chatId).toBe("r1");
             expect(terminal).toMatchObject({ messageId: "r1" });
-            // The alternatives are the provider's values as they came (the tab's `Object.values(lastChunk)`).
-            expect((terminal as any).alternatives).toEqual([" More text."]);
+            // One provider sample: the terminal carries no samples and the reply keeps no candidates.
+            expect((terminal as any).alternatives).toBeUndefined();
+            expect(chat.data.message[1].candidates).toBeUndefined();
             expect(await clientSetText(chaId, "r1", "tab edit")).toBe(200);
         },
         SLOW,
@@ -957,106 +1679,6 @@ describe("a send", () => {
     );
 
     it(
-        "a group send answers with each member in order on the job's frozen configuration, with one terminal",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-            });
-            mode = { chunks: ["Reply."], delayMs: 0 };
-            const before = bodies.length;
-            // While the first speaker's request runs, the stored profile changes its model.
-            onRequest = async () => {
-                onRequest = null;
-                await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "changed-during-job" });
-            };
-            try {
-                const { events, terminal } = await job("group", grp, {}, { observeStages: true });
-                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-                expect(events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
-                    "preparing",
-                    "generating",
-                    "finishing",
-                    "preparing",
-                    "generating",
-                    "finishing",
-                ]);
-                expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
-                const chat = await readChat(grp);
-                expect(texts(chat)).toEqual(["user:hello all", "char:Reply.", "char:Reply."]);
-                expect(chat.data.message.slice(1).map((m: any) => m.saying)).toEqual([bob, cid]);
-                expect(terminal).toMatchObject({ messageId: chat.data.message[2].chatId });
-                expect(bodies.slice(before).map((body) => body.model)).toEqual(["m", "m"]);
-                expect(JSON.stringify(bodies.at(-1).messages)).toContain("[Write the next reply only as Cid]");
-            } finally {
-                onRequest = null;
-                await patchPreset("modelProfiles", profileId, { customProxyRequestModel: "m" });
-            }
-        },
-        SLOW,
-    );
-
-    it(
-        "a group send's completion notifications name the group's chat and use the group's name and custom message, not the speaking member's",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob", extra: { customNotificationMessage: "Bob's own" } });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "The Crew",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-                extra: { customNotificationMessage: "  Crew is done  " },
-            });
-            mode = { chunks: ["Reply."], delayMs: 0 };
-            const ui = await single("ui");
-            await patchSection("ui", { notification: true, language: "ko" });
-            try {
-                const first = await job("group", grp);
-                expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
-                const custom = {
-                    chaId: grp,
-                    chatId: "k",
-                    title: "Risuai",
-                    body: "Crew is done",
-                    url: `/chat/${grp}/k`,
-                    tag: completionNotificationTag(grp, "k"),
-                };
-                // One per member's reply; neither names the member nor carries the reply.
-                expect(notices(first.events, "notification").map((event) => event.payload)).toEqual([custom, custom]);
-
-                // Without a custom message: the default sentence of the language setting, naming the group.
-                const current = (await api(`/api/resources/characters/${grp}`)).body;
-                const cleared = await batch({
-                    ops: [
-                        {
-                            kind: "characters",
-                            id: grp,
-                            baseRevision: current.revision,
-                            data: { ...current.data, customNotificationMessage: "" },
-                        },
-                    ],
-                });
-                expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
-                const second = await job("group", grp);
-                expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
-                const sentence = { ...custom, body: "The Crew의 메시지 처리가 완료되었습니다" };
-                expect(notices(second.events, "notification").map((event) => event.payload)).toEqual([
-                    sentence,
-                    sentence,
-                ]);
-            } finally {
-                await patchSection("ui", { notification: false, language: ui.data.language });
-            }
-        },
-        SLOW,
-    );
-
-    it(
         "stores a non-streaming reply in one write",
         async () => {
             const chaId = await seedCharacter({ name: "Ann" });
@@ -1129,6 +1751,277 @@ describe("a send", () => {
         SLOW,
     );
 
+    it("budgets the two offered tools, sends their listed schemas once, and leaves plain preview tool-free", async () => {
+        const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        const moduleRecord = await single("modules");
+        const modules = moduleRecord.data ?? [];
+        const providers = (await single("providers")).data;
+        const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+        const expectedTools = [...DICE_TOOLS, ...AIACCESS_TOOLS].map((tool) => ({
+            type: "function",
+            function: { name: tool.name, description: tool.description, parameters: structuredClone(tool.inputSchema) },
+        }));
+        // The adapter's schema form writes enum before description. JSON key order affects
+        // the estimate even though either order describes the same function.
+        const aiParameters = expectedTools[1].function.parameters as {
+            properties: { model: { type: string; enum: string[]; description: string } };
+        };
+        aiParameters.properties.model = {
+            type: "string",
+            enum: ["normal", "lite"],
+            description: aiParameters.properties.model.description,
+        };
+        // The reverse proxy's "tik" setting uses the o200k fallback, as the real request does.
+        const schemaTokens = await tokenizers.count("o200k_base", JSON.stringify(expectedTools));
+        const recent = "question";
+        const old = "old ".repeat(80).trim();
+        const recentTokens = (await tokenizers.count("o200k_base", recent)) + 3;
+        const maxResponse = 100;
+        const maxContext = schemaTokens + recentTokens + maxResponse;
+        const create = jobTools.createJobTools;
+        const lists: MockInstance<jobTools.JobTools["list"]>[] = [];
+        const created = vi.spyOn(jobTools, "createJobTools").mockImplementation((deps) => {
+            const tools = create(deps);
+            lists.push(vi.spyOn(tools, "list"));
+            return tools;
+        });
+        try {
+            const current = await single("modules");
+            expect(
+                (
+                    await batch({
+                        ops: [
+                            {
+                                kind: "modules",
+                                id: "main",
+                                baseRevision: current.revision ?? null,
+                                data: [
+                                    ...modules,
+                                    { id: "schema-dice", name: "Dice", mcp: { url: "internal:dice" } },
+                                    { id: "schema-ai", name: "AI", mcp: { url: "internal:aiaccess" } },
+                                ],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            await patchPreset("modelProfiles", profileId, { maxContext });
+            await patchPreset("presets", presetId, {
+                maxResponse,
+                regex: [],
+                promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+                promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+            });
+            await patchProviders({ useStreaming: false });
+            const chaId = await seedCharacter({
+                name: "Tools",
+                extra: { firstMessage: "Hi!", desc: "" },
+                chat: { modules: ["schema-dice", "schema-ai"] },
+                messages: [
+                    { role: "user", data: old, chatId: "old" },
+                    { role: "user", data: recent, chatId: "recent" },
+                ],
+            });
+            const before = bodies.length;
+            const preview = await job("preview", chaId);
+            expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
+            expect((preview.terminal as any).result.messages.map((entry: any) => entry.content)).toEqual([
+                "Hi!",
+                old,
+                recent,
+            ]);
+            expect(lists.reduce((sum, list) => sum + list.mock.calls.length, 0)).toBe(0);
+            expect(bodies).toHaveLength(before);
+
+            const sent = await job("send", chaId);
+            expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+            expect(bodies.slice(before)).toHaveLength(1);
+            expect(bodies.at(-1).tools).toEqual(expectedTools);
+            expect(bodies.at(-1).messages).toEqual([{ role: "user", content: recent }]);
+            expect(lists.reduce((sum, list) => sum + list.mock.calls.length, 0)).toBe(1);
+            const listed = await lists.flatMap((list) => list.mock.results)[0].value;
+            expect(listed.descriptors).toEqual([...DICE_TOOLS, ...AIACCESS_TOOLS]);
+            const info = (await readChat(chaId)).data.message.at(-1).generationInfo;
+            expect(parseContextReport(info.context)).toMatchObject({
+                input: recentTokens,
+                toolSchemas: schemaTokens,
+                maxResponse,
+                maxContext,
+            });
+            expect(info.inputTokens).toBe(recentTokens);
+            expect(info.context.input + info.context.toolSchemas + maxResponse).toBe(maxContext);
+        } finally {
+            created.mockRestore();
+            for (const list of lists) list.mockRestore();
+            await tokenizers.dispose();
+            await patchPreset("modelProfiles", profileId, profile);
+            await patchPreset("presets", presetId, { ...preset, promptTemplate: preset.promptTemplate });
+            await patchProviders({ useStreaming: providers.useStreaming });
+            const current = await single("modules");
+            await batch({
+                ops: [
+                    {
+                        kind: "modules",
+                        id: "main",
+                        baseRevision: current.revision,
+                        ...(moduleRecord.revision ? { data: modules } : { delete: true }),
+                    },
+                ],
+            });
+        }
+    });
+
+    it.each(["model", "memory"] as const)(
+        "reserves only applicable %s interception rules in preview and the sent reply",
+        async (ruleMode) => {
+            const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+            const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+            const providers = (await single("providers")).data;
+            const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+            const start = "instruction ".repeat(160).trim();
+            const end = "reminder ".repeat(80).trim();
+            const old = "old ".repeat(80).trim();
+            const recent = "question";
+            // Count the literal request messages independently: o200k text plus three per message.
+            const count = async (text: string) => (await tokenizers.count("o200k_base", text)) + 3;
+            const insertedTokens = (await count(start)) + (await count(end));
+            const recentTokens = await count(recent);
+            const allHistoryTokens = (await count("Hi!")) + (await count(old)) + recentTokens;
+            const maxResponse = 100;
+            const maxContext = insertedTokens + recentTokens + maxResponse;
+            const rules: RequestInterception[] = [
+                {
+                    id: "start",
+                    enabled: true,
+                    modes: [ruleMode],
+                    position: "start",
+                    prompt: { type: "plain", type2: "normal", role: "system", text: start },
+                },
+                {
+                    id: "end",
+                    enabled: true,
+                    modes: [ruleMode],
+                    position: "end",
+                    prompt: { type: "plain", type2: "normal", role: "user", text: end },
+                },
+                {
+                    id: "disabled",
+                    enabled: false,
+                    modes: ["model"],
+                    position: "start",
+                    prompt: { type: "plain", type2: "normal", role: "system", text: start.repeat(3) },
+                },
+                {
+                    id: "blank",
+                    enabled: true,
+                    modes: ["model"],
+                    position: "end",
+                    prompt: { type: "plain", type2: "normal", role: "user", text: " \n\t " },
+                },
+            ];
+            try {
+                await patchPreset("modelProfiles", profileId, { maxContext });
+                await patchPreset("presets", presetId, {
+                    maxResponse,
+                    regex: [],
+                    promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+                    promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+                });
+                await patchProviders({ useStreaming: false, requestInterceptions: rules });
+                const chaId = await seedCharacter({
+                    name: "Interceptions",
+                    extra: { firstMessage: "Hi!", desc: "" },
+                    messages: [
+                        { role: "user", data: old, chatId: "old" },
+                        { role: "user", data: recent, chatId: "recent" },
+                    ],
+                });
+                const applicable = ruleMode === "model";
+                const assembled = applicable
+                    ? [{ role: "user", content: recent }]
+                    : [
+                          { role: "assistant", content: "Hi!" },
+                          { role: "user", content: old },
+                          { role: "user", content: recent },
+                      ];
+                const expectedInput = applicable ? recentTokens : allHistoryTokens;
+                const before = bodies.length;
+                const preview = await job("preview", chaId);
+                expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
+                const result = (preview.terminal as any).result;
+                expect(
+                    result.messages.map(({ role, content }: { role: string; content: string }) => ({ role, content })),
+                ).toEqual(assembled);
+                expect(bodies).toHaveLength(before);
+
+                const sent = await job("send", chaId);
+                expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+                expect(bodies.slice(before)).toHaveLength(1);
+                expect(bodies.at(-1).messages).toEqual(
+                    applicable
+                        ? [{ role: "system", content: start }, ...assembled, { role: "user", content: end }]
+                        : assembled,
+                );
+                const info = (await readChat(chaId)).data.message.at(-1).generationInfo;
+                expect(info.inputTokens).toBe(expectedInput);
+                expect(info.outputTokens).toBe(maxResponse);
+                for (const context of [result.context, info.context]) {
+                    expect(parseContextReport(context)).toMatchObject({
+                        input: expectedInput,
+                        maxContext,
+                        maxResponse,
+                    });
+                    if (applicable) {
+                        expect(context.interceptions).toBe(insertedTokens);
+                        expect(context.input + context.interceptions + maxResponse).toBe(maxContext);
+                    } else {
+                        expect(context).not.toHaveProperty("interceptions");
+                    }
+                }
+            } finally {
+                await tokenizers.dispose();
+                await patchPreset("modelProfiles", profileId, profile);
+                await patchPreset("presets", presetId, { ...preset, promptTemplate: preset.promptTemplate });
+                await patchProviders({
+                    useStreaming: providers.useStreaming,
+                    requestInterceptions: providers.requestInterceptions,
+                });
+            }
+        },
+    );
+
+    it("sends unchanged prompt messages without request-trigger errors when the character and modules have no triggers", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            triggerscript: [],
+            messages: [{ role: "user", data: "question", chatId: "u1" }],
+        });
+        const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+        await patchPreset("presets", presetId, {
+            promptSettings: { ...preset.promptSettings, trimStartNewChat: true },
+        });
+        await patchProviders({ useStreaming: false });
+        const error = vi.mocked(console.error);
+        error.mockClear();
+        const before = bodies.length;
+        try {
+            const { terminal } = await job("send", chaId);
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(bodies.slice(before).map((body) => body.messages)).toEqual([
+                [
+                    { role: "system", content: "Main Ann\n\nDesc of Ann" },
+                    { role: "assistant", content: "Hi from Ann" },
+                    { role: "user", content: "question" },
+                ],
+            ]);
+            expect(error).not.toHaveBeenCalled();
+        } finally {
+            await patchPreset("presets", presetId, { promptSettings: preset.promptSettings });
+            await patchProviders({ useStreaming: true });
+        }
+    });
+
     it(
         "the request trigger's effect limit ends the job before any provider call",
         async () => {
@@ -1157,6 +2050,55 @@ describe("a send", () => {
         SLOW,
     );
 
+    it("failed preview and previewPrompt jobs leave the chat untouched even with inlayErrorResponse enabled", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const providers = (await single("providers")).data;
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        try {
+            await patchProviders({ inlayErrorResponse: true });
+            await patchPreset("modelProfiles", profileId, { maxContext: 100 });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [{ role: "user", chatId: "u1", data: "A protected final question. ".repeat(200) }],
+            });
+            const before = await readChat(chaId);
+            const requests = bodies.length;
+            for (const kind of ["preview", "previewPrompt"]) {
+                const result = await job(kind, chaId);
+                expect(result.terminal, kind).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("token"),
+                });
+                expect(await readChat(chaId)).toEqual(before);
+            }
+            expect(bodies).toHaveLength(requests);
+        } finally {
+            await patchProviders({ inlayErrorResponse: providers.inlayErrorResponse });
+            await patchPreset("modelProfiles", profileId, { maxContext: profile.maxContext });
+            vi.useRealTimers();
+        }
+    });
+
+    it.each(["preview", "previewPrompt"])("returns a %s result despite the lore budget option", async (kind) => {
+        await prepareLoreBudgetJob();
+        const chaId = await seedCharacter({
+            name: "Ann",
+            messages: [{ role: "user", data: "q", chatId: "u1" }],
+            extra: overBudgetLore(),
+        });
+        const before = bodies.length;
+        const result = await job(kind, chaId, { stopOverLoreBudget: true });
+        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+        if (result.terminal?.type !== "done") throw new Error(JSON.stringify(result.terminal));
+        const messages =
+            kind === "preview"
+                ? (result.terminal.result as { messages: { role: string; content: string }[] }).messages
+                : JSON.parse(result.terminal.result as string).body.messages;
+        expect(messages.at(-1)).toMatchObject({ role: "user", content: "q" });
+        expect(bodies).toHaveLength(before);
+        expect(texts(await readChat(chaId))).toEqual(["user:q"]);
+    });
+
     it(
         "previewPrompt answers the provider body and preview the assembled messages, generating nothing",
         async () => {
@@ -1175,7 +2117,7 @@ describe("a send", () => {
             expect(preview.events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual([
                 "preparing",
             ]);
-            const formated = (preview.terminal as any).result as { role: string; content: string }[];
+            const formated = (preview.terminal as any).result.messages as { role: string; content: string }[];
             expect(formated[0]).toEqual({ role: "system", content: "Main Ann\n\nDesc of Ann" });
             expect(formated.at(-1)).toMatchObject({ role: "user", content: "q" });
             expect(bodies.length).toBe(before);
@@ -1208,7 +2150,7 @@ describe("a send", () => {
                     "Cannot find preset: Missing",
                 ]);
                 expect(missing.events.some((event) => event.type === "preset")).toBe(false);
-                expect(((missing.terminal as any).result as any[])[0].content).toMatch(/^Main Ann/);
+                expect(((missing.terminal as any).result.messages as any[])[0].content).toMatch(/^Main Ann/);
             } finally {
                 await patchProviders({ presetChain: "" });
             }
@@ -1310,60 +2252,127 @@ describe("a send", () => {
         },
         SLOW,
     );
+});
 
-    it(
-        "a group send whose second member's request fails names that request (a later speaker's own stage), after the first member's reply was stored",
-        async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+describe("the final token recheck with a prompt template", () => {
+    const diceId = "recheck-dice";
+    const maxContext = 200;
+    const maxResponse = 100;
+
+    beforeEach(async () => {
+        const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        const providers = (await single("providers")).data;
+        const modules = await single("modules");
+        const previousMode = mode;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        onTestFinished(async () => {
+            vi.useRealTimers();
+            mode = previousMode;
+            await patchPreset("modelProfiles", profileId, profile);
+            await patchPreset("presets", presetId, { ...preset, promptTemplate: preset.promptTemplate });
+            await patchProviders(providers);
+            const current = await single("modules");
+            const restored = await batch({
+                ops: [{ kind: "modules", id: "main", baseRevision: current.revision, data: modules.data ?? [] }],
             });
-            mode = { chunks: ["Reply."], delayMs: 0 };
-            let requests = 0;
-            onRequest = async () => {
-                if (++requests === 2) {
-                    mode = { chunks: [], delayMs: 0, status: 500 };
-                }
-            };
-            try {
-                const { body, events, terminal } = await job("group", grp);
-                expect(terminal).toMatchObject({
-                    type: "error",
-                    status: 500,
-                    stage: "request",
-                    requestId: expect.stringMatching(UUID),
-                    providerCode: "upstream_broke",
-                });
-                expect(events.filter((event) => event.type === "done" || event.type === "error")).toHaveLength(1);
-                const rows = await historyOf(body.jobId);
-                expect(rows.filter((row) => row.status === "success")).toHaveLength(1);
-                const errored = rows.filter((row) => row.status === "error");
-                expect(errored.length).toBeGreaterThanOrEqual(1);
-                expect((terminal as any).requestId).toBe(errored[0].id);
-                const chat = await readChat(grp);
-                expect(texts(chat)).toEqual(["user:hello all", "char:Reply."]);
-                expect(chat.data.message[1].saying).toBe(bob);
-                expect(await clientSetText(grp, chat.data.message[1].chatId, "tab edit")).toBe(200);
-            } finally {
-                onRequest = null;
-                mode = { chunks: ["x"], delayMs: 0 };
-            }
-        },
-        SLOW,
-    );
+            expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+        });
+        mode = { chunks: ["Reply."], delayMs: 0 };
+        await patchProviders({ useStreaming: false, autoContinueChat: false, inlayErrorResponse: false });
+        await patchPreset("modelProfiles", profileId, { maxContext });
+        await patchPreset("presets", presetId, {
+            maxResponse,
+            regex: [],
+            promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+            promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+        });
+        const configured = await batch({
+            ops: [
+                {
+                    kind: "modules",
+                    id: "main",
+                    baseRevision: modules.revision ?? null,
+                    data: [...(modules.data ?? []), { id: diceId, name: "Dice", mcp: { url: "internal:dice" } }],
+                },
+            ],
+        });
+        expect(configured.status).toBe(200);
+    });
+
+    it("refuses a send one token over budget without losing its user row and sends the adjacent fitting turn intact", async () => {
+        // With 100 reply tokens and 64 for the dice schema, 36 remain for history including 3 per message.
+        const fitting = "detail ".repeat(33).trim();
+        const overBudget = `${fitting} detail`;
+        const character = { name: "Ann", extra: { firstMessage: "", desc: "" }, chat: { modules: [diceId] } };
+        const before = bodies.length;
+
+        const refusedChat = await seedCharacter(character);
+        const refused = await job("send", refusedChat, { input: overBudget, userMessageId: "over" });
+        expect(refused.terminal).toMatchObject({
+            type: "error",
+            stage: "assembly",
+            message:
+                "Error: The minimum required token is greater than the max context size.\n\n" +
+                `At token rechecking. Required Tokens: ${maxContext + 1}`,
+        });
+        expect(bodies).toHaveLength(before);
+        expect((await readChat(refusedChat)).data.message).toMatchObject([
+            { role: "user", chatId: "over", data: overBudget },
+        ]);
+
+        const fittingChat = await seedCharacter(character);
+        const sent = await job("send", fittingChat, { input: fitting, userMessageId: "fit" });
+        expect(sent.terminal).toMatchObject({ type: "done" });
+        expect(bodies.slice(before)).toEqual([
+            expect.objectContaining({
+                messages: [{ role: "user", content: fitting }],
+                tools: [expect.objectContaining({ function: expect.objectContaining({ name: "rollDice" }) })],
+            }),
+        ]);
+    });
+
+    it("keeps the newest user turn and trailing reply when a Continue trims older history", async () => {
+        // Put the recent exchange first so the recheck reaches the reply before the removable older turn.
+        await patchPreset("presets", presetId, {
+            promptTemplate: [
+                { type: "chat", rangeStart: -2, rangeEnd: "end" },
+                { type: "chat", rangeStart: 0, rangeEnd: -2 },
+            ],
+        });
+        const question = "question";
+        const reply = "answer";
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "", desc: "" },
+            chat: { modules: [diceId] },
+            messages: [
+                { role: "user", chatId: "old", data: "detail ".repeat(28).trim() },
+                { role: "user", chatId: "recent", data: question },
+                { role: "char", chatId: "reply", data: reply },
+            ],
+        });
+        const before = bodies.length;
+
+        const { terminal } = await job("continue", chaId);
+
+        expect(terminal).toMatchObject({ type: "done", messageId: "reply" });
+        const sent = bodies.slice(before);
+        expect(sent).toHaveLength(1);
+        expect(sent[0].messages.filter(({ role }: { role: string }) => role !== "system")).toEqual([
+            { role: "user", content: question },
+            { role: "assistant", content: reply },
+        ]);
+    });
 });
 
 describe("the route", () => {
-    it("accepts userMessageId only for send, continue, reroll, and group jobs", async () => {
+    it("accepts userMessageId only for send, continue, and reroll jobs", async () => {
         const chaId = await seedCharacter({ name: "Ann" });
         for (const kind of ["preview", "previewPrompt"]) {
             const res = await job(kind, chaId, { userMessageId: "u-x" });
             expect(res.status, kind).toBe(400);
-            expect(res.body.error).toMatch(/userMessageId is only for send, continue, reroll, and group/);
+            expect(res.body.error).toMatch(/userMessageId is only for send, continue, and reroll jobs/);
         }
         for (const userMessageId of ["", "x".repeat(600)]) {
             const bad = await job("send", chaId, { userMessageId });
@@ -1411,6 +2420,47 @@ describe("automatic translation of a send's messages", () => {
     afterEach(() => {
         onRequest = null;
     });
+
+    it.each([false, true])(
+        "keeps the stored original and translates only the reply with translateBotOnly=%s",
+        async (translateBotOnly) => {
+            await prepareLoreBudgetJob();
+            const appendedAt = Date.now();
+            const chaId = await seedCharacter({ name: "Ann", chat: { autoTranslate: true, translateBotOnly } });
+            const released = deferred<void>();
+            let requests = 0;
+            onRequest = async () => {
+                if (++requests > 1) await released.promise;
+            };
+            const before = bodies.length;
+            const cleanup = cleanupOnce(() => released.resolve());
+            try {
+                const result = await job("send", chaId, {
+                    input: "hi you",
+                    userMessageId: "draft-user",
+                    inputOriginal: "Original words",
+                });
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const replyId = (result.terminal as Extract<GenerationTerminalEvent, { type: "done" }>).messageId;
+                expect(translating(result.events)).toEqual([{ chaId, chatId: "k", messageIds: [replyId] }]);
+                expect(server.context.translationRunner.runningCount()).toBe(1);
+            } finally {
+                cleanup();
+                await server.context.translationRunner.drain();
+            }
+            // Draining under the frozen clock waits for the actual translation work, not a deadline.
+            expect(bodies).toHaveLength(before + 2);
+            const [user, reply] = (await readChat(chaId)).data.message;
+            expect(user.translation).toEqual({
+                text: "Original words",
+                sourceHash: translationSourceHash("hello you"),
+                targetLanguage: "original",
+                translatedAt: appendedAt,
+            });
+            expect(storedTranslation(user)).toBe("Original words");
+            expect(storedTranslation(reply)).not.toBeNull();
+        },
+    );
 
     it(
         "hands the reply and the user message over before done and tells the tab, without waiting: a second send runs while the translations are held, then they land",
@@ -1487,30 +2537,9 @@ describe("automatic translation of a send's messages", () => {
     );
 
     it(
-        "a group send hands every member's reply, then the user message it found in the chat; bot-only skips the user message; a chat that does not auto-translate hands nothing",
+        "a bot-only send hands only the reply; a chat that does not auto-translate hands nothing",
         async () => {
-            const bob = await seedCharacter({ name: "Bob" });
-            const cid = await seedCharacter({ name: "Cid" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob, cid],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
-                chat: { autoTranslate: true },
-            });
             mode = { chunks: ["Reply."], delayMs: 0 };
-            const { events, terminal } = await job("group", grp, { input: "hello all", userMessageId: "u0" });
-            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-            const chat = await readChat(grp);
-            const [, first, second] = chat.data.message.map((m: any) => m.chatId);
-            expect(translating(events)).toEqual([{ chaId: grp, chatId: "k", messageIds: [first, second, "u0"] }]);
-            await chatUntil(grp, (data) => data.message.every((m: any) => m.translation));
-            expect(translations(await readChat(grp))).toEqual([
-                ["u0", "번역: hello all"],
-                [first, "번역: Reply."],
-                [second, "번역: Reply."],
-            ]);
-
             const botOnly = await seedCharacter({ name: "Ann", chat: { autoTranslate: true, translateBotOnly: true } });
             const only = await job("send", botOnly, { input: "hi", userMessageId: "u1" });
             expect(only.terminal?.type).toBe("done");
@@ -1586,117 +2615,2145 @@ describe("automatic translation of a send's messages", () => {
     );
 });
 
-// The owner record's `lastInteraction` is the job's to stamp (`stampInteraction` in
-// `runner.ts`): a field patch with the server clock, published on the change feed with only that
-// field, never a character record on the job socket; a preview stamps nothing.
-describe("the lastInteraction stamp", () => {
-    const readCharacter = async (id: string) =>
-        (await api(`/api/resources/characters/${encodeURIComponent(id)}`)).body as {
-            revision: string;
-            data: Record<string, any>;
-        };
-    /** The live-update socket (`/api/events/ws`), collecting every frame after `hello`. */
-    async function feedSocket() {
+describe("chat activity without character writes", () => {
+    const replyTime = Date.parse("2026-10-29T00:00:00Z");
+    const readOwner = async (id: string) => (await api(`/api/resources/characters/${id}`)).body;
+    const readSummary = async (id: string) =>
+        (await api("/api/resources/read", { method: "POST", body: JSON.stringify({ chatSummaryCollections: [id] }) }))
+            .body.chatSummaryCollections[0].chats[0];
+
+    /** Observes the actual feed; a later seed is a barrier for all preceding publications. */
+    async function activityFeed() {
         const ws = new WebSocket(
             `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
         );
-        const frames: any[] = [];
-        ws.onmessage = (message) => frames.push(JSON.parse(String(message.data)));
-        await new Promise<void>((resolve, reject) => {
-            ws.onopen = () => resolve();
-            ws.onerror = () => reject(new Error("the feed socket did not open"));
-        });
-        await waitFor(() => frames.some((frame) => frame.type === "hello"));
-        return { frames, close: () => ws.close() };
+        const close = cleanupOnce(() => ws.close());
+        const frames: EventFeedFrame[] = [];
+        const listeners = new Set<() => void>();
+        ws.onmessage = (message) => {
+            frames.push(JSON.parse(String(message.data)));
+            for (const listener of listeners) listener();
+        };
+        const until = (matches: (frame: EventFeedFrame) => boolean) =>
+            new Promise<void>((resolve) => {
+                const check = () => {
+                    if (frames.some(matches)) {
+                        listeners.delete(check);
+                        resolve();
+                    }
+                };
+                listeners.add(check);
+                check();
+            });
+        await until((frame) => frame.type === "hello");
+        return {
+            frames,
+            close,
+            async drain() {
+                const marker = await seedCharacter({ name: "Feed barrier" });
+                await until(
+                    (frame) =>
+                        frame.type === "change" &&
+                        frame.changes.resources.some((entry) => entry.kind === "characters" && entry.id === marker),
+                );
+            },
+        };
     }
-    const stampEntries = (frames: any[], id: string) =>
-        frames
-            .filter((frame) => frame.type === "change")
-            .flatMap((frame) => frame.changes.resources as any[])
-            .filter((entry) => entry.kind === "characters" && entry.id === id);
-    const next = (revision: string) => revision.replace(/:(\d+)$/, (_, n: string) => `:${Number(n) + 1}`);
-    /** Runs a job and checks the owner's stamp: server time, one revision, nothing else of the record changed. */
-    async function stamps(kind: string, owner: string, extra: Record<string, unknown>, frames: any[]) {
-        const before = await readCharacter(owner);
-        const started = Date.now();
-        const result = await job(kind, owner, extra);
-        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
-        const after = await readCharacter(owner);
-        expect(after.data.lastInteraction).toBeGreaterThanOrEqual(started);
-        expect(after.data.lastInteraction).toBeLessThanOrEqual(Date.now());
-        expect(after.revision).toBe(next(before.revision));
-        expect({ ...after.data, lastInteraction: before.data.lastInteraction }).toEqual(before.data);
-        await waitFor(() => stampEntries(frames, owner).some((entry) => entry.revision === after.revision));
-        expect(stampEntries(frames, owner).filter((entry) => entry.revision === after.revision)).toEqual([
+
+    it.each([
+        { label: "send", kind: "send", streaming: true },
+        { label: "streamed continue", kind: "continue", streaming: true },
+        { label: "non-streamed continue", kind: "continue", streaming: false },
+        { label: "reroll", kind: "reroll", streaming: true },
+        { label: "preview", kind: "preview", streaming: true },
+        { label: "previewPrompt", kind: "previewPrompt", streaming: true },
+    ])(
+        "$label keeps owner revisions and character feed entries unchanged while recording only written replies as activity",
+        async ({ kind, streaming }) => {
+            vi.useFakeTimers({ toFake: ["Date"] });
+            vi.setSystemTime(replyTime);
+            const restoreClock = cleanupOnce(() => vi.useRealTimers());
+            const providers = (await single("providers")).data;
+            const cleanup = cleanupOnce(() => {
+                onRequest = null;
+                plainAnswer = null;
+                restoreClock();
+            });
+            let feed: Awaited<ReturnType<typeof activityFeed>> | undefined;
+            try {
+                await patchProviders({ useStreaming: streaming });
+                mode = { chunks: ["Reply."], delayMs: 0 };
+                const owner = await seedCharacter({
+                    name: "Owner",
+                    extra: { lastInteraction: replyTime + 86_400_000 },
+                    messages: [
+                        { role: "user", data: "earlier", chatId: "u0", time: 900 },
+                        { role: kind === "continue" ? "char" : "user", data: "Before.", chatId: "tail", time: 100 },
+                    ],
+                });
+                const before = await readOwner(owner);
+                const chatBefore = await readChat(owner);
+                expect((await readSummary(owner)).lastMessageAt).toBe(100);
+                feed = await activityFeed();
+                const result = await job(kind, owner, kind === "send" ? { input: "hello", userMessageId: "u1" } : {});
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(await readOwner(owner)).toEqual(before);
+                const after = await readChat(owner);
+                if (kind === "preview" || kind === "previewPrompt") {
+                    expect(after.data.message).toEqual(chatBefore.data.message);
+                    expect((await readSummary(owner)).lastMessageAt).toBe(100);
+                } else {
+                    expect(after.data.message.at(-1)).toMatchObject({ role: "char", time: replyTime });
+                    expect(after.data.message.at(-1).data).toContain("Reply.");
+                    if (kind === "continue") expect(after.data.message.at(-1).chatId).toBe("tail");
+                    expect((await readSummary(owner)).lastMessageAt).toBe(replyTime);
+                }
+                await feed.drain();
+                expect(
+                    feed.frames
+                        .flatMap((frame) => (frame.type === "change" ? frame.changes.resources : []))
+                        .filter((entry) => entry.kind === "characters" && entry.id === owner),
+                ).toEqual([]);
+            } finally {
+                feed?.close();
+                cleanup();
+                await patchProviders({ useStreaming: providers.useStreaming });
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "saves a concurrent character edit on the tab's original revision while a send is waiting for its provider",
+        async () => {
+            vi.useFakeTimers({ toFake: ["Date"] });
+            vi.setSystemTime(replyTime);
+            const entered = deferred<void>();
+            const release = deferred<void>();
+            const cleanup = cleanupOnce(() => {
+                release.resolve();
+                onRequest = null;
+                vi.useRealTimers();
+            });
+            let running: ReturnType<typeof job> | undefined;
+            try {
+                mode = { chunks: ["Reply."], delayMs: 0 };
+                const owner = await seedCharacter({ name: "Editable", extra: { lastInteraction: 500 } });
+                const held = await readOwner(owner);
+                onRequest = async () => {
+                    entered.resolve();
+                    await release.promise;
+                };
+                running = job("send", owner, { input: "hello", userMessageId: "u1" });
+                await entered.promise;
+                const saved = await batch({
+                    ops: [
+                        {
+                            kind: "characters",
+                            id: owner,
+                            baseRevision: held.revision,
+                            patch: { set: { desc: "edited while sending" } },
+                        },
+                    ],
+                });
+                expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+                release.resolve();
+                const result = await running;
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const after = await readOwner(owner);
+                expect(after.revision).toBe(saved.body.results[0].revision);
+                expect(after.data).toMatchObject({ desc: "edited while sending", lastInteraction: 500 });
+                expect((await readSummary(owner)).lastMessageAt).toBe(replyTime);
+            } finally {
+                cleanup();
+                await running;
+            }
+        },
+        SLOW,
+    );
+});
+
+describe("buffered output hooks", () => {
+    const raw = "Buffered provider answer.";
+    const previous = {
+        chatId: "r",
+        role: "char",
+        data: "Previous reply.",
+        candidates: [
+            { id: "first", data: "First reply." },
+            { id: "previous", data: "Previous reply." },
+        ],
+        selected: 1,
+        candidatesRevision: 3,
+    };
+    let providers: Record<string, unknown>;
+    let previousMode: typeof mode;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        providers = (await single("providers")).data;
+        previousMode = mode;
+        await patchProviders({
+            useStreaming: false,
+            halfStreaming: false,
+            autoContinueChat: false,
+            inlayErrorResponse: false,
+            presetChain: "",
+            requestRetrys: 0,
+        });
+        mode = { chunks: [raw], delayMs: 0 };
+    });
+    afterEach(async () => {
+        await patchProviders(providers);
+        mode = previousMode;
+        vi.useRealTimers();
+    });
+
+    async function runHook(kind: "send" | "reroll", fail: boolean) {
+        const chaId = await seedCharacter({
+            name: "Output hook",
+            messages: [{ chatId: "u", role: "user", data: "Question." }, ...(kind === "reroll" ? [previous] : [])],
+        });
+        let during: Chat["message"] = [];
+        const result = await job(kind, chaId, kind === "reroll" ? { rerollMessageId: "r" } : {}, {
+            hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            answerCallback: async () => {
+                during = (await readChat(chaId)).data.message.filter(
+                    (message: Chat["message"][number]) => message.role === "char",
+                );
+                return fail
+                    ? { outcome: "failed", failure: "hook", error: "output hook broke" }
+                    : { outcome: "answered", value: "Processed reply." };
+            },
+        });
+        expect(result.events.filter((event) => event.type === "callback")).toMatchObject([
+            { name: "editoutput", payload: { text: raw } },
+        ]);
+        const stored: Chat["message"] = (await readChat(chaId)).data.message;
+        expect(stored[0]).toEqual({ chatId: "u", role: "user", data: "Question." });
+        return { ...result, during, replies: stored.filter((message) => message.role === "char") };
+    }
+
+    it("retains the raw buffered reply when an output hook fails with a script error", async () => {
+        const result = await runHook("send", true);
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            status: 500,
+            stage: "script",
+            message: "The editoutput plugin hook failed: output hook broke",
+        });
+        expect(result.replies).toMatchObject([{ data: raw, generationInfo: { generationId: expect.any(String) } }]);
+        expect(result.during).toMatchObject([
             {
-                kind: "characters",
-                id: owner,
-                revision: after.revision,
-                patch: {
-                    baseRevision: before.revision,
-                    set: { lastInteraction: after.data.lastInteraction },
-                    remove: [],
-                },
+                chatId: result.replies[0].chatId,
+                data: raw,
+                generationInfo: { generationId: result.replies[0].generationInfo!.generationId },
             },
         ]);
-        // No character record reaches the job socket for the stamp (no receipt, no whole-record hydration).
-        expect(result.events.filter((event) => event.type === "resource" && event.kind === "characters")).toEqual([]);
-        return { before, after, result };
+    });
+
+    it("processes the one buffered reply already stored when the output hook starts", async () => {
+        const result = await runHook("send", false);
+        expect(result.terminal).toMatchObject({ type: "done" });
+        expect(result.during).toMatchObject([{ data: raw, generationInfo: { generationId: expect.any(String) } }]);
+        expect(result.replies).toMatchObject([
+            {
+                chatId: result.during[0].chatId,
+                data: "Processed reply.",
+                generationInfo: { generationId: result.during[0].generationInfo!.generationId },
+            },
+        ]);
+    });
+
+    it("stores a buffered in-place reroll before its hook and restores the previous candidate on failure", async () => {
+        const result = await runHook("reroll", true);
+        expect(result.terminal).toMatchObject({ type: "error", status: 500, stage: "script" });
+        expect(result.during).toMatchObject([
+            { chatId: "r", data: raw, generationInfo: { generationId: expect.any(String) } },
+        ]);
+        expect(result.replies).toMatchObject([{ ...previous, candidatesRevision: expect.any(Number) }]);
+    });
+});
+
+describe("Half Streaming", () => {
+    let providers: Record<string, unknown>;
+    let profile: Record<string, unknown>;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        providers = (await single("providers")).data;
+        profile = (await single("modelProfiles")).data.find((entry: any) => entry.id === profileId);
+        await patchProviders({
+            useStreaming: false,
+            halfStreaming: true,
+            autoContinueChat: false,
+            removeIncompleteResponse: false,
+            inlayErrorResponse: false,
+            presetChain: "",
+        });
+    });
+    afterEach(async () => {
+        await patchProviders(providers);
+        await patchPreset("modelProfiles", profileId, profile);
+        vi.useRealTimers();
+    });
+
+    /**
+     * Hold provider completion independently of the job's clock. `jobId` comes from the job's own `accepted`;
+     * `acceptance` is the reply's, awaited only when the reply has a row while it streams (`rowWhileStreaming`:
+     * a continue's or a reroll's, or a reply that is not quiet). A quiet new reply has none.
+     */
+    async function heldStream(
+        chaId: string,
+        kind = "send",
+        extra = {},
+        options: JobOptions = {},
+        rowWhileStreaming = kind !== "send",
+    ) {
+        let controller!: ReadableStreamDefaultController<Record<string, string>>;
+        const stream = new ReadableStream<Record<string, string>>({
+            start(value) {
+                controller = value;
+            },
+        });
+        const requested = deferred<void>();
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+            await socketOpen;
+            requested.resolve();
+            return { type: "streaming", result: stream };
+        });
+        const started = deferred<string>();
+        const accepted = deferred<Extract<GenerationEvent, { type: "accepted" }>>();
+        const pending = job(kind, chaId, extra, {
+            ...options,
+            streamedRows: true,
+            onEvent(event) {
+                options.onEvent?.(event);
+                if (event.type === "accepted") started.resolve(event.jobId);
+                if (event.type === "accepted" && event.messageId) accepted.resolve(event);
+            },
+        });
+        const close = () => {
+            try {
+                controller.close();
+            } catch {
+                // An abort or read failure may already have closed the stream.
+            }
+        };
+        onTestFinished(async () => {
+            close();
+            await pending;
+            upstream.mockRestore();
+        });
+        const [jobId, acceptance] = await Promise.all([
+            started.promise,
+            rowWhileStreaming ? accepted.promise : undefined,
+            requested.promise,
+        ]);
+        return { controller, upstream, pending, jobId, acceptance, close };
     }
 
-    it(
-        "send, continue, and group stamp the owner once with the server clock as a field patch on the feed; a future stamp is replaced",
-        async () => {
-            mode = { chunks: ["Ok."], delayMs: 0 };
-            // A stamp an older client clock wrote in the future is overwritten with the server's time.
-            const future = Date.now() + 86_400_000;
-            const ann = await seedCharacter({ name: "Ann", extra: { lastInteraction: future } });
-            const bob = await seedCharacter({ name: "Bob" });
-            const grp = await seedCharacter({
-                name: "Grp",
-                type: "group",
-                members: [bob],
-                messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+    it.each([
+        { useStreaming: false, halfStreaming: true, quiet: true, modelId: "reverse_proxy" },
+        { useStreaming: true, halfStreaming: true, quiet: false, modelId: "reverse_proxy" },
+        { useStreaming: true, halfStreaming: false, quiet: false, modelId: "reverse_proxy" },
+        { useStreaming: false, halfStreaming: false, quiet: false, modelId: "pluginmodel:::own-stream" },
+    ])(
+        "meters and completes a stream with Response Streaming=$useStreaming and Half Streaming=$halfStreaming; quiet=$quiet",
+        async ({ useStreaming, halfStreaming, quiet, modelId }) => {
+            await patchProviders({ useStreaming, halfStreaming });
+            await patchPreset("modelProfiles", profileId, { modelId });
+            const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", chatId: "u", data: "q" }] });
+            const callbacks: Extract<GenerationEvent, { type: "callback" }>[] = [];
+            const h = await heldStream(
+                chaId,
+                "send",
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+                    answerCallback(event) {
+                        callbacks.push(event);
+                        return { outcome: "answered", value: "Processed whole reply." };
+                    },
+                },
+                !quiet,
+            );
+            const request = h.upstream.mock.calls[0][0].arg;
+            if (quiet) expect(request.forceStreaming).toBe(true);
+            else expect(request).not.toHaveProperty("forceStreaming");
+            if (!quiet) expect(h.acceptance).toMatchObject({ text: "", seq: 0 });
+            const initial = await readChat(chaId);
+            // A quiet new reply has no row while it streams: no client shows an empty reply.
+            expect(initial.data.message.at(-1)).toMatchObject(quiet ? { chatId: "u" } : { role: "char", data: "" });
+            const since = Date.now();
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            onTestFinished(() => count.mockRestore());
+            h.controller.enqueue({ primary: "hello world" });
+            await vi.advanceTimersByTimeAsync(3000);
+            // A count crosses to the tokenizer worker, which answers outside the fake timers' microtask flush.
+            expect(count).toHaveBeenCalled();
+            await Promise.all(count.mock.results.map((result) => result.value));
+            await vi.advanceTimersByTimeAsync(0);
+            const output = server.context.generationJobs.generationSnapshot()[0].output;
+            expect(output).toMatchObject({ since });
+            expect(output!.tokens).toBeGreaterThan(0);
+            const during = await readChat(chaId);
+            if (quiet) {
+                expect(during.revision).toBe(initial.revision);
+                expect(during.data.message.at(-1)).toMatchObject({ chatId: "u" });
+            } else {
+                expect(during.revision).not.toBe(initial.revision);
+                expect(during.data.message.at(-1).data).toBe("hello world");
+            }
+            h.controller.enqueue({ primary: "hello world. Completed." });
+            h.close();
+            const result = await h.pending;
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply).toMatchObject({ role: "char", data: "Processed whole reply." });
+            expect(result.terminal).toMatchObject({ type: "done", messageId: h.acceptance?.messageId ?? reply.chatId });
+            expect(callbacks).toHaveLength(1);
+            expect(callbacks[0].payload).toEqual({ text: "hello world. Completed." });
+            const chunks = streamedTexts(result.events);
+            expect(chunks.map((chunk) => chunk.text)).toEqual(quiet ? [] : ["hello world", "hello world. Completed."]);
+            const patches = result.events.filter((event) => event.type === "chatPatch");
+            const sequences = patches.flatMap((event) => event.streaming.map((entry: { seq: number }) => entry.seq));
+            expect(sequences.length).toBeGreaterThan(0);
+            if (quiet) {
+                expect(sequences.every((seq) => seq === 0)).toBe(true);
+                expect(patches.flatMap((event) => event.messages ?? []).some((entry) => entry.streamed)).toBe(false);
+                // The row first reaches the client with the whole raw reply, and no reply acceptance precedes it.
+                const replyRows = patches
+                    .flatMap((event) => event.messages ?? [])
+                    .filter((entry) => entry.message?.chatId === reply.chatId);
+                expect(replyRows[0].message.data).toBe("hello world. Completed.");
+                expect(result.events.some((event) => event.type === "accepted" && event.messageId)).toBe(false);
+            } else {
+                expect(sequences).toContain(1);
+                expect(
+                    patches.flatMap((event) => event.messages ?? []).some((entry) => entry.streamed?.seq === 1),
+                ).toBe(true);
+            }
+        },
+    );
+
+    it.each([
+        { kind: "send", expected: "Partial reply." },
+        { kind: "continue", expected: "Previous reply. Partial reply." },
+        { kind: "reroll", expected: "Previous reply. " },
+    ])("keeps the correct stored reply when a quiet $kind is aborted", async ({ kind, expected }) => {
+        const candidates = [
+            { id: "first", data: "First reply." },
+            { id: "previous", data: "Previous reply. " },
+        ];
+        const chaId = await seedCharacter({
+            name: "Ann",
+            messages: [
+                { role: "user", chatId: "u", data: "q" },
+                ...(kind === "send"
+                    ? []
+                    : [{ role: "char", chatId: "r", data: "Previous reply. ", candidates, selected: 1 }]),
+            ],
+        });
+        const h = await heldStream(chaId, kind, kind === "reroll" ? { rerollMessageId: "r" } : {});
+        expect(h.upstream.mock.calls[0][0].arg.forceStreaming).toBe(true);
+        if (kind === "send") expect(h.acceptance).toBeUndefined();
+        else expect(h.acceptance).toMatchObject({ text: kind === "continue" ? "Previous reply. " : "", seq: 0 });
+        h.controller.enqueue({ primary: "Partial reply." });
+        await vi.advanceTimersByTimeAsync(0);
+        const stopped = await api(`/api/generations/${h.jobId}?clientId=tab`, { method: "DELETE" });
+        expect(stopped.status).toBe(200);
+        const result = await h.pending;
+        expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
+        expect(streamedTexts(result.events)).toEqual([]);
+        // A quiet new reply is never accepted; a continue or a reroll is, once, when its row is locked.
+        const replyAcceptances = result.events.filter((event) => event.type === "accepted" && event.messageId);
+        expect(replyAcceptances).toHaveLength(kind === "send" ? 0 : 1);
+        const reply = (await readChat(chaId)).data.message.at(-1);
+        expect(reply.data).toBe(expected);
+        if (kind !== "send") expect(reply.chatId).toBe("r");
+        if (kind === "reroll") expect(reply).toMatchObject({ candidates, selected: 1 });
+        expect(await clientSetText(chaId, reply.chatId, expected)).toBe(200);
+    });
+
+    it("writes no reply row when a quiet send is stopped before any text arrives", async () => {
+        const question = { role: "user", chatId: "u", data: "q" };
+        const chaId = await seedCharacter({ name: "Ann", messages: [question] });
+        const h = await heldStream(chaId);
+        const stopped = await api(`/api/generations/${h.jobId}?clientId=tab`, { method: "DELETE" });
+        expect(stopped.status).toBe(200);
+        const result = await h.pending;
+        expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
+        expect((await readChat(chaId)).data.message).toMatchObject([question]);
+        expect((await readChat(chaId)).data.message).toHaveLength(1);
+    });
+
+    it("trims an incomplete quiet reply before processing the completed stream", async () => {
+        await patchProviders({ removeIncompleteResponse: true });
+        const chaId = await seedCharacter({ name: "Ann" });
+        const h = await heldStream(chaId);
+        h.controller.enqueue({ primary: "A whole sentence. An unfinished tail" });
+        h.close();
+        const result = await h.pending;
+        expect(result.terminal?.type).toBe("done");
+        expect(streamedTexts(result.events)).toEqual([]);
+        expect((await readChat(chaId)).data.message.at(-1).data).toBe("A whole sentence.");
+    });
+
+    describe("reply stream response checks", () => {
+        beforeEach(async () => {
+            await patchProviders({ minResponseLengthModel: 6, banCharacterset: ["Cyrl"], requestRetrys: 1 });
+        });
+
+        function stream(...snapshots: string[]): requestDataResponse {
+            return {
+                type: "streaming",
+                result: new ReadableStream({
+                    start(controller) {
+                        for (const text of snapshots) controller.enqueue({ "0": text });
+                        controller.close();
+                    },
+                }),
+            };
+        }
+
+        function scriptReplies(...answers: requestDataResponse[]) {
+            let attempts = 0;
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementation(async () => {
+                await socketOpen;
+                const answer = answers[attempts++];
+                if (!answer) throw new Error(`Unexpected provider request ${attempts}`);
+                return { ...answer, request: { id: `request-${attempts}`, providerCode: null } };
             });
-            // The feed opens after the seeds: every character entry it sees from here on is a job's.
-            const feed = await feedSocket();
-            try {
-                expect((await readCharacter(ann)).data.lastInteraction).toBe(future);
-                const sent = await stamps("send", ann, { input: "hi", userMessageId: "u1" }, feed.frames);
-                expect(sent.after.data.lastInteraction).toBeLessThan(future);
-                // One stamp per job: the one character change the send made.
-                expect(stampEntries(feed.frames, ann)).toHaveLength(1);
-                await stamps("continue", ann, {}, feed.frames);
-                expect(stampEntries(feed.frames, ann)).toHaveLength(2);
+            onTestFinished(() => upstream.mockRestore());
+            return upstream;
+        }
 
-                const bobBefore = await readCharacter(bob);
-                await stamps("group", grp, {}, feed.frames);
-                expect(await readCharacter(bob)).toEqual(bobBefore);
-                expect(stampEntries(feed.frames, bob)).toEqual([]);
-            } finally {
-                feed.close();
-            }
-        },
-        SLOW,
-    );
+        const acceptances = (events: GenerationEvent[]) => events.filter((e) => e.type === "accepted" && e.messageId);
+        const question = { role: "user", chatId: "u", data: "Question." };
+        const shortError = "The model's answer was shorter than the minimum (3 < 6)";
 
-    it(
-        "a preview or a prompt preview stamps nothing",
-        async () => {
-            const ann = await seedCharacter({ name: "Ann", extra: { lastInteraction: 5 } });
-            const feed = await feedSocket();
-            try {
-                const before = await readCharacter(ann);
-                for (const kind of ["preview", "previewPrompt"]) {
-                    const { terminal } = await job(kind, ann);
-                    expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+        it.each([
+            { rejected: "No.", cause: "is too short" },
+            { rejected: "Привет", cause: "contains a banned script" },
+        ])("retries a quiet reply that $cause and stores one row for the second answer", async ({ rejected }) => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const upstream = scriptReplies(stream(rejected), stream("Second answer."));
+            const { terminal, events } = await job("send", chaId);
+            expect(upstream).toHaveBeenCalledTimes(2);
+            const rows = (await readChat(chaId)).data.message;
+            expect(rows).toMatchObject([{ role: "char", data: "Second answer." }]);
+            expect(terminal).toMatchObject({ type: "done", messageId: rows[0].chatId });
+            expect(acceptances(events)).toEqual([]);
+            expect(events.filter((e) => e.type === "retry" && e.retry !== null)).toMatchObject([{ retry: 1 }]);
+            expect(streamedTexts(events)).toEqual([]);
+        });
+
+        it("stores the last rejected quiet reply and names its request after exhausting the reply's own budget", async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const failure = { type: "fail", result: "temporary failure" } as const;
+            // Each request uses its outer retry before delivering a stream to the reply check.
+            const upstream = scriptReplies(failure, stream("?"), failure, stream("No."));
+            const { terminal } = await job("send", chaId);
+            expect(terminal).toMatchObject({
+                type: "error",
+                stage: "request",
+                requestId: "request-4",
+                message: shortError,
+            });
+            expect(texts(await readChat(chaId))).toEqual(["char:No."]);
+            expect(upstream).toHaveBeenCalledTimes(4);
+        });
+
+        it("writes no quiet reply row when stopped after the rejected output estimate clears", async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const h = await heldStream(chaId);
+            h.upstream.mockResolvedValue({ type: "fail", result: "Unexpected second request", noRetry: true });
+            // Let the first output count publish, then end the stream. Stop synchronously on its removal,
+            // before another request can dispatch.
+            await vi.advanceTimersByTimeAsync(1000);
+            let metered = false;
+            const unsubscribe = runnerFeed.subscribe((event) => {
+                if (event.type !== "generation" || event.jobId !== h.jobId || event.state !== "running") return;
+                if (event.output) {
+                    metered = true;
+                    h.close();
+                } else if (metered && !event.retry) {
+                    server.context.generationJobs.abort(event.jobId, "tab");
                 }
-                expect(await readCharacter(ann)).toEqual(before);
-                expect(stampEntries(feed.frames, ann)).toEqual([]);
+            });
+            onTestFinished(unsubscribe);
+            h.controller.enqueue({ primary: "No." });
+            const { terminal, events } = await h.pending;
+            expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+            expect(h.upstream).toHaveBeenCalledTimes(1);
+            expect(streamedTexts(events)).toEqual([]);
+            expect((await readChat(chaId)).data.message).toEqual([]);
+        });
+
+        it("appends the reply and runs editoutput at its row's index when a quiet retry answers buffered", async () => {
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [question],
+                customscript: [
+                    {
+                        comment: "Show the row index",
+                        type: "editoutput",
+                        in: "answer",
+                        out: "answer at row {{chatindex}}",
+                    },
+                ],
+            });
+            const upstream = scriptReplies(stream("No."), { type: "success", result: "Buffered answer." });
+            const { terminal, events } = await job("send", chaId);
+            const rows = (await readChat(chaId)).data.message;
+            expect(rows).toMatchObject([question, { role: "char", data: "Buffered answer at row 1." }]);
+            expect(acceptances(events)).toEqual([]);
+            expect(terminal).toMatchObject({ type: "done", messageId: rows[1].chatId });
+            expect(upstream).toHaveBeenCalledTimes(2);
+        });
+
+        it.each([
+            {
+                inlay: false,
+                outcome: "fails the send and writes no row",
+                rows: [],
+                expected: { type: "error", stage: "request", requestId: "request-2", message: "upstream failed" },
+            },
+            {
+                inlay: true,
+                outcome: "appends the error as the reply and stops",
+                rows: [{ role: "char", data: "```risuerror\nupstream failed\n```" }],
+                expected: { type: "done", stopped: true },
+            },
+        ])(
+            "a failed quiet retry $outcome with inlayErrorResponse=$inlay",
+            async ({ inlay, expected, rows: stored }) => {
+                await patchProviders({ inlayErrorResponse: inlay });
+                const chaId = await seedCharacter({ name: "Ann" });
+                const upstream = scriptReplies(stream("No."), {
+                    type: "fail",
+                    result: "upstream failed",
+                    noRetry: true,
+                });
+                const { terminal, events } = await job("send", chaId);
+                expect(terminal).toMatchObject(expected);
+                const rows = (await readChat(chaId)).data.message;
+                expect(rows).toHaveLength(stored.length);
+                expect(rows).toMatchObject(stored);
+                expect(acceptances(events)).toEqual([]);
+                expect(upstream).toHaveBeenCalledTimes(2);
+            },
+        );
+
+        it("keeps the shown text of a short full stream and fails without a retry or an inlaid error", async () => {
+            await patchProviders({ useStreaming: true, inlayErrorResponse: true });
+            const chaId = await seedCharacter({ name: "Ann" });
+            const upstream = scriptReplies(stream("Long enough.", "No."));
+            const { terminal, events } = await job("send", chaId);
+            expect(terminal).toMatchObject({
+                type: "error",
+                stage: "request",
+                requestId: "request-1",
+                message: shortError,
+            });
+            expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(["Long enough.", "No."]);
+            expect(texts(await readChat(chaId))).toEqual(["char:No."]);
+            expect(upstream).toHaveBeenCalledTimes(1);
+        });
+
+        it("restores the selected candidate when a full-stream reroll is too short", async () => {
+            await patchProviders({ useStreaming: true });
+            const previous = {
+                role: "char",
+                chatId: "r",
+                data: "Selected reply.",
+                selected: 1,
+                candidates: [
+                    { id: "a", data: "First reply." },
+                    { id: "b", data: "Selected reply." },
+                ],
+            };
+            const chaId = await seedCharacter({ name: "Ann", messages: [question, previous] });
+            const upstream = scriptReplies(stream("No."));
+            const { terminal } = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(terminal).toMatchObject({
+                type: "error",
+                stage: "request",
+                requestId: "request-1",
+                message: shortError,
+            });
+            expect((await readChat(chaId)).data.message).toMatchObject([question, previous]);
+            expect(upstream).toHaveBeenCalledTimes(1);
+        });
+
+        it.each([
+            { suffix: "!", outcome: "accepts a short addition", expected: { type: "done", messageId: "r" } },
+            {
+                suffix: "x",
+                outcome: "rejects a banned script in the addition",
+                expected: {
+                    type: "error",
+                    stage: "request",
+                    requestId: "request-1",
+                    message: "The model answered in a banned script (Latn)",
+                },
+            },
+        ])("a full-stream continuation $outcome", async ({ suffix, expected }) => {
+            await patchProviders({ useStreaming: true, banCharacterset: ["Latn"] });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [question, { role: "char", chatId: "r", data: "Hi" }],
+            });
+            const upstream = scriptReplies(stream(suffix));
+            const { terminal } = await job("continue", chaId);
+            expect(terminal).toMatchObject(expected);
+            expect((await readChat(chaId)).data.message).toMatchObject([
+                question,
+                { chatId: "r", data: "Hi" + suffix },
+            ]);
+            expect(upstream).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it.each([false, true])(
+        "keeps a buffered Claude reply on the buffered path with Half Streaming=%s",
+        async (halfStreaming) => {
+            await patchProviders({ halfStreaming });
+            await patchPreset("modelProfiles", profileId, { customAPIFormat: LLMFormat.Anthropic });
+            const modules = await single("modules");
+            const saved = await batch({
+                ops: [
+                    {
+                        kind: "modules",
+                        id: "main",
+                        baseRevision: modules.revision ?? null,
+                        data: [
+                            ...(modules.data ?? []),
+                            { id: "half-streaming-dice", name: "Dice", mcp: { url: "internal:dice" } },
+                        ],
+                    },
+                ],
+            });
+            expect(saved.status).toBe(200);
+            onTestFinished(async () => {
+                const current = await single("modules");
+                await batch({
+                    ops: [
+                        {
+                            kind: "modules",
+                            id: "main",
+                            baseRevision: current.revision,
+                            ...(modules.revision ? { data: modules.data } : { delete: true }),
+                        },
+                    ],
+                });
+            });
+            const chaId = await seedCharacter({ name: "Ann", chat: { modules: ["half-streaming-dice"] } });
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "success", result: "Buffered reply." };
+            });
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            onTestFinished(() => {
+                upstream.mockRestore();
+                count.mockRestore();
+            });
+            const callbacks: Extract<GenerationEvent, { type: "callback" }>[] = [];
+            const result = await job(
+                "send",
+                chaId,
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+                    answerCallback(event) {
+                        callbacks.push(event);
+                        return { outcome: "answered", value: "Processed reply." };
+                    },
+                },
+            );
+            const request = upstream.mock.calls[0][0];
+            if (halfStreaming) expect(request.arg.forceStreaming).toBe(true);
+            else expect(request.arg).not.toHaveProperty("forceStreaming");
+            expect(request.tools.descriptors.map((tool) => tool.name)).toEqual(DICE_TOOLS.map((tool) => tool.name));
+            expect(result.terminal?.type).toBe("done");
+            expect(callbacks).toHaveLength(1);
+            expect(callbacks[0].payload).toEqual({ text: "Buffered reply." });
+            expect((await readChat(chaId)).data.message.at(-1).data).toBe("Processed reply.");
+            expect(result.events.filter((event) => event.type === "accepted" && event.messageId)).toEqual([]);
+            expect(streamedTexts(result.events)).toEqual([]);
+            expect(count).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each([
+        { kind: "previewPrompt", format: LLMFormat.OpenAICompatible },
+        { kind: "send", format: LLMFormat.OobaLegacy },
+    ])("never forces streaming for $kind with reply format $format", async ({ kind, format }) => {
+        await patchPreset("modelProfiles", profileId, { customAPIFormat: format });
+        const chaId = await seedCharacter({ name: "Ann" });
+        const before = await readChat(chaId);
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+            await socketOpen;
+            return { type: "success", result: "Buffered reply." };
+        });
+        onTestFinished(() => upstream.mockRestore());
+        const result = await job(kind, chaId);
+        expect(result.terminal?.type).toBe("done");
+        expect(upstream).toHaveBeenCalledTimes(1);
+        expect(upstream.mock.calls[0][0].arg).not.toHaveProperty("forceStreaming");
+        if (kind === "previewPrompt") expect((await readChat(chaId)).data.message).toEqual(before.data.message);
+        else expect((await readChat(chaId)).data.message.at(-1).data).toBe("Buffered reply.");
+    });
+});
+
+describe("in-place reply candidates", () => {
+    const oldInfo = { model: "old-model", generationId: "old-generation", inputTokens: 8, outputTokens: 2 };
+    const oldPrompt = { promptName: "Old preset", promptToggles: [{ key: "tone", value: "quiet" }] };
+    const oldTranslation = {
+        text: "이전 응답",
+        sourceHash: translationSourceHash("Previous reply."),
+        targetLanguage: "ko",
+        translatedAt: 1,
+    };
+    const baseline = { $x: "0", $edited: "0" };
+    const after = { $x: "1", $edited: "1" };
+    const carrier = (extra: Record<string, unknown> = {}) => ({
+        role: "char",
+        chatId: "r",
+        data: "Previous reply.",
+        name: "Kept name",
+        disabled: false,
+        isComment: false,
+        generationInfo: { ...oldInfo, context: { report: "must not enter the candidate copy" } },
+        promptInfo: { ...oldPrompt, promptText: [{ role: "system", content: "OLD FULL PROMPT" }] },
+        translation: oldTranslation,
+        scriptstateCheckpoint: { before: baseline, after },
+        ...extra,
+    });
+    const setVar = (name: string, value: string) => ef("v2SetVar", { var: name, operator: "=", ...v(value) });
+    const seed = (extra: Partial<Parameters<typeof seedCharacter>[0]> = {}) =>
+        seedCharacter({
+            name: "Candidate owner",
+            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier()],
+            chat: { scriptstate: { ...after, $edited: "9" } },
+            ...extra,
+        });
+    const edit = async (chaId: string, ops: ChatOp[]) => {
+        const current = await readChat(chaId);
+        const result = await batch({
+            chats: [{ characterId: chaId, chatId: "k", baseRevision: current.revision, ops }],
+        });
+        expect(result.status, JSON.stringify(result.body)).toBe(200);
+    };
+    const storedCarrier = async (chaId: string) =>
+        (await readChat(chaId)).data.message.find((entry: any) => entry.chatId === "r");
+    const observeWrites = (expected?: { chaId: string; rollback: boolean }) => {
+        const feed: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        const unsubscribe = runnerFeed.subscribe((event) => {
+            if (event.type === "change") feed.push(event);
+        });
+        onTestFinished(unsubscribe);
+        // Observe the real SQLite store's public acknowledgements without replacing its behavior.
+        const writes = vi.spyOn(runnerStore, "applyChanges");
+        onTestFinished(() => writes.mockRestore());
+        return () => {
+            const outcomes = writes.mock.results
+                .filter((result) => result.type === "return")
+                .flatMap((result) => result.value.chats.flatMap((chat: any) => chat.checkpoints ?? []));
+            expect(outcomes.length).toBeGreaterThan(0);
+            expect(
+                outcomes.every((outcome) => outcome === "applied"),
+                JSON.stringify(outcomes),
+            ).toBe(true);
+            if (expected) {
+                const calls = writes.mock.calls
+                    .map(([changes, options], index) => ({
+                        groups: (changes.chats ?? []) as ChatGroup[],
+                        options,
+                        result: writes.mock.results[index],
+                    }))
+                    .filter(({ groups }) => groups.some((group) => group.characterId === expected.chaId));
+                const begin = calls.find(({ groups }) =>
+                    groups.some((group) => group.ops.some((op) => op.op === "begin" && op.id === "r")),
+                )!;
+                const final = calls.findLast(({ groups }) =>
+                    groups.some((group) =>
+                        group.ops.some(
+                            (op) => op.op === "setMessage" && op.message.chatId === "r" && op.generation?.final,
+                        ),
+                    ),
+                )!;
+                const control = {
+                    characterId: expected.chaId,
+                    chatId: "k",
+                    messageId: "r",
+                    generationId: expect.any(String),
+                };
+                expect(begin.options).toMatchObject({
+                    jobToken: expect.any(String),
+                    changes: true,
+                    committed: expect.any(Function),
+                    rerollAttempt: { ...control, action: "begin" },
+                });
+                expect(final.options).toMatchObject({
+                    jobToken: begin.options!.jobToken,
+                    changes: true,
+                    committed: expect.any(Function),
+                    ...(expected.rollback ? { rerollAttempt: { ...control, action: "rollback" } } : {}),
+                });
+                for (const [call, revision, texts] of [
+                    [begin, 1, ["Previous reply.", ""]],
+                    [final, 2, expected.rollback ? undefined : ["Previous reply.", "New reply."]],
+                ] as const) {
+                    expect(call.result.type).toBe("return");
+                    const committedRevision = call.result.value.chats[0].revision;
+                    const entry = feed
+                        .flatMap((event) => event.changes.chats)
+                        .find(
+                            (chat) =>
+                                chat.id === "k" &&
+                                chat.characterId === expected.chaId &&
+                                chat.revision === committedRevision,
+                        )!;
+                    expect(entry).toBeDefined();
+                    const row = entry.patch?.messages?.find(
+                        ({ message }) => (message as { chatId: string }).chatId === "r",
+                    )?.message as { candidates?: { data: string }[]; candidatesRevision?: number } | undefined;
+                    expect(row).toBeDefined();
+                    expect(row!.candidatesRevision).toBe(revision);
+                    expect(row!.candidates?.map((candidate) => candidate.data)).toEqual(texts);
+                }
+            }
+        };
+    };
+    let providers: Record<string, unknown>;
+    let preset: Record<string, unknown>;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2026-11-05T00:00:00Z"));
+        providers = (await single("providers")).data;
+        preset = (await single("presets")).data.find((entry: any) => entry.id === presetId);
+        await patchProviders({
+            useStreaming: true,
+            autoContinueChat: false,
+            inlayErrorResponse: false,
+            presetChain: "",
+            requestRetrys: 0,
+        });
+        mode = { chunks: ["New reply."], delayMs: 0 };
+        onRequest = null;
+        plainAnswer = null;
+    });
+    afterEach(async () => {
+        onRequest = null;
+        plainAnswer = null;
+        await patchProviders(providers);
+        await patchPreset("presets", presetId, preset);
+        vi.useRealTimers();
+    });
+
+    it("sends raw in-place reroll checkpoints by stream reference and the completed candidates as a whole row", async () => {
+        const chaId = await seed();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        let controller!: ReadableStreamDefaultController<Record<string, string>>;
+        const stream = new ReadableStream<Record<string, string>>({
+            start(value) {
+                controller = value;
+            },
+        });
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+            await socketOpen;
+            return { type: "streaming", result: stream };
+        });
+        const chunk = deferred<void>();
+        const checkpoint = deferred<Extract<GenerationEvent, { type: "chatPatch" }>>();
+        const pending = job(
+            "reroll",
+            chaId,
+            { rerollMessageId: "r" },
+            {
+                streamedRows: true,
+                onChunk: () => chunk.resolve(),
+                onEvent: (event) => {
+                    if (
+                        event.type === "chatPatch" &&
+                        event.streaming.some((entry) => entry.messageId === "r" && entry.seq === 1)
+                    )
+                        checkpoint.resolve(event);
+                },
+            },
+        );
+        const cleanup = cleanupOnce(() => {
+            upstream.mockRestore();
+            vi.useRealTimers();
+        });
+        try {
+            controller.enqueue({ "0": "New reply." });
+            await chunk.promise;
+            await vi.advanceTimersByTimeAsync(3000);
+            const raw = await checkpoint.promise;
+            const generationId = raw.streaming[0].generationId;
+            expect(raw.messages).toEqual([{ after: "u", id: "r", streamed: { generationId, seq: 1 } }]);
+            controller.close();
+            const result = await pending;
+            expect(result.terminal).toMatchObject({
+                type: "done",
+                epoch,
+                messageId: "r",
+                revision: (await readChat(chaId)).revision,
+            });
+            expect(result.terminal).not.toHaveProperty("alternatives");
+            const patches = result.events.filter((event) => event.type === "chatPatch");
+            const final = patches.findLast((event) => event.messages);
+            expect(final.streaming).toEqual([]);
+            expect(final.messages).toHaveLength(1);
+            expect(final.messages[0]).not.toHaveProperty("streamed");
+            expect(final.messages[0]).toMatchObject({
+                after: "u",
+                message: {
+                    chatId: "r",
+                    data: "New reply.",
+                    selected: 1,
+                    candidatesRevision: 2,
+                    candidates: [
+                        { id: expect.any(String), data: "Previous reply." },
+                        { id: expect.any(String), data: "New reply." },
+                    ],
+                },
+            });
+            expect(final.messages[0].message).toEqual(await storedCarrier(chaId));
+            const beginIndex = patches.findIndex((event) =>
+                event.messages?.some(
+                    (entry: { message?: { chatId: string; candidatesRevision?: number } }) =>
+                        entry.message?.chatId === "r" && entry.message.candidatesRevision === 1,
+                ),
+            );
+            expect(beginIndex).toBeGreaterThanOrEqual(0);
+            expect(patches[beginIndex].messages).toEqual([
+                {
+                    after: "u",
+                    message: expect.objectContaining({
+                        chatId: "r",
+                        data: "",
+                        selected: 1,
+                        candidatesRevision: 1,
+                        candidates: [
+                            expect.objectContaining({ data: "Previous reply." }),
+                            { id: expect.any(String), data: "" },
+                        ],
+                    }),
+                },
+            ]);
+            expect(patches.indexOf(raw)).toBeGreaterThan(beginIndex);
+        } finally {
+            try {
+                controller.close();
+            } catch {
+                /* Already closed by the test. */
+            }
+            cleanup();
+            await pending;
+        }
+    });
+
+    it("streams into the same reply, snapshots bounded metadata, restores unchanged variables before start, and refreshes the selected candidate on completion", async () => {
+        const chaId = await seed({
+            triggerscript: [trig("start", [setVar("seen", "{{getvar::x}}/{{getvar::edited}}"), setVar("x", "2")])],
+        });
+        await patchPreset("presets", presetId, { mainPrompt: "History {{history}} Characters {{charhistory}}" });
+        const release = deferred<void>();
+        const first = deferred<void>();
+        const cleanup = cleanupOnce(() => release.resolve());
+        mode = { chunks: ["New ", "reply."], delayMs: 0, holdBeforeChunk: { index: 1, until: release.promise } };
+        const assertApplied = observeWrites({ chaId, rollback: false });
+        const beforeRequests = bodies.length;
+        const pending = job("reroll", chaId, { rerollMessageId: "r" }, { onChunk: () => first.resolve() });
+        try {
+            await Promise.race([first.promise, pending]);
+            const during = await storedCarrier(chaId);
+            expect(during.chatId).toBe("r");
+            expect(during.candidatesRevision).toBe(1);
+            expect(during.selected).toBe(1);
+            expect(during.candidates[0]).toEqual({
+                id: expect.stringMatching(/^[a-zA-Z0-9]{1,32}$/),
+                data: "Previous reply.",
+                generationInfo: oldInfo,
+                promptInfo: oldPrompt,
+                translation: oldTranslation,
+                scriptstateAfter: after,
+            });
+            expect(await clientSetText(chaId, "r", "foreign edit")).toBe(409);
+            const sent = JSON.stringify(bodies.slice(beforeRequests));
+            expect(sent).toContain("Question.");
+            expect(sent).not.toContain("Previous reply.");
+            expect(sent).not.toContain("candidates");
+            release.resolve();
+            const { terminal, events } = await pending;
+            expect(terminal, JSON.stringify(terminal)).toMatchObject({ type: "done", messageId: "r" });
+            expect(streamedTexts(events).at(-1)).toMatchObject({ messageId: "r", text: "New reply." });
+            const chat = await readChat(chaId);
+            expect(texts(chat)).toEqual(["user:Question.", "char:New reply."]);
+            const result = await storedCarrier(chaId);
+            expect(result).toMatchObject({
+                name: "Kept name",
+                disabled: false,
+                isComment: false,
+                candidatesRevision: 2,
+                selected: 1,
+            });
+            expect(result.candidates.map((entry: any) => entry.id)).toEqual(
+                during.candidates.map((entry: any) => entry.id),
+            );
+            expect(new Set(result.candidates.map((entry: any) => entry.id)).size).toBe(2);
+            const { context: _context, ...info } = result.generationInfo;
+            const { promptText: _text, ...prompt } = result.promptInfo;
+            expect(info).toMatchObject({
+                model: "custom-m",
+                generationId: events.find((event) => event.type === "accepted" && event.messageId === "r").generationId,
+            });
+            expect(result.candidates[1]).toEqual({
+                id: during.candidates[1].id,
+                data: "New reply.",
+                generationInfo: info,
+                promptInfo: prompt,
+                scriptstateAfter: { $x: "2", $edited: "9", $seen: "0/9" },
+            });
+            expect(result.scriptstateCheckpoint).toEqual({
+                before: baseline,
+                after: { $x: "2", $edited: "9", $seen: "0/9" },
+            });
+            expect(result.translation).toBeUndefined();
+            assertApplied();
+            expect(await clientSetText(chaId, "r", "manual edit")).toBe(200);
+        } finally {
+            cleanup();
+            await pending;
+        }
+    });
+
+    it("preserves non-streaming carrier fields and excludes older candidates from ordinary CBS history", async () => {
+        await patchProviders({ useStreaming: false });
+        const chaId = await seed();
+        const rerolled = await job("reroll", chaId, { rerollMessageId: "r" });
+        expect(rerolled.terminal).toMatchObject({ type: "done", messageId: "r" });
+        const reply = await storedCarrier(chaId);
+        expect(reply).toMatchObject({
+            name: "Kept name",
+            disabled: false,
+            isComment: false,
+            selected: 1,
+            scriptstateCheckpoint: { before: baseline },
+        });
+        expect(reply.candidates.map((entry: any) => entry.data)).toEqual(["Previous reply.", "New reply."]);
+        await patchPreset("presets", presetId, { mainPrompt: "History {{history}} Characters {{charhistory}}" });
+        const beforeRequests = bodies.length;
+        const sent = await job("send", chaId, { input: "Next question", userMessageId: "u2" });
+        expect(sent.terminal?.type).toBe("done");
+        const prompt = JSON.stringify(bodies.slice(beforeRequests));
+        expect(prompt).toContain("New reply.");
+        expect(prompt).not.toContain("Previous reply.");
+        expect(prompt).not.toContain("candidates");
+        const old = await storedCarrier(chaId);
+        expect(old.scriptstateCheckpoint).toBeUndefined();
+        expect(old.candidates.map((entry: any) => entry.data)).toEqual(["Previous reply.", "New reply."]);
+        expect(old.candidates.every((entry: any) => entry.scriptstateAfter === undefined)).toBe(true);
+    });
+
+    it("edits the second trailing comment read at index 2 by a Lua editRequest hook during an in-place reroll", async () => {
+        await patchProviders({ useStreaming: false });
+        const firstComment = { role: "char", chatId: "c1", data: "First comment.", isComment: true };
+        const secondComment = { role: "char", chatId: "c2", data: "Second comment.", isComment: true };
+        const chaId = await seed({
+            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier(), firstComment, secondComment],
+            triggerscript: [
+                trig("manual", [
+                    {
+                        type: "triggerlua",
+                        code: `listenEdit("editRequest", function(id, data)
+                            local comment = getChatData(id, 2)
+                            setChat(id, 2, comment .. " edited")
+                            return data
+                        end)`,
+                    },
+                ]),
+            ],
+        });
+        const result = await job("reroll", chaId, { rerollMessageId: "r" });
+        expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done", messageId: "r" });
+        const stored = (await readChat(chaId)).data.message;
+        expect(stored.map((message: { chatId: string }) => message.chatId)).toEqual(["u", "r", "c1", "c2"]);
+        expect(stored.find((message: { chatId: string }) => message.chatId === "c1")).toEqual(firstComment);
+        expect(stored.find((message: { chatId: string }) => message.chatId === "c2")).toEqual({
+            ...secondComment,
+            data: "Second comment. edited",
+        });
+        expect(stored.find((message: { chatId: string }) => message.chatId === "r")).toMatchObject({
+            data: "New reply.",
+        });
+    });
+
+    it("keeps trigger appends after the carrier, exposes the history view to Lua and CBS, and removes obsolete checkpoints on success and failure", async () => {
+        for (const fail of [false, true]) {
+            const chaId = await seed({
+                triggerscript: [
+                    trig("manual", [
+                        {
+                            type: "triggerlua",
+                            code: `function onStart(id) addChat(id, "user", "Lua saw " .. tostring(getChatLength(id))) end`,
+                        },
+                    ]),
+                    trig("start", [ef("v2Impersonate", { role: "user", ...v("Trigger appended") })]),
+                ],
+            });
+            mode = fail ? { chunks: [], delayMs: 0, status: 400 } : { chunks: ["New reply."], delayMs: 0 };
+            const assertApplied = observeWrites();
+            const beforeRequests = bodies.length;
+            const result = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: fail ? "error" : "done" });
+            const chat = await readChat(chaId);
+            expect(chat.data.message.map((entry: any) => entry.chatId).slice(0, 2)).toEqual(["u", "r"]);
+            expect(chat.data.message.slice(2).map((entry: any) => entry.data)).toEqual([
+                "Lua saw 1",
+                "Trigger appended",
+            ]);
+            const prompt = JSON.stringify(bodies.slice(beforeRequests));
+            expect(prompt).toContain("Lua saw 1");
+            expect(prompt).not.toContain("Previous reply.");
+            const reply = await storedCarrier(chaId);
+            expect(reply.data).toBe(fail ? "Previous reply." : "New reply.");
+            expect(reply.scriptstateCheckpoint).toBeUndefined();
+            expect(reply.candidates?.some((entry: any) => entry.scriptstateAfter !== undefined) ?? false).toBe(false);
+            if (!fail)
+                expect(reply.candidates.map((entry: any) => entry.data)).toEqual(["Previous reply.", "New reply."]);
+            assertApplied();
+            expect(await clientSetText(chaId, "r", "after end")).toBe(200);
+        }
+    });
+
+    it("restores the selected candidate when an in-place reroll exceeds the lore budget", async () => {
+        await prepareLoreBudgetJob();
+        const candidates = [
+            { id: "a", data: "First" },
+            { id: "b", data: "Previous reply." },
+        ];
+        const chaId = await seed({
+            extra: overBudgetLore(),
+            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier({ candidates, selected: 1 })],
+        });
+        const before = bodies.length;
+        const result = await job("reroll", chaId, { rerollMessageId: "r", stopOverLoreBudget: true });
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            stage: "assembly",
+            code: "loreOverBudget",
+            lore: rejectedLore,
+        });
+        const reply = await storedCarrier(chaId);
+        expect(reply).toMatchObject({ data: "Previous reply.", selected: 1, candidates });
+        expect(reply.candidates).toHaveLength(2);
+        expect(bodies).toHaveLength(before);
+    });
+
+    it("writes the previous candidate back on stream abort and request failure while undoing only the attempt's variables", async () => {
+        for (const failure of ["abort", "request"] as const) {
+            const chaId = await seed({
+                triggerscript: [trig("start", [setVar("x", "2"), setVar("introduced", "attempt")])],
+            });
+            const release = deferred<void>();
+            const cleanup = cleanupOnce(() => release.resolve());
+            mode =
+                failure === "request"
+                    ? { chunks: [], delayMs: 0, status: 400 }
+                    : {
+                          chunks: ["Partial", " must vanish"],
+                          delayMs: 0,
+                          holdBeforeChunk: { index: 1, until: release.promise },
+                      };
+            onRequest = async () => {
+                expect(await clientSetText(chaId, "r", "foreign edit")).toBe(409);
+                await edit(chaId, [{ op: "meta", merge: { scriptstate: { $edited: "external" } } }]);
+            };
+            const assertApplied = observeWrites({ chaId, rollback: true });
+            try {
+                const result = await job(
+                    "reroll",
+                    chaId,
+                    { rerollMessageId: "r" },
+                    failure === "abort" ? { abortAfterChunks: 1 } : {},
+                );
+                expect(result.terminal).toMatchObject({
+                    type: "error",
+                    reason: failure === "abort" ? "aborted" : "failed",
+                });
+                const reply = await storedCarrier(chaId);
+                expect(reply).toMatchObject({
+                    data: "Previous reply.",
+                    generationInfo: oldInfo,
+                    promptInfo: oldPrompt,
+                    translation: oldTranslation,
+                    scriptstateCheckpoint: { before: baseline, after },
+                    candidatesRevision: 2,
+                });
+                expect(reply.candidates).toBeUndefined();
+                expect(reply.selected).toBeUndefined();
+                expect((await readChat(chaId)).data.scriptstate).toEqual({ $x: "1", $edited: "external" });
+                assertApplied();
+                expect(await clientSetText(chaId, "r", "after rollback")).toBe(200);
             } finally {
-                feed.close();
+                onRequest = null;
+                cleanup();
+            }
+        }
+    });
+
+    it("keeps all prior candidates when an output trigger removes the carrier and targets inlaid errors through trailing comments", async () => {
+        const chaId = await seed({
+            messages: [
+                { role: "user", chatId: "u", data: "Question." },
+                carrier({
+                    candidates: [
+                        { id: "a", data: "First" },
+                        { id: "b", data: "Previous reply." },
+                    ],
+                    selected: 1,
+                }),
+            ],
+            triggerscript: [
+                trig("output", [ef("v2CutChat", { startType: "value", start: "0", endType: "value", end: "1" })]),
+            ],
+        });
+        const removed = await job("reroll", chaId, { rerollMessageId: "r" });
+        expect(removed.terminal?.type).toBe("done");
+        const restored = await storedCarrier(chaId);
+        expect(restored).toMatchObject({ data: "Previous reply.", selected: 1 });
+        expect(restored.candidates.map((entry: any) => [entry.id, entry.data])).toEqual([
+            ["a", "First"],
+            ["b", "Previous reply."],
+        ]);
+        await patchProviders({ inlayErrorResponse: true });
+        for (const role of ["char", "user"]) {
+            const id = await seed({
+                messages: [
+                    { role: "user", chatId: "u", data: "Question." },
+                    carrier(),
+                    { role, chatId: "comment", data: "Untouched comment", isComment: true },
+                ],
+            });
+            mode = { chunks: [], delayMs: 0, status: 400 };
+            const result = await job("reroll", id, { rerollMessageId: "r" });
+            expect(result.terminal).toMatchObject({ type: "done", messageId: "r" });
+            const chat = await readChat(id);
+            expect(chat.data.message.map((entry: any) => entry.chatId)).toEqual(["u", "r", "comment"]);
+            expect(chat.data.message[2].data).toBe("Untouched comment");
+            const reply = chat.data.message[1];
+            expect(reply.data).toContain("```risuerror");
+            expect(reply.candidates[0].data).toBe("Previous reply.");
+            expect(reply.candidates[reply.selected].data).toBe(reply.data);
+        }
+    });
+
+    it.each(["an earlier checkpointed candidate", "a checkpointed candidate after text-only selection and reload"])(
+        "restores the turn baseline before rerolling %s",
+        async (scenario) => {
+            const textOnly = scenario.includes("text-only");
+            const chaId = await seed({
+                messages: [
+                    { role: "user", chatId: "u", data: "Question." },
+                    carrier({
+                        data: textOnly ? "A" : "B",
+                        selected: textOnly ? 0 : 1,
+                        candidates: [
+                            { id: "A", data: "A", scriptstateAfter: { $x: "1" } },
+                            { id: "B", data: "B", ...(textOnly ? {} : { scriptstateAfter: { $x: "2" } }) },
+                        ],
+                        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: textOnly ? "1" : "2" } },
+                    }),
+                ],
+                chat: { scriptstate: { $x: textOnly ? "1" : "2" } },
+                triggerscript: [trig("start", [setVar("seen", "{{getvar::x}}")])],
+            });
+            if (textOnly) {
+                await edit(chaId, [
+                    {
+                        op: "selectCandidate",
+                        messageId: "r",
+                        candidateId: "B",
+                        expect: { candidatesRevision: (await storedCarrier(chaId)).candidatesRevision },
+                    },
+                ]);
+                // A fresh API read, as a reloaded tab obtains: no old in-memory baseline is reused.
+                const reloaded = await readChat(chaId);
+                expect(reloaded.data.message.at(-1).scriptstateCheckpoint).toEqual({ before: { $x: "0" } });
+                expect(reloaded.data.scriptstate).toEqual({ $x: "1" });
+            }
+            await edit(chaId, [
+                {
+                    op: "selectCandidate",
+                    messageId: "r",
+                    candidateId: "A",
+                    expect: { candidatesRevision: (await storedCarrier(chaId)).candidatesRevision },
+                },
+            ]);
+            expect((await storedCarrier(chaId)).scriptstateCheckpoint).toEqual({
+                before: { $x: "0" },
+                after: { $x: "1" },
+            });
+            const result = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done", messageId: "r" });
+            expect((await readChat(chaId)).data.scriptstate).toEqual({ $x: "0", $seen: "0" });
+            expect((await storedCarrier(chaId)).scriptstateCheckpoint.before).toEqual({ $x: "0" });
+        },
+    );
+
+    it("takes a missing baseline at reroll start, retains a text-only candidate baseline without restoring, and checkpoints a reply without generation metadata", async () => {
+        for (const checkpoint of [undefined, { before: { $x: "baseline" } }]) {
+            const chaId = await seed({
+                messages: [
+                    { role: "user", chatId: "u", data: "Question." },
+                    carrier({
+                        scriptstateCheckpoint: checkpoint,
+                        ...(checkpoint
+                            ? {
+                                  candidates: [
+                                      { id: "older", data: "Earlier", scriptstateAfter: baseline },
+                                      { id: "text-only", data: "Previous reply." },
+                                  ],
+                                  selected: 1,
+                                  generationInfo: undefined,
+                                  promptInfo: undefined,
+                                  translation: undefined,
+                              }
+                            : {}),
+                    }),
+                ],
+                triggerscript: [trig("start", [setVar("seen", "{{getvar::x}}")])],
+            });
+            const result = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(result.terminal?.type).toBe("done");
+            const reply = await storedCarrier(chaId);
+            expect(reply.scriptstateCheckpoint).toEqual({
+                before: checkpoint?.before ?? { $x: "1", $edited: "9" },
+                after: { $x: "1", $edited: "9", $seen: "1" },
+            });
+        }
+        const chaId = await seedCharacter({
+            name: "No generation info",
+            extra: { viewScreen: "emotion", emotionImages: [] },
+            chat: { scriptstate: { $base: "kept" } },
+            triggerscript: [trig("input", [setVar("input", "kept")]), trig("start", [setVar("reply", "written")])],
+        });
+        const sent = await job("send", chaId, { input: "Question.", userMessageId: "u" });
+        expect(sent.terminal?.type).toBe("done");
+        const reply = (await readChat(chaId)).data.message.at(-1);
+        expect(reply.scriptstateCheckpoint).toEqual({
+            before: { $base: "kept", $input: "kept" },
+            after: { $base: "kept", $input: "kept", $reply: "written" },
+        });
+        const withoutInfo = await seed({
+            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier({ generationInfo: undefined })],
+            triggerscript: [trig("start", [setVar("x", "2"), ef("v2StopPromptSending")])],
+        });
+        const stopped = await job("continue", withoutInfo, { continueMessageId: "r" });
+        expect(stopped.terminal).toMatchObject({ type: "done", stopped: true });
+        const continued = await storedCarrier(withoutInfo);
+        expect(continued.generationInfo).toBeUndefined();
+        expect(continued.scriptstateCheckpoint).toEqual({ before: baseline, after: { $x: "2", $edited: "9" } });
+    });
+
+    it("persists extra provider samples as text-only candidates and bounds count, aggregate bytes, previous replies, and snapshots with coded notices", async () => {
+        await patchProviders({ useStreaming: false, genTime: 3 });
+        const profile = (await single("modelProfiles")).data.find((entry: any) => entry.id === profileId);
+        await patchPreset("modelProfiles", profileId, { modelId: "gpt4om" });
+        const fetchProvider = globalThis.fetch;
+        const redirected = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+            const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+            return fetchProvider(url.startsWith("https://api.openai.com/") ? profile.forceReplaceUrl : input, init);
+        });
+        onTestFinished(async () => {
+            redirected.mockRestore();
+            await patchPreset("modelProfiles", profileId, profile);
+        });
+        mode = { chunks: ["Selected sample."], samples: ["Second sample.", "Third sample."], delayMs: 0 };
+        const chaId = await seedCharacter({
+            name: "Samples",
+            messages: [{ role: "user", chatId: "u", data: "Question." }],
+            triggerscript: [
+                {
+                    ...trig("manual", [ef("v2Command", v("/send From command"))]),
+                    comment: "commands",
+                },
+            ],
+        });
+        const sampled = await job("send", chaId);
+        expect(sampled.terminal).toMatchObject({
+            type: "done",
+            epoch,
+            revision: (await readChat(chaId)).revision,
+            messageId: expect.any(String),
+        });
+        expect(sampled.terminal).not.toHaveProperty("alternatives");
+        const reply = (await readChat(chaId)).data.message.at(-1);
+        expect(reply.selected).toBe(0);
+        expect(reply.candidates.map((entry: any) => entry.data)).toEqual([
+            "Selected sample.",
+            "Second sample.",
+            "Third sample.",
+        ]);
+        expect(reply.candidates.slice(1)).toEqual([
+            { id: expect.any(String), data: "Second sample." },
+            { id: expect.any(String), data: "Third sample." },
+        ]);
+        expect(new Set(reply.candidates.map((entry: any) => entry.id)).size).toBe(3);
+        const command = await job("command", chaId, {}, { command: { type: "manual", name: "commands" } });
+        expect(command.terminal).toMatchObject({ type: "done", epoch, revision: (await readChat(chaId)).revision });
+        expect(command.terminal).not.toHaveProperty("alternatives");
+        // The next sampled reply, after the command's own message, takes the candidates and the checkpoint.
+        const next = await job("send", chaId);
+        expect(next.terminal).toMatchObject({
+            type: "done",
+            epoch,
+            revision: (await readChat(chaId)).revision,
+            messageId: expect.any(String),
+        });
+        expect(next.terminal).not.toHaveProperty("alternatives");
+        const afterCommand = await readChat(chaId);
+        expect(afterCommand.data.message.some((entry: any) => entry.data === "From command")).toBe(true);
+        expect(afterCommand.data.message.at(-1).chatId).toBe((next.terminal as { messageId: string }).messageId);
+        expect(afterCommand.data.message.at(-1).chatId).not.toBe(reply.chatId);
+        const older = afterCommand.data.message.find((entry: any) => entry.chatId === reply.chatId);
+        expect(older.scriptstateCheckpoint).toBeUndefined();
+        expect(older.candidates.every((entry: any) => entry.scriptstateAfter === undefined)).toBe(true);
+        expect(afterCommand.data.message.at(-1).candidates.map((entry: any) => entry.data)).toEqual([
+            "Selected sample.",
+            "Second sample.",
+            "Third sample.",
+        ]);
+        redirected.mockRestore();
+        await patchPreset("modelProfiles", profileId, profile);
+        await patchProviders({ genTime: 1 });
+        // Two-byte words, not one unbroken run of a letter: the tokenizer merges a run in quadratic time, and
+        // the byte caps under test count the same either way. Ends in a letter: a reply loses a trailing space.
+        const words = (letter: string, bytes: number) => `${letter} `.repeat(bytes / 2 - 1) + letter.repeat(2);
+        for (const scenario of ["count", "total", "reply", "snapshot"] as const) {
+            const candidates =
+                scenario === "count"
+                    ? Array.from({ length: 16 }, (_, i) => ({ id: String(i), data: `Old ${i}` }))
+                    : scenario === "total"
+                      ? Array.from({ length: 3 }, (_, i) => ({ id: String(i), data: String(i).repeat(50 * 1024) }))
+                      : undefined;
+            const previous =
+                candidates?.at(-1)?.data ?? (scenario === "reply" ? words("X", 193 * 1024) : "Previous reply.");
+            const id = await seed({
+                messages: [
+                    { role: "user", chatId: "u", data: "Question." },
+                    carrier({
+                        data: previous,
+                        ...(candidates ? { candidates, selected: candidates.length - 1 } : {}),
+                        ...(scenario === "snapshot" ? { scriptstateCheckpoint: undefined } : {}),
+                    }),
+                ],
+                ...(scenario === "snapshot" ? { chat: { scriptstate: { $large: words("X", 65 * 1024) } } } : {}),
+            });
+            mode = { chunks: [scenario === "total" ? words("N", 100 * 1024) : "New reply."], delayMs: 0 };
+            const result = await job("reroll", id, { rerollMessageId: "r" });
+            expect(result.terminal, scenario + JSON.stringify(result.terminal)).toMatchObject({
+                type: "done",
+                messageId: "r",
+            });
+            const final = await storedCarrier(id);
+            const code =
+                scenario === "reply"
+                    ? "rerollCandidateTooLarge"
+                    : scenario === "snapshot"
+                      ? "scriptstateCheckpointSkipped"
+                      : "rerollCandidateDropped";
+            expect(notices(result.events, "alertToast").filter((entry) => entry.payload.code === code)).toHaveLength(1);
+            if (scenario === "count") {
+                expect(final.candidates).toHaveLength(16);
+                expect(final.candidates.map((entry: any) => entry.id).slice(0, 15)).toEqual(
+                    Array.from({ length: 15 }, (_, i) => String(i + 1)),
+                );
+            }
+            if (scenario === "total") {
+                expect(final.candidates.map((entry: any) => entry.data)).toEqual([
+                    "2".repeat(50 * 1024),
+                    words("N", 100 * 1024),
+                ]);
+                expect(
+                    Buffer.byteLength(
+                        JSON.stringify({
+                            candidates: final.candidates,
+                            scriptstateCheckpoint: final.scriptstateCheckpoint,
+                        }),
+                    ),
+                ).toBeLessThanOrEqual(192 * 1024);
+            }
+            if (scenario === "reply") expect(final.candidates).toBeUndefined();
+            if (scenario === "snapshot") {
+                expect(final.scriptstateCheckpoint).toBeUndefined();
+                expect(final.candidates.every((entry: any) => entry.scriptstateAfter === undefined)).toBe(true);
+                expect((await readChat(id)).data.scriptstate.$large).toHaveLength(65 * 1024);
+            }
+        }
+    });
+
+    it("validates reroll addressing and rejects a superseded carrier", async () => {
+        const chaId = await seed();
+        for (const kind of ["send", "continue", "preview", "previewPrompt"]) {
+            const result = await job(kind, chaId, { rerollMessageId: "r" });
+            expect(result.status, kind).toBe(400);
+            expect(result.body.error).toContain("rerollMessageId");
+        }
+        await edit(chaId, [
+            {
+                op: "append",
+                anchor: { end: true },
+                messages: [{ role: "user", chatId: "newer", data: "Newer question" }],
+            },
+        ]);
+        const old = await job("reroll", chaId, { rerollMessageId: "r" });
+        expect(old.terminal).toMatchObject({ type: "error", reason: "failed" });
+        expect((await storedCarrier(chaId)).data).toBe("Previous reply.");
+        const legacy = await job("reroll", chaId);
+        expect(legacy.terminal?.type).toBe("done");
+        expect(texts(await readChat(chaId))).toEqual([
+            "user:Question.",
+            "char:Previous reply.",
+            "user:Newer question",
+            "char:New reply.",
+        ]);
+    });
+
+    it("auto-continues the new candidate once and keeps it selected when the later request fails", async () => {
+        const chaId = await seed();
+        await patchProviders({ autoContinueChat: true });
+        let calls = 0;
+        onRequest = async () => {
+            mode =
+                ++calls === 1
+                    ? { chunks: ["Unfinished new reply"], delayMs: 0 }
+                    : { chunks: [], delayMs: 0, status: 400 };
+        };
+        const result = await job("reroll", chaId, { rerollMessageId: "r" });
+        expect(result.terminal).toMatchObject({ type: "error", reason: "failed" });
+        expect(calls).toBe(2);
+        expect(
+            result.events
+                .filter((event) => event.type === "accepted" && event.messageId)
+                .map((event) => [event.messageId, event.text]),
+        ).toEqual([
+            ["r", ""],
+            ["r", "Unfinished new reply"],
+        ]);
+        const reply = await storedCarrier(chaId);
+        expect(reply.data).toBe("Unfinished new reply");
+        expect(reply.candidates.map((entry: any) => entry.data)).toEqual(["Previous reply.", "Unfinished new reply"]);
+        expect(reply.selected).toBe(1);
+        expect(await clientSetText(chaId, "r", "after later failure")).toBe(200);
+    });
+
+    it("omits the carrier from memory summarization as well as the provider prompt", async () => {
+        const memorySettings = (await single("memoryTranslateMedia")).data;
+        const profile = (await single("modelProfiles")).data.find((entry: any) => entry.id === profileId);
+        const summaries: string[] = [];
+        const summarizer = vi.spyOn(transformers, "runSummarizer").mockImplementation(async (input) => {
+            summaries.push(JSON.stringify(input));
+            return "The party explored a forest.";
+        });
+        try {
+            await patchSection("memoryTranslateMedia", {
+                supaModelType: "distilbart",
+                hypaV3: false,
+                hypav2: false,
+                hanuraiEnable: false,
+                hypaMemory: false,
+            });
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            const chaId = await seed({
+                extra: { supaMemory: true },
+                messages: [
+                    ...Array.from({ length: 8 }, (_, i) => ({
+                        role: i % 2 === 0 ? "user" : "char",
+                        chatId: `older-${i}`,
+                        data: `History ${i}: ` + "The party explored the forest and discussed the journey. ".repeat(12),
+                    })),
+                    { role: "user", chatId: "u", data: "Question." },
+                    carrier({ data: "CARRIER_SECRET " + "discarded reply ".repeat(200) }),
+                ],
+            });
+            const beforeRequests = bodies.length;
+            const result = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done", messageId: "r" });
+            expect(summaries.length).toBeGreaterThan(0);
+            expect(summaries.join(" ")).toContain("History 0");
+            expect(summaries.join(" ")).not.toContain("CARRIER_SECRET");
+            expect(JSON.stringify(bodies.slice(beforeRequests))).not.toContain("CARRIER_SECRET");
+            expect((await storedCarrier(chaId)).candidates[0].data).toContain("CARRIER_SECRET");
+        } finally {
+            summarizer.mockRestore();
+            await patchSection("memoryTranslateMedia", memorySettings);
+            await patchPreset("modelProfiles", profileId, profile);
+        }
+    });
+
+    it("writes back a timed-out or maintenance-aborted attempt before releasing the carrier lock", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        server.context.generationJobs.startGc();
+        for (const reason of ["timeout", "maintenance"] as const) {
+            const chaId = await seed({
+                triggerscript: [trig("start", [setVar("x", "2"), setVar("introduced", "attempt")])],
+            });
+            const first = deferred<void>();
+            const release = deferred<void>();
+            const cleanup = cleanupOnce(() => release.resolve());
+            mode = {
+                chunks: ["Partial", " discarded"],
+                delayMs: 0,
+                holdBeforeChunk: { index: 1, until: release.promise },
+            };
+            const apply = runnerStore.applyChanges;
+            let guarded = false;
+            const writes = vi.spyOn(runnerStore, "applyChanges").mockImplementation((changes, options) => {
+                if (options?.rerollAttempt?.action === "rollback") {
+                    guarded = true;
+                    try {
+                        apply({
+                            chats: [
+                                {
+                                    characterId: chaId,
+                                    chatId: "k",
+                                    baseRevision: runnerStore.chatRevision(chaId, "k"),
+                                    ops: [{ op: "setText", id: "r", text: "edit while unwinding" }],
+                                },
+                            ],
+                        });
+                        throw new Error("the carrier was unlocked before write-back");
+                    } catch (error) {
+                        expect(error).toBeInstanceOf(resourceStores.ResourceBatchConflictError);
+                        expect((error as resourceStores.ResourceBatchConflictError).conflicts).toEqual([
+                            expect.objectContaining({ reason: "generating", messageIds: ["r"] }),
+                        ]);
+                    }
+                }
+                return apply(changes, options);
+            });
+            const pending = job("reroll", chaId, { rerollMessageId: "r" }, { onChunk: () => first.resolve() });
+            try {
+                await Promise.race([first.promise, pending]);
+                if (reason === "timeout") {
+                    vi.setSystemTime(Date.now() + 31 * 60_000);
+                    await vi.advanceTimersByTimeAsync(30_000);
+                } else {
+                    await server.context.snapshots.withMaintenance(async () => {});
+                }
+                const result = await pending;
+                expect(result.terminal).toMatchObject({ type: "error", reason });
+                expect(guarded).toBe(true);
+                const reply = await storedCarrier(chaId);
+                expect(reply).toMatchObject({
+                    data: "Previous reply.",
+                    generationInfo: oldInfo,
+                    promptInfo: oldPrompt,
+                    translation: oldTranslation,
+                });
+                expect(reply.candidates).toBeUndefined();
+                expect((await readChat(chaId)).data.scriptstate).toEqual({ $x: "1", $edited: "9" });
+                expect(await clientSetText(chaId, "r", "after write-back")).toBe(200);
+            } finally {
+                writes.mockRestore();
+                cleanup();
+                await pending;
+            }
+        }
+        vi.clearAllTimers();
+    });
+});
+
+describe("OOC previews", () => {
+    const history = { type: "chat", rangeStart: 0, rangeEnd: "end" };
+    const plain = (text: string) => ({ type: "plain", type2: "normal", role: "system", text });
+    const log = (anchorMessageId: string | null = "anchor") => ({
+        earlier: {
+            id: "earlier",
+            segment: "discussion",
+            anchorMessageId,
+            question: "Earlier question",
+            answer: "Earlier answer",
+            time: 1,
+        },
+        target: { id: "target", segment: "discussion", anchorMessageId, question: "Current question", time: 2 },
+    });
+    const messages = [
+        { role: "user", chatId: "anchor", data: "Story at anchor" },
+        { role: "char", chatId: "after", data: "STORY AFTER ANCHOR" },
+    ];
+    const tail = [
+        { role: "user", content: "Earlier question" },
+        { role: "assistant", content: "Earlier answer" },
+        { role: "user", content: "Current question" },
+    ];
+    const previewResult = (result: Awaited<ReturnType<typeof job>>) => {
+        expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done" });
+        if (result.terminal?.type !== "done") throw new Error(JSON.stringify(result.terminal));
+        return result.terminal.result as import("../../../shared/jobs.ts").GenerationPreviewResult;
+    };
+    const contents = (result: import("../../../shared/jobs.ts").GenerationPreviewResult) =>
+        result.messages.map(({ role, content }) => ({ role, content }));
+    let preset: any;
+    let profile: any;
+    let providers: any;
+    let memory: any;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(new Date("2026-11-01T00:00:00Z"));
+        preset = (await single("presets")).data.find((entry: any) => entry.id === presetId);
+        profile = (await single("modelProfiles")).data.find((entry: any) => entry.id === profileId);
+        providers = (await single("providers")).data;
+        memory = (await single("memoryTranslateMedia")).data;
+        await patchProviders({ presetChain: "", useStreaming: false, inlayErrorResponse: false, requestRetrys: 0 });
+        await patchPreset("modelProfiles", profileId, { maxContext: 4000 });
+        await patchPreset("presets", presetId, {
+            regex: [],
+            maxResponse: 100,
+            promptTemplate: [history],
+            oocToggles: { flag: "1", other: "1" },
+            customToggle: "flag=Flag\nother=Other",
+            promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+        });
+        onRequest = null;
+        plainAnswer = null;
+    });
+    afterEach(async () => {
+        onRequest = null;
+        plainAnswer = null;
+        await patchPreset("presets", presetId, preset);
+        await patchPreset("modelProfiles", profileId, profile);
+        await patchProviders(providers);
+        await patchSection("memoryTranslateMedia", memory);
+        vi.useRealTimers();
+    });
+
+    it("keeps ordinary preview messages and result shape when the chat has OOC data", async () => {
+        const seed = (chat: Record<string, unknown>) =>
+            seedCharacter({ name: "Ann", extra: { firstMessage: "" }, messages, chat });
+        const baseline = previewResult(await job("preview", await seed({})));
+        const withOoc = previewResult(await job("preview", await seed({ oocLog: log(), oocToggles: { flag: "1" } })));
+        expect(withOoc.messages).toEqual(baseline.messages);
+        expect(contents(withOoc)).toEqual(
+            messages.map(({ role, data }) => ({ role: role === "char" ? "assistant" : role, content: data })),
+        );
+        expect(withOoc).not.toHaveProperty("ooc");
+    });
+
+    it.each([
+        { label: "preset toggles", anchor: "anchor", chatToggles: undefined, expected: "ON/1/1" },
+        {
+            label: "chat toggles replacing the preset",
+            anchor: "anchor",
+            chatToggles: { flag: "0" },
+            expected: "OFF/0/0",
+        },
+        { label: "a null anchor", anchor: null, chatToggles: undefined, expected: "ON/1/1" },
+    ])("uses the anchored history and OOC tail with $label", async ({ anchor, chatToggles, expected }) => {
+        await patchPreset("presets", presetId, {
+            promptTemplate: [
+                plain(
+                    "{{#when::toggle::flag}}ON{{:else}}OFF{{/when}}/{{getglobalvar::toggle_flag}}/{{getglobalvar::toggle_other}}",
+                ),
+                history,
+            ],
+        });
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "" },
+            messages,
+            chat: {
+                oocLog: log(anchor),
+                GLGlobalVariables: { toggle_flag: "0", toggle_other: "0" },
+                ...(chatToggles ? { oocToggles: chatToggles } : {}),
+            },
+        });
+        const before = JSON.stringify(await readChat(chaId));
+        const result = previewResult(await job("preview", chaId, { oocExchangeId: "target" }));
+        expect(result.ooc).toBe(true);
+        expect(contents(result)).toEqual([
+            { role: "system", content: expected },
+            ...(anchor === null ? [] : [{ role: "user", content: "Story at anchor" }]),
+            ...tail,
+        ]);
+        const tailIds = result.messages.slice(-tail.length).map((row) => row.memo);
+        expect(
+            tailIds.every((id) => typeof id === "string" && id.length > 0 && !messages.some((m) => m.chatId === id)),
+        ).toBe(true);
+        expect(new Set(tailIds).size).toBe(tail.length);
+        expect(JSON.stringify(await readChat(chaId))).toBe(before);
+    });
+
+    it.each([false, true])(
+        "keeps CBS, regex, variables and trimming on the copy when assembly fails: %s",
+        async (fail) => {
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            await patchPreset("presets", presetId, { promptTemplate: [plain("Variable={{getvar::local}}"), history] });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                extra: { firstMessage: "" },
+                chat: { oocLog: log(), GLGlobalVariables: { toggle_flag: "0" }, scriptstate: { $local: "stored" } },
+                messages: [
+                    { role: "user", chatId: "old", data: "TRIM THIS HISTORY ".repeat(400) },
+                    {
+                        role: "char",
+                        chatId: "cbs",
+                        data: "{{setvar::local::copy}}{{#when::toggle::flag}}Forced history{{:else}}Stored history{{/when}}",
+                    },
+                    { role: "user", chatId: "anchor", data: "raw INJECT" },
+                    messages[1],
+                ],
+                customscript: [
+                    { comment: "rewrite", in: "raw", out: "rewritten", type: "editprocess", flag: "g", ableFlag: true },
+                    {
+                        comment: "save processed text",
+                        in: "INJECT",
+                        out: "@@inject",
+                        type: "editprocess",
+                        flag: "g",
+                        ableFlag: true,
+                    },
+                ],
+                triggerscript: [
+                    trig("start", [ef("v2Impersonate", { role: "user", ...v("START MUST NOT RUN") })]),
+                    ...(fail
+                        ? [
+                              trig("manual", [
+                                  {
+                                      type: "triggerlua",
+                                      code: `listenEdit("editRequest", function(id, data) return {{role="system", content=string.rep("Overfull request ", 1000)}} end)`,
+                                  },
+                              ]),
+                          ]
+                        : []),
+                ],
+            });
+            const before = JSON.stringify(await readChat(chaId));
+            const result = await job("preview", chaId, { oocExchangeId: "target" });
+            expect(JSON.stringify(await readChat(chaId))).toBe(before);
+            if (fail) {
+                expect(result.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("At token rechecking"),
+                });
+            } else {
+                expect(contents(previewResult(result))).toEqual([
+                    { role: "system", content: "Variable=copy" },
+                    { role: "assistant", content: "Forced history" },
+                    { role: "user", content: "rewritten" },
+                    ...tail,
+                ]);
             }
         },
-        SLOW,
     );
+
+    it("keeps an interleaved writer's stored edit and lets editRequest read and edit only the preview copy", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "", desc: "Stored description" },
+            messages,
+            chat: { oocLog: log() },
+            triggerscript: [
+                trig("manual", [
+                    {
+                        type: "triggerlua",
+                        code: `listenEdit("editRequest", function(id, data)
+                local prior = getChatData(id, 0)
+                setChat(id, 0, prior .. " edited locally")
+                setDescription(id, "PREVIEW DESCRIPTION")
+                data[1].content = getChatData(id, 0) .. " / " .. getDescription(id)
+                return data
+            end)`,
+                    },
+                ]),
+            ],
+        });
+        const before = await readChat(chaId);
+        const characterBefore = JSON.stringify((await api(`/api/resources/characters/${chaId}`)).body);
+        let wrote = false;
+        const result = previewResult(
+            await job(
+                "preview",
+                chaId,
+                { oocExchangeId: "target" },
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editprocess"] },
+                    answerCallback: (event) => {
+                        if (!wrote) {
+                            wrote = true;
+                            runnerStore.applyChanges({
+                                chats: [
+                                    {
+                                        characterId: chaId,
+                                        chatId: "k",
+                                        baseRevision: before.revision,
+                                        ops: [{ op: "setText", id: "anchor", text: "Other writer" }],
+                                    },
+                                ],
+                            });
+                        }
+                        return { outcome: "answered", value: event.payload.text };
+                    },
+                },
+            ),
+        );
+        expect(wrote).toBe(true);
+        expect(contents(result)).toEqual([
+            { role: "user", content: "Story at anchor edited locally / Stored description" },
+            ...tail,
+        ]);
+        const expected = structuredClone(before.data);
+        expected.message[0].data = "Other writer";
+        expect(JSON.stringify((await readChat(chaId)).data)).toBe(JSON.stringify(expected));
+        expect(JSON.stringify((await api(`/api/resources/characters/${chaId}`)).body)).toBe(characterBefore);
+    });
+
+    it.each([false, true])(
+        "keeps SupaMemory writes on the copy and its requests tool-free when assembly fails: %s",
+        async (fail) => {
+            await patchSection("memoryTranslateMedia", {
+                supaModelType: "subModel",
+                hypaV3: false,
+                hypav2: false,
+                hanuraiEnable: false,
+                hypaMemory: false,
+            });
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            const modules = await single("modules");
+            const moduleData = modules.data ?? [];
+            expect(
+                (
+                    await batch({
+                        ops: [
+                            {
+                                kind: "modules",
+                                id: "main",
+                                baseRevision: modules.revision ?? null,
+                                data: [...moduleData, { id: "ooc-dice", name: "Dice", mcp: { url: "internal:dice" } }],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            try {
+                const chaId = await seedCharacter({
+                    name: "Ann",
+                    extra: { firstMessage: "", supaMemory: true },
+                    messages: [
+                        ...Array.from({ length: 8 }, (_, i) => ({
+                            role: i % 2 ? "char" : "user",
+                            chatId: `old-${i}`,
+                            data:
+                                `History ${i}: ` +
+                                "The party explored the forest and discussed the journey. ".repeat(12),
+                        })),
+                        ...messages,
+                    ],
+                    chat: { oocLog: log(), modules: ["ooc-dice"] },
+                    triggerscript: fail
+                        ? [
+                              trig("manual", [
+                                  {
+                                      type: "triggerlua",
+                                      code: `listenEdit("editRequest", function(id, data) return {{role="system", content=string.rep("Overfull request ", 1000)}} end)`,
+                                  },
+                              ]),
+                          ]
+                        : [],
+                });
+                const before = JSON.stringify(await readChat(chaId));
+                const requestsBefore = bodies.length;
+                plainAnswer = () => "The party explored a forest.";
+                const result = await job("preview", chaId, { oocExchangeId: "target" });
+                expect(JSON.stringify(await readChat(chaId))).toBe(before);
+                const requests = bodies.slice(requestsBefore);
+                expect(requests.length).toBeGreaterThan(0);
+                expect(JSON.stringify(requests)).toContain("History 0");
+                expect(JSON.stringify(requests)).not.toContain("STORY AFTER ANCHOR");
+                for (const request of requests) expect(request.tools ?? []).toEqual([]);
+                if (fail) {
+                    expect(result.terminal).toMatchObject({
+                        type: "error",
+                        message: expect.stringContaining("At token rechecking"),
+                    });
+                } else {
+                    expect(JSON.stringify(contents(previewResult(result)))).toContain("The party explored a forest.");
+                }
+            } finally {
+                const current = await single("modules");
+                expect(
+                    (
+                        await batch({
+                            ops: [{ kind: "modules", id: "main", baseRevision: current.revision, data: moduleData }],
+                        })
+                    ).status,
+                ).toBe(200);
+            }
+        },
+    );
+
+    it.each([
+        {
+            label: "a missing exchange",
+            code: "oocExchangeGone",
+            chat: { oocLog: {} },
+            memoryAhead: false,
+        },
+        {
+            label: "a missing anchor",
+            code: "oocAnchorGone",
+            chat: { oocLog: log("gone") },
+            memoryAhead: false,
+        },
+        {
+            label: "memory beyond the anchor",
+            code: "oocMemoryAhead",
+            chat: { oocLog: log(), supaMemoryData: "after\nSummary beyond the anchor" },
+            memoryAhead: true,
+        },
+    ])("refuses an OOC preview with $label without changing the chat", async ({ code, chat, memoryAhead }) => {
+        if (memoryAhead) {
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            await patchSection("memoryTranslateMedia", {
+                supaModelType: "subModel",
+                hypaV3: false,
+                hypav2: false,
+                hanuraiEnable: false,
+                hypaMemory: false,
+            });
+        }
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "", supaMemory: memoryAhead },
+            chat,
+            messages: [
+                { ...messages[0], data: memoryAhead ? "Old history ".repeat(800) : messages[0].data },
+                messages[1],
+            ],
+        });
+        const before = JSON.stringify(await readChat(chaId));
+        const result = await job("preview", chaId, { oocExchangeId: "target" });
+        expect(result.terminal).toMatchObject({ type: "error", code });
+        expect(JSON.stringify(await readChat(chaId))).toBe(before);
+    });
+
+    it("refuses an OOC preview on a group chat at admission with groupArchived without changing the chat", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            type: "group",
+            members: [],
+            extra: { firstMessage: "" },
+            chat: { oocLog: log() },
+            messages,
+        });
+        const before = JSON.stringify(await readChat(chaId));
+        const result = await job("preview", chaId, { oocExchangeId: "target" });
+        expect(result.status).toBe(409);
+        expect(result.body).toEqual({ error: "groupArchived" });
+        expect(result.terminal).toBeUndefined();
+        expect(JSON.stringify(await readChat(chaId))).toBe(before);
+    });
 });

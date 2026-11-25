@@ -21,20 +21,23 @@ import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
 // pinned by `src/ts/plugins/apiV3/mcpContext.test.ts`.
 
 vi.mock(import("src/ts/storage/database.svelte"), () => ({ appVer: "1234.5.67" }) as never);
-vi.mock("src/ts/globalApi.svelte", () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: vi.fn(() => Promise.resolve("")),
-    globalFetch: vi.fn(async (url: string, arg: { body: { input: string | string[] } }) => {
-        if (url !== "http://embed.test/v1/embeddings") {
-            throw new Error(`unexpected globalFetch(${url})`);
-        }
-        const inputs = Array.isArray(arg.body.input) ? arg.body.input : [arg.body.input];
-        return {
-            ok: true,
-            data: { data: inputs.map((text) => ({ embedding: [text.length, (text.match(/e/g) ?? []).length, 1] })) },
-        };
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        getFileSrc: vi.fn(() => Promise.resolve("")),
+        globalFetch: vi.fn(async (url: string, arg: { body: { input: string | string[] } }) => {
+            if (url !== "http://embed.test/v1/embeddings") {
+                throw new Error(`unexpected globalFetch(${url})`);
+            }
+            const inputs = Array.isArray(arg.body.input) ? arg.body.input : [arg.body.input];
+            return {
+                ok: true,
+                data: {
+                    data: inputs.map((text) => ({ embedding: [text.length, (text.match(/e/g) ?? []).length, 1] })),
+                },
+            };
+        }),
     }),
-}));
+);
 vi.mock("src/ts/network/auxFetch", () => ({
     auxFetchJson: vi.fn(async () => {
         throw new Error("no aux fetch here");

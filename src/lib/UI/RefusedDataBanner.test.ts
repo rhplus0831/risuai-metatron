@@ -31,7 +31,7 @@ vi.mock("src/ts/globalApi.svelte", async (importOriginal) => ({
     downloadFile: mocks.downloadFile,
 }));
 
-import { applyRaw, characterData } from "src/ts/storage/records.svelte";
+import { applyRaw, characterData, patchRawCharacter } from "src/ts/storage/records.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import RefusedDataBanner from "./RefusedDataBanner.svelte";
 
@@ -114,13 +114,13 @@ afterEach(async () => {
 });
 
 describe("RefusedDataBanner", () => {
-    it("shows the open chat's reason, exports by chat id, retries by refusal key and discards only after confirmation", async () => {
+    it("shows the open chat's reason, exports by chat ref, retries by refusal key and discards only after confirmation", async () => {
         inventory.set([openChat]);
         const { target } = render({ form: "chat", chaId: "c", chatId: "open" });
         expect(target.querySelector('[data-risu-refused-banner="chat"]')).not.toBeNull();
         expect(target.querySelector("[data-risu-refused-reason]")?.textContent).toBe(openChat.reason);
         action(target, "export").click();
-        expect(mocks.exportChat).toHaveBeenCalledExactlyOnceWith("open");
+        expect(mocks.exportChat).toHaveBeenCalledExactlyOnceWith({ chaId: "c", chatId: "open" });
         action(target, "retry").click();
         expect(mocks.retryRefused).toHaveBeenCalledExactlyOnceWith(openChat.key);
 
@@ -140,6 +140,18 @@ describe("RefusedDataBanner", () => {
             if (confirmed) expect(mocks.discardRefused).toHaveBeenCalledExactlyOnceWith(openChat.key);
             else expect(mocks.discardRefused).not.toHaveBeenCalled();
         }
+    });
+
+    it("offers export by owner and chat id instead of opening a held group chat", () => {
+        patchRawCharacter("c", [["type", "group"]]);
+        inventory.set([otherChat]);
+        const { target } = render({ form: "app" });
+        target.querySelector<HTMLButtonElement>("[data-risu-refused-toggle]")!.click();
+        flushSync();
+        const row = target.querySelector(`[data-risu-refused-key="${otherChat.key}"]`)!;
+        expect(row.querySelector('[data-risu-refused-action="open"]')).toBeNull();
+        action(row, "export").click();
+        expect(mocks.exportChat).toHaveBeenCalledExactlyOnceWith({ chaId: "c", chatId: "other" });
     });
 
     it("keeps a compact app banner for every refusal outside the displayed chat and offers no export for orders or absent chats", async () => {

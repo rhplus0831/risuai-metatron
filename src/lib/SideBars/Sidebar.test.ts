@@ -13,11 +13,11 @@ vi.mock("src/ts/characters", () => ({
     createBlankChar: vi.fn(),
     getCharImage: vi.fn(async () => ""),
 }));
-vi.mock("src/ts/globalApi.svelte", async () => ({
-    checkCharOrder: (await import("src/ts/storage/characterOrder")).checkCharOrder,
-    openPinnedChat: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        checkCharOrder: (await import("src/ts/storage/characterOrder")).checkCharOrder,
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn() }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
@@ -25,8 +25,9 @@ vi.mock("src/ts/process/chatStatus.svelte", async () => {
     const { writable } = await import("svelte/store");
     return {
         chatStatusKey: vi.fn(),
-        generatingChatKeys: () => new Set<string>(),
+        generatingBadgeKeys: () => new Set<string>(),
         isChatBusy: () => false,
+        memoryHealthStates: () => new Map<string, string>(),
         recoveryChatKeys: writable(new Set<string>()),
         unseenChatKeys: writable(new Set<string>()),
     };
@@ -53,6 +54,8 @@ function renderRail(order: Database["characterOrder"]) {
         characters: [
             { chaId: "root", name: "Root", type: "character", chats: [] },
             { chaId: "member", name: "Member", type: "character", chats: [] },
+            { chaId: "group-root", name: "Group at root", type: "group", chats: [] },
+            { chaId: "group-member", name: "Group in folder", type: "group", chats: [] },
             { chaId: "trash-root", name: "Trashed root", type: "character", trashTime: 1, chats: [] },
             { chaId: "trash-member", name: "Trashed member", type: "character", trashTime: 1, chats: [] },
         ],
@@ -98,8 +101,13 @@ function drag(source: HTMLElement, destination: HTMLElement) {
 }
 
 describe("Sidebar character rail", () => {
-    it("hides trashed characters at the root and inside an open folder", () => {
-        const target = renderRail(["trash-root", "root", folder(["trash-member", "member"])]);
+    it("hides groups and trashed characters at the root and inside an open folder", () => {
+        const target = renderRail([
+            "trash-root",
+            "group-root",
+            "root",
+            folder(["trash-member", "group-member", "member"]),
+        ]);
         expect(avatars(target)).toEqual(["root"]);
         openFolder(target);
         expect(avatars(target)).toEqual(["root", "member"]);

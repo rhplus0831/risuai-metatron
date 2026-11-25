@@ -1,5 +1,8 @@
-// The named `SettingsMenuIndex` values, apart from `stores.svelte.ts` so the route table
-// (`router/routes.ts`) can read them without the store graph. `stores.svelte.ts` re-exports them.
+/**
+ * Named `SettingsMenuIndex` values, re-exported by `src/ts/stores.svelte.ts`. Kept outside the store
+ * graph for `src/ts/router/routes.ts`, which owns URL slugs. `src/lib/Setting/Settings.svelte` also
+ * selects pages by numeric indexes, including 13 for the prompt template editor.
+ */
 
 /** The Model menu's Preset tab: the model preset (`ModelSettings.svelte`). */
 export const MODEL_SETTINGS_MENU = 1;
@@ -17,5 +20,18 @@ export const IMAGE_GENERATION_SETTINGS_MENU = 19;
 export const VOICE_SETTINGS_MENU = 20;
 /** The translator and its options (`TranslationSettings.svelte`); the UI language stays on menu 10. */
 export const TRANSLATION_SETTINGS_MENU = 21;
+/** The input hook list and its prompts and model choices (`InputHookSettings.svelte`). */
+export const INPUT_HOOKS_SETTINGS_MENU = 24;
+/**
+ * The Request Rules page (`RequestInterceptionSettings.svelte`): the request interception rule list (prompts inserted
+ * into requests by mode) and the response checks (each request kind's minimum answer length).
+ */
+export const REQUEST_INTERCEPTION_SETTINGS_MENU = 26;
+/** This browser's remote host, remote sending and job handoff controls (`DeviceLinkSettings.svelte`). */
+export const DEVICE_LINK_SETTINGS_MENU = 25;
 /** Chat input, message editing, and the menus and chat list (`InteractionSettings.svelte`). */
 export const INTERACTION_SETTINGS_MENU = 22;
+/** Disk usage, asset cleanup, and resource snapshots (`StorageSettings.svelte`). */
+export const STORAGE_SETTINGS_MENU = 23;
+/** The source repositories and the projects this fork learned from (`CreditsPage.svelte`). */
+export const CREDITS_SETTINGS_MENU = 27;

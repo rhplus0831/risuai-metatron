@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 
-vi.mock("./globalApi.svelte", () => ({ globalFetch: vi.fn() }));
+vi.mock("./globalApi.svelte", async () => (await import("./tests/globalApiMock")).createGlobalApiMock());
 
 // Fake HTMLAudioElement. The observer only uses the constructor, volume, play(), pause(),
 // error, and the "ended"/"error" events.

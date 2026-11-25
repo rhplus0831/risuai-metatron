@@ -5,8 +5,8 @@ import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // The save loop's module field-text cache (`moduleProjection` and `moduleTexts` in
-// `resourceSync.svelte.ts`, `moduleItemFieldStamp` in `records.svelte.ts`; `docs/structure/persistence.md`
-// save step 2) under the real boot, the real save loop, the real mutation module, and the real server
+// `resourceSync.svelte.ts`, `moduleItemFieldStamp` in `records.svelte.ts`; `docs/structure/resource-sync.md`
+// "Serialization") under the real boot, the real save loop, the real mutation module, and the real server
 // store with its change feed (`storeBackedServer.ts`). The oracle is twofold: the server's record must
 // equal the mirror's after every save, and the development comparison of the cached text with a whole
 // serialization (`console.error`, reported, never repaired) must not fire once, so `console.error` is
@@ -51,7 +51,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 const KINDS = Object.values(RESOURCE_KIND);
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
@@ -140,7 +140,7 @@ async function boot() {
         const before = { batches: fake.batchCount(), all: fake.requests.length };
         await vi.advanceTimersByTimeAsync(5000);
         expect({ batches: fake.batchCount(), all: fake.requests.length }, "nothing follows").toEqual(before);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount(), "a flush sends nothing more").toBe(before.batches);
     };
     /** Another tab's modules write: an item patch at the current revision, through the real store. */

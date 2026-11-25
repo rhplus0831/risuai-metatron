@@ -8,6 +8,7 @@ import {
     settings,
     writePresetField,
     writeSettingsRoot,
+    type PresetScope,
 } from "./settingsViews.svelte";
 import { untrack } from "svelte";
 import isEqual from "lodash/isEqual";
@@ -24,6 +25,13 @@ import {
     type RisuPersona,
 } from "../../../shared/database.ts";
 import { isRecordId } from "../../../shared/ids.ts";
+import {
+    createItemFolder,
+    itemFoldersChanged,
+    withItemInFolder,
+    withoutItem,
+    type ItemFolder,
+} from "../../../shared/itemFolders.ts";
 import { ModuleShapeError, normalizeModule, type RisuModule } from "../../../shared/modules.ts";
 import type { RisuPlugin } from "../../../shared/plugins.ts";
 import { normalizePersonaModules, normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts";
@@ -54,8 +62,8 @@ import {
     requireObject,
     writeEntries,
 } from "./mutationValidation";
-import { batchRecordWrites } from "./records.svelte";
-import { selection } from "./selection.svelte";
+import { batchRecordWrites, recordValueIdentity } from "./records.svelte";
+import { selectPersona, selection } from "./selection.svelte";
 import { deleteEntrySecret } from "./llmSecrets.svelte";
 
 /**
@@ -137,12 +145,25 @@ function checkSettingKey(key: string, value: unknown): "preset" | "section" {
 }
 
 /**
+ * Resolves settings write targets: supplied ids, otherwise the selected chat's bound presets where
+ * they exist, else the tab's selection. Capture this scope before awaiting to keep those targets.
+ */
+export function settingsWriteScope(options: Partial<PresetScope> = {}): PresetScope {
+    return {
+        presetId: options.presetId ?? presetRecordForWrite()?.id ?? untrack(() => selection.presetId),
+        modelPresetId:
+            options.modelPresetId ?? modelPresetRecordForWrite()?.id ?? untrack(() => selection.modelPresetId),
+    };
+}
+
+/**
  * Sets settings fields. A key is a field of the `providers`, `ui`, `memoryTranslateMedia`, or
  * `secrets` section (written there), or a forwarded preset field (`FORWARDED_PRESET_KEYS` or
  * `FORWARDED_MODEL_PRESET_KEYS`, by its root name). Prompt fields write their preset; model roots
  * use the slot/profile rules in `writeModelRoot`. The ids in `options` name the captured pair,
  * otherwise the pair a settings view reads now (the selected chat's bound presets where they exist,
- * else the tab's selection: `presetRecordForWrite`). A caller that captured its presets before an await passes them. Every key is checked
+ * else the tab's selection: `settingsWriteScope`). A caller that captured its presets before an await
+ * passes them. Every key is checked
  * first, and the owning preset must exist when a preset field is set (`MutationTargetGoneError`
  * otherwise); nothing is written unless everything passes. `llmSecrets` fields, `proxyKey`, the
  * persona fields, and the selection indexes are refused.
@@ -154,11 +175,7 @@ export function updateSettings(
     requireObject("patch", patch);
     const entries = Object.entries(patch).map(([key, value]) => ({ key, value, target: checkSettingKey(key, value) }));
     const prepared = entries.map((entry) => ({ ...entry, value: detach(entry.value) }));
-    const scope = {
-        presetId: options.presetId ?? presetRecordForWrite()?.id ?? untrack(() => selection.presetId),
-        modelPresetId:
-            options.modelPresetId ?? modelPresetRecordForWrite()?.id ?? untrack(() => selection.modelPresetId),
-    };
+    const scope = settingsWriteScope(options);
     const missing = missingPresetTarget(
         scope,
         entries.filter((entry) => entry.target === "preset").map((entry) => entry.key),
@@ -209,6 +226,28 @@ export function addPersona(persona: unknown): string {
     }
     settings.personas.push(entry);
     return entry.id;
+}
+
+/**
+ * Deletes the persona with `id` and its membership of every persona folder, as one batch. Returns `false`, changing
+ * nothing, when no persona has that id or it is the last one (the list is never empty). When the tab's selection names
+ * it, the selection first moves to the first other persona; chats bound to it keep the id and show it as deleted.
+ */
+export function removePersona(id: string): boolean {
+    const personas = settings.personas ?? [];
+    const index = personas.findIndex((persona) => persona?.id === id);
+    if (index === -1 || personas.length <= 1) {
+        return false;
+    }
+    batchRecordWrites(() => {
+        const other = personas.find((persona) => persona?.id !== id);
+        if (other && untrack(() => selection.personaId) === id) {
+            selectPersona(other.id);
+        }
+        personas.splice(index, 1);
+        dropItemFromFolders("personaFolders", id);
+    });
+    return true;
 }
 
 /**
@@ -276,9 +315,12 @@ export function setModules(list: unknown) {
     settings.modules = Array.from(list, (module, index) => checkedModule(`modules[${index}]`, module));
 }
 
-/** Adds a module (a missing id is assigned). Returns the id. */
+/** Adds a module (a missing id is assigned), refusing a duplicate id without a write. Returns the id. */
 export function addModule(module: unknown): string {
     const entry = checkedModule("module", module);
+    if (findModule(entry.id)) {
+        throw new MutationValidationError("module", `a module with id ${entry.id} already exists`);
+    }
     settings.modules ??= [];
     settings.modules.push(entry);
     return entry.id;
@@ -311,13 +353,114 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
     return true;
 }
 
-/** Deletes the module with `id`. Returns `false` when there is none. */
-export function removeModule(id: string): boolean {
-    const index = (settings.modules ?? []).findIndex((module) => module?.id === id);
+/**
+ * Deletes the first module with `id`, or the exact record when a row identity is supplied. A wrapper
+ * can follow a replacement during confirmation, so use the identity captured when the dialog opened.
+ * Returns `false` if the target is gone. Clears enablement and folder membership when the last match is deleted.
+ */
+export function removeModule(id: string, identity?: symbol): boolean {
+    const index = (settings.modules ?? []).findIndex(
+        (module) => module?.id === id && (identity === undefined || recordValueIdentity(module) === identity),
+    );
     if (index === -1) {
         return false;
     }
-    settings.modules.splice(index, 1);
+    batchRecordWrites(() => {
+        settings.modules.splice(index, 1);
+        if (settings.modules.some((module) => module?.id === id)) {
+            return;
+        }
+        if (settings.enabledModules?.includes(id)) {
+            settings.enabledModules = settings.enabledModules.filter((enabled) => enabled !== id);
+        }
+        dropItemFromFolders("moduleFolders", id);
+    });
+    return true;
+}
+
+/** The two folder collections (`shared/itemFolders.ts`): folders of module ids and folders of persona ids. */
+export type ItemFolderKind = "moduleFolders" | "personaFolders";
+
+/** A detached copy of a folder list: the pure helpers compare its folders by identity, and the result is installed whole. */
+function itemFolders(kind: ItemFolderKind): ItemFolder[] {
+    return detach(settings[kind] ?? []) as ItemFolder[];
+}
+
+function requireFolderName(name: unknown): asserts name is string {
+    if (typeof name !== "string" || name.trim() === "") {
+        throw new MutationValidationError("name", "a folder needs a name");
+    }
+}
+
+/** Removes a deleted item's id from the folders of `kind`; the list is written only when a folder listed it. */
+function dropItemFromFolders(kind: ItemFolderKind, itemId: string) {
+    const folders = itemFolders(kind);
+    const next = withoutItem(folders, itemId);
+    if (itemFoldersChanged(folders, next)) {
+        settings[kind] = next;
+    }
+}
+
+/**
+ * Adds an empty folder named `name` (stored as given) to the end of the list, under a fresh id. A name that is not a
+ * string or is blank is refused (`MutationValidationError`). Returns the id.
+ */
+export function addItemFolder(kind: ItemFolderKind, name: string): string {
+    requireFolderName(name);
+    const folder = createItemFolder(name);
+    settings[kind] = [...itemFolders(kind), folder];
+    return folder.id;
+}
+
+/**
+ * Renames the folder with `id`; a blank name is refused as `addItemFolder` refuses it. Returns `false`, changing
+ * nothing, when the folder is gone.
+ */
+export function renameItemFolder(kind: ItemFolderKind, id: string, name: string): boolean {
+    requireFolderName(name);
+    const folders = itemFolders(kind);
+    const index = folders.findIndex((folder) => folder.id === id);
+    if (index === -1) {
+        return false;
+    }
+    if (folders[index].name !== name) {
+        folders[index] = { id, name, data: folders[index].data };
+        settings[kind] = folders;
+    }
+    return true;
+}
+
+/**
+ * Deletes the folder with `id`, and only the folder: its items stay in their list and are at the root from then on
+ * (or in the next folder that lists them). Returns `false` when the folder is gone.
+ */
+export function removeItemFolder(kind: ItemFolderKind, id: string): boolean {
+    const folders = itemFolders(kind);
+    if (!folders.some((folder) => folder.id === id)) {
+        return false;
+    }
+    settings[kind] = folders.filter((folder) => folder.id !== id);
+    return true;
+}
+
+/**
+ * Files the item with `itemId` into the folder with `folderId`, or at the root for `null`, taking it out of every
+ * other folder (`withItemInFolder`). Only the folder list changes, never the item, and `itemId` is not checked
+ * against the item list (an id that names no item is ignored on read). Returns `false`, changing nothing, when
+ * `folderId` names a folder that is gone; a move that changes nothing writes nothing.
+ */
+export function moveItemToFolder(kind: ItemFolderKind, itemId: string, folderId: string | null): boolean {
+    if (typeof itemId !== "string" || itemId.trim() === "") {
+        throw new MutationValidationError("itemId", "expected a non-blank id");
+    }
+    const folders = itemFolders(kind);
+    if (folderId !== null && !folders.some((folder) => folder.id === folderId)) {
+        return false;
+    }
+    const next = withItemInFolder(folders, itemId, folderId);
+    if (itemFoldersChanged(folders, next)) {
+        settings[kind] = next;
+    }
     return true;
 }
 
@@ -382,14 +525,26 @@ export function setPlugins(list: unknown) {
     settings.plugins = Array.from(list, (plugin, index) => checkedPlugin(`plugins[${index}]`, plugin));
 }
 
-/** Installs a plugin, replacing the installed one with the same name. */
+/**
+ * Installs a plugin, replacing the installed one with the same name. Only the predecessor's
+ * completion-wait settings carry over; an import or plugin API replacement cannot set them.
+ */
 export function upsertPlugin(plugin: unknown) {
     const entry = checkedPlugin("plugin", plugin);
+    delete entry.completionWait;
+    delete entry.completionQuietSeconds;
     settings.plugins ??= [];
     const index = settings.plugins.findIndex((other) => other?.name === entry.name);
     if (index === -1) {
         settings.plugins.push(entry);
     } else {
+        const previous = settings.plugins[index];
+        if (previous.completionWait !== undefined) {
+            entry.completionWait = previous.completionWait;
+        }
+        if (previous.completionQuietSeconds !== undefined) {
+            entry.completionQuietSeconds = previous.completionQuietSeconds;
+        }
         settings.plugins[index] = entry;
     }
 }
@@ -540,10 +695,18 @@ function setRequiredModelSlot(presetId: string, field: "mainSlot" | "subSlot", p
     return true;
 }
 
+/**
+ * Sets a preset's main slot to a non-empty profile id without checking that the profile exists.
+ * Invalid ids throw `MutationValidationError`; a missing preset returns false.
+ */
 export function setMainModelSlot(presetId: string, profileId: string): boolean {
     return setRequiredModelSlot(presetId, "mainSlot", profileId);
 }
 
+/**
+ * Sets a preset's sub slot to a non-empty profile id without checking that the profile exists.
+ * Invalid ids throw `MutationValidationError`; a missing preset returns false.
+ */
 export function setSubModelSlot(presetId: string, profileId: string): boolean {
     return setRequiredModelSlot(presetId, "subSlot", profileId);
 }
@@ -585,7 +748,11 @@ export function setAuxModelSlot(
     return true;
 }
 
-/** Adds named credential metadata under a fresh record id. Set its key separately through `setSecret`. */
+/**
+ * Adds named credential metadata under a fresh record id: `name`, `type`, and, on a `vertex`
+ * credential only, `clientEmail` and `projectId` (dropped on any other type; any other field is
+ * refused). Set its key separately through `setSecret` on `{ kind: "entry", field: "credentials", id }`.
+ */
 export function addCredential(input: unknown): string {
     requireObject("credential", input);
     requireJsonData("credential", input);

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { openApp } from "../util/playwright/stack.mjs";
 
 // Refused local edits remain visible in DefaultChatScreen, Sidebar and MainMenu and can be
@@ -29,7 +29,7 @@ test("a refused chat stays badged and its banner exports the locally edited mess
         const folderId = crypto.randomUUID();
         settings.characterOrder = [
             ...settings.characterOrder.filter((entry) => entry !== chaId),
-            { type: "folder", id: folderId, name: "Refused export folder", color: "blue", data: [chaId] },
+            { id: folderId, name: "Refused export folder", color: "blue", data: [chaId] },
         ];
         await flushResources();
         await changeChar(chaId);

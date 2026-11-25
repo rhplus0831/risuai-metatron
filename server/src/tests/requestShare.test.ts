@@ -13,22 +13,28 @@ import {
     writeFileSync,
 } from "node:fs";
 import os from "node:os";
+import promises from "node:fs/promises";
+import { Hono } from "hono";
+import { createAuthStore } from "../routes/auth.ts";
+import type { AppEnv } from "../types.ts";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { encodeSecretPath } from "../../../shared/llmSecrets.ts";
 import {
     REQUEST_HISTORY_PATH,
+    REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
     REQUEST_HISTORY_SHARE_PATH,
     REQUEST_HISTORY_SHARES_PATH,
     type RequestHistoryShareResult,
 } from "../../../shared/requestHistory.ts";
+import { createOrderedWriter } from "../data/orderedWriter.ts";
 import { createRequestHistory, type RequestHistory, type RequestHistoryBegin } from "../data/requestHistory.ts";
 import type { DiagnosticEvent } from "../../../shared/diagnostics.ts";
-import { createDiagnosticsJournal, type SaveReportResult } from "../diagnostics/journal.ts";
+import { createDiagnosticsJournal, type SaveReportResult, type JournalFs } from "../diagnostics/journal.ts";
 import { createRequestShares, SHARE_FORMAT } from "../diagnostics/share.ts";
 import { REDACTED } from "../llm/redact.ts";
 import { loadStoredSecrets } from "../llm/settings.ts";
-import { SHARE_BODY_BYTES } from "../routes/requestHistory.ts";
+import { registerRequestHistoryRoutes, SHARE_BODY_BYTES } from "../routes/requestHistory.ts";
 import { createResourceTestClient, waitFor } from "./testSupport.ts";
 
 // A job's requests shared to the diagnostics folder's `shared/`
@@ -89,7 +95,15 @@ function tempDir(): string {
 }
 
 /** A store, a journal in `<temp>/diag`, and the share module over them (the test clock, the given secrets). */
-function open(options: { secrets?: () => string[]; now?: () => number; limit?: () => number } = {}) {
+function open(
+    options: {
+        secrets?: () => string[];
+        now?: () => number;
+        limit?: () => number;
+        fs?: JournalFs;
+        maxQueuedBytes?: number;
+    } = {},
+) {
     const root = tempDir();
     const history = createRequestHistory({
         file: path.join(root, "history.sqlite"),
@@ -97,9 +111,17 @@ function open(options: { secrets?: () => string[]; now?: () => number; limit?: (
         limit: options.limit ?? (() => 1000),
     });
     const dir = path.join(root, "diag");
-    const journal = createDiagnosticsJournal({ dir, now: () => clock, sources: { appVersion: () => "2026.10.1" } });
-    cleanups.push(() => {
-        journal.close();
+    const writer = createOrderedWriter();
+    const journal = createDiagnosticsJournal({
+        dir,
+        now: () => clock,
+        sources: { appVersion: () => "2026.10.1" },
+        writer,
+        fs: options.fs,
+        maxQueuedBytes: options.maxQueuedBytes,
+    });
+    cleanups.push(async () => {
+        await journal.finish();
         history.close();
     });
     const shares = createRequestShares({
@@ -108,7 +130,17 @@ function open(options: { secrets?: () => string[]; now?: () => number; limit?: (
         secrets: options.secrets ?? (() => [SECRET]),
         now: options.now ?? (() => clock),
     });
-    return { root, dir, shared: path.join(dir, "shared"), events: path.join(dir, "events"), history, journal, shares };
+    return {
+        root,
+        dir,
+        shared: path.join(dir, "shared"),
+        events: path.join(dir, "events"),
+        history,
+        journal,
+        shares,
+        /** The `state.json` publications a share or withdrawal queued have ended. */
+        published: () => writer.settled("diagnostics:state"),
+    };
 }
 
 function row(id: string, overrides: Partial<RequestHistoryBegin> = {}): RequestHistoryBegin {
@@ -219,8 +251,30 @@ describe("loadStoredSecrets", () => {
 });
 
 describe("the share module: the copy", () => {
-    it("shares a request's whole job as `shared/<stamp>-job-<id>.json` (0640): the head with the checked app version, the rows oldest first (a content-off row its summary only), the job's events and its last error, the rows marked, the state counting the file", () => {
-        const { dir, shared, history, journal, shares } = open();
+    it("keeps interception counts in each shared request summary, including with content capture off", () => {
+        const { shared, history, shares } = open();
+        for (const [id, content, interceptions] of [
+            [REQ(1), true, 2],
+            [REQ(2), false, 1],
+            [REQ(3), false, null],
+        ] as const) {
+            history.begin(row(id, { content }));
+            if (interceptions !== null) {
+                history.describe(id, { interceptions });
+            }
+            history.finish(id, { status: "success" });
+        }
+        expect(shares.share({ jobId: JOB })).toMatchObject({ ok: true });
+        const copy = readShare(shared, `${stamp(clock)}-job-${JOB}.json`);
+        expect(copy.requests).toEqual([
+            expect.objectContaining({ id: REQ(1), content: true, interceptions: 2 }),
+            expect.objectContaining({ id: REQ(2), content: false, interceptions: 1 }),
+            expect.objectContaining({ id: REQ(3), content: false, interceptions: null }),
+        ]);
+    });
+
+    it("shares a request's whole job as `shared/<stamp>-job-<id>.json` (0640): the head with the checked app version, the rows oldest first (a content-off row its summary only), the job's events and its last error, the rows marked, the state counting the file", async () => {
+        const { dir, shared, history, journal, shares, published } = open();
         seed(history);
         const t0 = NOON;
         journal.record({ kind: "request", requestId: REQ(1), jobId: JOB, status: "success" });
@@ -237,6 +291,7 @@ describe("the share module: the copy", () => {
         });
         journal.record({ kind: "runtime", origin: "dispose", jobId: JOB });
         journal.record({ kind: "request", requestId: REQ(3), status: "success" });
+        await journal.settled();
         const at = clock;
         const outcome = shares.share({ requestId: REQ(2) });
         expect(outcome).toEqual({
@@ -317,6 +372,7 @@ describe("the share module: the copy", () => {
         expect(history.get(REQ(2))?.sharedAt).toBe(at);
         expect(history.get(REQ(3))?.sharedAt).toBeNull();
         expect(journal.state().shared).toEqual({ files: 1 });
+        await published();
         expect(stateOf(dir).shared).toEqual({ files: 1 });
         expect(journal.listShares()).toEqual([{ jobId: JOB, requestId: null, sharedAt: at }]);
         expect(warn).not.toHaveBeenCalled();
@@ -466,6 +522,7 @@ describe("the share module: the protocol", () => {
             ok: false,
             status: 500,
             error: "The share was updated, but an older copy could not be removed. Withdraw the share to remove every copy.",
+            code: REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
         });
         expect(shareFiles(base.shared)).toEqual([`${stamp(t1)}-job-${JOB}.json`, `${stamp(clock)}-job-${JOB}.json`]);
         expect(base.history.get(REQ(1))?.sharedAt).toBe(clock);
@@ -477,8 +534,8 @@ describe("the share module: the protocol", () => {
         expect(base.history.get(REQ(1))?.sharedAt).toBeNull();
     });
 
-    it("withdraws by request id (its job's share) or job id: the files go first, then the marks; idempotent; a job whose rows the caps removed can still be withdrawn by its id, while its request id now names a standalone target", () => {
-        const { dir, shared, history, journal, shares } = open({ limit: () => 10 });
+    it("withdraws by request id (its job's share) or job id: the files go first, then the marks; idempotent; a job whose rows the caps removed can still be withdrawn by its id, while its request id now names a standalone target", async () => {
+        const { dir, shared, history, journal, shares, published } = open({ limit: () => 10 });
         seed(history);
         const t1 = clock;
         expect(shares.share({ jobId: JOB }).ok).toBe(true);
@@ -491,6 +548,7 @@ describe("the share module: the protocol", () => {
         expect(shareFiles(shared)).toEqual([`${stamp(t1)}-request-${REQ(3)}.json`]);
         expect(history.get(REQ(1))?.sharedAt).toBeNull();
         expect(history.get(REQ(3))?.sharedAt).toBe(t1);
+        await published();
         expect(stateOf(dir).shared).toEqual({ files: 1 });
         // Again: nothing to remove or clear, still fine.
         expect(shares.withdraw({ jobId: JOB })).toMatchObject({ ok: true, result: { ids: [] } });
@@ -572,7 +630,7 @@ describe("the journal's `shared/`", () => {
         symlinkSync(path.join(root, "elsewhere.json"), path.join(shared, `${stamp(NOON)}-request-${REQ(2)}.json`));
         writeFileSync(path.join(root, "elsewhere.json"), "keep");
         const journal = createDiagnosticsJournal({ dir, now: () => clock });
-        cleanups.push(() => journal.close());
+        cleanups.push(() => journal.finish());
         expect(existsSync(path.join(shared, temp))).toBe(false);
         expect(existsSync(path.join(shared, otherTemp))).toBe(false);
         expect(journal.state().shared).toEqual({ files: 0 });
@@ -675,7 +733,7 @@ describe("the journal's `eventsFor`", () => {
     const dayFile = (at: number) => `${new Date(at).toISOString().slice(0, 10)}.jsonl`;
     const match = (event: DiagnosticEvent) => event.jobId === JOB;
 
-    it("reads the matching events from the day files of the hour before `from` on and from the ring, each once, oldest first; a day file pruned away leaves the ring's copies", () => {
+    it("reads the matching events from the day files of the hour before `from` on and from the ring, each once, oldest first; a day file pruned away leaves the ring's copies", async () => {
         const { events, journal } = open();
         clock = NOON - 2 * DAY;
         journal.record({ kind: "job", phase: "accepted", jobId: JOB });
@@ -687,6 +745,7 @@ describe("the journal's `eventsFor`", () => {
         journal.record({ kind: "runtime", origin: "dispose", jobId: JOB });
         clock = NOON + DAY;
         journal.record({ kind: "job", phase: "done", jobId: JOB });
+        await journal.settled();
         // An event only on disk (another process wrote it), and the same event twice.
         const onDisk = JSON.stringify({ at: NOON + 1, kind: "job", phase: "error", jobId: JOB, reason: "failed" });
         writeFileSync(path.join(events, dayFile(NOON)), `${onDisk}\n${onDisk}\n`, { flag: "a" });
@@ -722,9 +781,10 @@ describe("the journal's `eventsFor`", () => {
         expect(journal.eventsFor(match, NOON).events).toHaveLength(4);
     });
 
-    it("is partial for a malformed line, an unterminated tail, a line over 64 KiB (skipped), a day entry that is not a regular file, or a refused `events/`; the readable events are still answered", () => {
+    it("is partial for a malformed line, an unterminated tail, a line over 64 KiB (skipped), a day entry that is not a regular file, or a refused `events/`; the readable events are still answered", async () => {
         const { root, events, journal } = open();
         journal.record({ kind: "job", phase: "accepted", jobId: JOB });
+        await journal.settled();
         const good = JSON.stringify({ at: NOON + 1, kind: "job", phase: "done", jobId: JOB });
         const file = path.join(events, dayFile(NOON));
         const readable = () => journal.eventsFor(match, NOON).events.map((event) => event.phase ?? event.origin);
@@ -869,6 +929,7 @@ describe("the routes", () => {
             [REQ(2), result.sharedAt],
             [REQ(1), result.sharedAt],
         ]);
+        await s.context.diagnostics.writeState();
         expect(JSON.parse(readFileSync(path.join(s.savePath, "diagnostics", "state.json"), "utf8")).shared).toEqual({
             files: 1,
         });
@@ -884,6 +945,59 @@ describe("the routes", () => {
         expect(await withdrawn.json()).toEqual({ jobId: JOB, requestId: null, shared: false, sharedAt: null, ids: [] });
         expect(readdirSync(sharedDir(s))).toEqual([]);
         expect((await listShares(s)).body).toEqual({ items: [] });
+    });
+
+    it.each(["job id", "request id"])("shares a memory task by %s and lists its grouped requests", async (target) => {
+        const s = await server();
+        const jobId = `memory-${OTHER_JOB}`;
+        for (const id of [REQ(1), REQ(2)]) {
+            s.context.requestHistory.begin(row(id, { jobId, source: "memory", mode: "memory" }));
+            s.context.requestHistory.finish(id, { status: "success" });
+        }
+
+        const response = await share(s, {
+            ...(target === "job id" ? { jobId } : { requestId: REQ(2) }),
+            shared: true,
+        });
+        expect(response.status).toBe(200);
+        const result = (await response.json()) as RequestHistoryShareResult;
+        expect(result).toMatchObject({ jobId, requestId: null, shared: true, ids: [REQ(1), REQ(2)] });
+        const listed = await listShares(s);
+        expect(listed.res.status).toBe(200);
+        expect(listed.body).toEqual({ items: [{ jobId, requestId: null, sharedAt: result.sharedAt }] });
+        const name = `${stamp(result.sharedAt!)}-job-${jobId}.json`;
+        expect(readdirSync(sharedDir(s))).toEqual([name]);
+        expect(readShare(sharedDir(s), name).requests.map((request: { id: string }) => request.id)).toEqual([
+            REQ(1),
+            REQ(2),
+        ]);
+
+        const withdrawn = await share(s, { jobId, shared: false });
+        expect(withdrawn.status).toBe(200);
+        expect(await withdrawn.json()).toMatchObject({ jobId, shared: false, sharedAt: null });
+        expect((await listShares(s)).body).toEqual({ items: [] });
+        expect(readdirSync(sharedDir(s))).toEqual([]);
+    });
+
+    it("answers 500 with the older-copies refusal code beside the error when commitShare fails", async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(NOON);
+        try {
+            const s = await server();
+            seed(s.context.requestHistory);
+            expect((await share(s, { jobId: JOB, shared: true })).status).toBe(200);
+            vi.spyOn(s.context.diagnostics, "commitShare").mockReturnValue(false);
+
+            const refused = await share(s, { jobId: JOB, shared: true });
+
+            expect(refused.status).toBe(500);
+            expect(await refused.json()).toEqual({
+                error: "The share was updated, but an older copy could not be removed. Withdraw the share to remove every copy.",
+                code: REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN,
+            });
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it("redacts a named key stored on the server (through `/api/llm-secrets/`, with no credential record) from the shared copy", async () => {
@@ -1063,5 +1177,96 @@ describe("the routes", () => {
         expect(listed.body).toEqual({ error: "The shared copies could not be read" });
         expect((await share(refusing, { jobId: JOB, shared: true })).status).toBe(500);
         expect(readdirSync(elsewhere)).toEqual([]);
+    });
+});
+
+function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((yes, no) => {
+        resolve = yes;
+        reject = no;
+    });
+    return { promise, resolve, reject };
+}
+
+describe("sharing queued events", () => {
+    it("waits for queued appends before sharing and marks a drop in the shared interval partial", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            for (const drop of [false, true]) {
+                const entered = deferred<void>();
+                const release = deferred<void>();
+                const fs: JournalFs = {
+                    ...promises,
+                    async open(file, flags, mode) {
+                        if (file.endsWith(".jsonl")) {
+                            entered.resolve();
+                            await release.promise;
+                        }
+                        return promises.open(file, flags, mode);
+                    },
+                };
+                const s = open({ fs, maxQueuedBytes: 220 });
+                s.history.begin(row(REQ(1)));
+                s.history.finish(REQ(1), { status: "success", httpStatus: 200, error: null });
+                const accepted = { kind: "job", phase: "accepted", jobId: JOB } as const;
+                const done = { kind: "job", phase: "done", jobId: JOB } as const;
+                const failed = { kind: "job", phase: "error", jobId: JOB, reason: "failed" } as const;
+                s.journal.record(accepted);
+                await entered.promise;
+                s.journal.record(done);
+                if (drop) s.journal.record(failed);
+                const app = new Hono<AppEnv>();
+                registerRequestHistoryRoutes(app, {
+                    history: s.history,
+                    shares: s.shares,
+                    auth: createAuthStore(path.join(s.root, "save"), { bypass: true }),
+                    limiter: async (_c, next) => {
+                        await next();
+                    },
+                    shuttingDown: () => false,
+                });
+                let answered = false;
+                const sharing = Promise.resolve(
+                    app.request(REQUEST_HISTORY_SHARE_PATH, {
+                        method: "PUT",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ jobId: JOB, shared: true }),
+                    }),
+                ).then((response) => {
+                    answered = true;
+                    return response;
+                });
+                try {
+                    await vi.advanceTimersByTimeAsync(0);
+                    expect(answered).toBe(false);
+                    expect(shareFiles(s.shared)).toBeNull();
+                    release.resolve();
+                    expect((await sharing).status).toBe(200);
+                    const [file] = shareFiles(s.shared)!;
+                    const copy = readShare(s.shared, file);
+                    expect(copy.events).toEqual(
+                        [accepted, done, ...(drop ? [failed] : [])].map((event) => ({ at: clock, ...event })),
+                    );
+                    expect(copy.eventsPartial).toBe(drop);
+                    const [day] = readdirSync(s.events);
+                    expect(
+                        readFileSync(path.join(s.events, day), "utf8")
+                            .trim()
+                            .split("\n")
+                            .map((line) => JSON.parse(line).phase),
+                    ).toEqual(["accepted", "done"]);
+                    expect(s.journal.eventsFor(() => true, clock + HOUR + 1).partial).toBe(false);
+                    await s.published();
+                } finally {
+                    release.resolve();
+                    await sharing;
+                    await s.journal.finish();
+                }
+            }
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

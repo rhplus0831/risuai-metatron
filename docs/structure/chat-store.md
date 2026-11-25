@@ -1,0 +1,391 @@
+# Chat Store: Chat Module, Write Protocol, Checkpoints
+
+## Scope
+
+- Owns the chat module and write protocol, its view of server jobs (locks, stream buffer, and hydration), chat field
+  drafts, checkpoints, and the client side of the restore floor.
+- Not here: save loop, conflicts → [resource sync](resource-sync.md); live updates → [live updates](live-updates.md);
+  chat journal, recovery drafts → [draft recovery](draft-recovery.md); database model, records →
+  [persistence](persistence.md); server chat store, checkpoint service → [server resources](server-resources.md); the
+  send → [chat pipeline](chat-pipeline.md); the checkpoint dialog → [UI and theming](ui-theming.md).
+- `Decision:` plan names resolve through [the archive](../archived-plan/README.md).
+
+## Files
+
+Module headers and export comments hold the contracts; these lists give lookup identifiers.
+
+- `src/ts/storage/chatStore.svelte.ts` owns membership, summaries, loaded chats, queued writes, refusals, and generation
+  locks. Boot reads summaries. Start with `chatEntry` for summary metadata or `findChat` for a loaded chat.
+  `ensureChatLoaded` loads a member. `chatMemberPage` reads an ordered active page without loading message rows.
+- Write through the by-id or metadata operations below. For a bulk edit start at `captureChatBaseline` and
+  `applyChatResult`. For synchronization start at `takeChatWork`, `ackChatWork`, `requeueChatWork` and
+  `recoverChatConflicts`. The module header groups the other readers, writers and job boundaries.
+- `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
+  whole chat copy; `readChatsDetached` serves `src/ts/storage/exportAsDataset.ts` and `src/ts/characters.ts`;
+  `readChatRefsDetached` serves plugin `getDatabase` and `getChats` via `withDetachedDatabaseChats` in
+  `src/ts/plugins/apiV3/v3.svelte.ts`. Both check `assertSaveAdmission` before and after each chunk read, so after a
+  restore halt an old-epoch answer is refused.
+- `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
+  `src/ts/storage/{localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`: the editing copies of a selected chat's array
+  fields and their send fence.
+- `src/ts/storage/messageEditorDrafts.svelte.ts` holds open message and stored-translation editors by chat, message id
+  and editor kind. It retains text across row remounts and chat eviction, then clears it on deletion or character
+  replacement. The [composer journal](draft-recovery.md#composer-api) serves the composer separately.
+- `src/ts/checkpoints/chatCheckpoints.svelte.ts`: checkpoint client (module header). `chatCheckpointsDialog` opens from
+  `SideChatList.svelte`; while `checkpointLoadBusy`, the dialog disables its controls and `hotkey.ts` swallows shortcuts
+  behind it and keeps Escape from closing it.
+- `src/ts/checkpoints/chatTrash.ts` (`confirmTrashChat`, `trashChat`, `restoreChat`, `deleteChatForever`) and
+  `src/ts/checkpoints/chatRequest.ts` (flush, admission, and epoch transport shared with checkpoints).
+- `src/ts/network/jobChannel.ts`: `rememberHydration`, `rememberJobStreaming`, `endJobChannel`, and the callback barrier
+  (its module header); chat installation stays in `chatStore.svelte.ts`.
+
+### Last chatted
+
+- `characterLastChattedAt`'s JSDoc holds derived activity rules. `applyPluginCharacter` preserves frozen
+  `lastInteraction` for same-character setters; imports and new characters keep their input.
+  `ChatEntryMeta.lastMessageAt` is derived, never written.
+
+### Pins and eviction
+
+- `pinChat` and `pinChats` return a release, counted per owner lifetime; pin before awaiting a load. `trimLoadedChats`
+  runs after a load, a pin release, every save cycle, and every selection change (`scheduleTrim`).
+
+### Locks and streaming
+
+- A generation this tab's job events retire (`retireGeneration`: its job's end, its job's chat copy no longer listing
+  it, another generation taking its message) releases the feed lock that names it, and a later feed list, `hello`, or
+  read snapshot does not lock it again: the feed's own release comes on another socket and may arrive after the job's
+  end. `detachServerJob` (lost participation) retires nothing, so the feed lock stays.
+- The lock readers count this tab's job locks and the [feed's](live-updates.md#feed-locks); `isCharacterStreamedHere`
+  counts this tab's only, so the list read recovery of `hydrate` (`refreshCharacter` in `resourceSync.svelte.ts`) waits
+  on it without blocking an observing tab, and a flush depending on that read rejects with `GenerationBlockedError`. A
+  conflict's acceptance of the character is [immediate](resource-sync.md#conflicts). A character's permanent deletion
+  and different-id replacement refuse locally on `isCharacterGenerating` (`characterStore.svelte.ts`).
+
+### Character lifecycle
+
+- `adoptCharacter`, `installCharacterChats`, `settleCharacterDelete`, `ackCharacterDelete`, `forgetCharacter`,
+  `forgetCharacterChats`: each comment states what it queues, settles, keeps, or retires (`parkedResends`,
+  `retireCharacterGroups`). `characterStore.svelte.ts` calls them around its add, replace, and delete.
+
+## Flows
+
+Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.ts` is its entrypoint's comment.
+
+### Chat writes
+
+- A local chat edit updates the mirror, bumps the chat's local version, and queues an op; the save loop
+  ([resource sync](resource-sync.md)) sends a chat's unsent ops as one group (`takeChatWork`, `coalesce`: a
+  generation-bearing op never coalesces, so every generation fence holds). An op's `before` is the
+  [chat journal's](draft-recovery.md#chat-journal). A direct chat write fails `pnpm check` (STRUCTURE D1).
+- Messages a writer takes in whole (`createChat`, `appendMessage`, `replaceChat`, `applyChatResult`, a new character's
+  chats) pass `prepareMessages`, which refuses a non-string `data` as the server's `normalizeMessage` does, so a JSON
+  chat import cannot store one. Its non-mutating `validateChatInput` rule checks all imported chats before any write,
+  and also refuses the OOC fields (`oocLog`, `oocSegment`, `oocToggles`) that `normalizeChatMeta` would refuse, with the
+  same `shared/ooc.ts` checks: the tab would otherwise hold a chat no save can store.
+
+### By-id ops
+
+- By-id reads and writes share `positionOf`'s index with translation and the transcript (`heldMessageById`,
+  `messagePositionOf`); its comment owns stale lookups and misses: id or order changes call `dropMessagePositions`.
+- Which ops apply on a stale revision and which need the current one is the `ChatOp` contract in `shared/chats.ts`,
+  enforced by the server ([chat writes](server-resources.md#chat-writes-and-checkpoints)) and the
+  [restore floor](#restore-floor). A `remove` may carry `retract`,
+  [a person's yes](structured-memory/lifecycle.md#retraction-and-edits).
+- A result on an older revision says `stale: true` and sets the acknowledged floor; an edit of a message another writer
+  removed answers `missing`, a recovery draft via the conflict listener ([resource sync](resource-sync.md#conflicts));
+  an `append` whose anchor is gone is re-anchored and resent alone; the rest take the ordinary
+  [recovery](resource-sync.md#chat-and-order-conflicts).
+- `requeueChatWork` keeps a lost reorder's sent vector and sequence in memory for conflict readback. A read matching the
+  conflicting vector settles it quietly. If the read matches an older lost vector, the newer reorder stays queued
+  without a discard notice and resends on the learned revision with a vector rebuilt from current membership. With no
+  newer reorder, a read matching neither the sent nor a kept vector takes the `markOrderDiscarded` path.
+- While a conflicting reorder waits for the read and a lost vector could match, `waitsForLostOrderRead` holds that
+  character's chat creates and deletes. Saving either first could change the server vector the read compares.
+  `hasChatWorkInDoubt` feeds the [unconfirmed save warning](resource-sync.md#state) for unresolved groups and reorders
+  outside quarantine.
+- A result's `candidateRows` (counters, cleaned snapshots) reach the mirror and unsent ops (`adoptCandidateRows`). A
+  refused `selectCandidate` (stale counter, gone candidate, not the newest reply) marks the chat stale.
+- An idle re-base can refresh a send still building its prompt without a lock: its baseline protects changes made
+  meanwhile ([chat pipeline](chat-pipeline.md)).
+
+### Map merges
+
+- `mergeChatMeta` and `applyChatResult` send map fields (`CHAT_META_MERGE_KEYS`) entry by entry, as do the
+  single-variable writers `setChatVar`/`setChatVarOf` for one `scriptstate` entry; the server applies `merge` and
+  `mergeUnset` onto its stored map, validates `chat.toolCalls` and `chat.oocLog` entries wherever a chat is written (an
+  `oocLog` merge past its entry limit is refused, so its writer prunes first), and stores the whole map again with no
+  eviction ([server resources](server-resources.md)).
+- `oocLog`'s one writer is `src/ts/ooc/oocSession.svelte.ts`: a new exchange with its prune removals in one merge, the
+  answer as the whole exchange again, and deletions as removals. It checks each entry with `oocExchangeError` before the
+  merge, since a refused merge refuses the chat's queued work. `oocSegment` is a plain field (`setChatMeta`).
+- The answer's merge carries `ifOocUnanswered`: the server skips it when the stored exchange is gone or already answered
+  (`oocAnswerRefusals`), so the first stored answer wins, and the losing tab rereads with a notice.
+
+### Stored translations
+
+- `Message.translation` shows only while its `sourceHash` matches (`storedTranslation`, [translation](translation.md)).
+  Tab edits go through `saveStoredTranslationEdit`, the server runner writes the translations it makes, and
+  `setMessageTranslation` edits an existing row's translation; `replaceChat` and `selectCandidate` also change it (the
+  `ChatOp` contract in `shared/chats.ts`).
+
+### Chat Trash
+
+- User chat deletion moves the chat to its character's trash. The caller captures `chatTrashRevision` before a
+  confirmation or await. The client requires an acknowledged token, flushes through `chatRequest.ts`, and sends the
+  captured token to the [trash route](server-resources.md#chat-trash). The mutation takes effect in the tab through the
+  answer or a server update, outside the save queue and journal. A 409 or uncertain result after dispatch triggers
+  readback and a notice.
+- Moving to trash keeps membership and drafts. Permanent deletion settles once for the deleted incarnation across the
+  answer, feed, and collection read. See `settleDeletedChat` and `removeRemoteChat` for the removal fence and the
+  handoff to a collection refresh when the deleted chat is the only member held by this tab.
+- Use `activeChatList`, `activeChatCount`, and `isActiveChat` for visible lists, counts, and opening a chat, and
+  `trashedChatList` for [the sidebar trash view](ui-theming.md#sidebar). `chatList`, `chatEntry`, `chatCount`, and
+  `memberIds` keep the full membership for structural readers. For drag and plugin writes, `reorderActiveChats` merges
+  the supplied active order into that full order, preserving the slots of other members.
+
+### Selection
+
+- `selectChat` and `loadSelectionPreference` own selection persistence; `selectedChatLoad` drives loading/error/retry
+  ([UI](ui-theming.md)).
+- `selectedChatId` falls back to the first active chat and `selectChat` refuses a trashed target. A trash update that
+  affects the open chat closes it with a notice and runs `syncSelection`.
+- Opening a chat also requires a selectable owner. See [archived groups](characters-modules.md#archived-groups).
+
+### Summaries and refresh
+
+- `ChatSummary`, server `summaryFields`, and tab `metaOf` carry `memoryEnabled`, `memoryMode`, `memoryPresetId`,
+  `memoryProfileId`, and `memoryTrimAck` through the shared `chatMemorySummary` helper. Only valid types are projected;
+  an explicit `false` is retained. `SUMMARY_FIELD_TYPES` permits unloaded edits and acknowledgement removal.
+- Summary changes bump both `SUMMARY_PROJECTION_VERSION` (stored summaries rebuild at the existing chat revisions) and
+  `CHAT_SUMMARY_FORMAT` (warm boot caches discard the old projection).
+- A live update reaches `noteRemoteChat` ([chat live updates](live-updates.md#chat-live-updates)): a loaded chat takes a
+  fitting body, an unloaded member its summary (`applyRemoteSummary`), everything else asks for the character's list.
+  Whole-chat reads are for loaded chats only (`idleChatRefreshes`); a server copy never loads a chat.
+- The refresh queue in `resourceSync.svelte.ts` reads summary lists for live list updates, for characters a recovery
+  inserted or refreshed (`hydrate`: what the server's list has no room for is discarded with the notice), for characters
+  an acknowledgement showed another writer's chats of (`listRefresh`, keeping a queued reorder), and for idle stale or
+  noticed unloaded chats (`idleSummaryRefreshes`, `settleSummaryRefresh`).
+- `installChatTrashState` takes the mark from summaries, whole reads, [sync updates](resource-sync.md#chat-trash-sync),
+  and trash route answers. It ignores older deliveries and requests readback for a newer bare revision when needed.
+  `readChatsDetached` and `readChatRefsDetached` carry the mark beside the data so chat and dataset exports can omit
+  trash and plugin reads can apply their [active-chat contract](plugin-sandbox.md#host-api).
+
+### Whole-chat writers
+
+- Plugin setters, `chatEdits.ts`, and the reroll paths capture a baseline and call `applyChatResult`
+  (`captureChatBaseline` can take an already assembled read copy); `reconcileCharacterChats` takes a plugin's whole list
+  and an optional supplier of read-time baselines ([plugins](plugin-sandbox.md)). A structured chat's `hypaV3Data` is a
+  projection the mirror holds and no send carries: [the rules](structured-memory/projection.md#the-hypav3-projection).
+- Without a retained plugin read baseline, `reconcileCharacterChats` fills each own-property-absent memory preference
+  (`memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`) from the current chat before `applyChatResult`,
+  covering whole-chat reorder replacements. A retained baseline uses the ordinary diff. Other fields, `memoryTrimAck`,
+  and `setChatToIndex` keep their existing rules.
+- A `createChatFieldDraft` copy is fenced by `loreWriteFenced` over `localSends`, `generatingChatKeys`, and the jobs the
+  live feed lists for the chat (`runningGenerations`, previews included), also before structural override actions; the
+  job's Lua lorebook upsert writes from the stored chat ([scripts](scripts-triggers.md)).
+- `memoryEditorWriteFence` is that fence plus a chat that is behind (`isChatBehind`, which tracks the chat's stale mark
+  and notice): the HypaV2 and SupaMemory editors use it ([memory](memory.md#ui)).
+
+### Deferral
+
+- A conflict on a chat this tab's job streams into is deferred until the job's locks release (`deferredReloads`,
+  `finishDeferredReload`); `reloadDeferredChats` in `resourceSync.svelte.ts` shows the notice only when a chat was
+  replaced or removed. A group refused for a generating message is not deferred:
+  [generating refusals](resource-sync.md#generating-refusals), `JOB_RETRY_MS`.
+
+### Job chunks
+
+- Generation updates and hydration share the [by-id index](#by-id-ops). A missed chunk in `applyServerGenerationChunk`
+  makes `network/generationJobs.ts` request `resyncReply` once per follow until the next full-text `accepted` frame or
+  the follow ends. This is a stream repair. A missed chat patch uses the separate [hydration path](#job-hydration).
+- `runServerJob` (`process/serverCommands.ts`) saves and reads a chat it knows is behind (`refreshStaleChat`, true once
+  `isChatBehind` is false) before creating a job, once more when a change or notice arrived meanwhile; a chat still
+  behind goes as it is and the server refuses its old revision ([chat pipeline](chat-pipeline.md)).
+
+### Job hydration
+
+- A job's `resource` event goes through `hydrateChat` and a `chatPatch` through `hydrateChatPatch`
+  (`network/generationJobs.ts`). A `streamed` row gets this job's buffer text if that generation's buffer reached its
+  `seq` (`resolveJobChatPatch`), else the patch is a `mismatch` keeping revision and watermark. On `mismatch`,
+  `applyGenerationEvent` sends the follow's one `resync`, cleared by the job chat's next whole `resource` event.
+- On `busy`, or a whole job chat refused for local work, `generationJobs.ts` waits for `flushResources`, then sends the
+  `resync` if the chat is still stale and `chatHydrationHold` is `none`; a failed save or new local work retries with a
+  growing wait (up to 15 s) while the follow lasts, one recovery per follow. Work no save settles asks nothing, nor does
+  a follow whose job ended or that closed.
+
+### Callback hydration
+
+- The barrier is the module header of `jobChannel.ts`. Under the job socket's `hydration=patch` a receipt may name a
+  revision this tab received as a patch or never received; `prepareChatHydrationRefresh` permits the one fenced read,
+  and `applyHydration` installs it with the held `streaming` list, never an empty one made up.
+
+### Server memory writes
+
+- Server jobs and [detached memory tasks](memory.md#background-memory-task) merge each HypaV3 summary onto the currently
+  stored field. `mergeHypaV3Write` and `mergeHypaV3SelectionWrite` own these rules. The epoch, admitted chat incarnation
+  and source generation fence the task. A whole-chat replacement or deletion advances that source generation in the
+  store transaction. An ordinary by-id or metadata edit leaves it alone. A new epoch ends the task with
+  `ResourceEpochError`.
+- The HypaV3 modal waits until the tab reaches the task's `terminalRevision`, a newer incarnation, or a confirmed
+  deletion before allowing a whole-field edit. Preserve that fence across disconnects and dirty reads. See
+  [memory writes](memory.md#memory-writes).
+
+### Chat checkpoints
+
+- The client protocol (request, preparation, and answer rules) is the module header of `chatCheckpoints.svelte.ts`; the
+  server side is [chat writes and checkpoints](server-resources.md#chat-writes-and-checkpoints). The HypaV3 modal and
+  the local lore draft follow a loaded chat's external replacement without writing it back.
+- Every checkpoint request (list, policy, save, rename, delete, load) waits at most 30 s for its answer and body,
+  counted after sign-in (`chatRequest.ts` `request`, `deadlineMs`); chat trash keeps no bound. A timeout is the
+  request's transport failure, so a timed-out restore re-reads the chat, answers `unknown`, and releases
+  `checkpointLoadBusy`. Restoring again is safe: the server refuses a load whose `chatBaseRevision` is no longer current
+  (`server/src/data/checkpointService.ts` `load`).
+
+### Restore floor
+
+- A load's `replace` sets the floor to its replacement revision. `server/src/data/chatStore.ts` `applyGroup` checks:
+  remembered `groupId` (replay), possibly expired retry (`reason: "expired"`), generation locks
+  (`reason: "generating"`), then for a non-null base: chat existence, token validity/epoch, incarnation `seq`, base
+  below the floor, and `needsCurrent` revision equality. Revision/floor conflicts have no `reason`. A null base requires
+  an absent chat and existing character.
+- `reason: "generating"` makes `recoverChatConflicts` retry work after `JOB_RETRY_MS` without reloading, except named
+  locked-message edits, dropped with the reload notice. A floor conflict reads back; `acceptRemoteChat` replaces the
+  mirror and discards queued edits with the notice, `flushResources` reports `chats/<chaId>/<chatId>`, and a chat this
+  tab's job streams into [defers](#deferral).
+- Old work is refused only while its base is below the floor, so nothing moves that base past it (`installRead` holds no
+  revision for a busy chat; `acceptRemoteCollection` keeps a create's replay and the old base of later edits).
+- One by-id case takes two rounds: an `append` whose `after` anchor the load removed keeps epoch and incarnation
+  (`replace` keeps `seq`), so `reanchorGoneAppends` rewrites it and resends alone with a new `groupId` on its old base.
+  The floor refuses it again; recovery finds no gone anchor and discards it with the notice.
+
+## State
+
+- Per chat: revision, `absentChats`, unsent and in-flight ops, local version, job locks, deferrals, refused intent (with
+  object identity fencing an asynchronous discard). Per character: selection, chat order revision, refused order.
+- A member's trash mark and its acknowledged revision are held apart from its transcript and save base. They survive
+  eviction and busy loads, so active membership is available before the transcript loads.
+- Refusal reads use the module's own counter and local projections without changing state. Forgetting a character
+  removes its refusal entries; session alert guards survive release and recreation.
+- `pinned` is stored as sent and summarized only when `true`. First-party UI keeps it only while pinned and clears it on
+  copy, branch, and import; creation, plugin reconciliation, and remote acceptance preserve it.
+
+## Coupling
+
+- The chain is in [resource sync](resource-sync.md#coupling). `characterStore.svelte.ts` installs and adopts a
+  character's chats, `network/generationJobs.ts` delivers job events, `process/serverCommands.ts` starts and follows
+  jobs.
+- `Chat.svelte` renders a chat's rows again on `chatSaveVersion`; `transformClient.ts` and `settledRender.svelte.ts`
+  read `chatInstallVersion` and `chatHasUnackedWork` ([CBS rendering](cbs-rendering.md)).
+
+## Invariants
+
+- Chats are their own records: two tabs editing different chats, or different messages of one chat, save independently.
+  A chat change never rewrites its character.
+- Every write to a character's `ids`, and every creation or removal of its holding, calls `bumpChatMembership` in the
+  same step: `isMember` answers from a set that call drops, and reactive readers of membership re-run on it.
+- Only `chatStore.svelte.ts` writes the chats; writing, defining, or deleting `chats`/`chatPage` on a character wrapper
+  throws. A changed copy goes through `applyChatResult` or `chatEdits.ts`, a chat field through `setChatMeta`, a map
+  entry through `mergeChatMeta`, and some fields of a message through `patchMessage`.
+- A writer outside the tab merges a whole memory field onto the value stored at the write
+  ([Server memory writes](#server-memory-writes)).
+- A message being generated is changed only by its generation; other writers get an error from the module. `Chat.svelte`
+  disables its controls from `isMessageLocked` and checks every affected id again at the write, which also covers a
+  finished reply whose final write is unacknowledged. The screen's reroll checks `isScreenBusy`, and `confirmTrashChat`
+  checks `isChatGenerating`. Both alert `chatGenerating` when blocked.
+
+## Recipes
+
+- A new chat writer follows [Invariants](#invariants); other recipes are in [persistence](persistence.md#recipes).
+
+## Tests
+
+- Focused: `pnpm --silent test:agent chatStore resourceSyncChats chatCheckpoints chatTrash`.
+- Loading and lore drafts: `pnpm --silent test:agent chatLazyLoading loreOverridesDraft.fence`; the
+  [memory tests](memory.md#tests) cover the local lore fence.
+- `src/ts/storage/tests/{chatStore.test.ts,resourceSyncChats.test.ts}` use
+  [`StoreBackedServer`](resource-sync.md#tests).
+- `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load
+  admission, commit, and lost answers; its policy routes are real too.
+- `src/lib/ChatScreens/Chat.draft.test.ts` exercises the row editor across remounts.
+- `slow`: `src/ts/storage/tests/resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
+- `e2e`: `e2e/lazyChats.spec.ts`, lazy loading; `e2e/multiClient.spec.ts`, two clients;
+  `e2e/multiClientGeneration.spec.ts`, lock readers.
+- Not tested: the client's two-round gone-anchor repair after a checkpoint load (`resourceSyncChats.test.ts` exercises
+  it for another cause); checkpoint preparation after a conflicting reorder is reported by `markOrderDiscarded`.
+  `ChatCheckpointsDialog.test.ts` mocks the client module.
+
+## Known Hazards
+
+### Limitations
+
+- At boot and during collection reconciliation, `ensureChat` still creates an empty `Chat 1` for any chatless owner,
+  including an archived group. The tab cannot open it. Decision: owner, 2026-11-23
+  ([archive boundary](../../STRUCTURE.md#data-and-persistence)).
+- A group-owned chat trashed before the upgrade is hidden even from the chat trash view. The server still purges it
+  after `chatTrashDays`, and a trashed group owner still expires from the character trash on its usual schedule.
+  Decision: owner, 2026-11-23 ([archive boundary](../../STRUCTURE.md#data-and-persistence)).
+- A drag or plugin reorder built before another tab trashes a chat can still be a valid permutation. It can move the
+  trashed chat's slot and change where it reappears on restore. Decision: owner, 2026-11-22 (fencing order writes on
+  active membership is a server change for a cosmetic effect).
+- Same-id character recreation keeps omitted chats the server still holds. `installCharacterChats` queues no deletes and
+  the collection refresh appends those members after the replacement's chats. An omitted chat whose create this tab has
+  yet to send is discarded with its unsaved content. Decision: owner, 2026-11-22 (recreation must happen during the save
+  delay of a new chat).
+- `CHAT_READ_DEADLINE_MS` bounds one `readRefs` call, not a whole load: a load can make three passes of 500-chat calls
+  plus a summary list read. Decision: U1,
+  [durable drafts audit](../reports/audits/finished-plans/durable-drafts-2026-10-29.md).
+- A same-id recreation reconciles only the chats this client knows: a chat another tab created survives, and a reused
+  id's `replace` on a changed base conflicts (409), eligible content kept as a recovery draft. Explicit recreation
+  releases old chat refusals from holding the reorder. Decision: `chatStore.svelte.ts` re-add reconciliation.
+- A same-id re-add after a failed or generating-refused deletion reconciles like one before the deletion was sent: a
+  whole `replace` per reused chat, also for an undo; a replace of a chat the job still locks waits behind its retry
+  block (the flush rejects until then). Decision: Durable Drafts Out of scope (no server create tombstone), archive.
+- A lost-answer deletion that landed is not known as such: a same-id re-add conflicts or meets a missing parent, and the
+  recovery removes it with the notice. Another writer deleting a character between the conflict read that adopts its
+  lost create and the summary-list read leaves no order to learn; that refresh ends. Decision: as above.
+- A stored chat row without `fmIndex` is not backfilled: a summary reads `-1`, a whole read can omit it. Decision:
+  metatron-only formats are owed no migration ([compatibility rule](persistence.md#invariants)).
+- A callback can fail as `barrier` while the job channel dispatcher loads (`onChannel`): a job's chat event moves
+  `jobMetadata` at once and `rememberJobStreaming` waits on the socket-ordered chain, so a callback from that chain can
+  find metadata newer than its list and is refused. The send ends with its job error (no hook ran; the job's writes
+  stay; a resend works). Decision: a barrier that cannot prove its `streaming` list current fails rather than install an
+  older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
+- Two clients can both save `setText` on one message. The later accepted edit wins without a notice to the earlier
+  writer. An open message or stored-translation editor warns if its base changed and keeps its draft within this tab
+  until saved, discarded, deleted or reloaded. Decision: Multi-Client Data Safety Checks Q3, archive.
+- A character this client never persisted (`takeChatWork`'s absent-character sweep, `dropCharacterWork(id, false)`)
+  keeps its parked resends (`parkedResends`) until a same-id re-add, which replays one harmless resend first, or the
+  next boot: no deletion acknowledgement or `forgetCharacter` comes for it. The leak is bounded to that session's
+  resend-bearing chats, whose payloads can be whole chat snapshots. Decision: Found Issues Decisions (owner,
+  2026-11-08).
+- A checkpoint request abandoned at its 30 s bound may still land: a restore pressed again is refused by its base
+  revision or repeats harmlessly, and a Save As can appear in the list after its failure message. Decision: Bounded
+  Client Waits D2 and D4, [archive](../archived-plan/README.md).
+- The own-save echo of an unloaded chat's list field asks for a summary-list read. Decision: Found Issues Decisions
+  (owner, 2026-11-08).
+- A followed job's generation that never got a `serverGenerations` entry keeps its feed lock past the job's terminal
+  until the feed catches up: its early job copy was refused for local work (an edit, a background plugin's
+  `setChatToIndex`), or the job socket attached after the reply ended. A send or command attempted at that end is
+  refused with `chatGenerating`. A fix would have the terminal name the job's generations. Decision: owner, 2026-11-13
+  (rare, no data lost; reproduced in `/home/codex/review-reports/feed-lock-retire-2026-11-13`).
+- The chat settings panels that patch chat metadata through `setChatMeta`, `setCurrentChatMeta` or `mergeChatMeta` stay
+  editable while a reply generates, unlike the chat lorebook and the messages: the author's note, the draft hook, the
+  binding pickers, memory and translation preferences, prompt toggles, chat modules, chat variables, the OOC own-toggles
+  switch, rename and folder moves. The server does not lock metadata ops for a job, and a change made then does not
+  reach the running reply. Decision: owner, 2026-11-21 (found-issues review): a single-field patch needs no lock.
+
+### Gotchas
+
+- `selectedChat()` and `findChat` return the live read-only chat: take `$state.snapshot` before passing it to mutating
+  code. A snapshot or spread of a character has no chats: build the legacy shape with `withChatsCopy`.
+- `SideChatList.svelte` renders a chat whose `folderId` names no folder at the root as unfiled (`chatFolderOf`) and
+  keeps the id: a drop at the root does not remove it, a move into a folder replaces it. The pinned rail and the modal
+  chat list do not group by folder.
+- A job's membership changes are not hydrated on its socket; they reach every tab through the live updates.
+- An observing tab sees a job's reply at its 3 s checkpoints, then the final text; a disconnected tab catches up on
+  reconnect.
+- A character wrapper's `chats` view builds a fresh array per read: read one chat through `findChat`, not by scanning
+  `chats` ([observation](../reports/measurements/server/chat-scan-observations-2026-10-24.md)).
+- `installRead` treats an incomparable revision as older, `adoptChatRead` as not older; only fixtures with tokens like
+  `r1` reach the difference.

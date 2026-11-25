@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { settings, editedPreset } from "src/ts/storage/settingsViews.svelte";
     import { ArrowLeft, PlusIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
@@ -8,13 +8,15 @@
     import { tokenScopeKey } from "src/ts/tokenizer";
     import { templateCheck } from "src/ts/process/templates/templateCheck";
 
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import Help from "src/lib/Others/Help.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
-    import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
-    import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import Accordion from "src/lib/UI/Accordion.svelte";
+    import OocToggleEditor from "../OocToggleEditor.svelte";
+    import { oocToggleMap } from "src/ts/ooc/oocToggleSettings.svelte";
     import { onDestroy, onMount } from "svelte";
     import { defaultAutoSuggestPrompt } from "../../../ts/storage/defaultPrompts";
 
@@ -24,10 +26,14 @@
     let extokens = $state(0);
     let draggedIndex = $state(-1);
     let dragOverIndex = $state(-1);
+    let draggedPresetId = $state<string>();
+    const dragMatchesPreset = $derived(draggedPresetId !== undefined && draggedPresetId === editedPreset.id);
     let openedItemIndices = $state(new Set<number>());
+    /** Shown beside the collapsed OOC toggle section's name; stale keys count, as they are still sent. */
+    const oocForcedCount = $derived(Object.keys(oocToggleMap(editedPreset.oocToggles)).length);
     /** The selected preset's template for reading: `[]` while it has none (writes go to the preset). */
     function templateItems(): PromptItem[] {
-        return activePreset.promptTemplate ?? [];
+        return editedPreset.promptTemplate ?? [];
     }
     interface Props {
         onGoBack?: () => void;
@@ -57,7 +63,7 @@
     });
 
     $effect.pre(() => {
-        warns = templateCheck({ promptTemplate: activePreset.promptTemplate });
+        warns = templateCheck({ promptTemplate: editedPreset.promptTemplate });
     });
     $effect.pre(() => {
         let input: PromptTokenCountInput;
@@ -79,7 +85,7 @@
     }
 
     function getReorderedTemplate() {
-        if (draggedIndex === -1 || dragOverIndex === -1 || draggedIndex === dragOverIndex) {
+        if (!dragMatchesPreset || draggedIndex === -1 || dragOverIndex === -1 || draggedIndex === dragOverIndex) {
             return getDisplayTemplate();
         }
 
@@ -96,6 +102,12 @@
     }
 
     function handlePromptDrop() {
+        // A feed update can switch the preset under the mounted rows during a drag.
+        if (!dragMatchesPreset) {
+            draggedIndex = -1;
+            dragOverIndex = -1;
+            return;
+        }
         if (draggedIndex === -1 || dragOverIndex === -1 || draggedIndex === dragOverIndex) {
             return;
         }
@@ -126,7 +138,7 @@
         });
         openedItemIndices = newOpenedIndices;
 
-        activePreset.promptTemplate = templates;
+        editedPreset.promptTemplate = templates;
         draggedIndex = -1;
         dragOverIndex = -1;
     }
@@ -182,13 +194,11 @@
     </div>
 {/if}
 {#if warns.length > 0 && subMenu === 0}
-    <div class="text-red-500 flex flex-col items-start p-2 rounded-md border-red-500 border mt-4">
-        <h2 class="text-xl font-bold">Warning</h2>
-        <div class="border-b border-b-red-500 mt-1 mb-2 w-full"></div>
+    <Alert status="warning" title="Warning" className="mt-4">
         {#each warns as warn}
-            <span class="ml-4">{warn}</span>
+            <span>{warn}</span>
         {/each}
-    </div>
+    </Alert>
 {/if}
 
 {#if subMenu === 0}
@@ -199,19 +209,22 @@
         {#key sorted}
             {#each getReorderedTemplate() as { item: prompt, originalIndex, displayIndex }}
                 <PromptDataItem
-                    bind:promptItem={activePreset.promptTemplate[originalIndex]}
-                    isDragging={draggedIndex === originalIndex}
+                    bind:promptItem={editedPreset.promptTemplate[originalIndex]}
+                    popupEditorContext={editedPreset.id}
+                    promptSettings={editedPreset.promptSettings}
+                    isDragging={dragMatchesPreset && draggedIndex === originalIndex}
                     isOpened={openedItemIndices.has(originalIndex)}
                     bind:draggedIndex
                     bind:dragOverIndex
                     bind:openedItemIndices
                     currentIndex={originalIndex}
                     {displayIndex}
+                    onDragStart={() => (draggedPresetId = editedPreset.id)}
                     onDrop={handlePromptDrop}
                     onRemove={() => {
-                        let templates = activePreset.promptTemplate;
+                        let templates = editedPreset.promptTemplate;
                         templates.splice(originalIndex, 1);
-                        activePreset.promptTemplate = templates;
+                        editedPreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -229,14 +242,14 @@
                         dragOverIndex = -1;
                     }}
                     moveDown={() => {
-                        if (originalIndex === activePreset.promptTemplate.length - 1) {
+                        if (originalIndex === editedPreset.promptTemplate.length - 1) {
                             return;
                         }
-                        let templates = activePreset.promptTemplate;
+                        let templates = editedPreset.promptTemplate;
                         let temp = templates[originalIndex];
                         templates[originalIndex] = templates[originalIndex + 1];
                         templates[originalIndex + 1] = temp;
-                        activePreset.promptTemplate = templates;
+                        editedPreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -254,11 +267,11 @@
                         if (originalIndex === 0) {
                             return;
                         }
-                        let templates = activePreset.promptTemplate;
+                        let templates = editedPreset.promptTemplate;
                         let temp = templates[originalIndex];
                         templates[originalIndex] = templates[originalIndex - 1];
                         templates[originalIndex - 1] = temp;
-                        activePreset.promptTemplate = templates;
+                        editedPreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -280,14 +293,14 @@
     <button
         class="font-medium cursor-pointer hover:text-green-500"
         onclick={() => {
-            let value = activePreset.promptTemplate ?? [];
+            let value = editedPreset.promptTemplate ?? [];
             value.push({
                 type: "plain",
                 text: "",
                 role: "system",
                 type2: "normal",
             });
-            activePreset.promptTemplate = value;
+            editedPreset.promptTemplate = value;
         }}><PlusIcon /></button
     >
 
@@ -295,27 +308,27 @@
     <span class="text-textcolor2 mb-6 text-sm mt-2">{extokens} {language.exactTokens}</span>
 {:else}
     <span class="text-textcolor mt-4">{language.postEndInnerFormat}</span>
-    <TextInput bind:value={activePreset.promptSettings.postEndInnerFormat} />
+    <TextInput bind:value={editedPreset.promptSettings.postEndInnerFormat} />
 
     <Check
-        bind:check={activePreset.promptSettings.sendChatAsSystem}
+        bind:check={editedPreset.promptSettings.sendChatAsSystem}
         name={language.sendChatAsSystem}
         className="mt-4"
     />
-    <Check bind:check={activePreset.promptSettings.sendName} name={language.formatGroupInSingle} className="mt-4" />
+    <Check bind:check={editedPreset.promptSettings.sendName} name={language.formatGroupInSingle} className="mt-4" />
     <Check
-        bind:check={activePreset.promptSettings.trimStartNewChat}
+        bind:check={editedPreset.promptSettings.trimStartNewChat}
         name={language.trimStartNewChat}
         className="mt-4"
     />
-    <Check bind:check={activePreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
-    <Check bind:check={activePreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
+    <Check bind:check={editedPreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
+    <Check bind:check={editedPreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
 
-    <Check bind:check={activePreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
+    <Check bind:check={editedPreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
 
     {#if settings.ui.showUnrecommended}
         <Check
-            bind:check={activePreset.promptSettings.customChainOfThought}
+            bind:check={editedPreset.promptSettings.customChainOfThought}
             name={language.customChainOfThought}
             className="mt-4"
         >
@@ -323,32 +336,41 @@
         </Check>
     {/if}
     <span class="text-textcolor mt-4">{language.maxThoughtTagDepth}</span>
-    <NumberInput bind:value={activePreset.promptSettings.maxThoughtTagDepth} />
-    <span class="text-textcolor mt-4">{language.groupOtherBotRole} <Help key="groupOtherBotRole" /></span>
-    <SelectInput bind:value={activePreset.groupOtherBotRole}>
-        <OptionInput value="user">User</OptionInput>
-        <OptionInput value="system">System</OptionInput>
-        <OptionInput value="assistant">assistant</OptionInput>
-    </SelectInput>
+    <NumberInput bind:value={editedPreset.promptSettings.maxThoughtTagDepth} />
     <span class="text-textcolor mt-4"
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
-    <TextAreaInput bind:value={activePreset.customPromptTemplateToggle} />
+    <TextAreaInput bind:value={editedPreset.customPromptTemplateToggle} popupEditorContext={editedPreset.id} />
+    <div class="mt-2 min-w-0" data-preset-ooc-toggles>
+        <Accordion
+            styled
+            name={language.oocToggles.title}
+            badge={oocForcedCount ? language.oocToggles.forcedCount(oocForcedCount) : ""}
+        >
+            <p class="mb-3 text-sm text-textcolor2">{language.oocToggles.help}</p>
+            {#key editedPreset.id}
+                <OocToggleEditor
+                    definitionsText={editedPreset.customPromptTemplateToggle}
+                    value={oocToggleMap(editedPreset.oocToggles)}
+                    onchange={(next) => (editedPreset.oocToggles = { ...next })}
+                />
+            {/key}
+        </Accordion>
+    </div>
     <span class="text-textcolor mt-4">{language.defaultVariables} <Help key="defaultVariables" /></span>
-    <TextAreaInput bind:value={activePreset.templateDefaultVariables} />
+    <TextAreaInput bind:value={editedPreset.templateDefaultVariables} popupEditorContext={editedPreset.id} />
     <span class="text-textcolor mt-4">{language.predictedOutput}</span>
     <TextAreaInput bind:value={settings.providers.OAIPrediction} />
     <span class="text-textcolor mt-4">{language.autoSuggest} <Help key="autoSuggest" /></span>
-    <TextAreaInput bind:value={activePreset.autoSuggestPrompt} placeholder={defaultAutoSuggestPrompt} />
-    <span class="text-textcolor mt-4">{language.groupInnerFormat} <Help key="groupInnerFormat" /></span>
     <TextAreaInput
-        placeholder={`<{{char}}\'s Message>\n{{slot}}\n</{{char}}\'s Message>`}
-        bind:value={activePreset.groupTemplate}
+        bind:value={editedPreset.autoSuggestPrompt}
+        popupEditorContext={editedPreset.id}
+        placeholder={defaultAutoSuggestPrompt}
     />
-    {#if activePreset.jsonSchemaEnabled}
+    {#if editedPreset.jsonSchemaEnabled}
         <span class="text-textcolor mt-4">{language.jsonSchema} <Help key="jsonSchema" /></span>
-        <TextAreaInput bind:value={activePreset.jsonSchema} />
+        <TextAreaInput bind:value={editedPreset.jsonSchema} popupEditorContext={editedPreset.id} />
         <span class="text-textcolor mt-4">{language.extractJson} <Help key="extractJson" /></span>
-        <TextInput bind:value={activePreset.extractJson} />
+        <TextInput bind:value={editedPreset.extractJson} />
     {/if}
 {/if}

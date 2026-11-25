@@ -1,4 +1,5 @@
 import { auxFetch } from "../network/auxFetch";
+import { globalFetch } from "../globalApi.svelte";
 import { credentialStatusFor } from "./credentials";
 import type { ModelProfile } from "../../../shared/database.ts";
 import type { SecretPath } from "../../../shared/llmSecrets.ts";
@@ -12,8 +13,18 @@ import {
 } from "../../../shared/llm/providers/nanogpt.ts";
 import type { ModelGridItem } from "./modelGrid";
 
+/**
+ * NanoGPT discovery and account reads. The account and model calls use the stored NanoGPT key on the server: they go
+ * through `auxFetch` (`src/ts/network/auxFetch.ts`) with the edited profile, so the server sends that profile's bound
+ * key, or the flat default key when it binds none. A refused binding does not fall back to a default or public
+ * account: the server refuses the call (`server/src/llm/auxOps.ts` `planAuxOp`), and `getNanoGPTModels` answers an
+ * empty list instead of the public one. Only `getNanoGPTModels` without any key set reads the public list, through
+ * `globalFetch`.
+ */
+
 const NANOGPT_KEY: SecretPath = { kind: "flat", field: "nanogptKey" };
 
+/** A normalized NanoGPT picker entry with capabilities and optional per-million-token prices. */
 export type NanoGPTModelInfo = {
     id: string;
     name: string;
@@ -33,6 +44,7 @@ export type NanoGPTModelInfo = {
     completionPrice1M: number | undefined;
 };
 
+/** The NanoGPT balance response, retaining the service's string amounts and deposit address. */
 export type NanoGPTBalance = {
     usd_balance: string;
     nano_balance: string;
@@ -46,6 +58,7 @@ type UsageBucket = {
     resetAt: number;
 };
 
+/** Subscription status, nullable limits and usage buckets, and the current billing-period end. */
 export type NanoGPTSubscriptionUsage = {
     active: boolean;
     state: "active" | "grace" | "inactive";
@@ -62,7 +75,7 @@ export type NanoGPTSubscriptionUsage = {
     period: { currentPeriodEnd: string };
 };
 
-// The account and model calls use the stored NanoGPT key on the server (`auxFetch`).
+/** Reads the profile's balance through `auxFetch`; HTTP, network, and JSON failures return null. */
 export async function getNanoGPTBalance(profile?: ModelProfile): Promise<NanoGPTBalance | null> {
     try {
         const res = await auxFetch("nanogpt-balance", NANOGPT_BALANCE_ENDPOINT, {
@@ -77,6 +90,7 @@ export async function getNanoGPTBalance(profile?: ModelProfile): Promise<NanoGPT
     }
 }
 
+/** Reads the profile's subscription through `auxFetch`; HTTP, network, and JSON failures return null. */
 export async function getNanoGPTSubscription(profile?: ModelProfile): Promise<NanoGPTSubscriptionUsage | null> {
     try {
         const res = await auxFetch("nanogpt-subscription", NANOGPT_SUBSCRIPTION_ENDPOINT, {
@@ -100,6 +114,7 @@ type NanoGPTPriceComparison = {
     hasUserDiscount: boolean;
 };
 
+/** A model's provider option with per-thousand-token prices, availability, and optional comparison data. */
 export type NanoGPTModelProvider = {
     provider: string;
     pricing: {
@@ -113,6 +128,7 @@ export type NanoGPTModelProvider = {
     comparison?: NanoGPTPriceComparison;
 };
 
+/** Provider-selection metadata and automatic-route metrics for one canonical NanoGPT model. */
 export type NanoGPTModelProviders = {
     canonicalId: string;
     displayName: string;
@@ -130,6 +146,7 @@ export type NanoGPTModelProviders = {
     };
 };
 
+/** Reads provider options for the URL-encoded model id; HTTP, network, and JSON failures return null. */
 export async function getNanoGPTModelProviders(
     modelId: string,
     profile?: ModelProfile,
@@ -147,6 +164,10 @@ export async function getNanoGPTModelProviders(
     }
 }
 
+/**
+ * Reads and normalizes the detailed subscription list using the profile's key. An unset or refused key, non-OK
+ * response, or fetch/parsing/mapping failure returns an empty list; the public list is never substituted.
+ */
 export async function getNanoGPTSubscriptionModels(profile?: ModelProfile): Promise<NanoGPTModelInfo[]> {
     if (!credentialStatusFor(profile, NANOGPT_KEY).keySet) return [];
     try {
@@ -177,20 +198,26 @@ export async function getNanoGPTSubscriptionModels(profile?: ModelProfile): Prom
     }
 }
 
+/**
+ * Reads the personalized list through `auxFetch` when a key is set, otherwise the public list through `globalFetch`.
+ * Refused bindings return an empty list. JSON is mapped without checking HTTP status; absent data or a
+ * fetch/parsing/mapping failure also yields an empty list, with no public fallback after a personalized failure.
+ */
 export async function getNanoGPTModels(profile?: ModelProfile): Promise<NanoGPTModelInfo[]> {
     try {
         // With a stored key, the personalized list through the server; without one, the public list.
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         const status = credentialStatusFor(profile, NANOGPT_KEY);
         if (status.state === "refused") return [];
-        const res = status.keySet
-            ? await auxFetch("nanogpt-models", NANOGPT_PERSONALIZED_MODELS_ENDPOINT + "?detailed=true", {
-                  method: "GET",
-                  profileId: profile?.id,
-                  headers,
-              })
-            : await fetch(NANOGPT_MODELS_ENDPOINT + "?detailed=true", { headers });
-        const json = await res.json();
+        const json = status.keySet
+            ? await (
+                  await auxFetch("nanogpt-models", NANOGPT_PERSONALIZED_MODELS_ENDPOINT + "?detailed=true", {
+                      method: "GET",
+                      profileId: profile?.id,
+                      headers,
+                  })
+              ).json()
+            : (await globalFetch(NANOGPT_MODELS_ENDPOINT + "?detailed=true", { method: "GET", headers })).data;
 
         const models: any[] = json?.data ?? [];
 
@@ -210,6 +237,7 @@ export async function getNanoGPTModels(profile?: ModelProfile): Promise<NanoGPTM
     }
 }
 
+/** Formats available per-million prices for the grid; zero is Free and an unknown input price sorts last. */
 export function toModelGridItem(m: NanoGPTModelInfo): ModelGridItem {
     const fmt = (p: number | undefined): string | null => {
         if (p === undefined) return null;

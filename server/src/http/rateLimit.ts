@@ -2,8 +2,16 @@ import type { Context, MiddlewareHandler } from "hono";
 import ipaddr from "ipaddr.js";
 import type { AppEnv } from "../types.ts";
 
+/**
+ * Process-local request limiting for the independent buckets in server/src/app.ts. Windows start
+ * at each key's first hit; every request counts, including one refused downstream. IPv4-mapped
+ * addresses collapse to IPv4, other IPv6 addresses share a /56, and missing addresses share one
+ * unknown bucket. Each limiter owns an unref'd expiry timer that its context must dispose.
+ */
+
 type Hits = { count: number; resetAt: number };
 
+/** Limiting middleware and cleanup for its counters and expiry timer. */
 export type RateLimiter = {
     middleware: MiddlewareHandler<AppEnv>;
     dispose: () => void;

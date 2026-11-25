@@ -1,3 +1,4 @@
+/** Simplified Chinese `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageChinese = {
     formating: {
         main: "主提示词",
@@ -96,7 +97,7 @@ export const languageChinese = {
         showUnrecommended: "激活后，将显示不建议使用的过时设置。不建议使用这些设置。",
         streamingDisplayOptimizationMode:
             "更改流式生成期间回复的显示方式。无论哪种模式，流式中的消息每帧最多重绘一次，而不是每个 Token 一次；显示脚本（正则、Lua）只在流式完成后对其执行一次。\n\n关闭会在每次重绘时像其他消息一样渲染流式文本（Markdown 等）。\n\n均衡的渲染方式与关闭相同，并在流式完成前隐藏该消息的编辑和翻译按钮。\n\n强会直接显示未经渲染的原始流式文本，流式完成后再正常渲染该消息。它最能降低负载，对移动设备或低端设备可能有帮助。\n\n这是一项实验性功能，可能会导致部分功能出现非预期行为。",
-        imageCompression: "激活后，在导出角色时会压缩略图片。如果动画图片无法显示，请尝试关闭此选项。",
+        imageCompression: "激活后，在导出角色和模块时会压缩略图片。如果动画图片无法显示，请尝试关闭此选项。",
         useExperimental: "激活后，将显示部分实验性功能。",
         forcePlainFetch: "激活后，将使用浏览器的 Fetch API 来替代原生 HTTP 请求。这可能会导致 CORS 错误。",
         autoFillRequestURL: "激活后，将自动填入请求 URL 以匹配当前模型。",
@@ -159,9 +160,6 @@ export const languageChinese = {
             '此字段不为空时，将从回应中提取特定的 JSON 数据。例如：想从回应 `{"response": {"text": ["hello"]}}` 中提取 `response.text[0]`，可以填写 `response.text.0`。',
         translatorNote:
             "可在此处为每个角色添加独特的翻译提示，但仅适用于使用 Ax. 模型进行翻译。要激活此功能，请在语言设置中包含 `{{slot::tnote}}`。此功能不适用群组聊天。",
-        groupInnerFormat:
-            "用于定义群组聊天中非发言者角色的格式。此字段不为空时，将使用此格式替代默认格式。若 `Group Other Bot Role` 设置为 `assistant`，该格式也将应用于发言者。",
-        groupOtherBotRole: "用于定义群组聊天中非发言者的角色。",
         chatHTML:
             "每个聊天插入的 HTML。\n\n可以使用CBS和特殊标签。\n- `<risutextbox>`：用于呈现文字的文本框\n- `<risuicon>`：用于显示用户或助理的头像\n- `<risubuttons>`：用于聊天编辑、翻译等图标按钮\n- `<risugeninfo>`：生成消息按钮。",
         systemContentReplacement: "若模型不支持系统提示词，将使用此格式替换系统提示词。",
@@ -610,7 +608,6 @@ export const languageChinese = {
     autoTranslation: "自动翻译",
     playMessage: "播放消息音效",
     iconSize: "头像大小",
-    createGroup: "创建群组",
     groupIcon: "群组头像",
     single: "单个",
     multiple: "多个",
@@ -684,7 +681,6 @@ export const languageChinese = {
     creator: "创建者",
     CharVersion: "角色版本",
     Speech: "语音",
-    ToggleSuperMemory: "激活 SupaMemory",
     SuperMemory: "SupaMemory",
     useExperimental: "激活实验性功能",
     showMemoryLimit: "显示记忆上限",
@@ -785,7 +781,6 @@ export const languageChinese = {
     customInnerFormat: "自定义内部格式",
     innerFormat: "内部格式",
     HypaMemory: "HypaMemory",
-    ToggleHypaMemory: "激活 HypaMemory",
     resetPromptTemplateConfirm: "你真的确定要重置提示词模板吗？",
     emotionMethod: "情绪检测方式",
     continueResponse: "继续回应",
@@ -800,8 +795,7 @@ export const languageChinese = {
     importPersona: "导入用户设置",
     export: "导出",
     import: "导入",
-    supporterThanks: "支持者感谢",
-    supporterThanksDesc: "感谢您的支持！",
+    supporterThanks: "叡苏支持者",
     supporterListLoadFailed: "无法加载支持者列表。请检查网络连接后重新打开此页面。",
     donatorPatreonDesc: "为保护隐私，默认不会显示在名单中。若想显示您的昵称，请前往叡苏的 Patreon 页面并点击链接按钮。",
     useNamePrefix: "使用名称前缀",
@@ -947,7 +941,10 @@ export const languageChinese = {
     select: "选择",
     options: "选项",
     alertContent: "警告内容",
-    lowLevelAccessConfirm: "此内容使用低层级访问，可直接访问 AI 模型和你的存储数据。你确定要导入吗？",
+    lowLevelAccessImportQuestion:
+        "此内容使用低层级访问，可直接访问 AI 模型和你的存储数据。是否允许低层级访问并导入？若不允许而导入，需要该权限的功能将无法使用，之后可在设置中开启。",
+    lowLevelAccessImportWith: "允许低层级访问并导入",
+    lowLevelAccessImportWithout: "不使用低层级访问导入",
     extractRegex: "使用正则表达式提取文字",
     runImgGen: "执行图像生成",
     cutChat: "分割聊天",
@@ -976,7 +973,6 @@ export const languageChinese = {
     blockMode: "区块",
     helpBlock: "帮助",
     hideChatIcon: "隐藏头像",
-    loadInternalBackup: "读取内部备份",
     createCopy: "新建副本",
     chatOptions: "聊天选项",
     parameters: "参数",
@@ -1007,8 +1003,6 @@ export const languageChinese = {
     trailingDoubleQuote: "下双引号",
     translatorNote: "翻译器备注",
     formatGroupInSingle: "单一群组格式",
-    groupInnerFormat: "非发言者内部格式",
-    groupOtherBotRole: "群组内非发言者的身份",
     chatHTML: "聊天介面 HTML",
     logShare: "显示分享记录按钮",
     preview: "预览",
@@ -1203,7 +1197,7 @@ export const languageChinese = {
     useTokenizerCaching: "Tokenizer 缓存",
     hypaMemoryV2Modal: "Hypa V2 模态框",
     hypaMemoryV3Modal: "Hypa V3 模态框",
-    showMenuHypaMemoryModal: "显示菜单 Hypa 模态框",
+    showMenuHypaMemoryModal: "显示菜单 HypaV2 模态框",
     promptInfoInsideChat: "添加提示信息到聊天",
     promptTextInfoInsideChat: "添加提示文本到聊天",
     promptInfoEmptyMessage: "此消息没有可用的提示信息。",
@@ -1250,8 +1244,6 @@ export const languageChinese = {
     translate: "翻译代码地址",
     apply: "应用",
     add: "追加",
-    nightlyWarning:
-        "## Nightly Builds\n\n您正在连接到软件的每夜构建版本。此版本用于测试，很可能包含错误。**在此版本中，即使您遇到问题，我们也不支持直接解决它们。**",
     generatedByAIDisclaimer: "此内容由 AI 生成，可能包含不准确信息或偏见。",
     aiGenerationWarning: "内容将由 AI 生成，可能包含不准确信息或偏见。",
     bookmark: "书签",

@@ -1,3 +1,4 @@
+import type { ChatMemorySummary } from "./chatMemory.ts";
 import type { Chat, Message, MessageTranslation } from "./database.ts";
 import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 
@@ -10,8 +11,12 @@ import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 /** Chat fields a `meta` op may not set or unset: identity, the messages, and client-only state. */
 export const CHAT_META_FORBIDDEN_KEYS = ["id", "message", "isStreaming", "activeStreamingDisplayOptimizationMode"];
 
-/** The chat fields a `meta` op may `merge` entries into (and remove entries from with `mergeUnset`). */
-export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate"];
+/**
+ * The chat fields a `meta` op may `merge` entries into (and remove entries from with `mergeUnset`):
+ * every stored chat field that is a map keyed by an id, so a writer that changes one entry never
+ * replaces another writer's entries (`bookmarkNames` uses message ids; `oocLog` uses exchange ids).
+ */
+export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate", "bookmarkNames", "oocLog"];
 
 /** The largest remembered tool call (`toolCalls[id]`), as serialized JSON, in UTF-8 bytes. */
 export const MAX_TOOL_CALL_RECORD_BYTES = 1024 * 1024;
@@ -63,6 +68,10 @@ export type ChatOp =
           unset?: string[];
           merge?: Record<string, Record<string, unknown>>;
           mergeUnset?: Record<string, string[]>;
+          /** Apply this single OOC answer merge only to an existing, unanswered exchange. */
+          ifOocUnanswered?: string;
+          /** Recovery Apply is also satisfied when the entire conditional exchange is already stored. */
+          acceptMatchingOocExchange?: true;
       }
     | { op: "append"; messages: Message[]; anchor: MessageAnchor }
     | { op: "setMessage"; message: Message; generation?: MessageGeneration }
@@ -80,15 +89,26 @@ export type ChatOp =
           set?: Partial<Omit<Message, "chatId" | "translation">>;
           unset?: Exclude<keyof Message, "chatId" | "translation" | "role" | "data">[];
       }
-    | { op: "remove"; ids: string[] }
+    /**
+     * `retract`: a person confirmed that what cites these messages is retracted. Without it what cites
+     * them stays as it is and reads as missing its source.
+     */
+    | { op: "remove"; ids: string[]; retract?: true }
     | { op: "begin"; id: string; generationId: string }
     /**
      * Sets or clears a message's stored translation. A translation lands only while its
      * `sourceHash` matches the message's current `data`, else the op is `ignored`
-     * (`ChatGroupResult.translations`); `null` always clears. The only op besides `replace` that
-     * changes a stored translation (`setMessage` keeps it).
+     * (`ChatGroupResult.translations`); `null` always clears. `replace` and `selectCandidate` also
+     * change a stored translation (`setMessage` keeps it).
      */
-    | { op: "setTranslation"; id: string; translation: MessageTranslation | null };
+    | { op: "setTranslation"; id: string; translation: MessageTranslation | null }
+    /**
+     * Switches the newest reply by stored candidate id, also on a stale chat revision. The stored
+     * candidatesRevision must match (absent counts as zero). A missing message, non-carrier,
+     * missing candidate, stale expectation, or invalid resulting row is refused without changing
+     * anything; the rest of the group still applies. Does not participate in `targets`.
+     */
+    | { op: "selectCandidate"; messageId: string; candidateId: string; expect: { candidatesRevision: number } };
 
 /**
  * Every change to one chat in one batch. `baseRevision` is null only for a group starting with `create`.
@@ -137,7 +157,8 @@ export type TargetOutcome = "applied" | "missing";
 /**
  * A group's answer. For a group whose `groupId` the chat already applied, the answer that group got:
  * `revision` as of that group (older than the chat's current one when others wrote since), its
- * `stale`, `messageIds`, `translations`, and `targets`, and every `checkpoints` entry `duplicate`.
+ * `stale`, `messageIds`, `translations`, `selections`, `candidateRows`, and `targets`, and every
+ * `checkpoints` entry `duplicate`.
  */
 export type ChatGroupResult = {
     characterId: string;
@@ -150,6 +171,22 @@ export type ChatGroupResult = {
     checkpoints?: CheckpointOutcome[];
     /** One entry per `setTranslation` op, in op order. */
     translations?: TranslationOutcome[];
+    /** The reasons any conditional OOC answers in the group were skipped. Other ops still applied. */
+    oocAnswerRefusals?: ("answered" | "missing")[];
+    /** A whole HypaV2 or SupaMemory field was skipped because a job wrote it after the group's base. */
+    memoryRefused?: true;
+    /** Index in the sent ops. A conditional OOC merge was refused whole; a memory refusal names only skipped fields. */
+    refusedMeta?: { index: number; memoryFields?: string[] }[];
+    /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */
+    selections?: ("applied" | "refused")[];
+    /**
+     * Final candidate state for surviving rows cleaned by append, refusing snapshot reintroduction,
+     * or needing counter correction, in first-write order. `cleared` means append cleanup or a refused
+     * reintroduction left no scriptstateCheckpoint or candidate scriptstateAfter after all ops,
+     * even when the stored row did not change. null means no stored counter; the writer drops its own.
+     * Omitted when empty; replayed unchanged at this group's revision.
+     */
+    candidateRows?: { id: string; candidatesRevision: number | null; cleared?: true }[];
     /**
      * One entry per `setText`, `setMessage`, `patchMessage`, and `setTranslation` op, in op order;
      * present only when one of them was `missing` (absent: every such op found its message).
@@ -163,16 +200,21 @@ export type ChatGroupResult = {
     stale?: true;
 };
 
+/** A batch's final stored chat order and revision, including membership changes from creates or deletes. */
 export type ChatOrderResult = { characterId: string; revision: string; ids: string[] };
 
 /** A chat as read: metadata plus `message` in order. */
-export type ChatRecord = { characterId: string; id: string; revision: string; data: Chat };
+export type ChatRecord = { characterId: string; id: string; revision: string; trashedAt: number | null; data: Chat };
 
+/** A character's separately stored chat order as read: its revision and chat ids in display order. */
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
+/** Bump when the server's chat summary projection changes, including derived fields. */
+export const CHAT_SUMMARY_FORMAT = 3;
+
 /**
- * A chat's summary: what a chat list shows, projected from the stored metadata without reading
- * message rows. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`, `supaMemoryData`),
+ * A chat's summary: what a chat list shows, projected from the stored metadata and the memoized
+ * time of its last message by position. It carries no messages, memory (`hypaV2Data`, `hypaV3Data`, `supaMemoryData`),
  * bookmarks, or `toolCalls`; it is never a `Chat`. `fmIndex` and `name` arrive defaulted (the
  * server's chat normalizer stores both); `pinned` is projected only when true.
  */
@@ -180,6 +222,10 @@ export type ChatSummary = {
     characterId: string;
     id: string;
     revision: string;
+    /** The last message by position has this finite numeric `time`; absent otherwise. */
+    lastMessageAt?: number;
+    /** Server time in milliseconds when this chat entered the trash. */
+    trashedAt?: number;
     name: string;
     pinned?: boolean;
     folderId?: string;
@@ -188,7 +234,22 @@ export type ChatSummary = {
     modelPresetId?: string;
     bindingReview?: boolean;
     fmIndex: number;
-} & ChatTranslationFields;
+} & ChatTranslationFields &
+    ChatMemorySummary;
+
+export type ChatTrashAction = "trash" | "restore" | "delete";
+export type ChatTrashRequest = { characterId: string; chatId: string; revision: string };
+/** Permanent deletion returns the state immediately before the cascade. */
+export type ChatTrashAnswer = {
+    characterId: string;
+    id: string;
+    revision: string;
+    trashedAt: number | null;
+    summary: ChatSummary;
+};
+export type ChatTrashConflict =
+    | { error: "stale"; revision: null }
+    | { error: "stale" | "generating" | "lastActiveChat" | "notTrashed"; revision: string; trashedAt: number | null };
 
 /**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group
@@ -202,7 +263,7 @@ export type ChatConflict = {
     characterId: string;
     id: string;
     revision: string | null;
-    reason?: "generating" | "expired";
+    reason?: "generating" | "expired" | "useTrash" | "chatTrashed";
     /**
      * With `reason: "generating"`: the messages the group's ops rewrite or remove that a generation
      * job owns (the refusal's evidence, not every lock of the chat); absent when there is none (a

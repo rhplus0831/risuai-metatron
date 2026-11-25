@@ -3,6 +3,11 @@
     import { tooltip } from "src/ts/gui/tooltip";
     import { openURL } from "src/ts/globalApi.svelte";
 
+    /**
+     * Only ids in `src/ts/licenses.ts` `CCLicenseData` make a Creative Commons claim. The displayed
+     * license applies to card text only, with its canonical CC 4.0 link; other ids render nothing.
+     */
+
     interface Props {
         license?: string;
     }

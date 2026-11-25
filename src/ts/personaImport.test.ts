@@ -121,17 +121,18 @@ afterEach(() => {
 });
 
 describe("importUserPersona adds the persona through addPersona", () => {
-    it("the persona gets an id, the saved icon, and its fields; the selection stays; it is saved", async () => {
+    it("returns the added persona's id with its saved icon and fields; the selection stays; it is saved", async () => {
         const { persona, personas, selection, sync, record } = await boot();
         const before = personas();
         const selected = selection.personaId;
         expect(selected).toBe(before[0].id);
         picker.file = { name: "persona.png", data: personaPng() };
-        await persona.importUserPersona();
+        const importedId = await persona.importUserPersona();
         const list = personas();
         expect(list).toHaveLength(before.length + 1);
         const added = list.at(-1);
         expect(added.id).toMatch(UUID_V4);
+        expect(importedId).toBe(added.id);
         expect(before.some((entry) => entry.id === added.id)).toBe(false);
         expect(added).toMatchObject({
             name: "Imported",
@@ -176,17 +177,57 @@ describe("importUserPersona adds the persona through addPersona", () => {
         expect(record("personas")).toEqual(list);
     });
 
-    it("a PNG without a persona chunk reports noData and adds nothing", async () => {
+    it("returns null for a PNG without a persona chunk, reports noData, and adds nothing", async () => {
         const { persona, personas, sync, record } = await boot();
         const before = personas();
         picker.file = { name: "plain.png", data: pngWithText({}) };
-        await persona.importUserPersona();
+        expect(await persona.importUserPersona()).toBeNull();
         expect(alerts.error).toHaveBeenCalledWith(language.errors.noData);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(personas()).toEqual(before);
         expect(saving.calls).toBe(0);
         await sync.flushResources();
         expect(record("personas")).toEqual(before);
+    });
+
+    it("returns null and adds nothing when no file is picked", async () => {
+        const { persona, personas } = await boot();
+        const before = personas();
+
+        expect(await persona.importUserPersona()).toBeNull();
+        expect(personas()).toEqual(before);
+        expect(saving.calls).toBe(0);
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { missing: "name", card: { personaPrompt: "imported prompt" } },
+        { missing: "prompt", card: { name: "Imported" } },
+    ])("returns null and adds nothing when the $missing is missing", async ({ card }) => {
+        const { persona, personas } = await boot();
+        const before = personas();
+        picker.file = { name: "incomplete.png", data: pngWithText({ persona: card }) };
+
+        expect(await persona.importUserPersona()).toBeNull();
+        expect(personas()).toEqual(before);
+        expect(saving.calls).toBe(0);
+        expect(alerts.error).toHaveBeenCalledWith(language.errors.noData);
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it("returns null and adds nothing when saving the imported icon fails", async () => {
+        const { persona, personas } = await boot();
+        const globalApi = await import("./globalApi.svelte");
+        const before = personas();
+        const error = new Error("Icon save failed");
+        vi.mocked(globalApi.saveAsset).mockRejectedValueOnce(error);
+        picker.file = { name: "persona.png", data: personaPng() };
+
+        expect(await persona.importUserPersona()).toBeNull();
+        expect(personas()).toEqual(before);
+        expect(alerts.error).toHaveBeenCalledWith(error);
+        expect(alerts.normal).not.toHaveBeenCalled();
     });
 });
 

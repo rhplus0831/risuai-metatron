@@ -9,15 +9,29 @@ import type { Attachment } from "svelte/attachments";
 import { mount, unmount, type Snippet } from "svelte";
 import PopupList from "src/lib/UI/PopupList.svelte";
 
-// Shared with the server so CBS and lore pick the same values.
+/**
+ * Client presentation helpers, file pickers, text/byte conversions and browser storage utilities.
+ * Character and preset helpers read the live selection; persona helpers accept a stable chat
+ * reference for rendering another chat, falling back to the tab persona when no bound one exists
+ * (src/ts/storage/chatStore.svelte.ts and src/ts/storage/settingsViews.svelte.ts).
+ * File selection uses DOM inputs and preserves eligible-file order; byte reads and IndexedDB calls
+ * can reject. These browser helpers are separate from the deterministic server-shared re-exports
+ * in shared/hashRand.ts and shared/prompt/toggles.ts.
+ */
+
+/** Shared with the server so CBS and lore pick the same random values. */
 export { pickHashRand, sfc32 } from "../../shared/hashRand.ts";
+/** Shared parser for sidebar-toggle prompt syntax. */
 export { parseToggleSyntax } from "../../shared/prompt/toggles.ts";
+/** Sidebar-toggle records returned by shared/prompt/toggles.ts. */
 export type { sidebarToggle, sidebarToggleGroup, sidebarToggleGroupEnd } from "../../shared/prompt/toggles.ts";
 
+/** A displayed message with its original index before `messageForm` reverses and limits the list. */
 export interface Messagec extends Message {
     index: number;
 }
 
+/** Copies display fields newest first, trims message text and limits to loadPages, keeping original indices. */
 export function messageForm(arg: Message[], loadPages: number) {
     function reformatContent(data: string) {
         return data?.trim();
@@ -38,22 +52,46 @@ export function messageForm(arg: Message[], loadPages: number) {
     return a.slice(0, loadPages);
 }
 
+/** Resolves after a timeout of ms milliseconds. */
 export function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** A delay whose timer and listener are released on completion or cancellation. */
+export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+        signal?.throwIfAborted();
+        const onAbort = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, ms);
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+/** Whether data is null or undefined. */
 export function checkNullish(data: any) {
     return data === undefined || data === null;
 }
 
+/** Reads the selected File into `{ name, data: Uint8Array }`; null on cancel or an empty eligible selection. */
 export async function selectSingleFile(ext: string[]) {
     const file = await selectSingleFileHandle(ext);
+    if (!file) {
+        return null;
+    }
     return { name: file.name, data: await readFileAsUint8Array(file) };
 }
 
 /**
- * The picked file as the `File` itself, read by nobody here (a `.risum` is uploaded as it is, never
- * held in the tab); `null` when none is picked.
+ * Returns the DOM-picked File unread, or null for an empty eligible change.
+ * `src/ts/process/modules.ts` passes `.risum` and `.charx` Files to server imports;
+ * `src/ts/process/transformers.ts` uses `src/ts/process/zipFile.ts` to read VITS model zips in slices.
  */
 export async function selectSingleFileHandle(ext: string[]): Promise<File | null> {
     const files = await selectFileByDom(ext, "single");
@@ -61,13 +99,14 @@ export async function selectSingleFileHandle(ext: string[]): Promise<File | null
 }
 
 /**
- * The picked files as the `File`s themselves, read by nobody here (the asset pickers read each file
- * only when its save slot is free, `savePickedFiles`); `[]` when none is picked.
+ * Returns DOM-picked Files unread, or [] for an empty eligible change.
+ * `src/ts/storage/assetQueue.ts`'s savePickedFiles reads each only after load admission.
  */
 export async function selectMultipleFileHandles(ext: string[]): Promise<File[]> {
     return (await selectFileByDom(ext, "multiple")) ?? [];
 }
 
+/** Reads eligible Files in selection order into `{ name, data: Uint8Array }` entries; [] for an empty change. */
 export async function selectMultipleFile(ext: string[]) {
     const v = await selectFileByDom(ext, "multiple");
     let arr: { name: string; data: Uint8Array }[] = [];
@@ -77,10 +116,11 @@ export async function selectMultipleFile(ext: string[]) {
     return arr;
 }
 
-export const replacePlaceholders = (msg: string, name: string) => {
-    let currentChar = selectedCharacter();
+/** Replaces character markers with the supplied name, selected name, or ""; replaces user markers and removes set/get-var markers. */
+export const replacePlaceholders = (msg: string, name?: string) => {
+    const charName = name ?? selectedCharacter()?.name ?? "";
     return msg
-        .replace(/({{char}})|({{Char}})|(<Char>)|(<char>)/gi, currentChar.name)
+        .replace(/({{char}})|({{Char}})|(<Char>)|(<char>)/gi, charName)
         .replace(/({{user}})|({{User}})|(<User>)|(<user>)/gi, getUserName())
         .replace(/(\{\{((set)|(get))var::.+?\}\})/gu, "");
 };
@@ -112,18 +152,22 @@ function displayPersona(chatRef?: { chaId: string; chatId: string } | null) {
     return checkPersonaBinded(chatRef) ?? tabPersonaRecord();
 }
 
+/** Displayed persona's name for the given or selected chat, falling back to "User". */
 export function getUserName(chatRef?: { chaId: string; chatId: string } | null) {
     return displayPersona(chatRef)?.name ?? "User";
 }
 
+/** Displayed persona's icon for the given or selected chat, falling back to "". */
 export function getUserIcon(chatRef?: { chaId: string; chatId: string } | null) {
     return displayPersona(chatRef)?.icon ?? "";
 }
 
+/** Displayed persona's prompt for the given or selected chat, falling back to "". */
 export function getPersonaPrompt(chatRef?: { chaId: string; chatId: string } | null) {
     return displayPersona(chatRef)?.personaPrompt ?? "";
 }
 
+/** Displayed persona's large-portrait flag for the given or selected chat; false when absent or reading fails. */
 export function getUserIconProtrait(chatRef?: { chaId: string; chatId: string } | null) {
     try {
         return displayPersona(chatRef)?.largePortrait ?? false;
@@ -132,6 +176,11 @@ export function getUserIconProtrait(chatRef?: { chaId: string; chatId: string } 
     }
 }
 
+/**
+ * Resolves eligible Files in selection order on change, or [] on cancel or an empty eligible selection.
+ * Filtering is bypassed by allow-all, iOS, or `allowedExtensions[0] === "*"`.
+ * Removes the input before settling.
+ */
 export function selectFileByDom(allowedExtensions: string[], multiple: "multiple" | "single" = "single") {
     return new Promise<null | File[]>((resolve) => {
         const fileInput = document.createElement("input");
@@ -146,7 +195,8 @@ export function selectFileByDom(allowedExtensions: string[], multiple: "multiple
             fileInput.accept = "*";
         }
 
-        fileInput.addEventListener("change", (event) => {
+        fileInput.addEventListener("change", () => {
+            fileInput.remove();
             if (fileInput.files.length === 0) {
                 resolve([]);
                 return;
@@ -159,8 +209,12 @@ export function selectFileByDom(allowedExtensions: string[], multiple: "multiple
                       return !allowedExtensions || allowedExtensions.includes(fileExtension);
                   });
 
-            fileInput.remove();
             resolve(files);
+        });
+
+        fileInput.addEventListener("cancel", () => {
+            fileInput.remove();
+            resolve([]);
         });
 
         document.body.appendChild(fileInput);
@@ -187,6 +241,7 @@ function readFileAsUint8Array(file: File) {
     });
 }
 
+/** Returns cover-background CSS for an image path, or "" for a path shorter than two characters. */
 export async function getCustomBackground(db: string) {
     if (db.length < 2) {
         return "";
@@ -196,6 +251,7 @@ export async function getCustomBackground(db: string) {
     }
 }
 
+/** Finds a non-group character; a miss returns a new blank character named "Unknown Character". */
 export function findCharacterbyId(id: string) {
     for (const char of characterList()) {
         if (char.type !== "group") {
@@ -209,6 +265,7 @@ export function findCharacterbyId(id: string) {
     return unknown;
 }
 
+/** Current list index (groups included), or -1; an index must not be retained as an address across awaits. */
 export function findCharacterIndexbyId(id: string) {
     let i = 0;
     for (const char of characterList()) {
@@ -220,6 +277,7 @@ export function findCharacterIndexbyId(id: string) {
     return -1;
 }
 
+/** Maps every current character/group id to its list index; indices are valid only for that list snapshot. */
 export function getCharacterIndexObject() {
     let i = 0;
     let result: { [key: string]: number } = {};
@@ -238,6 +296,7 @@ export function assetExtension(asset: readonly string[]): string {
 /** How many asset rows an asset list renders at first and adds per "Load More". */
 export const ASSET_LIST_PAGE = 100;
 
+/** Returns the first neutral emotion's image path, or "" when none exists. */
 export function defaultEmotion(em: readonly (readonly [string, string])[]) {
     if (!em) {
         return "";
@@ -250,6 +309,10 @@ export function defaultEmotion(em: readonly (readonly [string, string])[]) {
     return "";
 }
 
+/**
+ * Returns [] or a mode (emp/normal) followed by render values; depending on type/branch those values
+ * can be image URLs, CSS declarations, or a missing image value.
+ */
 export async function getEmotion(
     chaEmotion: { [key: string]: [string, string, number][] },
     type: "contain" | "plain" | "css",
@@ -319,6 +382,7 @@ export async function getEmotion(
     return datas;
 }
 
+/** Returns the first author-note template item's default text in the active prompt preset, or "". */
 export function getAuthorNoteDefaultText() {
     const template = activePreset.promptTemplate;
     if (!template) {
@@ -333,6 +397,7 @@ export function getAuthorNoteDefaultText() {
     return "";
 }
 
+/** AES-GCM ciphertext/tag ArrayBuffer using SHA-256 of the UTF-8 key and a fixed zero 12-byte IV; no IV prefix. */
 export async function encryptBuffer(data: Uint8Array, keys: string) {
     // hash the key to get a fixed length key value
     const keyArray = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(keys));
@@ -352,6 +417,7 @@ export async function encryptBuffer(data: Uint8Array, keys: string) {
     return result;
 }
 
+/** Reads `encryptBuffer`'s SHA-256-keyed, zero-IV AES-GCM format; authentication failure rejects. */
 export async function decryptBuffer(data: Uint8Array, keys: string) {
     // hash the key to get a fixed length key value
     const keyArray = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(keys));
@@ -371,10 +437,12 @@ export async function decryptBuffer(data: Uint8Array, keys: string) {
     return result;
 }
 
+/** Creates a Svelte writable store initialized with t. */
 export function toState<T>(t: T): Writable<T> {
     return writable(t);
 }
 
+/** Decodes bytes as UTF-8 with TextDecoder, using Buffer when the TextDecoder binding is falsy. */
 export function BufferToText(data: Uint8Array) {
     if (!TextDecoder) {
         return Buffer.from(data).toString("utf-8");
@@ -382,6 +450,7 @@ export function BufferToText(data: Uint8Array) {
     return new TextDecoder().decode(data);
 }
 
+/** Produces the heading format consumed by parseMultilangString; xx is free text, not an ordinary language. */
 export function encodeMultilangString(data: { [code: string]: string }) {
     let result = "";
     if (data.xx) {
@@ -393,6 +462,7 @@ export function encodeMultilangString(data: { [code: string]: string }) {
     return result;
 }
 
+/** Reads # headings with a backtick-quoted code and newline; free text becomes `xx`, overriding any `xx` section. */
 export function parseMultilangString(data: string) {
     let result: { [code: string]: string } = {};
     const regex = /# `(.+?)`\n([\s\S]+?)(?=\n# `|$)/g;
@@ -407,6 +477,7 @@ export function parseMultilangString(data: string) {
     return result;
 }
 
+/** Uses Intl with the code's locale and English fallback; xx yields "Unknown Language", and errors return code. */
 export const toLangName = (code: string) => {
     try {
         switch (code) {
@@ -423,10 +494,12 @@ export const toLangName = (code: string) => {
     }
 };
 
+/** Uppercases the first UTF-16 code unit and leaves the rest of the string unchanged. */
 export const capitalize = (s: string) => {
     return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
+/** Reads a Blob through FileReader as bytes; reader errors or a non-ArrayBuffer result reject. */
 export function blobToUint8Array(data: Blob) {
     return new Promise<Uint8Array>((resolve, reject) => {
         const reader = new FileReader();
@@ -444,6 +517,7 @@ export function blobToUint8Array(data: Blob) {
     });
 }
 
+/** Static language-code list for language selection. */
 export const languageCodes = [
     "af",
     "ak",
@@ -581,6 +655,7 @@ export const languageCodes = [
     "zu",
 ];
 
+/** Sums UTF-16 code units into a deterministic seed; different ids can collide. */
 export function uuidtoNumber(uuid: string) {
     let result = 0;
     for (let i = 0; i < uuid.length; i++) {
@@ -589,6 +664,7 @@ export function uuidtoNumber(uuid: string) {
     return result;
 }
 
+/** Empty or whitespace-only input counts as terminated. */
 export function isLastCharPunctuation(s: string) {
     const lastChar = s.trim().at(-1);
     const punctuation = [
@@ -654,6 +730,7 @@ export function isLastCharPunctuation(s: string) {
     return true;
 }
 
+/** Drops trailing code units until isLastCharPunctuation accepts the trimmed suffix, or the string is empty. */
 export function trimUntilPunctuation(s: string) {
     let result = s;
     while (result.length > 0 && !isLastCharPunctuation(result)) {
@@ -737,250 +814,7 @@ export function getNodetextToSentence(node: Node): string {
     return result;
 }
 
-export const TagList = [
-    {
-        value: "female",
-        alias: ["feminine", "girl"],
-    },
-    {
-        value: "male",
-        alias: ["masculine", "boy"],
-    },
-    {
-        value: "OC",
-        alias: ["original-character", "original-characters"],
-    },
-    {
-        value: "game-character",
-        alias: ["video_game", "video-game", "game", "video-game-character"],
-    },
-    {
-        value: "anime",
-        alias: ["animation", "anime-character"],
-    },
-    {
-        value: "v-tuber",
-        alias: ["virtual-tuber", "virtual-youtuber", "virtual-youtube"],
-    },
-    {
-        value: "fantasy",
-        alias: ["mystical"],
-    },
-    {
-        value: "religious",
-        alias: ["spiritual", "faith", "religion", "religious-character"],
-    },
-    {
-        value: "comedy",
-        alias: ["funny", "humor", "humorous"],
-    },
-    {
-        value: "mystery",
-        alias: ["mysterious", "enigma"],
-    },
-    {
-        value: "romance",
-        alias: ["love", "lovers", "couple"],
-    },
-    {
-        value: "dominance",
-        alias: ["dominant", "dom", "submissive", "sub", "bdsm"],
-    },
-    {
-        value: "yandere",
-        alias: ["yan", "yandere-character"],
-    },
-    {
-        value: "non-character",
-        alias: ["not-a-character", "noncharacter", "non-characters"],
-    },
-    {
-        value: "simulator",
-        alias: ["simulation", "sim"],
-    },
-    {
-        value: "minor",
-        alias: ["underage", "young"],
-    },
-    {
-        value: "giant",
-        alias: ["giantess", "giant-character"],
-    },
-    {
-        value: "tiny",
-        alias: ["tiny-character", "tiny-characters"],
-    },
-    {
-        value: "realistic",
-        alias: ["real", "real-life"],
-    },
-    {
-        value: "cartoon",
-        alias: ["toon", "animated"],
-    },
-    {
-        value: "furry",
-        alias: ["anthropomorphic"],
-    },
-    {
-        value: "kenomimi",
-        alias: ["animal-ears"],
-    },
-    {
-        value: "mecha",
-        alias: ["robot", "mech"],
-    },
-    {
-        value: "monster",
-        alias: ["creature", "beast", "monstrous"],
-    },
-    {
-        value: "alien",
-        alias: ["extraterrestrial", "alien-character"],
-    },
-    {
-        value: "demon",
-        alias: ["devil", "demonic", "demon-character"],
-    },
-    {
-        value: "angel",
-        alias: ["heavenly", "angelic", "angel-character"],
-    },
-    {
-        value: "elf",
-        alias: ["elven", "elf-character"],
-    },
-    {
-        value: "mermaid",
-        alias: ["merfolk", "mermaid-character"],
-    },
-    {
-        value: "vampire",
-        alias: ["vampiric", "vampire-character"],
-    },
-    {
-        value: "werewolf",
-        alias: ["lycan", "lycanthrope", "werewolf-character"],
-    },
-    {
-        value: "zombie",
-        alias: ["undead", "zombie-character"],
-    },
-    {
-        value: "ghost",
-        alias: ["spirit", "apparition", "ghost-character"],
-    },
-    {
-        value: "witch",
-        alias: ["sorceress", "witch-character"],
-    },
-    {
-        value: "wizard",
-        alias: ["sorcerer", "wizard-character"],
-    },
-    {
-        value: "ninja",
-        alias: ["shinobi", "ninja-character"],
-    },
-    {
-        value: "pirate",
-        alias: ["buccaneer", "pirate-character"],
-    },
-    {
-        value: "knight",
-        alias: ["paladin", "knight-character"],
-    },
-    {
-        value: "samurai",
-        alias: ["bushi", "samurai-character"],
-    },
-    {
-        value: "cowboy",
-        alias: ["cowgirl", "cowboy-character"],
-    },
-    {
-        value: "noble",
-        alias: ["royal", "nobility", "noble-character"],
-    },
-    {
-        value: "thief",
-        alias: ["rogue", "thief-character"],
-    },
-    {
-        value: "spy",
-        alias: ["secret-agent", "spy-character"],
-    },
-    {
-        value: "soldier",
-        alias: ["military", "soldier-character"],
-    },
-    {
-        value: "villain",
-        alias: ["antagonist", "villain-character"],
-    },
-    {
-        value: "hero",
-        alias: ["protagonist", "hero-character"],
-    },
-    {
-        value: "superhero",
-        alias: ["super-hero", "super-heroine", "superhero-character"],
-    },
-    {
-        value: "mage",
-        alias: ["magician", "mage-character", "magical"],
-    },
-    {
-        value: "animal",
-        alias: ["pet", "pet-character"],
-    },
-    {
-        value: "cute",
-        alias: ["adorable", "cute-character"],
-    },
-    {
-        value: "nonbinary",
-        alias: ["genderqueer", "genderfluid"],
-    },
-    {
-        value: "multiple-characters",
-        alias: ["group", "multiple"],
-    },
-    {
-        value: "rpg",
-        alias: ["roleplaying", "role-playing"],
-    },
-    {
-        value: "non-human",
-        alias: ["inhuman", "nonhuman", "non-human-character", "not-human"],
-    },
-];
-
-export const searchTagList = (query: string) => {
-    const splited = query.split(",").map((v) => v.trim());
-    if (splited.length > 10) {
-        return [];
-    }
-    const realQuery = splited.at(-1).trim().toLowerCase();
-
-    const result: string[] = [];
-
-    for (const tag of TagList) {
-        if (tag.value.startsWith(realQuery)) {
-            result.push(tag.value);
-            continue;
-        }
-        for (const alias of tag.alias) {
-            if (alias.startsWith(realQuery)) {
-                result.push(tag.value);
-                break;
-            }
-        }
-    }
-
-    return result.filter((v) => splited.indexOf(v) === -1);
-};
-
+/** Recognizes only case-sensitive http://, https://, ccdefault: and the persisted spelling embeded://. */
 export const isKnownUri = (uri: string) => {
     return (
         uri.startsWith("http://") ||
@@ -990,6 +824,7 @@ export const isKnownUri = (uri: string) => {
     );
 };
 
+/** Nonempty `key=value` lines without trimming; only the first value segment survives extra `=`; [] on failure. */
 export function parseKeyValue(template: string) {
     try {
         if (!template) {
@@ -1011,6 +846,7 @@ export function parseKeyValue(template: string) {
     }
 }
 
+/** Shared sorting options: a 300 ms touch-only delay, .no-sort filter and class-name substring move guard. */
 export const sortableOptions = {
     delay: 300, // time in milliseconds to define when the sorting should start
     delayOnTouchOnly: true,
@@ -1020,18 +856,24 @@ export const sortableOptions = {
     },
 } as const;
 
+/** Requires a global regexp. Replacers run concurrently; results are inserted in match order. */
 export async function replaceAsync(
     string: string,
     regexp: RegExp,
     replacerFunction: (...args: string[]) => Promise<string>,
 ) {
+    const pattern = new RegExp(regexp);
     const replacements = await Promise.all(
-        Array.from(string.matchAll(regexp), (match) => replacerFunction(...(match as string[]))),
+        Array.from(string.matchAll(pattern), (match) => replacerFunction(...(match as string[]))),
     );
     let i = 0;
-    return string.replace(regexp, () => replacements[i++]);
+    return string.replace(pattern, () => replacements[i++]);
 }
 
+/**
+ * Projects supported schema fields recursively; mutates union `type` to its first non-null type,
+ * setting `nullable` if the union contained "null".
+ */
 export function simplifySchema(
     schema: any,
     args: {
@@ -1109,6 +951,7 @@ export function simplifySchema(
     return result;
 }
 
+/** Prompt instructing image-tag insertion from the current character's CBS display-asset keywords. */
 export const prebuiltAssetCommand = `
 <Image Tag Instruction>Insert HTML image tags between paragraphs based on context.
 Set src as keywords from the list below that matches current character, outfit, situation sentiment and etc.
@@ -1120,6 +963,7 @@ Example: <img src="{{ele::{{chardisplayasset}}::0}}">
 <Image Tag Instruction>
 `;
 
+/** Removes nonempty <Thoughts> blocks, unwraps one enclosing lowercase json fence and trims whitespace. */
 export const jsonOutputTrimmer = (data: string) => {
     data = data.replace(/<Thoughts>(.+?)<\/Thoughts>/gms, "").trim();
     if (data.startsWith("```json") && data.endsWith("```")) {
@@ -1128,9 +972,12 @@ export const jsonOutputTrimmer = (data: string) => {
     return data.trim();
 };
 
+/** Type assertion for buffer APIs only: returns the same value without copying or converting SharedArrayBuffer. */
 export function asBuffer(arr: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer>;
+/** ArrayBufferLike overload of the same no-copy type assertion. */
 export function asBuffer(arr: ArrayBufferLike): ArrayBuffer;
 
+/** Returns the input unchanged; the ArrayBuffer result type does not convert shared backing storage. */
 export function asBuffer(arr: Uint8Array<ArrayBufferLike> | ArrayBufferLike): Uint8Array<ArrayBuffer> | ArrayBuffer {
     if (arr instanceof Uint8Array) {
         return arr as unknown as Uint8Array<ArrayBuffer>;
@@ -1139,6 +986,7 @@ export function asBuffer(arr: Uint8Array<ArrayBufferLike> | ArrayBufferLike): Ui
     }
 }
 
+/** Opens IndexedDB `DPoPDB` v1; creates store `name || "DPoPStore"` only on upgrade, not on later opens. */
 export function openKeypairStoreDB(name: string): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open("DPoPDB", 1);
@@ -1155,6 +1003,11 @@ export function openKeypairStoreDB(name: string): Promise<IDBDatabase> {
     });
 }
 
+/**
+ * Stores `{ privateKey, publicKey }` CryptoKeys as supplied under key `dpop` in `DPoPDB` v1, store
+ * `name || "DPoPStore"`. Preserve the signing private key's non-extractability: `src/ts/storage/serverAuth.ts`
+ * generates it with extractable false and uses store `node`; `public/sw.js` reads that same layout.
+ */
 export async function saveKeypairStore(name: string, keyPair: CryptoKeyPair) {
     const db = await openKeypairStoreDB(name);
     return new Promise((resolve, reject) => {
@@ -1173,6 +1026,7 @@ export async function saveKeypairStore(name: string, keyPair: CryptoKeyPair) {
     });
 }
 
+/** Reads `DPoPDB` v1 / `name || "DPoPStore"` / `dpop` as a CryptoKeyPair, null if absent; IDB errors reject. */
 export async function getKeypairStore(name: string): Promise<CryptoKeyPair | null> {
     const db = await openKeypairStoreDB(name);
     return new Promise((resolve, reject) => {
@@ -1196,6 +1050,7 @@ export async function getKeypairStore(name: string): Promise<CryptoKeyPair | nul
     });
 }
 
+/** Unpadded byte encoding used for JWT segments by `src/ts/storage/serverAuth.ts`. */
 export function base64url(source: Uint8Array | ArrayBuffer): string {
     const bytes = source instanceof ArrayBuffer ? new Uint8Array(source) : source;
     let encodedSource = btoa(String.fromCharCode.apply(null, [...bytes]))

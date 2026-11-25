@@ -3,13 +3,19 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("src/ts/globalApi.svelte", () => ({ openURL: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { language } from "src/lang";
+import { globalFetch } from "src/ts/globalApi.svelte";
+import { globalFetchFromResponse } from "src/ts/tests/globalApiMock";
 import ThanksPage from "./ThanksPage.svelte";
 
-// The supporter list is fetched when the page opens; a failed fetch (offline, or an error status)
-// shows a localized message instead of "Loading..." forever.
+// The supporter list is fetched through `globalFetch` when the page opens; a failed fetch (offline, or an
+// error status) shows a localized message instead of "Loading..." forever.
+
+function answer(reply: () => Promise<Response>) {
+    vi.mocked(globalFetch).mockImplementation((url, arg) => globalFetchFromResponse(reply, url, arg));
+}
 
 const mounted: ReturnType<typeof mount>[] = [];
 
@@ -26,40 +32,45 @@ async function render() {
 afterEach(() => {
     for (const instance of mounted.splice(0)) unmount(instance);
     document.body.replaceChildren();
-    vi.unstubAllGlobals();
+    vi.mocked(globalFetch).mockReset();
 });
 
 describe("ThanksPage", () => {
     it("shows the load failure message when the supporter list cannot be fetched", async () => {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))),
-        );
+        answer(async () => Promise.reject(new TypeError("Failed to fetch")));
         const page = await render();
         expect(page.textContent).toContain(language.supporterListLoadFailed);
         expect(page.textContent).not.toContain("Loading...");
     });
 
     it("shows the load failure message for an error status", async () => {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () => new Response("bad gateway", { status: 502 })),
-        );
+        answer(async () => new Response("bad gateway", { status: 502 }));
         const page = await render();
         expect(page.textContent).toContain(language.supporterListLoadFailed);
     });
 
+    // The list and the buttons belong to the original RisuAI project; the page says so whether or not the list loads.
+    it("names RisuAI as the project the supporters back, even when the list fails to load", async () => {
+        answer(async () => Promise.reject(new TypeError("Failed to fetch")));
+        const page = await render();
+        expect(page.querySelector("h2")?.textContent).toBe(language.supporterThanks);
+        expect(language.supporterThanks).toContain("RisuAI");
+        expect(page.querySelector('[role="note"]')?.textContent?.trim()).toBe(language.supporterUpstreamNotice);
+        expect(page.textContent).toContain(language.supporterLinkName);
+    });
+
     it("lists the supporters by tier when the list loads", async () => {
-        vi.stubGlobal(
-            "fetch",
-            vi.fn(async () =>
-                Response.json([
-                    { amount: 60, name: "Gold Name" },
-                    { amount: 3, name: "Copper Name" },
-                ]),
-            ),
+        answer(async () =>
+            Response.json([
+                { amount: 60, name: "Gold Name" },
+                { amount: 3, name: "Copper Name" },
+            ]),
         );
         const page = await render();
+        expect(globalFetch).toHaveBeenCalledWith(
+            "https://sv.risuai.xyz/patreon/list",
+            expect.objectContaining({ method: "GET" }),
+        );
         expect(page.textContent).toContain("Gold Name");
         expect(page.textContent).toContain("Copper Name");
         expect(page.textContent).not.toContain(language.supporterListLoadFailed);

@@ -1,13 +1,18 @@
 <script lang="ts">
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import { characterList, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-    import { chatCount } from "src/ts/storage/chatStore.svelte";
-    import { type character, type groupChat } from "src/ts/storage/database.svelte";
+    import { characterLastChattedAt, activeChatCount } from "src/ts/storage/chatStore.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import { addCharacter, changeChar } from "src/ts/characters";
     import { MessageSquareIcon, PlusIcon } from "@lucide/svelte";
     import { makeCharacterAgoText } from "../UI/mainMenuProjection";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
+
+    /**
+     * The list view of the character catalog (`src/lib/Others/GridCatalog.svelte`), not a mobile shell: there is
+     * none, and small screens use the desktop layout.
+     */
 
     interface Props {
         endGrid?: () => void;
@@ -26,18 +31,16 @@
 
     function sortChar(char: AnyClientCharacter[]) {
         return char
-            .map((c, i) => ({ c, i }))
-            .filter(({ c }) => {
-                return !hideTrash || !c.trashTime;
-            })
-            .map(({ c }) => {
+            .filter((c) => !isArchivedGroup(c) && (!hideTrash || !c.trashTime))
+            .map((c) => {
+                const interaction = characterLastChattedAt(c.chaId, c.lastInteraction);
                 return {
                     name: c.name || "Unnamed",
                     image: c.image,
-                    chats: chatCount(c.chaId),
+                    chats: activeChatCount(c.chaId),
                     chaId: c.chaId,
-                    interaction: c.lastInteraction || 0,
-                    agoText: makeAgoText(c.lastInteraction || 0),
+                    interaction,
+                    agoText: makeAgoText(interaction),
                 };
             })
             .filter((char) => !query || matchesAny([char.name], query))

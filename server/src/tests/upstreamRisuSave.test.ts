@@ -45,6 +45,19 @@ afterEach(() => {
 });
 
 describe("encodeUpstreamDatabase and decodeUpstreamDatabase", () => {
+    it("preserves Date values when decoding legacy MessagePack saves", async () => {
+        const db = {
+            characters: [],
+            pluginCustomStorage: { date: new Date("2024-01-02T03:04:05.678Z") },
+        };
+        const packed = packr.pack(db);
+        for (const bytes of [save(7, packed), encodeUpstreamDatabase(db), save(9, await streamGzip(packed))]) {
+            const decoded = decodeUpstreamSave(bytes, LIMIT);
+            expect(decoded).toStrictEqual({ database: db, kv: {} });
+            expect((decoded.database.pluginCustomStorage as { date: unknown }).date).toBeInstanceOf(Date);
+        }
+    });
+
     it("round-trips undefined, large integers, binary values, and long non-ASCII strings", () => {
         const db = {
             characters: [

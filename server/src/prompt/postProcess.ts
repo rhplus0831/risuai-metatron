@@ -4,17 +4,15 @@ import type { requestDataResponse } from "../llm/request.ts";
 import { type EmbeddingEnv, HypaProcesser } from "./embeddings.ts";
 
 /**
- * The parts of a send's tail that are the client's own code after the reply (the former
- * `src/ts/process/index.svelte.ts`, `src/ts/process/inlayScreen.ts`): the inlay screen's rewrite of a
- * reply and the two automatic emotion modes. The runner (`runner.ts`) orders them with the rest of
- * the tail.
+ * Rewrites a reply for the inlay screen and runs the two automatic emotion modes. The runner
+ * (`runner.ts`) orders them with the rest of the send's tail.
  */
 
 const imggenRegex = [/<ImgGen="(.+?)">/gi, /{{ImgGen="(.+?)"}}/gi] as const;
 
 /**
- * `runInlayScreen` (`inlayScreen.ts`): the reply's text at once, and for the image view the work
- * that replaces each image command by its inlay.
+ * Returns the reply's text at once, and for the image view the work that replaces each image
+ * command by its inlay.
  *
  * - `emotion` view: `<Emotion="x">` becomes `{{emotion::x}}`.
  * - `imggen` view: every `<ImgGen="…">` and `{{ImgGen="…"}}` shows `[Generating...]` at once;
@@ -23,8 +21,7 @@ const imggenRegex = [/<ImgGen="(.+?)">/gi, /{{ImgGen="(.+?)"}}/gi] as const;
  *   the text with `{{inlay::id}}` in place of each command. A command whose image was not made
  *   (`generate` answered null) is removed.
  *
- * The client starts a form's images together; here they are asked one after the other (the job
- * channel runs one callback at a time for a tab anyway).
+ * Images are requested one after the other; the job channel runs one callback at a time for a tab.
  */
 export function runInlayScreen(
     char: character,

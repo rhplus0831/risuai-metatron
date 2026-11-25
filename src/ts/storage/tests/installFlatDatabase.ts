@@ -118,6 +118,7 @@ export function installFlatDatabaseWithChats(raw: object, presetId = "fixture-pr
             characterId: character.chaId,
             id: chat.id,
             revision: "r1",
+            trashedAt: null,
             data: chat as any,
         })),
     );

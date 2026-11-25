@@ -1,10 +1,23 @@
+import { language } from "src/lang";
+import { ASSET_LEASE_MS } from "../../../shared/assetLifecycle.ts";
 import { assetKey, loadAssets, saveAsset, saveAssetBatch } from "../globalApi.svelte";
-import { ASSET_BATCH_CLIENT_BYTES, ASSET_BATCH_CLIENT_RECORDS } from "./assetClient";
+import { ASSET_BATCH_CLIENT_BYTES, ASSET_BATCH_CLIENT_RECORDS, assetContentHash, missingAssets } from "./assetClient";
 
 /**
- * Yields one completed batch in key order while prefetching the next (200 keys by default).
- * Only these two batches are retained. The asset client owns retries. Closing the iterator, a
- * consumer failure, or an external abort cancels and settles the pending read before returning.
+ * Batched asset reads for exports and bounded save queues for imports, through
+ * `src/ts/globalApi.svelte.ts`. Bulk import callers of `saveAssets` include CharX-embedded `.risum`,
+ * PNG card chunks, embedded base64 assets, picked files, and ONNX zips; `AssetSaveQueue` serves
+ * producers whose items arrive over time, such as the in-tab CharX importer.
+ * `src/ts/storage/assetClient.ts` owns retries for 429/503 and network failures; these helpers
+ * never retry themselves.
+ */
+
+/**
+ * Yields `{ index, key, bytes }` in key order over `loadAssets` in `src/ts/globalApi.svelte.ts`,
+ * prefetching the next batch while one is consumed. Only these two batches are retained.
+ * `batchSize` is floored and clamped to `ASSET_BATCH_CLIENT_RECORDS`; non-finite or <1 values use
+ * 200, the default. Closing the iterator, a consumer failure, or an external abort cancels and
+ * settles the pending read before returning.
  */
 export async function* loadAssetsInBatches(
     keys: readonly string[],
@@ -52,21 +65,16 @@ export async function* loadAssetsInBatches(
     }
 }
 
-/**
- * The bounded asset save queues. {@link saveAssets} serves the
- * bulk import paths (the CharX-embedded `.risum`, PNG card chunks, embedded base64 assets, picked
- * files, ONNX zips): an item's bytes are not produced (`load()`) until it has a slot, and the loaded
- * items are written in batches through the batch write route, one request at a time.
- * {@link AssetSaveQueue} writes one item per `saveAsset` (the in-tab CharX importer). The asset
- * client already retries a 429/503 or a network failure; the queues themselves never retry.
- */
-
 /** Items saved at once when the caller does not say. */
 export const DEFAULT_ASSET_CONCURRENCY = 10;
 
 /** One asset to save: `saveAsset(await load(), customId, fileName)`. */
 export type AssetSaveItem = {
-    /** Produces the bytes. Called once, only when the item has a slot; a throw fails the item. */
+    /**
+     * Produces the bytes under admission. saveAssets may call it again to repair a missing file at
+     * completion; replay must produce the same content. The callback is retained until completion,
+     * including anything it closes over. Prefer re-readable sources to captured encoded or decoded payloads.
+     */
     load: () => Promise<Uint8Array> | Uint8Array;
     /** Gives the stored key its extension (`saveAsset`'s `fileName`; default `png`). */
     fileName?: string;
@@ -74,6 +82,7 @@ export type AssetSaveItem = {
     customId?: string;
 };
 
+/** Load concurrency, settlement progress, and cancellation for bulk asset saves. */
 export type SaveAssetsOptions = {
     /** Items loading at once (default {@link DEFAULT_ASSET_CONCURRENCY}). */
     concurrency?: number;
@@ -109,10 +118,11 @@ type Entry = {
 };
 
 /**
- * The queue under {@link saveAssets}, for a caller whose items arrive over time (the CharX importer's
- * zip entries): `add` resolves to the item's key or rejects with its error, and `whenReady` lets the
- * producer wait before producing more, so items do not pile up waiting for a slot. With a `signal`,
- * an abort rejects the waiting items with its reason and aborts the writes in flight.
+ * Saves each item through its own `saveAsset` in `src/ts/globalApi.svelte.ts`, so a fresh canonical
+ * item makes one missing check and one write. `add` resolves to the item's key or rejects with its
+ * error, and `whenReady` lets the producer wait before producing more, so items do not pile up
+ * waiting for a slot. With a `signal`, an abort rejects the waiting items with its reason and
+ * aborts the writes in flight.
  */
 export class AssetSaveQueue {
     readonly concurrency: number;
@@ -222,17 +232,23 @@ function isAsyncIterable<T>(value: Iterable<T> | AsyncIterable<T>): value is Asy
 const keyEncoder = new TextEncoder();
 
 /** A loaded item waiting for its batch: `bytes` null for a repeat of a hash key already batched. */
-type LoadedAsset = { index: number; key: string; bytes: Uint8Array | null; size: number };
+type LoadedAsset = { index: number; key: string; bytes: Uint8Array | null; size: number; sha256?: string };
 
 /**
- * Saves `items` and resolves to their keys in item order (the key `saveAsset` would give each). An
- * item is taken from `items` (and its `load()` called) only when fewer than `concurrency` items are
- * loading and the loaded items waiting to be written are under one write request's worth
- * ({@link ASSET_BATCH_CLIENT_RECORDS} records or {@link ASSET_BATCH_CLIENT_BYTES} record bytes); an
- * async iterable is pulled the same way, so a producer that decodes as it yields is held back too.
- * The loaded items are written one request at a time, each request a batch of them that fits those
- * caps (a larger single item alone), while the next batch loads. An item whose hash key (no
- * `customId`) another item of this call already carries is not sent again.
+ * Saves `items` and resolves to their keys in item order. `concurrency` limits loads, not bytes.
+ * Admission pauses while queued records reach {@link ASSET_BATCH_CLIENT_RECORDS} or
+ * {@link ASSET_BATCH_CLIENT_BYTES} (headers included). An async iterator pull admitted earlier
+ * may still start its load; other loads in flight and the write batch add to retained bytes, and
+ * one item may exceed the byte cap. Async producers that decode as they yield are held back too.
+ *
+ * Each loaded item is keyed by `assetKey` in `src/ts/globalApi.svelte.ts` and written through its
+ * `saveAssetBatch`, one request at a time within the client caps (a larger single item alone), while
+ * the next batch loads. Without a `customId`, a canonical key's hash is carried as `sha256`, so
+ * `writeAssets` in `src/ts/storage/assetClient.ts` skips bytes the server holds verified; a custom
+ * id is always sent. An item whose hash key another item of this call already carries is not sent
+ * again when it has no `customId`. After draining, all canonical keys are checked again; missing
+ * keys (all keys after a failed check) are reloaded, hash-checked, and rewritten. A final pass lasting
+ * an hour refuses the handoff. Custom ids are always uploaded and are not presence-checked.
  *
  * `onProgress(done, total)` runs for each item once it settles: when its batch is written or fails,
  * or when its `load()` throws; `total` is the item count, or for an async iterable the items taken
@@ -245,6 +261,9 @@ type LoadedAsset = { index: number; key: string; bytes: Uint8Array | null; size:
  * async iterable that throws rejects the call with its error, also after the work in flight settles;
  * one left unfinished is closed (`return()`). When `signal` fires, the write in flight is aborted
  * and the call rejects with the signal's reason once the work in flight has stopped.
+ * A halt from a load or batch failure, an `onProgress` or source throw, or an abort drops loaded items
+ * still waiting for a batch: they are never written or settled, trigger no `onProgress` call, and do not
+ * count toward `AssetSaveError.failed`.
  */
 export async function saveAssets(
     items: Iterable<AssetSaveItem> | AsyncIterable<AssetSaveItem>,
@@ -261,6 +280,7 @@ export async function saveAssets(
     const errors: unknown[] = [];
     // Hash keys already in a batch of this call (written, being written, or waiting).
     const batchedKeys = new Set<string>();
+    const replay = new Map<string, AssetSaveItem>();
     let open: LoadedAsset[] = [];
     let openRecords = 0;
     let openBytes = 0;
@@ -326,7 +346,9 @@ export async function saveAssets(
         open = open.slice(count);
         openRecords -= records;
         openBytes -= bytes;
-        const writes = batch.flatMap((entry) => (entry.bytes ? [{ key: entry.key, bytes: entry.bytes }] : []));
+        const writes = batch.flatMap((entry) =>
+            entry.bytes ? [{ key: entry.key, bytes: entry.bytes, sha256: entry.sha256 }] : [],
+        );
         writing = (writes.length > 0 ? saveAssetBatch(writes, signal ? { signal } : undefined) : Promise.resolve())
             .then(
                 () => {
@@ -362,6 +384,7 @@ export async function saveAssets(
                 if (halted()) {
                     return;
                 }
+                if (!item.customId && assetContentHash(key) && !replay.has(key)) replay.set(key, item);
                 if (!item.customId && batchedKeys.has(key)) {
                     open.push({ index, key, bytes: null, size: 0 });
                 } else {
@@ -370,7 +393,9 @@ export async function saveAssets(
                     }
                     // The record's framing: u32 name length, the UTF-8 name, u32 data length.
                     const size = 8 + keyEncoder.encode(key).byteLength + data.byteLength;
-                    open.push({ index, key, bytes: data, size });
+                    // assetKey already hashed these bytes; custom ids never attest to their content.
+                    const sha256 = item.customId ? undefined : (assetContentHash(key) ?? undefined);
+                    open.push({ index, key, bytes: data, size, sha256 });
                     openRecords += 1;
                     openBytes += size;
                 }
@@ -441,6 +466,29 @@ export async function saveAssets(
     if (errors.length > 0) {
         throw new AssetSaveError(errors);
     }
+    // Earlier batches may have waited behind an arbitrarily slow loader. Reclaim every canonical
+    // key now; a failed check rewrites ALL of them, never relying on the earlier batches' leases.
+    const claimStart = performance.now();
+    let missing: Set<string>;
+    try {
+        missing = await missingAssets([...replay.keys()], signal ? { signal } : undefined);
+    } catch (error) {
+        if (signal?.aborted) throw abortReason(signal);
+        console.warn("Asset completion check failed; rewriting canonical assets", error);
+        missing = new Set(replay.keys());
+    }
+    for (const key of missing) {
+        const item = replay.get(key)!;
+        const bytes = await item.load();
+        if (signal?.aborted) throw abortReason(signal);
+        if ((await assetKey(bytes, "", item.fileName ?? "")) !== key)
+            throw new Error(language.errors.assetReloadChanged);
+        // Omit sha256 to force publication: the failed end check must not become another old skip.
+        await saveAssetBatch([{ key, bytes }], signal ? { signal } : undefined);
+    }
+    if (signal?.aborted) throw abortReason(signal);
+    if (replay.size && performance.now() - claimStart >= ASSET_LEASE_MS)
+        throw new Error(language.errors.assetClaimsExpired);
     return keys;
 }
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { untrack } from "svelte";
+    import { onDestroy, untrack } from "svelte";
     import { matchingAssetIndices, moduleAssetNames } from "src/ts/assetList";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
@@ -19,10 +19,17 @@
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
     import { ASSET_LIST_PAGE, assetExtension, selectMultipleFile, selectMultipleFileHandles } from "src/ts/util";
     import { savePickedFiles } from "src/ts/storage/assetQueue";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import LazyFileSrc from "src/lib/UI/GUI/LazyFileSrc.svelte";
 
     import { v4 } from "uuid";
+
+    /**
+     * The module editor (`ModuleSettings.svelte`'s create and edit views): it edits `currentModule` in place, so an
+     * edit of a stored module saves at once. The asset picker saves the picked files with `savePickedFiles` and, once
+     * all are saved, appends every row in one write; a failed save alerts and adds none.
+     */
 
     let submenu = $state(0);
     interface Props {
@@ -30,6 +37,18 @@
     }
 
     let { currentModule = $bindable() }: Props = $props();
+    let destroyed = false;
+    onDestroy(() => (destroyed = true));
+
+    // A retained wrapper can resolve to a replacement module after a picker or upload.
+    function captureModule() {
+        const module = currentModule;
+        const owner = recordValueIdentity(module);
+        return () => {
+            if (destroyed || !currentModule || recordValueIdentity(currentModule) !== owner) return null;
+            return module;
+        };
+    }
     // Search and paging reset per module; each query starts at the first page of matches.
     const assetsOwnerId = $derived(currentModule?.id);
     let assetQuery = $derived.by(() => {
@@ -72,6 +91,19 @@
         previousMatches = { owner: assetsOwnerId, query, indices };
         return indices;
     });
+
+    // A local rename copies its tuple; any other replacement must release the old row's typing focus.
+    function guardNameFocus(node: HTMLElement, context: { owner: unknown; row: unknown; local: () => boolean }) {
+        return {
+            update(next: typeof context) {
+                if (context.owner !== next.owner || (context.row !== next.row && !next.local())) {
+                    const input = node.querySelector("input");
+                    if (input === document.activeElement) input?.blur();
+                }
+                context = next;
+            },
+        };
+    }
 
     function renameAsset(index: number, name: string) {
         const list = currentModule.assets;
@@ -147,11 +179,13 @@
     }
 
     async function importLoreBook() {
-        let lore = currentModule.lorebook;
+        const target = captureModule();
         const lorebook = await selectMultipleFile(["json", "lorebook"]);
-        if (!lorebook) {
+        const module = target();
+        if (!lorebook || !module) {
             return;
         }
+        const lore = module.lorebook;
         try {
             for (const f of lorebook) {
                 const importedlore = JSON.parse(Buffer.from(f.data).toString("utf-8"));
@@ -330,7 +364,11 @@
         <button
             class="font-medium cursor-pointer hover:text-green-500"
             onclick={async () => {
-                currentModule.regex = await importRegex(currentModule.regex);
+                const target = captureModule();
+                const scripts = await importRegex([]);
+                const module = target();
+                if (!module || scripts.length === 0) return;
+                module.regex = [...(module.regex ?? []), ...scripts];
             }}><HardDriveUploadIcon /></button
         >
     </div>
@@ -346,6 +384,7 @@
                         <button
                             class="hover:text-green-500"
                             onclick={async () => {
+                                const target = captureModule();
                                 const da = await selectMultipleFileHandles([
                                     "png",
                                     "webp",
@@ -363,8 +402,7 @@
                                     "svg",
                                     "avif",
                                 ]);
-                                currentModule.assets ??= [];
-                                if (da.length === 0) {
+                                if (da.length === 0 || !target()) {
                                     return;
                                 }
                                 const extension = (f: File) => f.name.split(".").pop().toLowerCase();
@@ -375,8 +413,10 @@
                                     alertError(`${error}`);
                                     return;
                                 }
-                                currentModule.assets = [
-                                    ...(currentModule.assets ?? []),
+                                const module = target();
+                                if (!module) return;
+                                module.assets = [
+                                    ...(module.assets ?? []),
                                     ...da.map((f, i): [string, string, string] => [f.name, keys[i], extension(f)]),
                                 ];
                             }}
@@ -407,7 +447,14 @@
                         {@const assets = currentModule.assets[index]}
                         {@const extension = assetExtension(assets)}
                         <tr>
-                            <td class="font-medium truncate">
+                            <td
+                                class="font-medium truncate"
+                                use:guardNameFocus={{
+                                    owner: assetsOwnerId,
+                                    row: assets,
+                                    local: () => currentModule.assets === renamedList,
+                                }}
+                            >
                                 {#if settings.ui.useAdditionalAssetsPreview}
                                     <LazyFileSrc path={assets[1]}>
                                         {#snippet children(src)}

@@ -4,6 +4,15 @@
     import Button from "../UI/GUI/Button.svelte";
     import { generateAIImage } from "src/ts/process/stableDiff";
     import { createBlankChar } from "src/ts/characters";
+
+    /**
+     * Image preview using `src/ts/process/stableDiff.ts` `generateAIImage(..., "inlay")`;
+     * displays the URI without calling `src/ts/process/files/inlays.ts` `writeInlayImage`.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 7.
+     * That menu creates/reuses the special `§playground` character for chat (id 2);
+     * this preview instead supplies `createBlankChar()` from `src/ts/characters.ts`.
+     */
+
     let prompt = $state("");
     let negPrompt = $state("");
     let img = $state("");

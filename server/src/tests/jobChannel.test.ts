@@ -21,7 +21,14 @@ import {
     QUESTION_TIMEOUT_MS,
 } from "../jobs/channel.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { allowListenerOrigin, createSigner, createTestServer, json, waitFor } from "./testSupport.ts";
+import {
+    allowListenerOrigin,
+    createSigner,
+    createTestServer,
+    json,
+    waitFor,
+    type TestServerOptions,
+} from "./testSupport.ts";
 
 // The server side of the job channel. First the hub in isolation (`server/src/jobs/channel.ts`) over
 // a recording transport with an injected clock: the hook list validation, notices, the request
@@ -130,13 +137,19 @@ function harness() {
     const delivering = { value: true };
     const open = (
         jobId: string,
-        options: { clientId?: string; hooks?: Partial<GenerationHooks>; attached?: { value: boolean } } = {},
+        options: {
+            clientId?: string;
+            hooks?: Partial<GenerationHooks>;
+            attached?: { value: boolean };
+            ownerAbsentDeadline?: () => number;
+            chatId?: string;
+        } = {},
     ): Link =>
         hub.open({
             jobId,
             clientId: options.clientId ?? "tab",
             epoch: "e",
-            targets,
+            targets: { ...targets, chatRef: { ...targets.chatRef, chatId: options.chatId ?? "k" } },
             hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"], ...options.hooks },
             send: (event) => {
                 sent.push({ ...event, job: jobId });
@@ -147,6 +160,7 @@ function harness() {
                 return [receipt];
             },
             ownerAttached: () => (options.attached ?? attached).value,
+            ownerAbsentDeadline: options.ownerAbsentDeadline,
         });
     const ofType = <T extends Sent["type"]>(type: T) =>
         sent.filter((event) => event.type === type) as (Sent & {
@@ -272,6 +286,92 @@ describe("the hub: notices and questions", () => {
         void link.channel.ask({ kind: "alertConfirm", payload: { message: "ok" } });
         expect(h.ofType("question")).toHaveLength(1);
     });
+
+    it("drains 10,000 buffered notices in order with one sort and at most n log n comparisons", () => {
+        const h = harness();
+        h.attached.value = false;
+        const link = h.open("a");
+        const messages = Array.from({ length: 10_000 }, (_, index) => String(index));
+        for (const message of messages) {
+            link.channel.notice({ kind: "alertNormal", payload: { message } });
+        }
+        expect(h.sent).toEqual([]);
+        h.attached.value = true;
+
+        const originalSort = Array.prototype.sort;
+        let sorts = 0;
+        let comparisons = 0;
+        const sort = vi.spyOn(Array.prototype, "sort").mockImplementation(function (this: unknown[], compare) {
+            sorts++;
+            return originalSort.call(
+                this,
+                compare &&
+                    ((a, b) => {
+                        comparisons++;
+                        return compare(a, b);
+                    }),
+            );
+        });
+        try {
+            link.handleAttach();
+        } finally {
+            sort.mockRestore();
+        }
+
+        expect(sorts).toBe(1);
+        expect(comparisons).toBeGreaterThan(0);
+        expect(comparisons).toBeLessThanOrEqual(messages.length * Math.ceil(Math.log2(messages.length)));
+        expect(h.sent).toHaveLength(messages.length);
+        expect(h.ofType("notice").map((event) => (event.payload as { message: string }).message)).toEqual(messages);
+        expect(link.takeEarly()).toEqual([]);
+    });
+
+    it("drains only attached audiences in insertion order and releases their UTF-8 bytes for remaining audiences", () => {
+        const h = harness();
+        const link = h.hub.open({
+            jobId: "a",
+            clientId: "tab",
+            epoch: "e",
+            targets,
+            hooks: NO_GENERATION_HOOKS,
+            send: (event) => {
+                h.sent.push({ ...event, job: "a" });
+                return true;
+            },
+            hydrate: () => [],
+            ownerAttached: () => false,
+            noticeAudience: (notice) => (notice.kind === "alertNormal" ? "owner" : "creator"),
+        });
+        // Two 300 KB owner notices and two 150 KB creator notices share the 1 MiB budget.
+        const ownerMessage = "가".repeat(100_000);
+        const creatorMessage = "나".repeat(50_000);
+        const replacementMessage = ownerMessage + ownerMessage;
+        link.channel.notice({ kind: "alertNormal", payload: { message: ownerMessage } });
+        link.channel.notice({ kind: "alertToast", payload: { message: creatorMessage } });
+        link.channel.notice({ kind: "alertNormal", payload: { message: "owner-last" } });
+        link.channel.notice({ kind: "alertToast", payload: { message: "creator-last" } });
+        link.channel.notice({ kind: "alertNormal", payload: { message: ownerMessage } });
+        link.channel.notice({ kind: "alertToast", payload: { message: creatorMessage } });
+        // A further 600 KB will fit only after the owner's UTF-8 bytes have been released.
+        link.channel.notice({ kind: "alertToast", payload: { message: replacementMessage } });
+        expect(h.sent).toEqual([]);
+        link.handleAttach(["owner"]);
+        expect(h.ofType("notice").map((event) => (event.payload as { message: string }).message.length)).toEqual([
+            ownerMessage.length,
+            "owner-last".length,
+            ownerMessage.length,
+        ]);
+
+        link.channel.notice({ kind: "alertToast", payload: { message: replacementMessage } });
+        // The retained creator notices still consume 300 KB, so another 300 KB cannot fit.
+        link.channel.notice({ kind: "alertToast", payload: { message: ownerMessage } });
+        const remaining = link.takeEarly(["creator"]);
+        expect(
+            remaining.map((event) => event.type === "notice" && (event.payload as { message: string }).message.length),
+        ).toEqual([creatorMessage.length, "creator-last".length, creatorMessage.length, replacementMessage.length]);
+        expect(h.sent).toHaveLength(3);
+        expect(link.takeEarly()).toEqual([]);
+    });
 });
 
 describe("the hub: deadlines", () => {
@@ -289,7 +389,8 @@ describe("the hub: deadlines", () => {
         const detached = link.channel.callback("editoutput", { text: "x" }, { timeoutMs: 100 });
         const detachedId = h.last("callback").id;
         await h.tick(100);
-        expect(await detached).toMatchObject({ outcome: "disconnected" });
+        // Delivered (an earlier socket took it): the result says so, since the tab may have run it.
+        expect(await detached).toEqual({ outcome: "disconnected", error: expect.any(String), delivered: true });
         // A callback's default is 60 s; a question's 120 s. The expired callback was delivered
         // (an earlier socket took it), so the lane waits for the tab's drain report first.
         const slow = link.channel.callback("editoutput", { text: "y" });
@@ -387,8 +488,9 @@ describe("the hub: deadlines", () => {
         expect(h.hydrations).toEqual(["a"]);
 
         await h.tick(1);
+        // Never delivered (no owner took them): no `delivered` flag.
         for (const request of [first, ...queued]) {
-            expect(await h.state(request)).toMatchObject({ outcome: "disconnected" });
+            expect(await h.state(request)).toEqual({ outcome: "disconnected", error: expect.any(String) });
         }
         // Only the dispatched root was hydrated or sent, and only it receives a cancel.
         const expiredEvents = [firstEvent, { type: "cancel", epoch: "e", id: firstEvent.id, job: "a" }];
@@ -575,6 +677,243 @@ describe("the hub: deadlines", () => {
     });
 });
 
+describe("the hub: owner absence", () => {
+    it.each(["timer", "attach", "answer", "chunk"] as const)(
+        "disconnects an abandoned callback at the absence deadline on %s",
+        async (gate) => {
+            const h = harness();
+            let absentSince: number | null = null;
+            const link = h.open("a", {
+                ownerAbsentDeadline: () => (absentSince === null ? Infinity : absentSince + 120_000),
+            });
+            const onChunk = vi.fn();
+            const pending = link.channel.callback("editoutput", { text: "partial" }, { timeoutMs: 300_000, onChunk });
+            const request = h.last("callback");
+            h.clock.value += 10_000;
+            h.attached.value = false;
+            absentSince = h.clock.value;
+            link.ownerChanged();
+            h.clock.value += 119_999;
+            expect(link.watchCallback(request.id, () => {})).not.toBeNull();
+            expect(await h.state(pending)).toBe("pending");
+            // Move only the authoritative clock: traffic must enforce a deadline even if no timer ran.
+            h.clock.value += 1;
+            if (gate === "timer") await vi.advanceTimersByTimeAsync(120_000);
+            if (gate === "attach") link.handleAttach();
+            if (gate === "answer") h.answer(link, request.id, "too late");
+            if (gate === "chunk") link.handleMessage({ type: "chunk", id: request.id, text: "too late" });
+            expect(await h.state(pending)).toMatchObject({ outcome: "disconnected" });
+            expect(onChunk).not.toHaveBeenCalled();
+            expect(h.ofType("callback")).toHaveLength(1);
+            expect(h.last("cancel").id).toBe(request.id);
+        },
+    );
+
+    it("replays a callback when the owner returns inside the wait without extending its own deadline", async () => {
+        const h = harness();
+        let absentSince: number | null = null;
+        const link = h.open("a", {
+            ownerAbsentDeadline: () => (absentSince === null ? Infinity : absentSince + 120_000),
+        });
+        const pending = link.channel.callback("editoutput", { text: "again" }, { timeoutMs: 300_000 });
+        const request = h.last("callback");
+        h.attached.value = false;
+        absentSince = h.clock.value;
+        link.ownerChanged();
+        h.clock.value += 119_999;
+        link.expireOverdue();
+        h.attached.value = true;
+        absentSince = null;
+        link.ownerChanged();
+        link.handleAttach();
+        expect(h.ofType("callback")).toEqual([request, { ...request, replay: true }]);
+        // The old absence wakeup must not end a request after the owner returned.
+        await h.tick(1);
+        expect(await h.state(pending)).toBe("pending");
+        h.clock.value = request.deadline;
+        h.answer(link, request.id);
+        expect(await h.state(pending)).toMatchObject({ outcome: "timedOut" });
+    });
+
+    it("settles the same client's ownerless queued chat roots but keeps a delivered callback's drain hold", async () => {
+        const h = harness();
+        let absenceDeadline = Infinity;
+        const a = h.open("a", { chatId: "first", ownerAbsentDeadline: () => absenceDeadline });
+        const b = h.open("b", { chatId: "second", ownerAbsentDeadline: () => absenceDeadline });
+        const delivered = a.channel.callback("editoutput", { text: "running" }, { timeoutMs: 300_000 });
+        const id = h.last("callback").id;
+        const queuedCallback = b.channel.callback("editoutput", { text: "queued" });
+        const queuedQuestion = b.channel.ask({ kind: "alertConfirm", payload: { message: "queued?" } });
+        h.attached.value = false;
+        absenceDeadline = h.clock.value + 120_000;
+        a.ownerChanged();
+        h.clock.value = absenceDeadline;
+        a.expireOverdue();
+        for (const pending of [delivered, queuedCallback, queuedQuestion]) {
+            expect(await h.state<QuestionResult | CallbackResult>(pending)).toMatchObject({ outcome: "disconnected" });
+        }
+        expect(h.ofType("cancel").map((event) => event.id)).toEqual([id]);
+        h.attached.value = true;
+        absenceDeadline = Infinity;
+        a.handleAttach();
+        b.handleAttach();
+        expect(h.ofType("callback")).toHaveLength(1);
+        expect(h.ofType("question")).toHaveLength(0);
+        const next = b.channel.ask({ kind: "alertConfirm", payload: { message: "fresh?" } });
+        expect(await h.state(next)).toBe("pending");
+        expect(h.ofType("question")).toHaveLength(0);
+        expect(a.drained(id)).toBe(true);
+        expect(h.ofType("question")).toHaveLength(1);
+        h.answer(b, h.last("question").id, true);
+        expect(await next).toEqual({ outcome: "answered", value: true });
+    });
+
+    it.each(["dispatched callback", "cancelled callback's drain hold"] as const)(
+        "expires a newer queued root at its own absence deadline behind a %s without changing the drain hold",
+        async (blocker) => {
+            const h = harness();
+            const aAttached = { value: true };
+            const bAttached = { value: true };
+            let aDeadline = Infinity;
+            let bDeadline = Infinity;
+            const a = h.open("a", { attached: aAttached, ownerAbsentDeadline: () => aDeadline });
+            const abort = new AbortController();
+            const running = a.channel.callback(
+                "editoutput",
+                { text: "long callback" },
+                { timeoutMs: 300_000, signal: abort.signal },
+            );
+            const runningId = h.last("callback").id;
+            await h.tick(1);
+            // B must open after A dispatched: the older-channel sweep cannot settle this root.
+            const b = h.open("b", { attached: bAttached, ownerAbsentDeadline: () => bDeadline });
+            const queued = b.channel.callback("editoutput", { text: "queued" });
+            const c = h.open("c");
+            const next = c.channel.callback("editoutput", { text: "after the drain" });
+            if (blocker === "cancelled callback's drain hold") {
+                aAttached.value = false;
+                aDeadline = h.clock.value + 120_000;
+                a.ownerChanged();
+                await h.tick(10_000);
+            }
+            bAttached.value = false;
+            bDeadline = h.clock.value + 120_000;
+            b.ownerChanged();
+            if (Number.isFinite(aDeadline)) {
+                await h.tick(aDeadline - h.clock.value);
+                expect(await h.state(running)).toMatchObject({ outcome: "disconnected" });
+            }
+            await h.tick(bDeadline - h.clock.value - 1);
+            expect(await h.state(queued)).toBe("pending");
+            await h.tick(1);
+            expect(await h.state(queued)).toMatchObject({ outcome: "disconnected" });
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            expect(h.hydrations).toEqual(["a"]);
+            if (blocker === "dispatched callback") {
+                expect(await h.state(running)).toBe("pending");
+                abort.abort();
+                expect(await h.state(running)).toMatchObject({ outcome: "aborted" });
+                aDeadline = h.clock.value;
+            }
+            expect(h.ofType("cancel").map((event) => event.id)).toEqual([runningId]);
+            const drainEnd = aDeadline + CANCELLED_CALLBACK_DRAIN_MS;
+            await h.tick(drainEnd - h.clock.value - 1);
+            expect(await h.state(next)).toBe("pending");
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            await h.tick(1);
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a", "c"]);
+            h.answer(c, h.last("callback").id);
+            expect(await next).toMatchObject({ outcome: "answered" });
+            expect(a.drained(runningId)).toBe(false);
+        },
+    );
+
+    it.each([
+        { absence: 119_999, outcome: "answered" },
+        { absence: 120_000, outcome: "disconnected" },
+    ] as const)(
+        "settles a newer queued root as $outcome when its owner reattaches after $absence ms",
+        async ({ absence, outcome }) => {
+            const h = harness();
+            const a = h.open("a");
+            const running = a.channel.callback("editoutput", { text: "long callback" }, { timeoutMs: 300_000 });
+            const runningId = h.last("callback").id;
+            h.clock.value += 1;
+            const bAttached = { value: true };
+            let bDeadline = Infinity;
+            const b = h.open("b", { attached: bAttached, ownerAbsentDeadline: () => bDeadline });
+            const queued = b.channel.callback("editoutput", { text: "queued" }, { timeoutMs: 20_000 });
+            bAttached.value = false;
+            bDeadline = h.clock.value + 120_000;
+            b.ownerChanged();
+            // No timer fires: an attach checks the authoritative clock before clearing absence.
+            h.clock.value += absence;
+            b.expireOverdue();
+            bAttached.value = true;
+            bDeadline = Infinity;
+            b.ownerChanged();
+            b.handleAttach();
+            expect(await h.state(queued)).toEqual(
+                outcome === "answered" ? "pending" : expect.objectContaining({ outcome }),
+            );
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            if (outcome === "answered") {
+                // The owner is back, but the lane remains held beyond the old absence deadline.
+                h.clock.value += 1_000;
+                await vi.advanceTimersByTimeAsync(121_000);
+                expect(await h.state(queued)).toBe("pending");
+                expect(h.ofType("callback").map((event) => event.job)).toEqual(["a"]);
+            }
+            h.answer(a, runningId);
+            expect(await running).toMatchObject({ outcome: "answered" });
+            if (outcome === "answered") {
+                expect(h.last("callback")).toMatchObject({ job: "b", deadline: h.clock.value + 20_000 });
+                expect(h.last("callback").replay).toBeUndefined();
+                h.answer(b, h.last("callback").id);
+            }
+            expect(await h.state(queued)).toMatchObject({ outcome });
+            expect(h.ofType("callback").map((event) => event.job)).toEqual(outcome === "answered" ? ["a", "b"] : ["a"]);
+            expect(h.ofType("cancel")).toEqual([]);
+        },
+    );
+
+    it("caps a child by its absent parent's deadline and refuses nesting in that parent after expiry", async () => {
+        const h = harness();
+        let absenceDeadline = Infinity;
+        const parentAttached = { value: true };
+        const a = h.open("a", { attached: parentAttached, ownerAbsentDeadline: () => absenceDeadline });
+        // Another job of the same client remains attached, so only inheritance can cap this child.
+        const b = h.open("b");
+        const parent = a.channel.callback("editoutput", { text: "parent" }, { timeoutMs: 300_000 });
+        const parentId = h.last("callback").id;
+        parentAttached.value = false;
+        absenceDeadline = h.clock.value + 120_000;
+        a.ownerChanged();
+        h.clock.value += 1_000;
+        const child = b.channel.callback("editoutput", { text: "child" }, { parentId, timeoutMs: 300_000 });
+        expect(h.last("callback")).toMatchObject({ parentId, deadline: absenceDeadline });
+        h.clock.value = absenceDeadline;
+        h.answer(b, h.last("callback").id);
+        expect(await h.state(child)).toMatchObject({ outcome: "disconnected" });
+        const lateChild = b.channel.callback("editoutput", { text: "late" }, { parentId });
+        expect(await h.state(parent)).toMatchObject({ outcome: "disconnected" });
+        expect(await lateChild).toMatchObject({ outcome: "refused", refusal: "nesting" });
+        expect(h.ofType("callback")).toHaveLength(2);
+    });
+
+    it("refuses to dispatch work after an owner that never attached exhausted its absence allowance", async () => {
+        const h = harness();
+        h.attached.value = false;
+        const admittedAt = h.clock.value;
+        const link = h.open("a", { ownerAbsentDeadline: () => admittedAt + 120_000 });
+        h.clock.value += 120_000;
+        const pending = link.channel.callback("editoutput", { text: "late request" }, { timeoutMs: 300_000 });
+        expect(await h.state(pending)).toMatchObject({ outcome: "disconnected" });
+        expect(h.ofType("callback")).toHaveLength(0);
+        expect(h.hydrations).toEqual([]);
+    });
+});
+
 describe("the hub: callbacks and nesting", () => {
     it("refuses a callback the hook list lacks without sending it, by name, side, mode, provider name, and MCP identifier", async () => {
         const h = harness();
@@ -755,6 +1094,61 @@ describe("the hub: callbacks and nesting", () => {
 });
 
 describe("the hub: delivery, replay, and close", () => {
+    it("interleaves a callback promoted by a nested attach with unsent notices and keeps equal-order sends stable", async () => {
+        const h = harness();
+        h.attached.value = false;
+        const nested = h.open("b");
+        const outer = h.hub.open({
+            jobId: "a",
+            clientId: "tab",
+            epoch: "e",
+            targets,
+            hooks: NO_GENERATION_HOOKS,
+            send: (event) => {
+                h.sent.push({ ...event, job: "a" });
+                if (event.type === "notice" && (event.payload as { message: string }).message === "first") {
+                    // Delivery advances the injected clock, then another job's attach expires its question.
+                    h.clock.value += 100;
+                    nested.handleAttach();
+                    // A second attach adds a replay after the promoted callback's pending first delivery.
+                    nested.handleAttach();
+                }
+                return true;
+            },
+            hydrate: () => [],
+            ownerAttached: () => h.attached.value,
+        });
+        outer.channel.notice({ kind: "alertNormal", payload: { message: "first" } });
+        nested.channel.notice({ kind: "alertNormal", payload: { message: "nested-before" } });
+        const expiring = nested.channel.ask(
+            { kind: "alertInput", payload: { message: "expiring" } },
+            { timeoutMs: 100 },
+        );
+        outer.channel.notice({ kind: "alertNormal", payload: { message: "between" } });
+        const promoted = nested.channel.callback("editoutput", { text: "promoted" });
+        nested.channel.notice({ kind: "alertNormal", payload: { message: "nested-after" } });
+        outer.channel.notice({ kind: "alertNormal", payload: { message: "last" } });
+        h.sent.length = 0;
+        h.attached.value = true;
+
+        outer.handleAttach();
+
+        expect(
+            h.sent
+                .filter((event) => event.type === "notice" || event.type === "callback")
+                .map((event) =>
+                    event.type === "notice"
+                        ? (event.payload as { message: string }).message
+                        : `promoted:${event.replay ? "replay" : "first"}`,
+                ),
+        ).toEqual(["first", "nested-before", "between", "promoted:first", "promoted:replay", "nested-after", "last"]);
+        expect(await expiring).toMatchObject({ outcome: "timedOut" });
+        const callbacks = h.ofType("callback");
+        expect(callbacks[1]).toMatchObject({ id: callbacks[0].id, replay: true });
+        h.answer(nested, callbacks[0].id);
+        expect(await promoted).toMatchObject({ outcome: "answered" });
+    });
+
     it("orders first-attach notices, replays, and a request promoted by expiry, delivering the promoted request once", async () => {
         for (const expiry of ["none", "collection", "delivery"] as const) {
             const h = harness();
@@ -1189,12 +1583,13 @@ describe("the registry over a real socket", () => {
             await new Promise((resolve) => node?.close(resolve));
             node = undefined;
         }
+        vi.restoreAllMocks();
     });
 
-    async function listen() {
+    async function listen(options: TestServerOptions = {}) {
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
-        server = createTestServer({ password: "pw", generationRunner: runner });
+        server = createTestServer({ password: "pw", generationRunner: runner, ...options });
         const started = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
         node = started;
         await new Promise<void>((resolve) => started.once("listening", () => resolve()));
@@ -1347,6 +1742,210 @@ describe("the registry over a real socket", () => {
     }
     const types = (events: GenerationEvent[]) => events.map((event) => event.type);
 
+    /** Real socket events are latches; only the server clock and deadline timers are faked. */
+    async function ownerSocket(jobId: string, stamp: number, negotiated = true) {
+        const sends = vi.spyOn(WsSocket.prototype, "send");
+        const ws = new WsSocket(
+            `${base.replace("http", "ws")}/api/generations/${jobId}/ws?risu-auth=${encodeURIComponent(await signer.jwt())}&clientId=tab&attach=${stamp}${negotiated ? "&liveness=1" : ""}`,
+        );
+        const events: GenerationEvent[] = [];
+        const waiters = new Set<() => void>();
+        ws.on("message", (raw) => {
+            events.push(JSON.parse(String(raw)));
+            for (const notify of waiters) notify();
+        });
+        const closed = new Promise<void>((resolve) => ws.once("close", () => resolve()));
+        let peer: WsSocket;
+        try {
+            await new Promise<void>((resolve, reject) => {
+                ws.once("open", resolve);
+                ws.once("error", reject);
+            });
+            // The attach's snapshot was sent before the client open event. Keep that real server
+            // socket solely to await its frame/close events, including a delayed close handshake.
+            peer = sends.mock.contexts.find((socket) => socket !== ws) as WsSocket;
+            expect(peer).toBeDefined();
+        } finally {
+            sends.mockRestore();
+        }
+        const peerClosed = new Promise<void>((resolve) => peer.once("close", () => resolve()));
+        return {
+            ws,
+            peer,
+            events,
+            closed,
+            peerClosed,
+            async until(predicate: (events: GenerationEvent[]) => boolean) {
+                if (predicate(events)) return;
+                await new Promise<void>((resolve) => {
+                    const notify = () => {
+                        if (predicate(events)) {
+                            waiters.delete(notify);
+                            resolve();
+                        }
+                    };
+                    waiters.add(notify);
+                });
+            },
+            async send(message: unknown) {
+                const handled = new Promise<void>((resolve) => peer.once("message", () => resolve()));
+                ws.send(JSON.stringify(message));
+                await handled;
+            },
+            async close() {
+                ws.resume();
+                ws.close();
+                await Promise.all([closed, peerClosed]);
+            },
+        };
+    }
+
+    const pendingState = <T>(promise: Promise<T>) =>
+        Promise.race([promise, new Promise<"pending">((resolve) => setImmediate(() => resolve("pending")))]);
+
+    async function waitingOwner(options: TestServerOptions = {}) {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await listen({ generationOwnerSilentMs: 450, generationOwnerAbsentMs: 1_200, ...options });
+        let expose!: (job: RunningJob) => void;
+        const running = new Promise<RunningJob>((resolve) => {
+            expose = resolve;
+        });
+        let settle!: (result: CallbackResult) => void;
+        const result = new Promise<CallbackResult>((resolve) => {
+            settle = resolve;
+        });
+        step(async (job) => {
+            expose(job);
+            settle(await job.channel.callback("editoutput", { text: "waiting" }, { timeoutMs: 300_000 }));
+            return "end" as never;
+        });
+        const admittedAt = Date.now();
+        const created = await create();
+        expect(created.status).toBe(200);
+        return { id: created.body.jobId as string, job: await running, result, admittedAt };
+    }
+
+    it.each(["timer", "late frame"] as const)(
+        "drops a negotiated socket silent from attach at its deadline on %s before its close handshake",
+        async (gate) => {
+            const h = await waitingOwner();
+            const owner = await ownerSocket(h.id, 1);
+            await owner.until((events) => events.some((event) => event.type === "callback"));
+            owner.ws.pause();
+            try {
+                if (gate === "timer") {
+                    await vi.advanceTimersByTimeAsync(449);
+                    expect(h.job.ownerAttached()).toBe(true);
+                    await vi.advanceTimersByTimeAsync(1);
+                } else {
+                    vi.setSystemTime(h.admittedAt + 449);
+                    expect(h.job.ownerAttached()).toBe(true);
+                    // No timer runs: a late frame must not refresh the socket before checking silence.
+                    vi.setSystemTime(h.admittedAt + 450);
+                    await owner.send({ type: "pong", ts: Number.MAX_SAFE_INTEGER });
+                }
+                expect(owner.peer.readyState).toBe(WsSocket.CLOSING);
+                expect(h.job.ownerAttached()).toBe(false);
+                expect(await pendingState(h.result)).toBe("pending");
+                await vi.advanceTimersByTimeAsync(1_199);
+                expect(await pendingState(h.result)).toBe("pending");
+                await vi.advanceTimersByTimeAsync(1);
+                expect(await pendingState(h.result)).toMatchObject({ outcome: "disconnected" });
+            } finally {
+                await owner.close();
+            }
+        },
+    );
+
+    it("keeps a negotiated owner that answers pings and counts silence from its last frame using server time", async () => {
+        const h = await waitingOwner({ generationOwnerSilentMs: 45_000 });
+        const job = h.job;
+        const owner = await ownerSocket(h.id, 1);
+        try {
+            for (let heartbeat = 1; heartbeat <= 4; heartbeat++) {
+                await vi.advanceTimersByTimeAsync(15_000);
+                expect(job.ownerAttached()).toBe(true);
+                await owner.until((events) => events.filter((event) => event.type === "ping").length === heartbeat);
+                const ping = owner.events.filter((event) => event.type === "ping").at(-1)!;
+                await owner.send({ type: "pong", ts: ping.ts });
+                expect(job.ownerAttached()).toBe(true);
+            }
+            const lastFrameAt = Date.now();
+            // The timestamp is opaque to the server; a stale value still counts as a frame now.
+            vi.setSystemTime(lastFrameAt + 44_999);
+            await owner.send({ type: "pong", ts: -1 });
+            vi.setSystemTime(lastFrameAt + 45_000);
+            expect(job.ownerAttached()).toBe(true);
+            expect(owner.peer.readyState).toBe(WsSocket.OPEN);
+        } finally {
+            await owner.close();
+        }
+    });
+
+    it("keeps a legacy socket as an owner despite silence beyond both liveness allowances", async () => {
+        const h = await waitingOwner();
+        const owner = await ownerSocket(h.id, 1, false);
+        await owner.until((events) => events.some((event) => event.type === "callback"));
+        try {
+            vi.setSystemTime(h.admittedAt + 450 + 1_200);
+            await vi.advanceTimersByTimeAsync(1_650);
+            expect(h.job.ownerAttached()).toBe(true);
+            expect(owner.peer.readyState).toBe(WsSocket.OPEN);
+            const callback = owner.events.find((event) => event.type === "callback")!;
+            await owner.send({ type: "answer", id: callback.id, outcome: "answered", value: "still here" });
+            expect(await pendingState(h.result)).toEqual({ outcome: "answered", value: "still here" });
+        } finally {
+            await owner.close();
+        }
+    });
+
+    it("does not start absence when a superseded socket closes after its replacement attached", async () => {
+        const h = await waitingOwner();
+        const first = await ownerSocket(h.id, 1, false);
+        await first.until((events) => events.some((event) => event.type === "callback"));
+        first.ws.pause();
+        const second = await ownerSocket(h.id, 2, false);
+        await second.until((events) => events.some((event) => event.type === "callback"));
+        try {
+            first.ws.resume();
+            await first.peerClosed;
+            vi.setSystemTime(h.admittedAt + 1_201);
+            const callback = second.events.find((event) => event.type === "callback")!;
+            expect(callback.replay).toBe(true);
+            await second.send({ type: "answer", id: callback.id, outcome: "answered", value: "replacement" });
+            expect(await pendingState(h.result)).toEqual({ outcome: "answered", value: "replacement" });
+        } finally {
+            await first.close();
+            await second.close();
+        }
+    });
+
+    it.each(["first attach", "reattach"] as const)(
+        "settles expired absence before a late %s can replay or revive a callback",
+        async (attach) => {
+            const h = await waitingOwner();
+            let absentAt = h.admittedAt;
+            if (attach === "reattach") {
+                const first = await ownerSocket(h.id, 1, false);
+                await first.until((events) => events.some((event) => event.type === "callback"));
+                vi.setSystemTime(h.admittedAt + 100);
+                await first.close();
+                absentAt = Date.now();
+            }
+            // Timers remain unfired: attach must expire the old absence before clearing it.
+            vi.setSystemTime(absentAt + 1_200);
+            const late = await ownerSocket(h.id, 2, false);
+            try {
+                expect(await pendingState(h.result)).toMatchObject({ outcome: "disconnected" });
+                // A round trip ensures all frames from the attach have been delivered.
+                await late.send({ type: "pong", ts: 0 });
+                expect(late.events.filter((event) => event.type === "callback")).toEqual([]);
+            } finally {
+                await late.close();
+            }
+        },
+    );
+
     it("answers 400 for a malformed hook list and admits a job without one", async () => {
         await listen();
         expect(await create({ ...NO_GENERATION_HOOKS, scripts: "editoutput" })).toMatchObject({
@@ -1380,12 +1979,19 @@ describe("the registry over a real socket", () => {
         const callback = await owner.next("callback");
         expect(callback.replay).toBeUndefined();
         expect(callback).toMatchObject({ jobId, name: "editoutput", payload: { text: "early" } });
-        // The attach snapshot (the job chat as a `chatPatch` while the job runs, and the character the
-        // job sent), then the barrier's fresh hydration of both (the chat whole: the client's barrier
-        // re-applies a remembered whole copy once its local work settled), then the callback carrying
-        // their receipts.
+        // The owner's role, the attach snapshot (the job chat as a `chatPatch` while the job runs, and
+        // the character the job sent), then the barrier's fresh hydration of both (the chat whole: the
+        // client's barrier re-applies a remembered whole copy once its local work settled), then the
+        // callback carrying their receipts.
         const index = owner.events.indexOf(callback);
-        expect(types(owner.events.slice(0, index))).toEqual(["chatPatch", "resource", "resource", "resource"]);
+        expect(types(owner.events.slice(0, index))).toEqual([
+            "handoff",
+            "chatPatch",
+            "resource",
+            "resource",
+            "resource",
+        ]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         const hydrated = owner.events.slice(index - 2, index) as Extract<GenerationEvent, { type: "resource" }>[];
         expect(callback.revisions).toEqual(
             hydrated.map((event) => ({
@@ -1476,8 +2082,18 @@ describe("the registry over a real socket", () => {
             expect(cancel.id).toBe(q3.id);
             await second.next("done");
             expect(outcome.second).toMatchObject({ outcome: "timedOut" });
-            // The job chat on the attach and at the end goes as a `chatPatch` (the job's own chat events).
-            expect(types(second.events)).toEqual(["chatPatch", "question", "question", "cancel", "chatPatch", "done"]);
+            // The owner's role opens the attach; the job chat on the attach and at the end goes as a
+            // `chatPatch` (the job's own chat events).
+            expect(types(second.events)).toEqual([
+                "handoff",
+                "chatPatch",
+                "question",
+                "question",
+                "cancel",
+                "chatPatch",
+                "done",
+            ]);
+            expect(second.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         } finally {
             closes.mockRestore();
             first.ws.terminate();
@@ -1511,8 +2127,9 @@ describe("the registry over a real socket", () => {
         expect((await request(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" })).status).toBe(200);
         await owner.next("error");
         expect(outcome.question).toMatchObject({ outcome: "aborted" });
-        expect(types(owner.events)).toEqual(["chatPatch", "question", "cancel", "chatPatch", "error"]);
-        expect((owner.events[2] as { id: string }).id).toBe(question.id);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch", "question", "cancel", "chatPatch", "error"]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect((owner.events[3] as { id: string }).id).toBe(question.id);
 
         // A runner that ends while its callback waits (once the owner has it): the callback is
         // aborted first.
@@ -1533,9 +2150,19 @@ describe("the registry over a real socket", () => {
         release();
         await next.next("done");
         expect(outcome.callback).toMatchObject({ outcome: "aborted" });
-        // The attach's `chatPatch`, the barrier's whole chat before the callback, the terminal `chatPatch`.
-        expect(types(next.events)).toEqual(["chatPatch", "resource", "callback", "cancel", "chatPatch", "done"]);
-        expect((next.events[3] as { id: string }).id).toBe(callback.id);
+        // The owner's role, the attach's `chatPatch`, the barrier's whole chat before the callback, the
+        // terminal `chatPatch`.
+        expect(types(next.events)).toEqual([
+            "handoff",
+            "chatPatch",
+            "resource",
+            "callback",
+            "cancel",
+            "chatPatch",
+            "done",
+        ]);
+        expect(next.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect((next.events[4] as { id: string }).id).toBe(callback.id);
     });
 });
 
@@ -1543,7 +2170,7 @@ describe("the hub: provider chunks and the caller's signal", () => {
     const hooks = { providers: validHooks.providers };
     const payload = { name: "prov", argument: { prompt_chat: [], mode: "model" } };
 
-    it("routes an owner's `chunk` to the outstanding provider callback that takes chunks, ignores every other chunk, and fails the callback with a cancel when a text is too long", async () => {
+    it("accepts an old tab's unsequenced snapshots, ignores unrelated chunks, and rejects oversized text", async () => {
         const h = harness();
         const link = h.open("a", { hooks });
         const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1557,7 +2184,7 @@ describe("the hub: provider chunks and the caller's signal", () => {
             },
         });
         const dispatched = h.last("callback");
-        expect(dispatched).toMatchObject({ name: "provider", payload });
+        expect(dispatched).toMatchObject({ name: "provider", payload, chunks: "append" });
         const { id } = dispatched;
         // Ignored: another id, a text that is not a string, no text, a wrong message type.
         link.handleMessage({ type: "chunk", id: "nope", text: "x" });
@@ -1610,6 +2237,109 @@ describe("the hub: provider chunks and the caller's signal", () => {
         errors.mockRestore();
     });
 
+    it("reconstructs appends, ignores malformed frames and stale snapshots, and requests one snapshot per gap", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        const chunks: string[] = [];
+        const pending = link.channel.callback("provider", payload, { onChunk: (text) => chunks.push(text) });
+        const { id } = h.last("callback");
+        link.handleMessage({ type: "chunk", id, seq: 1, append: "Hello" });
+        link.handleMessage({ type: "chunk", id, seq: 2, append: " world" });
+        expect(chunks).toEqual(["Hello", "Hello world"]);
+
+        for (const frame of [
+            { seq: 3, append: "!", text: "wrong" },
+            { append: "missing sequence" },
+            { seq: -1, text: "negative" },
+            { seq: 2.5, append: "fraction" },
+            { seq: "3", append: "string sequence" },
+            { seq: Number.MAX_SAFE_INTEGER + 1, text: "unsafe" },
+            { seq: 3, append: 42 },
+            { seq: 3, text: null },
+            { seq: 1, text: "stale" },
+        ])
+            link.handleMessage({ type: "chunk", id, ...frame });
+        expect(chunks).toEqual(["Hello", "Hello world"]);
+        expect(h.ofType("chunkResync")).toEqual([]);
+
+        // Sequence 3 was lost. Later appends cannot be joined to the truncated prefix.
+        link.handleMessage({ type: "chunk", id, seq: 4, append: " Again" });
+        link.handleMessage({ type: "chunk", id, seq: 5, append: "." });
+        link.handleMessage({ type: "chunk", id, seq: 3, append: "!" });
+        expect(chunks).toEqual(["Hello", "Hello world"]);
+        expect(h.ofType("chunkResync")).toEqual([{ type: "chunkResync", epoch: "e", id, job: "a" }]);
+        link.handleMessage({ type: "chunk", id, seq: 5, text: "Hello world! Again." });
+        link.handleMessage({ type: "chunk", id, seq: 6, append: " Done." });
+        expect(chunks).toEqual(["Hello", "Hello world", "Hello world! Again.", "Hello world! Again. Done."]);
+
+        // Recovery resets the request so a separate loss can ask for its own snapshot.
+        link.handleMessage({ type: "chunk", id, seq: 8, append: "later" });
+        link.handleMessage({ type: "chunk", id, seq: 9, append: "still later" });
+        expect(h.ofType("chunkResync")).toHaveLength(2);
+        link.handleMessage({ type: "chunk", id, seq: 9, text: "Hello world! Again. Done. All recovered." });
+        h.answer(link, id, { success: true, streamed: true, seq: 9 });
+        expect(await pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 9 } });
+        expect(chunks.at(-1)).toBe("Hello world! Again. Done. All recovered.");
+    });
+
+    it("holds streamed success until its final sequence arrives, while failures settle without missing chunks", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        for (const recovery of ["snapshot", "append"] as const) {
+            const chunks: string[] = [];
+            const pending = link.channel.callback("provider", payload, { onChunk: (text) => chunks.push(text) });
+            const { id } = h.last("callback");
+            link.handleMessage({ type: "chunk", id, seq: 1, append: "Hello" });
+            h.answer(link, id, { success: true, streamed: true, seq: 3 });
+            expect(await h.state(pending)).toBe("pending");
+            expect(h.last("chunkResync")).toMatchObject({ epoch: "e", id });
+            link.handleMessage({ type: "chunk", id, seq: 2, append: " world" });
+            expect(await h.state(pending)).toBe("pending");
+            link.handleMessage({
+                type: "chunk",
+                id,
+                seq: 3,
+                ...(recovery === "snapshot" ? { text: "Hello world!" } : { append: "!" }),
+            });
+            expect(await pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 3 } });
+            expect(chunks).toEqual(["Hello", "Hello world", "Hello world!"]);
+        }
+
+        for (const result of [
+            { outcome: "answered", value: { success: false, content: "provider failed" } },
+            { outcome: "failed", failure: "hook", error: "reader failed" },
+        ]) {
+            const pending = link.channel.callback("provider", payload, { onChunk: () => {} });
+            const { id } = h.last("callback");
+            link.handleMessage({ type: "chunk", id, seq: 2, append: "missing prefix" });
+            h.answer(link, id, { success: true, streamed: true, seq: 2 });
+            expect(await h.state(pending)).toBe("pending");
+            link.handleMessage({ type: "answer", id, ...result });
+            expect(await h.state(pending)).toEqual(result);
+        }
+    });
+
+    it("enforces the 4 Mi-character cap on reconstructed appends before delivering an oversized chunk", async () => {
+        const h = harness();
+        const link = h.open("a", { hooks });
+        const lengths: number[] = [];
+        const pending = link.channel.callback("provider", payload, { onChunk: (text) => lengths.push(text.length) });
+        const { id } = h.last("callback");
+        const limit = 4 * 1024 * 1024;
+        link.handleMessage({ type: "chunk", id, seq: 1, append: "x".repeat(limit - 1) });
+        link.handleMessage({ type: "chunk", id, seq: 2, append: "y" });
+        expect(lengths).toEqual([limit - 1, limit]);
+        expect(await h.state(pending)).toBe("pending");
+        link.handleMessage({ type: "chunk", id, seq: 3, append: "z" });
+        expect(await h.state(pending)).toEqual({
+            outcome: "failed",
+            failure: "protocol",
+            error: "The provider's text is too long",
+        });
+        expect(lengths).toEqual([limit - 1, limit]);
+        expect(h.last("cancel")).toMatchObject({ id });
+    });
+
     it("ends a callback when the caller's signal aborts (a cancel to the tab), settles one whose signal already aborted without dispatching it, and ignores an abort after the answer", async () => {
         const h = harness();
         const link = h.open("a", { hooks });
@@ -1642,5 +2372,95 @@ describe("the hub: provider chunks and the caller's signal", () => {
         // Nothing is left on the lane: the next root callback is dispatched at once.
         void link.channel.callback("editoutput", { text: "t" });
         expect(h.ofType("callback")).toHaveLength(dispatched + 2);
+    });
+});
+
+describe("callback lanes after ownership transfer", () => {
+    it("moves queued roots away from the creator and serializes them behind the new owner's running root", async () => {
+        const h = harness();
+        const creator = h.open("creator-other-chat");
+        const moving = h.open("moving-chat");
+        const worker = h.open("worker-chat", { clientId: "worker" });
+        const creatorRoot = creator.channel.callback("editoutput", { text: "creator busy" });
+        const creatorId = h.last("callback").id;
+        const movedRoot = moving.channel.callback("editoutput", { text: "move me" });
+        const workerRoot = worker.channel.callback("editoutput", { text: "worker busy" });
+        const workerId = h.last("callback").id;
+        expect(moving.transferOwner("worker")).toBe(true);
+        expect(h.ofType("callback").map((event) => event.job)).toEqual(["creator-other-chat", "worker-chat"]);
+        h.answer(worker, workerId);
+        await workerRoot;
+        expect(h.last("callback")).toMatchObject({ job: "moving-chat", payload: { text: "move me" } });
+        expect(await h.state(creatorRoot)).toBe("pending");
+        h.answer(moving, h.last("callback").id, "moved answer");
+        expect(await movedRoot).toMatchObject({ value: "moved answer" });
+        h.answer(creator, creatorId);
+        await creatorRoot;
+        // Both lanes are free after settlement, including the entry removed from the old queue.
+        const a = creator.channel.callback("editoutput", { text: "creator next" });
+        const aId = h.last("callback").id;
+        const b = worker.channel.callback("editoutput", { text: "worker next" });
+        expect(
+            h
+                .ofType("callback")
+                .slice(-2)
+                .map((event) => event.job),
+        ).toEqual(["creator-other-chat", "worker-chat"]);
+        h.answer(worker, h.last("callback").id);
+        h.answer(creator, aId);
+        await Promise.all([a, b]);
+    });
+
+    it("redispatches an undelivered request only after the new owner's root settles with a fresh sixty seconds", async () => {
+        const h = harness();
+        const attached = { value: false };
+        const moving = h.open("moving-chat", { attached });
+        const worker = h.open("worker-chat", { clientId: "worker" });
+        h.delivering.value = false;
+        const moved = moving.channel.callback("editoutput", { text: "absent" });
+        h.delivering.value = true;
+        const own = worker.channel.callback("editoutput", { text: "working" });
+        const ownId = h.last("callback").id;
+        await h.tick(50_000);
+        attached.value = true;
+        expect(moving.transferOwner("worker")).toBe(true);
+        expect(h.ofType("callback").map((event) => event.job)).toEqual(["moving-chat", "worker-chat"]);
+        await h.tick(9_999);
+        h.answer(worker, ownId);
+        await own;
+        const dispatched = h.last("callback");
+        expect(dispatched).toMatchObject({ job: "moving-chat", deadline: h.clock.value + CALLBACK_TIMEOUT_MS });
+        expect(dispatched).not.toHaveProperty("replay");
+        await h.tick(1);
+        expect(await h.state(moved)).toBe("pending");
+        h.answer(moving, dispatched.id, "first delivery");
+        expect(await moved).toEqual({ outcome: "answered", value: "first delivery" });
+    });
+
+    it("keeps a cancelled delivered callback's drain hold on its dispatch client after a transfer", async () => {
+        const h = harness();
+        const moving = h.open("moving-chat");
+        const creator = h.open("creator-other-chat");
+        const controller = new AbortController();
+        const delivered = moving.channel.callback("editoutput", { text: "running" }, { signal: controller.signal });
+        const id = h.last("callback").id;
+        const oldQueued = creator.channel.callback("editoutput", { text: "old lane" });
+        const newQueued = moving.channel.callback("editoutput", { text: "new lane" });
+        expect(moving.transferOwner("worker")).toBe(false);
+        moving.deferTransfer(true);
+        controller.abort();
+        expect(await delivered).toMatchObject({ outcome: "aborted" });
+        expect(moving.transferOwner("worker")).toBe(true);
+        expect(h.ofType("callback").map((event) => event.payload)).toEqual([{ text: "running" }, { text: "new lane" }]);
+        const newId = h.last("callback").id;
+        expect(moving.drained(id, "third")).toBe(false);
+        expect(moving.drained(id, "worker")).toBe(false);
+        expect(await h.state(oldQueued)).toBe("pending");
+        expect(moving.drained(id, "tab")).toBe(true);
+        expect(h.last("callback")).toMatchObject({ job: "creator-other-chat", payload: { text: "old lane" } });
+        h.answer(creator, h.last("callback").id);
+        h.answer(moving, newId);
+        await Promise.all([oldQueued, newQueued]);
+        expect(moving.drained(id, "tab")).toBe(false);
     });
 });

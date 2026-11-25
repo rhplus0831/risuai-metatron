@@ -50,7 +50,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../../plugins/plugins.svelte", () => ({ loadPlugins: vi.fn() }));
 vi.mock("../../characterCards", () => ({ characterURLImport: vi.fn() }));
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
@@ -87,7 +87,7 @@ const settleMicrotasks = async () => {
  * `m` and `constructor` (an id named like an `Object.prototype` member), and `e` with its only chat
  * `only`. Nothing is selected.
  */
-async function boot(initialMeta: Record<string, unknown> = {}) {
+async function boot(initialMeta: Record<string, unknown> = {}, chatCount = C_CHATS) {
     vi.resetModules();
     const server = await StoreBackedServer.create();
     serverHolder.current = server;
@@ -99,7 +99,7 @@ async function boot(initialMeta: Record<string, unknown> = {}) {
             { kind: characters, id: "e", baseRevision: null, data: { chaId: "e", name: "E" } },
         ],
         chats: [
-            ...Array.from({ length: C_CHATS }, (_, i) =>
+            ...Array.from({ length: chatCount }, (_, i) =>
                 create("c", `k${i}`, {
                     name: `K${i}`,
                     message:
@@ -365,6 +365,26 @@ describe("user-pinned chats", () => {
         expect(chat.selectedChat()?.id).toBe("k2");
     });
 
+    it("keeps the current selection when changing to a chatless group or opening a stale group pin", async () => {
+        const { chat, selection } = await boot({ pinned: true });
+        const { changeChar } = await import("../../characters");
+        const { openPinnedChat } =
+            await vi.importActual<typeof import("../../globalApi.svelte")>("../../globalApi.svelte");
+        const { applyRawCharacter, patchRawCharacter } = await import("../records.svelte");
+        applyRawCharacter("empty-group", { chaId: "empty-group", type: "group" });
+        patchRawCharacter("c", [["type", "group"]]);
+        selection.selectCharacter("d");
+        selection.setChatOpen(true);
+        await settleMicrotasks();
+
+        await changeChar("empty-group");
+        expect(chat.chatList("empty-group")).toEqual([]);
+        expect(selection.selection).toMatchObject({ characterId: "d", chatOpen: true });
+        openPinnedChat(kRef(2));
+        expect(chat.selectedChatId("c")).toBe("k0");
+        expect(selection.selection).toMatchObject({ characterId: "d", chatOpen: true });
+    });
+
     it("openPinnedChat ignores an unknown character or a chat outside the character's list", async () => {
         const { chat, selection, reads, server } = await boot();
         const { openPinnedChat } =
@@ -537,18 +557,13 @@ describe("selection", () => {
         expect(chat.selectedChat()?.id).toBe("k0");
         expect(chat.selectedChatLoad()).toBeNull();
 
-        // Another tab deleted `e`'s only chat and gave it none: the read says gone, the list is
-        // kept (no write), and the screen says the chat is not available.
-        server.store.applyChanges({
-            chats: [
-                {
-                    characterId: "e",
-                    chatId: "only",
-                    baseRevision: server.chat("e", "only")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-            ],
-        });
+        // Another tab left `e` without chats (a character's last chat outside the trash cannot be
+        // deleted for good: it deleted the character, its chats with it, and created it again under
+        // its id): the read says gone, the list is kept (no write), and the screen says the chat is
+        // not available.
+        const recordE = server.record("characters", "e")!;
+        server.store.delete(server.kind("characters"), "e", recordE.revision);
+        server.set("characters", "e", recordE.data);
         selection.selectCharacter("e");
         await settleMicrotasks();
         expect(chat.selectedChat()).toBeNull();
@@ -564,16 +579,9 @@ describe("selection", () => {
         // Another tab deleted `c`'s selected chat `k0` and created `k_new` in front: the null read
         // removes `k0`, the selection falls back to the next chat and loads it, and the summary list
         // brings `k_new` as a summary.
+        server.store.applyChanges({ chats: [create("c", "k_new", { name: "New", message: [m("n", "N")] })] });
+        server.deleteChatForever("c", "k0");
         server.store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "k0",
-                    baseRevision: server.chat("c", "k0")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-                create("c", "k_new", { name: "New", message: [m("n", "N")] }),
-            ],
             chatOrders: [
                 {
                     characterId: "c",
@@ -609,16 +617,9 @@ describe("selection", () => {
 
     it("an unloaded chat gone on the server while selected: the null read removes it, the selection falls back and loads, and the summary list brings the replacement", async () => {
         const { server, chat, selection, reads } = await boot();
+        server.store.applyChanges({ chats: [create("c", "k_new", { name: "New", message: [m("n", "N")] })] });
+        server.deleteChatForever("c", "k0");
         server.store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "k0",
-                    baseRevision: server.chat("c", "k0")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-                create("c", "k_new", { name: "New", message: [m("n", "N")] }),
-            ],
             chatOrders: [
                 {
                     characterId: "c",
@@ -1009,6 +1010,40 @@ describe("eviction", () => {
         expect(texts(await chat.ensureChatLoaded(kRef(8)))).toEqual(["K8 text"]);
     });
 
+    it("trimming noticed chats preserves selection, pins, local work, stale chats, generation and unsaved chats", async () => {
+        const { chat, server, selection, loadedIds, take, remoteMeta } = await boot();
+        selection.selectCharacter("c");
+        await settleMicrotasks();
+        await chat.loadChats("c");
+        await chat.loadChats("d");
+        const releaseChat = chat.pinChat(kRef(1));
+        const releaseCharacter = chat.pinChats("d");
+        chat.setChatMeta(kRef(2), { note: "in flight" });
+        take();
+        chat.setChatMeta(kRef(3), { note: "unsent" });
+        chat.markChatStale(kRef(4));
+        chat.applyServerGeneration(kRef(5), { jobId: "J", messageId: "k5-0", generationId: "g", text: "...", seq: 0 });
+        const created = chat.createChat("c", { id: "new", name: "New", note: "", localLore: [], message: [] });
+        remoteMeta("c", "k6", { name: "K6 remote" });
+        chat.noteRemoteChat(kRef(6), server.chat("c", "k6")!.revision);
+        try {
+            chat.trimLoadedChats();
+            expect(chat.findChat(kRef(6))).toBeDefined();
+            chat.trimLoadedChats(true);
+            expect(chat.findChat(kRef(6))).toBeUndefined();
+            expect(chat.chatEntry(kRef(6))?.name).toBe("K6");
+            expect(chat.isChatBehind(kRef(6))).toBe(true);
+            for (const id of ["k0", "k1", "k2", "k3", "k4", "k5", created.id]) {
+                expect(chat.findChat(ref("c", id)), id).toBeDefined();
+            }
+            expect(loadedIds("d")).toEqual(["m", "constructor"]);
+            expect(server.batchCount()).toBe(0);
+        } finally {
+            releaseChat();
+            releaseCharacter();
+        }
+    });
+
     it("never evicts the selected chat, a pinned chat, a chat of a pinned character, one with unsent or in-flight work, a noticed or stale one, a generating one, or one not saved yet; the end of each protection lets a trim take it", async () => {
         const { server, chat, selection, loadedIds, runTrim, commit, take, apply, ack, refreshIdle, remoteMeta } =
             await boot();
@@ -1127,7 +1162,10 @@ describe("server copies never load a chat", () => {
         // A busy unloaded member keeps its summary and its notice; once idle, the summary refresh covers it.
         chat.setChatMeta(kRef(2), { folderId: "mine" });
         remoteMeta("c", "k2", { name: "K2 remote" });
-        expect(chat.noteRemoteChat(kRef(2), server.chat("c", "k2")!.revision)).toBe("collection");
+        // The mark rides beside the revision, as the server's feed entry carries it.
+        expect(chat.noteRemoteChat(kRef(2), server.chat("c", "k2")!.revision, undefined, { trashedAt: null })).toBe(
+            "collection",
+        );
         expect(chat.idleSummaryRefreshes()).toEqual([]);
         const busyIssued = chat.heldChatRevisionsOf("c");
         const busyNotices = chat.summaryRefreshNotices(["c"]);
@@ -1185,9 +1223,15 @@ describe("server copies never load a chat", () => {
         // A job's chat event for an unloaded member: applied as its summary and revision only.
         remoteMeta("c", "k2", { name: "K2 job" });
         const remote = server.chat("c", "k2")!;
-        expect(chat.hydrateChat({ characterId: "c", id: "k2", revision: remote.revision, data: remote.data })).toBe(
-            true,
-        );
+        expect(
+            chat.hydrateChat({
+                characterId: "c",
+                id: "k2",
+                revision: remote.revision,
+                trashedAt: null,
+                data: remote.data,
+            }),
+        ).toBe(true);
         expect(chat.findChat(kRef(2))).toBeUndefined();
         expect(chat.chatEntry(kRef(2))?.name).toBe("K2 job");
         expect(chat.heldChatRevision(kRef(2))).toBe(remote.revision);
@@ -1195,11 +1239,84 @@ describe("server copies never load a chat", () => {
         chat.setChatMeta(kRef(3), { name: "Mine" });
         remoteMeta("c", "k3", { folderId: "f2" });
         const busy = server.chat("c", "k3")!;
-        expect(chat.hydrateChat({ characterId: "c", id: "k3", revision: busy.revision, data: busy.data })).toBe(false);
+        expect(
+            chat.hydrateChat({ characterId: "c", id: "k3", revision: busy.revision, trashedAt: null, data: busy.data }),
+        ).toBe(false);
         expect(chat.chatEntry(kRef(3))).toMatchObject({ name: "Mine", folderId: "f" });
         expect(chat.heldChatRevision(kRef(3))).not.toBe(busy.revision);
         expect(chat.idleChatRefreshes()).toEqual([]);
         expect(chat.idleSummaryRefreshes()).toEqual([]);
         expect(server.batchCount()).toBe(0);
+    });
+});
+
+describe("continued bulk chat loads", () => {
+    async function timedLoad(roundDelay: number) {
+        const b = await boot({}, 500);
+        b.server.readResponseBytes = 8 * 1024;
+        const signals: (AbortSignal | null | undefined)[] = [];
+        const served: string[] = [];
+        const fetch = b.server.fetch;
+        vi.spyOn(b.server, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/read") {
+                signals.push(init?.signal);
+                const body = await response.clone().json();
+                served.push(...(body.chats ?? []).map((chat: { id: string }) => chat.id));
+                await new Promise<void>((resolve) => setTimeout(resolve, roundDelay));
+            }
+            return response;
+        });
+        return { ...b, signals, served };
+    }
+
+    it("loads 500 small chats across rounds under one deadline and installs each once", async () => {
+        const b = await timedLoad(1000);
+        const ids = Array.from({ length: 500 }, (_, i) => `k${i}`);
+        const release = b.chat.pinChats("c");
+        const versions = ids.map((id) => b.chat.chatInstallVersion(ref("c", id)));
+        const loading = b.chat.loadChats("c");
+        let failure: unknown;
+        const complete = loading.catch((error: unknown) => {
+            failure = error;
+            return null;
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(failure).toBeUndefined();
+        const loaded = (await complete)!;
+        expect(loaded.map(({ id }) => id)).toEqual(ids);
+        expect(b.loadedIds("c")).toEqual(ids);
+        expect(b.served).toEqual(ids);
+        expect(b.signals.length).toBeGreaterThan(2);
+        expect(new Set(b.signals).size).toBe(1);
+        expect(b.signals[0]?.aborted).toBe(false);
+        expect(ids.map((id, index) => b.chat.chatInstallVersion(ref("c", id)) - versions[index])).toEqual(
+            ids.map(() => 1),
+        );
+        expect(texts(loaded[0])).toEqual(["A", "B", "C"]);
+        expect(texts(loaded[499])).toEqual(["K499 text"]);
+        const requests = b.reads().length;
+        await b.chat.loadChats("c");
+        expect(b.reads()).toHaveLength(requests);
+        release();
+    });
+
+    it("times out a 500-chat continuation at the original deadline and installs nothing", async () => {
+        const b = await timedLoad(25_000);
+        const { language } = await import("src/lang");
+        const loading = b.chat.loadChats("c");
+        const failed = expect(loading).rejects.toThrow(language.chatLoadTimedOut);
+        await vi.advanceTimersByTimeAsync(50_000);
+        expect(b.signals).toHaveLength(3);
+        expect(b.loadedIds("c")).toEqual([]);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await failed;
+        expect(b.signals.every((signal) => signal?.aborted)).toBe(true);
+        expect(b.loadedIds("c")).toEqual([]);
+        expect(b.chat.chatList("c")).toHaveLength(500);
+        // A late third answer cannot resume the loop or install the first two rounds.
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(b.signals).toHaveLength(3);
+        expect(b.loadedIds("c")).toEqual([]);
     });
 });

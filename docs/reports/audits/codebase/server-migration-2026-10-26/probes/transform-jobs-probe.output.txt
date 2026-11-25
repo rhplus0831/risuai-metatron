@@ -1,0 +1,13 @@
+{"node":"v24.21.0","scopeKinds":["providers","secrets","llmSecrets","ui","memoryTranslateMedia","loreBook","globalscript","hotkeys","characterOrder","authRefreshes","globalChatVariables","personas","translatorPresets","hypaV3Presets","togglePresets","customModels","credentials","enabledModules","statics","modelPresets","modelProfiles","presets","modules","characters"]}
+{"label":"cold-500-plain-8-batches","ms":203.74,"selects":480,"parses":4849,"luaCalls":0,"regexCalls":0,"hostCalls":0,"hits":0,"failed":0}
+{"label":"hit-500-plain-8-batches","ms":13.69,"selects":200,"parses":8,"luaCalls":0,"regexCalls":0,"hostCalls":0,"hits":500,"failed":0}
+{"label":"after-variable-500-8-batches","ms":165.83,"selects":480,"parses":4848,"luaCalls":0,"regexCalls":0,"hostCalls":0,"hits":0,"failed":0}
+{"label":"after-stamp-500-8-batches","ms":138.41,"selects":480,"parses":4848,"luaCalls":0,"regexCalls":0,"hostCalls":0,"hits":0,"failed":0}
+{"label":"one-loadJobScope","ms":4.15,"selects":35,"parses":605,"luaCalls":0,"regexCalls":0,"hostCalls":0}
+{"label":"500-whole-chat-hydrations-local-model","ms":2198.35,"selects":1000,"parses":250500,"luaCalls":0,"regexCalls":0,"hostCalls":0,"bytes":523579500}
+{"label":"worker-warmup","ms":141.55,"selects":0,"parses":0,"luaCalls":0,"regexCalls":0,"hostCalls":0}
+{"label":"500-targets-10-no-match-regex","ms":1078.87,"selects":480,"parses":4848,"luaCalls":0,"regexCalls":500,"hostCalls":5000,"hits":0,"failed":0}
+{"label":"mixed-revision-cache","first":{"cached":false,"text":"LOCAL_NEW|stored=0:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},"afterSave":{"cached":true,"text":"LOCAL_NEW|stored=0:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},"bypass":{"cached":false,"text":"LOCAL_NEW|stored=LOCAL_NEW"},"sameKey":true}
+{"label":"viewport-cross-client","wide":{"text":"800","cached":false},"narrow":{"text":"800","cached":true}}
+{"label":"trigger-disjoint-variable-loss","before":{"$a":"1","$v":"1","$b":"saved-by-another-tab"},"after":{"$a":"1","$v":"1"},"olderMessage":"EDITED_OLDER_MESSAGE"}
+{"label":"four-tiny-snapshots","stats":{"active":0,"queued":0,"snapshots":4,"cached":0},"pendingTextBytes":16,"heapDeltaMiB":45.86,"chatTextMiB":15.625}

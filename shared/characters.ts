@@ -3,10 +3,16 @@ import type { character, groupChat } from "./database.ts";
 /**
  * The character defaults: one pure helper the client applies when a character is created or
  * replaced whole and before it saves one, and the server's `characters` normalizer applies on every
- * write and in its startup pass. Only deterministic defaults live here: ids, times, chats, the
+ * write and in its normalization pass. Only deterministic defaults live here: ids, times, chats, the
  * lorebook conversion, and the `postHistoryInstructions` transfer are creation steps
  * (`characterStore.svelte.ts`'s `prepareNewCharacter`).
  */
+
+/** The boot's existing three-day trash threshold, shared with recovery to keep edits from being pruned. */
+export function isCharacterTrashExpired(value: { trashTime?: unknown } | undefined, now: number): boolean {
+    const time = value?.trashTime;
+    return typeof time === "number" && !!time && time + 1000 * 60 * 60 * 24 * 3 < now;
+}
 
 /** Thrown when a character's shape cannot be normalized (a group whose `characters` is not a list). */
 export class CharacterShapeError extends Error {
@@ -86,6 +92,13 @@ export function inlayScreenGenData(
 
 type Defaults = readonly (readonly [string, () => unknown])[];
 
+export const VOICEVOX_CONFIG_DEFAULTS = {
+    SPEED_SCALE: 1,
+    PITCH_SCALE: 0,
+    INTONATION_SCALE: 1,
+    VOLUME_SCALE: 1,
+} as const;
+
 const EVERY_CHARACTER: Defaults = [
     ["name", () => ""],
     ["firstMessage", () => ""],
@@ -112,7 +125,7 @@ const SINGLE_CHARACTER: Defaults = [
     ["scenario", () => ""],
     ["firstMsgIndex", () => -1],
     ["additionalData", () => ({ tag: [], creator: "", character_version: "" })],
-    ["voicevoxConfig", () => ({ SPEED_SCALE: 1, PITCH_SCALE: 0, INTONATION_SCALE: 1, VOLUME_SCALE: 1 })],
+    ["voicevoxConfig", () => ({ ...VOICEVOX_CONFIG_DEFAULTS })],
     ["additionalText", () => ""],
     ["depth_prompt", () => ({ depth: 0, prompt: "" })],
     ["hfTTS", () => ({ model: "", language: "en" })],

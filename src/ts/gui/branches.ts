@@ -1,5 +1,5 @@
 import { findCharacter } from "../storage/characterStore.svelte";
-import { chatList, findChat } from "../storage/chatStore.svelte";
+import { activeChatList, findChat } from "../storage/chatStore.svelte";
 
 type ChatBranch = {
     children: Map<string, ChatBranch>;
@@ -83,7 +83,7 @@ export function getChatBranches(chaId: string) {
         return [];
     }
 
-    for (const entry of chatList(chaId)) {
+    for (const entry of activeChatList(chaId)) {
         const chat = findChat({ chaId, chatId: entry.id });
         if (!chat) {
             continue;

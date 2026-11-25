@@ -20,12 +20,12 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { chatEntry, deleteChat } from "src/ts/storage/chatStore.svelte";
+import { acceptRemoteChat, chatEntry } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { chatBindingDialog, openModelPresetList, openPersonaList, openPresetList } from "src/ts/stores.svelte";
@@ -168,10 +168,14 @@ describe("ChatBindingPanel", () => {
         flushSync();
         expect(noteBlock()?.textContent?.trim()).toBe("Bob's memo");
 
-        settings.personas.splice(1, 1);
+        chatBindingPatch(refK, { personaId: null });
         flushSync();
         expect(noteBlock()).toBeNull();
-        chatBindingPatch(refK, { personaId: null });
+
+        chatBindingPatch(refK, { personaId: "u2" });
+        flushSync();
+        expect(noteBlock()?.textContent?.trim()).toBe("Bob's memo");
+        settings.personas.splice(1, 1);
         flushSync();
         expect(noteBlock()).toBeNull();
     });
@@ -190,7 +194,8 @@ describe("ChatBindingPanel", () => {
     it("shows nothing for a chat that is gone, and a confirm clicked as the chat goes does not throw", () => {
         const panel = renderPanel(refJ);
         const confirm = panel.confirmButton()!;
-        deleteChat(refJ);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        acceptRemoteChat({ characterId: refJ.chaId, id: refJ.chatId, revision: null, data: null });
         expect(() => confirm.click()).not.toThrow();
         flushSync();
         expect(panel.target.querySelector("[data-chat-binding-panel]")).toBeNull();
@@ -217,7 +222,7 @@ describe("ChatBindingDialog", () => {
     it("closes itself when its chat stops being a member", () => {
         const dialog = renderDialog(refJ);
         expect(dialog.close).not.toHaveBeenCalled();
-        deleteChat(refJ);
+        acceptRemoteChat({ characterId: refJ.chaId, id: refJ.chatId, revision: null, data: null });
         flushSync();
         expect(dialog.close).toHaveBeenCalledTimes(1);
     });

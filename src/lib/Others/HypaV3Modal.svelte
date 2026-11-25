@@ -8,6 +8,7 @@
     import { language } from "src/lang";
     import { translateHTML } from "src/ts/translator/translator";
     import { alertConfirmTwice } from "./HypaV3Modal/utils";
+    import { memoryTaskStatusLine } from "./HypaV3Modal/taskStatusLine";
     import ModalHeader from "./HypaV3Modal/modal-header.svelte";
     import ModalSummaryItem from "./HypaV3Modal/modal-summary-item.svelte";
     import ModalFooter from "./HypaV3Modal/modal-footer.svelte";
@@ -48,12 +49,40 @@
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { capturePluginContext } from "src/ts/plugins/apiV3/pluginContext";
     import type { SerializableHypaV3Data } from "src/ts/process/memory/hypav3";
-    import { summaryKey } from "../../../shared/memory.ts";
+    import { remapHypaV3Metrics, summaryKey } from "../../../shared/memory.ts";
+    import { isSealedHypaV3Data } from "../../../shared/structuredMemory.ts";
+
+    /**
+     * The HypaV3 memory editor of the selected chat. It and its children (`HypaV3Modal/`, which get the
+     * copy as their `hypaV3Data` prop) edit a synced copy of the chat's `hypaV3Data`, and every change
+     * is saved with `setChatMeta`: search, filters, categories, tags, bulk edit, resummarize and
+     * reroll, reset, and the V2→V3 conversion. A send's memory data is written by the job and by the
+     * background memory task, never here; while either can write, edits are refused (`memoryWriteFence`).
+     *
+     * - The saving effect never writes the empty default of a chat without memory data; the immediate
+     *   initialization write is quietly refused while fenced. A refused conversion reports no success.
+     * - A replacement of the copy by another writer, or a fenced edit's undo, clears the bulk-edit
+     *   selection and closes the tag manager; a bulk resummary's Apply closes it too.
+     * - Resummarize and reroll capture the open chat (`currentChatRef`) and its plugin context
+     *   (`capturePluginContext`) when the action begins and pass them to `summarize`, so the request
+     *   is that chat's whatever is selected when it runs.
+     * - A bulk resummary's Cancel, Apply, Retry, and a new run discard earlier requests
+     *   (`bulkResummaryGeneration`): a late summary or translation result, or failure, shows nothing.
+     * - Tag handlers and rendering ignore a missing summary, and a delete confirmation resolves the
+     *   summary it captured by object identity before removing anything (`deleteSummaries`).
+     * - Under the header: the chat's memory task status (`memoryTaskStatusLine`: queued, running
+     *   `k/n`, or the last notable end with its reason), "Summarize now" (`startMemoryTask`), and,
+     *   while a task is live or a manual start waits, "Cancel" (`cancelMemoryTask`). The lore editor's
+     *   writes are not fenced by tasks (`src/ts/process/memoryTasks.svelte.ts`).
+     */
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
-    /** The selected chat's memory data as the chat holds it (read-only). */
-    const chatHypaV3Data = $derived(currentChat?.hypaV3Data);
+    /**
+     * The selected chat's memory data as the chat holds it (read-only). A projection, which a chat can
+     * still hold after another algorithm was selected, is no data here: the first edit is a real write.
+     */
+    const chatHypaV3Data = $derived(isSealedHypaV3Data(currentChat?.hypaV3Data) ? undefined : currentChat?.hypaV3Data);
 
     // The modal and its children edit a copy of the memory data; every change of the copy is written
     // to the chat through the chat module, and a change of the chat's copy from elsewhere (a
@@ -68,8 +97,10 @@
 
     /**
      * The notice a write of `ref`'s memory data is refused with, or null when it may be written: a
-     * send of this tab or a job this tab knows of runs in it, or its memory task fence holds
-     * (reactive, except that a held revision catching up alone does not notify).
+     * send of this tab (`isLocalSend`) or a job this tab knows of (`generatingChatKeys`: a followed job
+     * or a server lock this tab saw) runs in it, with `chatGenerating`; or its memory task fence holds
+     * (`memoryTaskFenced`), with `memoryTasks.editFenced` (reactive, except that a held revision
+     * catching up alone does not notify).
      */
     function memoryWriteFence(ref: ChatRef): string | null {
         if (isLocalSend(ref, $localSends) || generatingChatKeys().has(chatStatusKey(ref))) {
@@ -133,11 +164,10 @@
     });
 
     /**
-     * Writes new memory data to the selected chat (the copy follows). False when nothing was written:
+     * Writes new memory data to the supplied chat, or the selected chat (the copy follows). False when nothing was written:
      * no chat, or it is fenced (`memoryWriteFence`; with the notice, unless `quiet`).
      */
-    function writeHypaV3Data(data: SerializableHypaV3Data, quiet = false): boolean {
-        const ref = currentChatRef();
+    function writeHypaV3Data(data: SerializableHypaV3Data, quiet = false, ref = currentChatRef()): boolean {
         if (!ref) {
             return false;
         }
@@ -173,38 +203,19 @@
         syncCheck;
         return taskRef !== null && memoryTaskAwaitingSync(taskRef);
     });
-
-    function taskReasonText(reason: string | undefined): string {
-        return reason === undefined ? "" : (language.memoryTasks.reasons[reason] ?? reason);
-    }
-
-    /** The status line of the chat's task: running or queued, else its last notable end. */
-    const taskStatusLine = $derived.by((): string | null => {
-        const status = taskStatus;
-        if (!status) {
-            return null;
-        }
-        switch (status.state) {
-            case "queued":
-                return language.memoryTasks.queued;
-            case "running":
-                return language.memoryTasks.running(status.done, status.total);
-            case "done":
-                return status.reason || status.error
-                    ? language.memoryTasks.done(status.error ?? taskReasonText(status.reason))
-                    : null;
-            case "failed":
-                return language.memoryTasks.failed(status.error ?? taskReasonText(status.reason));
-            case "skipped":
-                return language.memoryTasks.skipped(taskReasonText(status.reason));
-            case "cancelled":
-                return status.reason && status.reason !== "cancelled"
-                    ? language.memoryTasks.cancelled(taskReasonText(status.reason))
-                    : null;
-        }
+    const readOnly = $derived.by(() => {
+        syncCheck;
+        return taskRef !== null && memoryWriteFence(taskRef) !== null;
     });
 
-    /** Shows the notice of a start or cancel that did not simply run. */
+    const taskStatusLine = $derived(memoryTaskStatusLine(taskStatus));
+
+    /**
+     * Shows the notice of a start or cancel that did not simply run. A start refused before it reached
+     * the server says why: local changes a conflict discarded (`memoryTasks.discarded`), changes the
+     * server refused (`serverJob.refusedDraft`), or a send in the chat; `pendingManual` says the next
+     * reply in the chat hands it off.
+     */
     function showMemoryTaskResult(result: MemoryTaskActionResult, action: "start" | "cancel") {
         switch (result.outcome) {
             case "pendingManual":
@@ -218,6 +229,9 @@
                     case "chatGone":
                         alertError(language.memoryTasks.chatGone);
                         return;
+                    case "groupArchived":
+                        alertError(language.serverJob.groupArchived);
+                        return;
                     case "queueFull":
                         alertError(language.memoryTasks.queueFull);
                         return;
@@ -227,6 +241,9 @@
                         return;
                     case "discarded":
                         alertError(language.memoryTasks.discarded);
+                        return;
+                    case "refused":
+                        alertError(language.serverJob.refusedDraft);
                         return;
                     case "generating":
                         alertError(language.chatGenerating);
@@ -372,6 +389,26 @@
         tagManagerState.editingTagIndex = -1;
     }
 
+    /**
+     * The last selection's `metrics` (indices into the summaries) moved through `map` before a change
+     * of the list made here, so its badges stay on their summaries; a summary that leaves loses them.
+     */
+    function moveMetrics(map: (index: number) => number | undefined) {
+        if (hypaV3Data.metrics) {
+            hypaV3Data.metrics = remapHypaV3Metrics(
+                $state.snapshot(hypaV3Data.metrics),
+                hypaV3Data.summaries.length,
+                map,
+            );
+        }
+    }
+
+    /**
+     * Removes `target` (by object identity; nothing when the copy no longer holds it), or every summary
+     * after it. Deleted selection indexes are dropped and later ones shift down, the last selection's
+     * badges move with their summaries, and a tag manager whose summary is deleted or shifts closes
+     * and resets its editing state (`closeTagManager`).
+     */
     function deleteSummaries(target: SerializableSummary, after: boolean) {
         const index = hypaV3Data.summaries.indexOf(target);
         if (index === -1) return;
@@ -384,6 +421,7 @@
                 .map((index) => (index < start ? index : index - count)),
         );
         if (tagManagerState.currentSummaryIndex >= start) closeTagManager();
+        moveMetrics((index) => (index < start ? index : index >= start + count ? index - count : undefined));
         hypaV3Data.summaries.splice(start, count);
     }
 
@@ -454,7 +492,8 @@
      * selection, the one summary that has it now. Null when the chat is no longer the selected one, or
      * a summary is gone or ambiguous: the copy can be replaced during the summarization await (a job's
      * memory write, a change from another tab), and the indices captured before it would name other
-     * summaries.
+     * summaries. Apply and Retry refuse a null with `hypaV3Modal.bulkResummaryTargetsGone` and change
+     * nothing; the result stays shown until Cancel.
      */
     function resolveBulkTargets(state: BulkResummaryState): BulkResummaryTarget[] | null {
         const ref = currentChatRef();
@@ -478,6 +517,11 @@
         return resolved.sort((a, b) => a.index - b.index);
     }
 
+    /**
+     * Merges the selected summaries (two or more) into one summary request. The selection is kept as
+     * `BulkResummaryState.targets` (each by object and `summaryKey`), which Apply and Retry resolve
+     * again in the copy as it is then (`resolveBulkTargets`).
+     */
     async function resummarizeBulkSelected() {
         if (bulkEditState.selectedSummaries.size < 2) return;
 
@@ -515,7 +559,7 @@
                 content: text,
             }));
 
-            const mergedChatMemos: string[] = [];
+            const mergedChatMemos: (string | null)[] = [];
             for (const index of sortedIndices) {
                 const summary = hypaV3Data.summaries[index];
                 mergedChatMemos.push(...summary.chatMemos);
@@ -553,6 +597,13 @@
         }
         const minIndex = targets[0].index;
         closeTagManager();
+        // The merged summary is new: no target keeps the last selection's badges. The first target's
+        // place stays (the merge goes there); the later targets leave.
+        const merged = new Set(targets.map((target) => target.index));
+        const removed = targets.slice(1).map((target) => target.index);
+        moveMetrics((index) =>
+            merged.has(index) ? undefined : index - removed.filter((other) => other < index).length,
+        );
 
         hypaV3Data.summaries[minIndex] = {
             text: bulkResummaryState.result,
@@ -658,15 +709,17 @@
     }
 
     async function handleResetData() {
+        const ref = currentChatRef();
+        if (!ref) return;
         if (
             await alertConfirmTwice(
                 language.hypaV3Modal.resetConfirmMessage,
                 language.hypaV3Modal.resetConfirmSecondMessage,
             )
         ) {
-            writeHypaV3Data({
-                summaries: [],
-            });
+            const current = currentChatRef();
+            if (current?.chaId !== ref.chaId || current?.chatId !== ref.chatId) return;
+            writeHypaV3Data({ summaries: [] }, false, ref);
         }
     }
 
@@ -809,8 +862,8 @@
                 textarea.readOnly = true;
                 textarea.focus();
                 window.setTimeout(() => {
-                    searchState.ref.focus(); // Restore focus to search bar
-                    textarea.readOnly = false; // Remove readonly after focus moved
+                    searchState?.ref?.focus();
+                    textarea.readOnly = readOnly; // A memory write fence may have arrived during the highlight.
                 }, 300);
             }
         } else {
@@ -981,6 +1034,7 @@
         >
             <!-- Header -->
             <ModalHeader
+                {readOnly}
                 bind:searchState
                 bind:filterImportant={filterState.showImportantOnly}
                 bind:dropdownOpen={uiState.dropdownOpen}
@@ -1046,7 +1100,8 @@
                                     {language.hypaV3Modal.convertLabel}
                                 </div>
                                 <button
-                                    class="px-4 py-2 my-1 font-semibold transition-colors rounded-md sm:my-2 text-zinc-300 bg-zinc-700 hover:bg-zinc-500"
+                                    class="px-4 py-2 my-1 font-semibold transition-colors rounded-md sm:my-2 text-zinc-300 bg-zinc-700 hover:bg-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled={readOnly}
                                     tabindex="-1"
                                     onclick={async () => {
                                         const conversionResult = convertHypaV2ToV3();
@@ -1139,6 +1194,7 @@
                     {#if isSummaryVisible(i)}
                         <!-- Summary Item  -->
                         <ModalSummaryItem
+                            {readOnly}
                             summaryIndex={i}
                             {hypaV3Data}
                             {summaryItemStateMap}
@@ -1162,6 +1218,7 @@
 
             <!-- Bulk Resummary Result -->
             <BulkResummaryResult
+                {readOnly}
                 {bulkResummaryState}
                 onToggleTranslation={toggleBulkResummaryTranslation}
                 onReroll={rerollBulkResummary}
@@ -1171,6 +1228,7 @@
 
             <!-- Bulk Edit Actions -->
             <BulkEditActions
+                {readOnly}
                 {hypaV3Data}
                 {bulkEditState}
                 {categories}
@@ -1190,6 +1248,7 @@
 
 <!-- Component Modals -->
 <CategoryManagerModal
+    {readOnly}
     {hypaV3Data}
     bind:categoryManagerState
     bind:searchState
@@ -1197,4 +1256,4 @@
     onCategoryFilter={handleCategoryFilter}
 />
 
-<TagManagerModal {hypaV3Data} bind:tagManagerState />
+<TagManagerModal {readOnly} {hypaV3Data} bind:tagManagerState />

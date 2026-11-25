@@ -6,16 +6,24 @@ import {
     type ResourceBatchResult,
     type ResourceBootRequest,
     type ResourceBootResult,
+    type ResourceChangesSince,
+    type ResourceReadEntries,
     type ResourceReadKindsResult,
+    type ResourceReadRefsAnswer,
     type ResourceReadRefsResult,
+    type ResourceReadRequest,
     type ResourceRevisionListing,
 } from "../../../shared/resources.ts";
 import { authFetch, getNodeServerProxyAuth } from "./serverAuth";
+import { utf8ByteLength } from "./utf8ByteLength";
+import { clearTransformResults } from "../parser/transformResults";
 
 /**
- * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every mutation sends
+ * Transport for the server resource routes (`/api/resources`, `/api/backups`). Every resource mutation sends
  * the database epoch the client loaded (`setResourceEpoch`); the server answers 412 when a restore
- * replaced the data since, which surfaces as `ResourceEpochMismatchError`.
+ * replaced the data since, which surfaces as `ResourceEpochMismatchError`. Once an epoch is loaded,
+ * every epoch-bearing read is checked too; a mismatch calls the listener before throwing. Normal
+ * requests use `authFetch` in `src/ts/storage/serverAuth.ts`; unload uses its prepared token directly.
  */
 
 /** A write named a stale revision; `conflicts` has the current revision of each record, chat, or chat order. */
@@ -38,14 +46,52 @@ export class ResourceEpochMismatchError extends Error {
     }
 }
 
-/** Any other failed request; `status` 0 means the request did not reach the server. */
+/**
+ * Any other failed request; `status` 0 means no answer arrived: the request did not reach the server,
+ * or its answer was lost. Set by this module's requests (other constructors leave them at their
+ * defaults): `serverError`, the answer's JSON `error` text, null when it had none (a reverse proxy or
+ * tunnel in front of the server may answer with HTML, a 413 for a body larger than it accepts), and
+ * `notSent`, true when the request failed before it was dispatched (authentication, signing, the
+ * mutation admission), so the server cannot have acted on it.
+ */
 export class ResourceRequestError extends Error {
     readonly status: number;
-    constructor(status: number, message: string) {
+    readonly serverError: string | null;
+    readonly notSent: boolean;
+    constructor(status: number, message: string, serverError: string | null = null, notSent = false) {
         super(message);
         this.name = "ResourceRequestError";
         this.status = status;
+        this.serverError = serverError;
+        this.notSent = notSent;
     }
+}
+
+/** The request deadline expired before a complete answer arrived. */
+export class ResourceRequestDeadlineError extends ResourceRequestError {
+    constructor(notSent: boolean) {
+        super(0, "The request was not answered in time", null, notSent);
+        this.name = "ResourceRequestDeadlineError";
+    }
+}
+
+export const REQUEST_BASE_ALLOWANCE_MS = 45_000;
+export const REQUEST_BODY_BYTES_PER_SECOND = 32 * 1024;
+export const REQUEST_MAX_ALLOWANCE_MULTIPLIER = 8;
+
+/** Allows time for the encoded body, doubling the total after each consecutive deadline abort up to 8×. */
+export function requestAllowanceMs(bodyBytes: number, consecutiveAborts: number): number {
+    const baseAllowance = REQUEST_BASE_ALLOWANCE_MS + (bodyBytes * 1000) / REQUEST_BODY_BYTES_PER_SECOND;
+    return baseAllowance * Math.min(2 ** consecutiveAborts, REQUEST_MAX_ALLOWANCE_MULTIPLIER);
+}
+
+/**
+ * The statuses a reverse proxy or tunnel answers when the server did not answer it in time or at all
+ * (502, 503, 504, and Cloudflare's 520-530). The server's own 503 carries JSON `error` text; check
+ * that the answer had none before reading one of these as a lost answer.
+ */
+export function isGatewayFailureStatus(status: number): boolean {
+    return status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 530);
 }
 
 let currentEpoch = "";
@@ -62,6 +108,7 @@ export function setMutationAdmission(check: (() => boolean) | null) {
 }
 
 export function setResourceEpoch(epoch: string) {
+    if (epoch !== currentEpoch) clearTransformResults();
     currentEpoch = epoch;
 }
 
@@ -83,6 +130,8 @@ export function setEpochMismatchListener(listener: ((epoch: string) => void) | n
  * transports to the server, such as the generation jobs, report a 412 through it too).
  */
 export function epochMismatch(epoch: string): ResourceEpochMismatchError {
+    // A live restore waits on a notice before reloading; pending transform answers are already stale.
+    clearTransformResults();
     try {
         epochMismatchListener?.(epoch);
     } catch (error) {
@@ -99,7 +148,15 @@ function checkedEpoch<T extends { epoch?: string }>(result: T): T {
     return result;
 }
 
-async function send(path: string, init: RequestInit & { mutation?: boolean } = {}): Promise<Response> {
+type ResourceRequestInit = RequestInit & { mutation?: boolean; conflictAsRequestError?: boolean };
+type DispatchState = { sent: boolean; onDispatch?: () => void };
+
+/** Records dispatch after auth, signing and admission. An observer cannot interrupt the request. */
+async function send(
+    path: string,
+    init: ResourceRequestInit = {},
+    dispatch: DispatchState = { sent: false },
+): Promise<Response> {
     const headers = new Headers(init.headers);
     if (init.mutation) {
         headers.set(RESOURCE_EPOCH_HEADER, currentEpoch);
@@ -109,18 +166,22 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
         response = await authFetch(
             path,
             { ...init, headers, cache: "no-store" },
-            init.mutation
-                ? {
-                      beforeDispatch: () => {
-                          if (mutationAdmission && !mutationAdmission()) {
-                              throw new Error("Saving stopped: the server data was restored");
-                          }
-                      },
-                  }
-                : {},
+            {
+                beforeDispatch: () => {
+                    if (init.mutation && mutationAdmission && !mutationAdmission()) {
+                        throw new Error("Saving stopped: the server data was restored");
+                    }
+                    dispatch.sent = true;
+                    try {
+                        dispatch.onDispatch?.();
+                    } catch (error) {
+                        console.error("[Resources]", error);
+                    }
+                },
+            },
         );
     } catch (error) {
-        throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error));
+        throw new ResourceRequestError(0, error instanceof Error ? error.message : String(error), null, !dispatch.sent);
     }
     if (response.ok) {
         return response;
@@ -134,11 +195,15 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
     } = {};
     try {
         body = await response.json();
-    } catch {}
+    } catch (error) {
+        if (init.signal?.aborted) {
+            throw error;
+        }
+    }
     if (response.status === 412 && body.error === "EpochMismatch") {
         throw epochMismatch(body.epoch ?? "");
     }
-    if (response.status === 409) {
+    if (response.status === 409 && !init.conflictAsRequestError) {
         throw new ResourceConflictError(
             Array.isArray(body.conflicts)
                 ? body.conflicts
@@ -152,11 +217,13 @@ async function send(path: string, init: RequestInit & { mutation?: boolean } = {
                   ],
         );
     }
-    throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
+    const serverError = typeof body.error === "string" ? body.error : null;
+    throw new ResourceRequestError(response.status, serverError ?? `Request failed (${response.status})`, serverError);
 }
 
-async function sendJson<T>(path: string, init: RequestInit & { mutation?: boolean } = {}): Promise<T> {
-    return (await (await send(path, init)).json()) as T;
+/** Resolves after reading the success body, under the same signal as dispatch and the error body. */
+async function sendJson<T>(path: string, init: ResourceRequestInit = {}, dispatch?: DispatchState): Promise<T> {
+    return (await (await send(path, init, dispatch)).json()) as T;
 }
 
 const jsonHeaders = { "content-type": "application/json" };
@@ -167,52 +234,177 @@ const jsonHeaders = { "content-type": "application/json" };
  */
 export async function readKinds(
     kinds: readonly string[],
-    options: { chats?: boolean; chatSummaries?: boolean } = {},
+    options: { chats?: boolean; chatSummaries?: boolean; signal?: AbortSignal } = {},
 ): Promise<ResourceReadKindsResult> {
     const query =
         `kinds=${kinds.map(encodeURIComponent).join(",")}` +
         `${options.chats ? "&chats=1" : ""}${options.chatSummaries ? "&chatSummaries=1" : ""}`;
-    return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`));
+    return checkedEpoch(await sendJson<ResourceReadKindsResult>(`/api/resources?${query}`, { signal: options.signal }));
 }
 
 /**
  * The boot read that skips what the client holds (`POST /api/resources/boot`; `bootCache.ts`
  * expands the answer). The answer is the server's as sent: the caller checks its shape.
  */
-export async function readBoot(request: ResourceBootRequest): Promise<ResourceBootResult> {
+export async function readBoot(
+    request: ResourceBootRequest,
+    options: { signal?: AbortSignal } = {},
+): Promise<ResourceBootResult> {
     return checkedEpoch(
         await sendJson<ResourceBootResult>(RESOURCE_BOOT_PATH, {
             method: "POST",
             headers: jsonHeaders,
             body: JSON.stringify(request),
+            signal: options.signal,
         }),
     );
 }
 
+/** Names one read entry: a key per list, since a chat list and a summary list can name one character. */
+function readKey(list: keyof ResourceReadEntries, ...ids: string[]): string {
+    return JSON.stringify([list, ...ids]);
+}
+
+/** The distinct entries of a read, in order of first mention. */
+function readKeys(entries: Partial<ResourceReadEntries>): Set<string> {
+    return new Set([
+        ...(entries.refs ?? []).map(({ kind, id }) => readKey("refs", kind, id)),
+        ...(entries.chats ?? []).map(({ characterId, id }) => readKey("chats", characterId, id)),
+        ...(entries.chatRows ?? []).map(({ characterId, id }) => readKey("chatRows", characterId, id)),
+        ...(entries.chatCollections ?? []).map((id) => readKey("chatCollections", id)),
+        ...(entries.chatSummaryCollections ?? []).map((id) => readKey("chatSummaryCollections", id)),
+    ]);
+}
+
 /**
- * Named records, chats (`chats`), characters' whole chat lists with their order (`chatCollections`),
+ * A read's rounds as one answer. Each list follows `requested`, with an entry it does not name at the
+ * end: the server keeps a character's entries together, which can answer an entry of a list before
+ * earlier ones. A list no round returned stays absent.
+ */
+function mergeRounds(rounds: ResourceReadRefsResult[], requested: ReadonlySet<string>): ResourceReadRefsResult {
+    const order = new Map([...requested].map((key, index) => [key, index]));
+    const merged = <T>(lists: (T[] | undefined)[], keyOf: (entry: T) => string): T[] | undefined => {
+        if (lists.every((list) => list === undefined)) {
+            return undefined;
+        }
+        return lists
+            .flatMap((list) => list ?? [])
+            .map((entry) => ({ entry, index: order.get(keyOf(entry)) ?? order.size }))
+            .sort((a, b) => a.index - b.index)
+            .map(({ entry }) => entry);
+    };
+    const items = merged(
+        rounds.map((round) => round.items),
+        ({ kind, id }) => readKey("refs", kind, id),
+    );
+    const chats = merged(
+        rounds.map((round) => round.chats),
+        ({ characterId, id }) => readKey("chats", characterId, id),
+    );
+    const chatRows = merged(
+        rounds.map((round) => round.chatRows),
+        ({ characterId, id }) => readKey("chatRows", characterId, id),
+    );
+    const chatCollections = merged(
+        rounds.map((round) => round.chatCollections),
+        ({ characterId }) => readKey("chatCollections", characterId),
+    );
+    const chatSummaryCollections = merged(
+        rounds.map((round) => round.chatSummaryCollections),
+        ({ characterId }) => readKey("chatSummaryCollections", characterId),
+    );
+    return {
+        ...rounds[0],
+        ...(items && { items }),
+        ...(chats && { chats }),
+        ...(chatRows && { chatRows }),
+        ...(chatCollections && { chatCollections }),
+        ...(chatSummaryCollections && { chatSummaryCollections }),
+    };
+}
+
+/**
+ * Named records, chats (`chats`), revision-guarded rows and metadata fields (`chatRows`), characters' whole chat lists
+ * with their order (`chatCollections`),
  * and characters' chat summaries with their order (`chatSummaryCollections`).
+ *
+ * The answer is complete and in request order, or the call throws: the server may stop at its byte
+ * budget, and this re-sends what it left `unanswered` until nothing is left. Every round carries
+ * `signal`, so a deadline on the call bounds the whole read. The rounds share an epoch, not a moment
+ * (a character's record and its collections come from one round; separate entries may not), and a
+ * round of another epoch halts through `epochMismatch` like any other read, discarding all rounds.
+ * A continuation that makes no progress throws `ResourceRequestError`; an aborted signal stops
+ * continuation. A moved row read is an answered entry; its caller can read the chat whole.
+ * Callers install only the complete result, never partially collected rounds.
  */
 export async function readRefs(
     refs: readonly { kind: string; id: string }[],
     options: {
         chats?: readonly { characterId: string; id: string }[];
+        chatRows?: ResourceReadEntries["chatRows"];
         chatCollections?: readonly string[];
         chatSummaryCollections?: readonly string[];
+        signal?: AbortSignal;
     } = {},
 ): Promise<ResourceReadRefsResult> {
-    return checkedEpoch(
-        await sendJson<ResourceReadRefsResult>("/api/resources/read", {
-            method: "POST",
-            headers: jsonHeaders,
-            body: JSON.stringify({ refs, ...options }),
-        }),
-    );
+    const { signal, ...bodyOptions } = options;
+    const read = async (body: ResourceReadRequest) =>
+        checkedEpoch(
+            await sendJson<ResourceReadRefsAnswer>("/api/resources/read", {
+                method: "POST",
+                headers: jsonHeaders,
+                body: JSON.stringify(body),
+                signal,
+            }),
+        );
+    const request = { refs, ...bodyOptions };
+    const { unanswered, ...first } = await read({ ...request, continue: true });
+    const rounds: ResourceReadRefsResult[] = [first];
+    const requested = readKeys(request);
+    let asked = requested;
+    let rest: Partial<ResourceReadEntries> = unanswered ?? {};
+    let left = readKeys(rest);
+    while (left.size > 0) {
+        // Asking for a strict subset each round is what ends this loop, whatever the server answers.
+        if (left.size >= asked.size || [...left].some((key) => !asked.has(key))) {
+            throw new ResourceRequestError(502, "The server's read made no progress");
+        }
+        signal?.throwIfAborted();
+        const { unanswered: next, ...round } = await read({ ...rest, continue: true });
+        // `checkedEpoch` compares with the loaded epoch, and none is loaded during boot.
+        if (round.epoch !== first.epoch) {
+            throw epochMismatch(round.epoch);
+        }
+        rounds.push(round);
+        asked = left;
+        rest = next ?? {};
+        left = readKeys(rest);
+    }
+    return rounds.length === 1 ? first : mergeRounds(rounds, requested);
 }
 
 /** Every record's, chat's, and chat order's revision on the server (no data): the live-update reconcile. */
-export async function listRevisions(): Promise<ResourceRevisionListing> {
-    return checkedEpoch(await sendJson<ResourceRevisionListing>("/api/resources/revisions"));
+export async function listRevisions(options: { signal?: AbortSignal } = {}): Promise<ResourceRevisionListing> {
+    return checkedEpoch(
+        await sendJson<ResourceRevisionListing>("/api/resources/revisions", { signal: options.signal }),
+    );
+}
+
+/** Refs in an epoch's bounded cursor interval, or an expired answer; epoch checks match the whole listing. */
+export async function listChanges(options: {
+    since: number;
+    until: number;
+    epoch: string;
+    signal?: AbortSignal;
+}): Promise<ResourceChangesSince> {
+    const query = new URLSearchParams({
+        since: String(options.since),
+        until: String(options.until),
+        epoch: options.epoch,
+    });
+    return checkedEpoch(
+        await sendJson<ResourceChangesSince>(`/api/resources/revisions?${query}`, { signal: options.signal }),
+    );
 }
 
 function resourcePath(kind: string, id: string) {
@@ -281,32 +473,65 @@ function singleConflict(error: unknown, kind: string, id: string): unknown {
     return error;
 }
 
+type WriteOptions = { consecutiveAborts?: number; onDispatch?: () => void };
+
 /**
- * One credential write of the write-only `llmSecrets` record: a set (`value`;
- * empty clears), on the record's `baseRevision`. Answers the new revision and the
- * masked record; a stale revision throws `ResourceConflictError`.
+ * Bounds a save from authentication through the complete JSON answer, using the encoded size of
+ * the body being sent. A deadline before dispatch is known unsent; one after dispatch leaves doubt.
+ */
+async function sendWriteJson<T>(
+    path: string,
+    method: "POST" | "PUT",
+    body: string,
+    { consecutiveAborts = 0, onDispatch }: WriteOptions,
+): Promise<T> {
+    const allowance = requestAllowanceMs(utf8ByteLength(body), consecutiveAborts);
+    const controller = new AbortController();
+    const { signal } = controller;
+    const dispatch = { sent: false, onDispatch };
+    const timer = setTimeout(() => controller.abort(), allowance);
+    try {
+        return await sendJson<T>(path, { method, headers: jsonHeaders, body, mutation: true, signal }, dispatch);
+    } catch (error) {
+        if (signal.aborted) {
+            throw new ResourceRequestDeadlineError(!dispatch.sent);
+        }
+        throw error;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Sets a credential on its base revision (an empty value clears it). Returns the new revision and
+ * masked record, or names the record in a conflict. Consecutive deadline aborts extend this op's
+ * allowance. onDispatch runs after signing and admission, immediately before fetch.
  */
 export async function sendSecretRequest(
     request: { kind: "put"; path: string; value: string },
     baseRevision: string,
+    options: WriteOptions = {},
 ): Promise<{ revision: string; data: unknown }> {
-    const init = {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ value: request.value, baseRevision }),
-        mutation: true,
-    };
-    const path = `/api/llm-secrets/${request.path}`;
+    const body = JSON.stringify({ value: request.value, baseRevision });
     try {
-        return checkedEpoch(await sendJson<{ epoch?: string; revision: string; data: unknown }>(path, init));
+        const reply = await sendWriteJson<{ epoch?: string; revision: string; data: unknown }>(
+            `/api/llm-secrets/${request.path}`,
+            "PUT",
+            body,
+            options,
+        );
+        return checkedEpoch(reply);
     } catch (error) {
         throw singleConflict(error, "llmSecrets", "main");
     }
 }
 
-/** Sends a batch whose JSON body the caller already built (`{"ops":[...],"chats":[...],"chatOrders":[...]}`). */
-export function applyBatchText(body: string): Promise<ResourceBatchResult> {
-    return sendJson("/api/resources/batch", { method: "POST", headers: jsonHeaders, body, mutation: true });
+/**
+ * Sends the caller's serialized batch under its size-based deadline using the largest consecutive
+ * abort count among its units. onDispatch runs after signing and admission, immediately before fetch.
+ */
+export function applyBatchText(body: string, options: WriteOptions = {}): Promise<ResourceBatchResult> {
+    return sendWriteJson("/api/resources/batch", "POST", body, options);
 }
 
 /** The body budget of a `keepalive` request (browsers refuse larger bodies; 64 KiB less headroom). */
@@ -376,6 +601,39 @@ export function sendBatchOnUnload(body: string, onResult?: (result: ResourceBatc
 
 export async function listBackups(): Promise<BackupSnapshotInfo[]> {
     return (await sendJson<{ items: BackupSnapshotInfo[] }>("/api/backups")).items;
+}
+
+/** Snapshot controls have no resource epoch and preserve the server's conflict message. */
+export async function takeSnapshot(label?: string | null): Promise<BackupSnapshotInfo> {
+    return (
+        await sendJson<{ snapshot: BackupSnapshotInfo }>("/api/backups/snapshot", {
+            method: "POST",
+            headers: jsonHeaders,
+            body: JSON.stringify({ label }),
+            conflictAsRequestError: true,
+        })
+    ).snapshot;
+}
+
+export async function updateSnapshot(
+    id: string,
+    update: { pinned?: boolean; label?: string | null },
+): Promise<BackupSnapshotInfo> {
+    return (
+        await sendJson<{ snapshot: BackupSnapshotInfo }>(`/api/backups/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: jsonHeaders,
+            body: JSON.stringify(update),
+            conflictAsRequestError: true,
+        })
+    ).snapshot;
+}
+
+export function deleteSnapshot(id: string): Promise<{ deleted: true }> {
+    return sendJson(`/api/backups/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        conflictAsRequestError: true,
+    });
 }
 
 export async function restoreBackup(id: string): Promise<string> {

@@ -1,6 +1,10 @@
 import { MCPClientLike } from "./internalmcp";
 import type { RPCToolCallContent } from "./mcplib";
 
+/**
+ * The tab's `internal:dice`, with the same tool as `server/src/mcp/dice.ts` but without that
+ * server tool's per-call bounds on notation length or total dice rolled.
+ */
 export class DiceClient extends MCPClientLike {
     constructor() {
         super("internal:dice");

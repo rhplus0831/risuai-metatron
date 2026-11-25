@@ -5,10 +5,12 @@ import type { CbsConditions } from "../../../shared/cbs/types.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     MAX_TRANSFORM_REQUEST_TEXT_BYTES,
+    MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT,
     MAX_TRANSFORM_TARGETS,
     MAX_TRANSFORM_TEXT_BYTES,
     TRANSFORM_SNAPSHOT_TTL_MS,
     type TransformContext,
+    type TransformContinueRequest,
     type TransformMode,
     type TransformResponse,
     type TransformResult,
@@ -21,10 +23,30 @@ import { generationClientId } from "../network/generationJobs";
 import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
-import { type ChatRef, currentChatRef, findChat, heldChatRevision, isMessageLocked } from "../storage/chatStore.svelte";
+import {
+    type ChatRef,
+    chatHasUnackedWork,
+    chatInstallVersion,
+    currentChatRef,
+    findChat,
+    heldChatRevision,
+    isMessageLocked,
+} from "../storage/chatStore.svelte";
 import { CharEmotion } from "../stores.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { recordClientEvent } from "../diagnostics/collector";
+import { markDisplayTransformFailed, markDisplayTransformSucceeded } from "./displayTransformRecovery.svelte";
+import {
+    advanceTransformResultsGeneration,
+    confirmTransformResult,
+    dropMessageTransformResults,
+    getTransformResult,
+    replaceTransformResult,
+    transformResultVersion,
+    transformResultsGeneration,
+    type TransformResultEntry,
+} from "./transformResults";
 
 /**
  * The client of the script transform (`shared/transform.ts`): the `editdisplay` stage of
@@ -40,23 +62,60 @@ import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
  * the stages and retries of a message's render, passed down to `ParseMarkdown` and `translateHTML`):
  * the chat, the message id at `chatID`, the preset and persona ids, the plugin call context, and the
  * message's Re-render generation (the first transform sent at a Re-render's generation skips the
- * server cache, for every later stage of that render too). Calls are batched per context, mode, and
- * handler set on the next animation frame (or after 16 ms when frames are withheld). While the
- * message is locked by a generation (it streams), the transform is skipped: the text goes through
- * the browser steps raw, and the row renders again when the lock ends. Each target is answered as
+ * server and tab caches, for every later stage of that render too). Calls are batched per context,
+ * mode, handler set, and captured viewport/language on the next animation frame (or after 16 ms
+ * when frames are withheld). While the message is locked by a generation (it streams), the
+ * transform is skipped: the text goes through
+ * the browser steps raw, and the row renders again when the lock ends. A locked row that no stream
+ * chunk reached (a whole reply) starts no render at all (`ChatBody`'s `held`). Each target is answered as
  * soon as its result is known; a failed target or request leaves its text unprocessed, and a batch
- * shows one toast on its first failure; there is no browser fallback on the server path. With the
- * tab's plugin handlers for the mode, the server answers the texts before them; the tab runs each
- * text's handlers in order (with the captured plugin context), the texts side by side, and sends
- * the second call. A chunk has 28 s for both calls and the handlers (the server allows 30 s from the
- * first call's admission), each call bounded as a whole; the handlers end 5 s before that: a handler
+ * shows one toast on its first failure; there is no browser fallback on the server path. A first call
+ * refused for the chat's binding (409 `chatBindingMismatch`) while the chat has unacknowledged work waits
+ * for that work's acknowledgement within the chunk's deadline and is sent once more (`ownChangeSaved`): a
+ * binding picked in this tab renders before its save goes out. A failure
+ * is `permanent` (`displayTransformRecovery` does not retry it) for a source over
+ * `MAX_TRANSFORM_TEXT_BYTES` (never sent), a 400 or 413 answer to either call of a chunk whose first
+ * request held that target alone, and a target the server marks so. Multi-target 400/413 refusals
+ * and transient server scope-limit results split immediately, recursively, within the original deadline.
+ * The split batches share subscribers and the original batch's single failure toast.
+ * With the tab's plugin handlers for the mode, the server answers the texts before them; the tab
+ * runs each text's handlers in order (with the captured plugin context), the texts side by side,
+ * and sends the second call. Two-call chunks enter a tab-wide FIFO among eligible waiters: at most
+ * four permits, with one reserved for nested calls captured with plugin purpose "transform". A
+ * nested-in-nested chain can still wait on itself until the handler deadline. Chunks without handlers
+ * need no permit. The 28 s deadline starts at admission, covering both calls and the handlers (the
+ * server allows 30 s from its admission); the handlers end 5 s before that: a handler
  * still running then fails its own target (it is not stopped, but no later handler of its text is
- * started; its result is ignored), and the finished texts go out in the second call.
+ * started; its result is ignored), and the finished texts go out in the second call. A permit stays
+ * held until a continuation answers 200 or SnapshotExpired, either call refuses the epoch, the first
+ * call fails before a 200 response or answers without a snapshot, or the TTL plus a 1 s transit margin ends.
+ * Unreadable 200 bodies retain the permit; abandoned known snapshots get one bounded all-cancelled continuation.
+ * Server memory pressure, the global snapshot cap across tabs, and TTL expiry can still expire snapshots.
  *
- * `@@emo` effects are applied once per tab and result key (as the tab's process cache applies
- * them once), and only when the caller's character argument is not `simple` (today's
- * `applyScriptEffect` skips a simple one); a response older than a "Re-render" of its message
- * applies none.
+ * A bounded tab LRU keeps confirmed text. A matching target sends `knownKey` when it does not need
+ * emotions; `same` confirms the retained text without downloading it. ChatBody's final display stage
+ * may show this text while confirmation is pending and render again on a changed or failed answer,
+ * handing a non-mixed answer or a raw failure to that correction without another request. A changed
+ * mixed answer instead makes the correction request fresh state. Source hashing and enqueueing are
+ * synchronous; a cache hit also requires the exact source, so a hash collision is a miss.
+ * Translation inputs always wait. Re-render drops the message's entries, GUI resets keep entries,
+ * and epoch changes clear them. Both the cache generation captured before any await and the message's
+ * Re-render generation fence every answer's cache changes, replacement callback, and effects.
+ * Overlapping answers condition their writes on the entry version they read.
+ *
+ * Identical inputs and capture provenance share an operation through settlement, including in flight.
+ * Each caller subscribes until its completion or abort; a caller without a signal keeps its subscription.
+ * Abort returns that caller's input immediately and suppresses its completion's effects. The last departure
+ * withdraws an operation queued for a frame or permit. After dispatch, zero-subscriber operations remain
+ * joinable until the first answer, each hook start, or continuation preparation and dispatch: checking and settling a
+ * departed target is synchronous, and its continuation carries only { id, cancelled: true }. A dispatched
+ * chunk is aborted only when none of its open operations has subscribers; hung hooks cannot delay its
+ * snapshot release. Its `cancelled` settlements touch no cache, recovery, diagnostics or provisional
+ * callback and show no toast; deadlines remain failures. Cancellation restores a consumed Re-render
+ * bypass at most once per operation and removes the operation from the join map at once.
+ *
+ * `@@emo` effects apply only from full answers, once per tab and result key, and only when the
+ * caller's character argument is not `simple`; cached text and `same` never apply emotions.
  */
 
 /** A per-document value: the handler-set identity never repeats across reloads. */
@@ -88,12 +147,36 @@ export type CapturedTransform = {
     pluginContext: PluginCallContext | undefined;
     /** The message's render generation when the call began ("Re-render" raises it). */
     generation: number;
+    /** The tab cache's generation before the render's first await. */
+    cacheGeneration: number;
     /**
      * Whether this render skips the server cache: claimed by its first transform sent at the generation a
      * "Re-render" marked (then every later stage with this capture skips it too).
      */
     noCache: boolean;
     locked: boolean;
+    /** The chat's installed state and unsaved-work flag when this render began. */
+    installVersion: number;
+    hadUnackedWork: boolean;
+    /** An editdisplay answer may have mixed the render's text with a different stored transcript. */
+    mixedDisplay: boolean;
+    /** Installed only for ChatBody's final display stage, never for translation inputs. */
+    onProvisional?: (answer: { replaced: boolean; mixed: boolean; outcome?: TransformOutcome }) => void;
+    /** Final display answers still pending; mixed reporting waits for their replacement decision. */
+    pendingProvisional?: number;
+    /** A provisional answer handed to the next local render, consumed at its final stage. */
+    provisionalOutcome?: TransformOutcome;
+};
+
+type TransformOutcome = {
+    identity: string;
+    cacheGeneration: number;
+    generation: number;
+    /** The originating render's install version, before any of its awaits. */
+    installVersion: number;
+    /** The exact source also guards the handoff against a hash collision. */
+    source: string;
+    text: string;
 };
 
 const generations = new Map<string, number>();
@@ -107,6 +190,12 @@ const messageKey = (ref: ChatRef, messageId: string) => JSON.stringify([ref.chaI
  * depend on the lock version, the selection, or other rows (a lock change on one message would
  * re-render every mounted row); a locked row, and a row of a chat whose first save landed, re-render
  * through `chatBodyRevision`.
+ * It holds the chat (the plugin context's, else `chatRef`, else the selected one), the message id at `chatID`, the
+ * chat's display ids (`chatDisplayIds`: per field the bound record when it exists, else the tab's; the persona sent
+ * as both the effective and the selected one), the plugin call context, the message's lock and Re-render
+ * generation, the tab cache's generation, `chatInstallVersion`, and `chatHasUnackedWork`. A render's later stages
+ * take it as their last argument (`ParseMarkdown`, `translateHTML`): a capture, null for none (the stage is
+ * skipped), or omitted to capture at that call.
  */
 export function captureTransform(
     chatID: number,
@@ -149,39 +238,78 @@ function readTransformContext(
         ...(messageId ? { messageId } : {}),
         pluginContext: options.pluginContext ?? capturePluginContext(chatRef),
         generation,
+        cacheGeneration: transformResultsGeneration(),
         noCache: false,
         locked: isMessageLocked(chatRef, messageId),
+        installVersion: chatInstallVersion(chatRef),
+        hadUnackedWork: chatHasUnackedWork(chatRef),
+        mixedDisplay: false,
     };
 }
 
-/** "Re-render": the next transform of the message skips the server cache; older responses apply no effects. */
+/**
+ * "Re-render": the next transform of the message skips the server cache; older responses apply no effects.
+ * It drops the message's tab results (every source, mode, and viewport) and raises its generation, so that
+ * transform also skips the tab cache and answers captured before it change neither cache nor recovery.
+ */
 export function rerenderMessage(chatRef: ChatRef, messageId: string): void {
     const key = messageKey(chatRef, messageId);
     const generation = (generations.get(key) ?? 0) + 1;
     generations.set(key, generation);
     noCacheNext.set(key, generation);
+    dropMessageTransformResults(key);
 }
 
 /** The keys whose emotions this tab applied (cleared with the process cache, on `ReloadGUIPointer`). */
 const appliedEmotions = new Set<string>();
 const MAX_APPLIED = 4096;
 
+/**
+ * On the `ReloadGUIPointer` bump (`src/ts/stores.svelte.ts`): forgets which results' emotions were applied and
+ * advances the tab cache's generation, keeping its entries, across chat switches too. A capture taken before it
+ * can no longer change or confirm the cache, apply emotions, report to recovery, or schedule a provisional
+ * correction.
+ */
 export function resetTransformEffects(): void {
     appliedEmotions.clear();
+    advanceTransformResultsGeneration();
 }
 
-type Pending = {
+type Answer = TransformResult | NonNullable<TransformResponse["same"]>[number] | { id: string; cancelled: true };
+
+type Operation = {
+    key: string;
     target: TransformTarget;
-    resolve: (result: TransformResult) => void;
+    captured: CapturedTransform;
+    batch: Batch;
+    entry: TransformResultEntry | undefined;
+    version: symbol | undefined;
+    answer: Promise<Answer>;
+    resolve: (result: Answer) => void;
+    subscribers: number;
+    settled: boolean;
+    chunk?: Chunk;
+    bypassKey?: string;
+    bypassRestored?: boolean;
+};
+
+type Chunk = {
+    open: Map<string, Operation>;
+    controller: AbortController;
+    deadline: number;
+    cancelled: boolean;
+    waiting: boolean;
+    snapshot?: TransformContinueRequest;
+    snapshotGone: boolean;
+    snapshotExpires: number;
 };
 
 type Batch = {
     mode: TransformMode;
     captured: CapturedTransform;
+    client: { viewport: { width: number; height: number }; browserLanguage: string };
     handlers: ReturnType<typeof handlerSet>;
-    pending: Pending[];
-    /** Identical targets share one entry (by their inputs). */
-    shared: Map<string, Promise<TransformResult>>;
+    pending: Operation[];
     /**
      * Whether this batch's failure toast was shown (one per batch, its chunks included) or is
      * suppressed (a restore refused it: the terminal notice tells the user).
@@ -190,7 +318,126 @@ type Batch = {
 };
 
 const batches = new Map<string, Batch>();
+const operations = new Map<string, Operation>();
 let scheduled = false;
+
+function forgetOperation(operation: Operation): void {
+    if (operations.get(operation.key) === operation) operations.delete(operation.key);
+}
+
+function restoreBypass(operation: Operation): void {
+    if (operation.bypassRestored) return;
+    operation.bypassRestored = true;
+    const key = operation.bypassKey;
+    if (key && generations.get(key) === operation.captured.generation && !noCacheNext.has(key)) {
+        noCacheNext.set(key, operation.captured.generation);
+    }
+}
+
+function cancelUnobservedChunk(chunk: Chunk): void {
+    if (
+        chunk.controller.signal.aborted ||
+        Date.now() >= chunk.deadline ||
+        chunk.open.size === 0 ||
+        [...chunk.open.values()].some((operation) => operation.subscribers > 0)
+    )
+        return;
+    chunk.cancelled = true;
+    // Remove joinable entries before abort listeners can enqueue replacement work.
+    for (const operation of chunk.open.values()) {
+        forgetOperation(operation);
+        restoreBypass(operation);
+    }
+    chunk.controller.abort();
+}
+
+function unsubscribe(operation: Operation): void {
+    operation.subscribers -= 1;
+    if (operation.chunk) {
+        const chunk = operation.chunk;
+        if (chunk.waiting && !operation.settled && operation.subscribers === 0) {
+            settle(operation, { id: operation.target.id, cancelled: true });
+            if (chunk.open.size === 0) chunk.controller.abort();
+        } else {
+            cancelUnobservedChunk(chunk);
+        }
+    } else if (!operation.settled && operation.subscribers === 0) {
+        const pending = operation.batch.pending;
+        pending.splice(pending.indexOf(operation), 1);
+        settle(operation, { id: operation.target.id, cancelled: true });
+    }
+}
+
+type Admission = { nested: boolean; grant: () => void };
+const admissions: Admission[] = [];
+let admittedChunks = 0;
+let admittedTopLevel = 0;
+
+function drainAdmissions(): void {
+    while (admittedChunks < MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT) {
+        const index = admissions.findIndex(
+            (entry) => entry.nested || admittedTopLevel < MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT - 1,
+        );
+        if (index < 0) return;
+        admissions.splice(index, 1)[0].grant();
+    }
+}
+
+/** The oldest eligible waiter takes a permit; nested calls may use the reserved slot. */
+function acquireChunk(chunk: Chunk, nested: boolean): Promise<(() => void) | undefined> {
+    const signal = chunk.controller.signal;
+    if (signal.aborted) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+        const entry: Admission = {
+            nested,
+            grant: () => {
+                signal.removeEventListener("abort", onAbort);
+                admittedChunks++;
+                if (!nested) admittedTopLevel++;
+                let released = false;
+                resolve(() => {
+                    if (released) return;
+                    released = true;
+                    admittedChunks--;
+                    if (!nested) admittedTopLevel--;
+                    drainAdmissions();
+                });
+            },
+        };
+        const onAbort = () => {
+            const index = admissions.indexOf(entry);
+            if (index >= 0) admissions.splice(index, 1);
+            resolve(undefined);
+            drainAdmissions();
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        admissions.push(entry);
+        drainAdmissions();
+    });
+}
+
+/** Checking and settling together leaves no gap in which a joiner could be lost. */
+function departed(chunk: Chunk, id: string): boolean {
+    const operation = chunk.open.get(id);
+    if (!operation) return true;
+    if (operation.subscribers > 0) return false;
+    settle(operation, { id, cancelled: true });
+    return true;
+}
+
+/** Retains body identity unless a target departed, so unchanged continuations serialize once. */
+function continuationBody(chunk: Chunk, request: TransformContinueRequest): () => TransformContinueRequest {
+    return () => {
+        let texts = request.texts;
+        for (const [index, entry] of request.texts.entries()) {
+            if ("cancelled" in entry || !departed(chunk, entry.id)) continue;
+            if (texts === request.texts) texts = [...texts];
+            texts[index] = { id: entry.id, cancelled: true };
+        }
+        if (texts !== request.texts) request = { ...request, texts };
+        return request;
+    };
+}
 
 const schedule = () => {
     if (scheduled) {
@@ -232,18 +479,27 @@ const textBytes = (text: string) => new TextEncoder().encode(text).length;
 const CHUNK_DEADLINE_MS = TRANSFORM_SNAPSHOT_TTL_MS - 2_000;
 /** The part of a chunk's time kept for the second call: the plugin handlers end this much before its deadline. */
 const CONTINUE_RESERVE_MS = 5_000;
+/** Extra permit retention for authentication and transit before the server starts its snapshot TTL. */
+const SNAPSHOT_EXPIRY_MARGIN_MS = 1_000;
 
 /**
  * `work`, or a rejection once `deadline` passes: also when the deadline had passed already, or passed
  * before `work` settled (a timer can run late). A rejection of `work` after that stays observed; its
  * result is ignored.
  */
-function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string): Promise<T> {
+function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string, signal?: AbortSignal): Promise<T> {
     work.catch(() => {});
     if (Date.now() >= deadline) {
         return Promise.reject(new Error(message));
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+        if (!signal) return;
+        onAbort = () => reject(signal.reason);
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+    });
     const expired = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(message)), deadline - Date.now());
     });
@@ -253,40 +509,102 @@ function beforeDeadline<T>(work: Promise<T>, deadline: number, message: string):
         }
         return value;
     });
-    return Promise.race([checked, expired]).finally(() => clearTimeout(timer));
+    return Promise.race([checked, expired, aborted]).finally(() => {
+        clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+    });
 }
 
 /** One call, within `deadline` as a whole (authentication, the request, and the body). */
-function post(path: string, body: unknown, deadline: number): Promise<TransformResponse> {
-    return beforeDeadline(postOnce(path, body, deadline), deadline, "The render took too long");
+function post(path: string, body: unknown, chunk: Chunk): Promise<TransformResponse> {
+    return beforeDeadline(postOnce(path, body, chunk), chunk.deadline, "The render took too long");
 }
 
 /** Errors of a request the server refused for another epoch (a restore replaced the data). */
 const epochRefusals = new WeakSet<object>();
+/** Errors of a request the server refused as malformed or too large: the same request fails again. */
+const permanentRefusals = new WeakSet<object>();
+/** Errors of a request whose ids are not the chat's binding as the server holds it (409 `chatBindingMismatch`). */
+const bindingRefusals = new WeakSet<object>();
+/** How often a render refused for the binding looks whether its chat's unsaved change was acknowledged. */
+const BINDING_SAVE_POLL_MS = 50;
 
-async function postOnce(path: string, body: unknown, deadline: number): Promise<TransformResponse> {
-    const response = await authFetch(path, {
+/**
+ * After a binding refusal: whether the chat had unacknowledged work that is acknowledged now, so the same
+ * request may pass. A pick binds the chat in the tab at once and its rows render on the next frame, while the
+ * save waits for the write debounce: until it lands the server holds the older binding. False when the chat
+ * had no such work (the server's binding is the newer one), when the work is still unacknowledged near the
+ * chunk's deadline, and when the chunk was aborted.
+ */
+async function ownChangeSaved(chatRef: ChatRef, chunk: Chunk): Promise<boolean> {
+    if (!chatHasUnackedWork(chatRef)) return false;
+    while (chatHasUnackedWork(chatRef)) {
+        if (chunk.controller.signal.aborted || Date.now() + BINDING_SAVE_POLL_MS >= chunk.deadline) return false;
+        await new Promise<void>((resolve) => setTimeout(resolve, BINDING_SAVE_POLL_MS));
+    }
+    return !chunk.controller.signal.aborted;
+}
+
+async function postOnce(path: string, body: unknown, chunk: Chunk): Promise<TransformResponse> {
+    const signal = chunk.controller.signal;
+    signal.throwIfAborted();
+    const prepared = typeof body === "function" ? body() : body;
+    const init: RequestInit = {
         method: "POST",
         headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        body: JSON.stringify(body),
+        body: JSON.stringify(prepared),
         cache: "no-store",
-        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        signal,
+    };
+    const response = await authFetch(path, init, {
+        beforeDispatch: () => {
+            signal.throwIfAborted();
+            if (typeof body === "function") {
+                const current = body();
+                if (current !== prepared) init.body = JSON.stringify(current);
+            }
+        },
     });
+    const continuation = path === "/api/transform/continue";
+    // Only a successful first response can leave an unreadable, still-owned snapshot.
+    if (response.status === 200) chunk.snapshotGone = continuation;
     let answer: { error?: string; epoch?: string } & Partial<TransformResponse> = {};
     try {
         answer = await response.json();
+        // Record ownership before abort/deadline checks can discard the answer.
+        if (!continuation && response.status === 200) {
+            chunk.snapshotGone = !answer.snapshotId;
+            if (answer.snapshotId) {
+                chunk.snapshot = {
+                    clientId: generationClientId(),
+                    snapshotId: answer.snapshotId,
+                    texts: (answer.pending ?? []).map(({ id }) => ({ id, cancelled: true })),
+                };
+            }
+        }
     } catch {}
-    if (response.status === 412 && answer.error === "EpochMismatch") {
+    const epochRefused = response.status === 412 && answer.error === "EpochMismatch";
+    // A restore makes snapshots from the prior epoch unclaimable, even if this caller also aborted.
+    if (epochRefused || (continuation && response.status === 409 && answer.error === "SnapshotExpired")) {
+        chunk.snapshotGone = true;
+    }
+    signal.throwIfAborted();
+    if (epochRefused) {
         const error = epochMismatch(answer.epoch ?? "");
         epochRefusals.add(error);
         throw error;
     }
     if (response.status === 409 && answer.error === "chatBindingMismatch") {
-        // The server holds a newer binding than this tab: the text stays unprocessed, with a readable reason.
-        throw new Error(language.chatBinding.mismatch);
+        // The sent ids are not the chat's binding as the server holds it: `sendChunk` resends once when the
+        // difference can be this tab's own unsaved change; otherwise the text stays unprocessed, with a readable reason.
+        const error = new Error(language.chatBinding.mismatch);
+        bindingRefusals.add(error);
+        throw error;
     }
     if (!response.ok) {
-        throw new Error(answer.error ?? `The render failed (${response.status})`);
+        const error = new Error(answer.error ?? `The render failed (${response.status})`);
+        if (response.status === 400 || response.status === 413) permanentRefusals.add(error);
+        throw error;
     }
     return answer as TransformResponse;
 }
@@ -301,10 +619,15 @@ function reportFailure(batch: Batch, error: string): void {
 }
 
 /** Answers a caller once; a failed target is reported. */
-function settle(batch: Batch, entry: Pending, result: TransformResult): void {
+function settle(entry: Operation, result: Answer): void {
+    if (entry.settled) return;
+    entry.settled = true;
+    if ("cancelled" in result) restoreBypass(entry);
+    forgetOperation(entry);
+    entry.chunk?.open.delete(entry.target.id);
     entry.resolve(result);
-    if (result.ok === false) {
-        reportFailure(batch, result.error);
+    if ("ok" in result && result.ok === false && isCurrent(entry.captured)) {
+        reportFailure(entry.batch, result.error);
     }
 }
 
@@ -317,17 +640,30 @@ async function runHandlers(
     batch: Batch,
     entry: { id: string; text: string },
     deadline: number,
-): Promise<{ id: string; text: string } | { id: string; error: string }> {
+    chunk: Chunk,
+): Promise<TransformContinueRequest["texts"][number]> {
+    const signal = chunk.controller.signal;
     const hooks = batch.handlers?.hooks ?? [];
+    // Both transform modes are read-only, even when called from a writable job hook.
+    const context: PluginCallContext = {
+        chatRef: batch.captured.chatRef,
+        presetId: batch.captured.context.presetId,
+        modelPresetId: batch.captured.context.modelPresetId,
+        personaId: batch.captured.context.personaId,
+        ...batch.captured.pluginContext,
+        purpose: "transform",
+    };
     let abandoned = false;
     const timeout = { id: entry.id, error: "A plugin handler took too long" };
-    const run = async (): Promise<{ id: string; text: string } | { id: string; error: string }> => {
+    const run = async (): Promise<TransformContinueRequest["texts"][number]> => {
         let text = entry.text;
         for (const hook of hooks) {
+            signal.throwIfAborted();
+            if (departed(chunk, entry.id)) return { id: entry.id, cancelled: true };
             if (abandoned || Date.now() >= deadline) {
                 return timeout;
             }
-            const result = await invokeHook(hook, batch.captured.pluginContext, text);
+            const result = await invokeHook(hook, context, text);
             if (result !== null && result !== undefined) {
                 text = String(result);
             }
@@ -335,22 +671,28 @@ async function runHandlers(
         return { id: entry.id, text };
     };
     try {
-        return await beforeDeadline(run(), deadline, timeout.error);
+        return await beforeDeadline(run(), deadline, timeout.error, signal);
     } catch (error) {
         abandoned = true;
         return { id: entry.id, error: error instanceof Error ? error.message : String(error) };
     }
 }
 
-async function sendBatch(batch: Batch): Promise<void> {
+async function sendBatch(batch: Batch, pending = batch.pending, deadline?: number): Promise<void> {
     // Split at the server's caps (an oversized single target fails alone, never requeued).
-    const chunks: Pending[][] = [];
-    let chunk: Pending[] = [];
+    const chunks: Operation[][] = [];
+    let chunk: Operation[] = [];
     let bytes = 0;
-    for (const entry of batch.pending) {
+    for (const entry of pending) {
+        if (entry.settled) continue;
         const size = textBytes(entry.target.source);
         if (size > MAX_TRANSFORM_TEXT_BYTES) {
-            settle(batch, entry, { id: entry.target.id, ok: false, error: "The text is too long to render" });
+            settle(entry, {
+                id: entry.target.id,
+                ok: false,
+                error: "The text is too long to render",
+                permanent: true,
+            });
             continue;
         }
         if (chunk.length >= MAX_TRANSFORM_TARGETS || bytes + size > MAX_TRANSFORM_REQUEST_TEXT_BYTES) {
@@ -364,68 +706,240 @@ async function sendBatch(batch: Batch): Promise<void> {
     if (chunk.length > 0) {
         chunks.push(chunk);
     }
-    await Promise.all(chunks.map((entries) => sendChunk(batch, entries)));
+    await Promise.all(chunks.map((entries) => sendChunk(batch, entries, deadline)));
 }
 
-/**
- * One request (and its second call): every target is answered as soon as its result is known, and
- * each exactly once; whatever is still open when the chunk fails or its deadline passes fails.
- */
-async function sendChunk(batch: Batch, entries: Pending[]): Promise<void> {
-    const deadline = Date.now() + CHUNK_DEADLINE_MS;
-    const open = new Map(entries.map((entry) => [entry.target.id, entry]));
-    const answer = (results: TransformResult[]) => {
-        for (const result of results) {
-            const entry = open.get(result.id);
-            if (entry) {
-                open.delete(result.id);
-                settle(batch, entry, result);
-            }
+/** Releases abandoned server work, or keeps the permit through the snapshot TTL and transit margin. */
+async function releaseChunkSnapshot(chunk: Chunk): Promise<void> {
+    if (chunk.snapshotGone) return;
+    const expires = chunk.snapshotExpires;
+    if (chunk.snapshot && Date.now() < expires) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), expires - Date.now());
+        try {
+            const release = async () => {
+                const response = await authFetch("/api/transform/continue", {
+                    method: "POST",
+                    headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                    body: JSON.stringify(chunk.snapshot),
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
+                return (
+                    response.status === 200 ||
+                    (response.status === 409 && (await response.json()).error === "SnapshotExpired")
+                );
+            };
+            if (await beforeDeadline(release(), expires, "The render took too long", controller.signal)) return;
+        } catch {
+            // Cleanup must not change any target's outcome or report another failure.
+        } finally {
+            clearTimeout(timer);
+            controller.abort();
         }
+    }
+    const remaining = expires + SNAPSHOT_EXPIRY_MARGIN_MS - Date.now();
+    if (remaining > 0) await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+}
+
+/** Every target settles once; the permit outlives any snapshot the chunk still owns. */
+async function sendChunk(batch: Batch, entries: Operation[], deadline = Infinity): Promise<void> {
+    const open = new Map(entries.map((entry) => [entry.target.id, entry]));
+    const controller = new AbortController();
+    const chunk: Chunk = {
+        open,
+        controller,
+        deadline,
+        cancelled: false,
+        waiting: true,
+        snapshotGone: true,
+        snapshotExpires: Infinity,
     };
+    const expire = () => controller.abort(new DOMException("The render took too long", "TimeoutError"));
+    let timer = Number.isFinite(deadline) ? setTimeout(expire, Math.max(0, deadline - Date.now())) : undefined;
+    let retry: Operation[] = [];
+    for (const entry of entries) entry.chunk = chunk;
+    const release = batch.handlers
+        ? await acquireChunk(chunk, batch.captured.pluginContext?.purpose === "transform")
+        : undefined;
+    // Install cleanup immediately after acquisition, including admission-time withdrawals.
     try {
-        const clientId = generationClientId();
-        const first = await post(
-            "/api/transform",
-            {
+        if (batch.handlers && !release) {
+            for (const entry of open.values()) {
+                settle(entry, { id: entry.target.id, ok: false, error: "The render took too long" });
+            }
+            return;
+        }
+        for (const id of open.keys()) departed(chunk, id);
+        if (open.size === 0) return;
+        chunk.waiting = false;
+        chunk.snapshotExpires = Date.now() + TRANSFORM_SNAPSHOT_TTL_MS;
+        chunk.deadline = Math.min(deadline, Date.now() + CHUNK_DEADLINE_MS);
+        clearTimeout(timer);
+        timer = setTimeout(expire, Math.max(0, chunk.deadline - Date.now()));
+        const answer = (results: Answer[]) => {
+            for (const received of results) {
+                const result: Answer = chunk.cancelled ? { id: received.id, cancelled: true } : received;
+                const entry = open.get(result.id);
+                if (entry) {
+                    // An unrecognized confirmation leaves the target unanswered, like a missing result.
+                    if (!("ok" in result) && !("cancelled" in result) && result.key !== entry.target.knownKey) continue;
+                    // Scope limits arrive as target failures, rather than HTTP refusals. A smaller
+                    // request can omit the unrelated source character that made this scope too large.
+                    if (
+                        entries.length > 1 &&
+                        "ok" in result &&
+                        result.ok === false &&
+                        !result.permanent &&
+                        result.error === "The render's texts are over the limit of one request"
+                    ) {
+                        retry.push(entry);
+                    } else {
+                        settle(entry, result);
+                    }
+                }
+            }
+        };
+        const targets = [...open.values()].map((entry) => entry.target);
+        try {
+            if (Date.now() >= chunk.deadline) throw new Error("The render took too long");
+            const clientId = generationClientId();
+            const request = {
                 clientId,
                 mode: batch.mode,
                 context: batch.captured.context,
-                client: {
-                    viewport: { width: window.innerWidth, height: window.innerHeight },
-                    browserLanguage: navigator.language,
-                },
-                targets: entries.map((entry) => entry.target),
+                client: batch.client,
+                targets,
                 ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
-            },
-            deadline,
-        );
-        answer(first.results);
-        if (first.snapshotId && first.pending && first.pending.length > 0) {
-            // Each text's handlers run in order; the texts run side by side, as the tab renders messages.
-            // They end before the second call's reserve, so the finished texts still go out with a hung
-            // one's error.
-            const handlersDeadline = deadline - CONTINUE_RESERVE_MS;
-            if (Date.now() >= handlersDeadline) {
-                throw new Error("The render took too long");
+            };
+            const first = await post("/api/transform", request, chunk).catch(async (error) => {
+                // Refused for the binding while the chat's own change is unsaved: once more after the save.
+                const resend =
+                    typeof error === "object" &&
+                    error !== null &&
+                    bindingRefusals.has(error) &&
+                    (await ownChangeSaved(batch.captured.chatRef, chunk));
+                if (!resend) throw error;
+                return post("/api/transform", request, chunk);
+            });
+            controller.signal.throwIfAborted();
+            answer(first.results);
+            answer(first.same ?? []);
+            cancelUnobservedChunk(chunk);
+            controller.signal.throwIfAborted();
+            if (first.snapshotId && first.pending && first.pending.length > 0) {
+                // Settle departures before any hook; surviving texts run side by side.
+                const pending = first.pending.map((entry) => ({ entry, cancelled: departed(chunk, entry.id) }));
+                const handlersDeadline = chunk.deadline - CONTINUE_RESERVE_MS;
+                if (Date.now() >= handlersDeadline) throw new Error("The render took too long");
+                const texts = await Promise.all(
+                    pending.map(({ entry, cancelled }) =>
+                        cancelled
+                            ? { id: entry.id, cancelled: true as const }
+                            : runHandlers(batch, entry, handlersDeadline, chunk),
+                    ),
+                );
+                cancelUnobservedChunk(chunk);
+                controller.signal.throwIfAborted();
+                const second = await post(
+                    "/api/transform/continue",
+                    continuationBody(chunk, {
+                        clientId,
+                        snapshotId: first.snapshotId,
+                        texts,
+                    }),
+                    chunk,
+                );
+                controller.signal.throwIfAborted();
+                answer(second.results);
             }
-            const texts = await Promise.all(first.pending.map((entry) => runHandlers(batch, entry, handlersDeadline)));
-            const second = await post(
-                "/api/transform/continue",
-                { clientId, snapshotId: first.snapshotId, texts },
-                deadline,
-            );
-            answer(second.results);
+        } catch (error) {
+            if (!chunk.cancelled && typeof error === "object" && error !== null && epochRefusals.has(error)) {
+                // A restore replaced the data: its notice tells the user and the page reloads, so no toast.
+                batch.reported = true;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            const refused = typeof error === "object" && error !== null && permanentRefusals.has(error);
+            const permanent = targets.length === 1 && refused;
+            if (!chunk.cancelled && refused && targets.length > 1) {
+                retry = [...open.values()];
+            } else
+                answer(
+                    [...open.keys()].map((id) =>
+                        chunk.cancelled
+                            ? { id, cancelled: true as const }
+                            : {
+                                  id,
+                                  ok: false as const,
+                                  error: message,
+                                  ...(permanent ? { permanent: true as const } : {}),
+                              },
+                    ),
+                );
+        } finally {
+            clearTimeout(timer);
         }
-    } catch (error) {
-        if (typeof error === "object" && error !== null && epochRefusals.has(error)) {
-            // A restore replaced the data: its notice tells the user and the page reloads, so no toast.
-            batch.reported = true;
+        const retrying = new Set(retry);
+        answer(
+            [...open.values()]
+                .filter((entry) => !retrying.has(entry))
+                .map(({ target: { id } }) =>
+                    chunk.cancelled
+                        ? { id, cancelled: true as const }
+                        : { id, ok: false as const, error: "The render did not answer" },
+                ),
+        );
+    } finally {
+        clearTimeout(timer);
+        if (release) {
+            try {
+                await releaseChunkSnapshot(chunk);
+            } finally {
+                release();
+            }
         }
-        const message = error instanceof Error ? error.message : String(error);
-        answer([...open.keys()].map((id) => ({ id, ok: false as const, error: message })));
     }
-    answer([...open.keys()].map((id) => ({ id, ok: false as const, error: "The render did not answer" })));
+    // Release the original snapshot/permit before acquiring any child permit. A continuation's
+    // snapshot cannot be partitioned, so a refused continuation restarts the read-only pipeline.
+    retry = retry.filter((entry) => !entry.settled);
+    if (retry.length > 0) {
+        const middle = Math.ceil(retry.length / 2);
+        await Promise.all(
+            [retry.slice(0, middle), retry.slice(middle)]
+                .filter((half) => half.length > 0)
+                .map((half) => sendBatch(batch, half, chunk.deadline)),
+        );
+    }
+}
+
+function isCurrent(captured: CapturedTransform): boolean {
+    return (
+        captured.cacheGeneration === transformResultsGeneration() &&
+        (!captured.messageId ||
+            (generations.get(messageKey(captured.chatRef, captured.messageId)) ?? 0) === captured.generation)
+    );
+}
+
+function isMixedDisplay(mode: TransformMode, captured: CapturedTransform): boolean {
+    return (
+        mode === "editdisplay" &&
+        !!captured.messageId &&
+        (captured.hadUnackedWork || chatInstallVersion(captured.chatRef) !== captured.installVersion)
+    );
+}
+
+/** A synchronous 53-bit UTF-16 hash (cyrb53); exact-source checks disambiguate collisions. */
+function sourceHash(source: string): string {
+    let first = 0xdeadbeef;
+    let second = 0x41c6ce57;
+    for (let i = 0; i < source.length; i++) {
+        const code = source.charCodeAt(i);
+        first = Math.imul(first ^ code, 2654435761);
+        second = Math.imul(second ^ code, 1597334677);
+    }
+    first = Math.imul(first ^ (first >>> 16), 2246822507) ^ Math.imul(second ^ (second >>> 13), 3266489909);
+    second = Math.imul(second ^ (second >>> 16), 2246822507) ^ Math.imul(first ^ (first >>> 13), 3266489909);
+    return (4294967296 * (second & 0x1fffff) + (first >>> 0)).toString(36);
 }
 
 /**
@@ -441,18 +955,27 @@ export async function serverProcessScript(
     cbsConditions: CbsConditions,
     captured: CapturedTransform,
     kind: TransformTargetKind,
+    signal?: AbortSignal,
 ): Promise<{ data: string; emoChanged: boolean }> {
+    signal?.throwIfAborted();
     if (captured.locked) {
         return { data, emoChanged: false };
     }
     const handlers = handlerSet(mode);
     const key = captured.messageId ? messageKey(captured.chatRef, captured.messageId) : null;
+    let consumedBypass = false;
     // The bypass is taken by a transform actually sent at the marked generation (never by an older render).
-    if (!captured.noCache && key !== null && noCacheNext.get(key) === captured.generation) {
+    if (!captured.noCache && key !== null && isCurrent(captured) && noCacheNext.get(key) === captured.generation) {
         noCacheNext.delete(key);
         captured.noCache = true;
+        consumedBypass = true;
     }
     const noCache = captured.noCache;
+    const client = {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        browserLanguage: navigator.language,
+    };
+    const onProvisional = captured.onProvisional;
     const target: TransformTarget = {
         id: uuidv4(),
         kind: kind === "message" && !captured.messageId ? "text" : kind,
@@ -465,50 +988,200 @@ export async function serverProcessScript(
         ),
         ...(noCache ? { noCache: true } : {}),
     };
-    const batchKey = JSON.stringify([mode, captured.context, handlers?.id ?? null]);
-    let batch = batches.get(batchKey);
-    if (!batch) {
-        batch = { mode, captured, handlers, pending: [], shared: new Map(), reported: false };
-        batches.set(batchKey, batch);
-    }
-    const inputs = JSON.stringify([
+    const identity = JSON.stringify([
+        captured.chatRef,
+        mode,
         target.kind,
-        target.sourceId,
+        captured.messageId ?? null,
         target.chatIndex,
-        target.messageId ?? null,
-        data,
+        target.sourceId,
+        sourceHash(data),
         target.cbsConditions,
-        noCache,
+        captured.context,
+        handlers?.id ?? null,
+        client,
     ]);
-    let result = batch.shared.get(inputs);
-    if (!result) {
-        result = new Promise<TransformResult>((resolve) => batch!.pending.push({ target, resolve }));
-        batch.shared.set(inputs, result);
+    const outcome = captured.provisionalOutcome;
+    if (onProvisional && outcome) {
+        delete captured.provisionalOutcome;
+        if (
+            outcome.identity === identity &&
+            outcome.source === data &&
+            outcome.cacheGeneration === captured.cacheGeneration &&
+            outcome.generation === captured.generation &&
+            isCurrent(captured)
+        ) {
+            if (isMixedDisplay(mode, captured) || outcome.installVersion !== captured.installVersion) {
+                captured.mixedDisplay = true;
+            }
+            return { data: outcome.text, emoChanged: false };
+        }
+    }
+    // No await between this lookup and enqueue: a frame may flush and remove the batch at any await.
+    const entry = noCache ? undefined : getTransformResult(identity, data);
+    const version = entry?.version ?? transformResultVersion(identity);
+    if (entry && (char.type === "simple" || appliedEmotions.has(entry.key))) target.knownKey = entry.key;
+    // A batch reuses its first plugin context; purpose, owner and job parent must also agree.
+    const batchKey = JSON.stringify([mode, captured.context, captured.pluginContext, handlers?.id ?? null, client]);
+    const inputs = JSON.stringify([
+        identity,
+        data,
+        noCache,
+        captured.cacheGeneration,
+        captured.generation,
+        target.knownKey ?? null,
+    ]);
+    const operationKey = JSON.stringify([batchKey, inputs, captured.installVersion, captured.hadUnackedWork]);
+    let operation = operations.get(operationKey);
+    if (!operation) {
+        let batch = batches.get(batchKey);
+        if (!batch) {
+            batch = { mode, captured, client, handlers, pending: [], reported: false };
+            batches.set(batchKey, batch);
+        }
+        let resolve: Operation["resolve"];
+        const answer = new Promise<Answer>((done) => {
+            resolve = done;
+        });
+        operation = {
+            key: operationKey,
+            target,
+            captured,
+            batch,
+            entry,
+            version,
+            answer,
+            resolve: resolve!,
+            subscribers: 0,
+            settled: false,
+        };
+        operations.set(operationKey, operation);
+        batch.pending.push(operation);
         schedule();
     }
-    const answered = await result;
-    if (answered.ok === false) {
-        console.warn("[Transform]", answered.error);
-        return { data, emoChanged: false };
-    }
-    let emoChanged = false;
-    const current = key === null || (generations.get(key) ?? 0) === captured.generation;
-    if (char.type !== "simple" && current && answered.emotions.length > 0 && !appliedEmotions.has(answered.key)) {
-        if (appliedEmotions.size >= MAX_APPLIED) {
-            appliedEmotions.clear();
-        }
-        appliedEmotions.add(answered.key);
-        const charemotions = get(CharEmotion);
-        for (const emotion of answered.emotions) {
-            const list = charemotions[char.chaId] ?? [];
-            if (list.length > 4) {
-                list.splice(0, 1);
+    const shared = operation;
+    if (consumedBypass) shared.bypassKey = key!;
+    shared.subscribers += 1;
+    const provisional =
+        onProvisional &&
+        shared.entry &&
+        shared.target.kind === "message" &&
+        mode === "editdisplay" &&
+        !captured.hadUnackedWork &&
+        isCurrent(captured);
+    if (provisional) captured.pendingProvisional = (captured.pendingProvisional ?? 0) + 1;
+    let provisionalPending = !!provisional;
+    const giveBackProvisional = () => {
+        if (!provisionalPending) return;
+        provisionalPending = false;
+        captured.pendingProvisional! -= 1;
+    };
+    let subscribed = true;
+    let aborted = false;
+    const original = { data, emoChanged: false };
+    let resolveAbort: (value: typeof original) => void;
+    const departed = new Promise<typeof original>((resolve) => {
+        resolveAbort = resolve;
+    });
+    const leave = () => {
+        if (!subscribed) return;
+        subscribed = false;
+        signal?.removeEventListener("abort", onAbort);
+        unsubscribe(shared);
+    };
+    const onAbort = () => {
+        aborted = true;
+        giveBackProvisional();
+        leave();
+        resolveAbort(original);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    const completion = shared.answer.then((answered) => {
+        try {
+            if (aborted || "cancelled" in answered) return original;
+            const current = isCurrent(captured);
+            const mixed = isMixedDisplay(mode, captured);
+            if (current && mixed) captured.mixedDisplay = true;
+            const failed = "ok" in answered && !answered.ok;
+            let text = data;
+            let emoChanged = false;
+            if (!("ok" in answered)) {
+                // The response belongs to the shared operation's dispatched target, not this caller's id.
+                text = shared.entry!.text;
+                if (current) confirmTransformResult(identity, shared.entry!.version);
+            } else if (answered.ok === false) {
+                console.warn("[Transform]", answered.error);
+                if (current) {
+                    replaceTransformResult(identity, shared.version, key);
+                }
+                if (mode === "editdisplay") {
+                    recordClientEvent({ kind: "notice", notice: "transformFailed" });
+                    // A permanent failure waits for a changed source or context, a remount, or a Re-render; like
+                    // a success, it ends an older generation's pending retry.
+                    if (captured.messageId && current) {
+                        if (answered.permanent) {
+                            markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
+                        } else {
+                            markDisplayTransformFailed(captured.chatRef, captured.messageId, captured.generation);
+                        }
+                    }
+                }
+            } else {
+                text = answered.text;
+                if (current) replaceTransformResult(identity, shared.version, key, { ...answered, source: data });
+                if (
+                    char.type !== "simple" &&
+                    current &&
+                    answered.emotions.length > 0 &&
+                    !appliedEmotions.has(answered.key)
+                ) {
+                    if (appliedEmotions.size >= MAX_APPLIED) appliedEmotions.clear();
+                    appliedEmotions.add(answered.key);
+                    const charemotions = get(CharEmotion);
+                    for (const emotion of answered.emotions) {
+                        const list = charemotions[char.chaId] ?? [];
+                        if (list.length > 4) list.splice(0, 1);
+                        list.push([emotion.name, emotion.image, Date.now()]);
+                        charemotions[char.chaId] = list;
+                    }
+                    CharEmotion.set(charemotions);
+                    emoChanged = true;
+                }
             }
-            list.push([emotion.name, emotion.image, Date.now()]);
-            charemotions[char.chaId] = list;
+            if (!failed && current && mode === "editdisplay" && captured.messageId) {
+                markDisplayTransformSucceeded(captured.chatRef, captured.messageId, captured.generation);
+            }
+            if (provisional && current) {
+                giveBackProvisional();
+                const replaced = failed || text !== shared.entry!.text;
+                onProvisional({
+                    replaced,
+                    mixed,
+                    ...(replaced && (!mixed || failed)
+                        ? {
+                              outcome: {
+                                  identity,
+                                  cacheGeneration: captured.cacheGeneration,
+                                  generation: captured.generation,
+                                  installVersion: captured.installVersion,
+                                  source: data,
+                                  text,
+                              },
+                          }
+                        : {}),
+                });
+            }
+            return { data: text, emoChanged };
+        } finally {
+            giveBackProvisional();
+            leave();
         }
-        CharEmotion.set(charemotions);
-        emoChanged = true;
+    });
+    if (provisional) {
+        // The row settles without waiting for confirmation; the callback schedules any correction.
+        void completion.catch((error) => console.error("[Transform]", error));
+        return aborted ? original : { data: shared.entry!.text, emoChanged: false };
     }
-    return { data: answered.text, emoChanged };
+    return Promise.race([completion, departed]);
 }

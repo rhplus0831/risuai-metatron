@@ -28,14 +28,14 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleRegexScripts: vi.fn(() => []),
 }));
 vi.mock("src/ts/model/modellist", () => ({ getModelInfoForMode: vi.fn(() => ({ id: "gpt-test" })) }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: vi.fn(async (_url: string, init: { body: { text: string[] } }) => ({
-        ok: true,
-        data: { translations: [{ text: `T:${init.body.text[0]}` }] },
-    })),
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        globalFetch: vi.fn(async (_url: string, init: { body: { text: string[] } }) => ({
+            ok: true,
+            data: { translations: [{ text: `T:${init.body.text[0]}` }] },
+        })),
+    }),
+);
 vi.mock("src/ts/util", () => ({
     getNodetextToSentence: vi.fn(),
     sleep: vi.fn(async () => undefined),
@@ -72,6 +72,30 @@ describe("the in-memory translate cache", () => {
         // A reverse translation is found from its source side too.
         await expect(translate("Bonjour", true)).resolves.toBe("T:Bonjour");
         await expect(translate("T:Bonjour", false)).resolves.toBe("Bonjour");
+        expect(fetches()).toBe(2);
+    });
+
+    it("keeps both sources cached when translations match and reverses to the newest source", async () => {
+        const olderSource = "Cache collision older source";
+        const newestSource = "Cache collision newest source";
+        const sharedTranslation = "Cache collision shared translation";
+        const response = {
+            ok: true,
+            data: { translations: [{ text: sharedTranslation }] },
+            headers: {},
+            status: 200,
+        };
+        vi.mocked(globalFetch).mockResolvedValueOnce(response).mockResolvedValueOnce(response);
+
+        await expect(translate(olderSource, false)).resolves.toBe(sharedTranslation);
+        await expect(translate(newestSource, false)).resolves.toBe(sharedTranslation);
+        expect(fetches()).toBe(2);
+
+        // On the next render, reading the older source last must not change the reverse lookup.
+        const nextRender = [await translate(newestSource, false), await translate(olderSource, false)];
+        expect(fetches()).toBe(2);
+        expect(nextRender).toEqual([sharedTranslation, sharedTranslation]);
+        await expect(translate(sharedTranslation, true)).resolves.toBe(newestSource);
         expect(fetches()).toBe(2);
     });
 

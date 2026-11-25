@@ -1,6 +1,9 @@
 // @vitest-environment node
 import http from "node:http";
 import { serve } from "@hono/node-server";
+import { WebSocket as WsClient } from "ws";
+import type { RunningJob } from "../jobs/generationJobs.ts";
+import { NO_GENERATION_HOOKS, type GenerationEvent } from "../../../shared/jobs.ts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LlmRequestEvent } from "../../../shared/llm/request.ts";
 import { encodeSecretPath, type SecretPath } from "../../../shared/llmSecrets.ts";
@@ -11,7 +14,19 @@ import {
     json,
     waitFor,
     type ResourceTestClient,
+    type TestServerOptions,
 } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The HTTP side of the server request layer (`server/src/routes/llm.ts` and the `risu-aux-op`
 // branch of `/proxy2`, `server/src/routes/proxy.ts`) on a test server whose provider is a local
@@ -112,8 +127,8 @@ async function startProvider() {
 let client: ResourceTestClient;
 const PROXY_CREDENTIAL_ID = "proxy-key";
 
-async function seed() {
-    client = await createResourceTestClient();
+async function seed(options: TestServerOptions = {}) {
+    client = await createResourceTestClient(options);
     const read = async (kind: string) =>
         (await (await client.get(kind, "main")).json()) as { revision: string; data: any };
     const write = async (kind: string, data: unknown) => {
@@ -716,5 +731,123 @@ describe("the auxiliary operations of /proxy2", () => {
         });
         expect(plain.status).toBe(200);
         expect(upstreamRequests.at(-1)?.headers.authorization).toBe("Bearer client-own");
+    });
+});
+
+describe("auxiliary requests across a handoff", () => {
+    it("admits the old owner's parent callback while pending and only the new owner's callback after the switch", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const entered = withResolvers<RunningJob>();
+        const ids = await seed({
+            generationRunner: async (job) => {
+                entered.resolve(job);
+                await new Promise<void>((resolve) =>
+                    job.signal.addEventListener("abort", () => resolve(), { once: true }),
+                );
+            },
+        });
+        const listener = serve({ fetch: client.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+        await new Promise<void>((resolve) => listener.once("listening", resolve));
+        allowListenerOrigin(listener);
+        client.context.attachWebSocket(listener);
+        const sockets: WsClient[] = [];
+        try {
+            expect(
+                (
+                    await client.json("/api/resources/batch", {
+                        ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+                        chats: [
+                            {
+                                characterId: "c",
+                                chatId: "k",
+                                baseRevision: null,
+                                ops: [
+                                    {
+                                        op: "create",
+                                        chat: {
+                                            id: "k",
+                                            name: "K",
+                                            message: [],
+                                            promptPresetId: ids.presetId,
+                                            modelPresetId: ids.modelPresetId,
+                                            bindedPersona: ids.personaId,
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            const read = await client.json("/api/resources/read", { chats: [{ characterId: "c", id: "k" }] });
+            const revision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+            const create = await client.json("/api/generations", {
+                kind: "send",
+                clientId: "tab-1",
+                context: { ...ids, characterId: "c", chatId: "k", mode: "normal", input: "", chatRevision: revision },
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(create.status).toBe(200);
+            const { jobId } = (await create.json()) as { jobId: string };
+            const job = await entered.promise;
+            async function follow(clientId: string, ticket?: string) {
+                const ws = new WsClient(
+                    `ws://127.0.0.1:${(listener.address() as { port: number }).port}/api/generations/${jobId}/ws?clientId=${clientId}&risu-auth=${encodeURIComponent(await client.signer.jwt())}${ticket ? `&ticket=${ticket}` : ""}`,
+                );
+                sockets.push(ws);
+                const seen: GenerationEvent[] = [];
+                ws.on("message", (raw) => seen.push(JSON.parse(String(raw))));
+                await new Promise<void>((resolve, reject) => {
+                    ws.once("open", resolve);
+                    ws.once("error", reject);
+                });
+                const fence = async () => {
+                    const pong = new Promise<void>((resolve) => ws.once("pong", () => resolve()));
+                    ws.ping();
+                    await pong;
+                };
+                return { ws, seen, fence };
+            }
+            const old = await follow("tab-1");
+            const edit = job.channel.callback("editoutput", { text: "old" });
+            await old.fence();
+            const oldCallback = old.seen.find((event) => event.type === "callback")!;
+            expect((await client.json(`/api/generations/${jobId}/handoff`, { clientId: "tab-1" })).status).toBe(200);
+            const takeover = await client.json(`/api/generations/${jobId}/takeover`, { clientId: "worker" });
+            const { ticket } = (await takeover.json()) as { ticket: string };
+            const worker = await follow("worker", ticket);
+            await worker.fence();
+            expect(worker.seen[0]).toMatchObject({ owner: "other", pending: true });
+            const aux = (clientId: string, callbackId: string) =>
+                client.json(
+                    "/api/llm/request",
+                    body(ids, { useStreaming: false }, { clientId, channelCall: { jobId, callbackId } }),
+                );
+            expect((await aux("worker", oldCallback.id)).status).toBe(409);
+            const before = await aux("tab-1", oldCallback.id);
+            expect(before.status).toBe(200);
+            expect((await events(before)).at(-1)).toMatchObject({ type: "result", response: { type: "success" } });
+            old.ws.send(JSON.stringify({ type: "answer", id: oldCallback.id, outcome: "answered", value: "edited" }));
+            expect(await edit).toMatchObject({ value: "edited" });
+            const next = job.channel.callback("editoutput", { text: "new" });
+            await worker.fence();
+            const newCallback = worker.seen.find((event) => event.type === "callback")!;
+            expect(newCallback).toMatchObject({ payload: { text: "new" } });
+            expect((await aux("tab-1", newCallback.id)).status).toBe(409);
+            const after = await aux("worker", newCallback.id);
+            expect(after.status).toBe(200);
+            expect((await events(after)).at(-1)).toMatchObject({ type: "result", response: { type: "success" } });
+            expect(upstreamRequests).toHaveLength(2);
+            worker.ws.send(
+                JSON.stringify({ type: "answer", id: newCallback.id, outcome: "answered", value: "worker" }),
+            );
+            expect(await next).toMatchObject({ value: "worker" });
+        } finally {
+            for (const socket of sockets) socket.terminate();
+            await client.close();
+            listener.closeAllConnections();
+            await new Promise<void>((resolve) => listener.close(() => resolve()));
+            vi.useRealTimers();
+        }
     });
 });

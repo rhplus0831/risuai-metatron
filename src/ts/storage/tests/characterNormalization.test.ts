@@ -12,7 +12,7 @@ import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 // the input untouched, a refusal changing nothing), canonical character text (a partial same-id
 // replacement, a deleted or nulled default, a group whose companion arrays no longer fit, with a
 // retained wrapper, the own save's echo, another writer's partial record, a local edit during an
-// outstanding save, and another tab's send stamp merged), the chat defaults at every client entry
+// outstanding save, and another tab's remote field change merged), the chat defaults at every client entry
 // and in `setChatMeta`, a create whose answer was lost, and a selection (`changeChar`) that writes
 // nothing. In every case the mirror, the server, and the held baseline agree and no further save
 // follows.
@@ -45,7 +45,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 const KINDS = Object.values(RESOURCE_KIND);
 const m = (id: string, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
@@ -185,7 +185,7 @@ async function boot() {
         const before = { batches: fake.batchCount(), all: fake.requests.length };
         await vi.advanceTimersByTimeAsync(5000);
         expect({ batches: fake.batchCount(), all: fake.requests.length }, "nothing follows").toEqual(before);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.batchCount(), "a flush sends nothing more").toBe(before.batches);
     };
     const noNotice = () => {
@@ -497,7 +497,7 @@ describe("canonical character text", () => {
         expect(fake.batchBodies()[0].ops[0]).not.toHaveProperty("data");
         element.personality = "typed during the save";
         fake.releaseBatch!();
-        expect(await flushing).toEqual({ discarded: [] });
+        expect(await flushing).toEqual({ discarded: [], refused: [] });
         expect(record("c")).toMatchObject({ desc: "", personality: "" });
         await settle();
         expect(fake.batchCount()).toBe(2);
@@ -512,17 +512,17 @@ describe("canonical character text", () => {
         noNotice();
     });
 
-    it("merges another tab's send stamp into a local edit of a canonicalized record without a discard or a notice", async () => {
+    it("merges another tab's remote field change into a local edit of a canonicalized record without a discard or a notice", async () => {
         const { fake, live, sync, character, record, agree, settle, noNotice } = await boot();
         delete character("c").desc;
         character("c").scenario = "first save";
         await settle();
         agree("c");
-        // Another tab sends (its stamp), while this tab edits; the feed is late, so the save conflicts.
+        // Another tab changes an independent field while this tab edits; the feed is late, so the save conflicts.
         live.paused = true;
         fake.set("characters", "c", { ...record("c"), lastInteraction: 5000 });
         character("c").personality = "mine";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         live.paused = false;
         await settle();
         expect(record("c")).toMatchObject({ personality: "mine", lastInteraction: 5000, desc: "" });
@@ -703,7 +703,7 @@ describe("chat defaults on the client", () => {
         await vi.advanceTimersByTimeAsync(1500);
         expect(fake.batchCount()).toBe(1);
         // The retry finds the chat the lost answer created and takes it as acknowledged.
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         await settle();
         const groups = chatGroups(fake).filter((group: any) => group.chatId === created.id);
         expect(groups.length).toBeLessThanOrEqual(2);

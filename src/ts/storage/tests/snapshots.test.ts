@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // it, the three selection indexes), `buildDatabaseSubset` (the plugin `getDatabase`: the 23 allowed
 // keys, the characters with their chats, the persona index, a hook's preset for the preset keys, an
 // own `__proto__` storage key kept as data), `buildSettingsReport` (the bug-report export: the
-// removal list the component carried before the aggregate was removed, every `llmSecrets` field,
+// removal list the component carried before the aggregate was removed, every secret section field,
 // and every key named like a credential, with `meta`), and `buildBackupInventory` (chat-free
 // character asset fields and the five settings). The model fields of the fixture live in the model
 // presets' main profiles. The oracle for the report is the removed component's own filter, written
@@ -18,12 +18,11 @@ const held = vi.hoisted(() => ({
     asset: null as null | ((path: string) => void),
 }));
 
-vi.mock("../../globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    readImage: vi.fn(),
-    saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
-    AppendableBuffer: class {},
-}));
+vi.mock("../../globalApi.svelte", async () =>
+    (await import("../../tests/globalApiMock")).createGlobalApiMock({
+        saveAsset: vi.fn(() => new Promise<string>((resolve) => (held.asset = resolve))),
+    }),
+);
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -133,10 +132,18 @@ const COMPONENT_REMOVED_KEYS = [
 ];
 
 /**
- * Removed later: the saved toggle presets hold free user text like `globalChatVariables` and
- * `customPromptTemplateToggle`, and the blocked Realm creators are third-party ids and names.
+ * Removed later: the saved toggle presets, the input hooks' prompts, the request interception rules, and the module
+ * and persona folder names hold free user text like `globalChatVariables` and `customPromptTemplateToggle`, and the
+ * blocked Realm creators are third-party ids and names.
  */
-const LATER_REMOVED_KEYS = ["togglePresets", "blockedRealmCreators"];
+const LATER_REMOVED_KEYS = [
+    "togglePresets",
+    "inputHooks",
+    "requestInterceptions",
+    "moduleFolders",
+    "personaFolders",
+    "blockedRealmCreators",
+];
 
 /** The report's filter: the component's removal list, the later removals, and whether `key` is dropped. */
 function componentDropped(key: string): boolean {
@@ -144,6 +151,7 @@ function componentDropped(key: string): boolean {
         COMPONENT_REMOVED_KEYS.includes(key) ||
         LATER_REMOVED_KEYS.includes(key) ||
         (SECTION_FIELDS.llmSecrets as readonly string[]).includes(key) ||
+        (SECTION_FIELDS.secrets as readonly string[]).includes(key) ||
         key.toLowerCase().includes("key") ||
         key.toLowerCase().includes("proxy") ||
         key.toLowerCase().includes("hypa")
@@ -206,6 +214,9 @@ function fixture(): AnyRecord {
         plugins: [],
         enabledModules: [],
         loreBook: [{ name: "L0", data: [] }],
+        inputHooks: [
+            { id: "h1", name: "Private", type: "draft", prompt: "private hook prompt", model: { mode: "inherit" } },
+        ],
     };
 }
 
@@ -294,24 +305,21 @@ describe("rootSnapshot", () => {
 });
 
 describe("buildDatabaseSubset (the plugin getDatabase)", () => {
-    it("answers every allowed key: the characters with their chats, the persona index, the selected preset's fields, and the rest by root name", () => {
+    it("answers every allowed key: the characters with their chats (archived groups left out, also from the order), the persona index, the selected preset's fields, and the rest by root name", () => {
         boot();
         selectPersona("p2");
         const subset = buildDatabaseSubset(ALLOWED_DB_KEYS, null) as AnyRecord;
         expect(Object.keys(subset).sort()).toEqual([...ALLOWED_DB_KEYS].sort());
-        expect(subset.characters.map((entry: AnyRecord) => entry.chaId)).toEqual(["c1", "g1"]);
-        expect(subset.characters.map((entry: AnyRecord) => entry.chats.map((c: AnyRecord) => c.id))).toEqual([
-            ["k"],
-            ["kg"],
-        ]);
-        expect(subset.characters.map((entry: AnyRecord) => entry.chatPage)).toEqual([0, 0]);
+        expect(subset.characters.map((entry: AnyRecord) => entry.chaId)).toEqual(["c1"]);
+        expect(subset.characters.map((entry: AnyRecord) => entry.chats.map((c: AnyRecord) => c.id))).toEqual([["k"]]);
+        expect(subset.characters.map((entry: AnyRecord) => entry.chatPage)).toEqual([0]);
         expect(subset.selectedPersona).toBe(1);
         expect(subset.temperature).toBe(40);
         expect(subset.maxContext).toBe(1234);
         expect(subset.moduleIntergration).toBe("mod-a");
         expect(subset.theme).toBe("dark");
         expect(subset.textTheme).toBe("standard");
-        expect(subset.characterOrder).toEqual(fixture().characterOrder);
+        expect(subset.characterOrder).toEqual(["c1", { name: "folder", data: [], color: "", id: "f1" }]);
         expect(subset.personas.map((entry: AnyRecord) => entry.name)).toEqual(["Ann", "Bob"]);
         expect(subset.modules).toEqual([]);
         expect(subset.plugins).toEqual([]);
@@ -386,7 +394,73 @@ describe("buildDatabaseSubset (the plugin getDatabase)", () => {
 });
 
 describe("buildSettingsReport", () => {
-    it("is the root snapshot without the component's removal list, the llmSecrets fields, and every key named like a credential, plus meta", () => {
+    it("omits non-empty request interceptions from the settings report", () => {
+        const requestInterceptions = [
+            {
+                id: "private-rule",
+                enabled: true,
+                modes: ["model"],
+                position: "start",
+                prompt: {
+                    type: "plain",
+                    type2: "normal",
+                    role: "system",
+                    text: "Private instruction.",
+                    name: "Private label",
+                },
+            },
+        ];
+        installFlatDatabaseWithChats({ ...fixture(), requestInterceptions });
+
+        expect(rootSnapshot().requestInterceptions).toEqual(requestInterceptions);
+        const report = buildSettingsReport();
+        expect(report).not.toHaveProperty("requestInterceptions");
+        expect(JSON.stringify(report)).not.toContain("Private instruction.");
+    });
+
+    it("omits every owned secret field while keeping ordinary settings and the full settings snapshot intact", () => {
+        const secretFields = [...SECTION_FIELDS.llmSecrets, ...SECTION_FIELDS.secrets];
+        const secrets: Record<string, unknown> = {
+            ...Object.fromEntries(secretFields.map((field) => [field, "sample-token-value"])),
+            google: { accessToken: "sample-token-value", projectId: "sample-project" },
+            hordeConfig: { apiKey: "sample-token-value", model: "sample-model" },
+            novelai: { token: "sample-token-value", model: "sample-model" },
+            vertexAccessTokenExpires: 12345,
+            OaiCompAPIKeys: { provider: "sample-token-value" },
+            deeplOptions: { key: "sample-token-value", freeApi: true },
+            deeplXOptions: { url: "https://translator.test", token: "sample-token-value" },
+            hypaCustomSettings: { url: "https://embeddings.test", key: "sample-token-value", model: "sample-model" },
+            openaiCompatImage: {
+                url: "https://image.test",
+                key: "sample-token-value",
+                model: "sample-model",
+                size: "1024x1024",
+                quality: "standard",
+            },
+            wavespeedImage: {
+                key: "sample-token-value",
+                model: "sample-model",
+                loras: [],
+                reference_mode: "none",
+                reference_image: "",
+                reference_base64image: "",
+            },
+            googleSearchCredentials: { apiKey: "sample-token-value", searchEngineId: "sample-engine" },
+        };
+        installFlatDatabaseWithChats({ ...fixture(), ...secrets });
+
+        const report = buildSettingsReport();
+        expect(report.theme).toBe("dark");
+        expect(JSON.stringify(report)).not.toContain("sample-token-value");
+        const fullSettings = rootSnapshot();
+        for (const field of secretFields) {
+            expect(Object.hasOwn(report, field), field).toBe(false);
+            expect(fullSettings[field], field).toEqual(secrets[field]);
+            expect(plainClone(readSettingsRoot(field)), field).toEqual(secrets[field]);
+        }
+    });
+
+    it("is the root snapshot without the component's removal list, the secret section fields, and every key named like a credential, plus meta", () => {
         boot();
         const root = rootSnapshot();
         const report = buildSettingsReport();
@@ -418,6 +492,9 @@ describe("buildSettingsReport", () => {
             "claudeAPIKey",
             "hypaV3",
             "togglePresets",
+            "inputHooks",
+            "moduleFolders",
+            "personaFolders",
         ]) {
             expect(Object.hasOwn(report, dropped), dropped).toBe(false);
         }
@@ -429,6 +506,8 @@ describe("buildSettingsReport", () => {
         const report = buildSettingsReport();
         const text = JSON.stringify(report);
         expect(text).not.toContain("sk-secret-in-record");
+        expect(rootSnapshot().inputHooks).toEqual([expect.objectContaining({ prompt: "private hook prompt" })]);
+        expect(text).not.toContain("private hook prompt");
         expect(text).toContain('"theme":"dark"');
         report.theme = "light";
         (report.meta as AnyRecord).protocol = "x:";

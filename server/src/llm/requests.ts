@@ -22,7 +22,7 @@ import {
 } from "../../../shared/llm/request.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
-import type { JobChannel } from "../jobs/channel.ts";
+import { isBarrierFailure, type JobChannel } from "../jobs/channel.ts";
 import { markFailure } from "../jobs/generationJobs.ts";
 import { type ChatBindingRefusal, checkChatBinding, readChatBindingState } from "../jobs/chatBinding.ts";
 import { tokenScopeFromTab, type TokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
@@ -36,14 +36,37 @@ import { type LoadedRequestDb, loadRequestDb, RequestTargetGoneError } from "./s
 import { createTransport, type ExchangeDetail, type FetchLogEntry } from "./transport.ts";
 import type { VertexTokenCache } from "./vertexToken.ts";
 
+/**
+ * Owns live tab and in-process job requests around `server/src/llm/request.ts`, constructing their settings, transport,
+ * tokenizer, callbacks, redactor, and history observer. Tab requests validate chat bindings before admission and load
+ * settings by stored ids; job requests use the job's captured settings and sinks without a per-client count limit.
+ *
+ * Tab SSE begins with `accepted`; adapter snapshots become set/append/remove patches, and one result/end/error ends
+ * delivery. A quiet tab stream sends idle comments (`IDLE_COMMENT_MS`). Finalization fences later events, aborts upstream work, and rejects pending callbacks even if an adapter
+ * continues draining. Job streams keep their request live until read completion, cancellation, or abort.
+ * `server/src/llm/redact.ts` masks request data that can expose secrets; callback payloads and remembered tool records
+ * carrying stored secrets are refused so their protocol values are never rewritten. Tab callback timeouts, malformed
+ * answers, and CBS callback failures end a request even if an adapter catches the throw; channel barrier, timeout, and
+ * disconnect failures also end the parent job. Maintenance and shutdown refuse new work and end admitted requests.
+ */
+
 /** Live requests one client may hold at once. */
 export const MAX_REQUESTS_PER_CLIENT = 32;
 /** Unread event bytes a request may queue before it is ended (a reader that stopped reading). */
 export const MAX_QUEUED_EVENT_BYTES = 64 * 1024 * 1024;
+/**
+ * The tick on which a quiet tab request sends an SSE comment: each tick after one that queued nothing,
+ * so the first comment comes 15 to 30 seconds after the last event. A proxy in front of the server
+ * may close a response that stays silent (Cloudflare after about 100 seconds), and a quiet provider
+ * can leave a long gap between events. The tab's reader skips frames without `data:`.
+ */
+export const IDLE_COMMENT_MS = 15_000;
+const IDLE_COMMENT = new TextEncoder().encode(": idle\n\n");
 /** How long `dispose` waits for the requests it aborted. */
 export const DISPOSE_WAIT_MS = 5000;
 const STRONG_BAN_CACHE_SIZE = 500;
 
+/** A watched job callback whose targets and channel a tab request inherits; settling it aborts that request. */
 export type ParentCallback = {
     channel: JobChannel;
     /** The job's targets when the request came (its chat, and the ids its callbacks run with). */
@@ -76,6 +99,8 @@ export type RequestModel = {
     profileName: string | null;
     /** The `LLMFormat` name. */
     provider: string | null;
+    /** The request interception prompts inserted into the request; given only when positive. */
+    interceptions?: number;
 };
 
 /**
@@ -104,6 +129,7 @@ export type RequestObserver = {
     ): void;
 };
 
+/** Stored settings and service dependencies shared by the live request registry, with optional transport/clock hooks. */
 export type LlmRequestsOptions = {
     store: ResourceStore;
     kinds: ResourceKindRegistry;
@@ -146,10 +172,12 @@ type LiveRequest = {
     finishedCallbacks: Set<string>;
 };
 
+/** Admission yields an id and SSE byte stream, or an HTTP refusal before a request is registered. */
 export type StartResult =
     | { ok: true; id: string; stream: ReadableStream<Uint8Array> }
     | { ok: false; status: 400 | 404 | 409 | 429 | 503; error: string; problems?: ChatBindingProblem[] };
 
+/** Accepted callback answer, ignored duplicate/late answer, or missing request/client/callback identity. */
 export type AnswerResult = "accepted" | "ignored" | "missing";
 
 /** A job's streamed answer failed while it was read (`runInJob`): the request and its provider code. */
@@ -318,7 +346,7 @@ function channelIntercept(p: {
                 }
                 throw p.endWith(
                     `The bodyIntercepter callback failed: ${result.error}`,
-                    strict || result.failure === "barrier",
+                    strict || isBarrierFailure(result),
                 );
             case "timedOut":
             case "disconnected":
@@ -362,6 +390,8 @@ function redactResponse(response: requestDataResponse, redactor: Redactor): requ
  */
 export type JobRequestSpec = {
     jobId: string;
+    /** Reports an adapter's re-send to the job that owns this request. */
+    reportRetry?: RequestContext["reportRetry"];
     loaded: LoadedRequestDb;
     mode: ModelModeExtended;
     arg: RequestArgs;
@@ -419,6 +449,11 @@ export type JobRequestSpec = {
  * `error` with the reason), aborts every upstream fetch, rejects every pending callback, and fences
  * every later event, whether or not the adapter's work has stopped; that work drains in the
  * background (`dispose` waits for it, bounded).
+ *
+ * It owns request admission (refused during shutdown or maintenance; a tab's request also by its client's
+ * `MAX_REQUESTS_PER_CLIENT` count) and `runInJob`, which carries a job's frozen settings, tokenizer scope, tools,
+ * callbacks, and abort signal into a request. The `strongBan` token cache is shared by every request and keyed by the
+ * phrase and the request scope's tokenizer identity (`shared/tokenizerChoice.ts` `tokenizerIdentityKey`).
  */
 export function createLlmRequests(options: LlmRequestsOptions) {
     const now = options.now ?? Date.now;
@@ -592,6 +627,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         intercept: RequestContext["intercept"];
         /** A job's request: its tab's plugin providers (`RequestContext.pluginProvider`). */
         pluginProvider?: RequestContext["pluginProvider"];
+        reportRetry?: RequestContext["reportRetry"];
         supportsInlayImage: () => boolean;
         /** A job's own request: models the server knows only through a tab (see `runInJob`). */
         browserOnlyModels?: boolean;
@@ -640,6 +676,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             userName: p.loaded.userName,
             signal: p.controller.signal,
             transport,
+            ...(p.reportRetry ? { reportRetry: p.reportRetry } : {}),
             ...(tracker.hook ? { firstByte: tracker.hook } : {}),
             describe: (model) => {
                 const redactor = p.redactor();
@@ -777,6 +814,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         };
         const ctx = buildContext({
             loaded: spec.loaded,
+            reportRetry: spec.reportRetry,
             tokenScope: spec.tokenScope,
             controller,
             redactor: () => redactor,
@@ -1193,6 +1231,8 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         let closed = false;
         let terminalSent = false;
         let finalized = false;
+        /** Nothing was queued since the last idle tick. */
+        let quiet = true;
         const encoder = new TextEncoder();
 
         /** Queues `event`; false when it was not (the stream is closed, or the client stopped reading). */
@@ -1210,6 +1250,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 terminalSent = true;
             }
             streamController.enqueue(bytes);
+            quiet = false;
             return true;
         };
         /**
@@ -1261,6 +1302,15 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         const onClientAbort = () => controller.abort(new Error("The client went away"));
         // Registered before anything can finalize it, so finalizing always removes it.
         requests.set(id, live);
+        // Skipped while unread bytes are queued: a reader that stopped needs no more.
+        const idleTimer = setInterval(() => {
+            if (!quiet || closed || (streamController.desiredSize ?? 0) < 0) {
+                quiet = true;
+                return;
+            }
+            streamController.enqueue(IDLE_COMMENT);
+        }, IDLE_COMMENT_MS);
+        idleTimer.unref?.();
 
         /** Ends the request once: the terminal, the stream, the registry entry, the callbacks. */
         function finalize() {
@@ -1268,6 +1318,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
                 return;
             }
             finalized = true;
+            clearInterval(idleTimer);
             signal.removeEventListener("abort", onClientAbort);
             parent?.unwatch();
             tracker.finish(
@@ -1647,6 +1698,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
     };
 }
 
+/** The live registry's admission, callback-answer, job-request, and lifecycle operations. */
 export type LlmRequests = ReturnType<typeof createLlmRequests>;
 
 function errorText(error: unknown): string {

@@ -26,21 +26,24 @@ const { embedded, vectorStore } = vi.hoisted(() => ({
 }));
 
 vi.mock(import("src/ts/storage/database.svelte"), () => ({ appVer: "1234.5.67" }) as never);
-vi.mock("src/ts/globalApi.svelte", () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: vi.fn(() => Promise.resolve("")),
-    globalFetch: vi.fn(async (url: string, arg: { body: { input: string | string[] } }) => {
-        if (url !== "http://embed.test/v1/embeddings") {
-            throw new Error(`unexpected globalFetch(${url})`);
-        }
-        embedded.push(arg.body.input);
-        const inputs = Array.isArray(arg.body.input) ? arg.body.input : [arg.body.input];
-        return {
-            ok: true,
-            data: { data: inputs.map((text) => ({ embedding: [text.length, (text.match(/e/g) ?? []).length, 1] })) },
-        };
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        getFileSrc: vi.fn(() => Promise.resolve("")),
+        globalFetch: vi.fn(async (url: string, arg: { body: { input: string | string[] } }) => {
+            if (url !== "http://embed.test/v1/embeddings") {
+                throw new Error(`unexpected globalFetch(${url})`);
+            }
+            embedded.push(arg.body.input);
+            const inputs = Array.isArray(arg.body.input) ? arg.body.input : [arg.body.input];
+            return {
+                ok: true,
+                data: {
+                    data: inputs.map((text) => ({ embedding: [text.length, (text.match(/e/g) ?? []).length, 1] })),
+                },
+            };
+        }),
     }),
-}));
+);
 vi.mock("src/ts/network/auxFetch", () => ({
     auxFetchJson: vi.fn(async () => {
         throw new Error("no aux fetch here");
@@ -130,6 +133,28 @@ beforeEach(() => {
 });
 
 describe("the tab's graph memory host without a request (`callTool`: the selected chat)", () => {
+    it("embeds only the query when a dense graph's connected names were all found by the first search", async () => {
+        const { GraphMemClient } = await import("../graphmem");
+        const client = new GraphMemClient();
+        const names = ["PresetB", "Alice", "Bob", "Carol"];
+        const connections = [...names, ...names];
+        for (const name of names.slice(1)) {
+            await client.callTool("writeMemory", { name, summary: `memory ${name}`, connections });
+        }
+        const expected = [
+            entry("PresetB", "from preset PresetB"),
+            ...names.slice(1).map((name) => entry(name, `memory ${name}`, connections)),
+        ];
+        const read = JSON.parse(text(await client.callTool("readMemory", { query: ["who"], search_depth: 1e12 })));
+        expect(read[0].queryTerm).toBe("who");
+        expect(read[0].entries).toHaveLength(expected.length);
+        expect(read[0].entries).toEqual(expect.arrayContaining(expected));
+        expect(embedded).toEqual([names, "who"]);
+        expect(graphOf(B1)).toEqual(expected);
+        expect(graphOf(A1)).toBeUndefined();
+        expect(graphOf(A2)).toBeUndefined();
+    });
+
     it("writes on the selected chat without the graph, then a read ranks the stored names by similarity", async () => {
         const { GraphMemClient } = await import("../graphmem");
         const client = new GraphMemClient();

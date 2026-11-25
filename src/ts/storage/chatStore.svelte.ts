@@ -1,7 +1,21 @@
 // First: module effects elsewhere (`stores.svelte`) read `selectedChat()` while this module may still be loading.
-import { onCharacterSelectionChanged, selection } from "./selection.svelte";
+import {
+    onCharacterSelectionChanged,
+    PlaygroundStore,
+    selectCharacter,
+    selection,
+    setChatOpen,
+} from "./selection.svelte";
 import { setOpenChatBindingSource, settings } from "./settingsViews.svelte";
+import {
+    chatMemoryAlgorithm,
+    chatMemorySummary,
+    type ChatMemorySummary,
+    type ChatMemoryInput,
+} from "../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "./chatMemory.svelte";
 import { untrack } from "svelte";
+import { createSubscriber, SvelteMap, SvelteSet } from "svelte/reactivity";
 import { v4 as uuidv4 } from "uuid";
 import type {
     ChatGroupResult,
@@ -14,22 +28,53 @@ import type {
 } from "../../../shared/chats.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
-import type { GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
-import { readChatBindingIds } from "../../../shared/chatBinding.ts";
-import { type ChangeSet, type ChatPatchBody, compareRevision, parseRevisionToken } from "../../../shared/resources.ts";
+import type { GenerationChatPatchEvent, GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
+import { readChatBindingIds, type ChatBindingFields } from "../../../shared/chatBinding.ts";
+import { oocLogError, oocSegmentError, oocTogglesError } from "../../../shared/ooc.ts";
+import {
+    type ChangeSet,
+    type ChatDeltaBody,
+    type ChatMetaFields,
+    type ChatPatchBody,
+    type ChatRowDeltaBody,
+    type ChatRowsManifest,
+    type ChatRowsReadResult,
+    compareRevision,
+    parseRevisionToken,
+} from "../../../shared/resources.ts";
+import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
+import type { ChatLoreOverride } from "../../../shared/database.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import {
+    hypaV3DataHoldsSummaries,
+    isSealedHypaV3Data,
+    sealedHypaV3DataIntact,
+    sealedHypaV3DataRevision,
+    STRUCTURED_MEMORY_ALGORITHM,
+    type SealedHypaV3Data,
+} from "../../../shared/structuredMemory.ts";
 import {
     CHAT_TRANSLATION_FIELD_TYPES,
     chatTranslationSummary,
     type ChatTranslationFields,
 } from "../../../shared/translation/chatSettings.ts";
+import { selectCandidateChange } from "../../../shared/rerollCandidates.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
-import { alertError } from "../alert";
+import { alertConfirm, alertError, alertReloadNotice, alertToast } from "../alert";
 import type { character, Chat, groupChat, Message, MessageTranslation } from "./database.svelte";
 import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
+import {
+    chatTarget,
+    orderTarget,
+    type ChatLayerValues,
+    type OrderLayerValues,
+    type JournalBefore,
+    type JournalChatOp,
+} from "./draftJournal";
 
 /**
  * The chat mutation module. Chats are server resources of their own
@@ -41,8 +86,10 @@ import { readRefs } from "./resourceClient";
  * (`resourceSync.svelte.ts`) sends in its next batch. Boot reads summaries only (`assembleChats`); a
  * chat is loaded on demand (`ensureChatLoaded`, `loadChats`, the selected chat when it is selected),
  * kept loaded while it is pinned or busy, and evicted beyond `MAX_LOADED_CHATS` idle loaded chats
- * (least recently used first). Readers use `chatList`, `chatEntry`, `selectedChat`, `findChat`, and
- * the loading functions; a character wrapper's `chats`/`chatPage` is a view of the loaded chats
+ * (least recently used first). Readers use `chatList`, `chatEntry`, `chatMemberPage`, `chatCount`,
+ * `chatMembershipVersion`, `selectedChat`, `findChat`, and the loading functions. Member pages copy
+ * only the requested ids; their untracked version changes with membership, order, and holding lifetime.
+ * A character wrapper's `chats`/`chatPage` is a view of the loaded chats
  * built here (`setCharacterChatView`) for the shared CBS evaluator, which reads that legacy shape.
  *
  * - Addressing is by `ChatRef` (`chaId`, `chatId`) and message id, never by index.
@@ -58,7 +105,8 @@ import { readRefs } from "./resourceClient";
  *   its index).
  * - A server generation job locks the message it writes: nothing but the job may rewrite or
  *   remove it. `applyServerGeneration` writes the streamed text into the mirror without queuing
- *   anything, and the job's end releases its locks. A chat `resource` event replaces the chat through
+ *   anything, and the job's end releases its locks, the feed's lock of the same generation
+ *   included (`retireGeneration`). A chat `resource` event replaces the chat through
  *   `hydrateChat` (never an outgoing write). Work the server refused for a generating message
  *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, except its edits of the locked
  *   messages the refusal names, which are dropped with the reload notice and read back with the chat
@@ -67,6 +115,12 @@ import { readRefs } from "./resourceClient";
  *   `streamingEntry` (the chat screen's display optimization) from its generation's first stream
  *   update until that generation's lock is released; each chat has its own.
  *   `lockedChatKeys` reads the distinct chat keys holding these locks (reactive).
+ * - A structured chat's `hypaV3Data` is a projection a whole read overlays: the mirror holds it for
+ *   plugins to read, and it never leaves the tab (`sendChat`). A write of the field is decided against
+ *   the held value (`keepsHeldHypaV3Data`); a job's copy, which is stored data, leaves it in place
+ *   unless it brings summaries of its own (`keepsProjection`). A plugin read's refresh takes a newer
+ *   value through `installChatProjection`, fenced on what `chatProjectionState` captured before its
+ *   first await: the one change of the field that is no write of the chat, so nothing is queued.
  */
 
 export type ChatRef = { chaId: string; chatId: string };
@@ -81,6 +135,34 @@ const forbiddenMetaKeys = new Set(CHAT_META_FORBIDDEN_KEYS);
 const keyOf = (chaId: string, chatId: string) => `${chaId}\u0000${chatId}`;
 const messageKeyOf = (ref: ChatRef, messageId: string) => `${keyOf(ref.chaId, ref.chatId)}\u0000${messageId}`;
 
+/** Map transitions invalidate journal layers; in-place changes mark them at their write sites. */
+class JournalMap<T> extends Map<string, T> {
+    private readonly change: (key: string, before: T | undefined, after: T | undefined) => void;
+
+    constructor(change: (key: string, before: T | undefined, after: T | undefined) => void) {
+        super();
+        this.change = change;
+    }
+
+    override set(key: string, value: T) {
+        const before = this.get(key);
+        super.set(key, value);
+        this.change(key, before, value);
+        return this;
+    }
+
+    override delete(key: string) {
+        const before = this.get(key);
+        const removed = super.delete(key);
+        if (removed) this.change(key, before, undefined);
+        return removed;
+    }
+
+    override clear() {
+        for (const key of this.keys()) this.delete(key);
+    }
+}
+
 /** A chat's queued, unsent work. */
 type Pending = {
     characterId: string;
@@ -94,10 +176,14 @@ type Pending = {
      * until it is answered and go out in a group of their own.
      */
     resend: Resend | null;
+    /** Identity of this unsent batch, independent of a kept resend's id. */
+    groupId: string;
     /** Unsent ops, in order. */
     ops: ChatOp[];
     /** Local sequence number of the latest change. */
     seq: number;
+    /** Creation time of intent installed by boot recovery. */
+    recoveredAt?: number;
 };
 
 /**
@@ -105,7 +191,16 @@ type Pending = {
  * group id as sent. `inDoubt`: an earlier attempt may have landed (its answer was lost), so it goes
  * out with `retry` and the same id, and the server answers it as before if it did.
  */
-type Resend = { ops: ChatOp[]; seq: number; baseRevision: string | null; groupId: string; inDoubt: boolean };
+type Resend = {
+    ops: ChatOp[];
+    seq: number;
+    baseRevision: string | null;
+    groupId: string;
+    inDoubt: boolean;
+    /** A split cannot send its prefix until the journal replaced the old whole-batch row. */
+    unconfirmed?: true;
+    recoveredAt?: number;
+};
 
 /** Whether the group kept for a resend is a create (the chat may not be on the server yet). */
 function isCreateResend(entry: Pending | undefined): boolean {
@@ -133,6 +228,7 @@ export type SentChatGroup = {
     inDoubt?: true;
     /** For a create: what the chat is on the server if this whole group landed (replay recognition). */
     expected?: string;
+    recoveredAt?: number;
 };
 
 export type SentChatOrder = { characterId: string; baseRevision: string; ids: string[]; seq: number };
@@ -146,6 +242,67 @@ const chatRevisions = new Map<string, string>();
  * the rows rendered before it without a server transform context render again.
  */
 const savedVersions = $state<Record<string, number>>({});
+/** Per chat: authoritative installs and acknowledgements that finish its queued work. */
+const installVersions = $state<Record<string, number>>({});
+const unackedWork = $state<Record<string, boolean>>({});
+
+function recordChatInstall(key: string) {
+    untrack(() => {
+        installVersions[key] = (installVersions[key] ?? 0) + 1;
+    });
+}
+
+function syncUnackedWork(key: string) {
+    untrack(() => {
+        const busy = isBusy(key);
+        if ((unackedWork[key] ?? false) !== busy) {
+            if (busy) unackedWork[key] = true;
+            else delete unackedWork[key];
+        }
+    });
+}
+
+// Keep the reactive read in sync at every work transition. Consumers drain asynchronously,
+// after transfers between these collections (for example, in-flight work into quarantine).
+class ChatWorkMap<T> extends Map<string, T> {
+    override set(key: string, value: T): this {
+        super.set(key, value);
+        syncUnackedWork(key);
+        return this;
+    }
+
+    override delete(key: string): boolean {
+        const removed = super.delete(key);
+        if (removed) syncUnackedWork(key);
+        return removed;
+    }
+
+    override clear(): void {
+        const keys = [...this.keys()];
+        super.clear();
+        for (const key of keys) syncUnackedWork(key);
+    }
+}
+
+class ChatWorkSet extends Set<string> {
+    override add(key: string): this {
+        super.add(key);
+        syncUnackedWork(key);
+        return this;
+    }
+
+    override delete(key: string): boolean {
+        const removed = super.delete(key);
+        if (removed) syncUnackedWork(key);
+        return removed;
+    }
+
+    override clear(): void {
+        const keys = [...this];
+        super.clear();
+        for (const key of keys) syncUnackedWork(key);
+    }
+}
 
 /**
  * Per chat (`keyOf`): the newest revision an acknowledgement of this client's work reported while
@@ -157,9 +314,9 @@ const savedVersions = $state<Record<string, number>>({});
 const ackedRevisions = new Map<string, string>();
 
 /**
- * Chats (`keyOf`) this client still holds a revision of that an authoritative chat list showed the
- * server no longer has, while this client keeps them (local work, a quarantine, a generation, or a
- * delete that cannot be sent): the server's order cannot hold them, so reorders, create indices, and
+ * Chats (`keyOf`) this client still holds a revision of that a server read or list showed gone,
+ * while this client keeps them (local work, a quarantine, a generation, a last-chat placeholder,
+ * or a delete that cannot be sent): the server's order cannot hold them, so reorders, create indices, and
  * order acknowledgements leave them out (`serverHolds`). The held revision stays (the base of their
  * work, whose conflict removes them). Cleared only by positive membership evidence: a list that
  * places the chat, an acknowledged create whose answer lists the chat in the order, or the revision
@@ -178,7 +335,11 @@ const absentChats = new Set<string>();
  * chat list of the character is accepted (`acceptRemoteCollection`). A create resend is not kept
  * only when it is not in doubt and this client holds no revision of the chat (`parkResends`).
  */
-const parkedResends = new Map<string, Map<string, { chatId: string; resend: Resend }>>();
+const parkedResends = new JournalMap<Map<string, { chatId: string; resend: Resend }>>((_id, before, after) => {
+    for (const key of new Set([...(before?.keys() ?? []), ...(after?.keys() ?? [])])) {
+        dirtyChatJournal(key, "resend");
+    }
+});
 
 /** Whether the server's chat order holds the chat as far as this client knows (`absentChats`). */
 function serverHolds(key: string): boolean {
@@ -189,6 +350,8 @@ function serverHolds(key: string): boolean {
 function holdChatRevision(key: string, revision: string) {
     const first = !chatRevisions.has(key);
     chatRevisions.set(key, revision);
+    dirtyChatJournal(key, "pending");
+    dirtyOrderJournal(key.split("\u0000")[0], "latest");
     if (first) {
         savedVersions[key] = (savedVersions[key] ?? 0) + 1;
     }
@@ -197,11 +360,23 @@ function holdChatRevision(key: string, revision: string) {
     }
 }
 
-/** Drops a chat's held revision (the chat is gone, or its state forgotten) and its acknowledged floor. */
-function dropChatRevision(key: string) {
+/** Drops a gone or forgotten chat's revision, acknowledged floor, feed locks, and read-order bookkeeping. */
+function dropChatRevision(key: string, keepListedMark = false) {
+    unknownTrashMarks.delete(key);
+    if (!keepListedMark) {
+        trashRevisions.delete(key);
+        if (trashMarks[key] !== undefined) {
+            delete trashMarks[key];
+            membershipVersions.set(key.split("\u0000")[0], ++membershipVersionCounter);
+        }
+    }
     chatRevisions.delete(key);
     ackedRevisions.delete(key);
     absentChats.delete(key);
+    idleReadStamps.delete(key);
+    dirtyChatJournal(key, "pending");
+    dirtyOrderJournal(key.split("\u0000")[0], "latest");
+    releaseFeedLocks(`${key}\u0000`);
 }
 
 /**
@@ -214,18 +389,45 @@ function belowAckedRevision(key: string, revision: string): boolean {
     return floor !== undefined && (compareRevision(revision, floor) ?? -1) < 0;
 }
 
-/** How many times the chat gained its first held revision (reactive; `savedVersions`). */
+/**
+ * How many times the chat gained its first held revision (reactive; `savedVersions`): a first save landed,
+ * or a landed create was recognized; not the boot seed or a restore. The chat screen renders the chat's
+ * rows again on it, since a row rendered before had no server transform context.
+ */
 export function chatSaveVersion(ref: ChatRef): number {
     return savedVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
 }
 
-const orderRevisions = new Map<string, string>();
-const pending = new Map<string, Pending>();
-const inflight = new Map<string, SentChatGroup>();
-const pendingOrders = new Map<string, number>();
-const inflightOrders = new Map<string, SentChatOrder>();
+/**
+ * The chat's installed-state version (reactive): moves when `ackChatWork` empties the chat's work (not a
+ * stale acknowledgement, which only marks a refresh) and on every installed copy (a patch or a job
+ * hydration of another revision); local edits and stream chunks do not advance it.
+ */
+export function chatInstallVersion(ref: ChatRef): number {
+    return installVersions[keyOf(ref.chaId, ref.chatId)] ?? 0;
+}
+
+/** Whether the chat has unacknowledged work (reactive), including refused, deferred, or job-blocked work. */
+export function chatHasUnackedWork(ref: ChatRef): boolean {
+    return unackedWork[keyOf(ref.chaId, ref.chatId)] ?? false;
+}
+
+const orderRevisions = new JournalMap<string>((id) => dirtyOrderJournal(id, "latest"));
+const pending = new JournalMap<Pending>((key, before, after) => {
+    dirtyChatJournal(key, "pending");
+    if ((before?.resend ?? null) !== (after?.resend ?? null)) dirtyChatJournal(key, "resend");
+    syncUnackedWork(key);
+});
+const inflight = new JournalMap<SentChatGroup>((key) => {
+    dirtyChatJournal(key, "resend");
+    syncUnackedWork(key);
+});
+const pendingOrders = new JournalMap<number>((id) => dirtyOrderJournal(id, "latest"));
+const inflightOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
 /** Conflicting sent orders whose outcome waits for an authoritative collection read. */
-const recoveringOrders = new Map<string, SentChatOrder>();
+const recoveringOrders = new JournalMap<SentChatOrder>((id) => dirtyOrderJournal(id, "sent"));
+/** Sent vectors whose answers were lost, kept in memory for the next conflict read. */
+const lostOrderAttempts = new Map<string, Pick<SentChatOrder, "seq" | "ids">[]>();
 /** Chat keys → highest local sequence settled (acknowledged or discarded). */
 const settled = new Map<string, number>();
 const ordersSettled = new Map<string, number>();
@@ -233,10 +435,16 @@ const ordersSettled = new Map<string, number>();
 const discarded = new Map<string, number>();
 let discardSequence = 0;
 /** Refused intent, retained until an explicit local edit, retry, or discard. Identity fences discards. */
-type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean };
-const quarantined = new Map<string, ChatRefusal>();
+type ChatRefusal = { reason: string; ops: ChatOp[]; create: boolean; delete: boolean; recovered?: true };
+const quarantined = new JournalMap<ChatRefusal>((key) => {
+    dirtyChatJournal(key, "refused");
+    syncUnackedWork(key);
+});
 /** Refused reorders wait until the ordered ids change. */
-const quarantinedOrders = new Map<string, { ids: string; reason: string }>();
+const quarantinedOrders = new JournalMap<{ ids: string; reason: string }>((id) => {
+    dirtyOrderJournal(id, "refused");
+    dirtyOrderJournal(id, "latest");
+});
 const chatAlerts = new Set<string>();
 const orderAlerts = new Set<string>();
 let refusalVersion = $state(0);
@@ -255,16 +463,16 @@ function clearOrderRefusal(chaId: string) {
     if (quarantinedOrders.delete(chaId)) notifyRefusals();
 }
 /** Chats whose conflict reload waits for the server job streaming into them. */
-const deferred = new Set<string>();
+const deferred = new ChatWorkSet();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
-const staleChats = new Set<string>();
+const staleChats = new SvelteSet<string>();
 /**
  * Chats a live update announced as changed on the server (`noteRemoteChat`) → the sequence of the
  * latest notice and the revision it announced (null: deleted). Only an idle read that began after
  * that notice clears it, or this client coming to hold that revision another way (its own save, a
- * job's chat event).
+ * job's chat event). An eligible row manifest lives with its notice, so every notice reset drops it too.
  */
-const noticedChats = new Map<string, { seq: number; revision: string | null }>();
+const noticedChats = new SvelteMap<string, { seq: number; revision: string | null; rows?: ChatRowsManifest }>();
 let noticeSeq = 0;
 /** Bumped when `serverGenerations` or `feedLocks` changes, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
@@ -280,28 +488,69 @@ const serverGenerations = new Map<string, { jobId: string; generationId: string;
  * copy holds (from the job's chat events); a streamed text at or below it is older than the copy.
  */
 const serverWatermarks = new Map<string, { generationId: string; seq: number }>();
-/** Server generations that ended or were replaced: their late events are dropped. */
+/**
+ * Verified stored text behind a held generation's display overlay, at its watermark (undefined
+ * without a matching watermark). A compact checkpoint with an ahead buffer cannot prove this text.
+ * Entries exist only while their message has a held generation.
+ */
+const storedGenerationText = new Map<string, { generationId: string; seq: number | undefined; text: string }>();
+/**
+ * Server generations this tab's job events said are over (`retireGeneration`): their late events are
+ * dropped, and so is a feed lock that names one.
+ */
 const retiredGenerations = new Set<string>();
 /**
  * Messages (`messageKeyOf`) the change feed announced as locked by a generation job of any tab or
- * device (`noteRemoteStreaming`, `replaceFeedLocks`) → the generation, the chat revision of the
+ * device or an adopted whole read → the generation, the chat revision of the
  * frame or snapshot that announced it (null: none), and whether an announcement of that generation
  * said its stored text holds a streamed chunk (`seq` above 0). A lock only: no stream text, no watermark, no
  * retirement, and it never holds the save loop's reads, patches, or reloads (`isChatStreamedHere`).
- * Independent of this tab's job events: losing a follow does not release the feed lock.
+ * Losing a follow does not release the feed lock. A generation this tab's job events retired does
+ * (`retireGeneration`): the feed's own release travels on another socket and may come after the
+ * job's end, and a list, `hello`, or read snapshot that still names the generation is older than its end.
+ * Whole-read snapshots replace a chat's locks only when issued after its latest feed list, the
+ * latest `hello`, and its last honored read. Reads without a stamped snapshot use revisions.
  */
 const feedLocks = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
+
+/**
+ * Retires a generation the server's job events said is over: its job ended or is gone, its job's
+ * chat copy no longer lists it, or another generation took its message. Never for lost
+ * participation in a running job (`detachServerJob`). Releases a feed lock that names it; the
+ * caller bumps `lockState` when this returns true.
+ */
+function retireGeneration(generationId: string): boolean {
+    retiredGenerations.add(generationId);
+    let moved = false;
+    for (const [messageKey, lock] of feedLocks) {
+        if (lock.generationId === generationId) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    return moved;
+}
+/** One local issue order for feed lists, `hello`, and whole-chat reads; revisions do not order locks. */
+let feedLockOrder = 0;
+let feedHelloOrder = 0;
+const feedChatOrders = new Map<string, number>();
+const feedReadOrders = new Map<string, number>();
+
+/** Capture immediately before issuing a whole-chat read and carry it on each adopted `RemoteChat`. */
+export function issueChatReadStamp(): number {
+    return ++feedLockOrder;
+}
 /**
  * Per chat: the newest job chat event whose metadata (streaming, releases) was taken, applied or
  * not; an older event's metadata is ignored. The entry's identity fences reads that reuse metadata.
  */
 const jobMetadata = new Map<string, { revision: string }>();
 /** Chats whose work the server refused for a generating message → when it may be sent again. */
-const jobBlocked = new Map<string, number>();
+const jobBlocked = new ChatWorkMap<number>();
 /** Chat keys → local version, bumped by every change of the chat in the mirror. */
 const versions = new Map<string, number>();
 let localSeq = 0;
-let workListener: (() => void) | null = null;
+let workListener: ((refreshCharacter?: string) => void) | null = null;
 let remoteListener: ((ref: ChatRef) => void) | null = null;
 
 /** Bumped by every mirror write this module makes (the development drift check compares it). */
@@ -315,12 +564,17 @@ export type StreamingEntry = { messageId: string; mode: Chat["activeStreamingDis
  * display optimization (client-only; replaces the persisted flags), and the generation that set it
  * (null: set by `setStreamingState`). Set on the generation's first stream update with the
  * configured mode, cleared when that generation's lock is released; a job in another chat has its
- * own entry.
+ * own entry; a later generation in the chat takes the entry over.
  */
 const streamingChats: Record<string, StreamingEntry & { generationId: string | null }> = $state({});
 
-/** What a chat list shows of a chat (`ChatListEntry` without the id): its summary while it is not loaded. */
+/** An unloaded chat's summary: list metadata and the derived time of its last message. */
 type ChatEntryMeta = {
+    /**
+     * Derived, never written: kept across summary ingestion, whole-chat copies, and eviction; never laid
+     * from a pending summary over a loaded chat.
+     */
+    lastMessageAt?: number;
     name: string;
     pinned?: boolean;
     folderId?: string;
@@ -329,13 +583,20 @@ type ChatEntryMeta = {
     modelPresetId?: string;
     bindingReview?: boolean;
     fmIndex: number;
-} & ChatTranslationFields;
+} & ChatTranslationFields &
+    ChatMemorySummary;
 
 /**
  * One character's chats: the ids in order (its membership), the loaded chats by id, and the summaries
  * of the chats that are not loaded (`slot` keys). Every member is in exactly one of the two.
  */
-type HeldChats = { ids: string[]; chats: Record<string, Chat>; summaries: Record<string, ChatEntryMeta> };
+class HeldChats {
+    ids = $state<string[]>([]);
+    chats = $state<Record<string, Chat>>({});
+    summaries = $state<Record<string, ChatEntryMeta>>({});
+    activeIds = $derived(this.ids.filter((id) => trashMarks[keyOf(this.chaId, id)] === undefined));
+    constructor(readonly chaId: string) {}
+}
 
 /** One member as `setChatList` takes it: loaded (`chat`) or as its summary (`meta`). */
 type ChatEntry = { id: string; chat?: Chat; meta?: ChatEntryMeta };
@@ -353,6 +614,39 @@ const slot = (id: string) => `#${id}`;
  * a chat to a list, and a server copy never loads a chat (only a load does).
  */
 const held: Record<string, HeldChats> = $state({});
+/** Synchronous membership invalidation; versions are never reused after a holding is removed. */
+const membershipVersions = new Map<string, number>();
+let membershipVersionCounter = 0;
+
+type ChatMembershipIndex = {
+    ids: Set<string>;
+    track: () => void;
+    notify?: () => void;
+};
+// Every ids write and holding replacement calls bumpChatMembership before another membership read.
+const membershipIndexes = new Map<string, ChatMembershipIndex>();
+
+function bumpChatMembership(chaId: string) {
+    membershipVersions.set(chaId, ++membershipVersionCounter);
+    const index = membershipIndexes.get(chaId);
+    membershipIndexes.delete(chaId);
+    index?.notify?.();
+}
+
+type MessagePositionIndex = {
+    positions: Map<string, number>;
+    trackMissing: () => void;
+    notifyMissing?: () => void;
+};
+// Misses trust this index: every id/order change must drop it or extend it and notify its miss readers.
+const messagePositions = new Map<string, MessagePositionIndex>();
+let messagePositionBuilds = 0;
+let messagePositionLookups = 0;
+
+/** Counts index builds and lookups so tests can check work without timing it. */
+export function messagePositionStats(): Readonly<{ builds: number; lookups: number }> {
+    return { builds: messagePositionBuilds, lookups: messagePositionLookups };
+}
 
 /** The selected chat id per character (this tab; reactive). */
 const chosen: Record<string, string> = $state({});
@@ -393,11 +687,20 @@ const lastUse = new Map<string, number>();
 let useCounter = 0;
 let trimTimer: ReturnType<typeof setTimeout> | null = null;
 /** The loads of unloaded chats in flight, per chat key, with the owner lifetime they were issued in. */
+/**
+ * The loads in flight, per chat: concurrent loads of one chat share its read, and a reset of the
+ * character's chats (`chatOwnerToken`) ends the load with nothing.
+ */
 const loading = new Map<string, { lifetime: string; promise: Promise<DeepReadonly<Chat> | undefined> }>();
 /** How many times a load reads a chat again when the server answers older than the held revision. */
 const MAX_LOAD_READS = 3;
 /** Chats per read request of a load (well inside the server's per-request cap). */
 const LOAD_CHUNK = 500;
+/**
+ * A read request (`deadlineChatRead`) aborts after this and rejects with `chatLoadTimedOut`;
+ * a shared load drops, so the next request reads again.
+ */
+const CHAT_READ_DEADLINE_MS = 60_000;
 
 /**
  * Per character, the lifetime of its held chats: advanced whenever they are installed, forgotten, or
@@ -426,14 +729,310 @@ export function chatOwnerToken(chaId: string): string {
     return lifetimeOf(chaId);
 }
 
+export type ChatJournalKey = { scope: "chat" | "order"; target: string };
+type JournalProjection =
+    | { scope: "chat"; target: string; layers: Partial<ChatLayerValues>; splitGroupId?: string }
+    | { scope: "order"; target: string; layers: Partial<OrderLayerValues> };
+type LayerCache<T> = {
+    generations: Partial<Record<keyof T, number>>;
+    projected: Partial<Record<keyof T, number>>;
+    layers: Partial<T>;
+};
+const journalChats = new Map<string, LayerCache<ChatLayerValues>>();
+const journalOrders = new Map<string, LayerCache<OrderLayerValues>>();
+let journalListener: ((key: ChatJournalKey) => void) | null = null;
+let conflictListener: ((projection: JournalProjection) => void) | null = null;
+const createSnapshots = new WeakMap<Chat, { version: number; value: Chat }>();
+
+function dirtyLayer<T>(views: Map<string, LayerCache<T>>, target: string, layer: keyof T) {
+    let view = views.get(target);
+    if (!view) {
+        view = { generations: {}, projected: {}, layers: {} };
+        views.set(target, view);
+    }
+    view.generations[layer] = (view.generations[layer] ?? 0) + 1;
+}
+
+function dirtyChatJournal(key: string, layer: keyof ChatLayerValues) {
+    const [chaId, chatId] = key.split("\u0000");
+    if (
+        !journalChats.has(key) &&
+        !pending.has(key) &&
+        !inflight.has(key) &&
+        !quarantined.has(key) &&
+        !parkedResends.get(chaId)?.has(key)
+    )
+        return;
+    dirtyLayer(journalChats, key, layer);
+    journalListener?.({ scope: "chat", target: chatTarget(chaId, chatId) });
+}
+
+function dirtyOrderJournal(chaId: string, layer: keyof OrderLayerValues) {
+    if (
+        !journalOrders.has(chaId) &&
+        !pendingOrders.has(chaId) &&
+        !inflightOrders.has(chaId) &&
+        !recoveringOrders.has(chaId) &&
+        !quarantinedOrders.has(chaId)
+    )
+        return;
+    dirtyLayer(journalOrders, chaId, layer);
+    journalListener?.({ scope: "order", target: orderTarget(chaId) });
+}
+
+function projectedLayer<T, K extends keyof T>(view: LayerCache<T>, name: K, project: () => T[K] | undefined) {
+    const generation = view.generations[name] ?? 0;
+    if (view.projected[name] !== generation) {
+        view.layers[name] = project();
+        view.projected[name] = generation;
+    }
+}
+
+function queuedChatLayer(key: string): ChatLayerValues["pending"] | undefined {
+    const entry = pending.get(key);
+    if (!entry || (!entry.create && entry.ops.length === 0)) return;
+    const ops = journalOps(entry.ops);
+    let createSnapshot: Chat | undefined;
+    if (entry.create) {
+        const chat = heldChat({ chaId: entry.characterId, chatId: entry.chatId });
+        if (chat) {
+            const version = versions.get(key) ?? 0;
+            let cached = createSnapshots.get(chat);
+            if (!cached || cached.version !== version) {
+                cached = { version, value: sendChat(chat) };
+                createSnapshots.set(chat, cached);
+            }
+            createSnapshot = cached.value;
+        }
+    }
+    return {
+        ops,
+        baseRevision: chatRevisions.get(key) ?? null,
+        groupId: entry.groupId,
+        ...(createSnapshot ? { createSnapshot } : {}),
+        ...(entry.ops.some((op) => op.op === "delete") ? { delete: true } : {}),
+    };
+}
+
+/** Take the WeakMap sidecar before cloning the original operation objects. */
+function journalOps(ops: readonly ChatOp[]): JournalChatOp[] {
+    return clone(ops.map((op) => ({ op, ...(beforeValues.has(op) ? { before: beforeValues.get(op) } : {}) })));
+}
+
+function resendLayer(group: Resend | SentChatGroup): ChatLayerValues["resend"] {
+    return clone({
+        ops: group.ops,
+        baseRevision: group.baseRevision,
+        groupId: group.groupId,
+        seq: group.seq,
+        inDoubt: !!group.inDoubt,
+    });
+}
+
+/**
+ * Capture only abandoned work, while its mirror and operation sidecars still exist. Conflict
+ * replacement, gone/locally deleted chats, deferred reloads and collection removals reach here
+ * before accepting the server copy. Pending befores, conflicted/in-flight/parked resends and refused
+ * intent must survive that replacement. On parent removal or a lost same-id create, forgetCharacter
+ * calls this for chat work and separately captures order intent through the conflict listener.
+ * With fulfilledDelete, this capture omits delete operations already fulfilled by the parent removal.
+ */
+function captureChatConflict(
+    key: string,
+    options: { group?: SentChatGroup; gone?: boolean; fulfilledDelete?: boolean } = {},
+) {
+    if (!conflictListener) return;
+    const [chaId, chatId] = key.split("\u0000");
+    const entry = pending.get(key);
+    const refusal = quarantined.get(key);
+    const groups = [
+        ...new Map(
+            [options.group, inflight.get(key), entry?.resend, parkedResends.get(chaId)?.get(key)?.resend]
+                .filter((group) => group != null)
+                .map((group) => [group.groupId, group]),
+        ).values(),
+    ];
+    const keep = (op: ChatOp) => !options.fulfilledDelete || op.op !== "delete";
+    const layers: Partial<ChatLayerValues> = {};
+    for (const group of groups) {
+        const ops = group.ops.filter(keep);
+        if (!ops.length) continue;
+        if (layers.resend) conflictListener({ scope: "chat", target: key, layers: { resend: layers.resend } });
+        layers.resend = resendLayer({ ...group, ops });
+    }
+    const queued = queuedChatLayer(key);
+    if (queued) {
+        queued.ops = queued.ops.filter(({ op }) => keep(op));
+        if (options.fulfilledDelete) delete queued.delete;
+        if (queued.ops.length || queued.createSnapshot) layers.pending = queued;
+    }
+    if (refusal) {
+        const ops = refusal.ops.filter(keep);
+        if (ops.length || refusal.create)
+            layers.refused = clone({ ...refusal, ops, delete: !options.fulfilledDelete && refusal.delete });
+    }
+    if (!Object.keys(layers).length) return;
+    // Recovered resends are not installed in the mirror. A loaded server copy cannot stand in for
+    // their final local transcript; those gone chats retain operations for Export only.
+    const mirrorHoldsIntent = !groups.some((group) => group.recoveredAt !== undefined) && !refusal?.recovered;
+    if (options.gone && !mirrorHoldsIntent && layers.pending) delete layers.pending.createSnapshot;
+    if (options.gone && mirrorHoldsIntent) {
+        const chat = heldChat({ chaId, chatId });
+        if (chat)
+            layers.pending = {
+                ...(layers.pending ?? {
+                    ops: [],
+                    baseRevision: chatRevisions.get(key) ?? null,
+                    groupId: entry?.groupId ?? groups[0]?.groupId ?? uuidv4(),
+                }),
+                createSnapshot: sendChat(chat),
+            };
+    }
+    conflictListener({ scope: "chat", target: key, layers });
+}
+
+function captureQueuedOrder(chaId: string) {
+    if (!conflictListener) return;
+    const refused = quarantinedOrders.get(chaId);
+    const layers: Partial<OrderLayerValues> = refused
+        ? { refused: { ids: JSON.parse(refused.ids), reason: refused.reason } }
+        : pendingOrders.has(chaId)
+          ? { latest: { baseRevision: orderRevisions.get(chaId) ?? null, ids: [...memberIds(chaId)] } }
+          : {};
+    if (Object.keys(layers).length) conflictListener({ scope: "order", target: orderTarget(chaId), layers });
+}
+
+function captureSentOrder(order: SentChatOrder | undefined) {
+    if (order)
+        conflictListener?.({
+            scope: "order",
+            target: orderTarget(order.characterId),
+            layers: { sent: { baseRevision: order.baseRevision, ids: [...order.ids] } },
+        });
+}
+
+/**
+ * Detached, cached journal layers owned by the chat module. Subscription includes work queued
+ * before the adapter starts. Projection never takes work, clears a refusal, or changes the mirror.
+ * A chat projects resend (exact ops/base/groupId/sequence/doubt), pending (real unsent ops and their
+ * befores, held base, batch id, optional create snapshot/delete), and refused intent; an empty pending
+ * shell is not intent. Each pending batch mints its groupId before journaling, shared by normal
+ * dispatch and whole-batch keepalive so the server remembers the journaled identity.
+ * Orders project in-flight/recovering sent, pending latest except the identical quarantined vector,
+ * and refused. A lost order answer returns to the current pending vector, never an exact resend.
+ * Create snapshots are reused until mirror content changes; a pending edit does not clone an
+ * unchanged resend. Taken groups/orders must be projected after oversized groups are quarantined,
+ * before dispatch; order rebases dirty sent again. Acks, Retry, refusal, discard, conflict repair,
+ * collection acceptance and base changes must invalidate layers even without another local edit.
+ * src/ts/storage/resourceSync.svelte.ts consumes these projections; it alone writes mutation rows.
+ */
+export const chatJournal = {
+    /**
+     * Receives only discarded intent for src/ts/storage/resourceSync.svelte.ts to queue as drafts.
+     * Generating refusals capture only removed locked-message ops. Orders capture the discarded
+     * sent/latest/refused vector (including acknowledgement rebase and keepPendingOrder losses),
+     * never a surviving newer reorder; superseded parked groups are captured as resend. Explicit
+     * discardRefused omits the user's chosen discard but still captures collateral losses.
+     */
+    setConflictListener(listener: ((projection: JournalProjection) => void) | null) {
+        conflictListener = listener;
+    },
+    setListener(listener: ((key: ChatJournalKey) => void) | null) {
+        journalListener = listener;
+        if (listener) {
+            for (const target of journalChats.keys()) listener({ scope: "chat", target });
+            for (const target of journalOrders.keys()) listener({ scope: "order", target });
+        }
+    },
+    project({ scope, target }: ChatJournalKey): JournalProjection {
+        if (scope === "chat") {
+            const view = journalChats.get(target);
+            if (!view) return { scope, target, layers: {} };
+            const [chaId] = target.split("\u0000");
+            const resend =
+                inflight.get(target) ?? pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
+            projectedLayer(view, "resend", () =>
+                resend
+                    ? clone({
+                          ops: resend.ops,
+                          baseRevision: resend.baseRevision,
+                          groupId: resend.groupId,
+                          seq: resend.seq,
+                          inDoubt: !!resend.inDoubt,
+                      })
+                    : undefined,
+            );
+            projectedLayer(view, "pending", () => queuedChatLayer(target));
+            projectedLayer(view, "refused", () => {
+                const refused = quarantined.get(target);
+                return refused ? clone(refused) : undefined;
+            });
+            return {
+                scope,
+                target,
+                layers: { ...view.layers },
+                ...(resend && "unconfirmed" in resend && resend.unconfirmed ? { splitGroupId: resend.groupId } : {}),
+            };
+        }
+        const view = journalOrders.get(target);
+        if (!view) return { scope, target, layers: {} };
+        projectedLayer(view, "sent", () => {
+            const sent = inflightOrders.get(target) ?? recoveringOrders.get(target);
+            return sent ? { baseRevision: sent.baseRevision, ids: [...sent.ids] } : undefined;
+        });
+        projectedLayer(view, "latest", () =>
+            pendingOrders.has(target) && quarantinedOrders.get(target)?.ids !== sendableOrderText(target)
+                ? { baseRevision: orderRevisions.get(target) ?? null, ids: [...memberIds(target)] }
+                : undefined,
+        );
+        projectedLayer(view, "refused", () => {
+            const refused = quarantinedOrders.get(target);
+            return refused ? { ids: JSON.parse(refused.ids) as string[], reason: refused.reason } : undefined;
+        });
+        return { scope, target, layers: { ...view.layers } };
+    },
+    splitGroupId(target: string): string | undefined {
+        const [chaId] = target.split("\u0000");
+        const resend = pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
+        return resend?.unconfirmed ? resend.groupId : undefined;
+    },
+    confirmSplit(target: string, groupId: string) {
+        const [chaId] = target.split("\u0000");
+        const resend = pending.get(target)?.resend ?? parkedResends.get(chaId)?.get(target)?.resend;
+        if (resend?.unconfirmed && resend.groupId === groupId) {
+            delete resend.unconfirmed;
+            notifyWork();
+        }
+    },
+};
+
 /** Registers the save loop's wake-up; called when new chat work is queued. */
-export function setChatWorkListener(listener: (() => void) | null) {
+export function setChatWorkListener(listener: ((refreshCharacter?: string) => void) | null) {
     workListener = listener;
 }
 
 /** Registers a listener for chats replaced by a server copy (another tab or device wrote them). */
 export function setRemoteChatListener(listener: ((ref: ChatRef) => void) | null) {
     remoteListener = listener;
+}
+
+export type ChatRemoval = { chaId: string; chatId: string | null };
+const removalListeners = new Set<(removal: ChatRemoval) => void>();
+
+/** Observes deletions here and on the server; null chatId means every chat of the character. */
+export function onChatRemoved(listener: (removal: ChatRemoval) => void): () => void {
+    removalListeners.add(listener);
+    return () => removalListeners.delete(listener);
+}
+
+function notifyRemoval(removal: ChatRemoval) {
+    for (const listener of removalListeners) {
+        try {
+            listener(removal);
+        } catch (error) {
+            console.warn("[Chat removal]", error);
+        }
+    }
 }
 
 function nextSeq() {
@@ -444,7 +1043,12 @@ function nextSeq() {
 /** Records that a chat changed in the mirror (its version, and the drift check's token). */
 function changed(key: string) {
     versions.set(key, (versions.get(key) ?? 0) + 1);
+    if (pending.get(key)?.create) dirtyChatJournal(key, "pending");
     mutationToken += 1;
+}
+
+export function requestChatListRefresh(chaId: string) {
+    workListener?.(chaId);
 }
 
 function notifyWork() {
@@ -478,9 +1082,12 @@ function canonical(value: unknown): string {
     );
 }
 
-/** The character with `chaId` (its raw record, untracked; this module only checks it and reads its defaults). */
-function findCharacter(chaId: string): AnyCharacter | undefined {
-    return characterData().find((entry) => entry?.chaId === chaId) as unknown as AnyCharacter | undefined;
+/** The raw character, untracked; a matching index hint avoids searching for its id. */
+function findCharacter(chaId: string, indexHint?: number): AnyCharacter | undefined {
+    const characters = characterData();
+    const hinted = indexHint === undefined ? undefined : characters[indexHint];
+    const character = hinted?.chaId === chaId ? hinted : characters.find((entry) => entry?.chaId === chaId);
+    return character as unknown as AnyCharacter | undefined;
 }
 
 function requireCharacter(chaId: string): AnyCharacter {
@@ -493,7 +1100,10 @@ function requireCharacter(chaId: string): AnyCharacter {
 
 /** The held chats of a character, created empty for a write. */
 function holdingOf(chaId: string): HeldChats {
-    held[slot(chaId)] ??= { ids: [], chats: {}, summaries: {} };
+    if (!held[slot(chaId)]) {
+        held[slot(chaId)] = new HeldChats(chaId);
+        bumpChatMembership(chaId);
+    }
     return held[slot(chaId)];
 }
 
@@ -507,23 +1117,181 @@ function memberIds(chaId: string): string[] {
     return [...(holdingAt(chaId)?.ids ?? [])];
 }
 
+/** Visibility is independent of the transcript's save base, including across eviction and busy reads. */
+const trashRevisions = new Map<string, string>();
+// List readers subscribe to the displayed mark, independently of revision-only deliveries.
+const trashMarks = $state<Record<string, number | "absent">>({});
+const unknownTrashMarks = new Set<string>();
+// Keep a fence after removing a member so an older collection cannot resurrect its incarnation.
+const deletedRevisions = new Map<string, string>();
+
+function retiredChat(key: string, revision: string): boolean {
+    if (!deletedRevisions.has(key)) return false;
+    const deleted = parseRevisionToken(deletedRevisions.get(key));
+    const next = parseRevisionToken(revision);
+    return !!deleted && (!next || next.epoch !== deleted.epoch || next.seq <= deleted.seq);
+}
+
+export function isActiveChat(ref: ChatRef): boolean {
+    return isMember(ref) && trashMarks[keyOf(ref.chaId, ref.chatId)] === undefined;
+}
+
+function latestChatRevision(key: string): string | undefined {
+    const mark = trashRevisions.get(key);
+    const body = chatRevisions.get(key);
+    return mark && (!body || (compareRevision(mark, body) ?? -1) >= 0) ? mark : body;
+}
+
+/** Fence a missing read against both body installs and independent trash state deliveries. */
+export function chatReadRevision(ref: ChatRef): string | null {
+    return latestChatRevision(keyOf(ref.chaId, ref.chatId)) ?? null;
+}
+
+/** The acknowledged revision of the displayed mark, captured before asking the user. */
+export function chatTrashRevision(ref: ChatRef): string | null {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const entry = pending.get(key);
+    if (
+        !isMember(ref) ||
+        !serverHolds(key) ||
+        unknownTrashMarks.has(key) ||
+        entry?.create ||
+        isCreateResend(entry) ||
+        inflight.get(key)?.ops[0]?.op === "create"
+    )
+        return null;
+    return trashRevisions.get(key) ?? null;
+}
+
+function activeIds(chaId: string): string[] {
+    return holdingAt(chaId)?.activeIds ?? [];
+}
+
+export function installChatTrashState(ref: ChatRef, revision: string, trashedAt: number | null | undefined) {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (!isMember(ref) || retiredChat(key, revision)) return;
+    const prior = latestChatRevision(key);
+    const order = prior === undefined ? 1 : compareRevision(revision, prior);
+    if (order === null || order < 0) return;
+    if (trashedAt === undefined) {
+        if (revision === trashRevisions.get(key)) return;
+        if (!chatRevisions.has(key)) return;
+        trashRevisions.set(key, revision);
+        unknownTrashMarks.add(key);
+        notifyWork();
+        return;
+    }
+    trashRevisions.set(key, revision);
+    unknownTrashMarks.delete(key);
+    if (trashMarks[key] === (trashedAt ?? undefined)) return;
+    const wasOpen =
+        selection.characterId === ref.chaId &&
+        (selection.chatOpen || ref.chaId === "§playground") &&
+        selectedChatId(ref.chaId) === ref.chatId;
+    if (trashedAt === null) delete trashMarks[key];
+    else trashMarks[key] = trashedAt;
+    membershipVersions.set(ref.chaId, ++membershipVersionCounter);
+    if (wasOpen && trashedAt !== null) {
+        setChatOpen(false);
+        if (ref.chaId === "§playground") {
+            selectCharacter(null);
+            PlaygroundStore.set(1);
+        }
+        alertReloadNotice(language.chatTrash.closed);
+    }
+    syncSelection(ref.chaId);
+}
+
 /** Whether the chat is a member of its character's list. */
 function isMember(ref: ChatRef): boolean {
-    return holdingAt(ref.chaId)?.ids.includes(ref.chatId) ?? false;
+    const holding = holdingAt(ref.chaId);
+    if (!holding) {
+        return false;
+    }
+    let index = membershipIndexes.get(ref.chaId);
+    if (!index) {
+        index = buildMembershipIndex(holding);
+        membershipIndexes.set(ref.chaId, index);
+    }
+    index.track();
+    return index.ids.has(ref.chatId);
+}
+
+function buildMembershipIndex(holding: HeldChats): ChatMembershipIndex {
+    const index: ChatMembershipIndex = {
+        // Only the invalidation signal subscribes the caller, never every element of the ids array.
+        ids: untrack(() => new Set(holding.ids)),
+        track: createSubscriber((update) => {
+            index.notify = () => untrack(update);
+            return () => {
+                index.notify = undefined;
+            };
+        }),
+    };
+    return index;
 }
 
 /** A character's loaded member chats in order, writable here only (unloaded members are left out). */
-function chatsOf(chaId: string): Chat[] {
+function chatsOf(chaId: string, activeOnly = false): Chat[] {
     const holding = holdingAt(chaId);
     if (!holding) {
         return [];
     }
-    return holding.ids.map((id) => holding.chats[slot(id)]).filter((chat): chat is Chat => chat !== undefined);
+    const ids = activeOnly ? activeIds(chaId) : holding.ids;
+    return ids.map((id) => holding.chats[slot(id)]).filter((chat): chat is Chat => chat !== undefined);
 }
 
 /** A loaded chat, writable (this module only). */
 function heldChat(ref: ChatRef): Chat | undefined {
     return holdingAt(ref.chaId)?.chats[slot(ref.chatId)];
+}
+
+function dropMessagePositions(key: string) {
+    const index = messagePositions.get(key);
+    messagePositions.delete(key);
+    index?.notifyMissing?.();
+}
+
+function buildMessagePositions(key: string, chat: DeepReadonly<Chat>): MessagePositionIndex {
+    const positions = new Map<string, number>();
+    // A hit depends only on its row, even when it is the read that builds the index.
+    untrack(() => chat.message.forEach((message, position) => positions.set(message.chatId!, position)));
+    const index: MessagePositionIndex = {
+        positions,
+        trackMissing: createSubscriber((update) => {
+            // Cache invalidation may run within a reactive caller. Notify without reading a signal
+            // into that caller or writing tracked state during a derived/template evaluation.
+            index.notifyMissing = () => untrack(update);
+            return () => {
+                index.notifyMissing = undefined;
+            };
+        }),
+    };
+    dropMessagePositions(key);
+    messagePositions.set(key, index);
+    messagePositionBuilds += 1;
+    return index;
+}
+
+/** A cached miss subscribes to structural changes; a stale hit rebuilds once and validates again. */
+function positionOf(key: string, chat: DeepReadonly<Chat>, id: string): number {
+    messagePositionLookups += 1;
+    let index = messagePositions.get(key);
+    const built = index === undefined;
+    index ??= buildMessagePositions(key, chat);
+    let position = index.positions.get(id);
+    if (position !== undefined && chat.message[position]?.chatId === id) {
+        return position;
+    }
+    if (position !== undefined && !built) {
+        index = buildMessagePositions(key, chat);
+        position = index.positions.get(id);
+        if (position !== undefined && chat.message[position]?.chatId === id) {
+            return position;
+        }
+    }
+    index.trackMissing();
+    return -1;
 }
 
 /** Whether a member chat is loaded (its whole chat is held, not only its summary). */
@@ -532,26 +1300,48 @@ function isLoaded(ref: ChatRef): boolean {
 }
 
 /** Whether every member chat of a character is loaded (true when it holds none). */
-export function chatsLoaded(chaId: string): boolean {
+export function chatsLoaded(chaId: string, activeOnly = false): boolean {
     const holding = holdingAt(chaId);
-    return !holding || holding.ids.every((id) => holding.chats[slot(id)] !== undefined);
+    return (
+        !holding || (activeOnly ? activeIds(chaId) : holding.ids).every((id) => holding.chats[slot(id)] !== undefined)
+    );
 }
 
-/** The list fields of a chat or summary (server rules: `name` "", `fmIndex` -1, `pinned` only when true). */
-function metaOf(source: {
-    name?: unknown;
-    pinned?: unknown;
-    folderId?: unknown;
-    bindedPersona?: unknown;
-    promptPresetId?: unknown;
-    modelPresetId?: unknown;
-    bindingReview?: unknown;
-    fmIndex?: unknown;
-}): ChatEntryMeta {
+/** Only the final message by position counts, even when an earlier message has a time. */
+function lastMessageTime(chat: { message: readonly { time?: unknown }[] }): number | undefined {
+    const time = chat.message.at(-1)?.time;
+    return typeof time === "number" && Number.isFinite(time) ? time : undefined;
+}
+
+/**
+ * Summary fields from a chat or summary (`name` "", `fmIndex` -1, `pinned` only when true).
+ * Lists omit activity so reading their metadata never subscribes to messages.
+ */
+function metaOf(
+    source: {
+        message?: readonly { time?: unknown }[];
+        lastMessageAt?: unknown;
+        name?: unknown;
+        pinned?: unknown;
+        folderId?: unknown;
+        bindedPersona?: unknown;
+        promptPresetId?: unknown;
+        modelPresetId?: unknown;
+        bindingReview?: unknown;
+        fmIndex?: unknown;
+    } & ChatMemoryInput,
+    includeActivity = true,
+): ChatEntryMeta {
     const meta: ChatEntryMeta = {
         name: typeof source.name === "string" ? source.name : "",
         fmIndex: typeof source.fmIndex === "number" ? source.fmIndex : -1,
     };
+    if (includeActivity) {
+        const time = source.message !== undefined ? lastMessageTime({ message: source.message }) : source.lastMessageAt;
+        if (typeof time === "number" && Number.isFinite(time)) {
+            meta.lastMessageAt = time;
+        }
+    }
     if (typeof source.folderId === "string") {
         meta.folderId = source.folderId;
     }
@@ -570,8 +1360,8 @@ function metaOf(source: {
     if (source.pinned === true) {
         meta.pinned = true;
     }
-    // The translation settings, as the server's summary carries them.
-    Object.assign(meta, chatTranslationSummary(source as Record<string, unknown>));
+    // List-editable translation and memory metadata, as the server summary carries them.
+    Object.assign(meta, chatTranslationSummary(source as Record<string, unknown>), chatMemorySummary(source));
     return meta;
 }
 
@@ -588,20 +1378,26 @@ function entryAt(chaId: string, id: string): ChatEntry | undefined {
 /** Puts a chat into a character's list at `index` (loaded and a member); returns the held copy. */
 function insertChat(chaId: string, index: number, chat: Chat): Chat {
     const holding = holdingOf(chaId);
+    dropMessagePositions(keyOf(chaId, chat.id!));
     loadedKeys.add(keyOf(chaId, chat.id!));
     holding.chats[slot(chat.id!)] = chat;
     delete holding.summaries[slot(chat.id!)];
     holding.ids.splice(index, 0, chat.id!);
+    bumpChatMembership(chaId);
+    dirtyOrderJournal(chaId, "latest");
     return holding.chats[slot(chat.id!)];
 }
 
 /** Puts a chat into a character's list at `index` as its summary (not loaded). */
 function insertSummary(chaId: string, index: number, id: string, meta: ChatEntryMeta) {
     const holding = holdingOf(chaId);
+    dropMessagePositions(keyOf(chaId, id));
     loadedKeys.delete(keyOf(chaId, id));
     holding.summaries[slot(id)] = meta;
     delete holding.chats[slot(id)];
     holding.ids.splice(index, 0, id);
+    bumpChatMembership(chaId);
+    dirtyOrderJournal(chaId, "latest");
 }
 
 /** Takes a chat out of a character's list (loaded or not). */
@@ -613,18 +1409,28 @@ function removeChat(chaId: string, chatId: string) {
     const index = holding.ids.indexOf(chatId);
     if (index !== -1) {
         holding.ids.splice(index, 1);
+        bumpChatMembership(chaId);
     }
     loadedKeys.delete(keyOf(chaId, chatId));
+    dropMessagePositions(keyOf(chaId, chatId));
     delete holding.chats[slot(chatId)];
     delete holding.summaries[slot(chatId)];
+    dirtyOrderJournal(chaId, "latest");
+    if (pending.get(keyOf(chaId, chatId))?.create) dirtyChatJournal(keyOf(chaId, chatId), "pending");
 }
 
 /** Drops everything held for a character (its list, loaded chats, and summaries). */
 function dropHeld(chaId: string) {
     for (const id of holdingAt(chaId)?.ids ?? []) {
         loadedKeys.delete(keyOf(chaId, id));
+        dropMessagePositions(keyOf(chaId, id));
     }
     delete held[slot(chaId)];
+    bumpChatMembership(chaId);
+    dirtyOrderJournal(chaId, "latest");
+    for (const [key, entry] of pending) {
+        if (entry.characterId === chaId && entry.create) dirtyChatJournal(key, "pending");
+    }
 }
 
 /** Replaces a character's whole list (membership, order, loaded chats, and summaries) with `entries`. */
@@ -632,10 +1438,12 @@ function setChatList(chaId: string, entries: readonly ChatEntry[]) {
     const holding = holdingOf(chaId);
     for (const id of holding.ids) {
         loadedKeys.delete(keyOf(chaId, id));
+        dropMessagePositions(keyOf(chaId, id));
     }
     const chats: Record<string, Chat> = {};
     const summaries: Record<string, ChatEntryMeta> = {};
     for (const entry of entries) {
+        dropMessagePositions(keyOf(chaId, entry.id));
         if (entry.chat) {
             chats[slot(entry.id)] = entry.chat;
             loadedKeys.add(keyOf(chaId, entry.id));
@@ -646,6 +1454,12 @@ function setChatList(chaId: string, entries: readonly ChatEntry[]) {
     holding.chats = chats;
     holding.summaries = summaries;
     holding.ids = entries.map((entry) => entry.id);
+    bumpChatMembership(chaId);
+    dirtyOrderJournal(chaId, "latest");
+    for (const entry of entries) {
+        const key = keyOf(chaId, entry.id);
+        if (pending.get(key)?.create) dirtyChatJournal(key, "pending");
+    }
 }
 
 /** Loaded chats as list entries. */
@@ -656,6 +1470,18 @@ function loadedEntries(chats: readonly Chat[]): ChatEntry[] {
 /** The loaded chat; read-only (change it through this module). Tracked when read reactively. */
 export function findChat(ref: ChatRef): DeepReadonly<Chat> | undefined {
     return heldChat(ref);
+}
+
+/** The held row by id, read-only and tracked when read reactively. */
+export function heldMessageById(ref: ChatRef, id: string): DeepReadonly<Message> | undefined {
+    const chat = heldChat(ref);
+    return chat?.message[positionOf(keyOf(ref.chaId, ref.chatId), chat, id)];
+}
+
+/** The message's current position in the held chat, or -1 when either is absent. */
+export function messagePositionOf(ref: ChatRef, id: string): number {
+    const chat = heldChat(ref);
+    return chat ? positionOf(keyOf(ref.chaId, ref.chatId), chat, id) : -1;
 }
 
 function requireChat(ref: ChatRef): Chat {
@@ -682,13 +1508,13 @@ export function selectedChatId(chaId: string): string | null {
         return null;
     }
     const id = chosen[slot(chaId)];
-    return id !== undefined && holding.ids.includes(id) ? id : holding.ids[0];
+    return id !== undefined && isActiveChat({ chaId, chatId: id }) ? id : (activeIds(chaId)[0] ?? null);
 }
 
 /** The index of a character's selected chat in its list (the facade's `chatPage`); 0 when it holds none. */
 export function selectedChatIndex(chaId: string): number {
     const id = selectedChatId(chaId);
-    return id === null ? 0 : Math.max(0, holdingAt(chaId)!.ids.indexOf(id));
+    return id === null ? 0 : Math.max(0, activeIds(chaId).indexOf(id));
 }
 
 /**
@@ -711,25 +1537,62 @@ export function selectedChat(): DeepReadonly<Chat> | null {
 }
 
 /**
- * A detached legacy copy of a character for the plugin and hook boundaries: `copy` (a chat-free
- * plain copy) with the character's chats as plain copies in order and `chatPage`, the index of
- * `chatId` when it is listed, else of the selected chat. Every chat must be loaded (the caller pins
- * and awaits `loadChats` first); throws otherwise, so a copy is never missing a chat.
+ * A detached legacy copy for plugins and hooks: `copy` (a chat-free character)
+ * with its active chats as plain copies in order and `chatPage`, the index of
+ * `chatId` when it is listed, else of the selected chat. Every active member must be loaded or supplied in
+ * `detached` (plain server copies, used without copying again); throws otherwise. Loaded chats are
+ * preferred and copied from the held store. The caller pins them across any preceding awaits.
+ * Its `lastInteraction` is filled with the derived last-chatted time when positive, for plugins.
  */
-export function withChatsCopy<T extends { chaId: string }>(
+export function withChatsCopy<T extends { chaId: string; lastInteraction?: unknown }>(
     copy: T,
     chatId?: string,
+    detached?: ReadonlyMap<string, Chat>,
 ): T & { chats: Chat[]; chatPage: number } {
-    if (!chatsLoaded(copy.chaId)) {
-        throw new Error(`The chats of ${copy.chaId} are not loaded`);
-    }
-    const chats = clone<Chat[]>($state.snapshot(chatsOf(copy.chaId)) as Chat[]);
+    const holding = holdingAt(copy.chaId);
+    const chats = activeIds(copy.chaId).map((id) => {
+        const held = holding!.chats[slot(id)];
+        if (held) return clone<Chat>($state.snapshot(held));
+        const chat = detached?.get(id);
+        if (!chat) throw new Error(`The chats of ${copy.chaId} are not loaded`);
+        return chat;
+    });
     const listed = chatId === undefined ? -1 : chats.findIndex((chat) => chat.id === chatId);
-    return { ...copy, chats, chatPage: listed !== -1 ? listed : selectedChatIndex(copy.chaId) };
+    let lastChatted: number;
+    if (detached) {
+        let newest: number | undefined;
+        for (const chat of chats) {
+            const time = lastMessageTime(chat);
+            if (time !== undefined) {
+                newest = newest === undefined ? time : Math.max(newest, time);
+            }
+        }
+        lastChatted =
+            newest ??
+            (typeof copy.lastInteraction === "number" && Number.isFinite(copy.lastInteraction)
+                ? copy.lastInteraction
+                : 0);
+    } else {
+        lastChatted = characterLastChattedAt(copy.chaId, copy.lastInteraction);
+    }
+    return {
+        ...copy,
+        ...(lastChatted > 0 ? { lastInteraction: lastChatted } : {}),
+        chats,
+        chatPage:
+            listed !== -1
+                ? listed
+                : detached
+                  ? Math.max(
+                        0,
+                        chats.findIndex((chat) => chat.id === selectedChatId(copy.chaId)),
+                    )
+                  : selectedChatIndex(copy.chaId),
+    };
 }
 
 /**
- * A character in the legacy shape the shared CBS evaluator reads (until `aggregate-removal`): a live
+ * A character in the legacy shape the shared CBS evaluator reads: a live
  * record already answers `chats`/`chatPage` (the facade view), any other object with a `chaId` gets
  * a shallow copy carrying the same view: its loaded chats (read-only by contract) and the selected
  * chat's index among them (`compatChatPage`). The shared readers find a chat by its ref's id or as
@@ -740,13 +1603,13 @@ export function withCompatChats<T extends object>(char: T): T & { chats: readonl
     if (Array.isArray(fields.chats) || typeof fields.chaId !== "string") {
         return char as T & { chats: readonly Chat[]; chatPage: number };
     }
-    return { ...char, chats: chatsOf(fields.chaId), chatPage: compatChatPage(fields.chaId) };
+    return { ...char, chats: chatsOf(fields.chaId, true), chatPage: compatChatPage(fields.chaId) };
 }
 
 /** The selected chat's index among a character's loaded chats (the facade view's `chatPage`); -1 when it is not loaded. */
 function compatChatPage(chaId: string): number {
     const id = selectedChatId(chaId);
-    return id === null ? -1 : chatsOf(chaId).findIndex((chat) => chat.id === id);
+    return id === null ? -1 : chatsOf(chaId, true).findIndex((chat) => chat.id === id);
 }
 
 /** How many chats a character has (its list's length; reactive over the membership only). */
@@ -754,8 +1617,62 @@ export function chatCount(chaId: string): number {
     return holdingAt(chaId)?.ids.length ?? 0;
 }
 
+/** A detached page of member ids in current order, sliced before building the id-only entries. */
+export function chatMemberPage(chaId: string, offset: number, end?: number): { id: string }[] {
+    return untrack(() =>
+        activeIds(chaId)
+            .slice(offset, end)
+            .map((id) => ({ id })),
+    );
+}
+
+/** Untracked membership/order version, advanced synchronously on writes and holding creation/removal. */
+export function chatMembershipVersion(chaId: string): number {
+    return membershipVersions.get(chaId) ?? 0;
+}
+
+/**
+ * The newest last-message time among a character's chats (reactive). Loaded chats use their own
+ * final message, including an undated one; summaries serve unloaded chats only. The frozen legacy
+ * value is a fallback only when no chat supplies a finite time, never part of the maximum, and the
+ * stored `lastInteraction` is never written or migrated from it (`withChatsCopy` fills a derived copy
+ * for plugins).
+ */
+export function characterLastChattedAt(chaId: string, fallback?: unknown): number {
+    const holding = holdingAt(chaId);
+    let newest: number | undefined;
+    for (const id of activeIds(chaId)) {
+        const chat = holding!.chats[slot(id)];
+        const time = chat ? lastMessageTime(chat) : holding!.summaries[slot(id)]?.lastMessageAt;
+        if (typeof time === "number" && Number.isFinite(time)) {
+            newest = newest === undefined ? time : Math.max(newest, time);
+        }
+    }
+    return newest ?? (typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 0);
+}
+
+/**
+ * Fresh summaries in member order, read only from this tab: loaded chats supply their name and
+ * final message time, unloaded chats their held summary. Unknown times are omitted. Synchronous
+ * and read-only: never loads, pins, flushes, or changes a chat; returns no message counts.
+ */
+export function chatSummaryList(chaId: string): { id: string; name: string; lastMessageAt?: number }[] {
+    const holding = holdingAt(chaId);
+    return activeIds(chaId).map((id) => {
+        const chat = holding!.chats[slot(id)];
+        const summary = holding!.summaries[slot(id)];
+        const name = (chat ?? summary)?.name;
+        const time = chat ? lastMessageTime(chat) : summary?.lastMessageAt;
+        return {
+            id,
+            name: typeof name === "string" ? name : "",
+            ...(typeof time === "number" && Number.isFinite(time) ? { lastMessageAt: time } : {}),
+        };
+    });
+}
+
 /** One entry of a character's chat list (`chatList`): what a chat list shows, never a whole chat. */
-export type ChatListEntry = { id: string } & ChatEntryMeta;
+export type ChatListEntry = { id: string; trashedAt?: number } & Omit<ChatEntryMeta, "lastMessageAt">;
 
 /**
  * A character's chats as list entries, in order (reactive over the listed fields and the
@@ -768,6 +1685,20 @@ export function chatList(chaId: string): ChatListEntry[] {
         return [];
     }
     return holding.ids.map((id) => listEntry(holding, id));
+}
+
+export function activeChatList(chaId: string): ChatListEntry[] {
+    return activeIds(chaId).map((id) => listEntry(holdingAt(chaId)!, id));
+}
+
+export function trashedChatList(chaId: string): (ChatListEntry & { trashedAt: number })[] {
+    return chatList(chaId).filter(
+        (entry): entry is ChatListEntry & { trashedAt: number } => entry.trashedAt !== undefined,
+    );
+}
+
+export function activeChatCount(chaId: string): number {
+    return activeIds(chaId).length;
 }
 
 /** A member's list entry, loaded or not, or undefined when it is not a member (reactive like `chatList`). */
@@ -796,10 +1727,16 @@ export function countChatEntries(test: (entry: ChatListEntry) => boolean): numbe
 
 function listEntry(holding: HeldChats, id: string): ChatListEntry {
     const chat = holding.chats[slot(id)];
-    return { id, ...(chat ? metaOf(chat) : (holding.summaries[slot(id)] ?? metaOf({}))) };
+    // Lists track metadata only; activity readers use `characterLastChattedAt` independently.
+    const mark = trashMarks[keyOf(holding.chaId, id)];
+    return {
+        id,
+        ...metaOf(chat ?? holding.summaries[slot(id)] ?? {}, false),
+        ...(typeof mark === "number" ? { trashedAt: mark } : {}),
+    };
 }
 
-/** A chat as sent: a plain copy without the client-only streaming flags. */
+/** A chat as the mirror holds it: a plain copy without the client-only streaming flags. */
 function projectChat(chat: Chat): Chat {
     const copy = snapshot(chat);
     delete copy.isStreaming;
@@ -808,27 +1745,99 @@ function projectChat(chat: Chat): Chat {
     return copy;
 }
 
+/** Whether a chat field holds a projection: only a read gives it, and no write or journal takes it. */
+function isProjection(field: string, value: unknown): boolean {
+    return field === "hypaV3Data" && isSealedHypaV3Data(value);
+}
+
+/**
+ * Whether a stored `value` of a chat field leaves the projection `held` in place: stored data never
+ * holds one, and a stored value with no summaries owns nothing (`hypaV3DataHoldsSummaries`), absent or
+ * empty alike. A value with summaries, or a read's sealed one, takes over.
+ *
+ * This rule applies to a job's copy and a patch's `meta` or field changes. Whole reads (`applyRemoteChat`,
+ * `installRead`) take the field as answered instead: an absent field cannot preserve an old projection.
+ */
+function keepsProjection(field: string, held: unknown, value: unknown): boolean {
+    return isProjection(field, held) && !isSealedHypaV3Data(value) && !hypaV3DataHoldsSummaries(value);
+}
+
+/**
+ * A whole chat for a stored-data boundary, with any sealed `hypaV3Data` left out. This also guards the
+ * recovered create converted to a replacement on refusal retry; its copy can predate the current mirror.
+ */
+function withoutProjection(chat: Chat): Chat {
+    if (!isSealedHypaV3Data(chat.hypaV3Data)) {
+        return chat;
+    }
+    const { hypaV3Data: _projected, ...stored } = chat;
+    return stored;
+}
+
+/**
+ * A chat built from the mirror for a write or journal snapshot: `projectChat` without a projection. Creates,
+ * replacements, journal snapshots and retries of refused mirror writes all use this shape.
+ * `projectChat` retains the value for `captureChatBaseline`, so a write's diff compares what it read.
+ * Recovered resends replay their exact ops without passing through here.
+ * `server/src/data/chatStore.ts` also strips sealed fields from writes a stale tab or recovered resend carries.
+ */
+function sendChat(chat: Chat): Chat {
+    return withoutProjection(projectChat(chat));
+}
+
+/**
+ * Checks a chat's message data and OOC fields without changing them; imports validate every chat before
+ * any write. The OOC checks are the server's (`normalizeChatMeta`), which would refuse the chat's save
+ * only after the tab held it, and whose shape the OOC panel reads without checking.
+ */
+export function validateChatInput(chat: DeepReadonly<Pick<Chat, "message" | "oocLog" | "oocSegment" | "oocToggles">>) {
+    for (const message of chat.message ?? []) {
+        if (typeof message.data !== "string") {
+            throw new Error("message.data must be a string");
+        }
+    }
+    const error =
+        (chat.oocLog !== undefined ? oocLogError(chat.oocLog) : null) ??
+        (chat.oocSegment !== undefined ? oocSegmentError(chat.oocSegment) : null) ??
+        (chat.oocToggles !== undefined ? oocTogglesError(chat.oocToggles) : null);
+    if (error !== null) {
+        throw new Error(error);
+    }
+}
+
 /**
  * Prepares messages the module takes in (owned copies) as the server's `normalizeMessage` stores
- * them: a missing or duplicate id is assigned, and a `translation` that is not a `MessageTranslation`
- * is dropped (`dropInvalidTranslation`), so the mirror holds what the server holds.
+ * them: a non-string `data` is refused before any message changes, a missing or duplicate id is
+ * assigned, and a `translation` that is not a `MessageTranslation` is dropped
+ * (`dropInvalidTranslation`), so the mirror holds what the server holds.
  */
-function prepareMessages(messages: Message[], taken: Set<string>) {
+function prepareMessages(messages: Message[], taken: Set<string>, existing?: ReadonlyMap<string, number>) {
+    validateChatInput({ message: messages });
     for (const message of messages) {
         dropInvalidTranslation(message);
-        if (!isValidId(message.chatId) || taken.has(message.chatId)) {
+        if (!isValidId(message.chatId) || taken.has(message.chatId) || existing?.has(message.chatId)) {
             message.chatId = uuidv4();
         }
         taken.add(message.chatId);
     }
 }
 
-function pendingFor(ref: ChatRef): Pending {
+function pendingFor(ref: ChatRef, newBatch = false): Pending {
     const key = keyOf(ref.chaId, ref.chatId);
     let entry = pending.get(key);
     if (!entry) {
-        entry = { characterId: ref.chaId, chatId: ref.chatId, create: false, resend: null, ops: [], seq: 0 };
+        entry = {
+            characterId: ref.chaId,
+            chatId: ref.chatId,
+            groupId: uuidv4(),
+            create: false,
+            resend: null,
+            ops: [],
+            seq: 0,
+        };
         pending.set(key, entry);
+    } else if (newBatch) {
+        entry.groupId = uuidv4();
     }
     return entry;
 }
@@ -839,8 +1848,99 @@ function workSeq(key: string): number {
     return Math.max(entry?.seq ?? 0, entry?.resend?.seq ?? 0, inflight.get(key)?.seq ?? 0);
 }
 
+/**
+ * Local metadata stays off the wire and follows copied ops through clones, reanchoring and
+ * message-id acknowledgements. Coalescing retains the first before value or absence per touched
+ * field, as defined by src/ts/storage/draftJournal.ts JournalBefore/JournalChatOp.
+ */
+const beforeValues = new WeakMap<ChatOp, JournalBefore>();
+/** Whole replacements that implicitly unset candidate fields on a retained message. */
+const candidateFieldRemovals = new WeakSet<ChatOp>();
+
+/** The part of this Apply write still owed. Null is saved; undefined is an ambiguous legacy receipt. */
+export type RecoveryChatWrite = {
+    remaining: ChatOp | null | undefined;
+    ignoredTranslation?: Extract<ChatOp, { op: "setTranslation" }>;
+    answered?: true;
+    onAnswer?: () => void;
+};
+const recoveryReceipts = new WeakMap<ChatOp, RecoveryChatWrite>();
+let recoveryCapture: { ref: ChatRef; writes: RecoveryChatWrite[]; last?: ChatOp } | undefined;
+
+/** Capture the actual by-id writes, after writer-side validation and omission of equal fields. */
+export function captureRecoveryChatWrites<T>(ref: ChatRef, writes: RecoveryChatWrite[], apply: () => T): T {
+    const previous = recoveryCapture;
+    recoveryCapture = { ref, writes };
+    try {
+        return apply();
+    } finally {
+        recoveryCapture = previous;
+    }
+}
+
+function fieldsBefore(target: object, fields: Iterable<string>): JournalBefore {
+    const values = target as Record<string, unknown>;
+    // A projection is left out: what an op overwrites on the server is no field at all.
+    return {
+        value: clone(
+            Object.fromEntries(
+                [...fields]
+                    .filter((key) => Object.hasOwn(values, key) && !isProjection(key, values[key]))
+                    .map((key) => [key, values[key]]),
+            ),
+        ),
+    };
+}
+
+function touchedFields(op: ChatOp): string[] {
+    if (op.op === "setText") return ["data"];
+    if (op.op === "patchMessage" || op.op === "meta") {
+        return [
+            ...Object.keys(op.set ?? {}),
+            ...(op.unset ?? []),
+            ...(op.op === "meta" ? [...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})] : []),
+        ];
+    }
+    return [];
+}
+
+function coalescedBefore(last: ChatOp, next: ChatOp): JournalBefore | undefined {
+    const before = beforeValues.get(last);
+    const later = beforeValues.get(next);
+    if (
+        (last.op !== "patchMessage" && last.op !== "meta") ||
+        !before ||
+        !("value" in before) ||
+        !later ||
+        !("value" in later)
+    )
+        return before;
+    const touched = new Set(touchedFields(last));
+    const values = next.op === "setText" ? { data: later.value } : (later.value as Record<string, unknown>);
+    return {
+        value: {
+            ...(before.value as object),
+            ...Object.fromEntries(
+                touchedFields(next)
+                    .filter((key) => !touched.has(key) && Object.hasOwn(values, key))
+                    .map((key) => [key, values[key]]),
+            ),
+        },
+    };
+}
+
+function copyOpBefore<T extends ChatOp>(source: ChatOp, copy: T): T {
+    if (candidateFieldRemovals.has(source)) candidateFieldRemovals.add(copy);
+    const receipt = recoveryReceipts.get(source);
+    if (receipt) recoveryReceipts.set(copy, receipt);
+    const before = beforeValues.get(source);
+    if (before) beforeValues.set(copy, clone<JournalBefore>(before));
+    return copy;
+}
+
 /** Queues an explicit local edit after its mirror write, releasing any refused intent first. */
-function enqueueLocalEdit(ref: ChatRef, op: ChatOp) {
+function enqueueLocalEdit(ref: ChatRef, op: ChatOp, before?: JournalBefore) {
+    if (before) beforeValues.set(op, before);
     if (releaseChatRefusal(ref) === "snapshot") {
         // The replacement/create already includes this edit, including an append's new ids.
         notifyWork();
@@ -849,9 +1949,23 @@ function enqueueLocalEdit(ref: ChatRef, op: ChatOp) {
     const entry = pendingFor(ref);
     entry.seq = nextSeq();
     const last = entry.ops[entry.ops.length - 1];
-    if (!(last && coalesce(last, op))) {
+    const capture = recoveryCapture?.ref === ref ? recoveryCapture : undefined;
+    // Capture the touched-field union before coalesce changes the earlier op.
+    const mergedBefore = last ? coalescedBefore(last, op) : undefined;
+    if (last && (capture ? capture.last === last : !recoveryReceipts.has(last)) && coalesce(last, op)) {
+        if (candidateFieldRemovals.has(op)) candidateFieldRemovals.add(last);
+        if (mergedBefore) beforeValues.set(last, mergedBefore);
+    } else {
         entry.ops.push(op);
+        if (capture) {
+            // Keep this op identifiable even when other edits share its eventual group.
+            const receipt = { remaining: op };
+            capture.last = op;
+            capture.writes.push(receipt);
+            recoveryReceipts.set(op, receipt);
+        }
     }
+    dirtyChatJournal(keyOf(ref.chaId, ref.chatId), "pending");
     notifyWork();
 }
 
@@ -919,6 +2033,8 @@ function coalesce(last: ChatOp, next: ChatOp): boolean {
     if (
         last.op === "meta" &&
         next.op === "meta" &&
+        last.ifOocUnanswered === undefined &&
+        next.ifOocUnanswered === undefined &&
         !last.mergeUnset &&
         !next.mergeUnset &&
         Object.keys(next.merge ?? {}).every(
@@ -1072,7 +2188,8 @@ function assertUnlocked(ref: ChatRef, messageIds: readonly (string | undefined)[
 /**
  * Streamed messages whose newest text waits for the next frame: the mirror takes at most one
  * stream update per frame, so the chat screen parses a streaming message once per frame, not once
- * per chunk. The text itself is the message's stream buffer (`serverGenerations`).
+ * per chunk. The text itself is the message's stream buffer (`serverGenerations`). `hydrateChat` first
+ * flushes its chat's held updates and `endServerJob` its job's, so later events apply in order.
  */
 const heldStreamText = new Map<string, ChatRef & { messageId: string }>();
 /** A frame flush is scheduled: until it runs, a stream update after the first is held. */
@@ -1114,7 +2231,8 @@ function showStreamText(target: ChatRef & { messageId: string }) {
     if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
         return;
     }
-    const message = heldChat(target)?.message.find((candidate) => candidate.chatId === target.messageId);
+    const chat = heldChat(target);
+    const message = chat?.message[positionOf(keyOf(target.chaId, target.chatId), chat, target.messageId)];
     if (message && message.data !== entry.text) {
         message.data = entry.text;
         changed(keyOf(target.chaId, target.chatId));
@@ -1161,7 +2279,8 @@ export function applyServerGeneration(
     if (retiredGenerations.has(update.generationId)) {
         return false;
     }
-    const message = heldChat(ref)?.message.find((entry) => entry.chatId === update.messageId);
+    const chat = heldChat(ref);
+    const message = chat?.message[positionOf(keyOf(ref.chaId, ref.chatId), chat, update.messageId)];
     if (!message) {
         return false;
     }
@@ -1169,7 +2288,10 @@ export function applyServerGeneration(
     const existing = serverGenerations.get(messageKey);
     if (existing && existing.generationId !== update.generationId) {
         // A new generation of the message (a continue): the previous one's late events are dropped.
-        retiredGenerations.add(existing.generationId);
+        if (retireGeneration(existing.generationId)) {
+            lockState.version += 1;
+        }
+        storedGenerationText.delete(messageKey);
     } else if (existing && update.seq <= existing.seq) {
         return false;
     }
@@ -1226,7 +2348,7 @@ export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: G
     }
     // A reply-only recovery cannot install a missing message. Wait for the job's chat copy;
     // its placeholder lock will make the next chunk request the full reply once it can apply.
-    if (!heldChat(ref)?.message.some((message) => message.chatId === chunk.messageId)) {
+    if (messagePositionOf(ref, chunk.messageId) === -1) {
         return true;
     }
     const held = serverGenerations.get(messageKeyOf(ref, chunk.messageId));
@@ -1252,9 +2374,11 @@ export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: G
 }
 
 /**
- * Releases every message a server generation job still locks (its terminal event). The terminal's
- * chat hydration normally released them already; one still locked here may hold streamed text
- * instead of the stored final, so its chat is marked for an idle refresh.
+ * Releases and retires every generation a job still holds after its terminal, or once the server
+ * no longer knows the job.
+ * The terminal's chat hydration normally released them already; one still locked here may hold
+ * streamed text instead of the stored final, so its chat is marked for an idle refresh. Losing
+ * participation in a running job uses `detachServerJob` so the same generation can be followed again.
  */
 export function endServerJob(jobId: string) {
     flushStreamText((_, messageKey) => serverGenerations.get(messageKey)?.jobId === jobId);
@@ -1263,7 +2387,8 @@ export function endServerJob(jobId: string) {
         if (entry.jobId === jobId) {
             serverGenerations.delete(messageKey);
             serverWatermarks.delete(messageKey);
-            retiredGenerations.add(entry.generationId);
+            storedGenerationText.delete(messageKey);
+            retireGeneration(entry.generationId);
             releaseStreaming(entry.generationId);
             const [chaId, chatId] = messageKey.split("\u0000");
             if (chatRevisions.has(keyOf(chaId, chatId))) {
@@ -1283,56 +2408,153 @@ export function endServerJob(jobId: string) {
 }
 
 /**
+ * Releases this tab's participation without retiring the job's generations. Pending display
+ * updates are discarded; a displayed stream overlay is replaced with its verified stored text so
+ * later feed text diffs use the stored prefix. An unknown baseline leaves the chat stale for an
+ * idle refresh. Existing stale marks and feed notices remain, as do other jobs' held messages.
+ */
+export function detachServerJob(jobId: string) {
+    let released = false;
+    for (const [messageKey, entry] of serverGenerations) {
+        if (entry.jobId !== jobId) continue;
+        heldStreamText.delete(messageKey);
+        const [chaId, chatId, messageId] = messageKey.split("\u0000");
+        const key = keyOf(chaId, chatId);
+        const mark = serverWatermarks.get(messageKey);
+        const seq = mark?.generationId === entry.generationId ? mark.seq : undefined;
+        if (entry.seq >= 0 && (seq === undefined || entry.seq > seq)) {
+            const stored = storedGenerationText.get(messageKey);
+            const chat = heldChat({ chaId, chatId });
+            const message = chat?.message[positionOf(key, chat, messageId)];
+            if (message && stored?.generationId === entry.generationId && stored.seq === seq) {
+                if (message.data !== stored.text) {
+                    message.data = stored.text;
+                    changed(key);
+                }
+            } else if (chatRevisions.has(key)) {
+                staleChats.add(key);
+            }
+        }
+        serverGenerations.delete(messageKey);
+        serverWatermarks.delete(messageKey);
+        storedGenerationText.delete(messageKey);
+        releaseStreaming(entry.generationId);
+        released = true;
+    }
+    if (released) lockState.version += 1;
+    if (released || staleChats.size > 0) notifyWork();
+}
+
+/**
+ * Marks a chat this client holds to be read whole by the idle refresh (or `refreshStaleChat`),
+ * whether or not a job still locks anything in it: a server job's end this tab did not see (a lost
+ * or gone follow, a kept outcome). The read applies under the idle refresh's rules (no local work,
+ * the epoch and revision fences). False, marking nothing, for a chat the client does not hold.
+ */
+export function markChatStale(ref: ChatRef): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (!chatRevisions.has(key)) {
+        return false;
+    }
+    staleChats.add(key);
+    notifyWork();
+    return true;
+}
+
+const remoteStreamingListeners = new Set<(streaming: readonly ChatStreaming[]) => void>();
+
+/** Observes chats named by a job's feed write or end after their locks are replaced, even when empty. */
+export function onRemoteStreaming(listener: (streaming: readonly ChatStreaming[]) => void): () => void {
+    remoteStreamingListeners.add(listener);
+    return () => remoteStreamingListeners.delete(listener);
+}
+
+/**
  * The generation locks a change-feed frame announces (`ChatStreaming`: every job's locks of a chat
  * after a job's write or end, `[]` when none is left), so a tab that does not follow the job (an
  * observer, or an owner whose follow was lost) shows the generating reply locked: its edit, delete,
  * and regenerate are off (`isMessageLocked`), and `assertUnlocked` refuses its edits. Each chat's
  * list replaces that chat's feed locks: a message no longer listed, or listed with another
  * generation, is released. The feed socket delivers these full lists in order, independently of
- * this tab's job events. The lock is by message id, so a message or chat the mirror does not hold
+ * this tab's job events, so a list can still name a generation those events already retired: it is
+ * not locked again (`retireGeneration`). The lock is by message id, so a message or chat the mirror does not hold
  * yet is locked when it arrives. `changes`: the frame's refs, whose revision
- * of the chat is the lock's (`dropFeedLocksOf`); none: null. Call after the frame's refs went to the
- * save loop. Nothing is queued, read, or discarded.
+ * of the chat is the lock's for reads without snapshots (`dropFeedLocksOf`); none: null. Each named
+ * chat advances its feed order even for an empty list, fencing snapshots of already-issued reads.
+ * Call after the frame's refs went to the save loop. Nothing is queued, read, or discarded here;
+ * `onRemoteStreaming` listeners then receive the named chats, including those without locks.
  */
 export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes?: ChangeSet) {
     let moved = false;
     for (const chat of streaming) {
-        const prefix = `${keyOf(chat.characterId, chat.id)}\u0000`;
+        const key = keyOf(chat.characterId, chat.id);
+        feedChatOrders.set(key, ++feedLockOrder);
         const revision =
             changes?.chats.find((entry) => entry.characterId === chat.characterId && entry.id === chat.id)?.revision ??
             null;
-        const listed = new Map(chat.streaming.map((entry) => [entry.messageId, entry]));
-        for (const [messageKey, lock] of [...feedLocks]) {
-            if (
-                messageKey.startsWith(prefix) &&
-                listed.get(messageKey.slice(prefix.length))?.generationId !== lock.generationId
-            ) {
-                feedLocks.delete(messageKey);
-                moved = true;
-            }
-        }
-        for (const [messageId, { generationId, seq }] of listed) {
-            const messageKey = `${prefix}${messageId}`;
-            const current = feedLocks.get(messageKey);
-            const streamed = seq > 0 || (current?.generationId === generationId && current.streamed);
-            moved ||= !current || current.streamed !== streamed;
-            feedLocks.set(messageKey, { generationId, revision, streamed });
-        }
+        moved = replaceChatFeedLocks(key, revision, chat.streaming) || moved;
     }
     if (moved) {
         lockState.version += 1;
     }
+    for (const listener of remoteStreamingListeners) {
+        listener(streaming);
+    }
+}
+
+/**
+ * Replaces one chat's locks by id, preserving streamed status only within the same generation. A
+ * retired generation is not locked again (`retireGeneration`).
+ */
+function replaceChatFeedLocks(key: string, revision: string | null, streaming: readonly StreamingMessage[]): boolean {
+    const prefix = `${key}\u0000`;
+    const listed = new Map(
+        streaming
+            .filter((entry) => !retiredGenerations.has(entry.generationId))
+            .map((entry) => [entry.messageId, entry]),
+    );
+    let moved = false;
+    for (const [messageKey, lock] of feedLocks) {
+        if (
+            messageKey.startsWith(prefix) &&
+            listed.get(messageKey.slice(prefix.length))?.generationId !== lock.generationId
+        ) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    for (const [messageId, { generationId, seq }] of listed) {
+        const messageKey = `${prefix}${messageId}`;
+        const current = feedLocks.get(messageKey);
+        const streamed = seq > 0 || (current?.generationId === generationId && current.streamed);
+        if (
+            current?.generationId !== generationId ||
+            current?.revision !== revision ||
+            current?.streamed !== streamed
+        ) {
+            feedLocks.set(messageKey, { generationId, revision, streamed });
+            moved = true;
+        }
+    }
+    return moved;
 }
 
 /**
  * Replaces the feed's whole lock set with a `hello` snapshot, including chats the mirror does not
- * hold. The sampled chat revisions keep locks through reconciliation reads at those revisions.
- * Only feed locks change; this tab's job events and stream state remain independent.
+ * hold, leaving out generations this tab retired. Every call fences snapshots of already-issued reads, including an empty `hello`. Sampled
+ * revisions serve only reads without stamped snapshots. This tab's job stream state is independent.
  */
 export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
+    feedHelloOrder = ++feedLockOrder;
+    // The global fence now covers every older per-chat list and honored read.
+    feedChatOrders.clear();
+    feedReadOrders.clear();
     const desired = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
     for (const chat of snapshot) {
         for (const { messageId, generationId, seq } of chat.streaming) {
+            if (retiredGenerations.has(generationId)) {
+                continue;
+            }
             const messageKey = messageKeyOf({ chaId: chat.characterId, chatId: chat.id }, messageId);
             const current = feedLocks.get(messageKey);
             desired.set(messageKey, {
@@ -1367,7 +2589,8 @@ export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
 
 /**
  * Releases every feed lock whose message key starts with `prefix` (all of them by default): the
- * character is gone. Not retired.
+ * chat or character is gone or forgotten. Clears matching per-chat ordering state, even without
+ * locks, so forgotten chats do not accumulate. Not retired.
  */
 export function releaseFeedLocks(prefix = "") {
     let moved = false;
@@ -1377,25 +2600,53 @@ export function releaseFeedLocks(prefix = "") {
             moved = true;
         }
     }
+    for (const orders of [feedChatOrders, feedReadOrders]) {
+        for (const key of orders.keys()) {
+            if (`${key}\u0000`.startsWith(prefix)) orders.delete(key);
+        }
+    }
     if (moved) {
         lockState.version += 1;
     }
 }
 
 /**
- * A chat's whole read was adopted (`revision`; null: the chat is gone): its feed locks announced at
- * an older revision (or with none) are released, since a read carries no locks and a missed release
- * frame must not keep the reply locked. A lock announced at the read's revision or later stays (the
- * read a lock frame's unfitting patch caused). Not retired: the job's next write announces a lock
- * that is still held.
+ * An adopted whole read replaces this chat's feed locks with its snapshot (including `[]`) only
+ * when its issue stamp is newer than the chat's latest feed list, the latest `hello`, and its last
+ * honored read. A suppressed snapshot leaves locks unchanged. Without a snapshot or issue stamp,
+ * the compatibility rule releases locks announced at an older revision (or with none). A gone chat
+ * always releases all its locks and ordering state. Nothing retires a generation.
  */
-function dropFeedLocksOf(key: string, revision: string | null) {
+function dropFeedLocksOf(
+    key: string,
+    revision: string | null,
+    streaming?: readonly StreamingMessage[],
+    readStamp?: number,
+) {
     const prefix = `${key}\u0000`;
+    if (revision === null) {
+        releaseFeedLocks(prefix);
+        return;
+    }
+    if (streaming !== undefined && readStamp !== undefined) {
+        if (
+            readStamp <= feedHelloOrder ||
+            readStamp <= (feedChatOrders.get(key) ?? 0) ||
+            readStamp <= (feedReadOrders.get(key) ?? 0)
+        ) {
+            return;
+        }
+        feedReadOrders.set(key, readStamp);
+        if (replaceChatFeedLocks(key, revision, streaming)) {
+            lockState.version += 1;
+        }
+        return;
+    }
     let moved = false;
     for (const [messageKey, lock] of [...feedLocks]) {
         if (
             messageKey.startsWith(prefix) &&
-            (revision === null || lock.revision === null || (compareRevision(revision, lock.revision) ?? 1) > 0)
+            (lock.revision === null || (compareRevision(revision, lock.revision) ?? 1) > 0)
         ) {
             feedLocks.delete(messageKey);
             moved = true;
@@ -1406,6 +2657,13 @@ function dropFeedLocksOf(key: string, revision: string | null) {
     }
 }
 
+export type ChatHydrationJob = {
+    jobId: string;
+    streaming: readonly StreamingMessage[];
+    /** The job also touched this chat while generating in a different one. */
+    otherChat?: boolean;
+};
+
 /**
  * Applies a chat `resource` event of a server job: the server's whole chat replaces the mirror's
  * when its revision is at least the held one and the chat has no local work (pending, in flight,
@@ -1414,19 +2672,26 @@ function dropFeedLocksOf(key: string, revision: string | null) {
  * the server, is not hydrated; a member that is not loaded takes the copy's revision and summary only
  * (a server copy never loads a chat). Nothing is queued, discarded, or settled, and no notice is shown.
  *
+ * A copy whose `hypaV3Data` holds no summaries leaves a projection held in place (`keepsProjection`):
+ * a job's copy is stored data, which never holds one.
+ *
  * `job` (a job's chat event): its `streaming` messages are still generating, each with the newest
  * chunk the copy holds; a streamed text with a higher `seq` is put back on its message, and its lock
  * stays. Every other lock of that job in the chat is released (the reply is final in the copy; if the
  * copy could not be applied for local work, the chat is marked for an idle refresh). Another job's
  * locks and newer streamed text are kept. A copy older than the held revision, or of another epoch,
- * changes nothing, its job metadata included. Returns whether it applied.
+ * changes nothing, its job metadata included; a copy that could not be applied releases locks but
+ * records no watermark. Returns whether it applied.
  */
 export function hydrateChat(
-    server: { characterId: string; id: string; revision: string; data: Chat },
-    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+    server: { characterId: string; id: string; revision: string; data: Chat; trashedAt?: number | null },
+    job?: ChatHydrationJob,
 ): boolean {
     // The chat's stream updates held for the next frame came before this event.
     flushStreamText((target) => target.chaId === server.characterId && target.chatId === server.id);
+    // The server holds the generation target active for the job.
+    const trashedAt = server.trashedAt === undefined && job && !job.otherChat ? null : server.trashedAt;
+    installChatTrashState({ chaId: server.characterId, chatId: server.id }, server.revision, trashedAt);
     const outcome = applyChatHydration(server);
     if (outcome === "old") {
         return false;
@@ -1438,23 +2703,26 @@ export function hydrateChat(
 /**
  * Applies a job's `chatPatch` (`GenerationChatPatchEvent`): the change from `baseRevision` to
  * `revision` of a loaded chat, applied only when the mirror holds exactly one of the two revisions,
- * the chat is not marked stale, and it has no local work. Its messages are the stored rows (each
+ * the chat is not marked stale, and it has no local work. Streamed entries are staged from a real,
+ * matching job buffer at or above their checkpoint; a missing or behind buffer mismatches the patch.
+ * Resolved messages are the stored rows (each
  * replaces the mirror's message of its id, or is inserted after `after`); every other message keeps
  * its object. Then `job` is handled as for `hydrateChat`. `"busy"`: local work (marked stale, as
  * `hydrateChat`); `"mismatch"`: the mirror cannot take it (marked stale: the caller asks the job for
  * the chat whole); `"old"`: older than the held revision, another epoch, or a chat this client lacks.
  */
 export function hydrateChatPatch(
-    patch: ChatPatch,
+    patch: JobChatPatch,
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
 ): "applied" | "busy" | "mismatch" | "old" {
     flushStreamText((target) => target.chaId === patch.characterId && target.chatId === patch.id);
-    const outcome = applyChatPatch(patch);
+    const storedText = new Map<string, string | null>();
+    const outcome = applyChatPatch(patch, storedText, job);
     if (outcome === "old") {
         return outcome;
     }
     // The locks of a copy that did not apply: as for local work.
-    settleJobHydration(patch, outcome === "applied" ? "applied" : "busy", job);
+    settleJobHydration(patch, outcome === "applied" ? "applied" : "busy", job, storedText);
     if (outcome !== "applied") {
         // Marked stale: the save loop runs its idle refresh once the chat is idle (after the job).
         notifyWork();
@@ -1469,9 +2737,15 @@ export function isChatStale(ref: ChatRef): boolean {
 
 /** Whether the mirror knows a chat is behind the server: marked stale, or a live notice not yet answered. */
 export function isChatBehind(ref: ChatRef): boolean {
-    dropAnsweredNotices();
+    // A field editor watches its chat's marks. Cleanup also visits notices for other chats.
+    untrack(dropAnsweredNotices);
     const key = keyOf(ref.chaId, ref.chatId);
     return staleChats.has(key) || noticedChats.has(key);
+}
+
+/** A server read or list confirmed this chat is gone, but its placeholder or local work is still held. */
+export function isChatKnownAbsent(ref: ChatRef): boolean {
+    return absentChats.has(keyOf(ref.chaId, ref.chatId));
 }
 
 /**
@@ -1488,9 +2762,13 @@ export function chatHydrationHold(ref: ChatRef): "none" | "saving" | "held" {
 }
 
 /**
- * A guard for one callback-barrier read when only the acknowledged floor refuses a remembered
- * whole copy. It fences the owner, chat incarnation, and job metadata across the read; admission
- * still goes through `hydrateChat`, which checks local work and the floor again.
+ * A guard for one callback-barrier read of a chat whose receipt neither the flush nor a remembered
+ * job copy made held, at `revision` (the receipt's, or the newer job metadata the read reuses): no
+ * copy at all, an older one, or one refused by the acknowledged floor. The chat must be a member
+ * with a held revision of the same incarnation (and floor, when one is kept), no local work, and job
+ * metadata no newer than `revision`. The guard fences the owner, chat incarnation, and job metadata
+ * across the read; admission still goes through `hydrateChat`, which checks local work and the floor
+ * again.
  */
 export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((server: ChatRecord) => boolean) | null {
     const { chaId, chatId } = ref;
@@ -1506,15 +2784,15 @@ export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((s
         return parsed?.epoch === held.epoch && parsed.seq === held.seq;
     };
     const metadata = jobMetadata.get(key);
+    const floor = ackedRevisions.get(key);
     if (
         !findCharacter(chaId) ||
         !isMember(ref) ||
         absentChats.has(key) ||
         chatHydrationHold(ref) !== "none" ||
         !sameChat(revision) ||
-        !sameChat(ackedRevisions.get(key)) ||
+        (floor !== undefined && !sameChat(floor)) ||
         (compareRevision(revision, heldRevision) ?? -1) < 0 ||
-        !belowAckedRevision(key, revision) ||
         (metadata && (compareRevision(revision, metadata.revision) ?? -1) < 0)
     ) {
         return null;
@@ -1533,7 +2811,7 @@ export function prepareChatHydrationRefresh(ref: ChatRef, revision: string): ((s
         chatHydrationHold(ref) === "none";
 }
 
-/** The body of a job's `chatPatch` (`GenerationChatPatchEvent` without its event fields). */
+/** A whole-row patch, shared by feed installation and resolved job hydration. */
 export type ChatPatch = Omit<ChatPatchBody, "removed" | "messages"> & {
     characterId: string;
     id: string;
@@ -1542,14 +2820,22 @@ export type ChatPatch = Omit<ChatPatchBody, "removed" | "messages"> & {
     messages?: Readonly<ChatPatchBody["messages"]>;
 };
 
+/** Job hydration's input; streamed rows are resolved before the whole-row installer runs. */
+export type JobChatPatch = Omit<ChatPatch, "messages"> & {
+    messages?: Readonly<GenerationChatPatchEvent["messages"]>;
+};
+
 /**
  * The job-lock part of a chat hydration (`hydrateChat`, `hydrateChatPatch`) after its copy was
- * applied (`applied`: the mirror holds the stored rows of the job's messages) or not (`busy`).
+ * applied (`applied`) or not (`busy`). Before restoring stream overlays, capture verified stored
+ * text: all rows of a whole copy, or the patch's `storedText` (null means an ahead stream buffer).
+ * Rows omitted from an applied patch retain a previously verified baseline; they did not change.
  */
 function settleJobHydration(
     server: { characterId: string; id: string; revision: string },
     outcome: "applied" | "busy",
     job?: { jobId: string; streaming: readonly StreamingMessage[] },
+    storedText?: ReadonlyMap<string, string | null>,
 ) {
     const key = keyOf(server.characterId, server.id);
     const prefix = `${key}\u0000`;
@@ -1568,7 +2854,8 @@ function settleJobHydration(
             if (!still || still.generationId !== entry.generationId) {
                 serverGenerations.delete(messageKey);
                 serverWatermarks.delete(messageKey);
-                retiredGenerations.add(entry.generationId);
+                storedGenerationText.delete(messageKey);
+                retireGeneration(entry.generationId);
                 releaseStreaming(entry.generationId);
                 released = true;
             }
@@ -1579,7 +2866,8 @@ function settleJobHydration(
             if (holder && holder.generationId !== entry.generationId) {
                 // The server says this generation owns the message now: an older owner is gone.
                 serverGenerations.delete(messageKey);
-                retiredGenerations.add(holder.generationId);
+                storedGenerationText.delete(messageKey);
+                retireGeneration(holder.generationId);
                 releaseStreaming(holder.generationId);
                 released = true;
             }
@@ -1593,9 +2881,8 @@ function settleJobHydration(
             // sequence is below every protocol sequence (the first `accepted`/`chunk` fills the raw
             // buffer whatever its claim; the watermark above keeps a covering copy shown), and the
             // buffer starts as the mirror's text.
-            const message = heldChat({ chaId: server.characterId, chatId: server.id })?.message.find(
-                (candidate) => candidate.chatId === entry.messageId,
-            );
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, entry.messageId)];
             if (
                 message &&
                 serverGenerations.get(messageKey)?.generationId !== entry.generationId &&
@@ -1617,14 +2904,28 @@ function settleJobHydration(
                 continue;
             }
             const mark = serverWatermarks.get(messageKey);
+            const seq = mark?.generationId === entry.generationId ? mark.seq : undefined;
+            const messageId = messageKey.slice(prefix.length);
+            const chat = heldChat({ chaId: server.characterId, chatId: server.id });
+            const message = chat?.message[positionOf(key, chat, messageId)];
+            const previous = storedGenerationText.get(messageKey);
+            const text = !storedText
+                ? message?.data
+                : storedText.has(messageId)
+                  ? storedText.get(messageId)
+                  : previous?.generationId === entry.generationId
+                    ? previous.text
+                    : undefined;
+            if (message && typeof text === "string") {
+                storedGenerationText.set(messageKey, { generationId: entry.generationId, seq, text });
+            } else {
+                storedGenerationText.delete(messageKey);
+            }
             if (mark && mark.generationId === entry.generationId && entry.seq <= mark.seq) {
                 // The copy holds this text or a later one; the stream buffer is kept for a lower claim.
                 continue;
             }
-            const message = heldChat({ chaId: server.characterId, chatId: server.id })?.message.find(
-                (candidate) => candidate.chatId === messageKey.slice(prefix.length),
-            );
-            if (message) {
+            if (message && entry.seq >= 0) {
                 message.data = entry.text;
             }
         }
@@ -1659,7 +2960,7 @@ function applyChatHydration(server: {
         return "old";
     }
     const order = compareRevision(server.revision, heldRevision);
-    if (order === null || order < 0) {
+    if (retiredChat(key, server.revision) || order === null || order < 0) {
         return "old";
     }
     if (
@@ -1675,13 +2976,22 @@ function applyChatHydration(server: {
         return "busy";
     }
     if (isLoaded(ref)) {
-        holdingOf(server.characterId).chats[slot(server.id)] = clone<Chat>(server.data);
+        const copy = clone<Chat>(server.data);
+        const heldData = heldChat(ref)?.hypaV3Data;
+        if (keepsProjection("hypaV3Data", heldData, copy.hypaV3Data)) {
+            copy.hypaV3Data = heldData;
+        }
+        dropMessagePositions(key);
+        holdingOf(server.characterId).chats[slot(server.id)] = copy;
     } else {
         holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
     }
     holdChatRevision(key, server.revision);
     staleChats.delete(key);
     changed(key);
+    if (heldRevision !== server.revision) {
+        recordChatInstall(key);
+    }
     remoteListener?.(ref);
     return "applied";
 }
@@ -1694,7 +3004,11 @@ function applyChatHydration(server: {
  * loaded, or a patch whose messages do not fit the mirror's is a mismatch. Nothing changes before
  * the whole result is checked.
  */
-function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "old" {
+function applyChatPatch(
+    patch: JobChatPatch,
+    storedText: Map<string, string | null>,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): "applied" | "busy" | "mismatch" | "old" {
     const key = keyOf(patch.characterId, patch.id);
     const ref = { chaId: patch.characterId, chatId: patch.id };
     const heldRevision = chatRevisions.get(key);
@@ -1731,27 +3045,257 @@ function applyChatPatch(patch: ChatPatch): "applied" | "busy" | "mismatch" | "ol
     }
     const fits = held.seq === next.seq && (held.revision === base.revision || held.revision === next.revision);
     const chat = isLoaded(ref) ? heldChat(ref) : undefined;
+    let resolved: ChatPatch | null = null;
     let patched: { start: number; tail: Message[] } | null = null;
+    const ownedRows = new Set<object>();
     try {
-        patched = fits && chat && !staleChats.has(key) ? patchedTail(chat.message, patch) : null;
+        if (fits && chat && !staleChats.has(key)) {
+            resolved = resolveJobChatPatch(chat, patch, ownedRows, storedText, job);
+            patched = resolved ? patchedTail(chat.message, resolved, ownedRows) : null;
+        }
     } catch (error) {
         // Anything unexpected in a server copy: read whole instead of failing the event.
         console.error("[Save]", error);
     }
-    if (!chat || !patched) {
+    if (!chat || !resolved || !patched) {
         staleChats.add(key);
         return "mismatch";
     }
     staleChats.delete(key);
-    installChatPatch(chat, patch, patched);
+    installChatPatch(chat, resolved, patched);
     return "applied";
 }
 
-/** The checked row/meta/revision step shared by job hydration and idle change-feed patches. */
-function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number; tail: Message[] }) {
+/** New rows for stream references share unchanged held values; `ownedRows` keeps assembly from copying them again. */
+function resolveJobChatPatch(
+    chat: Chat,
+    patch: JobChatPatch,
+    ownedRows: Set<object>,
+    storedText: Map<string, string | null>,
+    job?: { jobId: string; streaming: readonly StreamingMessage[] },
+): ChatPatch | null {
+    const messages: NonNullable<ChatPatch["messages"]>[number][] = [];
+    const ref = { chaId: patch.characterId, chatId: patch.id };
+    const key = keyOf(ref.chaId, ref.chatId);
+    const streaming = new Map(job?.streaming.map((entry) => [entry.messageId, entry]));
+    for (const entry of patch.messages ?? []) {
+        if (!("streamed" in entry)) {
+            messages.push(entry);
+            const message = entry.message as Message;
+            if (message.chatId) storedText.set(message.chatId, message.data);
+            continue;
+        }
+        const { id, streamed } = entry;
+        const buffer = serverGenerations.get(messageKeyOf(ref, id));
+        const active = streaming.get(id);
+        const row = chat.message[positionOf(key, chat, id)];
+        if (
+            !job ||
+            !row ||
+            !buffer ||
+            buffer.jobId !== job.jobId ||
+            buffer.generationId !== streamed.generationId ||
+            buffer.seq < 0 ||
+            retiredGenerations.has(streamed.generationId) ||
+            !active ||
+            active.generationId !== streamed.generationId ||
+            active.seq !== streamed.seq ||
+            !Number.isSafeInteger(streamed.seq) ||
+            streamed.seq < 0 ||
+            buffer.seq < streamed.seq
+        ) {
+            return null;
+        }
+        const message = { ...row };
+        message.data = buffer.text;
+        // An ahead buffer resolves the displayed row, but cannot reconstruct the stored prefix.
+        storedText.set(id, buffer.seq === streamed.seq ? buffer.text : null);
+        ownedRows.add(message);
+        messages.push({ after: entry.after, message });
+    }
+    return { ...patch, messages };
+}
+
+/**
+ * A feed delta's metadata change (`ChatMetaFields`) checked and prepared against a loaded chat at the
+ * delta's base, before anything changes: the fields to remove, and the fields to set with their new
+ * values (a merged map whole). Null when it is not well formed (a field named twice, `message`, or
+ * `__proto__`) or does not fit the held copy (a merge into a field the chat does not hold as a
+ * map). Set values and merged entries are owned copies; the entries a merge keeps are the mirror's
+ * own. A map is built from entries (never assigned by name, never through `$state.snapshot`), so an
+ * entry named `__proto__` stays an own entry. The result equals the stored metadata as JSON values,
+ * not necessarily in key order.
+ */
+function stagedMetaFields(chat: Chat, fields: unknown): { remove: string[]; set: [string, unknown][] } | null {
+    if (!isPlainRecord(fields)) {
+        return null;
+    }
+    const set = Object.hasOwn(fields, "set") ? fields.set : undefined;
+    const remove = Object.hasOwn(fields, "remove") ? fields.remove : undefined;
+    const merge = Object.hasOwn(fields, "merge") ? fields.merge : {};
+    const mergeUnset = Object.hasOwn(fields, "mergeUnset") ? fields.mergeUnset : {};
+    if (!isPlainRecord(set) || !Array.isArray(remove) || !isPlainRecord(merge) || !isPlainRecord(mergeUnset)) {
+        return null;
+    }
+    const named = new Set<string>();
+    /**
+     * Whether `field` may change: a string, not named before, other than `message` and `__proto__`
+     * (stored metadata never has that as its own field; assigning it would replace the prototype).
+     */
+    const fresh = (field: unknown): field is string => {
+        if (typeof field !== "string" || field === "message" || field === "__proto__" || named.has(field)) {
+            return false;
+        }
+        named.add(field);
+        return true;
+    };
+    const staged: { remove: string[]; set: [string, unknown][] } = { remove: [], set: [] };
+    for (const field of remove as unknown[]) {
+        if (!fresh(field)) {
+            return null;
+        }
+        staged.remove.push(field);
+    }
+    for (const field of Object.keys(set)) {
+        if (!fresh(field)) {
+            return null;
+        }
+        staged.set.push([field, clone(set[field])]);
+    }
+    const held = chat as unknown as Record<string, unknown>;
+    for (const field of new Set([...Object.keys(mergeUnset), ...Object.keys(merge)])) {
+        const removals: unknown = Object.hasOwn(mergeUnset, field) ? mergeUnset[field] : [];
+        const entries: unknown = Object.hasOwn(merge, field) ? merge[field] : {};
+        const current = Object.hasOwn(held, field) ? held[field] : undefined;
+        if (
+            !fresh(field) ||
+            !Array.isArray(removals) ||
+            !removals.every((id) => typeof id === "string") ||
+            !isPlainRecord(entries) ||
+            !isPlainRecord(current)
+        ) {
+            return null;
+        }
+        // The removals first, then the entries, as the server merged them.
+        const dropped = new Set<string>(removals);
+        const kept = Object.entries(current).filter(([id]) => !dropped.has(id));
+        staged.set.push([field, Object.fromEntries([...kept, ...Object.entries(clone(entries))])]);
+    }
+    return staged;
+}
+
+/**
+ * A feed body's row diffs, checked and prepared before installation. Every id must be held once in
+ * the diff list and absent from the body's whole rows and removals. Field changes exclude identity,
+ * text, and `__proto__`; text reconstructs from the held UTF-16 prefix only when the held text is
+ * the body's base, proven by length and hash when the body carries them.
+ * New row objects own copies of changed values and share unchanged values with the outgoing held
+ * rows. The shallow copy preserves own keys, including `__proto__`, and nested reactive proxies.
+ */
+function stagedRowDiffs(
+    key: string,
+    chat: Chat,
+    patch: Pick<ChatPatch, "removed" | "messages">,
+    diffs: unknown,
+): { position: number; message: Message }[] | null {
+    if (!Array.isArray(diffs)) return null;
+    const named = new Set(patch.removed ?? []);
+    for (const { message } of patch.messages ?? []) named.add((message as Message).chatId!);
+    const staged: { position: number; message: Message }[] = [];
+    for (const diff of diffs) {
+        if (!isPlainRecord(diff) || typeof diff.id !== "string" || named.has(diff.id)) return null;
+        named.add(diff.id);
+        const position = positionOf(key, chat, diff.id);
+        if (position < 0) return null;
+        const held = chat.message[position];
+        const unset: string[] = [];
+        const set: [string, unknown][] = [];
+        if (diff.fields !== undefined) {
+            if (!isPlainRecord(diff.fields) || !isPlainRecord(diff.fields.set) || !Array.isArray(diff.fields.unset))
+                return null;
+            const fields = new Set<string>();
+            const fresh = (name: unknown): name is string => {
+                if (
+                    typeof name !== "string" ||
+                    name === "data" ||
+                    name === "chatId" ||
+                    name === "__proto__" ||
+                    fields.has(name)
+                )
+                    return false;
+                fields.add(name);
+                return true;
+            };
+            for (const name of diff.fields.unset) {
+                if (!fresh(name)) return null;
+                unset.push(name);
+            }
+            for (const [name, value] of Object.entries(diff.fields.set)) {
+                if (!fresh(name)) return null;
+                set.push([name, clone(value)]);
+            }
+        }
+        let data: string | undefined;
+        if (diff.text !== undefined) {
+            if (
+                !isPlainRecord(diff.text) ||
+                typeof diff.text.keep !== "number" ||
+                !Number.isSafeInteger(diff.text.keep) ||
+                diff.text.keep < 0 ||
+                typeof diff.text.text !== "string" ||
+                typeof held.data !== "string" ||
+                held.data.length < diff.text.keep
+            )
+                return null;
+            if (Object.hasOwn(diff.text, "base")) {
+                const base = diff.text.base;
+                if (
+                    !isPlainRecord(base) ||
+                    typeof base.length !== "number" ||
+                    !Number.isSafeInteger(base.length) ||
+                    base.length < 0 ||
+                    typeof base.hash !== "string"
+                )
+                    return null;
+                if (held.data.length !== base.length || textHash(held.data) !== base.hash) return null;
+            }
+            data = held.data.slice(0, diff.text.keep) + diff.text.text;
+        }
+        const message = { ...held };
+        const target = message as unknown as Record<string, unknown>;
+        for (const name of unset) delete target[name];
+        for (const [name, value] of set) {
+            Object.defineProperty(target, name, { value, enumerable: true, configurable: true, writable: true });
+        }
+        if (data !== undefined) message.data = data;
+        staged.push({ position, message });
+    }
+    return staged;
+}
+
+/**
+ * The checked row/meta/revision step shared by job hydration and idle change-feed patches. A whole
+ * `meta` replaces the chat's fields; `fields` (a feed delta's, from `stagedMetaFields`) changes only
+ * the fields it names. Diffed rows before the patched tail retain their positions.
+ */
+function installChatPatch(
+    chat: Chat,
+    patch: ChatPatch,
+    patched: { start: number; tail: Message[] },
+    fields?: { remove: string[]; set: [string, unknown][] },
+    rowsBeforeTail: { position: number; message: Message }[] = [],
+) {
     // Only the positions that changed are written (an append writes one; a removal or insertion
     // writes the positions after it), never the whole list as call arguments.
     const { start, tail } = patched;
+    // Field/text-only checkpoints keep the lazy index: ids and their order are unchanged.
+    if (
+        chat.message.length !== start + tail.length ||
+        tail.some((message, index) => chat.message[start + index]?.chatId !== message.chatId)
+    ) {
+        dropMessagePositions(keyOf(patch.characterId, patch.id));
+    }
+    for (const { position, message } of rowsBeforeTail) chat.message[position] = message;
     for (let index = 0; index < tail.length; index++) {
         if (chat.message[start + index] !== tail[index]) {
             chat.message[start + index] = tail[index];
@@ -1761,27 +3305,56 @@ function installChatPatch(chat: Chat, patch: ChatPatch, patched: { start: number
         chat.message.length = start + tail.length;
     }
     if (patch.meta) {
-        // The chat's fields become the stored ones, as a whole copy replaces them.
+        // The chat's fields become the stored ones, as a whole copy replaces them, but for a
+        // projection held, which stored fields replace only with summaries (`keepsProjection`).
         const fields = chat as unknown as Record<string, unknown>;
         for (const field of Object.keys(fields)) {
-            if (field !== "message" && !Object.hasOwn(patch.meta, field)) {
+            if (
+                field !== "message" &&
+                !Object.hasOwn(patch.meta, field) &&
+                !keepsProjection(field, fields[field], undefined)
+            ) {
                 delete fields[field];
             }
         }
         for (const [field, value] of Object.entries(patch.meta)) {
-            if (field !== "message") {
+            if (field !== "message" && !keepsProjection(field, fields[field], value)) {
                 fields[field] = clone(value);
+            }
+        }
+    } else if (fields) {
+        const target = chat as unknown as Record<string, unknown>;
+        for (const field of fields.remove) {
+            if (!keepsProjection(field, target[field], undefined)) {
+                delete target[field];
+            }
+        }
+        for (const [field, value] of fields.set) {
+            if (!keepsProjection(field, target[field], value)) {
+                target[field] = value;
             }
         }
     }
     const key = keyOf(patch.characterId, patch.id);
+    const heldRevision = chatRevisions.get(key);
     holdChatRevision(key, patch.revision);
     changed(key);
+    if (heldRevision !== patch.revision) {
+        recordChatInstall(key);
+    }
     remoteListener?.({ chaId: patch.characterId, chatId: patch.id });
 }
 
-/** A feed patch is optional: a miss neither marks stale nor touches a job's locks. */
-function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBody): boolean {
+/**
+ * A feed body or completed row read is optional: a miss neither marks stale nor touches job locks.
+ * Metadata fields and row diffs are checked against the held copy before anything changes; one
+ * that does not fit is a miss.
+ */
+function applyRemoteChatPatch(
+    ref: ChatRef,
+    revision: string,
+    body: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
+): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!isLoaded(ref) || !canRefreshChat(ref) || staleChats.has(key) || chatRevisions.get(key) !== body.baseRevision) {
         return false;
@@ -1802,17 +3375,50 @@ function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBod
     if (!chat) {
         return false;
     }
-    const patch: ChatPatch = { ...body, characterId: ref.chaId, id: ref.chatId, revision };
+    let change: ChatPatchBody = body;
+    let metaFields: ChatMetaFields | undefined;
+    if ("metaFields" in body) {
+        const { metaFields: fields, ...rest } = body;
+        if (Object.hasOwn(rest, "meta")) {
+            // The metadata both whole and by field: not a body this client knows.
+            return false;
+        }
+        change = rest;
+        metaFields = fields;
+    }
+    const patch: ChatPatch = { ...change, characterId: ref.chaId, id: ref.chatId, revision };
     let patched: { start: number; tail: Message[] } | null = null;
+    let fields: ReturnType<typeof stagedMetaFields> | undefined = null;
+    let rowDiffs: ReturnType<typeof stagedRowDiffs> = null;
+    const rowsBeforeTail: { position: number; message: Message }[] = [];
     try {
         patched = patchedTail(chat.message, patch);
+        fields = metaFields === undefined ? undefined : stagedMetaFields(chat, metaFields);
+        rowDiffs = "rowDiffs" in body ? stagedRowDiffs(key, chat, patch, body.rowDiffs) : [];
+        if (patched && rowDiffs) {
+            const inTail = rowDiffs.filter(({ position }) => position >= patched!.start);
+            const tailPositions =
+                inTail.length > 0
+                    ? new Map(patched.tail.map((message, index) => [message.chatId, index]))
+                    : new Map<string, number>();
+            for (const row of rowDiffs) {
+                if (row.position < patched.start) {
+                    rowsBeforeTail.push(row);
+                } else {
+                    const index = tailPositions.get(row.message.chatId!);
+                    if (index === undefined) return false;
+                    patched.tail[index] = row.message;
+                }
+            }
+        }
     } catch (error) {
         console.error("[Save]", error);
-    }
-    if (!patched) {
         return false;
     }
-    installChatPatch(chat, patch, patched);
+    if (!patched || fields === null || rowDiffs === null) {
+        return false;
+    }
+    installChatPatch(chat, patch, patched, fields, rowsBeforeTail);
     return true;
 }
 
@@ -1825,11 +3431,16 @@ function applyRemoteChatPatch(ref: ChatRef, revision: string, body: ChatPatchBod
  * than the first, a patch row that is not a message,
  * names a removed id, or comes twice, an `after` that is neither a message kept nor an earlier
  * inserted row, a row of an existing message that is not right after its `after`, or a length that
- * is not the patch's `count`. Rows are owned copies of the stored messages; every other message
- * keeps its object. The part before `start` is the held copy at the patch's base, which the patch
- * says is unchanged.
+ * is not the patch's `count`. Incoming rows are copied unless already owned by this patch. Owned
+ * rows have new objects and owned changed fields, but may share unchanged values with outgoing held
+ * rows. Every other message keeps its object. The part before `start` is the held copy at the patch's
+ * base, which the patch says is unchanged.
  */
-function patchedTail(current: readonly Message[], patch: ChatPatch): { start: number; tail: Message[] } | null {
+function patchedTail(
+    current: readonly Message[],
+    patch: ChatPatch,
+    ownedRows?: ReadonlySet<object>,
+): { start: number; tail: Message[] } | null {
     const rows = patch.messages ?? [];
     const removed = new Set(patch.removed ?? []);
     if (rows.length === 0 && removed.size === 0) {
@@ -1859,7 +3470,7 @@ function patchedTail(current: readonly Message[], patch: ChatPatch): { start: nu
     if (!anchorFound) {
         return null;
     }
-    const tail = patchedMessages(current.slice(start), rows, removed);
+    const tail = patchedMessages(current.slice(start), rows, removed, ownedRows);
     return tail && start + tail.length === patch.count ? { start, tail } : null;
 }
 
@@ -1868,6 +3479,7 @@ function patchedMessages(
     current: readonly Message[],
     rows: NonNullable<ChatPatch["messages"]>,
     removed: ReadonlySet<string>,
+    ownedRows?: ReadonlySet<object>,
 ): Message[] | null {
     const seen = new Set<string>();
     const kept: Message[] = [];
@@ -1898,11 +3510,12 @@ function patchedMessages(
             return null;
         }
         placed.add(id);
+        const message = ownedRows?.has(row!) ? row! : clone<Message>(row!);
         if (keptIds.has(id)) {
-            replaced.set(id, { after: entry.after, row: clone<Message>(row!) });
+            replaced.set(id, { after: entry.after, row: message });
         } else {
             const group = inserted.get(entry.after) ?? [];
-            group.push(clone<Message>(row!));
+            group.push(message);
             inserted.set(entry.after, group);
         }
     }
@@ -1973,13 +3586,7 @@ export function chatJobRetryAt(): number | null {
 /** Takes an unload request's ops out of the queue and marks its groups in flight (the request was sent). */
 export function trackUnloadWork(work: ChatWork) {
     for (const group of work.groups) {
-        const entry = pending.get(group.key);
-        if (entry) {
-            entry.ops = entry.ops.slice(group.ops.length);
-            if (entry.ops.length === 0) {
-                pending.delete(group.key);
-            }
-        }
+        pending.delete(group.key);
         inflight.set(group.key, group);
     }
 }
@@ -2009,7 +3616,7 @@ export function settleUnloadWork(work: ChatWork, results: readonly ChatGroupResu
 
 /**
  * Pending by-id work for existing chats, one request per chat within the remaining shared budget.
- * Take only an eligible prefix: jumping past a replace or delete could change its meaning.
+ * Only whole eligible batches go: a remembered prefix id must never hide an unsent suffix.
  * Nothing leaves the queue until `trackUnloadWork` confirms the request was sent.
  */
 export function unloadPendingChatWork(limitBytes: number): { body: string; work: ChatWork }[] {
@@ -2028,28 +3635,25 @@ export function unloadPendingChatWork(limitBytes: number): { body: string; work:
         ) {
             continue;
         }
-        const ops: ChatOp[] = [];
-        for (const op of entry.ops) {
-            if (
-                op.op !== "append" &&
-                op.op !== "setText" &&
-                op.op !== "setMessage" &&
-                op.op !== "patchMessage" &&
-                op.op !== "setTranslation" &&
-                op.op !== "meta" &&
-                !(op.op === "remove" && op.ids.length === 1)
-            ) {
-                break;
-            }
-            if (ops.length === 5000) {
-                break;
-            }
-            ops.push(op);
-        }
-        if (ops.length === 0) {
+        const ops = entry.ops;
+        if (
+            ops.length === 0 ||
+            ops.length > 5000 ||
+            !ops.every(
+                (op) =>
+                    op.op === "append" ||
+                    op.op === "setText" ||
+                    op.op === "setMessage" ||
+                    op.op === "patchMessage" ||
+                    op.op === "setTranslation" ||
+                    op.op === "selectCandidate" ||
+                    op.op === "meta" ||
+                    (op.op === "remove" && op.ids.length === 1),
+            )
+        ) {
             continue;
         }
-        const group = sentGroup(key, entry, base, ops, ops.length === entry.ops.length ? entry.seq : 0);
+        const group = sentGroup(key, entry, base, ops, entry.groupId);
         const work = { groups: [group], orders: [] };
         const body = `{"chats":[${chatWorkBody(work).chats.join(",")}]}`;
         const bytes = encoder.encode(body).length;
@@ -2078,13 +3682,18 @@ export function setStreamingState(ref: ChatRef, entry: StreamingEntry | null) {
 /**
  * A chat's defaults that come from its character: `fmIndex`, the greeting the chat
  * starts from, is the character's `firstMsgIndex` (-1: the first message) when absent, and `localLore`
- * is `[]` when absent. An explicit `fmIndex` (also 0 or -1) is kept. Changes `chat` in place.
+ * is `[]` when absent. An explicit `fmIndex` (also 0 or -1) is kept. `loreOverrides` keep the first
+ * per id, as the server stores them (an acknowledgement does not install the server's copy). Changes
+ * `chat` in place.
  */
 export function prepareChatInput(chat: Chat, character: { firstMsgIndex?: unknown }) {
     if (chat.fmIndex === undefined || chat.fmIndex === null) {
         chat.fmIndex = typeof character.firstMsgIndex === "number" ? character.firstMsgIndex : -1;
     }
     chat.localLore ??= [];
+    if (Array.isArray(chat.loreOverrides)) {
+        chat.loreOverrides = firstOverridePerId(chat.loreOverrides);
+    }
 }
 
 /**
@@ -2107,15 +3716,17 @@ export function createChat(
     }
     chat.message ??= [];
     prepareMessages(chat.message, new Set());
+    const key = keyOf(chaId, chat.id);
+    settleHypaV3Data(key, chat, undefined, chat.memoryMode);
     const index = Math.max(0, Math.min(options.index ?? ids.length, ids.length));
     const created = insertChat(chaId, index, chat);
-    const key = keyOf(chaId, chat.id);
     changed(key);
     const ref = { chaId, chatId: chat.id };
     if (!releaseChatRefusal(ref)) {
         const entry = pendingFor(ref);
         entry.create = true;
         entry.seq = nextSeq();
+        dirtyChatJournal(key, "pending");
     }
     syncSelection(chaId);
     if (options.select) {
@@ -2133,47 +3744,15 @@ export function ensureChat(chaId: string) {
     }
 }
 
-/** Deletes a chat. The last chat of a character and a chat being generated in cannot be deleted. */
-export function deleteChat(ref: ChatRef) {
-    requireCharacter(ref.chaId);
-    const ids = memberIds(ref.chaId);
-    if (!ids.includes(ref.chatId)) {
-        return;
-    }
-    if (ids.length === 1) {
-        throw new Error("A character needs at least one chat");
-    }
-    if (isChatGenerating(ref)) {
-        throw new Error("This chat is being generated; wait until it finishes");
-    }
-    removeChat(ref.chaId, ref.chatId);
-    const key = keyOf(ref.chaId, ref.chatId);
-    changed(key);
-    const entry = pending.get(key);
-    const refused = quarantined.get(key);
-    clearChatRefusal(key);
-    const seq = nextSeq();
-    if (
-        (refused?.create || (entry?.create && !entry.resend)) &&
-        !inflight.has(key) &&
-        !chatRevisions.has(key) &&
-        !queuesDelete(entry)
-    ) {
-        // Never sent: nothing to delete on the server.
-        pending.delete(key);
-        settleKey(key, seq);
-    } else {
-        pending.set(key, {
-            characterId: ref.chaId,
-            chatId: ref.chatId,
-            create: false,
-            resend: entry?.resend ?? null,
-            ops: [{ op: "delete" }],
-            seq,
-        });
-    }
-    syncSelection(ref.chaId);
-    notifyWork();
+/** Only supplied active members exchange places. Omitted members retain their original slots. */
+export function reorderActiveChats(chaId: string, ids: readonly string[]) {
+    const order = [...new Set(ids.filter((chatId) => isActiveChat({ chaId, chatId })))];
+    const moved = new Set(order);
+    let index = 0;
+    reorderChats(
+        chaId,
+        memberIds(chaId).map((id) => (moved.has(id) ? order[index++] : id)),
+    );
 }
 
 /** Reorders a character's chats to `ids` (a permutation of its chat ids). */
@@ -2188,6 +3767,7 @@ export function reorderChats(chaId: string, ids: readonly string[]) {
         return;
     }
     holdingOf(chaId).ids = [...ids];
+    bumpChatMembership(chaId);
     mutationToken += 1;
     pendingOrders.set(chaId, nextSeq());
     notifyWork();
@@ -2226,22 +3806,21 @@ export function loadSelectionPreference() {
  * Selects a chat of a character by id or by its index in the list (nothing when it names none). The
  * selection is immediate, loaded or not: a selected chat that is not loaded yet is loaded now
  * (`selectedChat()` is null meanwhile and `selectedChatLoad` reports it), so a slow load never
- * selects anything and the latest selection is always the selection.
+ * selects anything and the latest selection is always the selection. An optional character index
+ * hint avoids a character-list search when the id at that index still matches; otherwise it is found by id.
  */
-export function selectChat(chaId: string, idOrIndex: string | number) {
-    if (!findCharacter(chaId)) {
-        return;
+export function selectChat(chaId: string, idOrIndex: string | number, characterIndexHint?: number): boolean {
+    if (!findCharacter(chaId, characterIndexHint)) {
+        return false;
     }
-    const ids = memberIds(chaId);
-    const id = typeof idOrIndex === "number" ? ids[idOrIndex] : ids.find((entry) => entry === idOrIndex);
-    if (id === undefined) {
-        return;
-    }
+    const id = typeof idOrIndex === "number" ? holdingAt(chaId)?.ids[idOrIndex] : idOrIndex;
+    if (id === undefined || !isActiveChat({ chaId, chatId: id })) return false;
     choose(chaId, id);
     writeSelectionPreference(chaId, id);
     if (untrack(() => selection.characterId) === chaId) {
         loadSelectedChat();
     }
+    return true;
 }
 
 /**
@@ -2250,7 +3829,7 @@ export function selectChat(chaId: string, idOrIndex: string | number) {
  * selected character's new selected chat is loaded when it is not.
  */
 function syncSelection(chaId: string) {
-    const ids = holdingAt(chaId)?.ids ?? [];
+    const ids = activeIds(chaId);
     const id = untrack(() => chosen[slot(chaId)]);
     if (ids.length > 0 && (id === undefined || !ids.includes(id))) {
         choose(chaId, ids[0]);
@@ -2323,7 +3902,12 @@ function loadSelectedChat() {
  */
 export function selectedChatLoad(): { error: string | null } | null {
     const ref = currentChatRef();
-    if (!ref || isLoaded(ref)) {
+    if (!ref) {
+        const owner = selection.characterId;
+        const absent = owner !== null && holdingAt(owner)?.ids.some((id) => trashMarks[keyOf(owner, id)] === "absent");
+        return absent ? { error: language.chatUnavailable } : null;
+    }
+    if (isLoaded(ref)) {
         return null;
     }
     const current = selectedLoad.key === keyOf(ref.chaId, ref.chatId) && selectedLoad.owner === lifetimeOf(ref.chaId);
@@ -2344,8 +3928,8 @@ onCharacterSelectionChanged(() => loadSelectedChat());
 // ---------------------------------------------------------------------------------------------
 // Messages and metadata
 
-function indexOfMessage(chat: Chat, id: string): number {
-    return chat.message.findIndex((message) => message.chatId === id);
+function indexOfMessage(ref: ChatRef, chat: Chat, id: string): number {
+    return positionOf(keyOf(ref.chaId, ref.chatId), chat, id);
 }
 
 /** An owned copy of an anchor (a caller may reuse its object). */
@@ -2370,7 +3954,9 @@ export function appendMessage(
 ): string[] {
     const chat = requireChat(ref);
     const messages = clone<Message[]>(Array.isArray(input) ? input : [input as DeepReadonly<Message>]);
-    prepareMessages(messages, new Set(chat.message.map((message) => message.chatId!)));
+    const key = keyOf(ref.chaId, ref.chatId);
+    const index = messagePositions.get(key) ?? buildMessagePositions(key, chat);
+    prepareMessages(messages, new Set(), index.positions);
     const anchor = ownAnchor(options.anchor ?? { end: true });
     let position: number;
     if ("start" in anchor) {
@@ -2378,27 +3964,35 @@ export function appendMessage(
     } else if ("end" in anchor) {
         position = chat.message.length;
     } else {
-        const after = indexOfMessage(chat, anchor.after);
+        const after = indexOfMessage(ref, chat, anchor.after);
         if (after === -1) {
             throw new Error(`No message ${anchor.after} to insert after`);
         }
         position = after + 1;
     }
+    const atEnd = position === chat.message.length;
     chat.message.splice(position, 0, ...messages);
-    changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor });
+    if (atEnd) {
+        messages.forEach((message, offset) => index.positions.set(message.chatId!, position + offset));
+        index.notifyMissing?.();
+    } else {
+        dropMessagePositions(key);
+    }
+    changed(key);
+    enqueueLocalEdit(ref, { op: "append", messages: clone(messages), anchor }, { absent: true });
     return messages.map((message) => message.chatId!);
 }
 
 /**
  * Replaces one message by its id (`message.chatId`) with a whole row (op `setMessage`): on an older
  * revision it reverts the fields another writer changed meanwhile, so a change of some fields is a
- * `patchMessage`.
+ * `patchMessage`. The held translation is kept, as the server's `setMessage` keeps it; `createChat`,
+ * `appendMessage`, and `replaceChat` take in what their messages carry (`prepareMessages`).
  */
 export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     const chat = requireChat(ref);
     const message = clone<Message>(input);
-    const index = indexOfMessage(chat, message.chatId!);
+    const index = indexOfMessage(ref, chat, message.chatId!);
     if (index === -1) {
         throw new Error(`No message ${message.chatId}`);
     }
@@ -2409,9 +4003,11 @@ export function replaceMessage(ref: ChatRef, input: DeepReadonly<Message>) {
     if (current !== undefined) {
         message.translation = clone<MessageTranslation>(current);
     }
+    const before = { value: clone(chat.message[index]) };
     chat.message[index] = message;
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) });
+    enqueueLocalEdit(ref, { op: "setMessage", message: clone(message) }, before);
 }
 
 /** A message field patch as the server takes it (`patchMessage`): fields to set and fields to remove. */
@@ -2469,6 +4065,7 @@ function prepareMessagePatch(set: unknown, unset: unknown): MessagePatch | null 
  */
 function applyMessagePatch(ref: ChatRef, chat: Chat, index: number, id: string, patch: MessagePatch) {
     const row = chat.message[index] as unknown as Record<string, unknown>;
+    const before = fieldsBefore(row, [...Object.keys(patch.set), ...patch.unset]);
     let differs = false;
     for (const key of patch.unset) {
         if (Object.hasOwn(row, key)) {
@@ -2493,7 +4090,7 @@ function applyMessagePatch(ref: ChatRef, chat: Chat, index: number, id: string, 
     if (patch.unset.length > 0) {
         op.unset = [...patch.unset] as typeof op.unset;
     }
-    enqueueLocalEdit(ref, op);
+    enqueueLocalEdit(ref, op, before);
 }
 
 /**
@@ -2510,7 +4107,7 @@ export function patchMessage(
     unset: readonly string[] = [],
 ) {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -2524,16 +4121,17 @@ export function patchMessage(
 /** Sets a message's text. */
 export function setMessageText(ref: ChatRef, id: string, text: string) {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
     assertUnlocked(ref, [id]);
+    const before = { value: chat.message[index].data };
     if (chat.message[index].data !== text) {
         chat.message[index].data = text;
         changed(keyOf(ref.chaId, ref.chatId));
     }
-    enqueueLocalEdit(ref, { op: "setText", id, text });
+    enqueueLocalEdit(ref, { op: "setText", id, text }, before);
 }
 
 /**
@@ -2548,7 +4146,7 @@ export function setMessageTranslation(
     translation: DeepReadonly<MessageTranslation> | null,
 ): boolean {
     const chat = requireChat(ref);
-    const index = indexOfMessage(chat, id);
+    const index = indexOfMessage(ref, chat, id);
     if (index === -1) {
         throw new Error(`No message ${id}`);
     }
@@ -2562,6 +4160,8 @@ export function setMessageTranslation(
     if (value !== null && value.sourceHash !== translationSourceHash(message.data)) {
         return false;
     }
+    const before: JournalBefore =
+        message.translation === undefined ? { absent: true } : { value: clone(message.translation) };
     if (value === null) {
         delete message.translation;
     } else {
@@ -2569,28 +4169,145 @@ export function setMessageTranslation(
     }
     changed(keyOf(ref.chaId, ref.chatId));
     // Never coalesced: a set lands only on a matching text, so dropping an earlier op could change the result.
-    enqueueLocalEdit(ref, { op: "setTranslation", id, translation: value });
+    enqueueLocalEdit(ref, { op: "setTranslation", id, translation: value }, before);
     return true;
 }
 
-/** Removes messages by id. Removing several needs the chat's current revision on the server. */
-export function removeMessages(ref: ChatRef, ids: readonly string[]) {
+/** Optimistically switches a stored candidate; the server recomputes it against its row and variables. */
+export function selectCandidate(ref: ChatRef, messageId: string, candidateId: string): void {
     const chat = requireChat(ref);
-    const present = ids.filter((id) => indexOfMessage(chat, id) !== -1);
+    const index = indexOfMessage(ref, chat, messageId);
+    if (index === -1) throw new Error(language.rerollCandidateUnavailable);
+    assertUnlocked(ref, [messageId]);
+    const message = clone<Message>(chat.message[index]);
+    const revision = message.candidatesRevision ?? 0;
+    const change = selectCandidateChange(message, candidateId, clone(chat.scriptstate));
+    if (!change) throw new Error(language.rerollCandidateUnavailable);
+    if (JSON.stringify(change.message) !== JSON.stringify(message)) {
+        change.message.candidatesRevision = revision + 1;
+        chat.message[index] = change.message;
+        if (Object.keys(change.merge).length || change.mergeUnset.length) {
+            const map = { ...chat.scriptstate };
+            for (const key of change.mergeUnset) delete map[key];
+            for (const [key, value] of Object.entries(change.merge))
+                Object.defineProperty(map, key, { value, enumerable: true, writable: true, configurable: true });
+            if (chat.scriptstate !== undefined || Object.keys(change.merge).length) chat.scriptstate = map;
+        }
+        changed(keyOf(ref.chaId, ref.chatId));
+    }
+    // Keep the expectation attached to this single action, including on a lost-answer resend.
+    enqueueLocalEdit(ref, { op: "selectCandidate", messageId, candidateId, expect: { candidatesRevision: revision } });
+}
+
+/** The chat of `ref` and which of `ids` it holds; throws for a chat not held or a message locked. */
+function removalTarget(ref: ChatRef, ids: readonly string[]): { chat: Chat; present: string[] } {
+    const chat = requireChat(ref);
+    const present = ids.filter((id) => indexOfMessage(ref, chat, id) !== -1);
+    assertUnlocked(ref, present);
+    return { chat, present };
+}
+
+/**
+ * Removes messages by id: a person's delete. Removing several needs the chat's current revision on the
+ * server. The checks throw here, in every chat. When this chat uses Structured Memory the removal itself comes later,
+ * or not at all (`removeAfterAsking`), so the messages may still be there when this returns.
+ */
+export function removeMessages(ref: ChatRef, ids: readonly string[]) {
+    const { chat, present } = removalTarget(ref, ids);
     if (present.length === 0) {
         return;
     }
-    assertUnlocked(ref, present);
-    applyRemoval(ref, chat, present);
+    if (chatMemoryAlgorithm(chatMemorySettings(), chat) === STRUCTURED_MEMORY_ALGORITHM) {
+        void removeAfterAsking(ref, present);
+    } else {
+        applyRemoval(ref, chat, present);
+    }
 }
 
-/** Removes messages already checked against the locks, as one op (several need the current revision). */
-function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[]) {
+/**
+ * Removes messages by id now, asking nothing: for what no person answers, a command or a recovered
+ * draft. Under Structured Memory what cites them reads as missing its source until someone repairs it,
+ * unless `retract` carries a person's earlier yes.
+ */
+export function removeMessagesUnasked(ref: ChatRef, ids: readonly string[], options: { retract?: true } = {}) {
+    const { chat, present } = removalTarget(ref, ids);
+    if (present.length > 0) {
+        applyRemoval(ref, chat, present, options);
+    }
+}
+
+/**
+ * How many of a chat's events that are not retracted cite any of `ids`. 0 when that cannot be read, so
+ * a memory read that failed never stands in the way of a delete. The reader stays out of this module's
+ * static graph.
+ */
+async function citingEvents(ref: ChatRef, ids: readonly string[]): Promise<number> {
+    try {
+        const { readStructuredMemoryCoverage } = await import("../process/structuredMemory.svelte");
+        const coverage = await readStructuredMemoryCoverage(ref);
+        if (coverage.outcome !== "ok") {
+            return 0;
+        }
+        const removing = new Set(ids);
+        return coverage.value.events.filter(
+            ({ status, messageIds }) => status !== "retracted" && messageIds.some((id) => removing.has(id)),
+        ).length;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * The rest of a person's delete in a Structured Memory chat: asks when events cite the messages, then
+ * removes them, marked so the server retracts those events. Declined removes nothing. The chat is
+ * pinned while it waits, and what it waited through is checked again: another owner of the ids or a
+ * chat no longer held removes nothing, messages already gone drop out, and a message a generation took
+ * meanwhile refuses the whole delete. Its callers discard the result, so it owns its errors.
+ */
+async function removeAfterAsking(ref: ChatRef, ids: readonly string[]): Promise<void> {
+    const owner = lifetimeOf(ref.chaId);
+    const release = pinChat(ref);
+    try {
+        const citing = await citingEvents(ref, ids);
+        if (citing > 0 && !(await alertConfirm(language.structuredMemory.removeRetracts(citing)))) {
+            return;
+        }
+        const chat = lifetimeOf(ref.chaId) === owner && findCharacter(ref.chaId) ? heldChat(ref) : undefined;
+        const present = chat ? ids.filter((id) => indexOfMessage(ref, chat, id) !== -1) : [];
+        if (present.length === 0) {
+            return;
+        }
+        if (present.some((id) => isLockedKey(messageKeyOf(ref, id)))) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        applyRemoval(ref, chat, present, citing > 0 ? { retract: true } : {});
+    } catch (error) {
+        alertError(error instanceof Error ? error : String(error));
+    } finally {
+        release();
+    }
+}
+
+/**
+ * Removes messages already checked against the locks, as one op (several need the current revision).
+ * `mark` holds a person's yes to retracting what cites them.
+ */
+function applyRemoval(ref: ChatRef, chat: Chat, present: readonly string[], mark: { retract?: true } = {}) {
     const removing = new Set(present);
-    const kept = chat.message.filter((message) => !removing.has(message.chatId!));
-    chat.message.splice(0, chat.message.length, ...kept);
+    const positions = [...removing].map((id) => indexOfMessage(ref, chat, id));
+    const before = removing.size === 1 ? { value: clone(chat.message[positions[0]]) } : undefined;
+    const removedPositions = new Set(positions.filter((position) => position >= 0));
+    let first = chat.message.length;
+    for (const position of removedPositions) first = Math.min(first, position);
+    let write = first;
+    for (let read = first; read < chat.message.length; read++) {
+        if (!removedPositions.has(read)) chat.message[write++] = chat.message[read];
+    }
+    chat.message.length = write;
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "remove", ids: [...removing] });
+    enqueueLocalEdit(ref, { op: "remove", ids: [...removing], ...mark }, before);
 }
 
 /**
@@ -2620,20 +4337,23 @@ export function restoreUnsentRemoval(
     const index = entry.ops.findLastIndex(
         (op) => op.op === "remove" && op.ids.length === ids.size && op.ids.every((id) => ids.has(id)),
     );
-    const anchorIndex = anchor === null ? -1 : indexOfMessage(chat, anchor);
+    const anchorIndex = anchor === null ? -1 : indexOfMessage(ref, chat, anchor);
+    const heldIds = new Set(chat.message.map((message) => message.chatId!));
     if (
         index === -1 ||
         index !== entry.ops.length - 1 ||
         (anchor !== null && anchorIndex === -1) ||
         anchorIndex !== chat.message.length - 1 ||
-        messages.some((message) => indexOfMessage(chat, message.chatId!) !== -1)
+        messages.some((message) => heldIds.has(message.chatId!))
     ) {
         return false;
     }
     entry.ops.splice(index, 1);
+    dirtyChatJournal(key, "pending");
     const restored = clone<Message[]>(messages);
     restored.forEach((message) => dropInvalidTranslation(message));
-    chat.message.push(...restored);
+    for (const message of restored) chat.message.push(message);
+    dropMessagePositions(key);
     changed(key);
     staleChats.add(key);
     if (entry.ops.length === 0 && !entry.create && !entry.resend && !inflight.has(key)) {
@@ -2657,6 +4377,197 @@ const SERVER_META_DEFAULTS: Readonly<Record<string, () => unknown>> = {
     fmIndex: () => -1,
 };
 
+/** The chats that showed the notice of a refused `hypaV3Data`, so a plugin writing on every send stacks no toasts. */
+const refusedProjectionChats = new Set<string>();
+
+/**
+ * Tells of a `hypaV3Data` dropped from a write whose other fields still apply: `console.warn` on each
+ * notice, and one `alertToast` per chat until reload. This refusal throws nothing: the field alone is
+ * dropped and the rest of the same write applies. `src/ts/plugins/apiV3/v3.svelte.ts`'s `warnRefused`
+ * handles a thrown `MutationValidationError`, which stops that setter's write; it rolls nothing back.
+ */
+function noticeRefusedProjection(key: string) {
+    console.warn(
+        "[Plugin] Refused a change to hypaV3Data, which Structured Memory projects from its records; the previous value was kept",
+    );
+    if (!refusedProjectionChats.has(key)) {
+        refusedProjectionChats.add(key);
+        alertToast(language.structuredMemory.projectionWriteRefused);
+    }
+}
+
+/**
+ * Whether a write's `hypaV3Data` (`incoming`, undefined when it names none) leaves the field as `held`
+ * holds it, before the mirror changes or a journal sidecar is captured. `held` is the chat, undefined
+ * for a new chat; `baseline` the value the writer started from, the held one when it has none. Nothing
+ * here authorizes: a seal only says a value is a projection.
+ *
+ * When the resulting mode selects Structured Memory the field is the projection's: a sealed value held, or on an existing
+ * chat anything but a real value with summaries, the one thing that means HypaV3 owns the field
+ * (`hypaV3DataHoldsSummaries`). Ownership comes from the held value before the write;
+ * `modeAfter` is the mode the emitted operation leaves, including a metadata diff or unset.
+ *
+ * - A sealed value is never taken: it is a projection, this chat's or another's, or an older one a
+ *   plugin read before a refresh. It raises the notice only when its seal is no longer intact and the
+ *   value differs from `baseline`; an unchanged copy of an already altered baseline is silent too.
+ * - An absent value leaves the field in place when it is the projection's, or a projection held or
+ *   started from: a plugin's object without the field loses nothing. A real value goes as it always did.
+ * - An unsealed value goes unless the field is the projection's, when a change is dropped with the
+ *   notice, so it never becomes a stored owner. A new chat has no records. With another algorithm
+ *   selected it is a real write, which replaces a projection held from before: HypaV3 owns the chat
+ *   from then on when the value holds summaries.
+ * Recovery suppresses the plugin notices; its caller preserves refused unsealed intent as a draft.
+ * Sealed values are still dropped, without becoming recovery intent.
+ */
+function keepsHeldHypaV3Data(
+    key: string,
+    incoming: unknown,
+    held: Chat | undefined,
+    baseline: unknown,
+    modeAfter: unknown,
+    source: "write" | "recovery" = "write",
+): boolean {
+    const differs = () => JSON.stringify(incoming) !== JSON.stringify(baseline);
+    if (isSealedHypaV3Data(incoming)) {
+        if (source === "write" && !sealedHypaV3DataIntact(incoming) && differs()) {
+            noticeRefusedProjection(key);
+        }
+        return true;
+    }
+    const heldValue = held?.hypaV3Data;
+    const projectionsField = () =>
+        (isSealedHypaV3Data(heldValue) || !hypaV3DataHoldsSummaries(heldValue)) &&
+        chatMemoryAlgorithm(chatMemorySettings(), { memoryMode: modeAfter }) === STRUCTURED_MEMORY_ALGORITHM;
+    if (incoming === undefined) {
+        return (
+            isSealedHypaV3Data(heldValue) ||
+            isSealedHypaV3Data(baseline) ||
+            (heldValue !== undefined && projectionsField())
+        );
+    }
+    if (!held || !projectionsField()) {
+        return false;
+    }
+    if (source === "write" && differs()) {
+        noticeRefusedProjection(key);
+    }
+    return true;
+}
+
+/**
+ * `keepsHeldHypaV3Data` for a whole copy: `chat`, the copy a write takes in, gets the held value when
+ * the field stays, so whatever holds the copy next holds that. Returns whether it stayed.
+ */
+function settleHypaV3Data(
+    key: string,
+    chat: Chat,
+    held: Chat | undefined,
+    modeAfter: unknown,
+    baseline = held,
+): boolean {
+    if (!keepsHeldHypaV3Data(key, chat.hypaV3Data, held, baseline?.hypaV3Data, modeAfter)) {
+        return false;
+    }
+    if (held?.hypaV3Data === undefined) {
+        delete chat.hypaV3Data;
+    } else {
+        chat.hypaV3Data = clone(held.hypaV3Data);
+    }
+    return true;
+}
+
+/** A loaded chat as a refresh of its projection found it, before its first await (`chatProjectionState`). */
+export type ChatProjectionState = {
+    /** The held chat and its `hypaV3Data`, compared by identity. */
+    chat: Chat;
+    value: Chat["hypaV3Data"];
+    /** `chatOwnerToken` of its character. */
+    owner: string;
+    /** `heldChatRevision`: null for a chat not on the server yet. */
+    chatRevision: string | null;
+    /** The memory revision the held value was read at (`sealedHypaV3DataRevision`). */
+    memoryRevision: string | undefined;
+    /** The held value is a real one with summaries: nothing projects over it. */
+    hypaV3Owned: boolean;
+};
+
+/** What `installChatProjection` is fenced on, undefined for a chat that is not loaded. */
+export function chatProjectionState(ref: ChatRef): ChatProjectionState | undefined {
+    const chat = heldChat(ref);
+    if (!chat) {
+        return undefined;
+    }
+    const value = chat.hypaV3Data;
+    return {
+        chat,
+        value,
+        owner: chatOwnerToken(ref.chaId),
+        chatRevision: heldChatRevision(ref),
+        memoryRevision: sealedHypaV3DataRevision(value),
+        hypaV3Owned: !isSealedHypaV3Data(value) && hypaV3DataHoldsSummaries(value),
+    };
+}
+
+/**
+ * Takes a refresh's `answer` for a chat's `hypaV3Data` and says whether the field changed. Only a chat
+ * still as `state` found it takes one: the same held object with the same value, the same owner, and a
+ * held revision of the same epoch and `seq`. Every whole replacement changes the object or the value, and
+ * `chatInstallVersion` does not see them all. A chat's revision may move within its `seq`, since the memory
+ * revision says nothing of its messages.
+ *
+ * - A null answer removes a sealed value. A real value stays.
+ * - A value goes in only when this chat resolves to Structured Memory, sealed intact, at the held revision's epoch and
+ *   `seq`, and past the counter of a held token of that `seq`. `compareRevision` alone would take a larger
+ *   `seq`, which is another chat under these ids.
+ *
+ * The field is written here directly: `keepsHeldHypaV3Data` refuses every sealed value, and `changed`
+ * would dirty a queued create's journal and move the version a reorder compares, for a value that never
+ * leaves the tab.
+ */
+export function installChatProjection(
+    ref: ChatRef,
+    state: ChatProjectionState,
+    answer: SealedHypaV3Data | null,
+): boolean {
+    const chat = heldChat(ref);
+    const revision = parseRevisionToken(heldChatRevision(ref));
+    const captured = parseRevisionToken(state.chatRevision);
+    if (
+        !chat ||
+        chat !== state.chat ||
+        chat.hypaV3Data !== state.value ||
+        chatOwnerToken(ref.chaId) !== state.owner ||
+        revision?.epoch !== captured?.epoch ||
+        revision?.seq !== captured?.seq
+    ) {
+        return false;
+    }
+    if (answer === null) {
+        if (!isSealedHypaV3Data(state.value)) {
+            return false;
+        }
+        delete chat.hypaV3Data;
+    } else {
+        const token = parseRevisionToken(sealedHypaV3DataRevision(answer));
+        const heldToken = parseRevisionToken(state.memoryRevision);
+        if (
+            state.hypaV3Owned ||
+            chatMemoryAlgorithm(chatMemorySettings(), chat) !== STRUCTURED_MEMORY_ALGORITHM ||
+            !sealedHypaV3DataIntact(answer) ||
+            !token ||
+            !revision ||
+            token.epoch !== revision.epoch ||
+            token.seq !== revision.seq ||
+            (heldToken?.epoch === token.epoch && heldToken.seq === token.seq && token.revision <= heldToken.revision)
+        ) {
+            return false;
+        }
+        chat.hypaV3Data = answer;
+    }
+    mutationToken += 1;
+    return true;
+}
+
 /**
  * The chat fields a chat list writes (`ChatListEntry`'s): `setChatMeta` changes them also in a chat
  * that is not loaded (its summary), with the type the summary holds. Optional fields such as `pinned`
@@ -2671,6 +4582,11 @@ const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolea
     modelPresetId: "string",
     bindingReview: "boolean",
     fmIndex: "number",
+    memoryEnabled: "boolean",
+    memoryMode: "string",
+    memoryPresetId: "string",
+    memoryProfileId: "string",
+    memoryTrimAck: "number",
     ...CHAT_TRANSLATION_FIELD_TYPES,
 };
 
@@ -2680,13 +4596,17 @@ const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolea
  * server defaults (`SERVER_META_DEFAULTS`) is set to its default instead of removed or set to `null`.
  * A chat that is not loaded takes changes of its list fields only (`SUMMARY_FIELD_TYPES`: its summary
  * changes and the same op is queued); any other field needs it loaded. The whole change is checked
- * before anything changes.
+ * before anything changes. A `hypaV3Data` that stays as held (`keepsHeldHypaV3Data`) drops out, and
+ * the other fields still apply. The recovery source suppresses plugin notices and returns any
+ * refused unsealed value for its caller to preserve; sealed values and unsets are never returned.
+ * Ordinary writes retain their existing notices and return nothing.
  */
 export function setChatMeta(
     ref: ChatRef,
     set: Partial<DeepReadonly<Chat>> | Record<string, unknown>,
     unset: readonly string[] = [],
-) {
+    source: "write" | "recovery" = "write",
+): unknown {
     const loaded = findCharacter(ref.chaId) ? heldChat(ref) : undefined;
     let summary: ChatEntryMeta | undefined;
     if (!loaded) {
@@ -2707,6 +4627,7 @@ export function setChatMeta(
     }
     const chat = (loaded ?? summary) as unknown as Record<string, unknown>;
     const changes: Record<string, unknown> = {};
+    let refusedHypaV3Data: unknown;
     const requested: Record<string, unknown> = { ...set };
     for (const key of unset) {
         if (Object.hasOwn(SERVER_META_DEFAULTS, key) && requested[key] === undefined) {
@@ -2714,7 +4635,11 @@ export function setChatMeta(
         }
     }
     for (const [key, entry] of Object.entries(requested)) {
-        const value = entry === null && Object.hasOwn(SERVER_META_DEFAULTS, key) ? SERVER_META_DEFAULTS[key]() : entry;
+        let value = entry === null && Object.hasOwn(SERVER_META_DEFAULTS, key) ? SERVER_META_DEFAULTS[key]() : entry;
+        // As the server stores it: an acknowledgement does not install the server's copy.
+        if (key === "loreOverrides" && Array.isArray(value)) {
+            value = firstOverridePerId(value as ChatLoreOverride[]);
+        }
         if (forbiddenMetaKeys.has(key)) {
             throw new Error(`setChatMeta cannot change ${key}`);
         }
@@ -2722,8 +4647,23 @@ export function setChatMeta(
             continue;
         }
         // Serialized as it is (a `$state.snapshot` would drop a nested own `__proto__`).
-        if (JSON.stringify(chat[key]) !== JSON.stringify(value)) {
-            changes[key] = clone(value);
+        if (JSON.stringify(chat[key]) === JSON.stringify(value)) {
+            continue;
+        }
+        changes[key] = clone(value);
+    }
+    // Equal-valued sets have already dropped out. An unset of such a mode still applies, just as
+    // it does in the emitted meta op; only a retained set wins over an unset.
+    const modeAfter = Object.hasOwn(changes, "memoryMode")
+        ? changes.memoryMode
+        : unset.includes("memoryMode")
+          ? undefined
+          : chat.memoryMode;
+    if (Object.hasOwn(changes, "hypaV3Data")) {
+        const value = changes.hypaV3Data;
+        if (keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), value, loaded, chat.hypaV3Data, modeAfter, source)) {
+            delete changes.hypaV3Data;
+            if (source === "recovery" && !isSealedHypaV3Data(value)) refusedHypaV3Data = value;
         }
     }
     const removals = unset.filter((key) => {
@@ -2731,11 +4671,18 @@ export function setChatMeta(
             throw new Error(`setChatMeta cannot change ${key}`);
         }
         // A field the server defaults is never removed: the loop above set it to its default.
-        return Object.hasOwn(chat, key) && !Object.hasOwn(changes, key) && !Object.hasOwn(SERVER_META_DEFAULTS, key);
+        return (
+            Object.hasOwn(chat, key) &&
+            !Object.hasOwn(changes, key) &&
+            !Object.hasOwn(SERVER_META_DEFAULTS, key) &&
+            (key !== "hypaV3Data" ||
+                !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), undefined, loaded, chat[key], modeAfter, source))
+        );
     });
     if (Object.keys(changes).length === 0 && removals.length === 0) {
-        return;
+        return refusedHypaV3Data;
     }
+    const before = fieldsBefore(chat, [...Object.keys(changes), ...removals]);
     for (const [key, value] of Object.entries(changes)) {
         chat[key] = clone(value);
     }
@@ -2743,7 +4690,8 @@ export function setChatMeta(
         delete chat[key];
     }
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "meta", set: changes, unset: removals });
+    enqueueLocalEdit(ref, { op: "meta", set: changes, unset: removals }, before);
+    return refusedHypaV3Data;
 }
 
 /**
@@ -2760,6 +4708,8 @@ export function mergeChatMeta(
     key: string,
     entries: Record<string, unknown>,
     removals: readonly string[] = [],
+    ifOocUnanswered?: string,
+    source: "write" | "recovery" = "write",
 ) {
     if (!CHAT_META_MERGE_KEYS.includes(key)) {
         throw new Error(`mergeChatMeta cannot merge ${key}`);
@@ -2784,6 +4734,7 @@ export function mergeChatMeta(
     }
     const chat = requireChat(ref) as unknown as Record<string, unknown>;
     const stored = chat[key];
+    const before = fieldsBefore(chat, [key]);
     if (isPlainRecord(stored) || adding) {
         // Built from entries (never assigned by name, never through `$state.snapshot`, which drops
         // an own `__proto__`), so any entry id stays an own entry; kept values are the mirror's own.
@@ -2793,13 +4744,17 @@ export function mergeChatMeta(
         changed(keyOf(ref.chaId, ref.chatId));
     }
     const op: Extract<ChatOp, { op: "meta" }> = { op: "meta" };
+    if (ifOocUnanswered !== undefined) {
+        op.ifOocUnanswered = ifOocUnanswered;
+        if (source === "recovery") op.acceptMatchingOocExchange = true;
+    }
     if (adding) {
         op.merge = { [key]: clone(added) };
     }
     if (removed.length > 0) {
         op.mergeUnset = { [key]: removed };
     }
-    enqueueLocalEdit(ref, op);
+    enqueueLocalEdit(ref, op, before);
 }
 
 /**
@@ -2822,9 +4777,19 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     prepareMessages(chat.message, new Set());
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
+    settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref), chat.memoryMode);
+    dropMessagePositions(keyOf(ref.chaId, ref.chatId));
+    const retained = new Set(chat.message.map((message) => message.chatId));
+    const removesCandidates = heldChat(ref)!.message.some(
+        (message) =>
+            retained.has(message.chatId) &&
+            (Object.hasOwn(message, "candidates") || Object.hasOwn(message, "selected")),
+    );
     holdingOf(ref.chaId).chats[slot(ref.chatId)] = chat;
     changed(keyOf(ref.chaId, ref.chatId));
-    enqueueLocalEdit(ref, { op: "replace", chat: projectChat(chat) });
+    const op: ChatOp = { op: "replace", chat: sendChat(chat) };
+    if (removesCandidates) candidateFieldRemovals.add(op);
+    enqueueLocalEdit(ref, op);
 }
 
 /**
@@ -2834,11 +4799,11 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
  */
 export type ChatBaseline = { ref: ChatRef; chat: Chat; version: number; owner?: string };
 
-/** Captures a chat before a hook works on a copy of it (for `applyChatResult`). */
-export function captureChatBaseline(ref: ChatRef): ChatBaseline {
+/** Captures a chat before editing; an already assembled read copy avoids projecting the held chat again. */
+export function captureChatBaseline(ref: ChatRef, copy?: DeepReadonly<Chat>): ChatBaseline {
     return {
         ref,
-        chat: projectChat(requireChat(ref)),
+        chat: copy === undefined ? projectChat(requireChat(ref)) : clone<Chat>(copy),
         version: versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0,
         owner: lifetimeOf(ref.chaId),
     };
@@ -2851,12 +4816,19 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
  * (`baseline`), onto the chat as it is now: messages the hook removed are removed, added ones are
  * inserted after their predecessor, changed message fields are sent as a field patch of the current
  * message (`patchMessage`), changed chat fields are set or removed, a changed map field
- * (`CHAT_META_MERGE_KEYS`) entry by entry (`mergeChatMeta`). Changes made meanwhile by others are
- * kept. When the hook reordered surviving messages, the whole chat is replaced, but only if the chat
- * has not changed since the baseline and no generation runs in it (otherwise the order change is
- * dropped with a warning). The locks and the message patches are checked before the mirror changes.
+ * (`CHAT_META_MERGE_KEYS`) entry by entry (`mergeChatMeta`). A map the hook dropped is treated as an
+ * emptied map: its baseline entries are removed, while entries others added meanwhile are kept.
+ * Changes made meanwhile by others are kept. When the hook reordered surviving messages, the whole
+ * chat is replaced, but only if it has not changed since the baseline and no generation runs in it
+ * (otherwise the order change is dropped with a warning). The locks and the message patches are
+ * checked before the mirror changes. A `hypaV3Data` that stays as held (`keepsHeldHypaV3Data`) is
+ * dropped from the result alone: the rest of it still applies.
  */
-export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Chat>) {
+export function applyChatResult(
+    baseline: ChatBaseline,
+    result: DeepReadonly<Chat>,
+    preserveBinding: readonly (keyof ChatBindingFields)[] = [],
+) {
     const { ref } = baseline;
     const current = heldChat(ref);
     if (!current) {
@@ -2871,17 +4843,18 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     prepareChatInput(next, requireCharacter(ref.chaId));
     next.message ??= [];
     const baseMessages = new Map(baseline.chat.message.map((message) => [message.chatId!, message]));
+    const currentIds = new Set(current.message.map((message) => message.chatId!));
     prepareMessages(next.message, new Set());
     for (const message of next.message) {
         // A new message may not reuse an id the chat already has.
-        if (!baseMessages.has(message.chatId!) && indexOfMessage(current, message.chatId!) !== -1) {
+        if (!baseMessages.has(message.chatId!) && currentIds.has(message.chatId!)) {
             message.chatId = uuidv4();
         }
     }
     const resultIds = new Set(next.message.map((message) => message.chatId!));
     const removed = baseline.chat.message
         .map((message) => message.chatId!)
-        .filter((id) => !resultIds.has(id) && indexOfMessage(current, id) !== -1);
+        .filter((id) => !resultIds.has(id) && currentIds.has(id));
     const changedMessages = next.message.filter((message) => {
         const before = baseMessages.get(message.chatId!);
         return before !== undefined && JSON.stringify(before) !== JSON.stringify(message);
@@ -2895,7 +4868,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const patches: { id: string; patch: MessagePatch }[] = [];
     for (const message of changedMessages) {
         const id = message.chatId!;
-        if (indexOfMessage(current, id) === -1) {
+        if (!currentIds.has(id)) {
             continue;
         }
         const beforeFields = baseMessages.get(id)! as unknown as Record<string, unknown>;
@@ -2918,9 +4891,25 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         }
     }
 
+    // After every refusal of the whole result, so the notice speaks of a write that goes on.
+    const replaces =
+        reordered && baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0) && !isChatGenerating(ref);
+    const modeAfter =
+        replaces || JSON.stringify(next.memoryMode) !== JSON.stringify(baseline.chat.memoryMode)
+            ? next.memoryMode
+            : current.memoryMode;
+    const heldHypaV3Data = settleHypaV3Data(keyOf(ref.chaId, ref.chatId), next, current, modeAfter, baseline.chat);
+
     if (reordered) {
-        const unchanged = baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0);
-        if (unchanged && !isChatGenerating(ref)) {
+        if (replaces) {
+            // A whole-chat replacement bypasses the metadata diff below.
+            for (const key of preserveBinding) {
+                if (Object.hasOwn(current, key)) {
+                    Object.assign(next, { [key]: current[key] });
+                } else {
+                    delete next[key];
+                }
+            }
             replaceChat(ref, next);
             return;
         }
@@ -2933,9 +4922,10 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         // One op for all of them (checked per message above), so removing several keeps needing
         // the current revision.
         applyRemoval(ref, current, removed);
+        for (const id of removed) currentIds.delete(id);
     }
     for (const { id, patch } of patches) {
-        const index = indexOfMessage(current, id);
+        const index = indexOfMessage(ref, current, id);
         if (index !== -1) {
             applyMessagePatch(ref, current, index, id, patch);
         }
@@ -2945,14 +4935,10 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
         const id = message.chatId!;
         if (!baseMessages.has(id)) {
             const anchor: MessageAnchor =
-                previous === null
-                    ? { start: true }
-                    : indexOfMessage(current, previous) !== -1
-                      ? { after: previous }
-                      : { end: true };
-            appendMessage(ref, message, { anchor });
+                previous === null ? { start: true } : currentIds.has(previous) ? { after: previous } : { end: true };
+            for (const added of appendMessage(ref, message, { anchor })) currentIds.add(added);
         }
-        if (indexOfMessage(current, id) !== -1) {
+        if (currentIds.has(id)) {
             previous = id;
         }
     }
@@ -2963,28 +4949,34 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     const baseFields = baseline.chat as unknown as Record<string, unknown>;
     const nextFields = next as unknown as Record<string, unknown>;
     for (const key of new Set([...Object.keys(baseFields), ...Object.keys(nextFields)])) {
-        if (nonMetaKeys.has(key) || JSON.stringify(baseFields[key]) === JSON.stringify(nextFields[key])) {
+        if (
+            nonMetaKeys.has(key) ||
+            preserveBinding.some((field) => field === key) ||
+            (key === "hypaV3Data" && heldHypaV3Data) ||
+            JSON.stringify(baseFields[key]) === JSON.stringify(nextFields[key])
+        ) {
             continue;
         }
         const before = baseFields[key];
         const after = nextFields[key];
         if (
             CHAT_META_MERGE_KEYS.includes(key) &&
-            isPlainRecord(after) &&
-            (before === undefined || isPlainRecord(before))
+            (before === undefined || isPlainRecord(before)) &&
+            (isPlainRecord(after) || (after === undefined && isPlainRecord(before)))
         ) {
             // A map field (chat variables, toggles, tool calls) changed entry by entry: only the
             // entries the hook changed or removed are sent, so entries another writer changed
             // meanwhile are kept. A map the baseline lacked counts as an empty one.
             const was: Record<string, unknown> = isPlainRecord(before) ? before : {};
+            const copy = isPlainRecord(after) ? after : {};
             merges.push({
                 key,
                 entries: Object.fromEntries(
-                    Object.entries(after).filter(
+                    Object.entries(copy).filter(
                         ([id, value]) => !Object.hasOwn(was, id) || JSON.stringify(was[id]) !== JSON.stringify(value),
                     ),
                 ),
-                removals: Object.keys(was).filter((id) => !Object.hasOwn(after, id)),
+                removals: Object.keys(was).filter((id) => !Object.hasOwn(copy, id)),
             });
             continue;
         }
@@ -3003,17 +4995,23 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
 }
 
 /**
- * Applies a whole character's chats handed back by a plugin (last writer wins): chats matched by id
- * take the incoming version (a diff against the current mirror), new ones are created, missing ones
- * deleted (unless a generation runs in them), and the order follows the incoming list. Changes to a
- * message being generated are skipped with a warning.
+ * Applies a whole character's chats handed back by a plugin: chats matched by id are diffed against
+ * a supplied read baseline, else the current mirror; new ones are created, and supplied active members exchange slots in the incoming order. Changes to a
+ * message being generated are skipped with a warning. Without a read baseline, omitted memory
+ * preferences are kept even when a reorder replaces the whole chat.
  */
-export function reconcileCharacterChats(chaId: string, incoming: readonly DeepReadonly<Chat>[], chatPage?: number) {
+export function reconcileCharacterChats(
+    chaId: string,
+    incoming: readonly DeepReadonly<Chat>[],
+    chatPage?: number,
+    takeBaseline?: (ref: ChatRef) => ChatBaseline | undefined,
+    preserveBinding: readonly (keyof ChatBindingFields)[] = [],
+) {
     const character = findCharacter(chaId);
     if (!character || !Array.isArray(incoming)) {
         return;
     }
-    if (!chatsLoaded(chaId)) {
+    if (!chatsLoaded(chaId, true)) {
         // The caller pins and loads them first (`loadChats`); a chat diffed against a summary would be lost.
         throw new Error(`The chats of ${chaId} are not loaded`);
     }
@@ -3028,8 +5026,19 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
     for (const chat of chats) {
         const ref = { chaId, chatId: chat.id! };
         if (isMember(ref)) {
+            if (!isActiveChat(ref)) continue;
             try {
-                applyChatResult(captureChatBaseline(ref), chat);
+                const retained = takeBaseline?.(ref);
+                const baseline = retained ?? captureChatBaseline(ref);
+                if (!retained) {
+                    // A plugin without its read baseline cannot remove memory choices it never held.
+                    for (const key of ["memoryEnabled", "memoryMode", "memoryPresetId", "memoryProfileId"] as const) {
+                        if (!Object.hasOwn(chat, key) && Object.hasOwn(baseline.chat, key)) {
+                            Object.assign(chat, { [key]: baseline.chat[key] });
+                        }
+                    }
+                }
+                applyChatResult(baseline, chat, preserveBinding);
             } catch (error) {
                 console.warn(
                     "[Chat] Skipped a plugin change to a chat (a message being generated, or a refused field)",
@@ -3037,43 +5046,98 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
                 );
             }
         } else {
+            for (const key of preserveBinding) delete chat[key];
             createChat(chaId, chat);
         }
     }
-    const incomingIds = new Set(chats.map((chat) => chat.id!));
-    for (const id of memberIds(chaId)) {
-        if (!incomingIds.has(id) && memberIds(chaId).length > 1) {
-            try {
-                deleteChat({ chaId, chatId: id });
-            } catch (error) {
-                console.warn("[Chat] Kept a chat a plugin removed", error);
-            }
-        }
-    }
-    const members = memberIds(chaId);
-    const order = chats.map((chat) => chat.id!).filter((id) => members.includes(id));
-    const rest = members.filter((id) => !order.includes(id));
-    reorderChats(chaId, [...order, ...rest]);
-    if (typeof chatPage === "number") {
-        selectChat(chaId, chatPage);
-    }
+    const selectedId = typeof chatPage === "number" ? chats[chatPage]?.id : undefined;
+    reorderActiveChats(
+        chaId,
+        chats.map((chat) => chat.id!),
+    );
+    if (selectedId !== undefined) selectChat(chaId, selectedId);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Boot
+
+/**
+ * Installs classified boot intent under its original identity, without applying resends to the mirror.
+ * Even pending batches may already have reached the server, so they become isolated in-doubt
+ * resends with their original id/base and retry identity. src/ts/storage/journalRecovery.ts drafts
+ * dependent pending work first. Creates install their original snapshot/id; deletes remove the
+ * mirror only after the caller's whole read checked generation locks, and still require another chat.
+ */
+export function installRecoveredChat(
+    ref: ChatRef,
+    intent: { groupId: string; snapshot: Chat } | Pick<Resend, "groupId" | "ops" | "baseRevision">,
+    createdAt: number,
+) {
+    requireCharacter(ref.chaId);
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (pending.has(key) || inflight.has(key) || quarantined.has(key)) {
+        throw new Error("Chat recovery requires a chat without local work");
+    }
+    const create = "snapshot" in intent;
+    const deleting = !create && intent.ops.some((op) => op.op === "delete");
+    if (create) {
+        if (isMember(ref) || chatRevisions.has(key) || intent.snapshot.id !== ref.chatId) {
+            throw new Error("Recovered create requires its original absent chat id");
+        }
+    } else if (!isMember(ref) || !chatRevisions.has(key)) {
+        throw new Error("Recovered resend requires an existing chat");
+    }
+    if (deleting && (memberIds(ref.chaId).length <= 1 || isChatGenerating(ref))) {
+        throw new Error("Recovered delete requires another chat and no generation");
+    }
+    const copy = clone<typeof intent>(intent);
+    const seq = nextSeq();
+    if ("snapshot" in copy) {
+        settleHypaV3Data(key, copy.snapshot, undefined, copy.snapshot.memoryMode);
+        insertChat(ref.chaId, memberIds(ref.chaId).length, copy.snapshot);
+        changed(key);
+    } else if (deleting) {
+        removeChat(ref.chaId, ref.chatId);
+        notifyRemoval(ref);
+        changed(key);
+    }
+    pending.set(key, {
+        characterId: ref.chaId,
+        chatId: ref.chatId,
+        create,
+        groupId: create ? intent.groupId : uuidv4(),
+        ops: [],
+        seq,
+        ...("snapshot" in copy
+            ? { resend: null, recoveredAt: createdAt }
+            : { resend: { ...copy, seq, inDoubt: true, recoveredAt: createdAt } }),
+    });
+    syncSelection(ref.chaId);
+    notifyWork();
+}
+
+/** Queues the classified vector even when recovery's membership changes already put it in order. */
+export function installRecoveredOrder(chaId: string, ids: readonly string[]) {
+    reorderChats(chaId, ids);
+    pendingOrders.set(chaId, nextSeq());
+    notifyWork();
+}
 
 /** Records what the server holds (boot read: chats or their summaries), before anything queues work. */
 export function seedChats(
     chats: readonly { characterId: string; id: string; revision: string }[],
     orders: readonly ChatOrderRecord[],
 ) {
+    storedGenerationText.clear();
     chatRevisions.clear();
     ackedRevisions.clear();
     absentChats.clear();
     parkedResends.clear();
     orderRevisions.clear();
+    lostOrderAttempts.clear();
     staleChats.clear();
     noticedChats.clear();
+    idleReadStamps.clear();
     for (const chat of chats) {
         chatRevisions.set(keyOf(chat.characterId, chat.id), chat.revision);
     }
@@ -3086,8 +5150,8 @@ export function seedChats(
  * A character's chats in their server order: the order's ids that name a chat, then the chats the
  * order misses (each reported). The boot assembly's rule, also for detached reads.
  */
-export function orderChats(chaId: string, chats: readonly ChatRecord[], ids: readonly string[]): Chat[] {
-    return orderRecords(chaId, chats, ids).map((record) => record.data);
+export function orderChats(chaId: string, chats: readonly ChatRecord[], ids: readonly string[]): ChatRecord[] {
+    return orderRecords(chaId, chats, ids);
 }
 
 /** `orderChats` over any records with an id (full chats or summaries). */
@@ -3133,6 +5197,11 @@ export function assembleChats(
     chats: readonly ListedChat[],
     orders: readonly ChatOrderRecord[],
 ) {
+    storedGenerationText.clear();
+    deletedRevisions.clear();
+    trashRevisions.clear();
+    for (const key of Object.keys(trashMarks)) delete trashMarks[key];
+    unknownTrashMarks.clear();
     const byCharacter = new Map<string, ListedChat[]>();
     for (const record of chats) {
         let list = byCharacter.get(record.characterId);
@@ -3145,7 +5214,9 @@ export function assembleChats(
     const orderOf = new Map(orders.map((order) => [order.characterId, order.ids]));
     for (const key of Object.keys(held)) {
         delete held[key];
+        bumpChatMembership(key.slice(1));
     }
+    for (const key of messagePositions.keys()) dropMessagePositions(key);
     loadedKeys.clear();
     pins.clear();
     lastUse.clear();
@@ -3161,6 +5232,8 @@ export function assembleChats(
         setChatList(
             chaId,
             orderRecords(chaId, byCharacter.get(chaId) ?? [], orderOf.get(chaId) ?? []).map((record) => {
+                trashRevisions.set(keyOf(chaId, record.id), record.revision);
+                if (record.trashedAt != null) trashMarks[keyOf(chaId, record.id)] = record.trashedAt;
                 const data = listedData(record);
                 return data ? { id: record.id, chat: data } : { id: record.id, meta: listedMeta(record) };
             }),
@@ -3185,6 +5258,13 @@ export function initializeChats() {
 // ---------------------------------------------------------------------------------------------
 // Save loop
 
+/** Membership writes wait while a conflict read can still recognize a lost order's vector. */
+function waitsForLostOrderRead(entry: Pending): boolean {
+    if (!recoveringOrders.has(entry.characterId) || !lostOrderAttempts.has(entry.characterId)) return false;
+    const ops = entry.resend?.ops ?? entry.ops;
+    return (!entry.resend && entry.create) || ops.some((op) => op.op === "create" || op.op === "delete");
+}
+
 /** Whether any chat work waits to be sent or a deferred reload can run. */
 export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => true): boolean {
     // Empty entries still need takeChatWork to settle them once earlier in-flight work resolves.
@@ -3194,6 +5274,7 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
             !deferred.has(key) &&
             !inflight.has(key) &&
             !isJobBlocked(key) &&
+            !waitsForLostOrderRead(entry) &&
             canSaveCharacter(entry.characterId)
         ) {
             return true;
@@ -3208,8 +5289,7 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
                 orderMembershipReady(id),
         ) ||
         deferredReloads().length > 0 ||
-        idleChatRefreshes().length > 0 ||
-        idleSummaryRefreshes().length > 0
+        hasIdleRefresh()
     );
 }
 
@@ -3239,6 +5319,27 @@ function orderMembershipReady(chaId: string): boolean {
             !isJobBlocked(key)
         );
     });
+}
+
+/** Whether any chat group or reorder outside quarantine still has an unanswered earlier attempt. */
+export function hasChatWorkInDoubt(): boolean {
+    for (const [key, entry] of pending) {
+        if (entry.resend?.inDoubt && !quarantined.has(key)) return true;
+    }
+    for (const [key, group] of inflight) {
+        if (group.inDoubt && !quarantined.has(key)) return true;
+    }
+    for (const groups of parkedResends.values()) {
+        for (const [key, { resend }] of groups) {
+            if (resend.inDoubt && !quarantined.has(key)) return true;
+        }
+    }
+    for (const [chaId, attempts] of lostOrderAttempts) {
+        const refused = quarantinedOrders.get(chaId);
+        // Match the current refusal without pruning it or the lost vectors used by conflict reads.
+        if (attempts.length > 0 && (!refused || refused.ids !== sendableOrderText(chaId))) return true;
+    }
+    return false;
 }
 
 /** Unsaved user work, including requests in flight. */
@@ -3313,15 +5414,27 @@ export function hasRefusedChatWork(): boolean {
 /**
  * Releases only at an explicit edit/retry. A loaded chat sends its whole current copy on the held
  * revision; an unloaded chat replays retained metadata ops without inventing an empty transcript.
+ * Recovered work is replayed from its ops, since its effects are not in the boot mirror.
  */
 function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
     const key = keyOf(ref.chaId, ref.chatId);
     const refused = quarantined.get(key);
     if (!refused) return false;
     const chat = heldChat(ref);
-    const entry = pendingFor(ref);
+    const entry = pendingFor(ref, true);
     const seq = nextSeq();
-    if (refused.delete && !isMember(ref)) {
+    if (refused.recovered && chatRevisions.has(key)) {
+        entry.create = false;
+        entry.resend = null;
+        entry.ops = [
+            ...refused.ops.map((op): ChatOp =>
+                op.op === "create" ? { op: "replace", chat: withoutProjection(op.chat) } : op,
+            ),
+            ...entry.ops,
+        ];
+        entry.seq = seq;
+        staleChats.add(key);
+    } else if (refused.delete && !isMember(ref)) {
         if (refused.create) {
             pending.delete(key);
             settleKey(key, seq);
@@ -3334,15 +5447,18 @@ function releaseChatRefusal(ref: ChatRef): "snapshot" | "ops" | false {
     } else {
         entry.create = refused.create;
         entry.resend = null;
-        entry.ops = chat
-            ? refused.create
-                ? []
-                : [{ op: "replace", chat: projectChat(chat) }]
-            : [...refused.ops, ...entry.ops];
+        entry.ops =
+            chat && !refused.recovered
+                ? refused.create
+                    ? []
+                    : [{ op: "replace", chat: sendChat(chat) }]
+                : [...refused.ops, ...entry.ops];
         entry.seq = seq;
     }
     clearChatRefusal(key);
-    return chat ? "snapshot" : "ops";
+    dirtyChatJournal(key, "pending");
+    dirtyChatJournal(key, "resend");
+    return chat && !refused.recovered ? "snapshot" : "ops";
 }
 
 /** Explicit retry of one chat or order from the refusal inventory. */
@@ -3367,16 +5483,19 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
     if (item.kind === "chat") {
         const chatKey = keyOf(item.chaId, item.chatId);
         const refused = quarantined.get(chatKey);
-        const read = await readRefs([], { chats: [{ characterId: item.chaId, id: item.chatId }] });
+        const readStamp = issueChatReadStamp();
+        const read = await deadlineChatRead((signal) =>
+            readRefs([], { chats: [{ characterId: item.chaId, id: item.chatId }], signal }),
+        );
         if (!canApply() || chatOwnerToken(item.chaId) !== owner || quarantined.get(chatKey) !== refused) return false;
         const server = read.chats?.find((chat) => chat.characterId === item.chaId && chat.id === item.chatId);
         if (!server) return false;
-        acceptRemoteChat(server as RemoteChat);
+        acceptRemoteChat({ ...server, readStamp } as RemoteChat, 0, { capture: false });
         clearChatRefusal(chatKey);
     } else {
         const refused = quarantinedOrders.get(item.chaId);
         const seq = pendingOrders.get(item.chaId);
-        const read = await readRefs([], { chatSummaryCollections: [item.chaId] });
+        const read = await deadlineChatRead((signal) => readRefs([], { chatSummaryCollections: [item.chaId], signal }));
         if (
             !canApply() ||
             chatOwnerToken(item.chaId) !== owner ||
@@ -3386,8 +5505,8 @@ export async function discardRefusedChat(key: string, canApply: () => boolean): 
         )
             return false;
         const collection = read.chatSummaryCollections?.find((collection) => collection.characterId === item.chaId);
-        if (!collection) return false;
-        acceptRemoteCollection(collection);
+        if (!collection || !chatCollectionIsCurrent(collection)) return false;
+        acceptRemoteCollection(collection, { captureOrder: false });
         clearOrderRefusal(item.chaId);
     }
     notifyWork();
@@ -3420,19 +5539,20 @@ function prepareCharacterChats(chats: Chat[], character: { firstMsgIndex?: unkno
 /**
  * Holds the chats of a character that is about to enter the character list (`characterStore`'s
  * add and replace), prepared (`prepareCharacterChats`), replacing anything held under `chaId`.
- * A new character leaves its creates to the save loop's `adoptCharacter`. A reused character id
- * reconciles the chats the server holds or may receive from earlier work: its character record
+ * A new character's caller queues its creates with `adoptCharacter` after insertion. A reused
+ * character id reconciles the chats the server holds or may receive from earlier work: its character record
  * stays an update, so the save loop will not adopt its replacement chats. The revisions stay held
  * until the server acknowledges the old character's deletion (`ackCharacterDelete`), so a re-add
  * after a deletion that failed or was refused reconciles the same way. Unsent work is superseded,
  * but an unacknowledged create keeps its payload for replay before the replacement or deletion, also
- * one the deletion's collection settled (`parkedResends`, restored here first).
+ * one the deletion's collection settled (`parkedResends`, restored here first). A reused id whose old
+ * delete is in flight is created after that delete settles.
  * The caller has finished every check that can refuse the character first, and drops the held chats
  * (`forgetCharacterChats`) if insertion throws; the save loop then forgets the absent owner's work.
  *
  * A replacement based on a revision another tab changed follows the usual conflict reload, which
  * discards that chat's replacement with a notice. A chat another tab created that this client never
- * saw survives on the server; reconciliation can delete only chats this client knows about.
+ * saw, and every omitted chat the server kept, rejoin the list through a collection refresh.
  */
 export function installCharacterChats(chaId: string, chats: Chat[], character: { firstMsgIndex?: unknown }) {
     const prefix = `${chaId}\u0000`;
@@ -3449,7 +5569,13 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
         known.size > 0 || orderRevisions.has(chaId) || pendingOrders.has(chaId) || inflightOrders.has(chaId);
     renewLifetime(chaId);
     dropLoadState(chaId);
-    setChatList(chaId, loadedEntries(prepareCharacterChats(chats, character)));
+    const prepared = prepareCharacterChats(chats, character);
+    for (const chat of prepared) {
+        // Only a chat the mirror holds whole is an existing one here: of any other, nothing says what
+        // the field is, and a value this drops would be lost with the chat's `replace`.
+        settleHypaV3Data(keyOf(chaId, chat.id!), chat, heldChat({ chaId, chatId: chat.id! }), chat.memoryMode);
+    }
+    setChatList(chaId, loadedEntries(prepared));
     // Explicit recreation supersedes the refused intent; reconciliation below queues its replacement.
     for (const key of known) clearChatRefusal(key);
     if (reconcile) {
@@ -3461,19 +5587,11 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
             }
             const entry = pending.get(key);
             const seq = nextSeq();
-            if (!chatRevisions.has(key) && !inflight.has(key) && !entry?.resend) {
-                // Only a never-sent create existed: nothing needs deleting on the server.
+            if (entry?.resend) {
+                pending.set(key, { ...entry, create: false, ops: [], seq });
+            } else {
                 pending.delete(key);
                 settleKey(key, seq);
-            } else {
-                pending.set(key, {
-                    characterId: chaId,
-                    chatId,
-                    create: false,
-                    resend: entry?.resend ?? null,
-                    ops: [{ op: "delete" }],
-                    seq,
-                });
             }
             staleChats.delete(key);
             noticedChats.delete(key);
@@ -3482,17 +5600,18 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
         }
         for (const chat of chatsOf(chaId)) {
             const key = keyOf(chaId, chat.id!);
-            const entry = pendingFor({ chaId, chatId: chat.id! });
+            const entry = pendingFor({ chaId, chatId: chat.id! }, true);
             const sending = inflight.get(key);
             // A delete in flight will remove the base, so the reused id needs a create after it settles.
             entry.create =
                 sending?.ops[0]?.op === "delete" ||
                 !!entry.resend?.ops.some((op) => op.op === "delete") ||
                 (!chatRevisions.has(key) && !sending && !entry.resend);
-            entry.ops = entry.create ? [] : [{ op: "replace", chat: projectChat(chat) }];
+            entry.ops = entry.create ? [] : [{ op: "replace", chat: sendChat(chat) }];
             entry.seq = nextSeq();
+            dirtyChatJournal(key, "pending");
         }
-        // The reorder waits until the queued deletes can leave a permutation of the server's list.
+        // The collection refresh places surviving omitted members after the replacement chats.
         pendingOrders.set(chaId, nextSeq());
     }
     mutationToken += 1;
@@ -3500,6 +5619,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
     if (reconcile) {
         notifyWork();
     }
+    return reconcile;
 }
 
 /**
@@ -3512,9 +5632,10 @@ function restoreParkedResends(chaId: string) {
     for (const [key, { chatId, resend }] of parked ?? []) {
         const entry = pending.get(key);
         if (!entry) {
-            pending.set(key, { characterId: chaId, chatId, create: false, resend, ops: [], seq: 0 });
+            pending.set(key, { characterId: chaId, chatId, groupId: uuidv4(), create: false, resend, ops: [], seq: 0 });
         } else if (!entry.resend) {
             entry.resend = resend;
+            dirtyChatJournal(key, "resend");
         }
     }
 }
@@ -3565,10 +5686,12 @@ function retireCharacterGroups(chaId: string) {
  * revisions it holds of them when the server acknowledges it (`ackCharacterDelete`).
  */
 export function forgetCharacterChats(chaId: string) {
+    lostOrderAttempts.delete(chaId);
     dropHeld(chaId);
     delete chosen[slot(chaId)];
     dropLoadState(chaId);
     renewLifetime(chaId);
+    notifyRemoval({ chaId, chatId: null });
 }
 
 /** Drops a character's pins (character and chat pins), recency stamps, and loads in flight (a reset of its chats). */
@@ -3586,10 +5709,11 @@ function dropLoadState(chaId: string) {
 
 /**
  * Gives a character new to the list its first chat when it holds none, and its chats their message
- * ids and defaults, without queuing anything (the save loop's `adoptCharacter` queues the creates).
+ * ids and defaults, without queuing anything (`adoptCharacter` queues the creates after insertion).
+ * A matching index hint avoids searching the character list.
  */
-export function normalizeNewCharacter(chaId: string) {
-    const character = findCharacter(chaId);
+export function normalizeNewCharacter(chaId: string, indexHint?: number) {
+    const character = findCharacter(chaId, indexHint);
     if (!character) {
         return;
     }
@@ -3597,6 +5721,7 @@ export function normalizeNewCharacter(chaId: string) {
         insertChat(chaId, 0, { id: uuidv4(), message: [], note: "", name: "Chat 1", localLore: [] });
     }
     for (const chat of chatsOf(chaId)) {
+        dropMessagePositions(keyOf(chaId, chat.id!));
         prepareChatInput(chat, character);
         chat.message ??= [];
         prepareMessages(chat.message, new Set());
@@ -3605,12 +5730,15 @@ export function normalizeNewCharacter(chaId: string) {
     syncSelection(chaId);
 }
 
-/** Queues creates for a new character's chats (the save loop found it in the list, unsaved). */
-export function adoptCharacter(chaId: string) {
-    if (!findCharacter(chaId)) {
+/**
+ * Queues creates for a new character's chats on insertion and for unsaved chats found by the save
+ * loop. A matching index hint avoids list searches here and during normalization.
+ */
+export function adoptCharacter(chaId: string, indexHint?: number) {
+    if (!findCharacter(chaId, indexHint)) {
         return;
     }
-    normalizeNewCharacter(chaId);
+    normalizeNewCharacter(chaId, indexHint);
     for (const chatId of memberIds(chaId)) {
         const key = keyOf(chaId, chatId);
         const entry = pending.get(key);
@@ -3624,23 +5752,42 @@ export function adoptCharacter(chaId: string) {
             const created = pendingFor({ chaId, chatId });
             created.create = true;
             created.seq = nextSeq();
+            dirtyChatJournal(key, "pending");
         }
     }
 }
 
 /**
- * Drops all chat state of a character that is deleted (the server deletes its chats with it). With
- * `discard` (another writer deleted it), the chats' unsent work and a queued reorder count as
+ * Drops all local chat state after a character's deletion or a conflicting create. With `discard`
+ * (another writer deleted it), the chats' unsent work and a queued reorder count as
  * discarded (the flush and `MutationScope` reports, `markDiscarded`); returns whether there was any.
  * A queued delete the deletion fulfils is settled. This tab's own deletion settles them all instead
  * (`ackCharacterDelete`, once the server acknowledged it). Groups still in flight are retired
- * (`retireCharacterGroups`) and the parked resends dropped: the chats are gone on the server.
+ * (`retireCharacterGroups`) and the parked resends dropped, so late answers cannot restore that state.
+ * With `capture`, keeps eligible work as drafts even when settling it: a conflicting parent create
+ * supersedes its local chats, with the discard reported on the character itself.
  */
-export function forgetCharacter(chaId: string, options: { discard?: boolean } = {}): boolean {
+export function forgetCharacter(chaId: string, options: { discard?: boolean; capture?: boolean } = {}): boolean {
+    if ((options.discard || options.capture) && conflictListener) {
+        const prefix = `${chaId}\u0000`;
+        const keys = new Set([
+            ...pending.keys(),
+            ...inflight.keys(),
+            ...quarantined.keys(),
+            ...(parkedResends.get(chaId)?.keys() ?? []),
+        ]);
+        for (const key of keys) {
+            if (key.startsWith(prefix)) captureChatConflict(key, { gone: true, fulfilledDelete: true });
+        }
+        captureQueuedOrder(chaId);
+        captureSentOrder(recoveringOrders.get(chaId));
+        captureSentOrder(inflightOrders.get(chaId));
+    }
     const discardedWork = dropCharacterWork(chaId, options.discard === true);
     retireCharacterGroups(chaId);
     parkedResends.delete(chaId);
     forgetCharacterRevisions(chaId);
+    notifyRemoval({ chaId, chatId: null });
     return discardedWork;
 }
 
@@ -3688,6 +5835,7 @@ function dropCharacterWork(chaId: string, discard: boolean): boolean {
         }
     }
     pendingOrders.delete(chaId);
+    lostOrderAttempts.delete(chaId);
     const recoveringOrder = recoveringOrders.get(chaId);
     if (recoveringOrder) {
         if (discard) {
@@ -3715,6 +5863,7 @@ function forgetCharacterRevisions(chaId: string) {
         }
     }
     orderRevisions.delete(chaId);
+    lostOrderAttempts.delete(chaId);
     clearOrderRefusal(chaId);
     for (const key of quarantined.keys()) {
         if (key.startsWith(prefix)) clearChatRefusal(key);
@@ -3770,7 +5919,7 @@ export function ackCharacterDelete(chaId: string) {
         }
         if (isMember({ chaId, chatId: entry.chatId })) {
             // Its server copy is gone: the create sends the mirror's chat, which holds every change.
-            pending.set(key, { ...entry, create: true, resend: null, ops: [], seq: workSeq(key) });
+            pending.set(key, { ...entry, groupId: uuidv4(), create: true, resend: null, ops: [], seq: workSeq(key) });
         } else {
             // A delete of a chat the character's deletion removed.
             settleKey(key, workSeq(key));
@@ -3809,10 +5958,13 @@ function memberIndex(entry: Pending): number {
  * are in the mirror, per character in mirror order; sent-but-unacknowledged creates exactly as
  * sent), then every other chat with unsent work, then reorders. `creating` names characters the
  * same batch creates; chat work of characters not yet on the server waits. A chat with more unsent
- * ops than `maxOps` (the server's cap on one request) sends the first `maxOps` now and the rest
- * once those are acknowledged, on the revision they produce; its work counts as saved only when the
- * last part is. Reorders wait behind in-doubt membership resends and `holdOrders` (characters whose
- * chat list still needs a read after an acknowledgement): their base may be stale.
+ * ops than `maxOps` (the server's cap on one request) holds the first part as a resend until the
+ * journal confirms the split. The rest follows its acknowledgement, on the revision it produces;
+ * its work counts as saved only when the last part is. Reorders wait behind in-doubt membership
+ * resends and `holdOrders` (characters whose chat list still needs a read after an acknowledgement):
+ * their base may be stale.
+ * Creates and deletes wait for a conflicting reorder's read if a lost vector could match it:
+ * saving either first would change the vector the read sees.
  */
 export function takeChatWork(
     creating: ReadonlySet<string>,
@@ -3832,7 +5984,12 @@ export function takeChatWork(
     const createdHere = new Set<string>();
     const deletedHere = new Set<string>();
     const eligible = [...pending.entries()].filter(
-        ([key]) => !quarantined.has(key) && !deferred.has(key) && !inflight.has(key) && !isJobBlocked(key),
+        ([key, entry]) =>
+            !quarantined.has(key) &&
+            !deferred.has(key) &&
+            !inflight.has(key) &&
+            !isJobBlocked(key) &&
+            !waitsForLostOrderRead(entry),
     );
     const creates = eligible
         .filter(([, entry]) => entry.create || entry.resend)
@@ -3848,7 +6005,8 @@ export function takeChatWork(
             // id, so its replay can be recognized; later work follows once it is answered, in a
             // group of its own (a replay answered as a duplicate never carries it down).
             const { resend } = entry;
-            const group = sentGroup(key, entry, resend.baseRevision, resend.ops, resend.seq, resend);
+            if (resend.unconfirmed) continue;
+            const group = sentGroup(key, entry, resend.baseRevision, resend.ops, resend.groupId, resend.seq, resend);
             inflight.set(key, group);
             if (entry.create || entry.ops.length > 0 || entry.seq > resend.seq) {
                 // The newer work stays, also an empty entry whose newer sequence a flush may wait for.
@@ -3868,9 +6026,9 @@ export function takeChatWork(
         if (queuesDelete(entry) && base !== undefined) {
             // Delete the old incarnation alone. The recreation keeps its sequence until its own
             // create is answered, even when this deletion needs a replay or conflict recovery.
-            const group = sentGroup(key, entry, base, [{ op: "delete" }], 0);
+            const group = sentGroup(key, entry, base, [{ op: "delete" }], entry.groupId, 0);
             inflight.set(key, group);
-            pending.set(key, { ...entry, ops: [] });
+            pending.set(key, { ...entry, groupId: uuidv4(), ops: [] });
             groups.push(group);
             deletedHere.add(key);
             continue;
@@ -3888,7 +6046,7 @@ export function takeChatWork(
             return serverHolds(otherKey) || createdHere.has(otherKey);
         }).length;
         // The mirror copy already holds every queued change.
-        const group = sentGroup(key, entry, null, [{ op: "create", chat: projectChat(chat), index }]);
+        const group = sentGroup(key, entry, null, [{ op: "create", chat: sendChat(chat), index }], entry.groupId);
         inflight.set(key, group);
         pending.delete(key);
         groups.push(group);
@@ -3919,15 +6077,25 @@ export function takeChatWork(
         }
         const ops = deleting ? [{ op: "delete" } as ChatOp] : entry.ops;
         if (ops.length > maxOps) {
-            // More than one request can carry: the first part goes now with sequence 0 (settling
-            // it settles nothing), the rest stays queued behind it with the entry's sequence.
-            const group = sentGroup(key, entry, base, ops.slice(0, maxOps), 0);
-            inflight.set(key, group);
-            pending.set(key, { ...entry, ops: ops.slice(maxOps) });
-            groups.push(group);
+            // The old id must not reach the server as a prefix while its recoverable row still
+            // names the whole batch. Journal the split before sending the prefix, whose sequence
+            // settles nothing; the remainder keeps the original flush obligation.
+            pending.set(key, {
+                ...entry,
+                groupId: uuidv4(),
+                ops: ops.slice(maxOps),
+                resend: {
+                    ops: ops.slice(0, maxOps),
+                    baseRevision: base,
+                    groupId: entry.groupId,
+                    seq: 0,
+                    inDoubt: false,
+                    unconfirmed: true,
+                },
+            });
             continue;
         }
-        const group = sentGroup(key, entry, base, ops);
+        const group = sentGroup(key, entry, base, ops, entry.groupId);
         inflight.set(key, group);
         pending.delete(key);
         groups.push(group);
@@ -3978,6 +6146,7 @@ function sentGroup(
     entry: Pending,
     baseRevision: string | null,
     ops: ChatOp[],
+    groupId: string,
     seq = entry.seq,
     resend: Resend | null = null,
 ): SentChatGroup {
@@ -3989,9 +6158,12 @@ function sentGroup(
         baseRevision,
         ops,
         seq,
-        groupId: resend?.groupId ?? uuidv4(),
+        groupId,
         ...(resend ? { resent: true as const } : {}),
         ...(resend?.inDoubt ? { inDoubt: true as const } : {}),
+        ...((resend?.recoveredAt ?? entry.recoveredAt) !== undefined
+            ? { recoveredAt: resend?.recoveredAt ?? entry.recoveredAt }
+            : {}),
         // The chat as it is on the server if the create landed.
         ...(create ? { expected: canonicalChat(create.chat) } : {}),
     };
@@ -3999,7 +6171,7 @@ function sentGroup(
 
 /** A chat in the form the server stores it (the defaults it adds), for comparisons. */
 function canonicalChat(chat: Chat): string {
-    const copy = clone(chat) as Chat;
+    const copy = withoutProjection(clone(chat) as Chat);
     delete copy.isStreaming;
     delete copy.activeStreamingDisplayOptimizationMode;
     copy.name ??= "";
@@ -4041,6 +6213,7 @@ export function rebaseChatOrders(work: ChatWork) {
         const current = orderRevisions.get(order.characterId);
         if (current !== undefined) {
             order.baseRevision = current;
+            dirtyOrderJournal(order.characterId, "sent");
         }
     }
 }
@@ -4057,6 +6230,123 @@ function settleOrder(chaId: string, seq: number) {
     }
 }
 
+/** Whole-chat writes still learn store-owned candidate counters through a read. */
+function writesWholeChatCandidateFields(op: ChatOp): boolean {
+    if (op.op !== "create" && op.op !== "replace") return false;
+    if (candidateFieldRemovals.has(op)) return true;
+    return op.chat.message.some(
+        (message) => Object.hasOwn(message, "candidates") || Object.hasOwn(message, "selected"),
+    );
+}
+
+function clearCandidateSnapshots(message: Pick<Message, "candidates" | "scriptstateCheckpoint">, checkpoint = true) {
+    if (checkpoint) delete message.scriptstateCheckpoint;
+    for (const candidate of message.candidates ?? []) delete candidate.scriptstateAfter;
+}
+
+/** Installs store-owned corrections without queuing work or changing a sent group's bytes. */
+function adoptCandidateRows(group: SentChatGroup, result: ChatGroupResult, previousRevision: string | undefined) {
+    if (!result.candidateRows?.length) return;
+    const chat = heldChat({ chaId: group.characterId, chatId: group.chatId });
+    const entry = pending.get(group.key);
+    const previous = parseRevisionToken(previousRevision);
+    const revision = parseRevisionToken(result.revision);
+    if (
+        result.stale ||
+        !chat ||
+        entry?.create ||
+        chatRevisions.get(group.key) !== result.revision ||
+        (previousRevision !== undefined && (previous?.epoch !== revision?.epoch || previous?.seq !== revision?.seq))
+    ) {
+        staleChats.add(group.key);
+        return;
+    }
+    const ops = entry?.ops ?? [];
+    const selecting = new Set(ops.filter((op) => op.op === "selectCandidate").map((op) => op.messageId));
+    let updated = false;
+    let queuedChanged = false;
+    for (const correction of result.candidateRows) {
+        const message = chat.message[positionOf(group.key, chat, correction.id)];
+        if (!message) continue;
+        if (correction.cleared) {
+            clearCandidateSnapshots(message);
+            for (const op of ops) {
+                if (op.op === "setMessage" && op.message.chatId === correction.id) {
+                    clearCandidateSnapshots(op.message);
+                } else if (op.op === "patchMessage" && op.id === correction.id) {
+                    // A patch's explicit checkpoint is intent; candidate snapshots are inherited copies.
+                    if (op.set) clearCandidateSnapshots(op.set, false);
+                } else {
+                    continue;
+                }
+                const before = beforeValues.get(op);
+                if (before && "value" in before && isPlainRecord(before.value)) {
+                    clearCandidateSnapshots(before.value as Pick<Message, "candidates" | "scriptstateCheckpoint">);
+                }
+                queuedChanged = true;
+            }
+            updated = true;
+        }
+        // A queued selection owns an optimistic increment and keeps its captured expectation.
+        if (!selecting.has(correction.id)) {
+            if (correction.candidatesRevision === null) delete message.candidatesRevision;
+            else message.candidatesRevision = correction.candidatesRevision;
+            updated = true;
+        }
+    }
+    if (updated) changed(group.key);
+    if (queuedChanged) dirtyChatJournal(group.key, "pending");
+}
+
+function settleRecoveryWrites(group: SentChatGroup, result: ChatGroupResult) {
+    const refused = result.refusedMeta && new Map(result.refusedMeta.map((detail) => [detail.index, detail]));
+    const legacyOoc =
+        !refused && result.oocAnswerRefusals?.length
+            ? group.ops.filter((op) => op.op === "meta" && op.ifOocUnanswered !== undefined)
+            : [];
+    const legacyMemory =
+        !refused && result.memoryRefused
+            ? ["supaMemoryData", "hypaV2Data"].filter((key) =>
+                  group.ops.some(
+                      (op) => op.op === "meta" && (Object.hasOwn(op.set ?? {}, key) || op.unset?.includes(key)),
+                  ),
+              )
+            : [];
+    let translationIndex = 0;
+    let listeners: Set<() => void> | undefined;
+    group.ops.forEach((op, index) => {
+        const translation = op.op === "setTranslation" ? result.translations?.[translationIndex++] : undefined;
+        const receipt = recoveryReceipts.get(op);
+        if (!receipt) return;
+        if (receipt.onAnswer) (listeners ??= new Set()).add(receipt.onAnswer);
+        receipt.answered = true;
+        if (op.op === "setTranslation" && translation === "ignored") receipt.ignoredTranslation = op;
+        const detail = refused?.get(index);
+        const fields =
+            detail?.memoryFields ??
+            (op.op === "meta" && legacyMemory.length
+                ? legacyMemory.filter((key) => Object.hasOwn(op.set ?? {}, key) || op.unset?.includes(key))
+                : []);
+        if (op.op === "meta" && fields.length) {
+            if (legacyMemory.length > 1) {
+                receipt.remaining = undefined;
+                return;
+            }
+            receipt.remaining = {
+                op: "meta",
+                set: Object.fromEntries(Object.entries(op.set ?? {}).filter(([key]) => fields.includes(key))),
+                unset: op.unset?.filter((key) => fields.includes(key)),
+            };
+        } else if (op.op === "meta" && op.ifOocUnanswered !== undefined && legacyOoc.length) {
+            // A legacy aggregate identifies a sole candidate, but cannot distinguish several.
+            receipt.remaining = legacyOoc.length === 1 ? op : undefined;
+        } else {
+            receipt.remaining = detail ? op : null;
+        }
+    });
+    listeners?.forEach((listener) => listener());
+}
+
 /**
  * Records the server's answer to chat work that was saved. Returns the characters whose chat list
  * on the server differs from this client's membership, or whose membership replay acknowledgement
@@ -4070,10 +6360,51 @@ export function ackChatWork(
     const refresh = new Set<string>();
     const placedByOrders = new Map(orders.map((order) => [order.characterId, new Set(order.ids)]));
     work.groups.forEach((group, index) => {
+        const previousRevision = chatRevisions.get(group.key);
+        const result = results[index];
+        // A lost response can make the replay the first receipt this tab actually sees.
+        const current = inflight.get(group.key)?.groupId === group.groupId;
+        if (current && result) settleRecoveryWrites(group, result);
+        const refusedMeta = current && (result?.memoryRefused || result?.oocAnswerRefusals?.length);
         inflight.delete(group.key);
         jobBlocked.delete(group.key);
-        const result = results[index];
         if (result) {
+            if (refusedMeta) {
+                if (result.memoryRefused) alertReloadNotice(language.memoryEditRefused);
+                for (const reason of result.oocAnswerRefusals ?? []) {
+                    alertReloadNotice(
+                        reason === "answered" ? language.ooc.alreadyAnswered : language.ooc.oocExchangeGone,
+                    );
+                }
+            }
+            if (conflictListener && result.targets?.includes("missing")) {
+                let targetIndex = 0;
+                const missingOps = group.ops.filter((op) => {
+                    if (
+                        op.op !== "setText" &&
+                        op.op !== "setMessage" &&
+                        op.op !== "patchMessage" &&
+                        op.op !== "setTranslation"
+                    )
+                        return false;
+                    return (
+                        result.targets![targetIndex++] === "missing" && !recoveryReceipts.get(op)?.ignoredTranslation
+                    );
+                });
+                if (missingOps.length) {
+                    conflictListener({
+                        scope: "chat",
+                        target: group.key,
+                        layers: {
+                            pending: {
+                                ops: journalOps(missingOps),
+                                baseRevision: group.baseRevision,
+                                groupId: group.groupId,
+                            },
+                        },
+                    });
+                }
+            }
             if (
                 group.inDoubt &&
                 group.ops.some((op) => op.op === "create" || op.op === "delete") &&
@@ -4082,6 +6413,10 @@ export function ackChatWork(
                 // A membership replay can answer only its chat revision. Read the order before
                 // sending a queued reorder on the revision from before that membership change.
                 refresh.add(group.characterId);
+            }
+            if (result.revision !== null) {
+                // A successful edit or create was admitted while the chat was active.
+                installChatTrashState({ chaId: group.characterId, chatId: group.chatId }, result.revision, null);
             }
             if (result.revision === null) {
                 dropChatRevision(group.key);
@@ -4114,16 +6449,40 @@ export function ackChatWork(
                 // the mirror, which holds this group's edit (`ackedRevisions`).
                 ackedRevisions.set(group.key, result.revision);
             }
-            if ((result.stale || result.targets?.includes("missing")) && result.revision !== null) {
-                // A `missing` target (another writer removed its message) changed nothing and is not
-                // a discard: the idle read removes the message from the mirror.
+            if (
+                (group.recoveredAt !== undefined ||
+                    result.stale ||
+                    result.targets?.includes("missing") ||
+                    result.selections?.includes("refused") ||
+                    result.oocAnswerRefusals?.length ||
+                    group.ops.some(writesWholeChatCandidateFields)) &&
+                result.revision !== null
+            ) {
+                // A `missing` target changed nothing and is kept as a draft, without a discard:
+                // the idle read removes its local message. Recovered ops were never applied to the
+                // boot mirror, so even a fresh or duplicate acknowledgement needs the whole read.
+                // Refused selections and whole-chat candidate writes also need that read.
                 staleChats.add(group.key);
             }
             if (result.messageIds) {
                 adoptMessageIds(group, result.messageIds);
             }
+            adoptCandidateRows(group, result, previousRevision);
         }
-        settleKey(group.key, group.seq);
+        if (refusedMeta) {
+            // Recovery Apply keeps its source draft when the scoped flush reports a discarded edit.
+            markDiscarded(group.key, group.seq);
+        } else {
+            settleKey(group.key, group.seq);
+        }
+        if (
+            result &&
+            !pending.has(group.key) &&
+            !inflight.has(group.key) &&
+            (!result.stale || chatRevisions.get(group.key) !== previousRevision)
+        ) {
+            recordChatInstall(group.key);
+        }
     });
     for (const order of orders) {
         const prefix = `${order.characterId}\u0000`;
@@ -4141,6 +6500,12 @@ export function ackChatWork(
     }
     for (const order of work.orders) {
         inflightOrders.delete(order.characterId);
+        const remaining = lostOrderAttempts.get(order.characterId)?.filter((attempt) => attempt.seq > order.seq);
+        if (remaining?.length) {
+            lostOrderAttempts.set(order.characterId, remaining);
+        } else {
+            lostOrderAttempts.delete(order.characterId);
+        }
         settleOrder(order.characterId, order.seq);
     }
     return [...refresh];
@@ -4169,13 +6534,13 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     }
     const ref = { chaId: group.characterId, chatId: group.chatId };
     const chat = heldChat(ref);
-    const firstRename = new Map<string, string>();
+    dropMessagePositions(group.key);
+    const firstRename = new Map([...renames].map(([id, values]) => [id, values[0]]));
     if (chat) {
         for (const message of chat.message) {
             const list = renames.get(message.chatId!);
             const next = list?.shift();
             if (next !== undefined && next !== message.chatId) {
-                firstRename.set(message.chatId!, next);
                 message.chatId = next;
             }
         }
@@ -4184,8 +6549,20 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
     const rename = (id: string) => firstRename.get(id) ?? id;
     const entry = pending.get(group.key);
     for (const op of entry?.ops ?? []) {
+        const before = beforeValues.get(op);
+        if (
+            (op.op === "setMessage" || (op.op === "remove" && op.ids.length === 1)) &&
+            before &&
+            "value" in before &&
+            isPlainRecord(before.value) &&
+            typeof before.value.chatId === "string"
+        ) {
+            before.value.chatId = rename(before.value.chatId);
+        }
         if (op.op === "setText" || op.op === "setTranslation" || op.op === "patchMessage") {
             op.id = rename(op.id);
+        } else if (op.op === "selectCandidate") {
+            op.messageId = rename(op.messageId);
         } else if (op.op === "setMessage") {
             op.message = { ...op.message, chatId: rename(op.message.chatId!) };
         } else if (op.op === "remove") {
@@ -4194,10 +6571,15 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
             op.anchor = { after: rename(op.anchor.after) };
         }
     }
+    dirtyChatJournal(group.key, "pending");
     const streamed = streamingChats[keyOf(ref.chaId, ref.chatId)];
     if (streamed !== undefined) {
         streamed.messageId = rename(streamed.messageId);
     }
+}
+
+function sameOrderIds(a: readonly string[], b: readonly string[]): boolean {
+    return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
 /**
@@ -4205,7 +6587,8 @@ function adoptMessageIds(group: SentChatGroup, ids: readonly string[]) {
  * With `lost` (no answer came: the request may have landed) every group becomes a resend of exactly
  * what was sent, with its id (`Resend.inDoubt`); so does a create, a group that was itself a resend
  * (it keeps its doubt), and a group with a newer create behind it. Any other group is merged in front
- * of the newer ops.
+ * of the newer ops. A lost reorder's sent vectors and sequences stay in memory for conflict readback.
+ * The queued order keeps the latest sequence and builds its vector from membership when sent.
  */
 export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}) {
     for (const group of work.groups) {
@@ -4216,6 +6599,7 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
             pending.set(group.key, {
                 characterId: group.characterId,
                 chatId: group.chatId,
+                groupId: newer?.groupId ?? uuidv4(),
                 create: newer?.create ?? false,
                 resend: {
                     ops: group.ops,
@@ -4223,6 +6607,7 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
                     baseRevision: group.baseRevision,
                     groupId: group.groupId,
                     inDoubt: !!options.lost || !!group.inDoubt,
+                    ...(group.recoveredAt !== undefined ? { recoveredAt: group.recoveredAt } : {}),
                 },
                 ops: newer?.ops ?? [],
                 seq: newer?.seq ?? 0,
@@ -4232,25 +6617,37 @@ export function requeueChatWork(work: ChatWork, options: { lost?: boolean } = {}
         pending.set(group.key, {
             characterId: group.characterId,
             chatId: group.chatId,
+            groupId: group.groupId,
             create: false,
             resend: newer?.resend ?? null,
             ops: [...group.ops, ...(newer?.ops ?? [])],
             seq: Math.max(group.seq, newer?.seq ?? 0),
         });
     }
-    for (const order of work.orders) {
-        inflightOrders.delete(order.characterId);
-        if (!pendingOrders.has(order.characterId)) {
-            pendingOrders.set(order.characterId, order.seq);
+    for (const { characterId, seq, ids } of work.orders) {
+        inflightOrders.delete(characterId);
+        if (options.lost) {
+            const attempts = lostOrderAttempts.get(characterId) ?? [];
+            if (!attempts.some((attempt) => attempt.seq === seq && sameOrderIds(attempt.ids, ids))) {
+                attempts.push({ seq, ids: [...ids] });
+                lostOrderAttempts.set(characterId, attempts);
+            }
+        }
+        if (!pendingOrders.has(characterId)) {
+            pendingOrders.set(characterId, seq);
         }
     }
 }
 
-/** Holds refused work locally, reporting it discarded to flush callers, until an explicit release. */
+/**
+ * Holds refused work until an explicit release, reporting it discarded to flush callers. Alerts
+ * once per chat/session unless `repeatAlert` surfaces each oversized pre-dispatch attempt.
+ */
 export function quarantineChat(
-    group: Pick<SentChatGroup, "key" | "seq" | "ops">,
+    group: Pick<SentChatGroup, "key" | "seq" | "ops" | "recoveredAt">,
     reason = language.chatSaveRefused,
     alertText = `${language.chatSaveRefused}\n${reason}`,
+    repeatAlert = false,
 ) {
     const entry = pending.get(group.key);
     const ops = [...group.ops, ...(entry?.resend?.ops ?? []), ...(entry?.ops ?? [])];
@@ -4260,16 +6657,17 @@ export function quarantineChat(
     const [chaId, chatId] = group.key.split("\u0000");
     quarantined.set(group.key, {
         reason,
-        ops: clone(ops),
+        ops: clone(ops).map((op, index) => copyOpBefore(ops[index], op)),
         create: (!chatRevisions.has(group.key) && !!entry?.create) || ops.some((op) => op.op === "create"),
         delete: !isMember({ chaId, chatId }) && ops.some((op) => op.op === "delete"),
+        ...(group.recoveredAt !== undefined ? { recovered: true as const } : {}),
     });
     notifyRefusals();
     deferred.delete(group.key);
     staleChats.delete(group.key);
     pending.delete(group.key);
     markDiscarded(group.key, seq);
-    if (!chatAlerts.has(group.key)) {
+    if (repeatAlert || !chatAlerts.has(group.key)) {
         chatAlerts.add(group.key);
         alertError(alertText);
     }
@@ -4295,8 +6693,20 @@ function markOrderDiscarded(chaId: string, seq: number) {
     settleOrder(chaId, seq);
 }
 
-/** The server's copy of a chat (revision and data null: it is gone), for conflict recovery. */
-export type RemoteChat = { characterId: string; id: string; revision: string | null; data: Chat | null };
+/**
+ * A whole server chat read (revision and data null: gone). `streaming`, when present, is authoritative
+ * even when empty; `readStamp` is client-only, captured at issue to fence it against later feed lists,
+ * `hello`, and honored reads. Without both, adoption keeps the revision-based lock release rule.
+ */
+export type RemoteChat = {
+    trashedAt?: number | null;
+    characterId: string;
+    id: string;
+    revision: string | null;
+    data: Chat | null;
+    streaming?: StreamingMessage[];
+    readStamp?: number;
+};
 
 /**
  * Handles the chat part of a 409 (the whole batch was rolled back). Work that did not conflict is
@@ -4306,7 +6716,9 @@ export type RemoteChat = { characterId: string; id: string; revision: string | n
  * gone is dropped with its work and its character's chat list is to be refreshed (`refresh`); a group
  * refused for an `append` whose anchor is gone is retried at the end (`reanchorGoneAppends`), unless
  * its id expired (`expired`: `reason: "expired"`) and it may already have landed; any
- * other is replaced by the server copy and its local work discarded. Reorders that conflicted keep
+ * other is replaced by the server copy and its local work discarded. Expired recovered groups
+ * quarantine their ops and newer work for explicit Retry/Discard and durable journaling.
+ * Reorders that conflicted keep
  * their sent vectors until a collection read distinguishes a lost answer from a discarded reorder.
  * A group refused for a generating message (`generating`: `reason: "generating"`) is kept and retried
  * after `JOB_RETRY_MS`, not reloaded, except its edits of the locked messages the conflict names
@@ -4323,6 +6735,7 @@ export function recoverChatConflicts(
     generating: ReadonlySet<string> = new Set(),
     lockedMessages: ReadonlyMap<string, readonly string[]> = new Map(),
     expired: ReadonlySet<string> = new Set(),
+    trashConflicts: ReadonlyMap<string, "useTrash" | "chatTrashed"> = new Map(),
 ): { reloaded: boolean; refresh: Set<string>; refreshOrders: Set<string>; blocked: boolean } {
     const byKey = new Map(remote.map((chat) => [keyOf(chat.characterId, chat.id), chat]));
     const retry: SentChatGroup[] = [];
@@ -4332,6 +6745,10 @@ export function recoverChatConflicts(
     let blocked = false;
     for (const group of work.groups) {
         inflight.delete(group.key);
+        if (group.recoveredAt !== undefined && expired.has(group.key)) {
+            quarantineChat(group, language.chatRecoveryExpired);
+            continue;
+        }
         if (generating.has(group.key)) {
             const outcome = dropLockedEdits(group, new Set(lockedMessages.get(group.key) ?? []));
             if (outcome.dropped) {
@@ -4360,7 +6777,12 @@ export function recoverChatConflicts(
         }
         const ref = { chaId: group.characterId, chatId: group.chatId };
         const create = group.ops[0]?.op === "create";
+        if (server.revision !== null) installChatTrashState(ref, server.revision, server.trashedAt);
+        // A refused hard delete (`useTrash`) keeps the chat at its server position, which a
+        // same-id recreation here moved: the character's list is read again for that order.
+        if (trashConflicts.get(group.key) === "useTrash") refreshOrders.add(group.characterId);
         if (
+            !trashConflicts.has(group.key) &&
             !expired.has(group.key) &&
             create &&
             server.revision !== null &&
@@ -4370,6 +6792,7 @@ export function recoverChatConflicts(
             // Our create (and the rest of its group) landed before the answer was lost: the whole
             // group is settled at the server's revision, so none of its ops applies a second time.
             holdChatRevision(group.key, server.revision);
+            if (group.recoveredAt !== undefined) staleChats.add(group.key);
             settleKey(group.key, group.seq);
             refreshOrders.add(group.characterId);
             continue;
@@ -4394,7 +6817,7 @@ export function recoverChatConflicts(
             continue;
         }
         const reanchored =
-            !expired.has(group.key) && server.revision !== null && server.data
+            !trashConflicts.has(group.key) && !expired.has(group.key) && server.revision !== null && server.data
                 ? reanchorGoneAppends(group, server)
                 : null;
         if (reanchored) {
@@ -4416,8 +6839,10 @@ export function recoverChatConflicts(
         if (server.revision === null) {
             // Gone on the server (another tab deleted it): the character's list is read again. Its
             // work is discarded now, with the notice, also when that read waits for a generation.
+            captureChatConflict(group.key, { group, gone: true });
             discardChatWork(group.key, group.seq);
-            dropChatRevision(group.key);
+            // The recovery collection settles membership after any sibling generation releases it.
+            dropChatRevision(group.key, isMember(ref));
             refresh.add(group.characterId);
             reloaded = true;
             continue;
@@ -4425,13 +6850,14 @@ export function recoverChatConflicts(
         if (!isMember(ref)) {
             // Deleted here but kept on the server (the delete conflicted): the character's list is
             // read again, which puts the chat back at its server position.
+            captureChatConflict(group.key, { group });
             discardChatWork(group.key, group.seq);
             holdChatRevision(group.key, server.revision);
             refresh.add(group.characterId);
             reloaded = true;
             continue;
         }
-        acceptRemoteChat(server, group.seq);
+        acceptRemoteChat(server, group.seq, { group });
         reloaded = true;
     }
     requeueRecovered(retry);
@@ -4439,7 +6865,7 @@ export function recoverChatConflicts(
     requeueChatWork({ groups: [], orders });
     for (const order of work.orders) {
         if (conflictedOrders.has(order.characterId)) {
-            // The sent snapshot, not the current mirror, decides whether its answer was lost.
+            // Keep the sent vector for comparison with the collection read.
             inflightOrders.delete(order.characterId);
             recoveringOrders.set(order.characterId, order);
             refresh.add(order.characterId);
@@ -4490,7 +6916,7 @@ function reanchorGoneAppends(group: SentChatGroup, server: RemoteChat): ChatOp[]
         ops.forEach((op, index) => {
             if (op.op === "append") {
                 if ("after" in op.anchor && !present.has(op.anchor.after)) {
-                    ops[index] = { ...op, anchor: { end: true } };
+                    ops[index] = copyOpBefore(op, { ...op, anchor: { end: true } });
                     rewritten = true;
                 }
                 for (const message of op.messages) {
@@ -4506,8 +6932,8 @@ function reanchorGoneAppends(group: SentChatGroup, server: RemoteChat): ChatOp[]
     if (!reanchor(ops)) {
         return null;
     }
-    if (newer) {
-        reanchor(newer.ops);
+    if (newer && reanchor(newer.ops)) {
+        dirtyChatJournal(group.key, "pending");
     }
     return ops;
 }
@@ -4520,6 +6946,8 @@ function targetsLocked(op: ChatOp, locked: ReadonlySet<string>): boolean {
         case "setTranslation":
         case "begin":
             return locked.has(op.id);
+        case "selectCandidate":
+            return locked.has(op.messageId);
         case "setMessage":
             return locked.has(op.message.chatId!);
         case "remove":
@@ -4546,11 +6974,32 @@ function dropLockedEdits(
     locked: ReadonlySet<string>,
 ): { kept: ChatOp[]; dropped: boolean; waiting: boolean } {
     const newer = pending.get(group.key);
-    const kept = group.ops.filter((op) => !targetsLocked(op, locked));
+    const filtered = group.ops.filter((op) => !targetsLocked(op, locked));
+    const kept = filtered.length === group.ops.length ? group.ops : filtered;
     const newerKept = newer?.ops.filter((op) => !targetsLocked(op, locked)) ?? [];
     const dropped = kept.length < group.ops.length || (newer !== undefined && newerKept.length < newer.ops.length);
     if (!dropped) {
         return { kept: group.ops, dropped: false, waiting: true };
+    }
+    if (conflictListener) {
+        const removed = group.ops.filter((op) => targetsLocked(op, locked));
+        const removedPending = newer?.ops.filter((op) => targetsLocked(op, locked)) ?? [];
+        conflictListener({
+            scope: "chat",
+            target: group.key,
+            layers: {
+                ...(removed.length ? { resend: resendLayer({ ...group, ops: removed }) } : {}),
+                ...(removedPending.length
+                    ? {
+                          pending: {
+                              ops: journalOps(removedPending),
+                              baseRevision: chatRevisions.get(group.key) ?? null,
+                              groupId: newer!.groupId,
+                          },
+                      }
+                    : {}),
+            },
+        });
     }
     discardSequence += 1;
     discarded.set(group.key, discardSequence);
@@ -4560,6 +7009,7 @@ function dropLockedEdits(
     }
     if (newer) {
         newer.ops = newerKept;
+        dirtyChatJournal(group.key, "pending");
         if (newerKept.length === 0 && !newer.create && !newer.resend && kept.length === 0) {
             pending.delete(group.key);
             settleKey(group.key, newer.seq);
@@ -4585,6 +7035,7 @@ function requeueRecovered(groups: readonly SentChatGroup[]) {
             pending.set(group.key, {
                 characterId: group.characterId,
                 chatId: group.chatId,
+                groupId: group.groupId,
                 create: false,
                 resend: null,
                 ops: [...group.ops, ...(newer?.ops ?? [])],
@@ -4609,8 +7060,13 @@ function discardChatWork(key: string, seq: number) {
  * Replaces a chat in the mirror with the server's copy and discards its local work. A chat that is
  * gone on the server is removed (a character left without chats gets a new one).
  */
-export function acceptRemoteChat(server: RemoteChat, seq = 0) {
+export function acceptRemoteChat(
+    server: RemoteChat,
+    seq = 0,
+    options: { group?: SentChatGroup; capture?: boolean } = {},
+) {
     const key = keyOf(server.characterId, server.id);
+    if (options.capture !== false) captureChatConflict(key, { group: options.group, gone: server.revision === null });
     discardChatWork(key, seq);
     applyRemoteChat(server);
 }
@@ -4618,35 +7074,45 @@ export function acceptRemoteChat(server: RemoteChat, seq = 0) {
 /**
  * Applies a server copy without settling or discarding any work (callers establish eligibility). A
  * loaded chat takes the copy; a member that is not loaded, or a chat new to the list, takes its
- * summary only (a server copy never loads a chat).
+ * summary only (a server copy never loads a chat). The copy is a whole read, so unlike a job's it
+ * speaks for `hypaV3Data` too: without a projection of its own, one held is gone (the records are, or
+ * another algorithm is selected). Feed locks reconcile from its stamped snapshot, with the
+ * revision-based fallback only when the snapshot or stamp is absent.
  */
 function applyRemoteChat(server: RemoteChat) {
     const key = keyOf(server.characterId, server.id);
+    if (server.revision !== null && retiredChat(key, server.revision)) return;
+    const ref = { chaId: server.characterId, chatId: server.id };
+    if (server.revision === null || !server.data) {
+        if (isMember(ref)) removeRemoteChat(ref.chaId, ref.chatId);
+        else dropChatRevision(key);
+        if (isMember(ref)) requestChatListRefresh(ref.chaId);
+        return;
+    }
     staleChats.delete(key);
-    dropFeedLocksOf(key, server.revision);
+    dropFeedLocksOf(key, server.revision, server.streaming, server.readStamp);
     if (findCharacter(server.characterId)) {
-        const ref = { chaId: server.characterId, chatId: server.id };
-        if (server.revision === null || !server.data) {
-            removeChat(server.characterId, server.id);
-        } else if (!isMember(ref)) {
+        if (!isMember(ref)) {
             insertSummary(server.characterId, memberIds(server.characterId).length, server.id, metaOf(server.data));
         } else if (isLoaded(ref)) {
+            dropMessagePositions(key);
             holdingOf(server.characterId).chats[slot(server.id)] = server.data;
         } else {
             holdingOf(server.characterId).summaries[slot(server.id)] = metaOf(server.data);
         }
+        installChatTrashState(ref, server.revision, server.trashedAt);
         changed(key);
-        ensureChat(server.characterId);
         syncSelection(server.characterId);
+        recordChatInstall(key);
     }
-    if (server.revision === null) {
-        dropChatRevision(key);
-    } else {
-        holdChatRevision(key, server.revision);
-    }
+    holdChatRevision(key, server.revision);
     remoteListener?.({ chaId: server.characterId, chatId: server.id });
 }
 
+/**
+ * Whether a held chat may take a server copy now: no pending or in-flight work, generation of this
+ * tab, deferral, quarantine, or unexpired retry block.
+ */
 function canRefreshChat(ref: ChatRef): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     return (
@@ -4662,7 +7128,7 @@ function canRefreshChat(ref: ChatRef): boolean {
 /** The stale and noticed chats as refs. */
 function refreshMarks(): ChatRef[] {
     dropAnsweredNotices();
-    return [...new Set([...staleChats, ...noticedChats.keys()])].map((key) => {
+    return [...new Set([...staleChats, ...noticedChats.keys(), ...unknownTrashMarks])].map((key) => {
         const [chaId, chatId] = key.split("\u0000");
         return { chaId, chatId };
     });
@@ -4673,13 +7139,40 @@ function isUnloadedMember(ref: ChatRef): boolean {
     return isMember(ref) && !isLoaded(ref);
 }
 
+function isIdleChatRefresh(ref: ChatRef): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    return (staleChats.has(key) || noticedChats.has(key)) && canRefreshChat(ref) && !isUnloadedMember(ref);
+}
+
+function isIdleSummaryRefresh(ref: ChatRef): boolean {
+    if (!isMember(ref) || !findCharacter(ref.chaId)) return false;
+    if (unknownTrashMarks.has(keyOf(ref.chaId, ref.chatId))) return !isIdleChatRefresh(ref);
+    return !isLoaded(ref) && canRefreshChat(ref) && canApplyRemoteCollection(ref.chaId);
+}
+
+/** Whether either idle refresh list has work, without building the lists or their union of marks. */
+export function hasIdleRefresh(): boolean {
+    // Like refreshMarks, settle all answered notices even when the first mark is eligible.
+    dropAnsweredNotices();
+    for (const marks of [staleChats, noticedChats.keys(), unknownTrashMarks]) {
+        for (const key of marks) {
+            const [chaId, chatId] = key.split("\u0000");
+            const ref = { chaId, chatId };
+            if (isIdleChatRefresh(ref) || isIdleSummaryRefresh(ref)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /**
- * Stale and noticed chats eligible for a whole-chat read inside the save cycle, never alongside a
+ * Stale and noticed chats eligible for an idle read inside the save cycle, never alongside a
  * batch: loaded ones (and ones no longer listed). A member that is not loaded is refreshed through
  * its character's summary list instead (`idleSummaryRefreshes`).
  */
 export function idleChatRefreshes(): ChatRef[] {
-    return refreshMarks().filter((ref) => canRefreshChat(ref) && !isUnloadedMember(ref));
+    return refreshMarks().filter(isIdleChatRefresh);
 }
 
 /**
@@ -4690,12 +7183,7 @@ export function idleChatRefreshes(): ChatRef[] {
 export function idleSummaryRefreshes(): string[] {
     const ids = new Set<string>();
     for (const ref of refreshMarks()) {
-        if (
-            isUnloadedMember(ref) &&
-            canRefreshChat(ref) &&
-            findCharacter(ref.chaId) &&
-            canApplyRemoteCollection(ref.chaId)
-        ) {
+        if (isIdleSummaryRefresh(ref)) {
             ids.add(ref.chaId);
         }
     }
@@ -4768,6 +7256,89 @@ export function chatNoticeSeq(ref: ChatRef): number {
     return noticedChats.get(keyOf(ref.chaId, ref.chatId))?.seq ?? 0;
 }
 
+/** The manifest and notice captured when an idle row read is issued. */
+export type IdleChatRows = { revision: string; rows: ChatRowsManifest; notice: number };
+
+/** A noticed manifest still applies only to the loaded, idle, non-stale copy at its exact base. */
+export function idleChatRows(ref: ChatRef): IdleChatRows | undefined {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const notice = noticedChats.get(key);
+    if (
+        !notice?.rows ||
+        notice.revision === null ||
+        (notice.rows.changed.length === 0 && notice.rows.meta.length === 0) ||
+        !isLoaded(ref) ||
+        !canRefreshChat(ref) ||
+        staleChats.has(key) ||
+        chatRevisions.get(key) !== notice.rows.baseRevision
+    )
+        return undefined;
+    return { revision: notice.revision, rows: notice.rows, notice: notice.seq };
+}
+
+/**
+ * Completes a row read only for the notice captured at issue, checking every requested row before
+ * the staged feed-patch installer runs. A miss keeps the notice and read stamp for a whole-chat
+ * fallback. Success retires only that notice, and leaves job hydration and locks alone.
+ */
+export function finishIdleChatRows(
+    ref: ChatRef,
+    request: IdleChatRows,
+    server: ChatRowsReadResult | undefined,
+    readStamp: number,
+): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const current = idleChatRows(ref);
+    if (
+        !current ||
+        current.notice !== request.notice ||
+        current.rows !== request.rows ||
+        !server ||
+        "moved" in server ||
+        server.revision !== request.revision ||
+        server.characterId !== ref.chaId ||
+        server.id !== ref.chatId ||
+        !Array.isArray(server.rows)
+    )
+        return false;
+    const fields = server.metaFields;
+    const names = new Set(request.rows.meta);
+    if (fields !== undefined) {
+        if (
+            !isPlainRecord(fields) ||
+            !isPlainRecord(fields.set) ||
+            !Array.isArray(fields.remove) ||
+            fields.merge ||
+            fields.mergeUnset
+        )
+            return false;
+        for (const name of [...Object.keys(fields.set), ...fields.remove]) {
+            if (!names.delete(name)) return false;
+        }
+    }
+    if (names.size > 0) return false;
+    const missing = new Set(request.rows.changed);
+    if (server.rows.length !== missing.size) return false;
+    for (const row of server.rows) {
+        if (!row || !missing.delete(row.id) || !isPlainRecord(row.message) || row.message.chatId !== row.id)
+            return false;
+    }
+    if (
+        missing.size > 0 ||
+        !applyRemoteChatPatch(ref, server.revision, {
+            baseRevision: request.rows.baseRevision,
+            count: request.rows.count,
+            removed: request.rows.removed,
+            messages: server.rows.map(({ after, message }) => ({ after, message })),
+            ...(server.metaFields !== undefined ? { metaFields: server.metaFields } : {}),
+        })
+    )
+        return false;
+    if (noticedChats.get(key)?.seq === request.notice) noticedChats.delete(key);
+    if (laterIdleReadOut(key, readStamp)) staleChats.add(key);
+    return true;
+}
+
 /**
  * Rechecks eligibility after the read's await; busy chats retain their refresh mark for later. A
  * notice that arrived during the read (a later sequence than `notice`) keeps its mark: the read
@@ -4779,15 +7350,56 @@ export function chatNoticeSeq(ref: ChatRef): number {
  */
 export function finishIdleChatRefresh(server: RemoteChat, notice = 0, issued?: string | null): boolean {
     const key = keyOf(server.characterId, server.id);
-    if (!staleChats.has(key) && !noticedChats.has(key)) {
+    if (!staleChats.has(key) && !noticedChats.has(key) && !unknownTrashMarks.has(key)) {
+        laterIdleReadOut(key, server.readStamp);
         return false;
     }
-    return adoptChatRead(server, notice, issued);
+    const taken = adoptChatRead(server, notice, issued);
+    if (taken && server.revision !== null && laterIdleReadOut(key, server.readStamp)) {
+        // A later read of this chat is out: the copy that took may predate what that read was asked
+        // for (a job's end), so the mark stays for its copy.
+        staleChats.add(key);
+    }
+    return taken;
+}
+
+/**
+ * Whether an idle read of the chat issued after the one `readStamp` answers is still out; the newest
+ * read's answer ends the bookkeeping, whether or not its copy took.
+ */
+function laterIdleReadOut(key: string, readStamp: number | undefined): boolean {
+    const newest = idleReadStamps.get(key);
+    if (newest === undefined || readStamp === undefined) {
+        return false;
+    }
+    if (newest <= readStamp) {
+        idleReadStamps.delete(key);
+        return false;
+    }
+    return true;
+}
+
+/** The newest idle read stamp issued per chat (`noteIdleChatRead`), until that read answers. */
+const idleReadStamps = new Map<string, number>();
+
+/**
+ * An idle read of the chat was issued with `readStamp` (`readIdleChats`): an earlier read's copy that
+ * takes before this one answers leaves the stale mark, so this read's copy, asked for later, can take
+ * too (`finishIdleChatRefresh` adopts only a stale or noticed chat).
+ */
+export function noteIdleChatRead(ref: ChatRef, readStamp: number): void {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if ((idleReadStamps.get(key) ?? 0) < readStamp) {
+        idleReadStamps.set(key, readStamp);
+    }
 }
 
 /** Applies a chat read by ref under the idle refresh's safeguards (`finishIdleChatRefresh`, without its mark). */
 function adoptChatRead(server: RemoteChat, notice: number, issued: string | null | undefined): boolean {
     const key = keyOf(server.characterId, server.id);
+    if (server.revision !== null && retiredChat(key, server.revision)) return false;
+    if (server.revision !== null)
+        installChatTrashState({ chaId: server.characterId, chatId: server.id }, server.revision, server.trashedAt);
     if (!canRefreshChat({ chaId: server.characterId, chatId: server.id })) {
         return false;
     }
@@ -4795,7 +7407,8 @@ function adoptChatRead(server: RemoteChat, notice: number, issued: string | null
     if (
         server.revision !== null &&
         heldRevision !== undefined &&
-        (compareRevision(server.revision, heldRevision) ?? 0) < 0
+        server.revision !== heldRevision &&
+        (compareRevision(server.revision, heldRevision) ?? -1) < 0
     ) {
         // A read older than a hydration that arrived meanwhile.
         return false;
@@ -4805,18 +7418,44 @@ function adoptChatRead(server: RemoteChat, notice: number, issued: string | null
         // the held base is older): the copy lacks that edit. The marks stay for a newer read.
         return false;
     }
-    if (server.revision === null && issued !== undefined && (heldRevision ?? null) !== issued) {
+    if (server.revision === null && issued !== undefined && (latestChatRevision(key) ?? null) !== issued) {
         return false;
     }
     if ((noticedChats.get(key)?.seq ?? 0) <= notice || server.revision === null) {
         noticedChats.delete(key);
     }
     if (server.revision === null) {
-        removeRemoteChat(server.characterId, server.id);
-        return true;
+        return removeRemoteChat(server.characterId, server.id);
     }
     applyRemoteChat(server);
     return true;
+}
+
+/** Record the removed incarnation before draft listeners see its removal. */
+function recordRemoval(ref: ChatRef, revision: string) {
+    const key = keyOf(ref.chaId, ref.chatId);
+    if (retiredChat(key, revision)) return false;
+    deletedRevisions.set(key, revision);
+    unknownTrashMarks.delete(key);
+    return true;
+}
+
+/** A delete answer names its pre-deletion incarnation. A later local create has no such revision. */
+export function settleDeletedChat(ref: ChatRef, revision: string) {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const current = latestChatRevision(key);
+    if (
+        !current ||
+        !chatRevisions.has(key) ||
+        pending.get(key)?.create ||
+        !isMember(ref) ||
+        retiredChat(key, revision) ||
+        (compareRevision(revision, current) ?? -1) < 0 ||
+        parseRevisionToken(revision)?.seq !== parseRevisionToken(current)?.seq
+    )
+        return;
+    removeRemoteChat(ref.chaId, ref.chatId);
+    if (isMember(ref)) void refreshChatEntry(ref).catch(() => requestChatListRefresh(ref.chaId));
 }
 
 /**
@@ -4830,16 +7469,22 @@ function removeRemoteChat(chaId: string, chatId: string) {
     dropFeedLocksOf(key, null);
     const ids = findCharacter(chaId) ? memberIds(chaId) : [];
     const index = ids.indexOf(chatId);
-    if (index !== -1 && ids.length === 1) {
-        return;
-    }
-    if (index !== -1) {
+    const revision = latestChatRevision(key);
+    if (index === -1 || !revision || !recordRemoval({ chaId, chatId }, revision)) return false;
+    noticedChats.delete(key);
+    if (ids.length === 1) {
+        absentChats.add(key);
+        trashMarks[key] = "absent";
+        membershipVersions.set(chaId, ++membershipVersionCounter);
+    } else {
         removeChat(chaId, chatId);
+        dropChatRevision(key);
         changed(key);
-        syncSelection(chaId);
     }
-    dropChatRevision(key);
+    syncSelection(chaId);
+    notifyRemoval({ chaId, chatId });
     remoteListener?.({ chaId, chatId });
+    return true;
 }
 
 /** The chat revisions this client holds for a character's chats (a collection read's deletion fence). */
@@ -4851,7 +7496,7 @@ export function heldChatRevisionsOf(chaId: string): Map<string, string> {
 export function heldChatRevisionsByCharacter(chaIds: readonly string[]): Map<string, Map<string, string>> {
     const byCharacter = new Map(chaIds.map((chaId) => [chaId, new Map<string, string>()]));
     for (const [key, revision] of chatRevisions) {
-        byCharacter.get(key.slice(0, key.indexOf("\u0000")))?.set(key, revision);
+        byCharacter.get(key.slice(0, key.indexOf("\u0000")))?.set(key, latestChatRevision(key) ?? revision);
     }
     return byCharacter;
 }
@@ -4888,26 +7533,82 @@ function dropAnsweredNotices() {
 }
 
 /**
+ * A feed entry's summary knowledge for a member held only as its summary (not loaded): with
+ * `summary` (the chat's summary at `revision`), that summary is held; with `summaryBase` equal to
+ * the held revision, the held summary is still the chat's. Either way the chat's held revision
+ * becomes `revision` and its notice is settled, with no summary list read. Only that summary and
+ * revision change (membership, order, and order work are left alone). False, for the ordinary
+ * notice: a loaded chat, a revision that is not newer, local work or a generation of this tab
+ * (`canRefreshChat`), a chat marked stale, a revision below an acknowledgement of this client's
+ * edit, a `summary` of another chat or revision, or a `summaryBase` that is not the held revision.
+ */
+function applyRemoteSummary(
+    ref: ChatRef,
+    revision: string,
+    known: { summary?: ChatSummary; summaryBase?: string },
+): boolean {
+    const key = keyOf(ref.chaId, ref.chatId);
+    const heldRevision = chatRevisions.get(key);
+    if (
+        !isMember(ref) ||
+        isLoaded(ref) ||
+        heldRevision === undefined ||
+        (compareRevision(revision, heldRevision) ?? 0) <= 0 ||
+        !canRefreshChat(ref) ||
+        staleChats.has(key) ||
+        belowAckedRevision(key, revision)
+    ) {
+        return false;
+    }
+    const summary: unknown = known.summary;
+    if (summary !== undefined) {
+        if (
+            !isPlainRecord(summary) ||
+            summary.characterId !== ref.chaId ||
+            summary.id !== ref.chatId ||
+            summary.revision !== revision
+        ) {
+            return false;
+        }
+        holdingAt(ref.chaId)!.summaries[slot(ref.chatId)] = listedMeta(summary as ChatSummary);
+    } else if (known.summaryBase !== heldRevision) {
+        return false;
+    }
+    holdChatRevision(key, revision);
+    settleNotice(key, revision);
+    changed(key);
+    remoteListener?.(ref);
+    return true;
+}
+
+/**
  * A live update says the server committed this chat at `revision` (null: deleted). A chat the mirror
  * holds at an older revision is read again once it is idle here (no local work, generation, retry
  * block, deferral, or quarantine; `idleChatRefreshes`); a notice at or below the held revision is
  * dropped (this tab's own save, or a job's chat event that applied it first). A chat the mirror does
  * not hold, of a character it holds, is a new chat: `"collection"` asks for the character's chat list
  * (`applyRemoteCollection`). A member that is not loaded is noticed too and also answers
- * `"collection"`: its summary comes with that list (never a whole-chat read). An optional by-id
- * patch applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its
- * base revision. A miss follows the ordinary notice path. Nothing is queued or discarded.
+ * `"collection"`: its summary comes with that list (never a whole-chat read), unless the entry's
+ * summary knowledge (`known`: `summary` or `summaryBase`) settles it at once (`applyRemoteSummary`).
+ * An optional by-id change (`patch`: a `ChatPatchBody`, `ChatDeltaBody`, or `ChatRowDeltaBody`)
+ * applies without a notice or read only to a loaded, idle, non-stale chat held at exactly its base
+ * revision. A miss follows the ordinary notice path. A row manifest is kept with that notice only
+ * under the same eligibility checks; the idle read rechecks them before requesting named rows.
+ * Nothing is queued or discarded.
  */
 export function noteRemoteChat(
     ref: ChatRef,
     revision: string | null,
-    patch?: ChatPatchBody,
+    patch?: ChatPatchBody | ChatDeltaBody | ChatRowDeltaBody,
+    known?: { summary?: ChatSummary; summaryBase?: string; trashedAt?: number | null },
+    rows?: ChatRowsManifest,
 ): "noticed" | "collection" | "ignored" {
     const key = keyOf(ref.chaId, ref.chatId);
     if (!findCharacter(ref.chaId)) {
         return "ignored";
     }
     const heldRevision = chatRevisions.get(key);
+    if (revision === null ? trashMarks[key] === "absent" : retiredChat(key, revision)) return "ignored";
     if (!isMember(ref)) {
         return revision === null || heldRevision !== undefined ? "ignored" : "collection";
     }
@@ -4915,14 +7616,40 @@ export function noteRemoteChat(
         // A chat this client created and has not saved yet: its own save settles it.
         return "ignored";
     }
+    if (revision !== null) {
+        const summary = known?.summary;
+        const valid =
+            summary?.id === ref.chatId &&
+            summary.characterId === ref.chaId &&
+            summary.revision === revision &&
+            typeof summary.name === "string" &&
+            Number.isFinite(summary.fmIndex);
+        installChatTrashState(
+            ref,
+            revision,
+            known?.trashedAt !== undefined ? known.trashedAt : valid ? (summary.trashedAt ?? null) : undefined,
+        );
+    }
     if (revision !== null && (compareRevision(revision, heldRevision) ?? 0) <= 0) {
         return "ignored";
     }
     if (revision !== null && patch && applyRemoteChatPatch(ref, revision, patch)) {
         return "ignored";
     }
+    if (revision !== null && known && applyRemoteSummary(ref, revision, known)) {
+        return "ignored";
+    }
     noticeSeq += 1;
-    noticedChats.set(key, { seq: noticeSeq, revision });
+    const manifest =
+        revision !== null &&
+        rows &&
+        isLoaded(ref) &&
+        canRefreshChat(ref) &&
+        !staleChats.has(key) &&
+        heldRevision === rows.baseRevision
+            ? rows
+            : undefined;
+    noticedChats.set(key, { seq: noticeSeq, revision, ...(manifest ? { rows: manifest } : {}) });
     notifyWork();
     return isLoaded(ref) ? "noticed" : "collection";
 }
@@ -4950,6 +7677,26 @@ export function canApplyRemoteCollection(chaId: string): boolean {
     return !pendingOrders.has(chaId) && !inflightOrders.has(chaId) && !recoveringOrders.has(chaId);
 }
 
+export function chatCollectionIsCurrent(
+    collection: { characterId: string; chats: readonly ListedChat[] },
+    issued?: ReadonlyMap<string, string>,
+): boolean {
+    if (collection.chats.some((row) => retiredChat(keyOf(collection.characterId, row.id), row.revision))) return false;
+    if (!issued) return true;
+    const listed = new Set(collection.chats.map((row) => row.id));
+    return memberIds(collection.characterId).every((id) => {
+        const key = keyOf(collection.characterId, id);
+        return listed.has(id) || !chatRevisions.has(key) || issued.get(key) === latestChatRevision(key);
+    });
+}
+
+function installCollectionMarks(chaId: string, records: readonly ListedChat[]) {
+    for (const record of records) {
+        if (record.characterId === chaId)
+            installChatTrashState({ chaId, chatId: record.id }, record.revision, record.trashedAt ?? null);
+    }
+}
+
 /**
  * Applies a character's chat list from a live update (another writer created, deleted, or reordered
  * its chats), keeping local work except for the reorder below: callers check
@@ -4965,7 +7712,9 @@ export function canApplyRemoteCollection(chaId: string): boolean {
  * is not acknowledged, are marked as gone from the server's order (`absentChats`): reorders leave
  * them out. A chat's notice is dropped only when the adopted state covers it. Nothing is queued.
  * Returns false when the character's order work is busy or a held chat the list lacks changed while
- * it was read (`issued`; the caller reads the list again later).
+ * it was read (`issued`; the caller reads the list again later). A list that would empty the
+ * character's chats is left as it is; an empty list on both sides holds its order, so this client's
+ * chat is saved.
  *
  * With `keepPendingOrder` (the membership refresh after this client's own acknowledgement), a queued
  * reorder does not refuse the list: the chats this client listed keep its order, the chats new to it
@@ -4985,6 +7734,8 @@ export function applyRemoteCollection(
     options: { keepPendingOrder?: boolean } = {},
 ): boolean {
     const chaId = collection.characterId;
+    if (!chatCollectionIsCurrent(collection)) return false;
+    installCollectionMarks(chaId, collection.chats);
     const rebase =
         options.keepPendingOrder === true &&
         pendingOrders.has(chaId) &&
@@ -4997,18 +7748,18 @@ export function applyRemoteCollection(
         return true;
     }
     const heldOrder = orderRevisions.get(chaId);
-    if (heldOrder !== undefined && (compareRevision(collection.order.revision, heldOrder) ?? 0) < 0) {
+    if (parseRevisionToken(heldOrder) && (compareRevision(collection.order.revision, heldOrder) ?? -1) < 0) {
         return true;
     }
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
     const localIds = memberIds(chaId);
     const next: ChatEntry[] = [];
     const placed = new Set<string>();
-    const adopted: { key: string; revision: string }[] = [];
+    const adopted: { key: string; revision: string; whole: boolean }[] = [];
     const outdated: string[] = [];
     for (const id of collection.order.ids) {
         const record = byId.get(id);
-        if (!record || placed.has(id)) {
+        if (!record || record.characterId !== chaId || placed.has(id)) {
             continue;
         }
         placed.add(id);
@@ -5041,7 +7792,7 @@ export function applyRemoteCollection(
             continue;
         }
         next.push(mine?.chat && data ? { id, chat: data } : { id, meta: listedMeta(record) });
-        adopted.push({ key, revision: record.revision });
+        adopted.push({ key, revision: record.revision, whole: !!(mine?.chat && data) });
     }
     const removed: string[] = [];
     const absent: string[] = [];
@@ -5057,7 +7808,7 @@ export function applyRemoteCollection(
             next.push(entryAt(chaId, id)!);
             continue;
         }
-        if (issued && issued.get(key) !== chatRevisions.get(key)) {
+        if (issued && issued.get(key) !== latestChatRevision(key)) {
             // A newer copy arrived while the list was read (a job's chat event, an acknowledgement):
             // the list may predate it, so neither a removal nor an absence follows from it. Read the
             // list again.
@@ -5079,7 +7830,7 @@ export function applyRemoteCollection(
         }
         // Held but no longer in the mirror (deleted here, the delete not acknowledged): the server's
         // order does not hold it either, so a reorder need not wait for that delete.
-        if (issued && issued.get(key) !== chatRevisions.get(key)) {
+        if (issued && issued.get(key) !== latestChatRevision(key)) {
             return false;
         }
         absent.push(key);
@@ -5092,13 +7843,18 @@ export function applyRemoteCollection(
         if (localIds.length === 0) {
             orderRevisions.set(chaId, collection.order.revision);
         }
+        for (const key of removed) {
+            removeRemoteChat(chaId, key.slice(prefix.length));
+        }
         return true;
     }
     let entries = next;
     if (rebase) {
         if (next.some((entry) => !placed.has(entry.id) && chatRevisions.has(keyOf(chaId, entry.id)))) {
+            captureQueuedOrder(chaId);
             markOrderDiscarded(chaId, pendingOrders.get(chaId)!);
             pendingOrders.delete(chaId);
+            lostOrderAttempts.delete(chaId);
         } else {
             const localIndex = new Map(localIds.map((id, index) => [id, index]));
             entries = [
@@ -5125,13 +7881,21 @@ export function applyRemoteCollection(
     for (const key of outdated) {
         staleChats.add(key);
     }
+    const removals: ChatRef[] = [];
     for (const key of removed) {
+        const ref = { chaId, chatId: key.slice(prefix.length) };
+        if (recordRemoval(ref, latestChatRevision(key)!)) removals.push(ref);
         dropChatRevision(key);
         staleChats.delete(key);
         noticedChats.delete(key);
         changed(key);
     }
     setChatList(chaId, entries);
+    for (const ref of removals) notifyRemoval(ref);
+    for (const { key, whole } of adopted) {
+        if (whole) recordChatInstall(key);
+    }
+    installCollectionMarks(chaId, collection.chats);
     mutationToken += 1;
     syncSelection(chaId);
     remoteListener?.({ chaId, chatId: "" });
@@ -5152,24 +7916,37 @@ export function applyRemoteCollection(
  * only a newer summary of keeps its copy and held revision and is marked stale (read whole next).
  * A kept chat with a held revision the list lacks (quarantined, a create, streamed here), and a held
  * chat deleted here whose delete is not acknowledged, are marked as gone from the server's order
- * (`absentChats`): reorders leave them out. A conflicting reorder is settled quietly only when its
- * sent vector equals the server's; a newer queued reorder keeps its own sequence and local order.
+ * (`absentChats`): reorders leave them out. A conflicting reorder settles quietly when its sent
+ * vector equals the server's. If the server instead holds a kept vector from a lost answer, matching
+ * older sequences settle quietly and the latest reorder stays queued on the learned revision, in
+ * local order. A newer reorder already queued behind a conflict keeps its own sequence and local order.
  * Other queued reorders and a dropped chat's work count as discarded (`markOrderDiscarded`,
  * `markDiscarded`: the flush and `MutationScope` reports); returns whether there was any.
  * A dropped idle chat discards nothing.
  */
-export function acceptRemoteCollection(collection: {
-    characterId: string;
-    order: ChatOrderRecord | null;
-    chats: readonly ListedChat[];
-}): boolean {
+export function acceptRemoteCollection(
+    collection: {
+        characterId: string;
+        order: ChatOrderRecord | null;
+        chats: readonly ListedChat[];
+    },
+    options: { captureOrder?: boolean } = {},
+): boolean {
     const chaId = collection.characterId;
+    if (!chatCollectionIsCurrent(collection)) return false;
+    installCollectionMarks(chaId, collection.chats);
     const character = findCharacter(chaId);
     const recoveringOrder = recoveringOrders.get(chaId);
-    const orderSeq = pendingOrders.get(chaId);
+    let orderSeq = pendingOrders.get(chaId);
+    const lostAttempts = lostOrderAttempts.get(chaId);
+    lostOrderAttempts.delete(chaId);
     if (!collection.order || !character) {
         if (orderSeq === undefined && !recoveringOrder) {
             return false;
+        }
+        if (options.captureOrder !== false) {
+            captureQueuedOrder(chaId);
+            captureSentOrder(recoveringOrder);
         }
         markOrderDiscarded(chaId, Math.max(orderSeq ?? 0, recoveringOrder?.seq ?? 0));
         pendingOrders.delete(chaId);
@@ -5178,32 +7955,45 @@ export function acceptRemoteCollection(collection: {
     }
     let discardedWork = false;
     if (recoveringOrder) {
-        if (
-            recoveringOrder.ids.length === collection.order.ids.length &&
-            recoveringOrder.ids.every((id, index) => id === collection.order!.ids[index])
-        ) {
+        const serverIds = collection.order.ids;
+        const matchingLost = lostAttempts?.filter((attempt) => sameOrderIds(attempt.ids, serverIds));
+        if (sameOrderIds(recoveringOrder.ids, serverIds)) {
             settleOrder(chaId, recoveringOrder.seq);
+        } else if (matchingLost?.length) {
+            for (const attempt of matchingLost) {
+                if (attempt.seq < recoveringOrder.seq) settleOrder(chaId, attempt.seq);
+            }
+            if (orderSeq === undefined || orderSeq < recoveringOrder.seq) {
+                orderSeq = recoveringOrder.seq;
+                pendingOrders.set(chaId, orderSeq);
+            }
         } else {
+            if (options.captureOrder !== false) captureSentOrder(recoveringOrder);
             markOrderDiscarded(chaId, recoveringOrder.seq);
             discardedWork = true;
         }
         recoveringOrders.delete(chaId);
     } else if (orderSeq !== undefined) {
+        if (options.captureOrder !== false) captureQueuedOrder(chaId);
         markOrderDiscarded(chaId, orderSeq);
         pendingOrders.delete(chaId);
         discardedWork = true;
     }
-    // The server's list supersedes what a deletion of the character kept for a re-add.
+    // The list cannot establish whether a parked group landed; preserve its exact identity.
+    for (const [key, { resend }] of parkedResends.get(chaId) ?? []) {
+        conflictListener?.({ scope: "chat", target: key, layers: { resend: resendLayer(resend) } });
+    }
     parkedResends.delete(chaId);
     orderRevisions.set(chaId, collection.order.revision);
     const byId = new Map(collection.chats.map((chat) => [chat.id, chat]));
     const localIds = memberIds(chaId);
     const next: ChatEntry[] = [];
     const placed = new Set<string>();
+    const installed: string[] = [];
     let outdated = false;
     for (const id of collection.order.ids) {
         const record = byId.get(id);
-        if (!record || placed.has(id)) {
+        if (!record || record.characterId !== chaId || placed.has(id)) {
             continue;
         }
         placed.add(id);
@@ -5248,6 +8038,7 @@ export function acceptRemoteCollection(collection: {
             outdated = true;
         } else {
             next.push(mine?.chat && data ? { id, chat: data } : { id, meta: listedMeta(record) });
+            if (mine?.chat && data) installed.push(key);
             holdChatRevision(key, record.revision);
             staleChats.delete(key);
             changed(key);
@@ -5277,12 +8068,15 @@ export function acceptRemoteCollection(collection: {
             absent.push(key);
         } else {
             if (pending.has(key) || inflight.has(key)) {
+                captureChatConflict(key, { gone: true });
                 discardChatWork(key, 0);
                 discardedWork = true;
             } else {
                 staleChats.delete(key);
                 jobBlocked.delete(key);
             }
+            const gone = latestChatRevision(key);
+            if (gone && recordRemoval({ chaId, chatId: id }, gone)) notifyRemoval({ chaId, chatId: id });
             dropChatRevision(key);
             changed(key);
         }
@@ -5306,11 +8100,13 @@ export function acceptRemoteCollection(collection: {
         }
     }
     if (recoveringOrder && orderSeq !== undefined) {
-        // A reorder queued after the conflicting request has its own obligation and local order.
+        // The queued reorder keeps the local order of the chats that remain.
         const localIndex = new Map(localIds.map((id, index) => [id, index]));
         next.sort((a, b) => (localIndex.get(a.id) ?? Infinity) - (localIndex.get(b.id) ?? Infinity));
     }
     setChatList(chaId, next);
+    installCollectionMarks(chaId, collection.chats);
+    for (const key of installed) recordChatInstall(key);
     mutationToken += 1;
     if (
         !pendingOrders.has(chaId) &&
@@ -5368,15 +8164,24 @@ export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undef
         return await loadUnloaded(ref, lifetime);
     }
     const notice = chatNoticeSeq(ref);
-    const issued = heldChatRevision(ref);
-    const read = await readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }] });
+    const issued = chatReadRevision(ref);
+    const readStamp = issueChatReadStamp();
+    const read = await deadlineChatRead((signal) =>
+        readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }], signal }),
+    );
     const server = read.chats?.find((chat) => chat.characterId === ref.chaId && chat.id === ref.chatId);
     if (lifetimeOf(ref.chaId) !== lifetime) {
         return undefined;
     }
     if (server && findCharacter(ref.chaId) && isMember(ref)) {
         if (isLoaded(ref)) {
-            adoptChatRead(server as RemoteChat, notice, issued);
+            if (
+                adoptChatRead({ ...server, readStamp } as RemoteChat, notice, issued) &&
+                server.revision === null &&
+                isMember(ref)
+            ) {
+                await readSummaryList(ref.chaId, lifetime);
+            }
         } else {
             // Evicted during the read: loaded again as an unloaded chat is.
             return await loadUnloaded(ref, lifetime);
@@ -5385,13 +8190,47 @@ export async function loadChat(ref: ChatRef): Promise<DeepReadonly<Chat> | undef
     return heldChat(ref);
 }
 
+/** Bounds on-demand reads even when the transport does not settle after an abort. */
+async function deadlineChatRead<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error(language.chatLoadTimedOut)), CHAT_READ_DEADLINE_MS);
+    let aborted!: () => void;
+    const cancellation = new Promise<never>((_, reject) => {
+        aborted = () => reject(controller.signal.reason);
+        controller.signal.addEventListener("abort", aborted, { once: true });
+    });
+    try {
+        return await Promise.race([read(controller.signal), cancellation]);
+    } finally {
+        controller.signal.removeEventListener("abort", aborted);
+        clearTimeout(timeout);
+    }
+}
+
 /** Reads a character's summary list and applies it as a live update (fenced on the owner's lifetime). */
-async function readSummaryList(chaId: string, lifetime: string) {
+const summaryReads = new Map<string, { lifetime: string; promise: Promise<void> }>();
+
+export async function refreshChatEntry(ref: ChatRef) {
+    if (isLoaded(ref) && !isChatKnownAbsent(ref)) await loadChat(ref);
+    else await readSummaryList(ref.chaId, lifetimeOf(ref.chaId));
+}
+
+function readSummaryList(chaId: string, lifetime: string): Promise<void> {
+    const running = summaryReads.get(chaId);
+    if (running?.lifetime === lifetime) return running.promise;
+    const promise = fetchSummaryList(chaId, lifetime).finally(() => {
+        if (summaryReads.get(chaId)?.promise === promise) summaryReads.delete(chaId);
+    });
+    summaryReads.set(chaId, { lifetime, promise });
+    return promise;
+}
+
+async function fetchSummaryList(chaId: string, lifetime: string) {
     const revisions = heldChatRevisionsOf(chaId);
-    const read = await readRefs([], { chatSummaryCollections: [chaId] });
+    const read = await deadlineChatRead((signal) => readRefs([], { chatSummaryCollections: [chaId], signal }));
     const collection = read.chatSummaryCollections?.find((entry) => entry.characterId === chaId);
     if (collection && findCharacter(chaId) && lifetimeOf(chaId) === lifetime) {
-        applyRemoteCollection(collection, revisions);
+        if (!applyRemoteCollection(collection, revisions)) requestChatListRefresh(chaId);
     }
 }
 
@@ -5425,18 +8264,22 @@ function loadUnloaded(ref: ChatRef, lifetime: string): Promise<DeepReadonly<Chat
 async function readUnloaded(chaId: string, ids: readonly string[], lifetime: string) {
     let wanted = [...ids];
     for (let attempt = 0; attempt < MAX_LOAD_READS && wanted.length > 0; attempt++) {
-        const issued = new Map(wanted.map((id) => [id, chatRevisions.get(keyOf(chaId, id)) ?? null]));
+        const issued = new Map(wanted.map((id) => [id, chatReadRevision({ chaId, chatId: id })]));
         const records = new Map<string, RemoteChat>();
         for (let start = 0; start < wanted.length; start += LOAD_CHUNK) {
-            const read = await readRefs([], {
-                chats: wanted.slice(start, start + LOAD_CHUNK).map((id) => ({ characterId: chaId, id })),
-            });
+            const readStamp = issueChatReadStamp();
+            const read = await deadlineChatRead((signal) =>
+                readRefs([], {
+                    chats: wanted.slice(start, start + LOAD_CHUNK).map((id) => ({ characterId: chaId, id })),
+                    signal,
+                }),
+            );
             if (lifetimeOf(chaId) !== lifetime) {
                 return;
             }
             for (const chat of read.chats ?? []) {
                 if (chat.characterId === chaId) {
-                    records.set(chat.id, chat as RemoteChat);
+                    records.set(chat.id, { ...chat, readStamp } as RemoteChat);
                 }
             }
         }
@@ -5472,7 +8315,8 @@ async function readUnloaded(chaId: string, ids: readonly string[], lifetime: str
  * older than the held revision or than an acknowledgement of this client's edit, or an overtaken
  * deletion). A chat with local work keeps its list fields: an unloaded chat's summary is the local
  * truth of those fields, laid over the read. Its work keeps the held base revision so the server
- * can still reject edits from before a checkpoint restore.
+ * can still reject edits from before a checkpoint restore. Feed locks take the read's stamped
+ * snapshot independently of that held base, using the same ordering fence as a loaded chat.
  */
 function installRead(
     chaId: string,
@@ -5482,6 +8326,8 @@ function installRead(
 ): "installed" | "skip" | "gone" | "retry" {
     const ref = { chaId, chatId: id };
     const key = keyOf(chaId, id);
+    if (server?.revision && retiredChat(key, server.revision)) return "skip";
+    if (server?.revision) installChatTrashState(ref, server.revision, server.trashedAt);
     if (!isUnloadedMember(ref)) {
         return "skip";
     }
@@ -5490,7 +8336,7 @@ function installRead(
     }
     const heldRevision = chatRevisions.get(key);
     if (server.revision === null || !server.data) {
-        if ((heldRevision ?? null) !== issued) {
+        if ((latestChatRevision(key) ?? null) !== issued) {
             return "retry";
         }
         if (isBusy(key)) {
@@ -5526,18 +8372,20 @@ function installRead(
     } else {
         staleChats.delete(key);
     }
+    dropMessagePositions(key);
     holding.chats[slot(id)] = chat;
     delete holding.summaries[slot(id)];
     loadedKeys.add(key);
     if (!busy) {
         holdChatRevision(key, server.revision);
     }
-    dropFeedLocksOf(key, server.revision);
+    dropFeedLocksOf(key, server.revision, server.streaming, server.readStamp);
     if (!busy) {
         settleNotice(key, server.revision);
     }
     changed(key);
     touch(key);
+    recordChatInstall(key);
     scheduleTrim();
     return "installed";
 }
@@ -5567,7 +8415,7 @@ export async function ensureChatLoaded(ref: ChatRef): Promise<DeepReadonly<Chat>
  * the character's chats were reset meanwhile. Pin the character (`pinChats`) first to keep them
  * loaded after it resolves.
  */
-export async function loadChats(chaId: string): Promise<readonly DeepReadonly<Chat>[]> {
+export async function loadChats(chaId: string, activeOnly = false): Promise<readonly DeepReadonly<Chat>[]> {
     const lifetime = lifetimeOf(chaId);
     const release = pinChats(chaId);
     try {
@@ -5575,19 +8423,21 @@ export async function loadChats(chaId: string): Promise<readonly DeepReadonly<Ch
             if (lifetimeOf(chaId) !== lifetime) {
                 return [];
             }
-            const missing = memberIds(chaId).filter((id) => !isLoaded({ chaId, chatId: id }));
+            const missing = (activeOnly ? activeIds(chaId) : memberIds(chaId)).filter(
+                (id) => !isLoaded({ chaId, chatId: id }),
+            );
             if (missing.length === 0) {
-                return chatsOf(chaId);
+                return chatsOf(chaId, activeOnly);
             }
             await readUnloaded(chaId, missing, lifetime);
         }
         if (lifetimeOf(chaId) !== lifetime) {
             return [];
         }
-        if (!chatsLoaded(chaId)) {
+        if (!chatsLoaded(chaId, activeOnly)) {
             throw new Error("The chats of this character could not be loaded");
         }
-        return chatsOf(chaId);
+        return chatsOf(chaId, activeOnly);
     } finally {
         release();
     }
@@ -5635,7 +8485,7 @@ export function isChatPinned(chaId: string): boolean {
 }
 
 /** Whether a loaded chat may be evicted (`trimLoadedChats`). */
-function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
+function isEvictable(ref: ChatRef, current: ChatRef | null, trimNoticed: boolean): boolean {
     const key = keyOf(ref.chaId, ref.chatId);
     return (
         chatRevisions.has(key) &&
@@ -5645,7 +8495,7 @@ function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
         !isBusy(key) &&
         !isChatGenerating(ref) &&
         !staleChats.has(key) &&
-        !noticedChats.has(key) &&
+        (trimNoticed || !noticedChats.has(key)) &&
         streamingChats[key] === undefined
     );
 }
@@ -5654,9 +8504,11 @@ function isEvictable(ref: ChatRef, current: ChatRef | null): boolean {
  * Evicts the least recently used idle loaded chats beyond `MAX_LOADED_CHATS`: each is kept as its
  * summary, with its revision and version. Never the selected chat, a pinned one (or one of a pinned
  * character), one with local work or a protection, a generating one, one waiting for a refresh, or
- * one not saved yet. Nothing is written.
+ * one not saved yet. The background refresh pass may trim noticed chats first (`trimNoticed`),
+ * preserving their notices for summary refresh instead of reading their whole contents. Stale
+ * chats remain protected. Nothing is written.
  */
-export function trimLoadedChats() {
+export function trimLoadedChats(trimNoticed = false) {
     if (loadedKeys.size <= MAX_LOADED_CHATS) {
         return;
     }
@@ -5667,10 +8519,11 @@ export function trimLoadedChats() {
             const [chaId, id] = key.split("\u0000");
             const ref = { chaId, chatId: id };
             if (!heldChat(ref) || !isMember(ref)) {
+                dropMessagePositions(key);
                 loadedKeys.delete(key);
                 continue;
             }
-            if (isEvictable(ref, current) && findCharacter(chaId)) {
+            if (isEvictable(ref, current, trimNoticed) && findCharacter(chaId)) {
                 candidates.push({ chaId, id, use: lastUse.get(key) ?? 0 });
             }
         }
@@ -5681,6 +8534,7 @@ export function trimLoadedChats() {
         for (const { chaId, id } of candidates.slice(0, candidates.length - MAX_LOADED_CHATS)) {
             const holding = holdingAt(chaId)!;
             holding.summaries[slot(id)] = metaOf(holding.chats[slot(id)]);
+            dropMessagePositions(keyOf(chaId, id));
             delete holding.chats[slot(id)];
             loadedKeys.delete(keyOf(chaId, id));
         }
@@ -5706,7 +8560,7 @@ export function scheduleTrim() {
  * by contract; not enforced.
  */
 setCharacterChatView({
-    chats: (chaId) => chatsOf(chaId),
+    chats: (chaId) => chatsOf(chaId, true),
     chatPage: (chaId) => compatChatPage(chaId),
 });
 
@@ -5734,16 +8588,17 @@ export function finishDeferredReload(server: RemoteChat): string | null {
         if (entry?.create || isCreateResend(entry)) {
             quarantineRefusedCreate({ key, seq: workSeq(key), ops: [] });
         } else {
+            captureChatConflict(key, { gone: true });
             discardChatWork(key, 0);
         }
-        dropChatRevision(key);
+        dropChatRevision(key, isMember(ref));
         return server.characterId;
     }
     acceptRemoteChat(server);
     return null;
 }
 
-/** What `flushResources` waits for: every chat and order with work queued or in flight now. */
+/** Work tracked by `flushResources`; a refused order is skipped while checking settlement. */
 export function captureChatObligations(): { chats: Map<string, number>; orders: Map<string, number> } {
     const chats = new Map<string, number>();
     for (const key of new Set([...pending.keys(), ...inflight.keys()])) {
@@ -5767,7 +8622,7 @@ export function unsettledChatObligations(obligations: ReturnType<typeof captureC
         }
     }
     for (const [chaId, seq] of obligations.orders) {
-        if ((ordersSettled.get(chaId) ?? 0) < seq) {
+        if (!isOrderQuarantined(chaId) && (ordersSettled.get(chaId) ?? 0) < seq) {
             open.push(chaId);
         }
     }
@@ -5810,14 +8665,14 @@ const DRIFT_CHECK_INTERVAL_MS = 2000;
  */
 export function startChatDriftCheck() {
     if (!import.meta.env.DEV) {
-        return;
+        return () => {};
     }
     // Polled, not an effect: a deep snapshot on every change makes a long stream quadratic. A
     // change outside the module in the same interval as a module write goes unnoticed (a dev aid).
     let lastCharacter: string | undefined;
     let lastText: string | undefined;
     let lastToken = -1;
-    setInterval(() => {
+    const interval = setInterval(() => {
         const id = selection.characterId ?? undefined;
         const text = JSON.stringify($state.snapshot(id === undefined ? undefined : holdingAt(id)));
         if (id === lastCharacter && lastText !== undefined && text !== lastText && mutationToken === lastToken) {
@@ -5829,6 +8684,7 @@ export function startChatDriftCheck() {
         lastText = text;
         lastToken = mutationToken;
     }, DRIFT_CHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
 }
 
 /** Tells the drift check that a mirror change outside the module is expected (hydration, restore). */

@@ -26,7 +26,7 @@ await vi.hoisted(async () => {
     (globalThis as any).Buffer = BufferPolyfill;
 });
 
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("../../process/modules", () => ({
     moduleUpdate: vi.fn(),
@@ -46,8 +46,16 @@ import type { Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { recordData, setRecordWriteListener, trackedRecord, type RecordKind } from "../records.svelte";
-import { selection, selectLoreBookPage, selectModelPreset, selectPersona, selectPreset } from "../selection.svelte";
-import { installFlatDatabase } from "./installFlatDatabase";
+import {
+    selectCharacter,
+    selection,
+    selectLoreBookPage,
+    selectModelPreset,
+    selectPersona,
+    selectPreset,
+} from "../selection.svelte";
+import { selectChat } from "../chatStore.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "./installFlatDatabase";
 import {
     ACTIVE_MODEL_PRESET_FIELDS,
     ACTIVE_PRESET_FIELDS,
@@ -62,10 +70,12 @@ import {
     isSettingsRootKey,
     missingScopeTarget,
     PresetTargetGoneError,
+    readEditedRoot,
     readSettingsRoot,
     scopedPresetRoot,
     selectedLoreBookPage,
     settings,
+    writeEditedRoot,
     writeSettingsRoot,
     type SettingsRootKey,
 } from "../settingsViews.svelte";
@@ -716,6 +726,58 @@ describe("activePersona", () => {
 });
 
 describe("the section and collection views", () => {
+    it("derives stale memory selectors reactively in dispatch priority without writing the saved selector", () => {
+        boot({
+            memoryAlgorithmType: "hypaMemoryV3",
+            supaModelType: "none",
+            hypav2: false,
+            hypaV3: false,
+            hanuraiEnable: false,
+        });
+        const memory = trackedRecord<any>("memoryTranslateMedia")!;
+        const ui = trackedRecord<any>("ui")!;
+        const probe = createProbe(() => settings.ui.memoryAlgorithmType);
+        try {
+            expect(probe.derived()).toBe("none");
+            expect(notified).toEqual([]);
+            for (const [patch, expected] of [
+                [{ supaModelType: "subModel" }, "supaMemory"],
+                [{ hypaV3: true }, "hypaMemoryV3"],
+                [{ hypav2: true }, "hypaMemoryV2"],
+                [{ hanuraiEnable: true }, "hanuraiMemory"],
+                [{ hanuraiEnable: false }, "hypaMemoryV2"],
+                [{ hypav2: false }, "hypaMemoryV3"],
+                [{ hypaV3: false, supaModelType: "none" }, "none"],
+            ] as const) {
+                Object.assign(memory, patch);
+                notified.length = 0;
+                flushSync();
+                expect(probe.derived()).toBe(expected);
+                expect(ui.memoryAlgorithmType).toBe("hypaMemoryV3");
+                expect(notified).toEqual([]);
+            }
+            expect(probe.seen).toEqual([
+                "none",
+                "supaMemory",
+                "hypaMemoryV3",
+                "hypaMemoryV2",
+                "hanuraiMemory",
+                "hypaMemoryV2",
+                "hypaMemoryV3",
+                "none",
+            ]);
+            ui.memoryAlgorithmType = "structuredMemory";
+            Object.assign(memory, { hanuraiEnable: true, hypav2: true, hypaV3: true });
+            notified.length = 0;
+            flushSync();
+            expect(probe.derived()).toBe("structuredMemory");
+            expect(notified).toEqual([]);
+            expect(queued()).toEqual([]);
+        } finally {
+            probe.dispose();
+        }
+    });
+
     it("read every section field as its record holds it", () => {
         for (const section of Object.values(SECTION_KIND) as SectionKind[]) {
             for (const field of SECTION_FIELDS[section]) {
@@ -1070,5 +1132,126 @@ describe("the registry over the views", () => {
         selectPreset("missing");
         expect(evaluateInDerived(() => getSettingValue(temperature, ctx))).toBe(80);
         expect(selection.presetId).toBe("a");
+    });
+});
+
+describe("edited root routes with a bound chat open", () => {
+    function openBoundChat() {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [
+                        {
+                            id: "chat",
+                            name: "Chat",
+                            message: [],
+                            localLore: [],
+                            promptPresetId: "b",
+                            modelPresetId: "b",
+                            bindedPersona: "p2",
+                        },
+                    ],
+                },
+            ],
+            botPresets: [
+                { ...presetA(), mainPrompt: "Tab prompt" },
+                { ...presetB(), mainPrompt: "Bound prompt" },
+            ],
+            modelPresets: modelPresets(),
+            modelProfiles: modelProfiles(),
+            personas: [
+                { id: "p1", name: "Tab persona" },
+                { id: "p2", name: "Bound persona" },
+            ],
+        });
+        modelPreset("a").auxSlots = { memory: { modelId: "memory-a" } };
+        modelPreset("b").auxSlots = { memory: { modelId: "memory-b" } };
+        selectPreset("a");
+        selectModelPreset("a");
+        selectPersona("p1");
+        selectCharacter("c");
+        selectChat("c", "chat");
+    }
+
+    afterEach(() => selectCharacter(null));
+
+    it("edited prompt, model, auxiliary and persona roots follow the tab selection while active roots keep the binding", () => {
+        openBoundChat();
+        const boundBefore = plainClone([preset("b"), modelPreset("b"), profile("pb"), persona("p2")]);
+        const keys = ["mainPrompt", "aiModel", "maxContext", "username"];
+        expect(keys.map(readSettingsRoot)).toEqual(["Bound prompt", "model-b", 5000, "Bound persona"]);
+        expect(keys.map(readEditedRoot)).toEqual(["Tab prompt", "model-a", 4000, "Tab persona"]);
+        const aux = readEditedRoot("seperateModels") as { memory: string; emotion: string };
+        expect(aux.memory).toBe("memory-a");
+        expect((readSettingsRoot("seperateModels") as { memory: string }).memory).toBe("memory-b");
+        writeEditedRoot("mainPrompt", "Tab edited");
+        writeEditedRoot("maxContext", 4321);
+        writeEditedRoot("aiModel", "model-sub");
+        writeEditedRoot("seperateModels", { memory: "whole-edit" });
+        expect(modelPreset("a").auxSlots.memory).toEqual({ modelId: "whole-edit" });
+        aux.memory = "dotted-edit";
+        aux.emotion = "view-edit";
+        writeEditedRoot("username", "Tab renamed");
+        expect(preset("a").mainPrompt).toBe("Tab edited");
+        expect(profile("pa").maxContext).toBe(4321);
+        expect(modelPreset("a")).toMatchObject({
+            mainSlot: { profileId: "sub" },
+            auxSlots: { memory: { modelId: "dotted-edit" }, emotion: { modelId: "view-edit" } },
+        });
+        expect(persona("p1").name).toBe("Tab renamed");
+        expect(plainClone([preset("b"), modelPreset("b"), profile("pb"), persona("p2")])).toEqual(boundBefore);
+        expect(keys.map(readSettingsRoot)).toEqual(["Bound prompt", "model-b", 5000, "Bound persona"]);
+
+        // Even an auxiliary view obtained before the switch must resolve the new selection on access.
+        selectPreset("b");
+        selectModelPreset("b");
+        selectPersona("p2");
+        expect(keys.map(readEditedRoot)).toEqual(["Bound prompt", "model-b", 5000, "Bound persona"]);
+        expect(aux.memory).toBe("memory-b");
+        aux.memory = "after-switch";
+        expect(modelPreset("b").auxSlots.memory).toEqual({ modelId: "after-switch" });
+        expect(modelPreset("a").auxSlots.memory).toEqual({ modelId: "dotted-edit" });
+    });
+
+    it("edited root writes with missing selections are dropped, including whole objects and retained auxiliary views", () => {
+        openBoundChat();
+        const aux = readEditedRoot("seperateModels") as { memory: string };
+        const before = plainClone([
+            record("presets"),
+            record("modelPresets"),
+            record("modelProfiles"),
+            record("personas"),
+        ]);
+        selectPreset("gone");
+        selectModelPreset("gone");
+        selectPersona("gone");
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            writeEditedRoot("mainPrompt", "must be dropped");
+            writeEditedRoot("aiModel", "model-sub");
+            writeEditedRoot("maxContext", 1234);
+            writeEditedRoot("seperateModels", { memory: "whole-edit" });
+            aux.memory = "view-edit";
+            writeEditedRoot("username", "must be dropped");
+            expect(
+                plainClone([record("presets"), record("modelPresets"), record("modelProfiles"), record("personas")]),
+            ).toEqual(before);
+            expect([selection.presetId, selection.modelPresetId, selection.personaId]).toEqual([
+                "gone",
+                "gone",
+                "gone",
+            ]);
+            expect(["mainPrompt", "aiModel", "username"].map(readEditedRoot)).toEqual([
+                "Tab prompt",
+                "model-a",
+                "Tab persona",
+            ]);
+            expect([selection.presetId, selection.modelPresetId, selection.personaId]).toEqual(["a", "a", "p1"]);
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

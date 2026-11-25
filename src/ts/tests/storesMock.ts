@@ -2,16 +2,19 @@ import { writable } from "svelte/store";
 import { vi } from "vitest";
 import { createAlertQueue } from "../alertQueue";
 import * as settingsMenu from "../settingsMenu";
-import type { PickerListState, MemoryProgressState } from "../stores.svelte";
+import type { LoreBudgetStopRequest, PickerListState, MemoryProgressState } from "../stores.svelte";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
 type StoresModule = typeof import("../stores.svelte");
+type StoresMockOverrides = Omit<Partial<StoresModule>, "popUpEditorStore"> & {
+    popUpEditorStore?: Omit<StoresModule["popUpEditorStore"], "sessionId"> & { sessionId?: number };
+};
 
 /** Plain stores without the DOM, resize listeners, module effects, or CSS subscription.
  * Load inside each hoisted vi.mock factory and pass that file's handles as overrides.
  * Every call owns fresh state; adding a product export must update these defaults.
  */
-export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresModule {
+export function createStoresMock(overrides: StoresMockOverrides = {}): StoresModule {
     const defaults = {
         ...settingsMenu,
         SizeStore: writable({ w: 0, h: 0 }),
@@ -30,6 +33,7 @@ export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresM
         openModelPresetList: writable<PickerListState>(false),
         openPersonaList: writable<PickerListState>(false),
         chatBindingDialog: writable<ChatRef | null>(null),
+        loreBudgetStopDialog: writable<LoreBudgetStopRequest | null>(null),
         bookmarkListOpen: writable(false),
         SettingsMenuIndex: writable(-1),
         ReloadGUIPointer: writable(0),
@@ -43,6 +47,8 @@ export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresM
         CustomCSSStore: writable(""),
         SafeModeStore: writable(false),
         CharConfigSubMenu: writable(0),
+        sidebarLeaveDevTool: writable(false),
+        loreBookSubmenuRequest: writable<number | null>(null),
         alertStore: createAlertQueue({ type: "none", msg: "n" }),
         hypaV3ModalOpen: writable(false),
         hypaV3ProgressStore: writable({ open: false, miniMsg: "", msg: "", subMsg: "" }),
@@ -59,9 +65,16 @@ export function createStoresMock(overrides: Partial<StoresModule> = {}): StoresM
         chatPanelStore: [],
         bodyIntercepterStore: [],
         popupStore: { children: null, mouseX: 0, mouseY: 0, openId: 0 },
-        popUpEditorStore: { open: false, value: "", mode: "default", language: "markdown" },
+        popUpEditorStore: { open: false, value: "", mode: "default", language: "markdown", sessionId: 0 },
+        openPopupEditorSession: vi.fn<StoresModule["openPopupEditorSession"]>(() => 0),
+        isPopupEditorSessionCurrent: vi.fn<StoresModule["isPopupEditorSessionCurrent"]>(() => false),
+        closePopupEditorSession: vi.fn<StoresModule["closePopupEditorSession"]>(() => false),
         irisStore: { open: false },
         hotReloading: [],
     } satisfies StoresModule;
-    return { ...defaults, ...overrides };
+    return {
+        ...defaults,
+        ...overrides,
+        popUpEditorStore: { ...defaults.popUpEditorStore, ...overrides.popUpEditorStore },
+    };
 }

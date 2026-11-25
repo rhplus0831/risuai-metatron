@@ -33,15 +33,28 @@ function makeImageLayoutRoot(): string {
 }
 
 /** Runs a script with plain `node` (no flags, no `NODE_OPTIONS`) and returns its exit and output. */
-async function runNode(args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+async function runNode(
+    args: string[],
+    cwd: string,
+    signal?: AbortSignal,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
-    const child = spawn(process.execPath, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, args, {
+        cwd,
+        env,
+        signal,
+        killSignal: "SIGKILL",
+        stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-    const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+    const code = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+    });
     return { code, stdout, stderr };
 }
 describe.concurrent("plain Node", () => {
@@ -103,6 +116,44 @@ console.log(JSON.stringify(out));
                         expect(actual, `${family} ${name}`).toEqual(expected);
                     }
                 }
+            }
+        }
+    }, 120_000);
+
+    it("counts every family's smoke strings in a worker and exits without dispose", async ({ expect, signal }) => {
+        const root = makeImageLayoutRoot();
+        const script = path.join(root, "worker.mjs");
+        writeFileSync(
+            script,
+            `
+import { createWorkerTokenizers } from ${JSON.stringify(path.join(TOKENIZERS_DIR, "workerHost.ts"))};
+const [families, texts] = process.argv.slice(2).map((arg) => JSON.parse(arg));
+const set = createWorkerTokenizers({ rootDir: process.cwd() });
+const counts = {};
+for (const family of families) {
+    counts[family] = {};
+    for (const [name, text] of Object.entries(texts)) {
+        try {
+            counts[family][name] = await set.count(family, text);
+        } catch (error) {
+            counts[family][name] = { error: error.message };
+        }
+    }
+}
+console.log(JSON.stringify(counts));
+`,
+        );
+        const texts = Object.fromEntries(SHORT_TEXT_NAMES.map((name) => [name, materialize(fixture.texts[name])]));
+        const families = Object.keys(fixture.families);
+        const result = await runNode([script, JSON.stringify(families), JSON.stringify(texts)], root, signal);
+        expect(result.code, result.stderr).toBe(0);
+        const counts = JSON.parse(result.stdout.trim());
+        for (const family of families) {
+            for (const name of SHORT_TEXT_NAMES) {
+                const record = fixture.families[family][name];
+                const actual = expect(counts[family][name], `${family} ${name}`);
+                if ("error" in record) actual.toEqual({ error: expect.stringContaining(record.error) });
+                else actual.toBe("ids" in record ? record.ids.length : record.count);
             }
         }
     }, 120_000);

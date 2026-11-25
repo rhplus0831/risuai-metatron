@@ -1,6 +1,7 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { languageEnglish } from "../../lang/en";
+import { createFakeLockManager } from "../storage/tests/fakeLockManager";
 
 // This browser's Web Push (`pushNotifications.ts`) over stubbed browser APIs (`Notification`,
 // `PushManager`, `navigator.serviceWorker` with one registration) and a fake `authFetch`: the
@@ -12,7 +13,8 @@ import { languageEnglish } from "../../lang/en";
 // refusing a subscription, the browser opt-out with the server removal retried at the next sync, the
 // tab's notification (suppressed while subscribed or while the page is in front with the focus, the
 // worker's `showNotification`, the page's `Notification` fallback with the click opening the chat),
-// the foreground cleanup of the tagged notifications, and the worker's `risu-open-route` message. A
+// the foreground cleanup of the tagged notifications (with its `push` `dismissedByPage` event counting
+// what it closed), and the worker's `risu-open-route` and `risu-push-completion` messages. A
 // browser unsubscribe that rejects or resolves `false` (at a disable, and for an older key's
 // subscription) is reported in `error` and retried at the next sync, dropped by a re-enable, and
 // repaired when another tab turns this browser on mid-retry; the failure details follow the selected
@@ -20,19 +22,31 @@ import { languageEnglish } from "../../lang/en";
 
 const deps = vi.hoisted(() => ({
     authFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
+    ensureAuth: vi.fn<() => Promise<void>>(),
     openRoute: vi.fn<(path: string) => boolean>(() => true),
     settings: { ui: { notification: true } },
+    /** `recordClientEvent`: the diagnostics of the foreground cleanup. */
+    record: vi.fn<(input: unknown) => void>(),
 }));
 vi.mock("../storage/serverAuth", async () =>
-    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: deps.authFetch }),
+    (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: deps.authFetch,
+        ensureAuth: deps.ensureAuth,
+    }),
 );
 vi.mock("../router/router.svelte", () => ({ openRoute: deps.openRoute }));
 vi.mock("../storage/settingsViews.svelte", () => ({ settings: deps.settings }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock({
+        recordClientEvent: (input: unknown) => deps.record(input),
+    }),
+);
 
 const PROMPT_DISMISSED = "risu-push-prompt-dismissed";
 const BROWSER_OFF = "risu-push-browser-off";
 const PENDING_REMOVAL = "risu-push-pending-removal";
 const PENDING_UNSUBSCRIBE = "risu-push-pending-unsubscribe";
+const REGISTERED = "risu-push-registered";
 const TAG = "risuai-chat-completion";
 
 function base64url(bytes: Uint8Array): string {
@@ -105,9 +119,10 @@ class FakeNotification {
     }
 }
 
-/** What the fake server answers: the key route, the PUT, the DELETE. */
-const server = { publicKey: KEY as string | null, put: 204, delete: 204 };
+/** What the fake server answers: the key route (its status and key), the PUT, the DELETE. */
+const server = { key: 200, publicKey: KEY as string | null, put: 204, delete: 204 };
 const requests: { method: string; path: string; body?: unknown }[] = [];
+const heldResponses = new Map<string, Promise<Response>>();
 let visibility: DocumentVisibilityState = "visible";
 /** `document.hasFocus()`: off by default, so the tab's notification is shown. */
 let focused = false;
@@ -154,9 +169,9 @@ function deferred<T = void>() {
 async function settle() {
     await vi.advanceTimersByTimeAsync(0);
 }
-async function boot() {
+async function boot(options?: Parameters<typeof import("./pushNotifications").startPushNotifications>[0]) {
     const module = await import("./pushNotifications");
-    module.startPushNotifications();
+    module.startPushNotifications(options);
     await settle();
     return module;
 }
@@ -178,17 +193,21 @@ beforeEach(() => {
     storage.throwWrites = false;
     vi.stubGlobal("localStorage", storage);
     requests.length = 0;
+    heldResponses.clear();
     created.length = 0;
     workerListeners.length = 0;
     current = null;
     shown = [];
     visibility = "visible";
     focused = false;
+    server.key = 200;
     server.publicKey = KEY;
     server.put = 204;
     server.delete = 204;
     deps.settings.ui.notification = true;
     deps.openRoute.mockClear().mockReturnValue(true);
+    deps.record.mockClear();
+    deps.ensureAuth.mockReset().mockResolvedValue(undefined);
     registration.pushManager.getSubscription.mockClear();
     registration.pushManager.subscribe.mockClear();
     registration.showNotification.mockClear();
@@ -198,8 +217,17 @@ beforeEach(() => {
     deps.authFetch.mockReset().mockImplementation(async (path, init) => {
         const method = init?.method ?? "GET";
         requests.push({ method, path, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+        const held = heldResponses.get(method);
+        if (held) {
+            heldResponses.delete(method);
+            return held;
+        }
         if (path === "/api/push/key") {
-            return { ok: true, status: 200, json: async () => ({ publicKey: server.publicKey }) } as Response;
+            return {
+                ok: server.key < 300,
+                status: server.key,
+                json: async () => ({ publicKey: server.publicKey }),
+            } as Response;
         }
         const status = method === "PUT" ? server.put : server.delete;
         return { ok: status < 300, status } as Response;
@@ -254,6 +282,8 @@ describe("subscription serialization", () => {
             syncSent.resolve();
             return finishSync.promise;
         });
+        // A sync that must register again (its registration is not fresh), so it holds the lock on its PUT.
+        localStorage.removeItem("risu-push-registered");
         const sync = syncing.reconcilePush();
         await syncSent.promise;
 
@@ -323,6 +353,345 @@ describe("subscription serialization", () => {
         expect(current).not.toBe(old);
         expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2);
         expect(state(module)).toMatchObject({ subscribed: true, optedOut: false, error: null });
+    });
+
+    it("undoes a new subscription when another tab disables push during enable without Web Locks", async () => {
+        // Boot both tabs before granting permission, so neither has an existing subscription.
+        const enabling = await boot();
+        vi.resetModules();
+        const disabling = await boot();
+        FakeNotification.permission = "granted";
+
+        const subscribeStarted = deferred();
+        const finishSubscribe = deferred();
+        registration.pushManager.subscribe.mockImplementationOnce(async (options) => {
+            subscribeStarted.resolve();
+            await finishSubscribe.promise;
+            current = fakeSubscription("https://fcm.googleapis.com/fcm/send/new", options.applicationServerKey);
+            current.unsubscribe.mockImplementation(async () => {
+                current = null;
+                return true;
+            });
+            return current;
+        });
+
+        const enable = enabling.enablePushOnThisBrowser();
+        await subscribeStarted.promise;
+        await disabling.disablePushOnThisBrowser();
+        finishSubscribe.resolve();
+        await expect(enable).resolves.toBe(false);
+
+        expect(current).toBeNull();
+        expect(calls("PUT")).toEqual([]);
+        expect(state(enabling)).toMatchObject({ subscribed: false, optedOut: true });
+    });
+});
+
+describe("registration refresh", () => {
+    const DAY = 24 * 60 * 60 * 1_000;
+    const START = 1_900_000_000_000;
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.setSystemTime(START);
+    });
+
+    it("reuses a successful registration across reloads for less than 24 hours and always PUTs on an enable click", async () => {
+        FakeNotification.permission = "granted";
+        await boot();
+        expect(calls("PUT")).toHaveLength(1);
+        const stamp = localStorage.getItem(REGISTERED);
+        expect(JSON.parse(stamp!)).toEqual({
+            endpoint: current!.endpoint,
+            p256dh: "p",
+            auth: "a",
+            serverKey: KEY,
+            at: START,
+        });
+        vi.resetModules();
+        const module = await boot();
+        vi.setSystemTime(START + DAY - 1);
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(1);
+        expect(localStorage.getItem(REGISTERED)).toBe(stamp);
+        expect(state(module).subscribed).toBe(true);
+        vi.setSystemTime(START + DAY);
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(2);
+        expect(JSON.parse(localStorage.getItem(REGISTERED)!).at).toBe(START + DAY);
+        await expect(module.enablePushOnThisBrowser()).resolves.toBe(true);
+        expect(calls("PUT")).toHaveLength(3);
+    });
+
+    it("registers changed endpoints, subscription keys, and server keys despite a fresh stamp", async () => {
+        FakeNotification.permission = "granted";
+        let module = await boot();
+        const endpoint = "https://fcm.googleapis.com/fcm/send/replacement";
+        current = fakeSubscription(endpoint, KEY_BYTES);
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(2);
+        for (const [index, keys] of [
+            { p256dh: "new-p", auth: "a" },
+            { p256dh: "new-p", auth: "new-a" },
+        ].entries()) {
+            current.toJSON = () => ({ endpoint, expirationTime: null, keys });
+            await module.reconcilePush();
+            expect(calls("PUT")).toHaveLength(3 + index);
+            expect(calls("PUT").at(-1)?.body).toEqual({ subscription: { endpoint, expirationTime: null, keys } });
+        }
+        // A reload learns a new server key; the browser already has a subscription for it.
+        // Keep the endpoint and subscription keys equal so only serverKey invalidates the stamp.
+        server.publicKey = base64url(OLD_KEY_BYTES);
+        current.options = fakeSubscription(endpoint, OLD_KEY_BYTES).options;
+        vi.resetModules();
+        module = await boot();
+        expect(calls("PUT")).toHaveLength(5);
+        expect(calls("DELETE")).toHaveLength(0);
+        expect(JSON.parse(localStorage.getItem(REGISTERED)!).serverKey).toBe(server.publicKey);
+        expect(state(module).subscribed).toBe(true);
+    });
+
+    it("clears registration evidence after a failed PUT or disable so reconciliation registers again", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        server.put = 503;
+        await expect(module.enablePushOnThisBrowser()).resolves.toBe(false);
+        expect(calls("PUT")).toHaveLength(2);
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+        server.put = 204;
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(3);
+        expect(localStorage.getItem(REGISTERED)).not.toBeNull();
+        server.delete = 503;
+        await module.disablePushOnThisBrowser();
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+        // Another tab removes the browser opt-out. The fake browser kept the same subscription.
+        localStorage.removeItem(BROWSER_OFF);
+        server.delete = 204;
+        await module.reconcilePush();
+        expect(calls("PUT")).toHaveLength(4);
+        expect(state(module).subscribed).toBe(true);
+    });
+
+    it("folds reconciliations waiting for the push lock into one run even when its PUT fails", async () => {
+        const module = await boot();
+        FakeNotification.permission = "granted";
+        server.put = 503;
+        const entered = deferred();
+        const release = deferred();
+        Object.defineProperty(navigator, "locks", {
+            configurable: true,
+            value: {
+                request: async (_name: string, task: () => Promise<unknown>) => {
+                    entered.resolve();
+                    await release.promise;
+                    return task();
+                },
+            },
+        });
+        const first = module.reconcilePush();
+        await entered.promise;
+        const rest = [module.reconcilePush(), module.reconcilePush()];
+        release.resolve();
+        await Promise.all([first, ...rest]);
+        expect(calls("PUT")).toHaveLength(1);
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+    });
+
+    it.each(["enable", "disable"] as const)(
+        "keeps a reconciliation queued after %s separate from one queued before it",
+        async (action) => {
+            const module = await boot();
+            FakeNotification.permission = "granted";
+            server.put = 503;
+            server.delete = 503;
+            const fetch = deps.authFetch.getMockImplementation()!;
+            deps.authFetch.mockImplementation(async (path, init) => {
+                const response = await fetch(path, init);
+                if (init?.method === "DELETE") {
+                    server.delete = 204;
+                }
+                return response;
+            });
+            const entered = deferred();
+            const release = deferred();
+            Object.defineProperty(navigator, "locks", {
+                configurable: true,
+                value: {
+                    request: async (_name: string, task: () => Promise<unknown>) => {
+                        entered.resolve();
+                        await release.promise;
+                        return task();
+                    },
+                },
+            });
+            const before = module.reconcilePush();
+            await entered.promise;
+            const change = action === "enable" ? module.enablePushOnThisBrowser() : module.disablePushOnThisBrowser();
+            const after = module.reconcilePush();
+            release.resolve();
+            await Promise.all([before, change, after]);
+            expect(requests.filter(({ method }) => method !== "GET").map(({ method }) => method)).toEqual(
+                action === "enable" ? ["PUT", "PUT", "PUT"] : ["PUT", "DELETE", "DELETE"],
+            );
+            expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
+        },
+    );
+});
+
+describe("push request deadlines", () => {
+    const DEADLINE_MS = 30_000;
+
+    function lastSignal(method: string) {
+        return deps.authFetch.mock.calls.findLast(([, init]) => (init?.method ?? "GET") === method)?.[1]?.signal;
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    });
+
+    it("releases the risu-push lock for another tab's Disable when a PUT times out", async () => {
+        const locks = createFakeLockManager();
+        Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
+        const enabling = await boot();
+        vi.resetModules();
+        const disabling = await boot();
+
+        FakeNotification.permission = "granted";
+        const endpoint = "https://fcm.googleapis.com/fcm/send/shared";
+        current = fakeSubscription(endpoint, KEY_BYTES);
+        heldResponses.set("PUT", deferred<Response>().promise);
+        const enable = enabling.enablePushOnThisBrowser();
+        await settle();
+        expect(calls("PUT")).toHaveLength(1);
+
+        const disabled = vi.fn();
+        const disable = disabling.disablePushOnThisBrowser().then(disabled);
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+        expect(locks.held()).toEqual(["risu-push"]);
+        expect(locks.waiting()).toEqual(["risu-push"]);
+        expect(calls("DELETE")).toEqual([]);
+        expect(disabled).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(disabled).toHaveBeenCalledOnce();
+        await disable;
+        await expect(enable).resolves.toBe(false);
+        expect(calls("DELETE")).toEqual([{ method: "DELETE", path: "/api/push/subscription", body: { endpoint } }]);
+        expect(locks.held()).toEqual([]);
+        expect(state(disabling)).toMatchObject({ optedOut: true, subscribed: false, busy: false });
+    });
+
+    it("clears the registration stamp after a PUT times out and sends a new PUT on reconciliation", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const stamp = localStorage.getItem(REGISTERED);
+        expect(stamp).not.toBeNull();
+        requests.length = 0;
+
+        heldResponses.set("PUT", deferred<Response>().promise);
+        const enable = module.enablePushOnThisBrowser();
+        await settle();
+        const put = {
+            method: "PUT",
+            path: "/api/push/subscription",
+            body: { subscription: current!.toJSON() },
+        };
+        expect(calls("PUT")).toEqual([put]);
+        const signal = lastSignal("PUT");
+        expect(localStorage.getItem(REGISTERED)).toBe(stamp);
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+        expect(localStorage.getItem(REGISTERED)).toBeNull();
+        expect(signal?.aborted).toBe(true);
+        expect(state(module)).toMatchObject({ subscribed: false, busy: false });
+        expect(state(module).error).toBeTruthy();
+        await expect(enable).resolves.toBe(false);
+
+        await module.reconcilePush();
+        expect(calls("PUT")).toEqual([put, put]);
+        expect(localStorage.getItem(REGISTERED)).not.toBeNull();
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("records a DELETE that times out and retries the same endpoint on reconciliation", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const removal = {
+            method: "DELETE",
+            path: "/api/push/subscription",
+            body: { endpoint: current!.endpoint },
+        };
+
+        heldResponses.set("DELETE", deferred<Response>().promise);
+        const disable = module.disablePushOnThisBrowser();
+        await settle();
+        expect(calls("DELETE")).toEqual([removal]);
+        const signal = lastSignal("DELETE");
+        expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+        expect(localStorage.getItem(PENDING_REMOVAL)).toBe(removal.body.endpoint);
+        expect(signal?.aborted).toBe(true);
+        expect(state(module)).toMatchObject({ optedOut: true, subscribed: false, busy: false });
+        await disable;
+
+        await module.reconcilePush();
+        expect(calls("DELETE")).toEqual([removal, removal]);
+        expect(localStorage.getItem(PENDING_REMOVAL)).toBeNull();
+    });
+
+    it("uses the cached VAPID key when the GET and its JSON body exceed one deadline", async () => {
+        const module = await boot();
+        FakeNotification.permission = "granted";
+        const headers = deferred<Response>();
+        const body = deferred<{ publicKey: string }>();
+        const response = new Response();
+        const readBody = vi.spyOn(response, "json").mockReturnValue(body.promise);
+        heldResponses.set("GET", headers.promise);
+
+        const sync = module.reconcilePush();
+        await settle();
+        expect(calls("GET").at(-1)).toEqual({ method: "GET", path: "/api/push/key" });
+        const signal = lastSignal("GET");
+        await vi.advanceTimersByTimeAsync(20_000);
+        headers.resolve(response);
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 20_000 - 1);
+        expect(readBody).toHaveBeenCalledOnce();
+        expect(signal?.aborted).toBe(false);
+        expect(calls("PUT")).toEqual([]);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(calls("PUT")).toHaveLength(1);
+        expect(signal?.aborted).toBe(true);
+        await sync;
+        expect(JSON.parse(localStorage.getItem(REGISTERED)!)).toMatchObject({ serverKey: KEY });
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("gives the request a full 30 seconds after sign-in settles", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const signIn = deferred();
+        deps.ensureAuth.mockReturnValueOnce(signIn.promise);
+        heldResponses.set("DELETE", deferred<Response>().promise);
+
+        const disable = module.disablePushOnThisBrowser();
+        await vi.advanceTimersByTimeAsync(2 * DEADLINE_MS);
+        expect(calls("DELETE")).toEqual([]);
+        expect(state(module).busy).toBe(true);
+
+        signIn.resolve();
+        await settle();
+        expect(calls("DELETE")).toHaveLength(1);
+        const signal = lastSignal("DELETE");
+        await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
+        expect(signal?.aborted).toBe(false);
+        expect(state(module).busy).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(signal?.aborted).toBe(true);
+        expect(state(module).busy).toBe(false);
+        await disable;
     });
 });
 
@@ -475,6 +844,63 @@ describe("startPushNotifications", () => {
         server.put = 400;
         const module = await boot();
         expect(state(module)).toMatchObject({ subscribed: false, error: expect.stringContaining("400") });
+    });
+});
+
+describe("the server key in an open tab", () => {
+    // The server's key is read again at each sync, so a tab that stays open never swaps back a
+    // subscription another tab made for a newer key, and a server that turns push on is seen.
+    const NEWER_KEY_BYTES = OLD_KEY_BYTES;
+
+    it("follows a key change another tab already subscribed for, replacing nothing", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        // A reloaded tab learned the newer key and subscribed for it.
+        server.publicKey = base64url(NEWER_KEY_BYTES);
+        const other = fakeSubscription("https://fcm.googleapis.com/fcm/send/other", NEWER_KEY_BYTES);
+        current = other;
+        registration.pushManager.subscribe.mockClear();
+        showPage();
+        await settle();
+        expect(other.unsubscribe).not.toHaveBeenCalled();
+        expect(registration.pushManager.subscribe).not.toHaveBeenCalled();
+        expect(current).toBe(other);
+        expect(calls("DELETE")).toEqual([]);
+        expect(calls("PUT").at(-1)?.body).toEqual({ subscription: other.toJSON() });
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("replaces nothing when the key cannot be read and the subscription has another key", async () => {
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        const other = fakeSubscription("https://fcm.googleapis.com/fcm/send/other", NEWER_KEY_BYTES);
+        current = other;
+        server.key = 503;
+        registration.pushManager.subscribe.mockClear();
+        await module.reconcilePush();
+        expect(other.unsubscribe).not.toHaveBeenCalled();
+        expect(registration.pushManager.subscribe).not.toHaveBeenCalled();
+        expect(state(module)).toMatchObject({
+            subscribed: false,
+            error: languageEnglish.pushNotifications.keyRequestFailed(503),
+        });
+        // A failed read with the last key's subscription in place still syncs from the last key.
+        current = fakeSubscription("https://fcm.googleapis.com/fcm/send/same", KEY_BYTES);
+        await module.reconcilePush();
+        expect(state(module)).toMatchObject({ subscribed: true, error: null });
+    });
+
+    it("sees push turned on on the server when the page is shown again, and subscribes", async () => {
+        server.publicKey = null;
+        FakeNotification.permission = "granted";
+        const module = await boot();
+        expect(state(module).availability).toBe("server-off");
+        server.publicKey = KEY;
+        showPage();
+        await settle();
+        expect(state(module)).toMatchObject({ availability: "ok", subscribed: true });
+        expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(1);
+        expect(calls("PUT")).toHaveLength(1);
     });
 });
 
@@ -832,7 +1258,7 @@ describe("showCompletionNotification", () => {
 });
 
 describe("the page shown and the worker's messages", () => {
-    it("closes every page fallback completion notice on foreground dismissal, including repeated tags, and leaves other notices open", async () => {
+    it("closes every page fallback completion notice on foreground dismissal, including repeated tags, leaves other notices open, and records how many it closed (nothing when none)", async () => {
         FakeNotification.permission = "granted";
         delete (navigator as unknown as Record<string, unknown>).serviceWorker;
         visibility = "hidden";
@@ -848,10 +1274,14 @@ describe("the page shown and the worker's messages", () => {
         await settle();
         for (const notice of created.slice(0, 4)) expect(notice.close).toHaveBeenCalledTimes(1);
         expect(created[4].close).not.toHaveBeenCalled();
+        expect(deps.record.mock.calls.map(([input]) => input)).toEqual([
+            { kind: "push", phase: "dismissedByPage", count: 4 },
+        ]);
         showPage();
         await settle();
         for (const notice of created.slice(0, 4)) expect(notice.close).toHaveBeenCalledTimes(1);
         expect(created[4].close).not.toHaveBeenCalled();
+        expect(deps.record).toHaveBeenCalledTimes(1);
     });
 
     it("closes the tagged notifications when the page is shown", async () => {
@@ -870,7 +1300,7 @@ describe("the page shown and the worker's messages", () => {
         expect(later.close).toHaveBeenCalledTimes(1);
     });
 
-    it("closes every chat's completion notifications and the bare prefix, and leaves other notifications", async () => {
+    it("closes every chat's completion notifications and the bare prefix, leaves other notifications, and counts the worker's and the page's together, never their tags", async () => {
         const chatA = { tag: `${TAG}:a1`, close: vi.fn() };
         const chatB = { tag: `${TAG}:b2`, close: vi.fn() };
         const older = { tag: TAG, close: vi.fn() };
@@ -883,10 +1313,15 @@ describe("the page shown and the worker's messages", () => {
         }
         expect(other.close).not.toHaveBeenCalled();
         expect(untagged.close).not.toHaveBeenCalled();
+        expect(deps.record.mock.calls.map(([input]) => input)).toEqual([
+            { kind: "push", phase: "dismissedByPage", count: 3 },
+        ]);
+        expect(JSON.stringify(deps.record.mock.calls)).not.toMatch(/a1|b2|another/);
     });
 
     it("opens the chat of a `risu-open-route` message and answers the worker; other messages are ignored", async () => {
-        await boot();
+        const onCompletionPush = vi.fn();
+        await boot({ onCompletionPush });
         const port = { postMessage: vi.fn() };
         container.emit({ data: { type: "risu-open-route", url: "/chat/a/b" }, ports: [port] });
         expect(deps.openRoute).toHaveBeenCalledWith("/chat/a/b");
@@ -898,6 +1333,19 @@ describe("the page shown and the worker's messages", () => {
         container.emit({ data: { type: "other", url: "/chat/a/b" }, ports: [port] });
         container.emit({ data: { type: "risu-open-route", url: 7 }, ports: [port] });
         container.emit({ data: null, ports: [] });
+        expect(deps.openRoute).not.toHaveBeenCalled();
+        expect(onCompletionPush).not.toHaveBeenCalled();
+    });
+
+    it("reports the chat of a `risu-push-completion` message, decoded from its route, and nothing for another path", async () => {
+        const onCompletionPush = vi.fn();
+        await boot({ onCompletionPush });
+        container.emit({ data: { type: "risu-push-completion", url: "/chat/a%20b/c%2Fd" }, ports: [] });
+        expect(onCompletionPush).toHaveBeenCalledExactlyOnceWith({ chaId: "a b", chatId: "c/d" });
+        container.emit({ data: { type: "risu-push-completion", url: "/" }, ports: [] });
+        container.emit({ data: { type: "risu-push-completion", url: "/chat/a" }, ports: [] });
+        container.emit({ data: { type: "risu-push-completion", url: 7 }, ports: [] });
+        expect(onCompletionPush).toHaveBeenCalledTimes(1);
         expect(deps.openRoute).not.toHaveBeenCalled();
     });
 });

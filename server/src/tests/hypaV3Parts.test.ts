@@ -13,14 +13,15 @@ import {
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { CachedVector, VectorCache } from "../data/vectorCache.ts";
 import type { requestDataResponse } from "../llm/request.ts";
-import { createEmbeddings } from "../prompt/embeddings.ts";
+import { createEmbeddings, HypaProcesser } from "../prompt/embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "../prompt/memory/host.ts";
 import {
+    appliedHypaV3Summaries,
     createHypaV3SourceValidator,
     emptyHypaV3Execution,
     executeHypaV3Plan,
-    HYPAV3_LOOKAHEAD_HEADROOM,
     hypaV3SourceHash,
+    forecastHypaV3,
     type HypaV3Checkpoint,
     type HypaV3CurrentSource,
     type HypaV3EntrySource,
@@ -51,6 +52,8 @@ import {
     TOO_MUCH_TOKEN,
     USER_NAME,
 } from "./fixtures/memory/scenarios.ts";
+
+import { UNHURRIED_HYPAV3_SEPARATOR } from "./unhurriedLimits.ts";
 
 // The HypaV3 parts (`prepareHypaV3`, `planHypaV3Summaries`, `executeHypaV3Plan`, `selectHypaV3`)
 // called directly over the fixture world of `memoryAlgorithms.test.ts`, which holds `hypaMemoryV3`
@@ -130,6 +133,8 @@ function hostOf(scenario: Scenario, world: World, options: HostOptions = {}): Me
         summarizer: (text) => world.summarizer(text),
         embeddings,
         regex: async (op) => runRegexOp(op),
+        separatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
+        parse: (text) => text,
         parseChatML: () => null,
         userName: () => USER_NAME,
         progress: (payload) => world.progress(payload),
@@ -1548,8 +1553,8 @@ describe("prepare options and lookahead planning", () => {
             chats: makeChats(20),
             maxContextTokens: 1000,
         });
-        expect(HYPAV3_LOOKAHEAD_HEADROOM).toBe(0.15);
         const { prepared, plan } = await setUp(base, { lookahead: true });
+        expect(prepared.settings.lookaheadHeadroomRatio).toBe(0.15);
         expect(prepared.ledger.current).toBe(670);
         expect((await planHypaV3Summaries(prepared)).stopReason).toBe("notNeeded");
         // Target 750: five windows (860 → 760), the sixth would overshoot.
@@ -1564,6 +1569,18 @@ describe("prepare options and lookahead planning", () => {
             { lookahead: true },
         );
         expect(atTrigger.plan.stopReason).toBe("notNeeded");
+        // A larger headroom moves the trigger to 800 and the target to 700: seven windows (850 → 710).
+        const wider = await setUp(
+            {
+                ...base,
+                name: "v3-lookahead-wider",
+                currentTokens: 700,
+                preset: { ...base.preset, lookaheadHeadroomRatio: 0.2 },
+            },
+            { lookahead: true },
+        );
+        expect(wider.plan.stopReason).toBe("nextWindowOvershoots");
+        expect(wider.plan.windows).toHaveLength(7);
 
         // A large extra ratio clamps the target at 0: the plan runs to the protected tail without an error.
         const clamped = await setUp(
@@ -1584,6 +1601,380 @@ describe("prepare options and lookahead planning", () => {
         const plain = await planHypaV3Summaries(overLookahead.prepared);
         expect(plain.stopReason).toBe("cannotSummarizeFurther");
         expect(plain.error).toMatch(/^\[HypaV3\] Cannot summarize further/);
+    });
+
+    it("`responseCorrection: false` keeps `maxResponse` in the count: a prompt that fits only without it is summarized", async () => {
+        // A context of 1000, `maxResponse` 50, the empty card 10, a budget of 20.
+        const base = flatScenario("v3-response-budget", 1020, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.02 },
+            chats: makeChats(20),
+            maxContextTokens: 1000,
+        });
+        // The legacy correction: 1020 − 50 + 10 = 980 fits, with the empty card held.
+        const legacy = await setUp(base);
+        expect(legacy.prepared.ledger.responseCorrection).toBe(50);
+        expect(legacy.prepared.ledger.reservation.kind).toBe("emptyCard");
+        expect(legacy.prepared.ledger.current).toBe(980);
+        expect(legacy.plan.stopReason).toBe("notNeeded");
+        // Kept: 1020 + 10 is over, so the full budget is held (1040) and windows are planned.
+        const kept = await setUp(base, { prepare: { responseCorrection: false } });
+        expect(kept.prepared.ledger.responseCorrection).toBe(0);
+        expect(kept.prepared.ledger.reservation).toEqual({ kind: "fullBudget", tokens: 20 });
+        expect(kept.prepared.ledger.current).toBe(1040);
+        expect(kept.plan.windows.length).toBeGreaterThan(0);
+    });
+
+    it("forecastHypaV3 counts the added tokens at which an ordinary plan summarizes and a lookahead plan asks", async () => {
+        // A context of 1000, `maxResponse` 50, the empty card 10, a budget of 200, 10-token messages
+        // in two-message windows, a two-message tail; the lookahead triggers past 850, its target 850.
+        type Options = { prepare?: HypaV3PrepareOptions; room?: Scenario["room"]; chats?: OpenAIChat[] };
+        type Preset = NonNullable<Scenario["preset"]>;
+        const at = async (incoming: number, preset: Preset, options: Options = {}) => {
+            const s = flatScenario(`v3-forecast-${incoming}`, incoming, {
+                preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.2, ...preset },
+                chats: options.chats ?? makeChats(20),
+                room: options.room ?? {},
+                maxContextTokens: 1000,
+            });
+            const host = { ...hostOf(s, createWorld(s)), signal: new AbortController().signal, fence() {} };
+            const outcome = await prepareHypaV3(
+                host,
+                structuredClone(s.chats),
+                incoming,
+                1000,
+                structuredClone(s.room) as never,
+                flat,
+                options.prepare,
+            );
+            if (!outcome.ok) throw new Error(outcome.result.error);
+            const prepared = outcome.prepared;
+            const ordinary = await planHypaV3Summaries(prepared);
+            const lookahead = await planHypaV3Summaries(prepared, { lookahead: true });
+            const execution = emptyHypaV3Execution(prepared);
+            const forecast = await forecastHypaV3(prepared, {
+                cursor: execution.cursor,
+                currentTokens: execution.currentTokens,
+                summaryCount: prepared.data.summaries.length,
+            });
+            return { prepared, ordinary, lookahead, forecast };
+        };
+        /** The forecast at `incoming`, checked against plans one token short of each point and at it. */
+        const checked = async (incoming: number, preset: Preset, options: Options = {}) => {
+            const { forecast } = await at(incoming, preset, options);
+            if (forecast.summarizeIn > 0) {
+                expect((await at(incoming + forecast.summarizeIn - 1, preset, options)).ordinary.stopReason).toBe(
+                    "notNeeded",
+                );
+            }
+            expect((await at(incoming + forecast.summarizeIn, preset, options)).ordinary.stopReason).not.toBe(
+                "notNeeded",
+            );
+            if (forecast.lookaheadIn !== null) {
+                if (forecast.lookaheadIn > 0) {
+                    const short = await at(incoming + forecast.lookaheadIn - 1, preset, options);
+                    expect(short.lookahead.llmCalls).toBe(0);
+                }
+                expect((await at(incoming + forecast.lookaheadIn, preset, options)).lookahead.llmCalls).toBeGreaterThan(
+                    0,
+                );
+            }
+            return forecast;
+        };
+        const keep = { prepare: { responseCorrection: false } } as const;
+
+        // Legacy correction: 700 − 50 = 650 entries may grow to 990 with the empty card held; the
+        // lookahead counts the full budget (850) and asks once its first 20-token window leaves 850.
+        expect(await checked(700, {})).toEqual({ reserved: 10, summarizeIn: 341, lookaheadIn: 20 });
+        // An extra ratio lowers the target (350): the trigger past 850 decides.
+        expect(await checked(700, { extraSummarizationRatio: 0.5 })).toMatchObject({ lookaheadIn: 1 });
+        // Kept response budget: 700 entries, 900 with the full budget, so the lookahead asks already.
+        expect(await checked(700, {}, keep)).toEqual({ reserved: 10, summarizeIn: 291, lookaheadIn: 0 });
+        // A zero budget: the empty card does not fit past 990, and the full budget held then is 0.
+        expect(await checked(700, { memoryTokensRatio: 0 }, keep)).toEqual({
+            reserved: 10,
+            summarizeIn: 301,
+            lookaheadIn: 170,
+        });
+        // Experimental holds nothing without summaries.
+        expect(await checked(700, { useExperimentalImpl: true }, keep)).toMatchObject({
+            reserved: 0,
+            summarizeIn: 301,
+        });
+        // A summary of m0 and m1: the 20-token prefix is out and the full budget held (880, past
+        // 850): the lookahead asks already.
+        const summarized = { hypaV3Data: { summaries: [stored(["m0", "m1"], "s")] } };
+        expect(await checked(700, {}, { ...keep, room: summarized })).toEqual({
+            reserved: 200,
+            summarizeIn: 121,
+            lookaheadIn: 0,
+        });
+        // A first window with nothing to summarize only moves the cursor: the second one decides.
+        const blank = makeChats(20).map((chat, i) => (i < 2 ? { ...chat, content: " " } : chat));
+        expect((await checked(600, {}, { ...keep, chats: blank })).lookaheadIn).toBe(890 - 800);
+        // A window larger than the room above the target is accepted only over the context.
+        expect((await checked(600, { maxChatsPerSummary: 18 }, keep)).lookaheadIn).toBe(1001 - 800);
+        // Only the protected tail: nothing to ask for.
+        expect((await at(600, {}, { ...keep, chats: makeChats(2) })).forecast.lookaheadIn).toBeNull();
+    });
+
+    it("forecastHypaV3 after an execution matches a step prepared on what it saved", async () => {
+        // 1000 entries with the empty card are over 1000, so the 50-token budget is held (1050):
+        // three windows summarize six messages to 990.
+        const s = flatScenario("v3-forecast-after", 1000, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.05 },
+            chats: makeChats(20),
+            maxContextTokens: 1000,
+        });
+        const { host, prepared, plan } = await setUp(s, { prepare: { responseCorrection: false } });
+        expect(plan.windows.length).toBeGreaterThan(0);
+        const { store, checkpoint } = fakeStore(prepared.snapshot);
+        const execution = await executeHypaV3Plan(host, prepared, plan, { checkpoint });
+        expect(execution.endReason).toBe("complete");
+        const forecast = await forecastHypaV3(prepared, {
+            cursor: execution.cursor,
+            currentTokens: execution.currentTokens,
+            summaryCount: execution.data.summaries.length,
+        });
+        const again = await setUp(
+            { ...s, room: { hypaV3Data: store.value } },
+            { prepare: { responseCorrection: false } },
+        );
+        const fresh = emptyHypaV3Execution(again.prepared);
+        expect(forecast).toEqual(
+            await forecastHypaV3(again.prepared, {
+                cursor: fresh.cursor,
+                currentTokens: fresh.currentTokens,
+                summaryCount: again.prepared.data.summaries.length,
+            }),
+        );
+        expect(execution.cursor).toBe(6);
+        expect(forecast).toEqual({ reserved: 50, summarizeIn: 11, lookaheadIn: 0 });
+    });
+});
+
+describe("deferred stored summaries", () => {
+    /** Stored summaries of the message pairs m0–m1, m2–m3, … (texts S0, S1, …). */
+    const pairs = (count: number) =>
+        Array.from({ length: count }, (_, i) => stored([`m${2 * i}`, `m${2 * i + 1}`], `S${i}`));
+    const DEFER = { responseCorrection: false, deferStored: true } as const;
+    /** A deferring preparation alone, for counts whose ordinary plan stops with an error. */
+    const prepareDeferred = async (s: Scenario) => {
+        const host = { ...hostOf(s, createWorld(s)), signal: new AbortController().signal, fence() {} };
+        const outcome = await prepareHypaV3(
+            host,
+            structuredClone(s.chats),
+            s.currentTokens!,
+            s.maxContextTokens,
+            structuredClone(s.room) as never,
+            flat,
+            DEFER,
+        );
+        if (!outcome.ok) throw new Error(outcome.result.error);
+        return outcome.prepared;
+    };
+    const scenario = (name: string, incoming: number, messages: number, summaries: number, preset = {}) =>
+        flatScenario(name, incoming, {
+            preset: { ...HOOKED_PRESET, memoryTokensRatio: 0.05, ...preset },
+            chats: makeChats(messages),
+            room: { hypaV3Data: { summaries: pairs(summaries) } },
+            maxContextTokens: 1000,
+        });
+
+    it("stored summaries stay out while the prompt fits: the history is raw, the card empty, the lookahead plans from the coverage", async () => {
+        // A context of 1000 and a budget of 200: 750 with the empty card fits.
+        const s = scenario("v3-deferred-fits", 750, 20, 2, { memoryTokensRatio: 0.2 });
+        const deferred = await setUp(s, { prepare: DEFER });
+        expect(deferred.prepared.appliedSummaries).toBe(0);
+        expect(deferred.prepared.startIdx).toBe(0);
+        expect(deferred.prepared.coverage).toEqual({ startIdx: 4, deferredTokens: 40 });
+        expect(deferred.prepared.ledger.reservation.kind).toBe("emptyCard");
+        expect(deferred.prepared.ledger.current).toBe(760);
+        expect(deferred.plan.stopReason).toBe("notNeeded");
+        // Without deferral both summaries are in: the cursor at 4 and the full budget held.
+        const plain = await setUp(s, { prepare: { responseCorrection: false } });
+        expect(plain.prepared.startIdx).toBe(4);
+        expect(plain.prepared.ledger.current).toBe(910);
+        // The background plan is the same either way: it starts where the stored summaries end and
+        // takes three windows from 910 to its target, 850.
+        const lookahead = await planHypaV3Summaries(deferred.prepared, { lookahead: true });
+        expect(lookahead).toEqual(await planHypaV3Summaries(plain.prepared, { lookahead: true }));
+        expect(lookahead.windows.map((window) => window.scanStart)).toEqual([4, 6, 8]);
+
+        const execution = emptyHypaV3Execution(deferred.prepared);
+        const selection = await selectHypaV3(deferred.host, deferred.prepared, execution);
+        expect(selection.chats.map((chat) => chat.content)).toEqual([
+            EMPTY_CARD,
+            ...deferred.chats.map((chat) => chat.content),
+        ]);
+        expect(selection.currentTokens).toBe(760);
+        // The stored summaries stay in the memory written back; nothing was selected, both deferred.
+        expect(selection.memory!.summaries.map((summary) => summary.text)).toEqual(["S0", "S1"]);
+        expect(selection.memory!.metrics).toEqual({
+            lastImportantSummaries: [],
+            lastRecentSummaries: [],
+            lastSimilarSummaries: [],
+            lastRandomSummaries: [],
+            lastDeferredSummaries: [0, 1],
+        });
+
+        // The meter: the next send takes a summary 241 tokens on (990 + 10 is the most that fits), and
+        // the lookahead point is the one counted from the coverage.
+        const forecast = (prepared: HypaV3Prepared) => {
+            const fresh = emptyHypaV3Execution(prepared);
+            return forecastHypaV3(prepared, {
+                cursor: fresh.cursor,
+                currentTokens: fresh.currentTokens,
+                summaryCount: appliedHypaV3Summaries(prepared, fresh).length,
+            });
+        };
+        const deferredForecast = await forecast(deferred.prepared);
+        expect(deferredForecast).toEqual({
+            reserved: 10,
+            summarizeIn: 241,
+            lookaheadIn: (await forecast(plain.prepared)).lookaheadIn,
+        });
+        // At 700 the lookahead asks 10 tokens on: 660 from the coverage with the budget is 860, and its
+        // first window (20) leaves the target, 850, reached at 870.
+        const earlier = await prepareDeferred({ ...s, name: "v3-deferred-700", currentTokens: 700 });
+        expect((await forecast(earlier)).lookaheadIn).toBe(10);
+        const grown = (incoming: number) =>
+            prepareDeferred({ ...s, name: `v3-deferred-${incoming}`, currentTokens: incoming });
+        expect((await grown(750 + 240)).appliedSummaries).toBe(0);
+        expect((await grown(750 + 241)).appliedSummaries).toBeGreaterThan(0);
+    });
+
+    it("over the context a step takes the stored summaries an ordinary plan would have made: just enough to fit", async () => {
+        // 1000 with the empty card is over 1000, so the 50-token budget is held (1050): three of the
+        // seven stored summaries bring it to 990, as three summary windows would from no summaries.
+        const s = scenario("v3-deferred-over", 1000, 20, 7);
+        const deferred = await setUp(s, { prepare: DEFER });
+        expect(deferred.prepared.appliedSummaries).toBe(3);
+        expect(deferred.prepared.startIdx).toBe(6);
+        expect(deferred.prepared.ledger.current).toBe(990);
+        expect(deferred.prepared.coverage).toEqual({ startIdx: 14, deferredTokens: 80 });
+        expect(deferred.plan.stopReason).toBe("notNeeded");
+        const fresh = await setUp(
+            { ...s, name: "v3-deferred-fresh", room: {} },
+            { prepare: { responseCorrection: false } },
+        );
+        expect(fresh.plan.windows.at(-1)!.scanEnd).toBe(6);
+        expect(fresh.plan.predictedTokens).toBe(990);
+        // Without deferral every stored summary is in.
+        const plain = await setUp(s, { prepare: { responseCorrection: false } });
+        expect(plain.prepared.startIdx).toBe(14);
+        expect(plain.prepared.ledger.current).toBe(910);
+
+        // The card holds the summaries in the prompt only, the history starts after them, and the
+        // memory written back keeps all seven.
+        const selection = await selectHypaV3(deferred.host, deferred.prepared, emptyHypaV3Execution(deferred.prepared));
+        const card = selection.chats[0].content;
+        expect(["S0", "S1", "S2"].every((text) => card.includes(text))).toBe(true);
+        expect(card).not.toContain("S3");
+        expect(selection.chats.slice(1).map((chat) => chat.memo)).toEqual(
+            deferred.chats.slice(6).map((chat) => chat.memo),
+        );
+        expect(selection.memory!.summaries).toHaveLength(7);
+        expect(selection.memory!.metrics!.lastRecentSummaries).toEqual([2, 1, 0]);
+        expect(selection.memory!.metrics!.lastDeferredSummaries).toEqual([3, 4, 5, 6]);
+    });
+
+    it("with an extra ratio the replay keeps the pause between the target and the context", async () => {
+        // A context of 1000, a budget of 50, a target of 900, 25 messages of 10 and the rest of the
+        // prompt 800. At 20 messages the count first passes 1000 (1000 + the budget): seven summaries
+        // bring it to 910, and the eighth would go under 900. Five messages later it is 960, between
+        // the target and the context, so the original rules summarize nothing more yet.
+        const deferred = await setUp(scenario("v3-deferred-pause", 1050, 25, 9, { extraSummarizationRatio: 0.1 }), {
+            prepare: DEFER,
+        });
+        expect(deferred.prepared.appliedSummaries).toBe(7);
+        expect(deferred.prepared.startIdx).toBe(14);
+        expect(deferred.prepared.ledger.current).toBe(960);
+        expect(deferred.prepared.coverage).toEqual({ startIdx: 18, deferredTokens: 40 });
+        expect(deferred.plan.stopReason).toBe("notNeeded");
+    });
+
+    it("a merge of summaries that were not next to each other brings in the summary between them with it", async () => {
+        // The merge of m0–m1 and m4–m5 is stored first, the summary of m2–m3 after it: 1000 with the
+        // budget is 1050, and taking the merge (60) reaches the target, but it takes m2–m3 out too.
+        const room = {
+            hypaV3Data: {
+                summaries: [
+                    stored(["m0", "m1", "m4", "m5"], "Merged"),
+                    stored(["m2", "m3"], "Middle"),
+                    stored(["m6", "m7"], "Later"),
+                ],
+            },
+        };
+        const deferred = await setUp({ ...scenario("v3-deferred-merge", 1000, 20, 0), room }, { prepare: DEFER });
+        expect(deferred.prepared.appliedSummaries).toBe(2);
+        expect(deferred.prepared.startIdx).toBe(6);
+        const selection = await selectHypaV3(deferred.host, deferred.prepared, emptyHypaV3Execution(deferred.prepared));
+        expect(selection.chats[0].content).toContain("Middle");
+        expect(selection.chats[0].content).not.toContain("Later");
+    });
+
+    it("standard takes the windows of examples alone before a stored summary, as its scan does", async () => {
+        // Six example entries before m0–m17, windows of two. 991 with the budget is 1041: the three
+        // example windows bring it to 981, so the summary of m0–m1 waits.
+        const examples: OpenAIChat[] = Array.from({ length: 6 }, (_, i) => ({
+            role: i % 2 === 0 ? "user" : "assistant",
+            name: i % 2 === 0 ? "example_user" : "example_assistant",
+            content: `Example ${i}.`,
+        }));
+        const s = { ...scenario("v3-deferred-examples", 991, 18, 2), chats: [...examples, ...makeChats(18)] };
+        const deferred = await setUp(s, { prepare: DEFER });
+        expect(deferred.prepared.appliedSummaries).toBe(0);
+        expect(deferred.prepared.startIdx).toBe(0);
+        expect(deferred.plan.windows.map((window) => [window.scanStart, window.scanEnd, window.needsLlm])).toEqual([
+            [0, 2, false],
+            [2, 4, false],
+            [4, 6, false],
+        ]);
+        expect(deferred.plan.stopReason).toBe("targetReached");
+        // 20 more: the examples leave 1001, so the summary comes in after them.
+        const over = await prepareDeferred({ ...s, name: "v3-deferred-examples-over", currentTokens: 1011 });
+        expect(over.appliedSummaries).toBe(1);
+        expect(over.startIdx).toBe(8);
+    });
+
+    it("a history that fits with no summary in is not tokenized past the stored coverage", async () => {
+        let calls = 0;
+        const counting: MemoryTokenizer = {
+            tokenizeChat: async () => {
+                calls++;
+                return TOKENS;
+            },
+        };
+        const s = scenario("v3-deferred-count", 700, 20, 2);
+        const host = { ...hostOf(s, createWorld(s)), signal: new AbortController().signal, fence() {} };
+        const outcome = await prepareHypaV3(
+            host,
+            structuredClone(s.chats),
+            700,
+            1000,
+            structuredClone(s.room) as never,
+            counting,
+            DEFER,
+        );
+        if (!outcome.ok) throw new Error(outcome.result.error);
+        expect(outcome.prepared.coverage).toEqual({ startIdx: 4, deferredTokens: 40 });
+        // The four covered entries and the empty card.
+        expect(calls).toBe(5);
+    });
+
+    it("a stored summary reaching into the protected tail comes in when the count is still over the context, so nothing is summarized again", async () => {
+        // Eight pair summaries and one of m16–m19, which reaches into the two-message tail. 1200 is over
+        // the context at every length: the pairs come in as they leave the tail, and at 20 messages
+        // the count is still over 1000 with only the last summary left.
+        const s = scenario("v3-deferred-tail", 1200, 20, 8);
+        const room = { hypaV3Data: { summaries: [...pairs(8), stored(["m16", "m17", "m18", "m19"], "T")] } };
+        const prepared = await prepareDeferred({ ...s, room });
+        expect(prepared.appliedSummaries).toBe(9);
+        expect(prepared.startIdx).toBe(20);
+        expect(prepared.coverage).toEqual({ startIdx: 20, deferredTokens: 0 });
+        const plan = await planHypaV3Summaries(prepared);
+        expect(plan.windows).toEqual([]);
+        expect(plan.stopReason).toBe("cannotSummarizeFurther");
     });
 });
 
@@ -1660,4 +2051,230 @@ describe("warming the summaries' vectors", () => {
         await warmHypaV3Vectors(host, outcome.prepared.data.summaries);
         expect(world.log.http).toEqual([]);
     });
+});
+
+describe("standard summary chunk vector lookup", () => {
+    const scenarioWithSummaries = (texts: string[]) =>
+        flatScenario("v3-standard-vector-lookup", 100, {
+            settings: { hypaModel: "MiniLM" },
+            chats: makeChats(texts.length + 1),
+            preset: {
+                ...HOOKED_PRESET,
+                recentMemoryRatio: 0,
+                similarMemoryRatio: 1,
+                queryChatCount: 1,
+            },
+            room: { hypaV3Data: { summaries: texts.map((text, index) => stored([`m${index}`], text)) } },
+        });
+
+    beforeEach(() => {
+        // The separator's deadline must not depend on machine load.
+        vi.spyOn(performance, "now").mockReturnValue(0);
+    });
+
+    it("warms cached duplicate chunks without consuming their shared vector and selects both summaries", async () => {
+        const shared = "Shared paragraph.";
+        const { world, host, prepared } = await setUp(scenarioWithSummaries([shared, shared]));
+
+        // Warm one copy first: addText will admit this cached text only once for the two chunks.
+        await warmHypaV3Vectors(host, prepared.data.summaries.slice(0, 1));
+        expect(world.log.embeds.flatMap(({ texts }) => texts)).toEqual([shared]);
+        await expect(warmHypaV3Vectors(host, prepared.data.summaries)).resolves.toBeUndefined();
+        expect(world.log.embeds.flatMap(({ texts }) => texts)).toEqual([shared]);
+
+        const selection = await selectHypaV3(host, prepared, emptyHypaV3Execution(prepared));
+        expect(selection.error).toBeUndefined();
+        expect(selection.memory?.metrics?.lastSimilarSummaries).toEqual([0, 1]);
+    });
+
+    it("reuses the first vector admitted by an earlier addText call for every equal chunk", async () => {
+        const shared = "Shared paragraph.";
+        const other = "Other paragraph.";
+        const { host, prepared } = await setUp(scenarioWithSummaries([shared, shared, other]));
+        let sharedOccurrence = 0;
+        vi.spyOn(host.embeddings.transformers, "runEmbedding").mockImplementation(async (texts) =>
+            texts.map((text) =>
+                Float32Array.from(
+                    text === shared ? [sharedOccurrence++ === 0 ? 1 : -1, 0] : text === other ? [0, 1] : [1, 0],
+                ),
+            ),
+        );
+
+        // The subclass has no exported factory. Seed it through the real base admission method:
+        // cold duplicates get distinct vectors, and the later batch admits only `other`.
+        const addText = HypaProcesser.prototype.addText;
+        vi.spyOn(HypaProcesser.prototype, "addText").mockImplementation(async function (this: HypaProcesser, texts) {
+            await addText.call(this, [shared, shared]);
+            await addText.call(this, texts);
+        });
+
+        const selection = await selectHypaV3(host, prepared, emptyHypaV3Execution(prepared));
+        expect(selection.error).toBeUndefined();
+        // The query is [1, 0]: both shared chunks must score +1 using the FIRST vector,
+        // ahead of other's 0. Taking the last vector would score both shared chunks -1.
+        expect(selection.memory?.metrics?.lastSimilarSummaries).toEqual([0, 1, 2]);
+    });
+
+    it("looks up 2,000 chunk vectors with a linear number of content reads", async () => {
+        const chunks = Array.from({ length: 2000 }, (_, index) => `Chunk ${index}.`);
+        const { world, host, prepared } = await setUp(scenarioWithSummaries([chunks.join("\n\n")]));
+        let contentReads = 0;
+        const addText = HypaProcesser.prototype.addText;
+        vi.spyOn(HypaProcesser.prototype, "addText").mockImplementation(async function (this: HypaProcesser, texts) {
+            await addText.call(this, texts);
+            // Count lookup work after real admission, independently of embedding/cache work.
+            for (const vector of this.vectors) {
+                const content = vector.content;
+                Object.defineProperty(vector, "content", {
+                    get: () => {
+                        contentReads++;
+                        return content;
+                    },
+                });
+            }
+        });
+
+        await expect(warmHypaV3Vectors(host, prepared.data.summaries)).resolves.toBeUndefined();
+        expect(world.log.embeds.flatMap(({ texts }) => texts)).toEqual(chunks);
+        // Allow several passes, but reject the 2,001,000 reads of a per-chunk linear scan.
+        expect(contentReads).toBeLessThanOrEqual(4 * chunks.length);
+        expect(world.log.http).toEqual([]);
+    });
+});
+
+describe("token and ratio budget equivalence", () => {
+    for (const implementation of ["standard", "experimental"] as const) {
+        it(`${implementation}: equivalent token amounts preserve preparation, ordinary and lookahead plans, selection, and forecasts`, async () => {
+            // Keep the separator's cumulative deadline independent of machine load. The fixture's
+            // regex host runs in process; these small runs never exhaust the 1000-request limiter.
+            vi.spyOn(performance, "now").mockReturnValue(0);
+            const cases = [
+                { name: "v3-fits-empty", context: 1024, extraFixed: 0 },
+                { name: "v3-cold-overflow", context: 512, extraFixed: 0 },
+                { name: "v3-existing-selection", context: 512, extraFixed: 0 },
+                { name: "v3-existing-selection", context: 512, extraFixed: 128 },
+                { name: "v3-user-messages-kept", context: 384, extraFixed: 0 },
+            ].map(({ name, ...budget }) => ({ scenario: scenarioNamed(name), ...budget }));
+            cases.push({
+                scenario: {
+                    ...scenarioNamed("v3-existing-selection"),
+                    name: "stored pairs after history growth",
+                    // 45 messages of 10 tokens plus 200 fixed tokens. Growth crosses the
+                    // 512-token context repeatedly; replay must stop at the 448-token target
+                    // each time, leaving some stored pairs deferred once the history fits.
+                    chats: makeChats(45).map((chat) => ({ ...chat, content: "x".repeat(28) })),
+                    currentTokens: 650,
+                    preset: { maxChatsPerSummary: 2, queryChatCount: 3, similarMemoryRatio: 0 },
+                    room: {
+                        hypaV3Data: {
+                            summaries: Array.from({ length: 20 }, (_, i) =>
+                                stored([`m${2 * i}`, `m${2 * i + 1}`], `S${i}`),
+                            ),
+                        },
+                    },
+                },
+                context: 512,
+                extraFixed: 0,
+            });
+            let executedSummaries = 0;
+            let deferredTokens = 0;
+            let replayedSummaries = 0;
+            let lookaheadCalls = 0;
+            for (const { scenario: fixtureScenario, context, extraFixed } of cases) {
+                const name = fixtureScenario.name;
+                // C and all ratios are binary-exact. With response 64, both memory (C/4)
+                // and margins (C/8 + C/8) fit in floor((C - 64)/2).
+                const incoming =
+                    fixtureScenario.currentTokens ??
+                    (await defaultCurrentTokens(fixtureScenario.chats)) + 64 + extraFixed;
+                for (const options of [undefined, { deferStored: true, responseCorrection: false }] as const) {
+                    const observe = async (budgetMode: "ratio" | "tokens") => {
+                        const scenario: Scenario = {
+                            ...fixtureScenario,
+                            maxContextTokens: context,
+                            currentTokens: incoming,
+                            settings: { ...fixtureScenario.settings, maxResponse: 64 },
+                            preset: {
+                                ...fixtureScenario.preset,
+                                ...EXPERIMENTAL_PRESET,
+                                useExperimentalImpl: implementation === "experimental",
+                                budgetMode,
+                                memoryTokensRatio: budgetMode === "ratio" ? 0.25 : 0.0625,
+                                lookaheadHeadroomRatio: budgetMode === "ratio" ? 0.125 : 0.5,
+                                extraSummarizationRatio: budgetMode === "ratio" ? 0.125 : 0.5,
+                                memoryBudgetTokens: context / 4,
+                                lookaheadHeadroomTokens: context / 8,
+                                extraSummarizationTokens: context / 8,
+                            },
+                        };
+                        const world = createWorld(scenario);
+                        const host = hostOf(scenario, world);
+                        const outcome = await prepareHypaV3(
+                            host,
+                            structuredClone(scenario.chats),
+                            incoming,
+                            context,
+                            structuredClone(scenario.room) as never,
+                            { tokenizeChat },
+                            options,
+                        );
+                        if (!outcome.ok) throw new Error(outcome.result.error);
+                        const prepared = outcome.prepared;
+                        expect(prepared.budget).toEqual({
+                            memoryTokens: context / 4,
+                            targetTokens: context * 0.875,
+                            lookaheadTrigger: context * 0.875,
+                            lookaheadTarget: context * 0.75,
+                            reduced: [],
+                        });
+                        const forecast = (execution: HypaV3ExecutionResult) =>
+                            forecastHypaV3(prepared, {
+                                cursor: execution.cursor,
+                                currentTokens: execution.currentTokens,
+                                summaryCount: appliedHypaV3Summaries(prepared, execution).length,
+                            });
+                        const beforeForecast = await forecast(emptyHypaV3Execution(prepared));
+                        const plan = await planHypaV3Summaries(prepared);
+                        const lookahead = await planHypaV3Summaries(prepared, { lookahead: true });
+                        const execution = await executeHypaV3Plan(host, prepared, plan);
+                        const selection = await selectHypaV3(host, prepared, execution);
+                        expect(selection.error).toBeUndefined();
+                        return {
+                            ledger: prepared.ledger,
+                            startIdx: prepared.startIdx,
+                            appliedSummaries: prepared.appliedSummaries,
+                            coverage: prepared.coverage,
+                            plan,
+                            lookahead,
+                            execution,
+                            selection,
+                            beforeForecast,
+                            afterForecast: await forecast(execution),
+                            summaryRequests: world.log.requests,
+                        };
+                    };
+                    const ratio = await observe("ratio");
+                    const tokens = await observe("tokens");
+                    expect(tokens, JSON.stringify({ name, context, extraFixed, options })).toEqual(ratio);
+                    executedSummaries += ratio.summaryRequests.length;
+                    lookaheadCalls += ratio.lookahead.llmCalls;
+                    if (options?.deferStored) {
+                        deferredTokens += ratio.coverage.deferredTokens;
+                        replayedSummaries += ratio.appliedSummaries;
+                        expect(ratio.ledger.responseCorrection).toBe(0);
+                        if (name === "stored pairs after history growth") {
+                            expect(ratio.appliedSummaries).toBeGreaterThan(0);
+                            expect(ratio.appliedSummaries).toBeLessThan(20);
+                            expect(ratio.plan.stopReason).toBe("notNeeded");
+                        }
+                    }
+                }
+            }
+            // These comparisons exercise work, including both taking and deferring stored summaries.
+            expect(executedSummaries).toBeGreaterThan(0);
+            expect(lookaheadCalls).toBeGreaterThan(0);
+            expect(deferredTokens).toBeGreaterThan(0);
+            expect(replayedSummaries).toBeGreaterThan(0);
+        });
+    }
 });

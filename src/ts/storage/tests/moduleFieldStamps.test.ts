@@ -16,8 +16,8 @@ import {
 } from "../records.svelte";
 import { reactiveProps } from "src/lib/UI/tests/reactiveProps.svelte";
 
-// The save loop's module field-text stamps (`moduleItemFieldStamp`, `docs/structure/persistence.md`
-// save step 2), checked on the records module alone: a write through a wrapper under an element's
+// The save loop's module field-text stamps (`moduleItemFieldStamp`, `docs/structure/resource-sync.md`
+// "Serialization"), checked on the records module alone: a write through a wrapper under an element's
 // top-level field changes that field's stamp of that element and no other, on every write path (set
 // at depth, delete, defineProperty, each array mutator, `replaceRecordList`, `moveRecordListItem`,
 // batched writes); a change of the root list (a reorder, a deletion, a swap, the UI's self-assignment,

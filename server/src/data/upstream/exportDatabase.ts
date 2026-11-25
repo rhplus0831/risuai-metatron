@@ -1,3 +1,4 @@
+import { chatMemoryAlgorithm, chatMemoryEnabled, type ChatMemorySettings } from "../../../../shared/chatMemory.ts";
 import type {
     Chat,
     Credential,
@@ -24,6 +25,11 @@ import {
 } from "../../../../shared/presets.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import {
+    hypaV3DataHoldsSummaries,
+    type MemoryEvent,
+    STRUCTURED_MEMORY_ALGORITHM,
+} from "../../../../shared/structuredMemory.ts";
+import {
     COLLECTION_FIELDS,
     DROPPED_FIELDS,
     maxContextOverrideOf,
@@ -46,18 +52,20 @@ import {
     projectCollections,
     projectSections,
 } from "../databaseProjection.ts";
+import { type MemoryEventRow, projectChatMemory } from "../memoryStore.ts";
 import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 
 /**
  * The metatron store → upstream RisuAI flat `Database` exporter: the inverse of `importDatabase.ts`'s
  * conversion, for a `.bin` upstream's "Load Backup" restores. It reads the rows of a validated store
- * copy (`store.readSnapshot` of a `backupTo` file: every record normalized, the chat tables checked)
+ * copy (`readSnapshotFile` of a `backupTo` file: every record normalized, the chat tables checked)
  * and does no I/O; `encodeUpstreamDatabase` (`risuSave.ts`) turns the result into `database.risudat`.
  * Upstream behavior is read from RisuAI `669b12ce`; "U" below is its `src/ts/`.
  *
  * - Settings: the sections and collections as a job's projection holds them (`databaseProjection.ts`),
  *   without metatron-only fields, with `formatversion: 5` so upstream's `checkNewFormat` runs no legacy
- *   migration, and with the translator and HypaV3 selections as list positions.
+ *   migration, with the translator and HypaV3 selections as list positions, and with every HypaV3
+ *   preset in ratios (upstream has no token budget mode).
  * - Presets: one upstream preset per prompt preset, each with the chosen model preset's slot
  *   model ids and main profile options; the chosen prompt preset also fills the root.
  * - Credentials: only with `includeSecrets`. Upstream reads one key per field (U `setPreset`
@@ -67,6 +75,10 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
  *   auxiliary service keys included.
  * - Characters and chats: chats in `chatOrders` order, without metatron-only chat, message, and
  *   character fields; inlays and device-local plugin storage are left out and counted.
+ * - Structured memory: a structured chat's `hypaV3Data` is the projection of its records, unsealed:
+ *   upstream restores plain HypaV3 data, and a re-import here takes it as real. A chat is structured
+ *   by the rule of a tab's read: its mode and snapshot settings resolve to Structured Memory, it has
+ *   at least one event, and no stored value with summaries, which wins.
  *
  * Every left-out or reshaped item is reported (`shared/upstreamExportReport.ts`). The rows are parsed
  * here, so the result shares no object with the input.
@@ -75,9 +87,13 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 export type UpstreamExportRows = readonly { kind: string; id: string; text: string }[];
 
 export type UpstreamExportChats = {
-    readonly chats: readonly { seq: number; characterId: string; id: string; meta: string }[];
+    readonly chats: readonly { seq: number; characterId: string; id: string; meta: string; trashedAt: number | null }[];
     readonly messages: readonly { chatSeq: number; position: number; data: string }[];
     readonly chatOrders: readonly { characterId: string; ids: string }[];
+    /** The structured memory events (`ValidatedSnapshot`), null when the memory tables could not be read. */
+    readonly memoryEvents?: readonly MemoryEventRow[] | null;
+    /** Stored pages and threads omitted regardless of the chat's current memory mode. */
+    readonly memoryCounts?: { readonly pages: number; readonly threads: number };
 };
 
 export type UpstreamExportOptions = {
@@ -111,14 +127,36 @@ type Root = Record<string, unknown>;
  */
 const METATRON_ONLY_SETTINGS = [
     "chatScreenWidth",
+    "generationProgressWindow",
+    "halfStreaming",
     "googleSearchCredentials",
     "irisDialogue",
     "llmTranslationTarget",
+    "loreBudgetStop",
     "newChatBinding",
     "requestHistoryContent",
     "requestHistoryLimit",
     "translatorHistoryMaxTokens",
     "togglePresets",
+    "inputHooks",
+    "moduleFolders",
+    "personaFolders",
+    "requestInterceptions",
+    "minResponseLengthModel",
+    "minResponseLengthSubmodel",
+    "minResponseLengthMemory",
+    "minResponseLengthEmotion",
+    "minResponseLengthOtherAx",
+    "minResponseLengthTranslate",
+    "contextMeter",
+    "contextMeterTurnUnit",
+    "contextMeterFixedWarn",
+    "contextMeterLookahead",
+    "completionWaitMaxSeconds",
+    "chatTrashDays",
+    "realmTermsAccepted",
+    "scrollToReplyStartAfterStreaming",
+    "disableAutoPopupMessageEditor",
     "credentials",
     "modelPresets",
     "modelProfiles",
@@ -142,7 +180,7 @@ const settingDefaults: ReadonlyMap<string, string | undefined> = (() => {
 })();
 
 /** Prompt preset fields upstream has no place for (the context size goes into `maxContext`). */
-const PROMPT_ONLY_FIELDS = new Set<string>(["maxContextOverride", "maxContextOverrideSize"]);
+const PROMPT_ONLY_FIELDS = new Set<string>(["maxContextOverride", "maxContextOverrideSize", "oocToggles"]);
 
 /**
  * Profile options upstream keeps only at the root (U `setPreset` never reads them from a preset; the
@@ -164,14 +202,33 @@ const ROOT_ONLY_PROFILE_FIELDS = new Set<string>([
 ]);
 
 /** Character fields upstream's `character` and `groupChat` lack. */
-const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCount"];
+const METATRON_CHARACTER_FIELDS = [
+    "customNotificationMessage",
+    "supaMemoryOnCount",
+    "structuredMemoryLanguage",
+    "structuredMemoryInstructions",
+];
 
-/** Chat fields upstream's `Chat` lacks. */
+/**
+ * Chat fields upstream's `Chat` lacks. In particular, `loreOverrides` must not become chat lore:
+ * upstream would add those entries instead of replacing their originals.
+ */
 const METATRON_CHAT_FIELDS = [
     "pinned",
+    "memoryEnabled",
+    "memoryMode",
+    "memoryPresetId",
+    "memoryProfileId",
     "memoryTrimAck",
+    "loreBudgetWarnOff",
+    "structuredMemoryLanguage",
+    "structuredMemoryHighlight",
     "bindingReview",
+    "draftHookId",
     "toolCalls",
+    "oocLog",
+    "oocSegment",
+    "oocToggles",
     "loreOverrides",
     "togglePresetId",
     "promptPresetId",
@@ -185,7 +242,7 @@ const METATRON_CHAT_FIELDS = [
 ];
 
 /** Where `pluginCustomStorage` holds what upstream keeps in its device storage (LocalForage). */
-const DEVICE_PLUGIN_STORAGE_KEYS = ["_pluginStorage", "_safeLocalPluginStorage"];
+const DEVICE_PLUGIN_STORAGE_KEYS = ["_pluginStorage", "_safeLocalPluginStorage", "_ownedPluginStorage"];
 
 /** Credentials of the auxiliary services in the `secrets` section: flat fields, then nested leaves. */
 const AUXILIARY_SECRET_FIELDS = [
@@ -226,6 +283,16 @@ const SLOT_NESTED_FIELDS: Partial<Record<CredentialSlotName, [string, string]>> 
     novelai: ["novelai", "token"],
 };
 
+/**
+ * Synchronously projects validated snapshot rows and chat tables into a detached upstream database,
+ * referenced assets, and `shared/upstreamExportReport.ts`'s report, without I/O. Rows are parsed here
+ * so repairs cannot affect the store copy. Missing requested selections fall back to the first record
+ * and are reported; `hasAsset` moves absent references into `report.missing`.
+ * `server/src/data/databaseProjection.ts` supplies the same settings/persona/character projection
+ * used by jobs; `server/src/data/upstream/risuSave.ts` encodes the result as `database.risudat`.
+ * Cleanup precedes the final `formatversion: 5` assignment. Secret filtering clears known credential
+ * fields; it does not scan arbitrary text in messages, lorebooks, or retained plugin storage for keys.
+ */
 export function buildUpstreamDatabase(
     rows: UpstreamExportRows,
     chats: UpstreamExportChats,
@@ -334,7 +401,19 @@ export function buildUpstreamDatabase(
     forwardPersonaRoots(db, persona, personas);
 
     db.translatorPresets = upstreamTranslatorPresets(db, report);
+    // Preserve the stored preset id and settings before converting them for upstream.
+    const memorySettings = {
+        memoryAlgorithmType: db.memoryAlgorithmType,
+        hanuraiEnable: db.hanuraiEnable,
+        hypav2: db.hypav2,
+        hypaV3: db.hypaV3,
+        supaModelType: db.supaModelType,
+        hypaV3Presets: structuredClone(db.hypaV3Presets),
+        hypaV3PresetId: db.hypaV3PresetId,
+    } as ChatMemorySettings;
     db.hypaV3PresetId = positionOf(db.hypaV3Presets, db.hypaV3PresetId);
+    // After `forwardSelectedPreset`: the root `maxContext` is the exported one.
+    db.hypaV3Presets = upstreamHypaV3Presets(db.hypaV3Presets, db.maxContext);
     db.characterOrder = repairCharacterOrder(db.characterOrder, report);
     db.loreBook = asList<Root>(db.loreBook).map((page, index) => ({
         ...page,
@@ -349,7 +428,13 @@ export function buildUpstreamDatabase(
     db.plugins = plugins;
     db.pluginCustomStorage = upstreamPluginStorage(records.get(RESOURCE_KIND.pluginStorage), plugins, report);
 
-    db.characters = upstreamCharacters(characterRecords, chats, options, now, report);
+    db.characters = upstreamCharacters(characterRecords, chats, options, now, memorySettings, report);
+    if (chats.memoryCounts?.pages) {
+        addEntry(report.excluded, "memory-pages", [], chats.memoryCounts.pages);
+    }
+    if (chats.memoryCounts?.threads) {
+        addEntry(report.excluded, "memory-threads", [], chats.memoryCounts.threads);
+    }
 
     if (!options.includeSecrets) {
         clearAuxiliaryKeys(db, report);
@@ -481,7 +566,10 @@ function chosenSlotProfiles(
 
 /**
  * One upstream preset: the prompt preset's fields under their stored names, the model preset's slot
- * model ids, the main profile's options except the root-only ones, and the effective context size.
+ * model ids, the main profile's options except the root-only ones, and `maxContext` from the prompt
+ * override or main profile. Stored prompt order is preserved; `id`, `archived`, OOC toggles, and override
+ * fields have no upstream counterpart and are omitted. Differing sub/aux options are reported by
+ * `buildUpstreamDatabase`, excluding root-only options and the separately projected context size.
  */
 function upstreamPreset(
     preset: botPreset,
@@ -517,8 +605,11 @@ function upstreamPreset(
 /**
  * Writes the named keys the chosen model preset's slots bind into the upstream fields their models
  * read (main, then sub, then the auxiliary slots when they are on; default-backed slots reserve fields too),
- * and each custom model's key from the profiles that use it. Returns the proxy key. Every named key
- * holding a value that no field received is reported.
+ * and each custom model's key from the profiles that use it. Returns the proxy key. Only with
+ * `includeSecrets`, each unplaced named key whose stored value is a string with non-whitespace
+ * content is reported, including displaced bindings and entries without metadata (named by id).
+ * A placed Vertex binding also supplies `google.projectId` when present and clears cached token/expiry;
+ * a Vertex binding without a client email is skipped.
  */
 function placeNamedKeys(
     db: Root,
@@ -634,7 +725,11 @@ function placeNamedKeys(
     return { proxyKey };
 }
 
-/** Without `includeSecrets`: reports the `llmSecrets` fields that held a key. */
+/**
+ * Reports non-empty `llmSecrets` fields omitted by the client-mirror projection in
+ * `server/src/data/databaseProjection.ts`; `buildUpstreamDatabase` also clears the cached Vertex
+ * token and resets its expiry to zero when secrets are excluded.
+ */
 function reportOmittedKeys(stored: Root, report: UpstreamExportReport): void {
     const fields: string[] = [];
     for (const field of FLAT_SECRET_FIELDS) {
@@ -739,6 +834,49 @@ function upstreamTranslatorPresets(db: Root, report: UpstreamExportReport): Root
     });
 }
 
+/**
+ * Upstream HypaV3 presets. Upstream has no token budget mode, so a token-mode preset gets the ratios
+ * of its token amounts at the exported root `maxContext` `C` (`memoryBudgetTokens / C`,
+ * `extraSummarizationTokens / C`, `lookaheadHeadroomTokens / C`), each rounded to 2 decimals as the
+ * settings sliders are and kept in the sliders' ranges: memory in [0, 1], extra summarization in
+ * [0, 1 − memory], and headroom in [0, 0.99] (`createHypaV3Preset` replaces a headroom of 1). The
+ * bound `1 − memory` is rounded too (`1 − 0.33` is 0.6699999999999999), so every exported ratio has at
+ * most 2 decimals. Without a positive finite `C` the stored ratios stay. Every preset leaves out
+ * `budgetMode`, the token amounts, and `structured` (upstream has no Structured Memory); the result
+ * shares no settings object with `value`.
+ */
+function upstreamHypaV3Presets(value: unknown, maxContext: unknown): unknown {
+    if (!Array.isArray(value)) {
+        return value;
+    }
+    const context = typeof maxContext === "number" && Number.isFinite(maxContext) && maxContext > 0 ? maxContext : null;
+    return value.map((preset: unknown) => {
+        if (!isPlainObject(preset) || !isPlainObject(preset.settings)) {
+            return preset;
+        }
+        const {
+            budgetMode,
+            memoryBudgetTokens,
+            lookaheadHeadroomTokens,
+            extraSummarizationTokens,
+            structured: _structured,
+            ...settings
+        } = preset.settings;
+        if (budgetMode === "tokens" && context !== null) {
+            const ratioOf = (tokens: unknown) =>
+                Math.round(((typeof tokens === "number" && tokens > 0 ? tokens : 0) / context) * 100) / 100;
+            const memory = Math.min(1, ratioOf(memoryBudgetTokens));
+            settings.memoryTokensRatio = memory;
+            settings.extraSummarizationRatio = Math.min(
+                Math.round((1 - memory) * 100) / 100,
+                ratioOf(extraSummarizationTokens),
+            );
+            settings.lookaheadHeadroomRatio = Math.min(0.99, ratioOf(lookaheadHeadroomTokens));
+        }
+        return { ...preset, settings };
+    });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Shapes upstream's boot reads without checking
 
@@ -807,7 +945,7 @@ function repairCharacterOrder(value: unknown, report: UpstreamExportReport): unk
 
 /**
  * `pluginCustomStorage` without what upstream keeps in its device storage (`_pluginStorage`,
- * `_safeLocalPluginStorage`) or as cold storage (`_coldplugin`); the left-out entries are counted.
+ * `_safeLocalPluginStorage`, `_ownedPluginStorage`) or as cold storage (`_coldplugin`); the left-out entries are counted.
  */
 function upstreamPluginStorage(value: unknown, plugins: readonly Root[], report: UpstreamExportReport): Root {
     const storage: Root = isPlainObject(value) ? { ...value } : {};
@@ -830,13 +968,41 @@ function upstreamPluginStorage(value: unknown, plugins: readonly Root[], report:
 // ---------------------------------------------------------------------------------------------
 // Characters and chats
 
+/**
+ * Chats keep their stored order; a character without chats gets upstream's empty "Chat 1", since
+ * upstream reads `chats[chatPage]` unguarded (`server/src/data/upstream/importCharacters.ts` makes
+ * the same empty chat). Metatron character fields are stripped and chats with omitted inlays counted.
+ * A numeric frozen legacy `lastInteraction` rises to the newest chat `lastDate`; an absent field
+ * stays absent (upstream reads it as now). This keeps active records out of upstream's ten-day cold
+ * storage, enabled by default without plugins. Finite positive trash times older than three days
+ * are refreshed so upstream boot does not immediately delete those characters. All changes are to
+ * the parsed export copy.
+ */
 function upstreamCharacters(
     records: readonly Root[],
     snapshot: UpstreamExportChats,
     options: UpstreamExportOptions,
     now: number,
+    memorySettings: ChatMemorySettings,
     report: UpstreamExportReport,
 ): Root[] {
+    const eventsBySeq = new Map<number, string[]>();
+    for (const { chatSeq, data } of snapshot.memoryEvents ?? []) {
+        const list = eventsBySeq.get(chatSeq);
+        if (list) {
+            list.push(data);
+        } else {
+            eventsBySeq.set(chatSeq, [data]);
+        }
+    }
+    /** What a chat of the character `name` is projected from, undefined when it has nothing to project. */
+    const memoryOf = (seq: number, name: string): UpstreamChatMemory | undefined => {
+        if (snapshot.memoryEvents === null) {
+            return { name, events: null };
+        }
+        const events = eventsBySeq.get(seq);
+        return events && { name, events };
+    };
     const messagesBySeq = new Map<number, { position: number; data: string }[]>();
     for (const message of snapshot.messages) {
         let list = messagesBySeq.get(message.chatSeq);
@@ -861,6 +1027,8 @@ function upstreamCharacters(
     }
 
     return records.map((character) => {
+        const owner = { supaMemory: character.supaMemory };
+        let memoryEnabled = false;
         const chaId = character.chaId as string;
         const name = typeof character.name === "string" ? character.name : chaId;
         const stripped = METATRON_CHARACTER_FIELDS.filter((field) => Object.hasOwn(character, field));
@@ -874,21 +1042,29 @@ function upstreamCharacters(
             character.globalLore = repairLore(character.globalLore, `characters[${name}].globalLore`, report);
         }
         const stored = chatsByCharacter.get(chaId) ?? new Map();
-        const ids = orders.get(chaId) ?? [...stored.keys()];
-        const chats = ids.flatMap((id) => {
-            const row = stored.get(id);
-            if (!row) {
-                return [];
-            }
+        const ids = (orders.get(chaId) ?? [...stored.keys()]).filter((id) => stored.get(id)?.trashedAt === null);
+        const chats = ids.map((id) => {
+            const row = stored.get(id)!;
+            const metadata = JSON.parse(row.meta);
+            memoryEnabled ||= chatMemoryEnabled(metadata, owner, memorySettings);
+            const projected = chatMemoryAlgorithm(memorySettings, metadata) === STRUCTURED_MEMORY_ALGORITHM;
             const messages = (messagesBySeq.get(row.seq) ?? []).sort((a, b) => a.position - b.position);
-            const chat = upstreamChat(row.meta, messages, `characters[${name}]`, report);
+            const chat = upstreamChat(
+                row.meta,
+                messages,
+                projected ? memoryOf(row.seq, name) : undefined,
+                `characters[${name}]`,
+                report,
+            );
             if (
                 chat.message.some((message) => typeof message.data === "string" && INLAY_REFERENCE.test(message.data))
             ) {
                 addEntry(report.excluded, "inlays", [name]);
             }
-            return [chat];
+            return chat;
         });
+        // A synthetic first chat has no preferences and must inherit the owner's resolved default.
+        character.supaMemory = chats.length === 0 ? chatMemoryEnabled({}, owner, memorySettings) : memoryEnabled;
         // Upstream reads the selected character's `chats[chatPage]` unguarded (U `globalApi.svelte.ts`
         // change tracker, `parser/chatVar.svelte.ts`), so a character without chats gets the empty one
         // upstream's creation makes (U `characters.ts`); its boot gives it an id. The import's creation
@@ -907,8 +1083,9 @@ function upstreamCharacters(
             character.trashTime = now;
             addEntry(report.converted, "trash-time-refreshed", [name]);
         }
-        // U `makeColdData` sends a character whose `lastInteraction` is older than ten days to cold
-        // storage: it is kept as recent as its newest chat.
+        // The stored `lastInteraction` is frozen legacy data. Keep the export's own rule: raise a
+        // numeric value to the newest chat's `lastDate`, so U `makeColdData` does not cold-store an
+        // active character after ten days. An absent field stays absent (upstream reads it as now).
         if (typeof character.lastInteraction === "number") {
             let lastInteraction = character.lastInteraction;
             for (const chat of chats) {
@@ -922,15 +1099,50 @@ function upstreamCharacters(
     });
 }
 
+/** A structured chat's records and its character's name; `events` null: they could not be read. */
+type UpstreamChatMemory = { name: string; events: readonly string[] | null };
+
 /**
- * One upstream chat: the stored metadata without metatron's fields, the messages in order
- * without their translations, `useLocallySetGlobalVariables` when the chat holds toggle values (so
- * upstream keeps writing them to the chat, as metatron does), and `lastDate` at least as recent as its
- * newest message.
+ * Gives a chat whose stored `hypaV3Data` holds no summaries the projection of its records. One that
+ * cannot be made leaves the chat as stored, and is reported.
+ * The value from `server/src/data/memoryStore.ts` stays unsealed: both an upstream restore and a
+ * re-import through `server/src/data/upstream/importDatabase.ts` take plain HypaV3 data as real summaries.
+ */
+function projectUpstreamMemory(
+    chat: Root,
+    messages: readonly Message[],
+    { name, events }: UpstreamChatMemory,
+    report: UpstreamExportReport,
+): void {
+    if (hypaV3DataHoldsSummaries(chat.hypaV3Data)) {
+        return;
+    }
+    if (events === null) {
+        addEntry(report.excluded, "memory-unreadable", [name]);
+        return;
+    }
+    try {
+        chat.hypaV3Data = projectChatMemory(
+            events.map((text) => JSON.parse(text) as MemoryEvent),
+            messages,
+        );
+        addEntry(report.converted, "memory-projected", [name]);
+    } catch {
+        addEntry(report.excluded, "memory-unreadable", [name]);
+    }
+}
+
+/**
+ * One upstream chat: the stored metadata without metatron's fields, the projection of its structured
+ * memory (`projectUpstreamMemory`), the messages in order without their translations, reroll
+ * candidates, selection and revision fields, or variable checkpoints,
+ * `useLocallySetGlobalVariables` when the chat holds toggle values (so upstream keeps writing them to
+ * the chat, as metatron does), and `lastDate` at least as recent as its newest message.
  */
 function upstreamChat(
     metaText: string,
     rows: readonly { data: string }[],
+    memory: UpstreamChatMemory | undefined,
     path: string,
     report: UpstreamExportReport,
 ): Chat {
@@ -942,14 +1154,26 @@ function upstreamChat(
     if (stripped.length > 0) {
         addEntry(report.excluded, "chat-fields", stripped);
     }
+    const stored = rows.map((row) => JSON.parse(row.data) as Message & Root);
+    // From the messages as stored, before any field goes: their hashes and last manifest are read.
+    if (memory) {
+        projectUpstreamMemory(chat, stored, memory, report);
+    }
     let translations = 0;
+    let candidates = 0;
     let newest: number | undefined;
-    const message = rows.map((row) => {
-        const entry = JSON.parse(row.data) as Message & Root;
+    const message = stored.map((entry) => {
         if (Object.hasOwn(entry, "translation")) {
             delete entry.translation;
             translations++;
         }
+        if (Object.hasOwn(entry, "candidates")) {
+            candidates++;
+        }
+        delete entry.candidates;
+        delete entry.selected;
+        delete entry.candidatesRevision;
+        delete entry.scriptstateCheckpoint;
         if (
             typeof entry.time === "number" &&
             Number.isFinite(entry.time) &&
@@ -961,6 +1185,9 @@ function upstreamChat(
     });
     if (translations > 0) {
         addEntry(report.excluded, "message-translations", [], translations);
+    }
+    if (candidates > 0) {
+        addEntry(report.excluded, "message-candidates", [], candidates);
     }
     chat.message = message;
     if (isPlainObject(chat.GLGlobalVariables) && Object.keys(chat.GLGlobalVariables).length > 0) {

@@ -1,11 +1,3 @@
-/**
- * Language Settings Data
- *
- * Data-driven definition for the LanguageSettings page: the UI language only. The translator and its
- * options are the Translation page's (`translationSettingsData.ts`).
- * Uses `.svelte.ts` extension to support reactive `langState` via Svelte 5 runes.
- */
-
 import type { SettingItem } from "./types";
 import { changeLanguage, language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
@@ -13,8 +5,17 @@ import { sleep } from "../util";
 import { alertNormal, alertSelect } from "../alert";
 import { downloadFile } from "../globalApi.svelte";
 
+/**
+ * UI language data for `src/lib/Setting/Pages/LanguageSettings.svelte`; translator options belong to
+ * `src/ts/setting/translationSettingsData.ts`. `translang` exports a locale for translators, not a UI
+ * locale. Bundled locales, picker options, and first-boot browser matching in `src/ts/bootstrap.ts`
+ * are separate lists. The `.svelte.ts` extension supports reactive `langState`.
+ */
+
+/** Whether a local language change has completed; controls the close-settings warning. */
 export const langState = $state({ changed: false });
 
+/** Bundled UI languages (including Spanish) and the warning; `translang` exports a translation file. */
 export const languageSettingsItems: SettingItem[] = [
     {
         id: "lang.header",
@@ -29,11 +30,11 @@ export const languageSettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "UiLanguage",
         bindKey: "language",
-        classes: "mt-4",
         options: {
             selectOptions: [
                 { value: "de", label: "Deutsch" },
                 { value: "en", label: "English" },
+                { value: "es", label: "Español" },
                 { value: "ko", label: "한국어" },
                 { value: "cn", label: "中文" },
                 { value: "zh-Hant", label: "中文(繁體)" },
@@ -41,6 +42,10 @@ export const languageSettingsItems: SettingItem[] = [
                 { value: "translang", label: "[Translate in your own language]" },
             ],
         },
+        /**
+         * When `translang` is selected, export the locale and restore English; then apply the stored
+         * UI language and set `langState.changed`.
+         */
         onChange: async (val, ctx) => {
             if (val === "translang") {
                 const j = await alertSelect(["Continue Translating Existing Language", "Make a new language"]);
@@ -72,7 +77,7 @@ export const languageSettingsItems: SettingItem[] = [
     {
         id: "lang.restartWarn",
         type: "header",
-        fallbackLabel: "Close the settings to take effect",
+        labelKey: "closeSettingsToApply",
         options: { level: "span" },
         classes: "bg-red-500 text-sm",
         condition: () => langState.changed,

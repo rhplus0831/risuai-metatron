@@ -3,10 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHypaV3Preset, selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
+import { LLMFormat } from "../../../shared/llm.ts";
 import type { GenerationContext } from "../../../shared/jobs.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
-import { loadJobScope, refreshChat } from "../jobs/jobScope.ts";
+import { jobMemoryBlockingReason } from "../prompt/runner.ts";
+import { loadJobScope, refreshChat, resolveScopeMemoryModel } from "../jobs/jobScope.ts";
 
 // `loadJobScope` (`server/src/jobs/jobScope.ts`) reads the chat's characters, not every one: the
 // owner, a group's members, the speaker the job names, every message's speaker, and a caller's
@@ -136,5 +139,133 @@ describe("the characters of a job's scope", () => {
         expect(refreshChat(h.store, scope)).toBe(true);
         expect(ids(scope)).toEqual(["earlier", "g", "late", "member", "named"]);
         expect(scope.db.characters.find((entry) => entry.chaId === "late")).toMatchObject({ name: "LATE", chats: [] });
+    });
+});
+
+it("resolves the chat's memory preset in its job scope without changing the stored default", () => {
+    const h = (current = harness());
+    const kind = h.kinds.get("hypaV3Presets")!;
+    const record = h.store.get(kind, "main")!;
+    h.store.put(
+        kind,
+        "main",
+        {
+            items: [
+                createHypaV3Preset("Default", { memoryBudgetTokens: 100 }, "default"),
+                createHypaV3Preset("Chat", { memoryBudgetTokens: 300 }, "chat"),
+            ],
+            selectedId: "default",
+        },
+        record.revision,
+    );
+    h.store.applyChanges({
+        chats: [
+            {
+                characterId: "g",
+                chatId: "gk",
+                baseRevision: h.store.chatRevision("g", "gk"),
+                ops: [{ op: "meta", set: { memoryPresetId: "chat" } }],
+            },
+        ],
+    });
+    const stored = h.store.get(kind, "main");
+    const scope = loadJobScope(h.store, h.kinds, h.context);
+    expect(selectedHypaV3Preset(scope.db)).toMatchObject({ id: "chat", settings: { memoryBudgetTokens: 300 } });
+    expect(h.store.get(kind, "main")).toEqual(stored);
+    expect(h.store.chatMeta("g", "gk")!.data.memoryPresetId).toBe("chat");
+});
+
+describe("the chat's memory connection", () => {
+    function memoryScope(memoryProfileId?: unknown) {
+        const h = (current = harness());
+        const profilesKind = h.kinds.get("modelProfiles")!;
+        const profiles = h.store.get(profilesKind, "main")!;
+        h.store.put(
+            profilesKind,
+            "main",
+            [
+                { id: "main", name: "Main", modelId: "gpt-4o" },
+                { id: "slot", name: "Memory slot", modelId: "gpt-4o" },
+                { id: "named", name: "Chat memory", modelId: "gpt-4o-mini" },
+                {
+                    id: "plugin",
+                    name: "Plugin memory",
+                    modelId: "reverse_proxy",
+                    customAPIFormat: LLMFormat.Plugin,
+                    currentPluginProvider: "prov",
+                },
+            ],
+            profiles.revision,
+        );
+        const presetsKind = h.kinds.get("modelPresets")!;
+        const presets = h.store.get(presetsKind, "main")!;
+        h.store.put(
+            presetsKind,
+            "main",
+            [
+                {
+                    id: h.context.modelPresetId,
+                    name: "Model preset",
+                    mainSlot: { profileId: "main" },
+                    subSlot: { profileId: "main" },
+                    seperateModelsForAxModels: true,
+                    auxSlots: { memory: { profileId: "slot" } },
+                },
+            ],
+            presets.revision,
+        );
+        const setConnection = (value: unknown) =>
+            h.store.applyChanges({
+                chats: [
+                    {
+                        characterId: "g",
+                        chatId: "gk",
+                        baseRevision: h.store.chatRevision("g", "gk"),
+                        ops: [{ op: "meta", set: { memoryProfileId: value } }],
+                    },
+                ],
+            });
+        if (memoryProfileId !== undefined) setConnection(memoryProfileId);
+        return { h, setConnection, scope: loadJobScope(h.store, h.kinds, h.context) };
+    }
+
+    it("captures the named memory connection when the scope loads and keeps it across chat refreshes", () => {
+        const { h, setConnection, scope } = memoryScope("named");
+        expect(resolveScopeMemoryModel(scope)).toMatchObject({
+            kind: "resolved",
+            profile: { id: "named" },
+            aiModel: "gpt-4o-mini",
+        });
+        setConnection("slot");
+        expect(refreshChat(h.store, scope)).toBe(true);
+        expect(resolveScopeMemoryModel(scope)).toMatchObject({
+            kind: "resolved",
+            profile: { id: "named" },
+            aiModel: "gpt-4o-mini",
+        });
+        expect(resolveScopeMemoryModel(loadJobScope(h.store, h.kinds, h.context))).toMatchObject({
+            kind: "resolved",
+            profile: { id: "slot" },
+            aiModel: "gpt-4o",
+        });
+    });
+
+    it.each([undefined, 42, ""])("uses the preset's memory slot for a stored connection of %s", (value) => {
+        expect(resolveScopeMemoryModel(memoryScope(value).scope)).toMatchObject({
+            kind: "resolved",
+            profile: { id: "slot" },
+            aiModel: "gpt-4o",
+        });
+    });
+
+    it("refuses a gone named memory connection instead of using the preset's memory slot", () => {
+        expect(resolveScopeMemoryModel(memoryScope("deleted").scope)).toEqual({
+            kind: "refused",
+            result: "Cannot send the request: the connection it names no longer exists.",
+        });
+    });
+
+    it("requires the tab for a Plugin-format named memory connection even with a server memory slot", () => {
+        expect(jobMemoryBlockingReason(memoryScope("plugin").scope)).toBe("pluginModel");
     });
 });

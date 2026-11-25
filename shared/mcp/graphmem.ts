@@ -8,8 +8,9 @@ type GraphIndex = {
 
 /**
  * What the graph memory tools (`internal:graphmem`) need from where they run: the tab
- * (`src/ts/process/mcp/graphmem.ts`) or a server job (`server/src/mcp/jobTools.ts`). The graph is
- * the chat variable `graphmem_graph` of the chat the tools run for.
+ * (`src/ts/process/mcp/graphmem.ts`) or a server job (`createInternalMcps` in
+ * `server/src/mcp/internal.ts`). The graph is the chat variable `graphmem_graph` of the chat the
+ * tools run for.
  */
 export type GraphMemHost = {
     getVar(key: string): string;
@@ -73,6 +74,11 @@ export const GRAPHMEM_TOOLS: MCPTool[] = [
     },
 ];
 
+/**
+ * Failures that reach this dispatcher's catch answer `Error:` text unless `host.fatal` says the
+ * failure is not the tool's own; the graph-reading helpers swallow `getVar` failures before that
+ * check. A server job's dispatch also fences the completed result (`server/src/mcp/jobTools.ts`).
+ */
 export async function callGraphMemTool(host: GraphMemHost, toolName: string, args: any): Promise<RPCToolCallContent[]> {
     try {
         switch (toolName) {
@@ -153,21 +159,26 @@ async function readMemory(host: GraphMemHost, args: any): Promise<RPCToolCallCon
     }[] = [];
     for (let i = 0; i < query.length; i++) {
         let currentEntries: GraphIndex[] = [];
+        const foundNames = new Set<string>();
         let toSearch: string[] = [query[i]];
         // Stops once nothing new was found: a later depth would search nothing (a huge depth is no loop).
         for (let depth = 0; depth < search_depth && toSearch.length > 0; depth++) {
             const newEntries: GraphIndex[] = [];
             for (const searchTerm of toSearch) {
+                if (foundNames.has(searchTerm)) {
+                    continue;
+                }
                 const searched = await search(searchTerm);
                 for (const entry of searched) {
                     const found = graph.find((g) => g.name === entry);
-                    if (found && !currentEntries.includes(found)) {
+                    if (found && !foundNames.has(found.name)) {
+                        foundNames.add(found.name);
                         newEntries.push(found);
                     }
                 }
             }
             currentEntries = currentEntries.concat(newEntries);
-            toSearch = newEntries.flatMap((e) => e.connections);
+            toSearch = [...new Set(newEntries.flatMap((e) => e.connections))];
         }
 
         results.push({ queryTerm: query[i], entries: currentEntries });

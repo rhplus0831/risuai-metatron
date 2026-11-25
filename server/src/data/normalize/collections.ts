@@ -2,6 +2,8 @@ import { CREDENTIAL_TYPES, type Credential, type CredentialType, type Database }
 import { isRecordId } from "../../../../shared/ids.ts";
 import { defaultHotkeys } from "../../../../shared/hotkeys.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { defaultInputHooks, normalizeInputHooks as normalizeInputHookList } from "../../../../shared/inputHooks.ts";
+import { normalizeItemFolders } from "../../../../shared/itemFolders.ts";
 import type { CollectionResource } from "../../../../shared/resources.ts";
 import { normalizeTogglePresets as normalizeTogglePresetList } from "../../../../shared/togglePresets.ts";
 import { createTranslatorPreset, getNormalizedTranslatorPresetName } from "../../../../shared/translatorPresets.ts";
@@ -11,9 +13,10 @@ import { isPlainObject, plainClone, requireArrayOfObjects, requireObject } from 
 /**
  * The collection normalizers other than `personas`. Each accepts `undefined` (a record being
  * materialized) and returns the fresh-boot value; otherwise it rejects a value of the wrong shape
- * (a `ResourceValidationError`, a 400 on write) and returns a copy. Only `hotkeys` and the two
- * `{ items, selectedId }` records add default items; `togglePresets` repairs ids and fields without
- * adding items.
+ * (a `ResourceValidationError`, a 400 on write) and returns a copy. `loreBook` and `inputHooks`
+ * default only when absent; `hotkeys` and the two `{ items, selectedId }` records also add default
+ * items to existing lists. `togglePresets`, `moduleFolders`, and `personaFolders` repair ids and
+ * fields without adding items.
  */
 
 function objectList<T>(what: string, fallback: () => T[] = () => []): (input: unknown) => T[] {
@@ -31,6 +34,27 @@ export function normalizeTogglePresets(input: unknown): Database["togglePresets"
     return input === undefined ? [] : normalizeTogglePresetList(requireArrayOfObjects(input, "togglePresets"));
 }
 
+/** `moduleFolders`: a possibly empty list of `{ id, name, data }` folders with unique ids; member ids are not checked. */
+export function normalizeModuleFolders(input: unknown): Database["moduleFolders"] {
+    return input === undefined ? [] : normalizeItemFolders(requireArrayOfObjects(input, "moduleFolders"));
+}
+
+/** `personaFolders`: the same folder list (`normalizeItemFolders`) over persona ids. */
+export function normalizePersonaFolders(input: unknown): Database["personaFolders"] {
+    return input === undefined ? [] : normalizeItemFolders(requireArrayOfObjects(input, "personaFolders"));
+}
+
+/** `inputHooks`: an absent list gets the default; a saved list drops malformed entries and may stay empty. */
+export function normalizeInputHooks(input: unknown): Database["inputHooks"] {
+    if (input === undefined) {
+        return defaultInputHooks();
+    }
+    if (!Array.isArray(input)) {
+        throw new ResourceValidationError("inputHooks must be an array");
+    }
+    return normalizeInputHookList(input);
+}
+
 /** `hotkeys`: the stored list, then each built-in hotkey whose `action` it lacks (as `setDatabase` merged them). */
 export function normalizeHotkeys(input: unknown): Database["hotkeys"] {
     if (input === undefined) {
@@ -46,7 +70,11 @@ export function normalizeHotkeys(input: unknown): Database["hotkeys"] {
     return hotkeys;
 }
 
-/** `characterOrder`: character ids and folder objects. */
+/**
+ * Keeps the first character or folder of each id. A folder is never dropped (older folders lack `id`, `color`, or
+ * `name`, and the boot repair tolerates them): a `data` list loses its non-string members, and a folder without an id is
+ * never deduplicated.
+ */
 export function normalizeCharacterOrder(input: unknown): Database["characterOrder"] {
     if (input === undefined) {
         return [];
@@ -54,7 +82,23 @@ export function normalizeCharacterOrder(input: unknown): Database["characterOrde
     if (!Array.isArray(input) || !input.every((entry) => typeof entry === "string" || isPlainObject(entry))) {
         throw new ResourceValidationError("characterOrder must be an array of ids and folders");
     }
-    return plainClone(input) as Database["characterOrder"];
+    const seen = new Set<string>();
+    const entries: unknown[] = [];
+    for (const entry of input) {
+        const id = typeof entry === "string" ? entry : typeof entry.id === "string" ? entry.id : undefined;
+        if (id !== undefined) {
+            if (seen.has(id)) {
+                continue;
+            }
+            seen.add(id);
+        }
+        entries.push(
+            typeof entry !== "string" && Array.isArray(entry.data)
+                ? { ...entry, data: entry.data.filter((member: unknown) => typeof member === "string") }
+                : entry,
+        );
+    }
+    return plainClone(entries) as Database["characterOrder"];
 }
 
 const authRefreshFields = ["url", "tokenUrl", "refreshToken", "clientId", "clientSecret"];
@@ -79,7 +123,7 @@ export function normalizeGlobalChatVariables(input: unknown): Database["globalCh
         : (plainClone(requireObject(input, "globalChatVariables")) as Record<string, string>);
 }
 
-/** `customModels`: each entry needs its string `id` and `internalId`. */
+/** Requires string model `id` and `internalId` fields and keeps the first occurrence of each id. */
 export function normalizeCustomModels(input: unknown): Database["customModels"] {
     if (input === undefined) {
         return [];
@@ -90,7 +134,15 @@ export function normalizeCustomModels(input: unknown): Database["customModels"] 
     }
     // Definitions hold neither keys nor bindings: profiles choose named credentials. Drop the
     // retired fields from an older client or record instead of keeping them readable.
-    return plainClone(entries).map(
+    const seen = new Set<string>();
+    const unique = entries.filter((entry) => {
+        if (seen.has(entry.id as string)) {
+            return false;
+        }
+        seen.add(entry.id as string);
+        return true;
+    });
+    return plainClone(unique).map(
         ({ key: _key, credentialId: _credentialId, ...entry }) => entry,
     ) as unknown as Database["customModels"];
 }
@@ -189,7 +241,11 @@ export const normalizeTranslatorPresets: (input: unknown) => CollectionResource<
     () => createTranslatorPreset("Default"),
 );
 
-/** `hypaV3Presets` with the selected preset (`hypaV3PresetId`). */
+/**
+ * `hypaV3Presets` with the selected preset (`hypaV3PresetId`). A stored preset without `budgetMode`
+ * stays in ratio mode (`createHypaV3Preset`'s default); the preset seeded into a missing or empty
+ * list is a new one, in token mode.
+ */
 export const normalizeHypaV3Presets: (input: unknown) => CollectionResource<"hypaV3Presets"> = selectableList(
     "hypaV3Presets",
     (entry, index, id) =>
@@ -198,5 +254,5 @@ export const normalizeHypaV3Presets: (input: unknown) => CollectionResource<"hyp
             isPlainObject(entry.settings) ? entry.settings : {},
             id,
         ),
-    () => createHypaV3Preset("Default"),
+    () => createHypaV3Preset("Default", { budgetMode: "tokens" }),
 );

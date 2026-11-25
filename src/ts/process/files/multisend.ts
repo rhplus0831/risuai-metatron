@@ -1,35 +1,60 @@
-import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
+import {
+    appendMessage,
+    chatOwnerToken,
+    currentChatRef,
+    ensureChatLoaded,
+    findChat,
+    pinChat,
+    type ChatRef,
+} from "../../storage/chatStore.svelte";
 import { sendChat } from "../index.svelte";
 import { isChatBusy } from "../chatStatus.svelte";
+import { refuseOrphanedOverrides } from "../loreOverrides";
+import { checkServerJobBinding } from "../serverCommands";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
 import { postInlayAsset } from "./inlays";
+import { alertError } from "src/ts/alert";
+import { language } from "src/lang";
+import { AssetWriteError } from "../../storage/assetClient";
+
+/**
+ * Converts picked or supplied files into inlay ids, retrieved text, or PO translation sends.
+ * Media storage goes through `src/ts/process/files/inlays.ts`; text, PDF, and XML retrieval uses
+ * `HypaProcesser`. PO entries send sequentially to one captured chat, stopping without a download
+ * when a send fails or its chat is unavailable, busy, unbound, or has orphaned lore overrides. Failed media
+ * uploads are alerted and skipped so later files can still be processed.
+ */
 
 type sendFileArg = {
     file: string;
     query: string;
 };
 
-async function sendPofile(arg: sendFileArg) {
+async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string | undefined) {
     let result = "";
     let msgId = "";
     let note = "";
     let speaker = "";
     let parseMode = 0;
-    // Every line is sent in the chat selected when the file was sent. The run stops, downloading
-    // nothing, when that chat is gone or busy before an entry, or an entry's send does not run.
-    const ref = currentChatRef();
-    if (!ref) {
+    // Every file and entry shares the batch's destination, even after navigation or another file's send.
+    if (
+        !ref ||
+        chatOwnerToken(ref.chaId) !== owner ||
+        !(await ensureChatLoaded(ref)) ||
+        chatOwnerToken(ref.chaId) !== owner
+    ) {
         return;
     }
+    const newline = arg.file.match(/\r?\n/)?.[0] ?? "\n";
     const lines = arg.file.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-        console.log(i);
-        const line = lines[i];
+    // EOF also finishes an entry, even if the file has no final blank line.
+    for (let i = 0; i <= lines.length; i++) {
+        const line = lines[i]?.replace(/\r$/, "") ?? "";
         if (line === "") {
             if (msgId === "") {
-                result += "\n";
+                if (i < lines.length) result += newline;
                 continue;
             }
             let text = msgId;
@@ -39,11 +64,17 @@ async function sendPofile(arg: sendFileArg) {
             if (note !== "") {
                 text = `Note: ${note}\n${text}`;
             }
-            if (!findChat(ref) || isChatBusy(ref)) {
+            if (
+                chatOwnerToken(ref.chaId) !== owner ||
+                !findChat(ref) ||
+                isChatBusy(ref) ||
+                refuseOrphanedOverrides(ref) ||
+                !checkServerJobBinding(ref)
+            ) {
                 return;
             }
             appendMessage(ref, { role: "user", data: text });
-            if (!(await sendChat(-1, { target: ref }))) {
+            if (!(await sendChat(-1, { target: ref })) || chatOwnerToken(ref.chaId) !== owner) {
                 return;
             }
             const res = findChat(ref)?.message.at(-1);
@@ -58,8 +89,8 @@ async function sendPofile(arg: sendFileArg) {
                 .map((str) => {
                     return `"${str.replaceAll('"', '\\"')}"`;
                 })
-                .join("\n");
-            result += `msgstr ""\n${msgStr}\n\n`;
+                .join(newline);
+            result += `msgstr ""${newline}${msgStr}${newline}${newline}`;
             note = "";
             speaker = "";
             msgId = "";
@@ -84,17 +115,17 @@ async function sendPofile(arg: sendFileArg) {
             if (msgId === "") {
                 parseMode = 1;
             }
-            result += line + "\n";
+            result += line + newline;
             continue;
         }
         if (parseMode === 1 && line.startsWith('"') && line.endsWith('"')) {
             msgId += line.substring(1, line.length - 1).replaceAll('\\"', '"');
-            result += line + "\n";
+            result += line + newline;
             continue;
         }
         if (line.startsWith("msgstr")) {
             if (msgId === "") {
-                result += line + "\n";
+                result += line + newline;
                 parseMode = 0;
             } else {
                 parseMode = 2;
@@ -104,11 +135,7 @@ async function sendPofile(arg: sendFileArg) {
         if (parseMode === 2 && line.startsWith('"') && line.endsWith('"')) {
             continue;
         }
-        result += line + "\n";
-
-        if (i > 100) {
-            break; //prevent too long message in testing
-        }
+        result += line + newline;
     }
     await downloadFile("translated.po", result);
 }
@@ -198,6 +225,17 @@ type postFileResultText = {
     type: "text";
     name: string;
 };
+/**
+ * Turns files into composer attachments, by extension: images, audio, and video become inlays
+ * (`postInlayAsset`; its id as `asset`), `txt`, `pdf`, and `xml` become `text` for the caller to append
+ * as a `{{file::name::data}}` tag, and a `po` file runs its translation sends and download (`void`);
+ * any other extension adds nothing. Failed inlay writes show an error and skip that file, continuing
+ * with the remaining files. A string `query` opens the file picker (and is the query a PDF's passages
+ * are searched by). The picker offers only media extensions stored by `postInlayAsset`, plus `po`
+ * and `txt`. The picker's own list offers no `pdf` or `xml`, and the screen's other
+ * caller passes only pasted images, so those arrive only when the picker accepts every extension
+ * (`selectFileByDom` in `src/ts/util.ts`: `allowAllExtentionFiles` on, or iOS).
+ */
 export async function postChatFile(
     query:
         | string
@@ -205,124 +243,141 @@ export async function postChatFile(
               name: string;
               data: Uint8Array;
           },
+    ref: ChatRef | null = currentChatRef(),
 ): Promise<postFileResult[]> {
-    const files =
-        typeof query === "string"
-            ? await selectMultipleFile([
-                  //image format
-                  "jpg",
-                  "jpeg",
-                  "png",
-                  "webp",
-                  "gif",
-                  "avif",
+    const owner = ref ? chatOwnerToken(ref.chaId) : undefined;
+    const release = ref ? pinChat(ref) : undefined;
+    try {
+        const files =
+            typeof query === "string"
+                ? await selectMultipleFile([
+                      //image format
+                      "jpg",
+                      "jpeg",
+                      "png",
+                      "webp",
+                      "gif",
+                      "avif",
 
-                  //audio format
-                  "wav",
-                  "mp3",
-                  "ogg",
-                  "flac",
+                      //audio format
+                      "wav",
+                      "mp3",
+                      "ogg",
+                      "flac",
 
-                  //video format
-                  "mp4",
-                  "webm",
-                  "mpeg",
-                  "avi",
+                      //video format
+                      "mp4",
+                      "webm",
 
-                  //other format
-                  "po",
-                  // 'pdf',
-                  "txt",
-              ])
-            : [query];
+                      //other format
+                      "po",
+                      // 'pdf',
+                      "txt",
+                  ])
+                : [query];
 
-    if (!files) {
-        return null;
-    }
+        if (!files) {
+            return null;
+        }
 
-    const xquery = typeof query === "string" ? query : "";
-    const results: postFileResult[] = [];
+        const xquery = typeof query === "string" ? query : "";
+        const results: postFileResult[] = [];
 
-    for (const file of files) {
-        const extention = file.name.split(".").at(-1);
-        console.log(extention);
+        for (const file of files) {
+            const extention = file.name.split(".").at(-1);
+            console.log(extention);
 
-        switch (extention) {
-            case "po": {
-                await sendPofile({
-                    file: BufferToText(file.data),
-                    query: xquery,
-                });
-                results.push({
-                    type: "void",
-                });
-                break;
-            }
-            case "pdf": {
-                results.push({
-                    type: "text",
-                    data: await sendPDFFile({
-                        file: BufferToText(file.data),
-                        query: xquery,
-                    }),
-                    name: file.name,
-                });
-                break;
-            }
-            case "xml": {
-                results.push({
-                    type: "text",
-                    data: await sendXMLFile({
-                        file: BufferToText(file.data),
-                        query: xquery,
-                    }),
-                    name: file.name,
-                });
-                break;
-            }
-
-            //image format
-            case "jpg":
-            case "jpeg":
-            case "png":
-            case "webp":
-            case "gif":
-            case "avif":
-
-            //audio format
-            case "wav":
-            case "mp3":
-            case "ogg":
-            case "flac":
-
-            //video format
-            case "mp4":
-            case "webm":
-            case "mpeg":
-            case "avi": {
-                const postData = await postInlayAsset(file);
-                if (!postData) {
-                    continue;
+            switch (extention) {
+                case "po": {
+                    await sendPofile(
+                        {
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        },
+                        ref,
+                        owner,
+                    );
+                    results.push({
+                        type: "void",
+                    });
+                    break;
                 }
-                results.push({
-                    data: postData,
-                    type: "asset",
-                });
-                break;
-            }
-            case "txt": {
-                results.push({
-                    type: "text",
-                    data: await sendTxtFile({
-                        file: BufferToText(file.data),
-                        query: xquery,
-                    }),
-                    name: file.name,
-                });
-                break;
+                case "pdf": {
+                    results.push({
+                        type: "text",
+                        data: await sendPDFFile({
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        }),
+                        name: file.name,
+                    });
+                    break;
+                }
+                case "xml": {
+                    results.push({
+                        type: "text",
+                        data: await sendXMLFile({
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        }),
+                        name: file.name,
+                    });
+                    break;
+                }
+
+                //image format
+                case "jpg":
+                case "jpeg":
+                case "png":
+                case "webp":
+                case "gif":
+                case "avif":
+
+                //audio format
+                case "wav":
+                case "mp3":
+                case "ogg":
+                case "flac":
+
+                //video format
+                case "mp4":
+                case "webm": {
+                    let postData: string | null;
+                    try {
+                        postData = await postInlayAsset(file);
+                    } catch (error) {
+                        alertError(
+                            error instanceof AssetWriteError && error.status === 413
+                                ? language.attachmentTooLarge
+                                : error,
+                        );
+                        continue;
+                    }
+                    if (!postData) {
+                        continue;
+                    }
+                    results.push({
+                        data: postData,
+                        type: "asset",
+                    });
+                    break;
+                }
+                case "txt": {
+                    results.push({
+                        type: "text",
+                        data: await sendTxtFile({
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        }),
+                        name: file.name,
+                    });
+                    break;
+                }
             }
         }
-    }
 
-    return results;
+        return results;
+    } finally {
+        release?.();
+    }
 }

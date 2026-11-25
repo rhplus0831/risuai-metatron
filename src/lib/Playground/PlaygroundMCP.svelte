@@ -4,6 +4,13 @@
     import { type MCPToolWithURL, callMCPTool, getMCPMeta, getMCPTools, initializeMCPs } from "src/ts/process/mcp/mcp";
     import { alertMd } from "src/ts/alert";
 
+    /**
+     * The Playground's MCP page discovers servers from the selected chat's modules, without a
+     * request chat. `callMCPTool` in `src/ts/process/mcp/mcp.ts` dispatches through `callTool`,
+     * not `callToolForChat`: graph memory and RisuAccess use the tab's selection; AI access starts
+     * a chatless request through `src/ts/process/mcp/aiaccess.ts`.
+     */
+
     let metadatas = $state("");
     let tools: MCPToolWithURL[] = $state([]);
     let toolInputs: { [key: string]: string } = $state({});

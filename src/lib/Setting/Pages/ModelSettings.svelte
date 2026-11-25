@@ -1,9 +1,10 @@
 <script lang="ts">
-    import { activeModelPreset, settings } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, editedModelPreset, settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import { openModelPresetList } from "src/ts/stores.svelte";
     import { getModelInfoForMode, LLMFlags, LLMProvider } from "src/ts/model/modellist";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
+    import Help from "src/lib/Others/Help.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
@@ -13,15 +14,21 @@
     import ProfileSlotSelect from "./Model/ProfileSlotSelect.svelte";
     import AuxModelSelectors from "./Model/AuxModelSelectors.svelte";
     import ModelMenuTabs from "./Model/ModelMenuTabs.svelte";
-    import BindingScopeNote from "../BindingScopeNote.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
     import SettingsSections from "../SettingsSections.svelte";
     import { modelAdditionalParamsItems, modelSettingsSections } from "src/ts/setting/modelSettingsData";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
 
+    /**
+     * Model preset page: main/sub pickers (`src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`),
+     * aux slots (`src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`), Vertex region, global request
+     * toggles including streaming and Gemini signature saving, and Additional Params. At mount, an available
+     * `currentJump()` from `src/ts/setting/settingJump.svelte.ts` naming `model.additionalParams` starts that accordion open.
+     */
+
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
-            getModelInfoForMode(mode),
+            getModelInfoForMode(mode, editedScope()),
         ),
     );
     // A search jump to an item inside Additional Params opens it (read at mount).
@@ -33,14 +40,13 @@
 
 <div class="flex items-center gap-2 mb-4 p-2 rounded-md border border-darkborderc">
     <span class="text-textcolor2 text-sm shrink-0">{language.modelPreset}</span>
-    <BindingScopeNote field="modelPresetId" />
-    <span class="grow truncate">{activeModelPreset.name}</span>
+    <span class="grow truncate">{editedModelPreset.name}</span>
     <Button size="sm" onclick={() => ($openModelPresetList = true)}><ListIcon size={16} /></Button>
 </div>
 
-{#if activeModelPreset.id}
-    <ProfileSlotSelect presetId={activeModelPreset.id} mode="model" label={language.model} />
-    <ProfileSlotSelect presetId={activeModelPreset.id} mode="submodel" label={language.submodel} />
+{#if editedModelPreset.id}
+    <ProfileSlotSelect presetId={editedModelPreset.id} mode="model" label={language.model} />
+    <ProfileSlotSelect presetId={editedModelPreset.id} mode="submodel" label={language.submodel} />
 {/if}
 <AuxModelSelectors />
 
@@ -56,12 +62,27 @@
 <div class="py-2 flex flex-col gap-2 mb-4">
     {#if models.some((model) => model.flags.includes(LLMFlags.hasStreaming))}
         <Check bind:check={settings.providers.useStreaming} name={language.modelProfiles.responseStreaming} />
+        {#if !settings.providers.useStreaming}
+            <div class="flex items-center">
+                <Check bind:check={settings.providers.halfStreaming} name={language.modelProfiles.halfStreaming} />
+                <Help key="halfStreaming" name={language.modelProfiles.halfStreaming} />
+            </div>
+        {/if}
         {#if settings.providers.useStreaming && models.some((model) => model.flags.includes(LLMFlags.geminiThinking))}
             <Check
                 bind:check={settings.providers.streamGeminiThoughts}
                 name={language.modelProfiles.streamGeminiThoughts}
             />
         {/if}
+    {/if}
+    {#if models.some((model) => model.flags.includes(LLMFlags.geminiThinking))}
+        <Check
+            bind:check={
+                () => settings.providers.saveSignatures === true,
+                (value) => (settings.providers.saveSignatures = value === true)
+            }
+            name={language.modelProfiles.saveSignatures}
+        />
     {/if}
     {#if models.some((model) => model.id === "reverse_proxy")}
         <Check bind:check={settings.providers.reverseProxyOobaMode} name={language.reverseProxyOobaMode} />

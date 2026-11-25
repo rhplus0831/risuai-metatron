@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain, warmMutationGraph } from "./mutationStoresHarness";
+import { groupByFolder } from "../../../../shared/itemFolders.ts";
 
 // The settings, persona, module, plugin, order, OAuth, and preset mutations
 // (`collectionStore.svelte.ts`) against the real server store. Every refusal is checked to throw
@@ -11,6 +12,7 @@ const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
+const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location")!;
 
 vi.mock("../serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
@@ -35,7 +37,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 async function boot() {
     vi.resetModules();
@@ -62,7 +64,7 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    Object.defineProperty(globalThis, "location", originalLocation);
     server.current?.close();
 });
 
@@ -325,7 +327,57 @@ describe("personas", () => {
 });
 
 describe("modules", () => {
-    it("adds, replaces, patches, and removes modules by id, and keeps enabledModules on removal", async () => {
+    it("refuses duplicate module ids before changing modules or global enablement", async () => {
+        const { collectionStore: c, sync, settings, record, validation, fake } = await boot();
+        c.addModule({ id: "same", name: "Original", description: "kept" });
+        c.setEnabledModules(["same", "missing"]);
+        await sync.flushResources();
+        fake.requests.length = 0;
+        const before = plain(settings.modules);
+        expect(() => c.addModule({ id: "same", name: "Duplicate", description: "refused" })).toThrow(
+            validation.MutationValidationError,
+        );
+        expect(plain(settings.modules)).toEqual(before);
+        expect(plain(settings.enabledModules)).toEqual(["same", "missing"]);
+        await sync.flushResources();
+        expect(record("modules")).toEqual(before);
+        expect(record("enabledModules")).toEqual(["same", "missing"]);
+        expect(fake.batchCount()).toBe(0);
+    });
+
+    it("persists module removal with cleared global enablement while retaining persona, character and chat links", async () => {
+        const { collectionStore: c, characterStore, chat, sync, settings, record, fake } = await boot();
+        c.addModule({ id: "removed", name: "Removed" });
+        c.addModule({ id: "kept", name: "Kept" });
+        c.setEnabledModules(["removed", "kept"]);
+        const personaId = c.addPersona({ name: "Linked", modules: ["removed"] });
+        characterStore.updateCharacter("c", { modules: ["removed"] });
+        chat.setChatMeta({ chaId: "c", chatId: "k" }, { modules: ["removed"] });
+        await sync.flushResources();
+        fake.requests.length = 0;
+        expect(c.removeModule("removed")).toBe(true);
+        expect(plain(settings.enabledModules)).toEqual(["kept"]);
+        expect(plain(settings.personas.find((persona) => persona.id === personaId)?.modules)).toEqual(["removed"]);
+        expect(plain(characterStore.findCharacter("c")?.modules)).toEqual(["removed"]);
+        expect(chat.findChat({ chaId: "c", chatId: "k" })?.modules).toEqual(["removed"]);
+        await sync.flushResources();
+        expect(record("modules").map((module: { id: string }) => module.id)).toEqual(["kept"]);
+        expect(record("enabledModules")).toEqual(["kept"]);
+        expect(record("personas").find((persona: { id: string }) => persona.id === personaId).modules).toEqual([
+            "removed",
+        ]);
+        expect(record("characters", "c").modules).toEqual(["removed"]);
+        expect(fake.chat("c", "k")!.data.modules).toEqual(["removed"]);
+        expect(
+            fake
+                .batchBodies()[0]
+                .ops.map((op: { kind: string }) => op.kind)
+                .sort(),
+        ).toEqual(["enabledModules", "modules"]);
+        expect(c.removeModule("removed")).toBe(false);
+    });
+
+    it("adds, replaces, patches, and removes modules by id, and clears enabledModules on removal", async () => {
         const { sync, collectionStore, record, settings, refused, validation } = await boot();
         const generated = collectionStore.addModule({ name: "gen" });
         expect(collectionStore.addModule({ name: "given", id: "given" })).toBe("given");
@@ -340,7 +392,7 @@ describe("modules", () => {
         expect(plain(collectionStore.findModule("given"))).toEqual({ id: "given", name: "patched", toString: "t" });
         expect(collectionStore.removeModule(generated)).toBe(true);
         expect(collectionStore.removeModule(generated)).toBe(false);
-        expect(settings.enabledModules).toEqual(["given", generated]);
+        expect(settings.enabledModules).toEqual(["given"]);
         collectionStore.setModuleEnabled(generated, false);
         collectionStore.setModuleEnabled("third", true);
         collectionStore.setModuleEnabled("third", true);
@@ -366,6 +418,197 @@ describe("modules", () => {
     });
 });
 
+describe.each(["moduleFolders", "personaFolders"] as const)("%s mutations", (kind) => {
+    it("creates, renames, moves, and removes folders without changing the item records", async () => {
+        const { collectionStore: c, sync, settings, record } = await boot();
+        const itemsKind = kind === "moduleFolders" ? "modules" : "personas";
+        const otherKind = kind === "moduleFolders" ? "personaFolders" : "moduleFolders";
+        const items = [
+            { id: "item", name: "Item" },
+            { id: "root", name: "Root" },
+        ];
+        if (kind === "moduleFolders") c.setModules(items);
+        else c.setPersonas(items);
+        const originalItems = plain(settings[itemsKind]);
+        settings[otherKind] = [{ id: "other", name: "Other", data: ["item"] }];
+
+        const first = c.addItemFolder(kind, "First");
+        const second = c.addItemFolder(kind, "Second");
+        expect(first).toEqual(expect.any(String));
+        expect(first.length).toBeGreaterThan(0);
+        expect(second).toEqual(expect.any(String));
+        expect(second.length).toBeGreaterThan(0);
+        expect(second).not.toBe(first);
+        expect(plain(settings[kind])).toEqual([
+            { id: first, name: "First", data: [] },
+            { id: second, name: "Second", data: [] },
+        ]);
+        expect(c.moveItemToFolder(kind, "item", first)).toBe(true);
+        expect(c.renameItemFolder(kind, first, "Renamed")).toBe(true);
+        await sync.flushResources();
+        expect(record(kind)).toEqual([
+            { id: first, name: "Renamed", data: ["item"] },
+            { id: second, name: "Second", data: [] },
+        ]);
+
+        expect(c.moveItemToFolder(kind, "item", second)).toBe(true);
+        expect(plain(settings[kind])).toEqual([
+            { id: first, name: "Renamed", data: [] },
+            { id: second, name: "Second", data: ["item"] },
+        ]);
+        expect(c.moveItemToFolder(kind, "item", null)).toBe(true);
+        expect(plain(settings[kind])).toEqual([
+            { id: first, name: "Renamed", data: [] },
+            { id: second, name: "Second", data: [] },
+        ]);
+        expect(c.moveItemToFolder(kind, "item", second)).toBe(true);
+        expect(c.removeItemFolder(kind, second)).toBe(true);
+        expect(plain(settings[kind])).toEqual([{ id: first, name: "Renamed", data: [] }]);
+        expect(plain(settings[itemsKind])).toEqual(originalItems);
+        expect(groupByFolder(plain(settings[itemsKind]), plain(settings[kind])).root).toEqual(originalItems);
+        await sync.flushResources();
+        expect(record(kind)).toEqual([{ id: first, name: "Renamed", data: [] }]);
+        expect(record(itemsKind)).toEqual(originalItems);
+        expect(record(otherKind)).toEqual([{ id: "other", name: "Other", data: ["item"] }]);
+    });
+
+    it("refuses blank names and returns false for gone folders without changing or saving anything", async () => {
+        const {
+            collectionStore: c,
+            sync,
+            settings,
+            refusedEach,
+            validation,
+            mirrorText,
+            serverText,
+            fake,
+        } = await boot();
+        settings[kind] = [{ id: "kept", name: "Kept", data: ["item"] }];
+        await sync.flushResources();
+        await refusedEach(
+            ["", " \t\n"].flatMap((name) => [
+                () => c.addItemFolder(kind, name),
+                () => c.renameItemFolder(kind, "kept", name),
+            ]),
+            validation.MutationValidationError,
+        );
+        const mirror = mirrorText();
+        const stored = serverText();
+        const batches = fake.batchCount();
+        for (const mutate of [
+            () => c.renameItemFolder(kind, "gone", "Renamed"),
+            () => c.removeItemFolder(kind, "gone"),
+            () => c.moveItemToFolder(kind, "item", "gone"),
+        ]) {
+            expect(mutate()).toBe(false);
+            expect(mirrorText()).toBe(mirror);
+            await sync.flushResources();
+            expect(serverText()).toBe(stored);
+            expect(fake.batchCount()).toBe(batches);
+        }
+    });
+});
+
+describe("item deletion and folder membership", () => {
+    it("removes a module from every folder along with its record and global enablement", async () => {
+        const { collectionStore: c, settings, sync, record } = await boot();
+        c.setModules([
+            { id: "deleted", name: "Deleted" },
+            { id: "kept", name: "Kept" },
+        ]);
+        c.setEnabledModules(["deleted", "kept"]);
+        settings.moduleFolders = [
+            { id: "first", name: "First", data: ["deleted", "kept", "stale"] },
+            { id: "second", name: "Second", data: ["deleted"] },
+        ];
+        settings.personaFolders = [{ id: "personas", name: "Personas", data: ["deleted"] }];
+        await sync.flushResources();
+        expect(c.removeModule("deleted")).toBe(true);
+        const expected = [
+            { id: "first", name: "First", data: ["kept", "stale"] },
+            { id: "second", name: "Second", data: [] },
+        ];
+        expect(plain(settings.modules)).toEqual([{ id: "kept", name: "Kept" }]);
+        expect(plain(settings.enabledModules)).toEqual(["kept"]);
+        expect(plain(settings.moduleFolders)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("modules")).toEqual([{ id: "kept", name: "Kept" }]);
+        expect(record("enabledModules")).toEqual(["kept"]);
+        expect(record("moduleFolders")).toEqual(expected);
+        expect(record("personaFolders")).toEqual([{ id: "personas", name: "Personas", data: ["deleted"] }]);
+    });
+
+    it("moves selection off a deleted persona, clears all its folder memberships, and refuses to delete the last persona", async () => {
+        const {
+            collectionStore: c,
+            settings,
+            selectionModule,
+            selection,
+            activePersona,
+            sync,
+            record,
+            mirrorText,
+            serverText,
+            fake,
+        } = await boot();
+        c.setPersonas([
+            { id: "kept", name: "Kept" },
+            { id: "deleted", name: "Deleted" },
+        ]);
+        const kept = plain(settings.personas[0]);
+        selectionModule.selectPersona("deleted");
+        settings.personaFolders = [
+            { id: "first", name: "First", data: ["deleted", "kept", "stale"] },
+            { id: "second", name: "Second", data: ["deleted"] },
+        ];
+        settings.moduleFolders = [{ id: "modules", name: "Modules", data: ["deleted"] }];
+        await sync.flushResources();
+        expect(c.removePersona("deleted")).toBe(true);
+        expect(selection.personaId).toBe("kept");
+        expect(activePersona.name).toBe("Kept");
+        const expected = [
+            { id: "first", name: "First", data: ["kept", "stale"] },
+            { id: "second", name: "Second", data: [] },
+        ];
+        expect(plain(settings.personas)).toEqual([kept]);
+        expect(plain(settings.personaFolders)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("personas")).toEqual([kept]);
+        expect(record("personaFolders")).toEqual(expected);
+        expect(record("moduleFolders")).toEqual([{ id: "modules", name: "Modules", data: ["deleted"] }]);
+
+        const mirror = mirrorText();
+        const stored = serverText();
+        const batches = fake.batchCount();
+        expect(c.removePersona("kept")).toBe(false);
+        expect(selection.personaId).toBe("kept");
+        expect(mirrorText()).toBe(mirror);
+        await sync.flushResources();
+        expect(serverText()).toBe(stored);
+        expect(fake.batchCount()).toBe(batches);
+    });
+
+    it("leaves folder membership stored when whole module and persona lists are replaced", async () => {
+        const { collectionStore: c, settings, sync, record } = await boot();
+        c.setModules([{ id: "old-module", name: "Old module" }]);
+        c.setPersonas([{ id: "old-persona", name: "Old persona" }]);
+        const moduleFolders = [{ id: "modules", name: "Modules", data: ["old-module", "stale"] }];
+        const personaFolders = [{ id: "personas", name: "Personas", data: ["old-persona", "stale"] }];
+        settings.moduleFolders = moduleFolders;
+        settings.personaFolders = personaFolders;
+        await sync.flushResources();
+        c.setModules([{ id: "new-module", name: "New module" }]);
+        c.setPersonas([{ id: "new-persona", name: "New persona" }]);
+        expect(plain(settings.moduleFolders)).toEqual(moduleFolders);
+        expect(plain(settings.personaFolders)).toEqual(personaFolders);
+        await sync.flushResources();
+        expect(record("moduleFolders")).toEqual(moduleFolders);
+        expect(record("personaFolders")).toEqual(personaFolders);
+        expect(record("modules").map((item: { id: string }) => item.id)).toEqual(["new-module"]);
+        expect(record("personas").map((item: { id: string }) => item.id)).toEqual(["new-persona"]);
+    });
+});
+
 describe("character order, plugins, and OAuth entries", () => {
     it("setCharacterOrder accepts ids and folders with member lists, and refuses anything else", async () => {
         const { sync, collectionStore, record, settings, refused, validation } = await boot();
@@ -388,6 +631,76 @@ describe("character order, plugins, and OAuth entries", () => {
         expect(plain(settings.characterOrder)).toEqual(["c", { id: "f", name: "F", data: ["c"] }]);
         await sync.flushResources();
         expect(record("characterOrder")).toEqual(["c", { id: "f", name: "F", data: ["c"] }]);
+    });
+
+    it("upsertPlugin keeps the predecessor's completion settings and replaces every other field", async () => {
+        const { sync, collectionStore, record, settings } = await boot();
+        collectionStore.setPlugins([
+            {
+                name: "plug",
+                script: "old",
+                enabled: false,
+                realArg: { old: "value" },
+                displayName: "Old name",
+                completionWait: true,
+                completionQuietSeconds: 7,
+            },
+        ]);
+        const incoming = {
+            name: "plug",
+            script: "new",
+            enabled: true,
+            realArg: { new: "value" },
+            completionWait: true,
+            completionQuietSeconds: 60,
+        };
+        // Settings can change after a replacement is prepared; carry their stored values unchanged.
+        settings.plugins[0].completionWait = false;
+        settings.plugins[0].completionQuietSeconds = 4.9;
+        collectionStore.upsertPlugin(incoming);
+        const expected = [
+            {
+                name: "plug",
+                script: "new",
+                enabled: true,
+                realArg: { new: "value" },
+                completionWait: false,
+                completionQuietSeconds: 4.9,
+            },
+        ];
+        expect(plain(settings.plugins)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("plugins")).toEqual(expected);
+    });
+
+    it("upsertPlugin strips supplied completion settings from a new entry", async () => {
+        const { sync, collectionStore, record, settings } = await boot();
+        collectionStore.setPlugins([]);
+        collectionStore.upsertPlugin({
+            name: "new",
+            script: "new script",
+            completionWait: true,
+            completionQuietSeconds: 15,
+        });
+        const expected = [{ name: "new", script: "new script" }];
+        expect(plain(settings.plugins)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("plugins")).toEqual(expected);
+    });
+
+    it("upsertPlugin strips supplied completion settings when the predecessor has none", async () => {
+        const { sync, collectionStore, record, settings } = await boot();
+        collectionStore.setPlugins([{ name: "plug", script: "old", displayName: "Old name" }]);
+        collectionStore.upsertPlugin({
+            name: "plug",
+            script: "new",
+            completionWait: true,
+            completionQuietSeconds: 15,
+        });
+        const expected = [{ name: "plug", script: "new" }];
+        expect(plain(settings.plugins)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("plugins")).toEqual(expected);
     });
 
     it("setPlugins, upsertPlugin, and setPluginArgument write the plugin list by name", async () => {

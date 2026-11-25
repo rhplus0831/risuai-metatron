@@ -1,9 +1,10 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { diskNeeded, diskWithFree, liveBytes } from "./assetSweepFixtures.ts";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database.ts";
@@ -16,7 +17,9 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
-import { sleep } from "./testSupport.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { installSnapshot } from "./stagedRestore.ts";
+import { createResourceTestClient, testRestoreRunner, sleep } from "./testSupport.ts";
 
 const docs: ResourceKind = { name: "docs", schemaVersion: 1, normalize: (input) => input };
 const kinds = createKindRegistry([docs]);
@@ -150,6 +153,75 @@ describe("snapshot files", () => {
         expect(manager.list().map((s) => s.id)).toEqual([ids[3], ids[2]]);
     });
 
+    it("keeps pinned snapshots in addition to the newest unpinned snapshots, including manual ones", async () => {
+        const { manager, backups } = setup({ keep: 2 });
+        let tick = 0;
+        const take = (label?: string) => {
+            vi.setSystemTime(Date.UTC(2030, 0, 1, 0, 0, tick++));
+            return manager.snapshotNow({ label });
+        };
+        const pinned = await take("Keep this");
+        await manager.setPinned(pinned.id, { pinned: true });
+        const manual = await take("Before editing");
+        expect(manual).toMatchObject({ pinned: false, label: "Before editing" });
+        const recent = await take();
+        expect(manager.list().map(({ id }) => id)).toEqual([recent.id, manual.id, pinned.id]);
+        const newest = await take();
+        expect(manager.list().map(({ id }) => id)).toEqual([newest.id, recent.id, pinned.id]);
+        expect(existsSync(path.join(backups, `${manual.id}.sqlite`))).toBe(false);
+
+        await manager.setPinned(recent.id, { pinned: true });
+        const last = await take();
+        expect(manager.list().map(({ id }) => id)).toEqual([last.id, newest.id, recent.id, pinned.id]);
+        expect(
+            manager
+                .list()
+                .filter(({ pinned }) => pinned)
+                .map(({ id }) => id),
+        ).toEqual([recent.id, pinned.id]);
+    });
+
+    it("persists pins and labels across manager restarts and omits metadata whose file is gone", async () => {
+        const { manager, store, backups } = setup();
+        vi.setSystemTime(new Date("2030-01-01"));
+        const pinned = await manager.snapshotNow({ label: "Keep across restarts" });
+        await manager.setPinned(pinned.id, { pinned: true });
+        vi.setSystemTime(new Date("2030-01-02"));
+        const labeled = await manager.snapshotNow({ label: "Manual copy" });
+        const metadataFile = path.join(backups, "pins.json");
+        expect(JSON.parse(readFileSync(metadataFile, "utf8")).entries).toEqual({
+            [pinned.id]: { pinned: true, label: "Keep across restarts" },
+            [labeled.id]: { pinned: false, label: "Manual copy" },
+        });
+        await manager.stop();
+        const restarted = createSnapshotManager({ store, dir: backups });
+        managers.push(restarted);
+        expect(restarted.list()).toEqual([
+            expect.objectContaining({ id: labeled.id, pinned: false, label: "Manual copy" }),
+            expect.objectContaining({ id: pinned.id, pinned: true, label: "Keep across restarts" }),
+        ]);
+        await restarted.stop();
+        rmSync(path.join(backups, `${pinned.id}.sqlite`));
+        const afterLoss = createSnapshotManager({ store, dir: backups });
+        managers.push(afterLoss);
+        expect(afterLoss.list()).toEqual([
+            expect.objectContaining({ id: labeled.id, pinned: false, label: "Manual copy" }),
+        ]);
+    });
+
+    it("refuses to start with corrupt pin metadata instead of dropping pins", async () => {
+        const { manager, store, backups } = setup();
+        const snapshot = await manager.snapshotNow();
+        await manager.setPinned(snapshot.id, { pinned: true });
+        await manager.stop();
+        const metadataFile = path.join(backups, "pins.json");
+        const corrupt = readFileSync(metadataFile, "utf8").slice(0, -1);
+        writeFileSync(metadataFile, corrupt);
+        expect(() => createSnapshotManager({ store, dir: backups })).toThrow();
+        expect(readFileSync(metadataFile, "utf8")).toBe(corrupt);
+        expect(existsSync(path.join(backups, `${snapshot.id}.sqlite`))).toBe(true);
+    });
+
     it("removes the temporary file when the copy fails", async () => {
         const { store, manager, backups } = setup();
         store.close();
@@ -178,19 +250,10 @@ describe("checkpoint snapshots", () => {
         stores.push(store);
         store.put(characters, "c", { chaId: "c" }, null);
         store.put(characters, "d", { chaId: "d" }, null);
-        // Leave a gap so restoring the chats must remap their checkpoint and policy owners.
+        // Leave a gap (deleted once c/k exists) so restoring the chats must remap their checkpoint and
+        // policy owners.
         store.applyChanges({
             chats: [{ characterId: "c", chatId: "discarded", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
-        });
-        store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "discarded",
-                    baseRevision: store.chatRevision("c", "discarded"),
-                    ops: [{ op: "delete" }],
-                },
-            ],
         });
         const saved = ["c", "d"].map((characterId, index) => {
             const chat: Chat = {
@@ -234,6 +297,7 @@ describe("checkpoint snapshots", () => {
             });
             return { characterId, chat, checkpoint, policy };
         });
+        deleteChatThroughTrash(store, "c", "discarded");
         return { dir, file, store, saved };
     }
 
@@ -283,7 +347,7 @@ describe("checkpoint snapshots", () => {
         const later = store.checkpoints.save("c", "k", "After snapshot", "auto")!;
         store.checkpoints.writePolicy("c", "k", { autoEvery: 17, autoKeep: 9, lastAutoTurns: 99 });
         store.checkpoints.writePolicy("d", "k", null);
-        store.replaceAll(validated);
+        await installSnapshot(store, input, defaults);
 
         for (const { characterId, checkpoint, chat, policy } of saved) {
             expect(store.checkpoints.list(characterId, "k")?.map((item) => item.id)).toEqual([checkpoint.id]);
@@ -313,7 +377,7 @@ describe("checkpoint snapshots", () => {
             DROP TABLE chatCheckpointPolicy;
         `,
         );
-        store.replaceAll(store.readSnapshot(legacy));
+        await installSnapshot(store, legacy, defaults);
         for (const { characterId, checkpoint } of saved) {
             expect(store.chatRevision(characterId, "k")).not.toBeNull();
             expect(store.checkpoints.list(characterId, "k")).toEqual([]);
@@ -399,7 +463,8 @@ describe("checkpoint snapshots", () => {
         const before = state();
         expect(() => store.readSnapshot(invalid)).toThrow(ResourceValidationError);
         expect(state()).toEqual(before);
-        expect(readFileSync(invalid)).toEqual(fileBefore);
+        // `Buffer.equals`, not `toEqual`: the matcher walks a database file byte by byte, over a second per case.
+        expect(readFileSync(invalid).equals(fileBefore)).toBe(true);
     });
 });
 
@@ -635,4 +700,93 @@ describe("maintenance gate", () => {
         expect(order).toEqual(["first", "maintenance", "third"]);
         expect(manager.list()).toHaveLength(2);
     });
+});
+
+it("restores its staged source after retention prunes the original during validation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const held = defer();
+    const release = defer();
+    const runner = testRestoreRunner();
+    let stagedSource = "";
+    const s = await createResourceTestClient({
+        restore: {
+            runner: async (input, options) => {
+                stagedSource = input.source;
+                held.resolve();
+                await release.promise;
+                return runner(input, options);
+            },
+        },
+    });
+    try {
+        vi.setSystemTime(new Date("2030-01-01"));
+        await s.create("characters", "saved", { chaId: "saved" });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        const restoring = s.request(`/api/backups/${snapshot.id}/restore`, { method: "POST" });
+        await held.promise;
+        expect(s.context.snapshots.gate.active).toBe(false);
+        expect(stagedSource).not.toBe(path.join(s.savePath, "backups", `${snapshot.id}.sqlite`));
+        // A small-retention manager shares the backup directory; its snapshot prunes the original.
+        const donor = setup();
+        const pruner = createSnapshotManager({ store: donor.store, dir: path.join(s.savePath, "backups"), keep: 1 });
+        managers.push(pruner);
+        vi.setSystemTime(new Date("2030-01-02"));
+        await pruner.snapshotNow();
+        expect(existsSync(path.join(s.savePath, "backups", `${snapshot.id}.sqlite`))).toBe(false);
+        expect(existsSync(stagedSource)).toBe(true);
+        release.resolve();
+        expect((await restoring).status).toBe(200);
+        await s.readEpoch();
+        expect((await s.get("characters", "saved")).status).toBe(200);
+        expect(readdirSync(path.join(s.savePath, ".tmp"))).toEqual([]);
+    } finally {
+        release.resolve();
+        await s.close();
+        vi.useRealTimers();
+    }
+});
+
+it("skips short-disk snapshot ticks, logs once, and resumes when capacity returns", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { dir, store, backups } = setup();
+    let free = 0;
+    const manager = createSnapshotManager({
+        store,
+        dir: backups,
+        intervalMs: 1000,
+        databaseFile: path.join(dir, "data", "resources.sqlite"),
+        statfs: async () => diskWithFree(free),
+    });
+    managers.push(manager);
+    try {
+        manager.start();
+        store.put(docs, "pending", { value: "must survive" }, null);
+        const tick = async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            await manager.exclusive(async () => {});
+        };
+        await tick();
+        await tick();
+        expect(manager.list()).toEqual([]);
+        expect(errors.mock.calls.filter(([message]) => String(message).includes("insufficient storage"))).toHaveLength(
+            1,
+        );
+        free = diskNeeded(liveBytes(dir));
+        await tick();
+        expect(manager.list()).toHaveLength(1);
+        expect(store.readSnapshot(manager.resolve(manager.list()[0].id)!).rows).toContainEqual(
+            expect.objectContaining({ id: "pending", text: JSON.stringify({ value: "must survive" }) }),
+        );
+        free = 0;
+        store.put(docs, "another", 2, null);
+        await tick();
+        expect(errors.mock.calls.filter(([message]) => String(message).includes("insufficient storage"))).toHaveLength(
+            2,
+        );
+    } finally {
+        await manager.stop();
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+    }
 });

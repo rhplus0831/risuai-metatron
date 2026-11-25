@@ -2,6 +2,8 @@
     import CheckInput from "./CheckInput.svelte";
     import NumberInput from "./NumberInput.svelte";
     import TextInput from "./TextInput.svelte";
+    /** A nullable value: `null` (or `undefined`) means the default is used. */
+
     interface Props {
         value: string | number | boolean;
         numberMode?: boolean;

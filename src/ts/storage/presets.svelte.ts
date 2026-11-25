@@ -4,7 +4,7 @@ import * as fflate from "fflate";
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js";
 import { decryptBuffer, encryptBuffer, selectSingleFile } from "../util";
 import { downloadFile } from "../globalApi.svelte";
-import { alertNormal } from "../alert";
+import { alertError, alertNormal } from "../alert";
 import { prebuiltPresets } from "../process/templates/templates";
 import {
     newPresetId,
@@ -21,14 +21,14 @@ import type { botPreset } from "../../../shared/database.ts";
 import { safeStructuredClone } from "../polyfill";
 import { addPreset } from "./collectionStore.svelte";
 import { selectModelPreset, selectPreset, selection } from "./selection.svelte";
-import { activeMainProfile, currentPresetRecord, settings } from "./settingsViews.svelte";
+import { editedMainProfile, editedPresetRecord, settings } from "./settingsViews.svelte";
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 
-/*
- * The preset actions of the preset lists (moved out of `database.svelte.ts`; split into prompt and
- * model presets): copy, switch, apply a template, export, and import, over the `presets` record (prompt presets) and the
- * `modelPresets` collection (`settingsViews.svelte.ts`). Every preset field lives in its own preset
- * (the views write them there directly), so a switch only changes this tab's selection.
+/**
+ * The preset actions of the preset lists: copy, switch, apply a template, export, and import, over
+ * the `presets` record (prompt presets) and the `modelPresets` collection
+ * (`settingsViews.svelte.ts`). Every preset field lives in its own preset (the views write them
+ * there directly), so a switch only changes this tab's selection.
  */
 
 /** Adds a copy of prompt preset `id` under a new id; the copy starts active (never archived). */
@@ -94,7 +94,7 @@ export function removeModelPreset(id: string): boolean {
  * id, name, image, and `archived`. The template's model fields are not applied (`normalizePreset` drops them).
  */
 export function applyPresetTemplate(template: Omit<botPreset, "id">) {
-    const current = currentPresetRecord();
+    const current = editedPresetRecord();
     if (!current) {
         return;
     }
@@ -111,6 +111,13 @@ function isPositiveSize(value: unknown): value is number {
     return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
+/**
+ * Exports prompt preset `id` as a `.json` or `.risup` file (`return`: the data and the `.risup`
+ * bytes, nothing downloaded): `name`, `image`, and every `PROMPT_PRESET_FIELDS` field; no id,
+ * `archived`, or credential. Its one model field is upstream RisuAI's `maxContext`: the preset's
+ * context size override (`maxContextOverrideOf`), else the main profile the views resolve now
+ * (`editedMainProfile`) when its `maxContext` is above 0, else the `PRESET_DEFAULTS` value.
+ */
 export async function downloadPreset(id: string, type: "json" | "risupreset" | "return" = "json") {
     const source = settings.presets.find((preset) => preset.id === id);
     if (!source) {
@@ -127,7 +134,7 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
     for (const field of [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS]) {
         pres[field] = stored[field];
     }
-    const profileContext = activeMainProfile.maxContext;
+    const profileContext = editedMainProfile.maxContext;
     pres.maxContext =
         maxContextOverrideOf(stored) ?? (isPositiveSize(profileContext) ? profileContext : PRESET_DEFAULTS.maxContext);
     const fileName = typeof pres.name === "string" ? pres.name : "";
@@ -163,6 +170,16 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
     };
 }
 
+/**
+ * Imports a prompt preset file (`f`, else one the user picks) as a new prompt preset through
+ * `addPreset`, so it gets a fresh id on every path, even when the file carries one, and starts active
+ * (`archived` dropped). A NovelAI preset (`presetVersion` 3 or later) and a SillyTavern preset are
+ * converted. The file's model fields and a `proxyKey` are ignored (`normalizePreset` drops them),
+ * except that a RisuAI file's `maxContext` seeds an unset `maxContextOverrideSize`; the override
+ * stays off unless the file turns `maxContextOverride` on. Returns the new preset's id, or undefined
+ * when the picker is cancelled or a `.risup`/`.risupreset` has an unsupported version or type
+ * (alerted, with nothing imported).
+ */
 export async function importPreset(
     f: {
         name: string;
@@ -176,18 +193,23 @@ export async function importPreset(
         return;
     }
     let pre: any;
-    if (f.name.endsWith(".risupreset") || f.name.endsWith(".risup")) {
+    const name = f.name.toLowerCase();
+    if (name.endsWith(".risupreset") || name.endsWith(".risup")) {
         let data = f.data;
-        if (f.name.endsWith(".risup")) {
+        if (name.endsWith(".risup")) {
             data = await decodeRPack(data);
         }
         const decoded = await decodeMsgpack(fflate.decompressSync(data));
         console.log(decoded);
-        if ((decoded.presetVersion === 0 || decoded.presetVersion === 2) && decoded.type === "preset") {
+        if ((decoded?.presetVersion === 0 || decoded?.presetVersion === 2) && decoded.type === "preset") {
             pre = {
                 ...presetTemplate,
                 ...decodeMsgpack(Buffer.from(await decryptBuffer(decoded.preset ?? decoded.pres, "risupreset"))),
             };
+        }
+        if (!pre) {
+            alertError(language.errors.unsupportedPreset);
+            return;
         }
     } else {
         pre = { ...presetTemplate, ...JSON.parse(Buffer.from(f.data).toString("utf-8")) };
@@ -210,7 +232,7 @@ export async function importPreset(
         pr.NAISettings.repetitionPenaltyRange = pre.parameters.repetition_penalty_range;
         pr.NAISettings.repetitionPenaltySlope = pre.parameters.repetition_penalty_slope;
         pr.NAISettings.frequencyPenalty = pre.parameters.repetition_penalty_frequency;
-        pr.NAISettings.repostitionPenaltyPresence = pre.parameters.repetition_penalty_presence;
+        pr.NAISettings.presencePenalty = pre.parameters.repetition_penalty_presence;
         pr.PresensePenalty = pre.parameters.repetition_penalty_presence * 100;
         pr.NAISettings.cfg_scale = pre.parameters.cfg_scale;
         pr.NAISettings.mirostat_lr = pre.parameters.mirostat_lr;

@@ -4,6 +4,7 @@ import localforage from "localforage";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { runEmbedding } from "../transformers";
 import { appendLastPath } from "src/ts/util";
+import { textHash } from "../../../../shared/textHash.ts";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import {
     type HypaModel,
@@ -12,11 +13,26 @@ import {
     voyageKeyMissing,
 } from "../../../../shared/memory.ts";
 
+/**
+ * The tab's embedding engine (`HypaProcesser`), used beyond memory: multisend
+ * (`src/ts/process/files/multisend.ts`), the tab's graph memory host (`src/ts/process/mcp/graphmem.ts`),
+ * the tab's HypaV3 copy, and the embedding playground. Every other embedding user is on the server
+ * (`server/src/prompt/embeddings.ts`, a port of this file), which shares no vectors with it.
+ *
+ * Document vectors are cached in the LocalForage store `hypaVector` under `text|model` (with the custom
+ * model's name, `-<model>`); query vectors are not cached. `testText` caches by the raw text alone.
+ */
+
 export type { HypaModel } from "../../../../shared/memory.ts";
 
-// In a typical environment, bge-m3 is a heavy model.
-// If your GPU can't handle this model, you'll see errror below.
-// Failed to execute 'mapAsync' on 'GPUBuffer': [Device] is lost
+/**
+ * The Transformers.js embedding models by `hypaModel` value; a `gpuModels` name runs on WebGPU. A new
+ * model also goes into the server's registry (`server/src/prompt/embeddings.ts`), the `EmbeddingModel`
+ * union of `src/ts/process/transformers.ts`, and the settings and playground options.
+ *
+ * In a typical environment, bge-m3 is a heavy model: a GPU that cannot hold it fails with "Failed to
+ * execute 'mapAsync' on 'GPUBuffer': [Device] is lost".
+ */
 export const localModels = {
     models: {
         MiniLM: "Xenova/all-MiniLM-L6-v2",
@@ -36,8 +52,11 @@ export const localModels = {
 };
 
 /**
- * The Voyage `/v1/embeddings` request for a `VOYAGE_EMBEDDING_MODELS` model, with `voyageApiKey`.
- * The answer has the OpenAI shape (`data[].embedding`).
+ * The Voyage `/v1/embeddings` request for a `VOYAGE_EMBEDDING_MODELS` model (Voyage 4 Large, 4, and
+ * 4 Lite), with `voyageApiKey` through `globalFetch`. `inputType` is `document` for stored texts and
+ * `query` for a search; the two give different vectors. The answer has the OpenAI shape
+ * (`data[].embedding`). It sends what it is given and counts no tokens: `HypaProcesser.getEmbeds`
+ * (including `embedDocuments`) and `HypaProcessorV2`'s API batches pass at most 50 texts.
  */
 export async function voyageEmbeds(model: string, input: string[] | string, inputType: "query" | "document") {
     const apiKey = settings.secrets.voyageApiKey?.trim();
@@ -54,6 +73,11 @@ export async function voyageEmbeds(model: string, input: string[] | string, inpu
     });
 }
 
+/**
+ * Vectors of stored texts (`addText`, cached) and a similarity search over them (`similaritySearch`,
+ * `similaritySearchScored`, by dot product, highest first). `"auto"` takes `hypaModel` (default
+ * `MiniLM`); the custom URL defaults to `hypaCustomSettings.url`.
+ */
 export class HypaProcesser {
     oaikey: string;
     vectors: memoryVector[];
@@ -90,7 +114,23 @@ export class HypaProcesser {
         return embeddings;
     }
 
+    /**
+     * The vectors of `input`, uncached, by the model, in this order: a contextual Voyage model
+     * (`contextualEmbedding.ts`; a document is a group of one); a `localModels` model (Transformers.js,
+     * `runEmbedding`); else `custom` (`hypaCustomSettings`, through `globalFetch`), OpenAI (the
+     * processor's `oaikey` through `globalFetch`, else `auxFetchJson("openai-embeddings")`, which
+     * uses the stored memory key on the server), or a Voyage `/v1/embeddings` model (`voyageEmbeds`).
+     * A failed answer of the custom, OpenAI, or `/v1/embeddings` branch throws its body's JSON text (a
+     * string, not an `Error`); the contextual provider throws an `Error`.
+     */
     async getEmbeds(input: string[] | string, inputType: "query" | "document" = "query"): Promise<VectorArray[]> {
+        if (Array.isArray(input) && input.length > 50) {
+            const embeddings: VectorArray[] = [];
+            for (const batch of chunkArray(input, 50)) {
+                embeddings.push(...(await this.getEmbeds(batch, inputType)));
+            }
+            return embeddings;
+        }
         if (isContextModel(this.model)) {
             const provider = getContextProvider(this.model);
             const inputs: string[] = Array.isArray(input) ? input : [input];
@@ -282,13 +322,8 @@ export function cosineSimilarity(a: VectorArray, b: VectorArray): number {
 }
 
 export function contextHash(texts: string[]): string {
-    let h = 0x811c9dc5;
-    const s = texts.join("\0");
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 0x01000193);
-    }
-    return (h >>> 0).toString(36);
+    // JSON preserves chunk boundaries; the shared 53-bit hash replaces the old 32-bit cache keys.
+    return textHash(JSON.stringify(texts));
 }
 
 export type VectorArray = number[] | Float32Array;

@@ -42,7 +42,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -119,7 +119,7 @@ it("adopts the first remote creation from the live update and updates it with th
     expect(h.fake.batchCount()).toBe(0);
 
     h.storage.setPluginStorageItem("newLocalSetting", "local value");
-    expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+    expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
     expect(h.fake.record("pluginStorage", "main")!.data).toEqual({
         _pluginStorage: { remoteSetting: "saved elsewhere", newLocalSetting: "local value" },
     });
@@ -177,5 +177,7 @@ it("control: a concurrent creation of the same key keeps the old policy (the ser
     expect(h.storage.getPluginStorageValue("remoteSetting")).toBe("saved elsewhere");
     expect(h.fake.record("pluginStorage", "main")!.data).toEqual(REMOTE);
     expect(alerts.normal).toHaveBeenCalledWith("reloaded");
-    expect(discards).toEqual([{ pluginStorage: ["remoteSetting"], localPluginStorage: [], customStorage: false }]);
+    expect(discards).toEqual([
+        { pluginStorage: ["remoteSetting"], ownedPluginStorage: [], localPluginStorage: [], customStorage: false },
+    ]);
 });

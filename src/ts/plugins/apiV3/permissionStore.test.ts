@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureAuth } from "../../storage/serverAuth";
 import { FakeResourceServer } from "../../storage/tests/fakeResourceServer";
 
 // The server-owned `pluginPermissions` record: append-only merges, conflict re-read and retry,
@@ -6,9 +7,11 @@ import { FakeResourceServer } from "../../storage/tests/fakeResourceServer";
 
 const { server } = vi.hoisted(() => ({ server: { current: null as any } }));
 
-vi.mock("../../storage/serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
-}));
+vi.mock("../../storage/serverAuth", async () =>
+    (await import("../../storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init) => server.current.fetch(path, init),
+    }),
+);
 
 import * as client from "../../storage/resourceClient";
 import {
@@ -17,9 +20,41 @@ import {
     loadPluginPermissions,
     recordPermissionGrants,
     refreshPluginPermissions,
+    getPermissionResetCount,
+    hasStandingGrant,
+    onPermissionGrantsRemoved,
+    revokePermissionGrants,
+    seedPluginPermissions,
+    setStandingPermissionGrants,
+    StalePermissionListError,
 } from "./permissionStore";
 
 let fake: FakeResourceServer;
+
+function holdNextPermissionWrite() {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => (markEntered = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const statuses: number[] = [];
+    let held = false;
+    server.current = {
+        fetch: async (path: string, init?: RequestInit) => {
+            if (path !== "/api/resources/pluginPermissions/main" || init?.method !== "PUT") {
+                return fake.fetch(path, init);
+            }
+            if (!held) {
+                held = true;
+                markEntered();
+                await released;
+            }
+            const response = await fake.fetch(path, init);
+            statuses.push(response.status);
+            return response;
+        },
+    };
+    return { entered, release, statuses };
+}
 
 beforeEach(async () => {
     fake = new FakeResourceServer();
@@ -50,7 +85,124 @@ describe("loading", () => {
     });
 });
 
+describe("seedPluginPermissions", () => {
+    it("filters boot grants and uses the boot revision for the first write without a conflict read", async () => {
+        const revision = fake.set("pluginPermissions", "main", {
+            grants: { boot: true, denied: false, junk: "yes" },
+            lastGrantTime: { boot_lastGrantTime: 42, junk: "42" },
+        });
+        const snapshot = await client.readKinds(["pluginPermissions"]);
+        const record = snapshot.kinds.pluginPermissions.find(({ id }) => id === "main")!;
+        fake.requests.length = 0;
+
+        seedPluginPermissions(record);
+        expect(hasPermissionGrant("boot")).toBe(true);
+        expect(hasPermissionGrant("denied")).toBe(false);
+        expect(hasPermissionGrant("junk")).toBe(false);
+        expect(getLastGrantTime("boot_lastGrantTime")).toBe(42);
+        expect(getLastGrantTime("junk")).toBeUndefined();
+
+        await recordPermissionGrants({ grants: ["new"] });
+        expect(fake.requests).toEqual([
+            {
+                method: "PUT",
+                path: "/api/resources/pluginPermissions/main",
+                body: {
+                    baseRevision: revision,
+                    data: { grants: { boot: true, new: true }, lastGrantTime: { boot_lastGrantTime: 42 } },
+                },
+            },
+        ]);
+        expect(hasPermissionGrant("new")).toBe(true);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { boot: true, new: true },
+            lastGrantTime: { boot_lastGrantTime: 42 },
+        });
+    });
+
+    it("seeds an absent record empty and creates the first grant at a null base", async () => {
+        const revision = fake.set("pluginPermissions", "main", {
+            grants: { previous: true },
+            lastGrantTime: { previous_lastGrantTime: 42 },
+        });
+        seedPluginPermissions({ id: "main", revision, data: fake.data("pluginPermissions", "main") });
+        expect(hasPermissionGrant("previous")).toBe(true);
+        fake.delete("pluginPermissions", "main");
+        fake.requests.length = 0;
+
+        seedPluginPermissions(undefined);
+        expect(hasPermissionGrant("previous")).toBe(false);
+        expect(getLastGrantTime("previous_lastGrantTime")).toBeUndefined();
+        await recordPermissionGrants({ grants: ["first"] });
+        expect(fake.requests).toEqual([
+            {
+                method: "PUT",
+                path: "/api/resources/pluginPermissions/main",
+                body: { baseRevision: null, data: { grants: { first: true }, lastGrantTime: {} } },
+            },
+        ]);
+        expect(fake.data("pluginPermissions", "main")).toEqual({ grants: { first: true }, lastGrantTime: {} });
+        expect(hasPermissionGrant("first")).toBe(true);
+    });
+});
+
 describe("recordPermissionGrants", () => {
+    it("drops revoked renewals after a conflict while merging unrelated new grants", async () => {
+        await recordPermissionGrants({ grants: ["hash-foo_db"], lastGrantTime: { foo_db_lastGrantTime: 10 } });
+        const held = holdNextPermissionWrite();
+        const renewing = recordPermissionGrants({
+            grants: ["hash-foo_db", "hash-other_inlay"],
+            lastGrantTime: { foo_db_lastGrantTime: 20, other_inlay_lastGrantTime: 30 },
+        });
+        await held.entered;
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 1 } });
+        held.release();
+        await renewing;
+
+        expect(held.statuses).toEqual([409, 200]);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { "hash-other_inlay": true },
+            lastGrantTime: { other_inlay_lastGrantTime: 30 },
+            resets: { foo: 1 },
+        });
+        expect(hasPermissionGrant("hash-foo_db")).toBe(false);
+        expect(getLastGrantTime("foo_db_lastGrantTime")).toBeUndefined();
+    });
+
+    it("skips consent invalidated while queued behind a reset and allows a fresh grant afterward", async () => {
+        await recordPermissionGrants({ grants: ["hash-foo_db"], lastGrantTime: { foo_db_lastGrantTime: 10 } });
+        const held = holdNextPermissionWrite();
+        const resetting = revokePermissionGrants(
+            (key) => key.startsWith("hash-foo_"),
+            (key) => key === "foo_db_lastGrantTime",
+            "foo",
+        );
+        await held.entered;
+        let isCurrent = true;
+        const staleConsent = recordPermissionGrants(
+            { grants: ["hash-foo_inlay"], lastGrantTime: { foo_inlay_lastGrantTime: 20 } },
+            () => isCurrent,
+        );
+        isCurrent = false;
+        held.release();
+        await Promise.all([resetting, staleConsent]);
+
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: {},
+            lastGrantTime: {},
+            resets: { foo: 1 },
+        });
+        await recordPermissionGrants(
+            { grants: ["hash-foo_db"], lastGrantTime: { foo_db_lastGrantTime: 30 } },
+            () => true,
+        );
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { "hash-foo_db": true },
+            lastGrantTime: { foo_db_lastGrantTime: 30 },
+            resets: { foo: 1 },
+        });
+    });
+
     it("creates the record with the first grant and appends later ones", async () => {
         await recordPermissionGrants({ grants: ["hash_db"], lastGrantTime: { p_db_lastGrantTime: 10 } });
         expect(fake.data("pluginPermissions", "main")).toEqual({
@@ -121,8 +273,236 @@ describe("recordPermissionGrants", () => {
     });
 });
 
+describe("revokePermissionGrants", () => {
+    const mine = (key: string) => key.startsWith("hash-foo_");
+    const myTime = (key: string) => key === "foo_db_lastGrantTime";
+    const writes = () => fake.requests.filter(({ method }) => method === "PUT");
+
+    it("reads unseen grants before matching and writes nothing when no keys match", async () => {
+        await revokePermissionGrants(mine, myTime);
+        expect(fake.get("pluginPermissions", "main")).toBeNull();
+        expect(writes()).toEqual([]);
+
+        fake.set("pluginPermissions", "main", {
+            grants: { "hash-foo_db": true, "hash-other_db": true },
+            lastGrantTime: { foo_db_lastGrantTime: 10, foo_bar_db_lastGrantTime: 20 },
+        });
+        expect(hasPermissionGrant("hash-foo_db")).toBe(false);
+        await revokePermissionGrants(mine, myTime);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { "hash-other_db": true },
+            lastGrantTime: { foo_bar_db_lastGrantTime: 20 },
+        });
+        expect(writes()).toHaveLength(1);
+
+        await revokePermissionGrants(mine, myTime);
+        expect(writes()).toHaveLength(1);
+    });
+
+    it("reapplies selectors after four revision conflicts and preserves concurrent grants of another plugin", async () => {
+        const timeKeys = new Set([
+            "foo_db_lastGrantTime",
+            "foo_inlay_lastGrantTime",
+            "foo_provider_lastGrantTime",
+            "foo_sendChat_lastGrantTime",
+            "foo_mainDom_lastGrantTime",
+        ]);
+        fake.set("pluginPermissions", "main", {
+            grants: { "hash-foo_db": true, "hash-other_db": true },
+            lastGrantTime: { foo_db_lastGrantTime: 10, foo_bar_db_lastGrantTime: 20 },
+        });
+        await loadPluginPermissions();
+        const statuses: number[] = [];
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                if (init?.method !== "PUT") return fake.fetch(path, init);
+                if (statuses.length < 4) {
+                    const permission = ["inlay", "provider", "sendChat", "mainDom"][statuses.length];
+                    const current = fake.data("pluginPermissions", "main");
+                    fake.set("pluginPermissions", "main", {
+                        grants: {
+                            ...current.grants,
+                            [`hash-foo_${permission}`]: true,
+                            [`hash-other_${permission}`]: true,
+                        },
+                        lastGrantTime: {
+                            ...current.lastGrantTime,
+                            [`foo_${permission}_lastGrantTime`]: 30,
+                            [`foo_bar_${permission}_lastGrantTime`]: 40,
+                        },
+                    });
+                }
+                const response = await fake.fetch(path, init);
+                statuses.push(response.status);
+                return response;
+            },
+        };
+
+        await revokePermissionGrants(mine, (key) => timeKeys.has(key));
+
+        expect(statuses).toEqual([409, 409, 409, 409, 200]);
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: {
+                "hash-other_db": true,
+                "hash-other_inlay": true,
+                "hash-other_provider": true,
+                "hash-other_sendChat": true,
+                "hash-other_mainDom": true,
+            },
+            lastGrantTime: {
+                foo_bar_db_lastGrantTime: 20,
+                foo_bar_inlay_lastGrantTime: 40,
+                foo_bar_provider_lastGrantTime: 40,
+                foo_bar_sendChat_lastGrantTime: 40,
+                foo_bar_mainDom_lastGrantTime: 40,
+            },
+        });
+    });
+
+    it("stops after five conflicting writes without overwriting the server record", async () => {
+        const stored = { grants: { "hash-foo_db": true, "hash-other_db": true }, lastGrantTime: {} };
+        fake.set("pluginPermissions", "main", stored);
+        server.current = {
+            fetch: (path: string, init?: RequestInit) => {
+                if (init?.method === "PUT") fake.set("pluginPermissions", "main", stored);
+                return fake.fetch(path, init);
+            },
+        };
+
+        await expect(revokePermissionGrants(mine, myTime)).rejects.toThrow();
+        expect(writes()).toHaveLength(5);
+        expect(fake.data("pluginPermissions", "main")).toEqual(stored);
+    });
+});
+
 // Live updates: another tab's or device's grant reaches this tab as a feed notice with the
 // committed revision. The fake's revisions are real tokens here, since the refresh compares them.
+describe("setStandingPermissionGrants", () => {
+    it("adds standing grants, removes the unchosen ones with their times, and counts a reset in one write", async () => {
+        fake.set("pluginPermissions", "main", {
+            grants: { h_db: true, h_mainDom: true, other_db: true },
+            lastGrantTime: { foo_db_lastGrantTime: 5, foo_mainDom_lastGrantTime: 6 },
+            standing: { h_mainDom: true },
+        });
+        const removals: [string[], string[]][] = [];
+        const off = onPermissionGrantsRemoved((keys, resets) => removals.push([[...keys], [...resets]]));
+        const puts = vi.spyOn(client, "putResource");
+
+        await setStandingPermissionGrants(
+            "foo",
+            ["h_db", "h_provider"],
+            (key) => key === "h_mainDom",
+            (key) => key === "foo_mainDom_lastGrantTime",
+            0,
+        );
+        off();
+
+        expect(puts).toHaveBeenCalledTimes(1);
+        puts.mockRestore();
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { h_db: true, h_provider: true, other_db: true },
+            lastGrantTime: { foo_db_lastGrantTime: 5 },
+            resets: { foo: 1 },
+            standing: { h_db: true, h_provider: true },
+        });
+        expect(hasStandingGrant("h_db")).toBe(true);
+        expect(hasStandingGrant("h_mainDom")).toBe(false);
+        expect(hasStandingGrant("other_db")).toBe(false);
+        // Loading the record reported nothing; the write reported the removed grant and the reset.
+        expect(removals).toEqual([[["h_mainDom"], ["foo"]]]);
+    });
+
+    it("counts a reset even when the list did not change", async () => {
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 2 } });
+        await loadPluginPermissions();
+        expect(getPermissionResetCount("foo")).toBe(2);
+        expect(getPermissionResetCount("constructor")).toBe(0);
+        await setStandingPermissionGrants(
+            "foo",
+            [],
+            () => false,
+            () => false,
+            2,
+        );
+        expect(fake.data("pluginPermissions", "main").resets).toEqual({ foo: 3 });
+    });
+
+    it("refuses a list opened before a reset of its plugin, seen on the fresh read or on a conflict", async () => {
+        // Another tab's reset this tab has not heard of yet: the write's fresh read finds it.
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 1 } });
+        await expect(
+            setStandingPermissionGrants(
+                "foo",
+                ["h_db"],
+                () => false,
+                () => false,
+                0,
+            ),
+        ).rejects.toBeInstanceOf(StalePermissionListError);
+
+        // The reset lands while this tab's write is on its way: the conflict read finds it.
+        const hold = holdNextPermissionWrite();
+        const saving = setStandingPermissionGrants(
+            "foo",
+            ["h_db"],
+            () => false,
+            () => false,
+            1,
+        );
+        await hold.entered;
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 2 } });
+        hold.release();
+        await expect(saving).rejects.toBeInstanceOf(StalePermissionListError);
+        expect(hold.statuses).toEqual([409]);
+        server.current = fake;
+        expect(fake.data("pluginPermissions", "main")).toEqual({ grants: {}, lastGrantTime: {}, resets: { foo: 2 } });
+
+        // Another plugin's reset and an unrelated consent do not make the list stale.
+        fake.set("pluginPermissions", "main", {
+            grants: { other_db: true },
+            lastGrantTime: {},
+            resets: { foo: 2, bar: 7 },
+        });
+        await setStandingPermissionGrants(
+            "foo",
+            ["h_db"],
+            () => false,
+            () => false,
+            2,
+        );
+        expect(fake.data("pluginPermissions", "main")).toMatchObject({
+            grants: { other_db: true, h_db: true },
+            resets: { foo: 3, bar: 7 },
+        });
+    });
+
+    it("keeps a standing mark through a later consent write and drops it when its grant is revoked", async () => {
+        await setStandingPermissionGrants(
+            "foo",
+            ["h_db"],
+            () => false,
+            () => false,
+            0,
+        );
+        await recordPermissionGrants({ grants: ["h_inlay"] });
+        expect(fake.data("pluginPermissions", "main").standing).toEqual({ h_db: true });
+
+        await revokePermissionGrants(
+            (key) => key === "h_db",
+            () => false,
+        );
+        expect(fake.data("pluginPermissions", "main")).toMatchObject({ grants: { h_inlay: true }, standing: {} });
+        expect(hasStandingGrant("h_db")).toBe(false);
+    });
+
+    it("ignores a standing mark that has no grant", async () => {
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, standing: { h_db: true } });
+        await loadPluginPermissions();
+        expect(hasStandingGrant("h_db")).toBe(false);
+        expect(hasPermissionGrant("h_db")).toBe(false);
+    });
+});
+
 describe("refreshPluginPermissions", () => {
     const EPOCH = "00000000-0000-4000-8000-000000000002";
     let counter = 0;
@@ -192,6 +572,72 @@ describe("refreshPluginPermissions", () => {
         await refreshing;
         expect(hasPermissionGrant("two")).toBe(true);
         server.current = fake;
+    });
+
+    it("releases queued grants and revocations 30 seconds after sign-in and ignores a late refresh", async () => {
+        vi.useFakeTimers();
+        fake.set("pluginPermissions", "main", { grants: { older: true }, lastGrantTime: {} });
+        await loadPluginPermissions();
+        fake.requests.length = 0;
+        let finishSignIn!: () => void;
+        const signedIn = new Promise<void>((resolve) => (finishSignIn = resolve));
+        vi.mocked(ensureAuth).mockReturnValueOnce(signedIn);
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => (release = resolve));
+        let held = false;
+        let signal: AbortSignal | null | undefined;
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                if (!held && path === "/api/resources/pluginPermissions/main" && (init?.method ?? "GET") === "GET") {
+                    held = true;
+                    await signedIn;
+                    signal = init?.signal;
+                    const older = await fake.fetch(path, init);
+                    await released;
+                    return older;
+                }
+                return fake.fetch(path, init);
+            },
+        };
+        let failure: unknown;
+        const refresh = refreshPluginPermissions(null).catch((error: unknown) => {
+            failure = error;
+        });
+        const grant = recordPermissionGrants({ grants: ["newer"] });
+        const revoke = revokePermissionGrants(
+            (key) => key === "older",
+            () => false,
+        );
+        const queued = Promise.allSettled([refresh, grant, revoke]);
+        try {
+            await vi.advanceTimersByTimeAsync(30_001);
+            expect(fake.requests).toHaveLength(0);
+            expect(failure).toBeUndefined();
+            finishSignIn();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(reads()).toBe(1);
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(failure).toBeUndefined();
+            expect(fake.data("pluginPermissions", "main").grants).toEqual({ older: true });
+            expect(signal?.aborted).not.toBe(true);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(failure).toMatchObject({ message: "The plugin permission refresh timed out" });
+            expect(signal?.aborted).toBe(true);
+            await Promise.all([grant, revoke]);
+            expect(fake.data("pluginPermissions", "main").grants).toEqual({ newer: true });
+
+            release();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(hasPermissionGrant("newer")).toBe(true);
+            expect(hasPermissionGrant("older")).toBe(false);
+        } finally {
+            finishSignIn();
+            release();
+            await queued;
+            vi.mocked(ensureAuth).mockReset();
+            vi.useRealTimers();
+        }
     });
 
     it("forgets the grants when the record is gone", async () => {

@@ -1,3 +1,5 @@
+import { textHash } from "./textHash.ts";
+
 /**
  * Chat completion notifications: the text the server builds once, for the tab's `notification`
  * notice and for Web Push alike, and the payload shape the service worker shows.
@@ -13,7 +15,11 @@ export const COMPLETION_NOTIFICATION_TAG = "risuai-chat-completion";
 export const PUSH_KEY_PATH = "/api/push/key";
 /** `PUT { subscription }` registers this browser; `DELETE { endpoint }` removes it. */
 export const PUSH_SUBSCRIPTION_PATH = "/api/push/subscription";
+/** An unchanged push registration is refreshed after this interval on both the client and server. */
+export const PUSH_REGISTRATION_REFRESH_MS = 24 * 60 * 60 * 1000;
+/** Completion title shared by tab notices and push; also the fallback name in the default body. */
 export const COMPLETION_NOTIFICATION_TITLE = "Risuai";
+/** Same-origin icon and badge for both worker and page completion notifications. */
 export const NOTIFICATION_ICON = "/logo_192.png";
 /** `{name}` in the default sentence is cut to this many graphemes (plus `…`). */
 export const MAX_NOTIFICATION_NAME_GRAPHEMES = 20;
@@ -96,26 +102,23 @@ export function chatRoutePath(chaId: string, chatId: string): string {
     return `/chat/${encodeURIComponent(chaId)}/${encodeURIComponent(chatId)}`;
 }
 
-/**
- * A 53-bit string hash (cyrb53) in base 36: at most 11 characters whatever the ids' length, so the tag
- * never counts against the payload budget the way the route does.
- */
-function hash53(text: string): string {
-    let h1 = 0xdeadbeef;
-    let h2 = 0x41c6ce57;
-    for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        h1 = Math.imul(h1 ^ code, 2654435761);
-        h2 = Math.imul(h2 ^ code, 1597334677);
+/** The chat a `chatRoutePath` names, or null for any other path (a query, a hash, or a bad escape included). */
+export function parseChatRoutePath(path: string): { chaId: string; chatId: string } | null {
+    const match = /^\/chat\/([^/?#]+)\/([^/?#]+)$/.exec(path);
+    if (!match) {
+        return null;
     }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+    try {
+        return { chaId: decodeURIComponent(match[1]), chatId: decodeURIComponent(match[2]) };
+    } catch {
+        return null;
+    }
 }
 
 /** The completion notification tag of one chat: `COMPLETION_NOTIFICATION_TAG`, `:`, a hash of the chat. */
 export function completionNotificationTag(chaId: string, chatId: string): string {
-    return `${COMPLETION_NOTIFICATION_TAG}:${hash53(`${chaId}\u0000${chatId}`)}`;
+    // The base-36 hash is at most 11 characters whatever the ids' length, keeping the tag's size bounded.
+    return `${COMPLETION_NOTIFICATION_TAG}:${textHash(`${chaId}\u0000${chatId}`, 36)}`;
 }
 
 /** Whether `tag` is a completion notification's: the bare prefix (older notices) or a chat's tag. */

@@ -17,6 +17,8 @@ vi.mock("./Pages/PluginSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/AdvancedSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/LanguageSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/TranslationSettings.svelte", () => ({ default: () => {} }));
+vi.mock("./Pages/InputHookSettings.svelte", () => ({ default: () => {} }));
+vi.mock("./Pages/RequestInterceptionSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/AccessibilitySettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/PersonaSettings.svelte", () => ({ default: () => {} }));
 vi.mock("./Pages/PromptSettings.svelte", () => ({ default: () => {} }));
@@ -38,7 +40,7 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/parser/transformClient", () => ({ resetTransformEffects: vi.fn() }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn(), globalFetch: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/process/index.svelte", () => ({}));
 vi.mock("src/ts/tokenizer", () => ({
     tokenizeAccurate: vi.fn(async () => 0),

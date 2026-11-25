@@ -6,7 +6,9 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createServerContext, type RouteLimits } from "../app.ts";
-import type { ResourceKind } from "../data/kinds.ts";
+import type { ChatTrashAnswer } from "../../../shared/chats.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
+import { inProcessRestoreRunner, type RestoreRunner } from "../data/restore/validateRunner.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
 import type { MemoryTaskService } from "../../../shared/jobs.ts";
 import type { ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
@@ -28,6 +30,7 @@ export const TEST_INDEX_HTML = '<!doctype html><html lang="en"><head><meta chars
  */
 export type TestServerOptions = {
     password?: string;
+    assetLifecycle?: Parameters<typeof createServerContext>[0]["assetLifecycle"];
     resourceKinds?: readonly ResourceKind[];
     snapshotIntervalMs?: number;
     /**
@@ -50,12 +53,16 @@ export type TestServerOptions = {
     upstreamImport?: { stagedTtlMs?: number; runner?: UpstreamImportRunner };
     /** The upstream RisuAI-compatible export's staged expiry. */
     upstreamExport?: { stagedTtlMs?: number };
+    /** What stages a snapshot restore or a version-2 import (default `testRestoreRunner`). */
+    restore?: { runner?: RestoreRunner };
     /** What schedules a staged Realm import's expiry (a test holds the callback and fires it). */
     realmStagingTimer?: RealmStagingTimer;
     /** The default runner's trigger effect-loop clock (a test freezes or steps the 50 ms yield window). */
     generationEffectClock?: () => number;
     /** An aborted generation job's grace before it is ended for it (default 5 s). */
     generationAbortGraceMs?: number;
+    generationOwnerAbsentMs?: number;
+    generationOwnerSilentMs?: number;
     /** The default runner's HypaV3 separator limits (default 5 s chunking, 1 s per split). */
     generationHypaV3SeparatorLimits?: HypaV3SeparatorLimits;
     /** Lower rate limits and asset batch, backup archive, and CharX entry caps (default the production ones). */
@@ -70,7 +77,13 @@ export type TestServerOptions = {
     memoryTasks?: "disabled" | MemoryTaskService;
     /** The context's own memory task service: `now` and `limits` replace its clock and caps. */
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    remoteCommandOptions?: Parameters<typeof createServerContext>[0]["remoteCommandOptions"];
 };
+
+/** Stages a restore in process, with `resourceKinds` or the defaults: a gate test starts no worker. */
+export function testRestoreRunner(resourceKinds?: readonly ResourceKind[]): RestoreRunner {
+    return inProcessRestoreRunner(createKindRegistry(resourceKinds ?? DEFAULT_RESOURCE_KINDS));
+}
 
 export function createTestServer(options: TestServerOptions = {}) {
     const rootDir = options.rootDir ?? mkdtempSync(path.join(os.tmpdir(), "risu-server-test-"));
@@ -87,6 +100,7 @@ export function createTestServer(options: TestServerOptions = {}) {
     }
     const context = createServerContext({
         rootDir,
+        assetLifecycle: options.assetLifecycle,
         resourceKinds: options.resourceKinds,
         snapshotIntervalMs: options.snapshotIntervalMs,
         scriptWorkerOptions: options.scriptWorkerOptions,
@@ -97,14 +111,18 @@ export function createTestServer(options: TestServerOptions = {}) {
         realm: options.realm,
         upstreamImport: options.upstreamImport,
         upstreamExport: options.upstreamExport,
+        restore: { runner: options.restore?.runner ?? testRestoreRunner(options.resourceKinds) },
         realmStagingTimer: options.realmStagingTimer,
         generationEffectClock: options.generationEffectClock,
         generationAbortGraceMs: options.generationAbortGraceMs,
+        generationOwnerAbsentMs: options.generationOwnerAbsentMs,
+        generationOwnerSilentMs: options.generationOwnerSilentMs,
         generationHypaV3SeparatorLimits: options.generationHypaV3SeparatorLimits,
         routeLimits: options.routeLimits,
         cbsTimeLimits: options.cbsTimeLimits,
         memoryTasks: options.memoryTasks,
         memoryTaskOptions: options.memoryTaskOptions,
+        remoteCommandOptions: options.remoteCommandOptions,
     });
     return {
         rootDir,
@@ -177,6 +195,29 @@ export async function createResourceTestClient(
         batch: (ops: unknown, epoch?: string | null) => client.json("/api/resources/batch", { ops }, {}, epoch),
         readKinds: (kinds: string) => client.request(`/api/resources?kinds=${kinds}`),
         readRefs: (refs: unknown) => client.json("/api/resources/read", { refs }),
+        /** `POST /api/chat-trash/{action}` with the client's epoch. */
+        chatTrash: (action: "trash" | "restore" | "delete", body: unknown, epoch?: string | null) =>
+            client.json(`/api/chat-trash/${action}`, body, {}, epoch),
+        /**
+         * Deletes a chat permanently over HTTP: trash at `revision`, then delete with the token the
+         * trash answered. Throws unless both answer 200; returns both bodies.
+         */
+        async deleteChat(
+            characterId: string,
+            chatId: string,
+            revision: string,
+        ): Promise<{ trashed: ChatTrashAnswer; deleted: ChatTrashAnswer }> {
+            const trash = await client.chatTrash("trash", { characterId, chatId, revision });
+            if (trash.status !== 200) {
+                throw new Error(`trash ${characterId}/${chatId}: ${trash.status} ${await trash.text()}`);
+            }
+            const trashed = (await trash.json()) as ChatTrashAnswer;
+            const remove = await client.chatTrash("delete", { characterId, chatId, revision: trashed.revision });
+            if (remove.status !== 200) {
+                throw new Error(`delete ${characterId}/${chatId}: ${remove.status} ${await remove.text()}`);
+            }
+            return { trashed, deleted: (await remove.json()) as ChatTrashAnswer };
+        },
         /** Creates a record and returns its revision token. */
         async create(kind: string, id: string, data: unknown): Promise<string> {
             const res = await client.put(kind, id, { baseRevision: null, data });

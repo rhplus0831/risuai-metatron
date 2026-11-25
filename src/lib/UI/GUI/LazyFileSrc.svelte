@@ -1,6 +1,12 @@
 <script lang="ts">
     import type { Snippet } from "svelte";
-    import { holdFileSrc } from "src/ts/globalApi.svelte";
+    import { holdFileSrc, recoverDirectAssetElement } from "src/ts/globalApi.svelte";
+
+    /**
+     * A stored file's preview, read through `holdFileSrc` (`src/ts/globalApi.svelte.ts`, which owns the object URL)
+     * once the wrapper first comes within 200px of the viewport (at once without `IntersectionObserver`). The hold
+     * lasts until the path changes or the wrapper unmounts; scrolling away does not release it.
+     */
 
     interface Props {
         /** Held once the wrapper nears the viewport, released when the path changes or it unmounts. */
@@ -59,7 +65,7 @@
     });
 </script>
 
-<div bind:this={anchor} class={className}>
+<div bind:this={anchor} class={className} onerrorcapture={(event) => void recoverDirectAssetElement(event.target)}>
     {#if loaded && loaded.path === path && loaded.src}
         {@render children(loaded.src)}
     {/if}

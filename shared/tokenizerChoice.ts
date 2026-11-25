@@ -2,6 +2,13 @@ import { LLMTokenizer } from "./llm.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
+ * Tokenizer routing, wire-scope validation, and cache identity shared by tab and server callers.
+ * `src/ts/tokenizer.ts` captures the scope; server counters select a family or Google/plugin fallback from these
+ * rules. OpenRouter and reverse-proxy overrides precede catalogue choices, while playground names use a separate
+ * mapping. Identity retains all routing inputs so counts from different model scopes do not share cache entries.
+ */
+
+/**
  * Which tokenizer counts a model's text on the server. The tab captures `tabTokenScope`
  * (`src/ts/tokenizer.ts`) for `/api/tokens/count` and LLM requests; shared routing keeps those
  * choices aligned.
@@ -28,6 +35,7 @@ export type TokenizerFamily =
     | "GLM4"
     | "GLM5";
 
+/** A local tokenizer family or a remote/plugin counting path whose fallback is handled by the counter. */
 export type TokenizerChoice =
     | { kind: "family"; family: TokenizerFamily }
     /** Google's `countTokens` endpoint (`googleClaudeTokenizing`); `gemmaSentencePiece` when it fails. */
@@ -35,6 +43,7 @@ export type TokenizerChoice =
     /** A legacy provider's `custom` tokenizer: `tokenizerFunc` is never called; counts use `cl100k_base`. */
     | { kind: "pluginFunction" };
 
+/** The model and provider settings read by `selectTokenizer`, independent of either runtime's settings store. */
 export type TokenizerSettings = {
     /** The selected preset's `aiModel`. */
     aiModel: string;
@@ -58,6 +67,11 @@ export type TokenizerIdentity = {
     pluginTokenizer: string;
 };
 
+/**
+ * The identity of a tokenizer scope: every field that can change which tokenizer counts, the model's `internalID`
+ * included (Google counts by it). The tab's count cache (`src/ts/tokenizer.ts` `tokenScopeKey`), the server's encode
+ * cache, the strong-ban cache, and the context report's `tokenScope` all key by it.
+ */
 export function tokenizerIdentityKey(scope: TokenizerIdentity): string {
     return JSON.stringify([
         scope.aiModel,
@@ -70,7 +84,10 @@ export function tokenizerIdentityKey(scope: TokenizerIdentity): string {
     ]);
 }
 
-/** The tab's tokenizer scope, sent to the LLM request and token count routes. */
+/**
+ * The tab's tokenizer scope, sent to the LLM request and token count routes: the main model's tokenizer settings,
+ * captured at call time (`src/ts/tokenizer.ts` `tabTokenScope`).
+ */
 export type TabTokenScope = {
     aiModel: string;
     currentPluginProvider: string;
@@ -83,6 +100,7 @@ export type TabTokenScope = {
     useTokenizerCaching: boolean;
 };
 
+/** Checks plain-object scope field types; numeric tokenizer codes and extra properties are not restricted. */
 export function isTabTokenScope(value: unknown): value is TabTokenScope {
     return (
         isPlainObject(value) &&
@@ -97,7 +115,7 @@ export function isTabTokenScope(value: unknown): value is TabTokenScope {
     );
 }
 
-/** The tab's `encodeWithTokenizer` names; unlike model overrides, `llama3` uses its own family. */
+/** The tab's `encodeWithTokenizer` names, including the distinct `llama3` family. */
 export function playgroundFamily(name: string): TokenizerFamily {
     switch (name) {
         case "mistral":
@@ -124,14 +142,14 @@ export function playgroundFamily(name: string): TokenizerFamily {
 
 const family = (name: TokenizerFamily): TokenizerChoice => ({ kind: "family", family: name });
 
-/** A `customTokenizer` or plugin `tokenizer` name; `llama3` counts with the `llama` model. */
+/** Resolves a `customTokenizer` or plugin `tokenizer` name to its matching family. */
 function byName(name: string): TokenizerChoice | null {
     switch (name) {
         case "mistral":
             return family("mistral");
         case "llama":
         case "llama3":
-            return family("llama");
+            return family(name);
         case "novelai":
             return family("novelai");
         case "claude":
@@ -155,6 +173,15 @@ function byName(name: string): TokenizerChoice | null {
     }
 }
 
+/**
+ * Which tokenizer counts a model's text, for the server counter and routes: `openrouter` and `reverse_proxy` by
+ * `customTokenizer` (else `o200k_base`), the legacy plugin `custom` model by its declared tokenizer (`custom` is
+ * `pluginFunction`; an unknown name `o200k_base`), else the catalogue family. `GoogleCloud` is Google's count with
+ * `googleClaudeTokenizing`, else `gemma`; `Llama3`, `Local`, and `Unknown` count with `cl100k_base`. A new
+ * user-pickable name gets a `src/ts/tokenizer.ts` `tokenizerList` row and its `byName` and `playgroundFamily` cases
+ * unless their fallbacks are intended (`tik` relies on them: `o200k_base` as an override, `cl100k_base` in the
+ * playground).
+ */
 export function selectTokenizer(settings: TokenizerSettings): TokenizerChoice {
     if (settings.aiModel === "openrouter" || settings.aiModel === "reverse_proxy") {
         return byName(settings.customTokenizer) ?? family("o200k_base");

@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("src/ts/parser/parser.svelte", () => ({
     ParseMarkdown: vi.fn(async (text: string) => text),
     trimMarkdown: (html: string) => html,
-    addMetadataToElement: (html: string) => html,
     postTranslationParse: async (html: string) => html,
 }));
 vi.mock("src/ts/parser/assetSearch", async (original) => {
@@ -19,7 +18,7 @@ vi.mock("src/ts/translator/translator", () => ({
 }));
 vi.mock("src/ts/parser/transformClient", () => ({ captureTransform: () => null }));
 vi.mock("src/ts/process/modules", () => ({ getModuleAssets: vi.fn(() => []), getModules: () => [] }));
-vi.mock("src/ts/globalApi.svelte", () => ({ getFileSrc: async (path: string) => path }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ sleep: async () => undefined }));
 
@@ -72,7 +71,6 @@ function render(additionalAssets: Asset[]) {
         translated: false,
         translating: false,
         retranslate: false,
-        modelShortName: "",
     });
     mounted.push(mount(ChatBody, { target, props }));
     return { target, props };

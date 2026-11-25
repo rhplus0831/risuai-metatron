@@ -1,13 +1,13 @@
 import type { SettingItem, SettingContext, SettingSection } from "./types";
 import type { LLMModel } from "../model/types";
 import {
-    activeMainProfile,
-    activeModelPreset,
-    activePersona,
-    activePreset,
-    readSettingsRoot,
+    editedMainProfile,
+    editedModelPreset,
+    editedPersona,
+    editedPreset,
+    readEditedRoot,
     settings,
-    writeSettingsRoot,
+    writeEditedRoot,
     type ModelProfileView,
 } from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
@@ -30,19 +30,33 @@ import { memorySettingsItems } from "./memorySettingsData";
 import { modelSettingsItems } from "./modelSettingsData";
 import { promptSettingsItems } from "./promptSettingsData";
 import { voiceSettingsItems } from "./voiceSettingsData";
+import { storageSettingsItems } from "./storageSettingsData";
+import { deviceLinkSettingsItems } from "./deviceLinkSettingsData";
 
-/** The current language's string for a flat key (`language.xxx`), or `""` when it has none. */
-export function languageText(key: string | undefined): string {
-    return (key && (language as any)[key]) || "";
+/** Resolve a flat or dotted language key to a string; missing and non-string values have no label. */
+export function resolveLanguageText(source: unknown, key: string | undefined): string {
+    if (!key) return "";
+    let value = source;
+    for (const segment of key.split(".")) {
+        if (value === null || typeof value !== "object") return "";
+        value = (value as Record<string, unknown>)[segment];
+    }
+    return typeof value === "string" ? value : "";
 }
 
+/** The current language's string for a flat or dotted key, or `""` when it has none. */
+export function languageText(key: string | undefined): string {
+    return resolveLanguageText(language, key);
+}
+
+/** The current language's `labelKey`, then `fallbackLabel`, else an empty label. */
 export function getLabel(item: SettingItem): string {
     return languageText(item.labelKey) || (item.fallbackLabel ?? "");
 }
 
 /**
  * The context the conditions and wrappers read (`SettingRenderer`, `SettingsSections`): the settings
- * views, the selected (or chat-bound) presets and persona, the given model profile or else the main
+ * views, the edited presets and persona, the given model profile or else the edited main
  * slot's, and the model info the caller derived. Call it inside `$derived` so it follows the views.
  */
 export function settingContext(parts: {
@@ -52,46 +66,55 @@ export function settingContext(parts: {
 }): SettingContext {
     return {
         settings,
-        preset: activePreset,
-        modelPreset: activeModelPreset,
-        modelProfile: parts.modelProfile ?? activeMainProfile,
-        persona: activePersona,
+        preset: editedPreset,
+        modelPreset: editedModelPreset,
+        modelProfile: parts.modelProfile ?? editedMainProfile,
+        persona: editedPersona,
         modelInfo: parts.modelInfo,
         subModelInfo: parts.subModelInfo,
     };
 }
 
+/**
+ * Value precedence: `getValue`, then `bindPath`, then `bindKey`. Bindings read their root through
+ * `readEditedRoot` in `src/ts/storage/settingsViews.svelte.ts`.
+ */
 export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
     if (item.getValue) {
         return item.getValue(ctx);
     }
     if (item.bindPath) {
         const [root, ...parts] = item.bindPath.split(".");
-        let value: any = readSettingsRoot(root);
+        let value: any = readEditedRoot(root);
         for (const part of parts) {
             value = value?.[part];
         }
         return value;
     }
     if (item.bindKey) {
-        return readSettingsRoot(item.bindKey);
+        return readEditedRoot(item.bindKey);
     }
     return undefined;
 }
 
+/**
+ * Write through `setValue`, else `bindPath`, else `bindKey`, then call `onChange`. Bindings use
+ * `src/ts/storage/settingsViews.svelte.ts`'s root readers/writers; dotted paths create missing objects
+ * and mutate the resolved root's leaf. Unlike `updateSettingValue`, this does not skip equal values.
+ */
 export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingContext): void {
     if (item.setValue) {
         item.setValue(newValue, ctx);
     } else if (item.bindPath) {
         const [root, ...parts] = item.bindPath.split(".");
         if (parts.length === 0) {
-            writeSettingsRoot(root, newValue);
+            writeEditedRoot(root, newValue);
         } else {
-            let obj: any = readSettingsRoot(root);
+            let obj: any = readEditedRoot(root);
             if (obj === undefined || obj === null) {
                 obj = {};
-                writeSettingsRoot(root, obj);
-                obj = readSettingsRoot(root);
+                writeEditedRoot(root, obj);
+                obj = readEditedRoot(root);
             }
             for (let i = 0; i < parts.length - 1; i++) {
                 obj = obj[parts[i]] ??= {};
@@ -99,7 +122,7 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
             obj[parts[parts.length - 1]] = newValue;
         }
     } else if (item.bindKey) {
-        writeSettingsRoot(item.bindKey, newValue);
+        writeEditedRoot(item.bindKey, newValue);
     }
 
     if (item.onChange) {
@@ -132,6 +155,10 @@ export function sectionHasVisibleItems(section: SettingSection, ctx: SettingCont
     return section.items.some((item) => checkCondition(item, ctx));
 }
 
+/**
+ * Every page's leaf arrays, including Language and Translation, each item once. The optional
+ * label/keyword filter has no UI caller; `src/ts/setting/searchIndex.ts` searches the unfiltered catalog.
+ */
 export function getFullSettingsData(searchTerm = "") {
     const full = accessibilitySettingsItems.concat(
         advancedSettingsItems,
@@ -150,6 +177,8 @@ export function getFullSettingsData(searchTerm = "") {
         memorySettingsItems,
         voiceSettingsItems,
         interactionSettingsItems,
+        storageSettingsItems,
+        deviceLinkSettingsItems,
     );
 
     if (!searchTerm) return full;

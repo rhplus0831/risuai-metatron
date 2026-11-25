@@ -1,5 +1,11 @@
 <script lang="ts">
     import { language } from "src/lang";
+
+    /**
+     * The notice `src/main.ts` mounts in place of the app when the injected server flag (`isNodeServer`) is false
+     * (static hosting, a bare `vite build` output). It is English only (`language.nodeServerRequiredTitle`/`Desc`):
+     * `changeLanguage` runs only after the database loads, which never happens on this path.
+     */
 </script>
 
 <div

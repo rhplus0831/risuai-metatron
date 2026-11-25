@@ -1,6 +1,6 @@
 import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
-import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
+import { getChatVarOf } from "../parser/chatVar.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
 import { tokenize } from "../tokenizer";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
@@ -29,6 +29,15 @@ import { chatStatusKey, generatingChatKeys } from "./chatStatus.svelte";
 import { isLocalSend } from "./localSends";
 
 /**
+ * Provides the tab host for `shared/lore/activation.ts` and lore editor/import/export helpers. Activation pins its
+ * captured chat and supplies its ref to variables, CBS, and module lookup; token counts use its display ids. The
+ * calculator in `src/ts/process/infunctions.ts` still reads the selected chat. Replacing the owner's chats invalidates
+ * the run. Local lore writes replace the whole array and are fenced by local sends, followed jobs, and locks to avoid
+ * overwriting job-written entries. Global lore edits are not fenced. Imports capture their destination before the file
+ * dialog.
+ */
+
+/**
  * Whether a send of this tab or a job this tab knows of runs in `ref`'s chat: the fence of
  * `localLoreDraft.svelte.ts`. A local lore write sends the whole array as this tab holds it, so one
  * written while the job runs would drop the entries its Lua `upsertLocalLoreBook` writes.
@@ -51,6 +60,11 @@ function appendLocalLore(entries: loreBook[]) {
     setChatMeta(ref, { localLore: [...$state.snapshot(chat.localLore ?? []), ...entries] });
 }
 
+/**
+ * Adds an empty entry: `type` 0 to the selected character's `globalLore`, written in place and not
+ * fenced by a running job; 1 to the selected chat's local lore (`appendLocalLore`, refused during a job
+ * there); any other value adds nothing.
+ */
 export function addLorebook(type: number) {
     const char = selectedCharacter();
     if (type === 0) {
@@ -80,6 +94,7 @@ export function addLorebook(type: number) {
     }
 }
 
+/** `addLorebook` for a folder entry, keyed `\uf000folder:` and a fresh uuid. */
 export function addLorebookFolder(type: number) {
     const char = selectedCharacter();
     const id = v4();
@@ -112,7 +127,7 @@ export function addLorebookFolder(type: number) {
 
 /**
  * The active lore of `chatRef`'s chat (default: the selected character's selected chat): the
- * shared activation (`shared/lore/activation.ts`) with the client's state.
+ * shared activation (`shared/lore/activation.ts`) with the client's state and detached preview flags.
  */
 export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
     const ref = chatRef ?? currentChatRef();
@@ -144,6 +159,8 @@ async function activatePinnedLore(ref: ChatRef | null) {
             throw new Error("The chat changed during the lore activation");
         }
     };
+    // Lore inspections must not consume entries before a real server send can activate them.
+    const previewVars = new Map<string, string>();
     const result = await activateLore(
         {
             character: char,
@@ -158,11 +175,11 @@ async function activatePinnedLore(ref: ChatRef | null) {
             findCharacterName: (id) => findCharacterbyId(id)?.name,
             getChatVar: (key) => {
                 same();
-                return getChatVarOf(ref, key);
+                return previewVars.get(key) ?? getChatVarOf(ref, key);
             },
             setChatVar: (key, value) => {
                 same();
-                return setChatVarOf(ref, key, value);
+                previewVars.set(key, value);
             },
             pickHashRand,
             parseCBS: (text) => {
@@ -177,6 +194,13 @@ async function activatePinnedLore(ref: ChatRef | null) {
     return result;
 }
 
+/**
+ * Imports a lorebook file (a Risu export, or another format's `entries` through
+ * `convertExternalLorebook`) into the selected character's lore (`"global"`, its `globalLore`, entries
+ * upgraded by `upgradeLorebook`) or the selected chat's (`"local"`, its `localLore`, refused with
+ * `chatGenerating` during a job there). Those are the only modes: the settings-level lorebook pages
+ * (`Database.loreBook`) have none here or in `exportLoreBook`.
+ */
 export async function importLoreBook(mode: "global" | "local") {
     const chaId = selectedCharacter()?.chaId;
     // The chat (for local lore) is captured before the file dialog, so a chat switch cannot redirect
@@ -184,7 +208,11 @@ export async function importLoreBook(mode: "global" | "local") {
     const chatTarget = mode === "local" ? currentChatRef() : null;
     const chatOwner = chatTarget ? chatOwnerToken(chatTarget.chaId) : null;
     const lore: loreBook[] = [];
-    const lorebook = (await selectSingleFile(["json", "lorebook"])).data;
+    const file = await selectSingleFile(["json", "lorebook"]);
+    if (!file) {
+        return;
+    }
+    const lorebook = file.data;
     if (!lorebook) {
         return;
     }
@@ -225,6 +253,7 @@ export async function importLoreBook(mode: "global" | "local") {
     }
 }
 
+/** Accepted external lore entry fields and alternate names used during conversion. */
 export interface CCLorebook {
     key: string[];
     comment: string;
@@ -248,6 +277,7 @@ export interface CCLorebook {
     };
 }
 
+/** Converts external entry aliases to normal lore entries; absent fields use empty strings, zero, or false. */
 export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) {
     let lore: loreBook[] = [];
     for (const key in entries) {
@@ -272,6 +302,11 @@ export function convertExternalLorebook(entries: { [key: string]: CCLorebook }) 
     return lore;
 }
 
+/**
+ * Downloads the selected character's lore (`"global"`) or the selected chat's local lore (`"local"`)
+ * as a Risu export (`lorebook_export.json`). A local export of a chat that is not loaded yet refuses
+ * with `localLoreExportNotLoaded`.
+ */
 export async function exportLoreBook(mode: "global" | "local") {
     try {
         let lore: unknown;

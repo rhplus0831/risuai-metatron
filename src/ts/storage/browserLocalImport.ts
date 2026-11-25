@@ -21,7 +21,9 @@ import {
     verifyInlay,
     type InlayAsset,
 } from "../process/files/inlays";
+import { readWithDeadline } from "./readDeadline";
 import { getResource, ResourceEpochMismatchError } from "./resourceClient";
+import { waitForResourceFlush } from "./resourceFlushWait";
 import { flushResources } from "./resourceSync.svelte";
 
 /**
@@ -30,11 +32,15 @@ import { flushResources } from "./resourceSync.svelte";
  * Google search credentials. Per entry: when the server already holds it, the server copy wins;
  * otherwise the entry is written, read back from the server and compared, and only then deleted
  * locally. A local entry is deleted only when it still holds the value that was imported (another
- * tab may have changed it meanwhile). Anything that fails stays in the browser for the next boot.
+ * tab may have changed it meanwhile). Plugin storage and settings wait up to 30 seconds each for
+ * saves and verification reads, leaving the local entries for the next boot if either times out. Permission
+ * grants merge only once per browser; later boots only clean up leftovers so revoked grants stay revoked.
  * A restore meanwhile (412) stops the import.
  */
 
 const LOCAL_PREFIX = "safe_plugin_";
+const PERMISSIONS_IMPORTED_KEY = "risu_legacy_plugin_permissions_imported";
+const VERIFICATION_READ_DEADLINE_MS = 30_000;
 
 function store(name: string, storeName: string) {
     return localforage.createInstance({ name, storeName });
@@ -107,7 +113,9 @@ const importedFieldSection = {
 } as const;
 
 async function readServerField<K extends keyof typeof importedFieldSection>(field: K): Promise<unknown> {
-    const record = await getResource<Partial<Database>>(importedFieldSection[field], SINGLETON_RESOURCE_ID);
+    const record = await readWithDeadline(VERIFICATION_READ_DEADLINE_MS, "Import verification timed out", (signal) =>
+        getResource<Partial<Database>>(importedFieldSection[field], SINGLETON_RESOURCE_ID, { signal }),
+    );
     return record?.data?.[field];
 }
 
@@ -159,8 +167,10 @@ async function importSafeLocalPluginStorage() {
     if (moved.length === 0) {
         return;
     }
-    await flushResources();
-    const server = await getResource<Record<string, unknown>>(RESOURCE_KIND.pluginStorage, SINGLETON_RESOURCE_ID);
+    await waitForResourceFlush(flushResources());
+    const server = await readWithDeadline(VERIFICATION_READ_DEADLINE_MS, "Import verification timed out", (signal) =>
+        getResource<Record<string, unknown>>(RESOURCE_KIND.pluginStorage, SINGLETON_RESOURCE_ID, { signal }),
+    );
     const saved = (server?.data?.[SAFE_LOCAL_PLUGIN_STORAGE_KEY] ?? {}) as Record<string, unknown>;
     for (const [localKey, key, value] of moved) {
         // Present on the server (ours, or the server's own value that won) → the local copy can go.
@@ -170,10 +180,17 @@ async function importSafeLocalPluginStorage() {
     }
 }
 
+/** Imports grants once; a durable device marker prevents leftover legacy entries restoring revocations. */
 async function importPermissions() {
     const legacy = store("plugin_permissions", "plugin_permissions");
     const list = await entries(legacy);
     if (list.length === 0) {
+        return;
+    }
+    if (localStorage.getItem(PERMISSIONS_IMPORTED_KEY)) {
+        for (const [key, value] of list) {
+            await removeIfUnchanged(legacy, key, value);
+        }
         return;
     }
     const grants: string[] = [];
@@ -187,6 +204,7 @@ async function importPermissions() {
     }
     await recordPermissionGrants({ grants, lastGrantTime });
     await loadPluginPermissions();
+    localStorage.setItem(PERMISSIONS_IMPORTED_KEY, "1");
     for (const [key, value] of list) {
         const kept =
             key.endsWith("_lastGrantTime") && typeof value === "number"
@@ -215,7 +233,7 @@ async function importSectionField<K extends keyof typeof importedFieldSection>(
     }
     if (readSettingsRoot(field) === undefined) {
         writeSettingsRoot(field, JSON.parse(JSON.stringify(value)));
-        await flushResources();
+        await waitForResourceFlush(flushResources());
     }
     if ((await readServerField(field)) !== undefined) {
         await removeIfUnchanged(legacy, legacyKey, value);
@@ -241,7 +259,10 @@ function isGoogleCredentials(value: unknown): value is NonNullable<Database["goo
     );
 }
 
-/** Runs every import step; one failing step does not stop the others (except a restore). */
+/**
+ * Runs every import step; one failing step does not stop the others (except a restore). Boot
+ * (`src/ts/bootstrap.ts`) awaits it before loading plugins, so a plugin reads its moved values.
+ */
 export async function importBrowserLocalData() {
     const steps: [string, () => Promise<void>][] = [
         ["inlays", importInlays],

@@ -20,11 +20,20 @@ import BanCharacterSetSettings from "src/lib/Setting/Pages/Advanced/BanCharacter
 import CustomModelsSettings from "src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte";
 import SettingsExportButtons from "src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte";
 import DiagnosticsPanel from "src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte";
+import StorageOverview from "src/lib/Setting/Pages/Storage/StorageOverview.svelte";
+import StorageCleanup from "src/lib/Setting/Pages/Storage/StorageCleanup.svelte";
+import StorageSnapshots from "src/lib/Setting/Pages/Storage/StorageSnapshots.svelte";
+import StorageOwners from "src/lib/Setting/Pages/Storage/StorageOwners.svelte";
+import StorageDetails from "src/lib/Setting/Pages/Storage/StorageDetails.svelte";
 import ColorSchemeSelect from "src/lib/Setting/Pages/Display/ColorSchemeSelect.svelte";
 import CustomColorSchemeEditor from "src/lib/Setting/Pages/Display/CustomColorSchemeEditor.svelte";
 import CustomTextThemeEditor from "src/lib/Setting/Pages/Display/CustomTextThemeEditor.svelte";
 import CustomBackgroundToggle from "src/lib/Setting/Pages/Display/CustomBackgroundToggle.svelte";
 import NullableTextColorToggle from "src/lib/Setting/Pages/Display/NullableTextColorToggle.svelte";
+import DeviceNameInput from "src/lib/Setting/Pages/Device/DeviceNameInput.svelte";
+import HostModeButton from "src/lib/Setting/Pages/Device/HostModeButton.svelte";
+import HandoffToggles from "src/lib/Setting/Pages/Device/HandoffToggles.svelte";
+import RemoteHostControls from "src/lib/Setting/Pages/Device/RemoteHostControls.svelte";
 import NotificationToggle from "src/lib/Setting/Pages/Display/NotificationToggle.svelte";
 
 /**
@@ -37,12 +46,21 @@ export const customComponents: Record<string, Component<any>> = {
     CustomModelsSettings: CustomModelsSettings,
     SettingsExportButtons: SettingsExportButtons,
     DiagnosticsPanel: DiagnosticsPanel,
+    StorageOverview,
+    StorageCleanup,
+    StorageSnapshots,
+    StorageOwners,
+    StorageDetails,
     ColorSchemeSelect: ColorSchemeSelect,
     CustomColorSchemeEditor: CustomColorSchemeEditor,
     CustomTextThemeEditor: CustomTextThemeEditor,
     CustomBackgroundToggle: CustomBackgroundToggle,
     NullableTextColorToggle: NullableTextColorToggle,
     NotificationToggle: NotificationToggle,
+    DeviceNameInput,
+    HostModeButton,
+    HandoffToggles,
+    RemoteHostControls,
     // Add more as we migrate complex settings
 } as const;
 

@@ -5,6 +5,7 @@ import { lucideImports } from "./vitest.lucideImports.ts";
 
 // Every Vitest run loads this file once in the main process, so this gate covers `pnpm test` and a
 // direct `vitest` alike: without CI, HUMAN, or AGENT_TEST it prints the notice and exits.
+// The Vitest VS Code extension loads this config too, so that editor needs HUMAN in its environment.
 requireHuman("vitest");
 
 export default defineConfig({
@@ -20,6 +21,11 @@ export default defineConfig({
     test: {
         environment: "happy-dom",
         setupFiles: ["vitest.setup.ts"],
+        // happy-dom 21 turns iframe page loading off by default (its SSRF hardening). The network
+        // guard in `vitest.setup.ts` already refuses every non-loopback load, and the plugin sandbox
+        // appends its iframe before setting `srcdoc`, which off would log a NotSupportedError per
+        // plugin boot and leave the frame without a window.
+        environmentOptions: { happyDOM: { settings: { enableIframePageLoading: true } } },
         // Playwright specs (`pnpm test:e2e`) match Vitest's default `*.spec.ts` include. Claude Code
         // worktrees under `.claude/worktrees/` are full checkouts of other branches.
         exclude: [...configDefaults.exclude, "e2e/**", ".claude/**"],
@@ -28,7 +34,7 @@ export default defineConfig({
         testTimeout: 60_000,
         hookTimeout: 60_000,
         // `pnpm test` leaves out the `slow` tests (`--tags-filter=!slow`); `pnpm test:slow` runs only
-        // them and `pnpm test:all` everything. See `docs/structure/build-test-platforms.md`.
+        // them and `pnpm test:all` everything. See `docs/structure/test-harness.md`.
         tags: [
             {
                 name: "slow",

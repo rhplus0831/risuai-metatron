@@ -1,6 +1,9 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from "svelte";
+import { readFileSync } from "node:fs";
+import { LLMFormat, LLMTokenizer } from "../../../../shared/llm.ts";
+import { selectTokenizer } from "../../../../shared/tokenizerChoice.ts";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The Chat Bot page is split into the Model page (`ModelSettings.svelte`, the selected model
@@ -17,7 +20,7 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn(), globalFetch: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/tokenizer", () => ({
     tokenizeAccurate: vi.fn(async () => 0),
     tokenizerList: [["tik", "Tiktoken"]],
@@ -25,20 +28,38 @@ vi.mock("src/ts/tokenizer", () => ({
 vi.mock("src/ts/process/prompt", () => ({ tokenizePreset: vi.fn(async () => 0) }));
 
 import { get } from "svelte/store";
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
+import * as modelRegistry from "src/ts/model/modellist";
+import * as auxRequests from "src/ts/network/auxFetch";
+import * as hordeModels from "src/ts/horde/getModels";
+import { customV3ProviderMetaStore } from "src/ts/plugins/apiV3/v3.svelte";
+import { setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
+import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { alertConfirm } from "src/ts/alert";
 import { deleteModelProfile, translatorPresetsUsingModelProfile } from "src/ts/storage/collectionStore.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
-import { settings, activePreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
+import { settings, activePreset, activeMainProfile, editedPreset } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import BotPreset from "../botpreset.svelte";
+import { chatBindingIds } from "src/ts/storage/chatBinding.svelte";
+import { selectChat } from "src/ts/storage/chatStore.svelte";
+import { applyRaw } from "src/ts/storage/records.svelte";
+import {
+    selectCharacter,
+    selection,
+    selectModelPreset,
+    selectPreset,
+    setChatOpen,
+} from "src/ts/storage/selection.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
+    closePopupEditorSession,
     MODEL_PROFILES_SETTINGS_MENU,
     MODEL_SETTINGS_MENU,
     openModelPresetList,
     openPresetList,
+    popUpEditorStore,
     SettingsMenuIndex,
     settingsOpen,
 } from "src/ts/stores.svelte";
@@ -48,6 +69,15 @@ import PromptPresetSettings from "./PromptPresetSettings.svelte";
 import CustomModelsSettings from "./Advanced/CustomModelsSettings.svelte";
 
 const mounted: ReturnType<typeof mount>[] = [];
+const catalogueLength = modelRegistry.LLMModels.length;
+
+function button(page: HTMLElement, label: string) {
+    const found = [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+        (entry) => entry.textContent?.trim() === label,
+    );
+    expect(found, `button ${label}`).toBeDefined();
+    return found!;
+}
 
 function render(
     component:
@@ -66,10 +96,13 @@ function chooseOption(element: HTMLSelectElement, value: string) {
     const querySelector = element.querySelector.bind(element);
     (element as { querySelector: unknown }).querySelector = (selector: string) =>
         selector === ":checked" ? (element.options[element.selectedIndex] ?? null) : querySelector(selector);
-    element.dispatchEvent(new Event("change"));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 beforeEach(() => {
+    changeLanguage("en");
+    setMaskedSecrets(maskLlmSecrets({}), "all");
+    vi.spyOn(hordeModels, "getHordeModels").mockResolvedValue([]);
     installFlatDatabase({
         characters: [],
         customModels: [],
@@ -98,7 +131,11 @@ afterEach(() => {
         unmount(instance);
     }
     document.body.innerHTML = "";
+    modelRegistry.LLMModels.splice(catalogueLength);
+    customV3ProviderMetaStore.length = 0;
     vi.clearAllMocks();
+    vi.restoreAllMocks();
+    changeLanguage("en");
 });
 
 describe("the Model page", () => {
@@ -149,6 +186,156 @@ describe("the Model page", () => {
 });
 
 describe("the Connections tab", () => {
+    it("discovers through the edited profile and refreshes a provider list that was opened before discovery finished", async () => {
+        settings.modelProfiles[1].modelId = "claude-opus-5";
+        settings.modelProfiles[1].credentialId = "named";
+        settings.providers.dynamicModelRegistry = true;
+        let answer!: (response: Response) => void;
+        const pending = new Promise<Response>((resolve) => {
+            answer = resolve;
+        });
+        const aux = vi.spyOn(auxRequests, "auxFetch").mockReturnValueOnce(pending);
+        const discovery = vi.spyOn(modelRegistry, "registerModelDynamic");
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+
+        button(page, modelRegistry.getModelInfo("claude-opus-5").fullName!).click();
+        flushSync();
+        expect(discovery).toHaveBeenCalledExactlyOnceWith("spare");
+        expect(aux).toHaveBeenCalledExactlyOnceWith(
+            "anthropic-models",
+            "https://api.anthropic.com/v1/models",
+            expect.objectContaining({ profileId: "spare" }),
+        );
+        button(page, "Anthropic").click();
+        flushSync();
+        expect(page.textContent).not.toContain("Connection Private Model");
+
+        answer(
+            Response.json({ data: [{ id: "claude-connection-private", display_name: "Connection Private Model" }] }),
+        );
+        await discovery.mock.results[0].value;
+        await tick();
+        button(page, "Connection Private Model").click();
+        flushSync();
+        expect(settings.modelProfiles[1].modelId).toBe("dynamic_anthropic_claude-connection-private");
+        expect(settings.modelProfiles[0].modelId).toBe("echo_model");
+        expect(settings.modelPresets[0].mainSlot).toEqual({ profileId: "echo" });
+    });
+
+    it("discovers again with the current profile after switching connections or changing its binding", async () => {
+        settings.modelProfiles.forEach((profile) => {
+            profile.modelId = "claude-opus-5";
+        });
+        settings.providers.dynamicModelRegistry = true;
+        const aux = vi.spyOn(auxRequests, "auxFetch");
+        const discovery = vi.spyOn(modelRegistry, "registerModelDynamic");
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        const page = render(ModelProfilesSettings);
+        for (const [index, profileId, credentialId] of [
+            [0, "spare", "first"],
+            [1, "echo", "second"],
+            [2, "echo", "replacement"],
+        ] as const) {
+            const profile = settings.modelProfiles.find((entry) => entry.id === profileId)!;
+            profile.credentialId = credentialId;
+            page.querySelector<HTMLElement>(`[data-profile-id=${profileId}]`)!.click();
+            flushSync();
+            const name = `Private models for ${credentialId}`;
+            aux.mockResolvedValueOnce(Response.json({ data: [{ id: `claude-reopen-${index}`, display_name: name }] }));
+            button(page, modelRegistry.getModelInfo(profile.modelId).fullName!).click();
+            flushSync();
+            expect(aux).toHaveBeenCalledTimes(index + 1);
+            expect(aux).toHaveBeenLastCalledWith(
+                "anthropic-models",
+                expect.any(String),
+                expect.objectContaining({ profileId }),
+            );
+            await discovery.mock.results[index].value;
+            await tick();
+            button(page, "Anthropic").click();
+            flushSync();
+            expect(button(page, name)).toBeDefined();
+            page.querySelector<HTMLButtonElement>('button[title="Back"]')!.click();
+            flushSync();
+        }
+    });
+
+    it.each([
+        [
+            "en",
+            "retired-vendor-model",
+            "This model ID is not in the current model list. It will be sent as-is to an OpenAI-compatible endpoint until you choose another model.",
+        ],
+        [
+            "ko",
+            "intentional-private-model",
+            "이 모델 ID는 현재 모델 목록에 없습니다. 다른 모델을 선택할 때까지 OpenAI 호환 엔드포인트로 ID를 그대로 전송합니다.",
+        ],
+    ])(
+        "shows the %s fallback notice without rewriting the stored id and removes it after a model pick",
+        async (locale, modelId, notice) => {
+            changeLanguage(locale);
+            settings.modelProfiles[1].modelId = modelId;
+            const before = settings.modelProfiles.map(({ id, modelId }) => ({ id, modelId }));
+            const page = render(ModelProfilesSettings);
+            page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+            flushSync();
+            expect(page.textContent).toContain(notice);
+            expect(settings.modelProfiles.map(({ id, modelId }) => ({ id, modelId }))).toEqual(before);
+
+            button(page, modelId).click();
+            flushSync();
+            button(page, "OpenAI").click();
+            flushSync();
+            button(page, "GPT 5.5").click();
+            await tick();
+            expect(settings.modelProfiles[1].modelId).toBe("gpt-5.5");
+            expect(page.textContent).not.toContain(notice);
+            expect(settings.modelProfiles[0].modelId).toBe("echo_model");
+        },
+    );
+
+    it("clears the fallback notice for recognized custom endpoints, plugins, and dynamic ids", () => {
+        settings.customModels = [
+            {
+                id: "xcustom:::private",
+                name: "Private",
+                internalId: "wire-private",
+                url: "https://private.example",
+                params: "",
+                format: LLMFormat.OpenAICompatible,
+                tokenizer: LLMTokenizer.Unknown,
+                flags: [],
+            },
+        ];
+        customV3ProviderMetaStore.push({
+            ...modelRegistry.getModelInfo("reverse_proxy"),
+            id: "pluginmodel:::private",
+            name: "Private plugin",
+            format: LLMFormat.Plugin,
+        });
+        settings.modelProfiles[1].modelId = "retired-vendor-model";
+        const page = render(ModelProfilesSettings);
+        page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
+        flushSync();
+        expect(page.textContent).toContain(language.modelProfiles.unresolvedModelNotice);
+
+        for (const modelId of [
+            "reverse_proxy",
+            "xcustom:::private",
+            "pluginmodel:::private",
+            "dynamic_anthropic_claude-private",
+        ]) {
+            settings.modelProfiles[1].modelId = modelId;
+            flushSync();
+            expect(page.textContent, modelId).not.toContain(language.modelProfiles.unresolvedModelNotice);
+            expect(settings.modelProfiles[1].modelId).toBe(modelId);
+        }
+    });
+
     it("offers flags 25, 26, and 27 and stores their numbers on the edited profile", () => {
         const page = render(ModelProfilesSettings);
         page.querySelector<HTMLElement>("[data-profile-id=spare]")!.click();
@@ -269,7 +456,50 @@ describe("the Connections tab", () => {
 });
 
 describe("custom model definitions", () => {
-    it("offers flags 25, 26, and 27 and stores their numbers on the custom model", () => {
+    it("offers every supported format and tokenizer and persists newly exposed numeric codes", () => {
+        settings.customModels = [
+            {
+                id: "xcustom:::test",
+                name: "Definition",
+                internalId: "test",
+                url: "",
+                format: 0,
+                tokenizer: 1,
+                params: "",
+                flags: [],
+            },
+        ];
+        const page = render(CustomModelsSettings);
+        for (const label of [language.customModels, "Definition"]) {
+            [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === label)!.click();
+            flushSync();
+        }
+        const [tokenizer, format] = [...page.querySelectorAll("select")];
+        expect([...format.options].map((option) => Number(option.value))).toEqual(Object.values(LLMFormat));
+        expect([...tokenizer.options].map((option) => Number(option.value))).toEqual(Object.values(LLMTokenizer));
+        // The UI's persisted discriminator must have a dispatch branch, including local/plugin dispatch.
+        const dispatch = readFileSync("server/src/llm/request.ts", "utf8");
+        for (const [name] of Object.entries(LLMFormat)) expect(dispatch).toContain(`case LLMFormat.${name}:`);
+        for (const code of [10, 12, 15, 16, 19, 20, 21, 22, 23]) {
+            chooseOption(format, String(code));
+            flushSync();
+            expect(settings.customModels[0].format).toBe(code);
+        }
+        chooseOption(tokenizer, "12");
+        flushSync();
+        expect(settings.customModels[0].tokenizer).toBe(12);
+        expect(
+            selectTokenizer({
+                aiModel: "xcustom:::test",
+                modelTokenizer: settings.customModels[0].tokenizer,
+                customTokenizer: "tik",
+                pluginTokenizer: "none",
+                googleClaudeTokenizing: false,
+            }),
+        ).toEqual({ kind: "family", family: "cl100k_base" });
+    });
+
+    it("offers flags 11, 25, 26, and 27 and stores their numbers on the custom model", () => {
         settings.customModels = [
             {
                 id: "xcustom:::claude",
@@ -292,6 +522,7 @@ describe("custom model definitions", () => {
             flushSync();
         }
         const flags = [
+            ["poolSupported", 11],
             ["noStructuredOutput", 25],
             ["geminiThinkingNoMinimal", 26],
             ["claudeThinkingOnByDefault", 27],
@@ -309,6 +540,24 @@ describe("custom model definitions", () => {
 });
 
 describe("the Prompt page", () => {
+    it("initializes text to an empty string when a persona item is switched to chatML through the type select", () => {
+        activePreset.promptTemplate = [{ type: "persona" }];
+        const page = render(PromptPresetSettings);
+        [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === language.prompt)!.click();
+        flushSync();
+        [...page.querySelectorAll<HTMLElement>('[draggable="true"]')]
+            .find((header) => header.textContent?.trim() === language.formating.personaPrompt)!
+            .click();
+        flushSync();
+        const typeSelect = [...page.querySelectorAll("select")].find((select) =>
+            [...select.options].some((option) => option.value === "chatML"),
+        )!;
+        expect(typeSelect.value).toBe("persona");
+        chooseOption(typeSelect, "chatML");
+        flushSync();
+        expect(activePreset.promptTemplate[0]).toMatchObject({ type: "chatML", text: "" });
+    });
+
     it("names the selected prompt preset, opens the prompt list, and shows no model selector", () => {
         const page = render(PromptPresetSettings);
         expect(page.querySelector("h2")?.textContent).toBe("Prompt");
@@ -324,4 +573,209 @@ describe("the Prompt page", () => {
         expect(get(openModelPresetList)).toBe(false);
         expect(activePreset.id).toBe("p1");
     });
+
+    it("a field's popup writes the tab's preset it opened on, not the open chat's; a selection change while it is open discards it, even between presets with the same text", async () => {
+        vi.useFakeTimers();
+        const previousPopup = { ...popUpEditorStore };
+        try {
+            installFlatDatabaseWithChats({
+                characters: [
+                    {
+                        chaId: "c",
+                        type: "character",
+                        name: "C",
+                        chats: [{ id: "chat", name: "chat", message: [], localLore: [], promptPresetId: "bound" }],
+                    },
+                ],
+                botPresets: [
+                    { id: "bound", name: "Bound", moduleIntergration: "" },
+                    { id: "tab", name: "Tab", moduleIntergration: "" },
+                ],
+                useLegacyGUI: false,
+            } as any);
+            selectPreset("tab");
+            selectCharacter("c");
+            selectChat("c", "chat");
+            setChatOpen(true);
+            // The open chat runs with its `bound`; the page edits the tab's `tab`.
+            expect(activePreset.id).toBe("bound");
+            expect(editedPreset.id).toBe("tab");
+            const page = render(PromptPresetSettings);
+            const button = (name: string) =>
+                [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === name)!;
+            button(language.others).click();
+            flushSync();
+            button(language.moduleIntergration).click();
+            flushSync();
+            const openPopup = () => {
+                const area = [...page.querySelectorAll("textarea")].find((area) =>
+                    area.closest("div.relative")?.querySelector("button"),
+                )!;
+                area.parentElement!.querySelector("button")!.click();
+                flushSync();
+                expect(popUpEditorStore).toMatchObject({ open: true, value: "" });
+            };
+            const closePopupWith = async (text: string) => {
+                popUpEditorStore.value = text;
+                closePopupEditorSession(popUpEditorStore.sessionId);
+                await vi.advanceTimersByTimeAsync(100);
+                flushSync();
+                await vi.advanceTimersByTimeAsync(0);
+                flushSync();
+            };
+            const moduleIntegrations = () => settings.presets.map((preset) => [preset.id, preset.moduleIntergration]);
+
+            // The tab's preset is shown; the tab's selection moves to `bound` while its popup is open,
+            // and `bound` (also "") is shown next, so the bound value alone would not notice.
+            openPopup();
+            popUpEditorStore.value = "typed for the tab preset";
+            selectPreset("bound");
+            flushSync();
+            expect(editedPreset.id).toBe("bound");
+            await closePopupWith("typed for the tab preset");
+            expect(moduleIntegrations()).toEqual([
+                ["bound", ""],
+                ["tab", ""],
+            ]);
+
+            // Without a change the popup writes the shown preset (the tab's, while the open chat still
+            // binds `bound`), also across a refresh of the preset list (another client renamed it) that
+            // keeps its id.
+            selectPreset("tab");
+            flushSync();
+            expect(activePreset.id).toBe("bound");
+            openPopup();
+            const refreshed = JSON.parse(JSON.stringify(settings.presets));
+            refreshed[1].name = "Tab, renamed";
+            applyRaw("presets", refreshed);
+            flushSync();
+            await vi.advanceTimersByTimeAsync(100);
+            flushSync();
+            expect(popUpEditorStore.open).toBe(true);
+            await closePopupWith("typed for the tab preset");
+            expect(moduleIntegrations()).toEqual([
+                ["bound", ""],
+                ["tab", "typed for the tab preset"],
+            ]);
+        } finally {
+            popUpEditorStore.open = false;
+            await vi.advanceTimersByTimeAsync(100);
+            Object.assign(popUpEditorStore, previousPopup);
+            vi.useRealTimers();
+        }
+    });
+});
+
+describe("settings lists with a bound chat open", () => {
+    afterEach(() => selectCharacter(null));
+
+    it.each(["prompt", "model"] as const)(
+        "a %s settings pick selects for the page and its edits; an explicit chat list binds without selecting",
+        (kind) => {
+            installFlatDatabaseWithChats({
+                characters: [
+                    {
+                        chaId: "c",
+                        type: "character",
+                        name: "C",
+                        chats: [
+                            {
+                                id: "chat",
+                                name: "Chat",
+                                message: [],
+                                localLore: [],
+                                promptPresetId: "p1",
+                                modelPresetId: "m1",
+                            },
+                        ],
+                    },
+                ],
+                botPresets: [
+                    { id: "p1", name: "Prompt One", temperature: 80, maxResponse: 300 },
+                    { id: "p2", name: "Prompt Two", temperature: 50, maxResponse: 600 },
+                ],
+                modelPresets: [
+                    normalizeModelPreset({
+                        id: "m1",
+                        name: "Model One",
+                        mainSlot: { profileId: "echo" },
+                        subSlot: { profileId: "echo" },
+                    }),
+                    normalizeModelPreset({
+                        id: "m2",
+                        name: "Model Two",
+                        mainSlot: { profileId: "spare" },
+                        subSlot: { profileId: "spare" },
+                    }),
+                ],
+                modelProfiles: [
+                    normalizeModelProfile({ id: "echo", name: "Echo", modelId: "echo_model" }),
+                    normalizeModelProfile({ id: "spare", name: "Spare", modelId: "echo_model" }),
+                ],
+                useLegacyGUI: false,
+            });
+            const ref = { chaId: "c", chatId: "chat" };
+            selectPreset("p1");
+            selectModelPreset("m1");
+            selectCharacter("c");
+            selectChat("c", "chat");
+            const bindingBefore = chatBindingIds(ref);
+            const boundBefore = JSON.stringify([settings.presets[0], settings.modelPresets[0]]);
+            const isPrompt = kind === "prompt";
+            const field = isPrompt ? "promptPresetId" : "modelPresetId";
+            const selectionKey = isPrompt ? "presetId" : "modelPresetId";
+            const page = render(isPrompt ? PromptPresetSettings : ModelSettings);
+            page.querySelector<HTMLElement>(".lucide-list")!.closest("button")!.click();
+            expect(get(isPrompt ? openPresetList : openModelPresetList)).toBe(true);
+
+            const list = document.createElement("div");
+            document.body.append(list);
+            mounted.push(mount(BotPreset, { target: list, props: { kind } }));
+            flushSync();
+            expect(list.textContent).not.toContain("For this chat");
+            const pickSecond = (target: HTMLElement) => {
+                const label = [...target.querySelectorAll("span")].find(
+                    (span) => span.textContent?.trim() === (isPrompt ? "Prompt Two" : "Model Two"),
+                );
+                expect(label, "the second preset's list row").toBeDefined();
+                label!.closest("button")!.click();
+            };
+            pickSecond(list);
+            flushSync();
+            expect(selection[selectionKey]).toBe(isPrompt ? "p2" : "m2");
+            expect(chatBindingIds(ref)).toEqual(bindingBefore);
+            expect(page.textContent).toContain(isPrompt ? "Prompt Two" : "Model Two");
+            expect(page.textContent).not.toContain("Not this chat's");
+            if (isPrompt) {
+                const input = [...page.querySelectorAll<HTMLInputElement>("input[type=number]")].find(
+                    (input) => input.value === "600",
+                )!;
+                expect(input).toBeDefined();
+                input.value = "777";
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                flushSync();
+                expect(settings.presets[1].maxResponse).toBe(777);
+            } else {
+                const main = page.querySelector<HTMLSelectElement>("[data-model-slot=model] select")!;
+                expect(main.value).toBe("profile:spare");
+                chooseOption(main, "profile:echo");
+                flushSync();
+                expect(settings.modelPresets[1].mainSlot).toEqual({ profileId: "echo" });
+            }
+            expect(JSON.stringify([settings.presets[0], settings.modelPresets[0]])).toBe(boundBefore);
+
+            // A new list with an explicit chat target has the opposite ownership: bind, leave the tab.
+            selectPreset("p1");
+            selectModelPreset("m1");
+            const chatList = document.createElement("div");
+            document.body.append(chatList);
+            mounted.push(mount(BotPreset, { target: chatList, props: { kind, chatRef: ref } }));
+            flushSync();
+            expect(chatList.textContent).toContain("For this chat: Chat");
+            pickSecond(chatList);
+            flushSync();
+            expect(chatBindingIds(ref)).toEqual({ ...bindingBefore, [field]: isPrompt ? "p2" : "m2" });
+            expect([selection.presetId, selection.modelPresetId]).toEqual(["p1", "m1"]);
+        },
+    );
 });

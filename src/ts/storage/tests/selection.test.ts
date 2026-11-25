@@ -162,6 +162,23 @@ describe("loadSelection", () => {
 });
 
 describe("selectPreset, selectModelPreset, selectPersona, and selectLoreBookPage", () => {
+    it("preserves nonnegative integer lorebook pages and persists 0 for negative, fractional, or NaN pages", () => {
+        for (const [page, expected] of [
+            [3, 3],
+            [0, 0],
+            [-1, 0],
+            [1.5, 0],
+            [NaN, 0],
+        ] as const) {
+            selectLoreBookPage(7);
+            selectLoreBookPage(page);
+
+            expect(selection.loreBookPage, String(page)).toBe(expected);
+            expect(stored(sessionStorage).loreBookPage, String(page)).toBe(expected);
+            expect(stored(localStorage).loreBookPage, String(page)).toBe(expected);
+        }
+    });
+
     it("write the whole selection to both storages on every change, and nothing for an unchanged value", () => {
         selectPreset("p1");
         expect(stored(sessionStorage)).toEqual({ presetId: "p1", modelPresetId: "", personaId: "", loreBookPage: 0 });

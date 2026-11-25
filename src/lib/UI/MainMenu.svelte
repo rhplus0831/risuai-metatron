@@ -1,10 +1,11 @@
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { characterList } from "src/ts/storage/characterStore.svelte";
-    import { chatList } from "src/ts/storage/chatStore.svelte";
+    import { activeChatList } from "src/ts/storage/chatStore.svelte";
     import {
         chatStatusKey,
-        generatingChatKeys,
+        generatingBadgeKeys,
+        memoryHealthStates,
         recoveryChatKeys,
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
@@ -12,31 +13,69 @@
     import { refusedItems } from "src/ts/storage/resourceSync.svelte";
     import Hub from "./Realm/RealmMain.svelte";
     import { gridOpenStore, OpenRealmStore } from "src/ts/stores.svelte";
-    import { ArrowLeft, ChevronRightIcon, Globe2Icon, PinIcon, UsersIcon } from "@lucide/svelte";
-    import { getVersionString, openPinnedChat } from "src/ts/globalApi.svelte";
+    import {
+        ArrowLeft,
+        ChevronRightIcon,
+        Globe2Icon,
+        ImportIcon,
+        LayoutGridIcon,
+        MonitorSmartphoneIcon,
+        PinIcon,
+        UsersIcon,
+    } from "@lucide/svelte";
+    import { getVersionString, openPinnedChat, recoverDirectAssetElement } from "src/ts/globalApi.svelte";
+    import { buildId, buildInfo } from "src/ts/buildInfo";
+    import { alertNormal } from "src/ts/alert";
     import { language } from "src/lang";
-    import { changeChar, getCharImage } from "src/ts/characters";
+    import { changeChar, getCharImage, importCharacterAndSelect } from "src/ts/characters";
     import { onMount } from "svelte";
+    import { hostMode } from "src/ts/network/remoteHost";
     import Title from "./Title.svelte";
     import { collectHomeRecentCharacters } from "./mainMenuProjection";
     import { collectPinnedChats, HOME_PINNED_CHAT_COLLAPSED_LIMIT } from "../SideBars/pinnedChats";
     import ChatStatusBadge from "../SideBars/ChatStatusBadge.svelte";
     import { chatStatusLabel, refusedChatKeys, resolveChatStatus, type ChatStatus } from "../SideBars/chatStatus";
 
+    /**
+     * The home screen: `src/lib/ChatScreens/DefaultChatScreen.svelte` shows it with no selected character and
+     * `PlaygroundStore` 0. It fetches nothing from Realm itself.
+     *
+     * - Pinned chats share their projection (`collectPinnedChats`, `src/lib/SideBars/pinnedChats.ts`) and their status
+     *   resolution (`resolveChatStatus`, `ChatStatusBadge`) with the sidebar rail; the status is in a card's accessible
+     *   name and hover title. A card opens through `openPinnedChat` (`src/ts/globalApi.svelte.ts`), which selects the
+     *   chat before its character, so the character's previous chat is not loaded first.
+     * - Recent characters come from `collectHomeRecentCharacters` (`src/lib/UI/mainMenuProjection.ts`).
+     * - The More section always shows. `OpenRealmStore` swaps the whole screen, logo included, for `RealmMain`; the
+     *   card that sets it is hidden under `settings.ui.hideRealm`. The import card opens the card file picker directly
+     *   (`importCharacterAndSelect`, `src/ts/characters.ts`), not the add dialog. The remote host card turns on `hostMode`
+     *   (`src/ts/network/remoteHost.ts`), whose lock screen then covers the app and holds the control that leaves it.
+     */
+
+    const compatVersion = getVersionString();
+
+    // The full commit goes with the copy, so a bug report names the exact build.
+    async function copyVersion() {
+        const commit = buildInfo.commit ? ` (${buildInfo.commit})` : "";
+        await navigator.clipboard.writeText(`Metatron ${buildId}${commit}, RisuAI ${compatVersion}`);
+        alertNormal(language.clipboardSuccess);
+    }
+
     const agoFormatter = new Intl.RelativeTimeFormat(navigator.languages, { style: "short" });
 
     let relativeTimeNow = $state(Date.now());
     let showAllPinnedChats = $state(false);
     const pinnedChats = $derived(
-        collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
+        collectPinnedChats(characterList(), settings.characterOrder, activeChatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
+    const healthStates = $derived(memoryHealthStates());
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         refused: refusedChatKeys(refusedItems()),
-        generating: generatingChatKeys(),
+        generating: generatingBadgeKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,
+        health: healthStates,
     });
     const pinnedStatuses = $derived.by(() => {
         const statuses = new Map<string, ChatStatus>();
@@ -68,10 +107,40 @@
     });
 </script>
 
+{#snippet moreCard(card: string, Icon: typeof Globe2Icon, title: string, description: string, onclick: () => void)}
+    <button
+        type="button"
+        class="group flex w-full items-center gap-4 rounded-xl border border-darkborderc bg-darkbg px-5 py-4 text-left shadow-sm transition-colors hover:border-green-500 hover:bg-selected focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-green-500"
+        data-risu-home-card={card}
+        {onclick}
+    >
+        <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-selected text-textcolor">
+            <Icon size={22} aria-hidden="true" />
+        </span>
+        <span class="min-w-0 grow">
+            <span class="block text-lg font-bold">{title}</span>
+            <span class="mt-0.5 block text-sm text-textcolor2">{description}</span>
+        </span>
+        <ChevronRightIcon
+            size={20}
+            class="shrink-0 text-textcolor2 transition-transform group-hover:translate-x-0.5"
+            aria-hidden="true"
+        />
+    </button>
+{/snippet}
+
 <div class="h-full w-full flex flex-col overflow-y-auto items-center">
     {#if !$OpenRealmStore}
         <Title />
-        <h3 class="text-textcolor2 mt-1">Version {getVersionString()}</h3>
+        <button
+            type="button"
+            class="mt-1 flex flex-col items-center text-textcolor2 hover:text-textcolor"
+            title={language.versionCopy}
+            onclick={copyVersion}
+        >
+            <span class="text-lg font-bold">{language.versionLabel.replace("{{build}}", buildId)}</span>
+            <span class="text-xs">{language.versionBasedOn.replace("{{version}}", compatVersion)}</span>
+        </button>
     {/if}
     <div class="w-full flex p-4 pb-8 flex-col text-textcolor max-w-4xl">
         {#if !$OpenRealmStore}
@@ -89,7 +158,11 @@
                             {@const status = pinnedStatuses.get(chatStatusKey(item))}
                             {@const statusCount =
                                 status === "memory" ? (summarizing.get(chatStatusKey(item)) ?? null) : null}
-                            {@const statusLabel = status ? chatStatusLabel(status, item.chatName, statusCount) : ""}
+                            {@const statusHealth =
+                                status === "health" ? (healthStates.get(chatStatusKey(item)) ?? null) : null}
+                            {@const statusLabel = status
+                                ? chatStatusLabel(status, item.chatName, statusCount, statusHealth)
+                                : ""}
                             {@const label =
                                 language.openPinnedChat(item.chatName, item.characterName) +
                                 (status ? ` · ${statusLabel}` : "")}
@@ -110,6 +183,7 @@
                                         ></span>
                                     {:then imageSource}
                                         <img
+                                            onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                                             src={imageSource || "/none.webp"}
                                             alt=""
                                             class="h-full w-full rounded-lg object-cover object-top"
@@ -117,7 +191,12 @@
                                         />
                                     {/await}
                                     {#if status}
-                                        <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
+                                        <ChatStatusBadge
+                                            {status}
+                                            label={statusLabel}
+                                            count={statusCount}
+                                            health={statusHealth}
+                                        />
                                     {/if}
                                 </span>
                                 <span class="min-w-0">
@@ -186,6 +265,7 @@
                                     ></span>
                                 {:then imageSource}
                                     <img
+                                        onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                                         src={imageSource || "/none.webp"}
                                         alt=""
                                         class="h-11 w-11 shrink-0 rounded-lg object-cover object-top"
@@ -208,36 +288,37 @@
                 {/if}
             </section>
 
-            {#if !settings.ui.hideRealm}
-                <section class="mt-7" aria-labelledby="home-explore-title" data-risu-home-section="explore">
-                    <div class="mb-3 flex items-center gap-2">
-                        <Globe2Icon size={18} aria-hidden="true" />
-                        <h2 id="home-explore-title" class="text-lg font-bold">{language.homeExplore}</h2>
-                    </div>
-                    <button
-                        type="button"
-                        class="group flex w-full items-center gap-4 rounded-xl border border-darkborderc bg-darkbg px-5 py-4 text-left shadow-sm transition-colors hover:border-green-500 hover:bg-selected focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-green-500"
-                        onclick={() => ($OpenRealmStore = true)}
-                    >
-                        <span
-                            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-selected text-textcolor"
-                        >
-                            <Globe2Icon size={22} aria-hidden="true" />
-                        </span>
-                        <span class="min-w-0 grow">
-                            <span class="block text-lg font-bold">{language.openRisuRealm}</span>
-                            <span class="mt-0.5 block text-sm text-textcolor2"
-                                >{language.homeExploreRealmDescription}</span
-                            >
-                        </span>
-                        <ChevronRightIcon
-                            size={20}
-                            class="shrink-0 text-textcolor2 transition-transform group-hover:translate-x-0.5"
-                            aria-hidden="true"
-                        />
-                    </button>
-                </section>
-            {/if}
+            <section class="mt-7" aria-labelledby="home-more-title" data-risu-home-section="more">
+                <div class="mb-3 flex items-center gap-2">
+                    <LayoutGridIcon size={18} aria-hidden="true" />
+                    <h2 id="home-more-title" class="text-lg font-bold">{language.homeMore}</h2>
+                </div>
+                <div class="flex flex-col gap-3">
+                    {#if !settings.ui.hideRealm}
+                        {@render moreCard(
+                            "realm",
+                            Globe2Icon,
+                            language.openRisuRealm,
+                            language.homeExploreRealmDescription,
+                            () => ($OpenRealmStore = true),
+                        )}
+                    {/if}
+                    {@render moreCard(
+                        "import-character",
+                        ImportIcon,
+                        language.importCharacter,
+                        language.homeImportCharacterDescription,
+                        () => void importCharacterAndSelect(),
+                    )}
+                    {@render moreCard(
+                        "remote-host",
+                        MonitorSmartphoneIcon,
+                        language.serverJob.remoteHost.start,
+                        language.serverJob.remoteHost.startDescription,
+                        () => hostMode.set(true),
+                    )}
+                </div>
+            </section>
         {:else}
             <div class="flex items-center mt-4">
                 <button

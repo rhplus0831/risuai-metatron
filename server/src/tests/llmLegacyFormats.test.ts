@@ -11,7 +11,7 @@ import { createLlmRequests, type LlmRequestsOptions, type RequestObserver } from
 
 // The recorded provider bodies of the formats whose client functions lived in
 // `src/ts/process/request/request.ts` itself (NovelAI, Kobold, Cohere, NovelList, Horde, Echo) and
-// so have no client module left to run beside the port (`serverParity.test.ts` covers the others).
+// so have no client module left to run beside the port (the former `serverParity.test.ts` covered the others).
 // The expectations are the bodies the client built at `250c0f96`, from the same settings; a change
 // in `server/src/llm/request.ts` or in the settings the port reads shows here.
 
@@ -229,6 +229,22 @@ describe("the legacy formats on the server", () => {
             k: 3,
         });
         await registry.dispose();
+    });
+
+    it("NovelList: appends the character cue for a new turn and only the quote when continuing", async () => {
+        const { registry, calls } = harness({ aiModel: "novellist" }, {}, () => json({ data: ["こんにちは」"] }));
+        try {
+            await run(registry, body({ continue: false }));
+            expect(calls).toHaveLength(1);
+            expect((calls[0].body as { text: string }).text).toMatch(/\n\nCara 「$/);
+
+            await run(registry, body({ continue: true }));
+            expect(calls).toHaveLength(2);
+            expect((calls[1].body as { text: string }).text).toMatch(/ 「$/);
+            expect((calls[1].body as { text: string }).text).not.toMatch(/\n\nCara 「$/);
+        } finally {
+            await registry.dispose();
+        }
     });
 
     it("NovelList: the AIN-formatted text and a multiline answer", async () => {

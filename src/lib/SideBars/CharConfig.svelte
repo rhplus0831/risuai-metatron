@@ -1,5 +1,8 @@
 <script lang="ts">
+    import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { memoryEditorWriteFence } from "src/ts/storage/chatFieldDraft.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
@@ -10,6 +13,8 @@
     import { onDestroy, untrack } from "svelte";
     import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
     import { CharConfigSubMenu, hypaV3ModalOpen } from "../../ts/stores.svelte";
+    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+    import { VOICEVOX_CONFIG_DEFAULTS } from "../../../shared/characters.ts";
     import {
         PlusIcon,
         SmileIcon,
@@ -52,6 +57,7 @@
     } from "../../ts/util";
     import Help from "../Others/Help.svelte";
     import { exportChar } from "src/ts/characterCards";
+    import { globalFetch } from "src/ts/globalApi.svelte";
     import {
         getElevenTTSVoices,
         getWebSpeechTTSVoices,
@@ -81,8 +87,47 @@
     import Toggles from "./Toggles.svelte";
     import { convertCharacterToModule } from "src/ts/interchangeability";
 
+    /**
+     * The character and group editor of the selected character, its tabs picked by `CharConfigSubMenu`. A
+     * `private`-licensed card hides its card fields and the other tabs (the `licensed` guards);
+     * `customNotificationMessage` (a character's or group's completion text for Web Push) sits outside those guards,
+     * since it is local and never in a card.
+     *
+     * The additional assets and the emotion image table page by `ASSET_LIST_PAGE`, reset per character; only the
+     * assets have a search. A rename writes nothing once its index is past the list's end. The asset pickers save the
+     * picked `File`s with `savePickedFiles` (`src/ts/storage/assetQueue.ts`) and, once all are saved, append every row
+     * in one write to the list as it then is; a failed save alerts and adds none. `addCharEmotion`
+     * (`src/ts/characters.ts`), `src/lib/Setting/Pages/Module/ModuleMenu.svelte`, and
+     * `src/lib/ChatScreens/AssetInput.svelte` add assets the same way.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
+
+    function currentMemoryFence() {
+        const ref = currentChatRef();
+        return ref ? memoryEditorWriteFence(ref) : null;
+    }
+
+    function setSupaMemoryData(supaMemoryData: string) {
+        if (!currentMemoryFence()) setCurrentChatMeta({ supaMemoryData });
+    }
+
+    function setVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS, value: number) {
+        if (Number.isFinite(value)) currentCharacter.voicevoxConfig[key] = value;
+    }
+
+    function resetNonFiniteVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS, value: number) {
+        if (!Number.isFinite(value)) {
+            currentCharacter.voicevoxConfig[key] = VOICEVOX_CONFIG_DEFAULTS[key];
+        }
+    }
+
+    // Popup editors of chat fields belong to the chat they opened on.
+    const chatContext = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? `${ref.chaId}\u0000${ref.chatId}` : null;
+    });
     let iconRemoveMode = $state(false);
     let viewSubMenu = $state(0);
     let iconButtonSize = window.innerWidth > 360 ? (24 as const) : (20 as const);
@@ -156,6 +201,19 @@
         return indices;
     });
 
+    // A local rename copies its tuple; any other replacement must release the old row's typing focus.
+    function guardNameFocus(node: HTMLElement, context: { owner: unknown; row: unknown; local: () => boolean }) {
+        return {
+            update(next: typeof context) {
+                if (context.owner !== next.owner || (context.row !== next.row && !next.local())) {
+                    const input = node.querySelector("input");
+                    if (input === document.activeElement) input?.blur();
+                }
+                context = next;
+            },
+        };
+    }
+
     function renameAsset(index: number, name: string) {
         if (currentCharacter.type !== "character") return;
         const list = currentCharacter.additionalAssets;
@@ -170,6 +228,8 @@
         renamedList = untrack(() => (currentCharacter as character).additionalAssets);
     }
 
+    let renamedEmotionList: unknown = null;
+
     function renameEmotion(index: number, name: string) {
         const list = currentCharacter.emotionImages;
         if (!list?.[index]) return;
@@ -179,6 +239,7 @@
             renamed[0] = name;
             return renamed;
         });
+        renamedEmotionList = untrack(() => currentCharacter.emotionImages);
     }
     const assetCount = $derived(
         matchedAssets?.length ??
@@ -287,12 +348,13 @@
 
     async function getFishSpeechModels() {
         try {
-            const res = await fetch(`https://api.fish.audio/model?self=true`, {
+            const res = await globalFetch(`https://api.fish.audio/model?self=true`, {
+                method: "GET",
                 headers: {
                     Authorization: `Bearer ${settings.secrets.fishSpeechKey}`,
                 },
             });
-            const data = await res.json();
+            const data = res.ok ? res.data : {};
             console.log(data.items);
             console.log(currentCharacter);
 
@@ -404,11 +466,21 @@
     {#if currentCharacter.type !== "group" && licensed !== "private"}
         <TextInput size="xl" marginBottom placeholder="Character Name" bind:value={currentCharacter.name} />
         <span class="text-textcolor">{language.description} <Help key="charDesc" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={(currentCharacter as character).desc}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={(currentCharacter as character).desc}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm">{tokens.desc} {language.tokens}</span>
         <span class="text-textcolor">{language.firstMessage} <Help key="charFirstMessage" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.firstMessage}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.firstMessage}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm">{tokens.firstMsg} {language.tokens}</span>
     {:else if licensed !== "private" && currentCharacter.type === "group"}
@@ -471,11 +543,17 @@
     {/if}
     <!-- Local to this server, never in a card, so a private card shows it too. -->
     <span class="text-textcolor">{language.customNotificationMessage} <Help key="customNotificationMessage" /></span>
-    <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.customNotificationMessage} />
+    <TextAreaInput
+        popupEditorContext={currentCharacter.chaId}
+        margin="both"
+        autocomplete="off"
+        bind:value={currentCharacter.customNotificationMessage}
+    />
     <!-- The chat's fields wait while the selected chat loads. -->
     {#if currentChat}
         <span class="text-textcolor">{language.authorNote} <Help key="chatNote" /></span>
         <TextAreaInput
+            popupEditorContext={chatContext}
             margin="both"
             autocomplete="off"
             bind:value={() => currentChat.note, (note) => setCurrentChatMeta({ note })}
@@ -701,7 +779,14 @@
                                             </LazyFileSrc>
                                         {/if}
                                     </td>
-                                    <td class="font-medium truncate w-1/2">
+                                    <td
+                                        class="font-medium truncate w-1/2"
+                                        use:guardNameFocus={{
+                                            owner: assetsOwnerId,
+                                            row: currentCharacter.emotionImages[index],
+                                            local: () => currentCharacter.emotionImages === renamedEmotionList,
+                                        }}
+                                    >
                                         <TextInput
                                             marginBottom
                                             size="lg"
@@ -753,7 +838,11 @@
 
             {#if (currentCharacter as character).inlayViewScreen}
                 <span class="text-textcolor mt-2">{language.imgGenInstructions}</span>
-                <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.emotionInstructions} />
+                <TextAreaInput
+                    popupEditorContext={currentCharacter.chaId}
+                    highlight
+                    bind:value={(currentCharacter as character).newGenData.emotionInstructions}
+                />
             {/if}
 
             <CheckInput
@@ -783,11 +872,23 @@
             <span class="text-textcolor2 text-xs">{language.emotionWarn}</span>
 
             <span class="text-textcolor mt-2">{language.imgGenPrompt}</span>
-            <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.prompt} />
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                bind:value={(currentCharacter as character).newGenData.prompt}
+            />
             <span class="text-textcolor mt-2">{language.imgGenNegatives}</span>
-            <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.negative} />
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                bind:value={(currentCharacter as character).newGenData.negative}
+            />
             <span class="text-textcolor mt-2">{language.imgGenInstructions}</span>
-            <TextAreaInput highlight bind:value={(currentCharacter as character).newGenData.instructions} />
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                bind:value={(currentCharacter as character).newGenData.instructions}
+            />
 
             <CheckInput
                 bind:check={(currentCharacter as character).inlayViewScreen}
@@ -901,7 +1002,14 @@
                             {@const assets = currentCharacter.additionalAssets[index]}
                             {@const extension = assetExtension(assets)}
                             <tr>
-                                <td class="font-medium truncate">
+                                <td
+                                    class="font-medium truncate"
+                                    use:guardNameFocus={{
+                                        owner: assetsOwnerId,
+                                        row: assets,
+                                        local: () => currentCharacter.additionalAssets === renamedList,
+                                    }}
+                                >
                                     {#if settings.ui.useAdditionalAssetsPreview && ["mp4", "mp3", "png", "webp", "jpeg", "jpg", "gif"].includes(extension)}
                                         <LazyFileSrc path={assets[1]}>
                                             {#snippet children(src)}
@@ -992,11 +1100,16 @@
         <h2 class="mb-2 text-2xl font-bold mt-2">{language.scripts}</h2>
 
         <span class="text-textcolor mt-2">{language.backgroundHTML} <Help key="backgroundHTML" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.backgroundHTML}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.backgroundHTML}
         ></TextAreaInput>
 
         <span class="text-textcolor mt-4">{language.regexScript} <Help key="regexScript" /></span>
-        <RegexList bind:value={currentCharacter.customscript} />
+        <RegexList bind:value={currentCharacter.customscript} popupEditorContext={currentCharacter.chaId} />
         <div class="text-textcolor2 mt-2 flex gap-2">
             <button
                 class="font-medium cursor-pointer hover:text-green-500"
@@ -1034,6 +1147,7 @@
         <TriggerList
             bind:value={(currentCharacter as character).triggerscript}
             lowLevelAble={currentCharacter.lowLevelAccess}
+            popupEditorContext={currentCharacter.chaId}
         />
     {/if}
 {:else if $CharConfigSubMenu === 6}
@@ -1133,16 +1247,50 @@
                 </SelectInput>
             {/if}
             <span class="text-textcolor">Speed scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.SPEED_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.SPEED_SCALE, (value) => setVoicevoxScale("SPEED_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("SPEED_SCALE", currentTarget.valueAsNumber)}
+            />
 
             <span class="text-textcolor">Pitch scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.PITCH_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.PITCH_SCALE, (value) => setVoicevoxScale("PITCH_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("PITCH_SCALE", currentTarget.valueAsNumber)}
+            />
 
             <span class="text-textcolor">Volume scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.VOLUME_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.VOLUME_SCALE,
+                    (value) => setVoicevoxScale("VOLUME_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("VOLUME_SCALE", currentTarget.valueAsNumber)}
+            />
 
             <span class="text-textcolor">Intonation scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.INTONATION_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.INTONATION_SCALE,
+                    (value) => setVoicevoxScale("INTONATION_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("INTONATION_SCALE", currentTarget.valueAsNumber)}
+            />
             <span class="text-sm mb-2 text-textcolor2"
                 >To use VOICEVOX, you need to run a colab and put the localtunnel URL in "Settings → Voice & Emotion".
                 https://colab.research.google.com/drive/1tyeXJSklNfjW-aZJAib1JfgOMFarAwze</span
@@ -1204,6 +1352,7 @@
 
                 <span class="text-textcolor">API Key (overrides global)</span>
                 <TextInput
+                    secret
                     className="mb-4 mt-2"
                     hideText={settings.ui.hideApiKey}
                     bind:value={currentCharacter.oaiTTSConfig.apiKey}
@@ -1320,7 +1469,11 @@
 
             {#if currentCharacter.gptSoVitsConfig.use_prompt && !currentCharacter.gptSoVitsConfig.use_long_audio}
                 <span class="text-textcolor">Reference Audio Script</span>
-                <TextAreaInput className="mb-4 mt-2" bind:value={currentCharacter.gptSoVitsConfig.prompt} />
+                <TextAreaInput
+                    popupEditorContext={currentCharacter.chaId}
+                    className="mb-4 mt-2"
+                    bind:value={currentCharacter.gptSoVitsConfig.prompt}
+                />
             {/if}
 
             <span class="text-textcolor">Reference Audio Language</span>
@@ -1470,12 +1623,18 @@
         </div>
 
         <span class="text-textcolor">{language.exampleMessage} <Help key="exampleMessage" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.exampleMessage}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.exampleMessage}
         ></TextAreaInput>
 
         <span class="text-textcolor">{language.creatorNotes} <Help key="creatorQuotes" /></span>
         <MultiLangInput
             bind:value={currentCharacter.creatorNotes}
+            popupEditorContext={currentCharacter.chaId}
             className="my-2"
             onInput={() => {
                 currentCharacter.removedQuotes = false;
@@ -1483,38 +1642,77 @@
         ></MultiLangInput>
 
         <span class="text-textcolor">{language.systemPrompt} <Help key="systemPrompt" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.systemPrompt}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.systemPrompt}
         ></TextAreaInput>
 
         <span class="text-textcolor">{language.replaceGlobalNote} <Help key="replaceGlobalNote" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.replaceGlobalNote}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.replaceGlobalNote}
         ></TextAreaInput>
 
         <span class="text-textcolor mt-2">{language.additionalText} <Help key="additionalText" /></span>
-        <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.additionalText}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            highlight
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.additionalText}
         ></TextAreaInput>
 
         {#if settings.ui.showUnrecommended || currentCharacter.personality.length > 3}
             <span class="text-textcolor">{language.personality} <Help key="personality" unrecommended /></span>
-            <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.personality}
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                margin="both"
+                autocomplete="off"
+                bind:value={currentCharacter.personality}
             ></TextAreaInput>
         {/if}
         {#if settings.ui.showUnrecommended || currentCharacter.scenario.length > 3}
             <span class="text-textcolor">{language.scenario} <Help key="scenario" unrecommended /></span>
-            <TextAreaInput highlight margin="both" autocomplete="off" bind:value={currentCharacter.scenario}
+            <TextAreaInput
+                popupEditorContext={currentCharacter.chaId}
+                highlight
+                margin="both"
+                autocomplete="off"
+                bind:value={currentCharacter.scenario}
             ></TextAreaInput>
         {/if}
 
         <span class="text-textcolor mt-2">{language.defaultVariables} <Help key="defaultVariables" /></span>
-        <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.defaultVariables}></TextAreaInput>
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.defaultVariables}
+        ></TextAreaInput>
 
         <span class="text-textcolor mt-2">{language.translatorNote} <Help key="translatorNote" /></span>
-        <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.translatorNote}></TextAreaInput>
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.translatorNote}
+        ></TextAreaInput>
 
         <span class="text-textcolor mt-2"
             >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
         >
-        <TextAreaInput margin="both" autocomplete="off" bind:value={currentCharacter.customModuleToggle}
+        <TextAreaInput
+            popupEditorContext={currentCharacter.chaId}
+            margin="both"
+            autocomplete="off"
+            bind:value={currentCharacter.customModuleToggle}
         ></TextAreaInput>
 
         <span class="text-textcolor">{language.creator}</span>
@@ -1562,6 +1760,7 @@
                         <tr>
                             <td class="font-medium truncate">
                                 <TextAreaInput
+                                    popupEditorContext={currentCharacter.chaId}
                                     highlight
                                     bind:value={currentCharacter.alternateGreetings[i]}
                                     placeholder="..."
@@ -1623,14 +1822,23 @@
             <Check bind:check={currentCharacter.escapeOutput} name={language.escapeOutput} />
         </div>
 
-        {#if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
+        {#if chatMemoryAlgorithm(chatMemorySettings(), currentChat) === STRUCTURED_MEMORY_ALGORITHM}
+            <Button
+                onclick={() => {
+                    $hypaV3ModalOpen = true;
+                }}
+                className="mt-4"
+            >
+                {language.structuredMemory.panel.title}
+            </Button>
+        {:else if chatMemoryAlgorithm(chatMemorySettings(), currentChat) === "hypaMemoryV2"}
             <Button
                 onclick={() => {
                     const chat = selectedChat();
                     if (!chat) {
                         return;
                     }
-                    if (!chat.hypaV2Data) {
+                    if (!chat.hypaV2Data && !currentMemoryFence()) {
                         setCurrentChatMeta({ hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] } });
                     }
                     showHypaV2Alert();
@@ -1639,7 +1847,7 @@
             >
                 {language.hypaMemoryV2Modal}
             </Button>
-        {:else if settings.memoryTranslateMedia.hypaV3}
+        {:else if chatMemoryAlgorithm(chatMemorySettings(), currentChat) === "hypaMemoryV3"}
             <Button
                 onclick={() => {
                     $hypaV3ModalOpen = true;
@@ -1648,14 +1856,16 @@
             >
                 {language.hypaMemoryV3Modal}
             </Button>
-        {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
+        {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || chatMemoryEnabled(currentChat, currentCharacter, chatMemorySettings()))}
+            {@const fence = currentMemoryFence()}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
+            {#if fence}<p class="text-sm text-textcolor2" role="status">{fence}</p>{/if}
             <TextAreaInput
+                popupEditorContext={chatContext}
                 margin="both"
                 autocomplete="off"
-                bind:value={
-                    () => currentChat.supaMemoryData, (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
-                }
+                readonly={!!fence}
+                bind:value={() => currentChat.supaMemoryData, setSupaMemoryData}
             ></TextAreaInput>
         {/if}
 
@@ -1678,14 +1888,16 @@
             {language.convertToModule}
         </Button>
     {:else}
-        {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
+        {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || chatMemoryEnabled(currentChat, currentCharacter, chatMemorySettings()))}
+            {@const fence = currentMemoryFence()}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
+            {#if fence}<p class="text-sm text-textcolor2" role="status">{fence}</p>{/if}
             <TextAreaInput
+                popupEditorContext={chatContext}
                 margin="both"
                 autocomplete="off"
-                bind:value={
-                    () => currentChat.supaMemoryData, (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
-                }
+                readonly={!!fence}
+                bind:value={() => currentChat.supaMemoryData, setSupaMemoryData}
             ></TextAreaInput>
         {/if}
 

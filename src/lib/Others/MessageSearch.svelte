@@ -24,6 +24,13 @@
     } from "../../../shared/messageSearch.ts";
     import { makeCharacterAgoText } from "../UI/mainMenuProjection";
 
+    /**
+     * The message search panel. `src/App.svelte` keeps it mounted once loaded, so its query and results survive a
+     * close; the open flag and scope are `messageSearchPanel` (`src/ts/messageSearch.svelte.ts`). Snippets render
+     * as plain text, never as HTML. A hit opens its chat through `openPinnedChat` and then requests the guarded
+     * message jump (`requestMessageJump`) only when that chat became the current one.
+     */
+
     /** Typing stops for this long before a query runs (Enter runs it at once). */
     const DEBOUNCE_MS = 300;
     /** Automatic re-asks after a page that brought no new hit while `next` is set. */

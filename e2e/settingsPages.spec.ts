@@ -1,16 +1,13 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, settle, test, type Page } from "./fixtures";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
 // Every settings page still loads and saves through the facade: the settings records are the source
 // of truth and the settings views (`settingsViews.svelte.ts`) read and write them, so every
 // settings page reads and binds through record wrappers. Each page (and, in the legacy GUI, every
-// accordion it holds) mounts without a page error and without writing anything; an edit made
+// accordion it holds) mounts without a page error (a first visit may still save defaults); an edit made
 // through the page's own controls (a section field bound with `bind:checked`, a nested section
 // field bound with `bind:value`) is saved and survives a reload. The supporter page (77) is left
 // out: it fetches from public services, which this context refuses.
-
-/** Lets the save loop run: the debounce is 500 ms, and the boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 /** The ops of every batch the page sends, as `kind`. */
 function trackBatches(page: Page): string[][] {
@@ -36,13 +33,18 @@ const PAGES: [number, string][] = [
     [3, "display"],
     [10, "language"],
     [21, "translation"],
+    [24, "input hooks"],
+    [26, "request rules"],
     [22, "interaction"],
     [11, "accessibility"],
     [14, "modules"],
     [4, "plugins"],
+    [25, "device link"],
     [0, "files"],
+    [23, "storage"],
     [15, "hotkeys"],
     [6, "advanced"],
+    [27, "credits"],
 ];
 
 const openSettings = (page: Page, index: number) =>

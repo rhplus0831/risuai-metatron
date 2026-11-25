@@ -15,7 +15,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 import * as chat from "../chatStore.svelte";
 import { characterList } from "../characterStore.svelte";
@@ -187,5 +187,85 @@ describe("isMessageStreamed", () => {
         chat.noteRemoteStreaming([{ characterId: "c", id: "k", streaming: [] }]);
         expect(chat.isMessageLocked(ref, "b")).toBe(false);
         expect(chat.isMessageStreamed(ref, "b")).toBe(false);
+    });
+});
+
+describe("feed locks of a generation this tab's job saw end", () => {
+    const feed = (messageId: string, generationId: string, seq = 1) =>
+        chat.noteRemoteStreaming([{ characterId: "c", id: "k", streaming: [{ messageId, generationId, seq }] }]);
+    const chatKey = "c\u0000k";
+
+    it("releases the feed lock at the job's end, before the feed's empty list arrives", () => {
+        chat.applyServerGeneration(ref, { jobId: "E1", messageId: "a", generationId: "e1", text: "A", seq: 0 });
+        feed("a", "e1");
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+
+        // The terminal on the job's own socket can come before the feed frame that releases the lock.
+        const readStamp = chat.issueChatReadStamp();
+        chat.endServerJob("E1");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.isChatGenerating(ref)).toBe(false);
+        expect(chat.lockedChatKeys().has(chatKey)).toBe(false);
+
+        // A whole read's snapshot, a feed list, and a `hello` sampled before the end still name it.
+        // The read was issued after the chat's last feed list, so only the retirement keeps it out.
+        chat.markChatStale(ref);
+        expect(
+            chat.finishIdleChatRefresh({
+                ...server.chat("c", "k")!,
+                streaming: [{ messageId: "a", generationId: "e1", seq: 1 }],
+                readStamp,
+            }),
+        ).toBe(true);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        feed("a", "e1");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        chat.replaceFeedLocks([
+            { characterId: "c", id: "k", revision: null, streaming: [{ messageId: "a", generationId: "e1", seq: 1 }] },
+        ]);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.isMessageStreamed(ref, "a")).toBe(false);
+
+        // Another generation of the same message (another tab's continue) locks as before.
+        feed("a", "e2");
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+        chat.noteRemoteStreaming([{ characterId: "c", id: "k", streaming: [] }]);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+    });
+
+    it("releases the feed lock of a reply the job's chat copy no longer lists, keeping the job's next reply locked", () => {
+        // A group round: the first member's reply is final while the job goes on with the second.
+        chat.applyServerGeneration(ref, { jobId: "E2", messageId: "a", generationId: "h1", text: "A", seq: 0 });
+        chat.noteRemoteStreaming([
+            {
+                characterId: "c",
+                id: "k",
+                streaming: [
+                    { messageId: "a", generationId: "h1", seq: 1 },
+                    { messageId: "b", generationId: "h2", seq: 0 },
+                ],
+            },
+        ]);
+        expect(
+            chat.hydrateChat(server.chat("c", "k")!, {
+                jobId: "E2",
+                streaming: [{ messageId: "b", generationId: "h2", seq: 0 }],
+            }),
+        ).toBe(true);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.isMessageLocked(ref, "b")).toBe(true);
+
+        chat.endServerJob("E2");
+        expect(chat.isMessageLocked(ref, "b")).toBe(false);
+        expect(chat.isChatGenerating(ref)).toBe(false);
+    });
+
+    it("keeps the feed lock when this tab only lost its part in the job", () => {
+        chat.applyServerGeneration(ref, { jobId: "E3", messageId: "a", generationId: "d1", text: "A", seq: 0 });
+        feed("a", "d1");
+        chat.detachServerJob("E3");
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+        chat.noteRemoteStreaming([{ characterId: "c", id: "k", streaming: [] }]);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
     });
 });

@@ -51,7 +51,7 @@ vi.mock("../parser/parser.svelte", () => ({
     risuChatParser: vi.fn((text: string) => text),
 }));
 vi.mock("../tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 
 type Scenario = {
     name: string;

@@ -20,17 +20,7 @@ vi.mock("./factory", () => ({
         terminate() {}
     },
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    appendFetchLog: vi.fn(),
-    getFetchLogs: vi.fn(),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: vi.fn(async () => true),
@@ -48,11 +38,13 @@ vi.mock("src/ts/process/modules", () => ({
     getModules: () => [],
     getModuleMcps: () => [...harness.mcps],
 }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(),
+    }),
+);
 
 vi.mock("src/ts/process/mcp/filesystemclient", () => ({
     FileSystemClient: class {
@@ -154,7 +146,7 @@ beforeEach(async () => {
     harness.fetch.mockReset();
     harness.internal.list.mockClear();
     harness.internal.call.mockClear();
-    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [] });
+    vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
     await executePluginV3({ name: `mcp-context-${++serial}`, version: "3.0", script: "" } as never);
     api = harness.api!;
 });
@@ -321,8 +313,16 @@ describe("plugin MCP call context", () => {
             expect(await callTool("local_tool", {}, refB, capturePluginContext(refB))).toEqual([
                 { type: "text", text: "local result" },
             ]);
-            for (const args of harness.internal.list.mock.calls) expect(args).toEqual([]);
-            for (const args of harness.internal.call.mock.calls) expect(args).toHaveLength(2);
+            // No plugin context reaches a tab client; the trailing argument is the caller's abort signal when it has one.
+            const signalOrNone = (value: unknown) => value === undefined || value instanceof AbortSignal;
+            for (const args of harness.internal.list.mock.calls as unknown[][]) {
+                expect(args[0]).toBeUndefined();
+                expect(signalOrNone(args[1])).toBe(true);
+            }
+            for (const args of harness.internal.call.mock.calls as unknown[][]) {
+                expect(args[2]).toBeUndefined();
+                expect(signalOrNone(args[3])).toBe(true);
+            }
         },
     );
 });

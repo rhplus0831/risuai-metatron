@@ -10,6 +10,8 @@ import {
     type PresetScope,
 } from "../../storage/settingsViews.svelte";
 import { plainClone, presetFieldValue } from "../../../../shared/presets.ts";
+import { applyRequestInterceptions } from "../../../../shared/llm/interception.ts";
+import { responseRejection } from "../../../../shared/llm/responseChecks.ts";
 import { applyReverseProxyOverride } from "../../../../shared/llm/reverseProxy.ts";
 import { credentialFor } from "../../model/credentials";
 import { language } from "../../../lang";
@@ -37,6 +39,16 @@ import { runTransformers } from "../transformers";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters, type ModelModeExtended } from "./shared";
 import { requestServer } from "./transport";
 
+/**
+ * Tab-side LLM request orchestration: retries and plugin replacers around model-slot routing and local adapters.
+ * A chat request retains its binding and owner lifetime across awaits; loading failure, deletion, replacement,
+ * or mismatched captured bindings refuse its reply. Streams keep the chat pinned until completion or cancellation.
+ * Only Plugin and WebLLM formats run here; other formats use `src/ts/process/request/transport.ts`, and character
+ * request triggers run only in server jobs through `server/src/llm/outer.ts`. Captured presets do not fall back to
+ * the current selection after deletion. Local adapter preparation mutates the supplied request argument.
+ */
+
+/** A tool name paired with its serialized argument text. */
 export type ToolCall = {
     name: string;
     arguments: string;
@@ -83,14 +95,19 @@ interface requestDataArgument {
      * later ones. A captured preset that is gone refuses the
      * request, as a plugin context's does. Without it a request without a chat reads the settings
      * views at its start; a request with a chat (its `chatRef` or plugin context) never reads it.
+     * The prompt preset, model preset, and persona (`src/ts/translator/translator.ts` captures them once per run) are
+     * used where a plugin context's ids would be: the preset-gone checks before each attempt, `requestChatDataMain`'s
+     * scope, WebLLM's user name, and the transport's ids.
      */
     requestIds?: ChatContextIds;
     escape?: boolean;
     tools?: MCPTool[];
+    allowConfiguredTools?: boolean;
     rememberToolUsage?: boolean;
     blockPlugins?: boolean;
 }
 
+/** Mutable local-adapter arguments augmented with resolved model, detached profile, preset scope, and defaults. */
 export interface RequestDataArgumentExtended extends requestDataArgument {
     aiModel?: string;
     multiGen?: boolean;
@@ -110,6 +127,7 @@ export interface RequestDataArgumentExtended extends requestDataArgument {
     presetScope?: PresetScope;
 }
 
+/** A buffered success/refusal, cumulative reply stream, or ordered user/character lines with optional metadata. */
 export type requestDataResponse =
     | {
           type: "success" | "fail";
@@ -138,6 +156,7 @@ export type requestDataResponse =
           model?: string;
       };
 
+/** Cumulative text values keyed by response index or auxiliary stream-field name. */
 export interface StreamResponseChunk {
     [key: string]: string;
 }
@@ -147,6 +166,19 @@ export interface StreamResponseChunk {
  * chat (its `chatRef`, else its plugin context's) is pinned and loaded from the start, before tool
  * discovery and the plugin hooks, until the request and its after-request hooks end (a streamed
  * reply keeps the transport's own pin until its stream ends). A chat that is gone fails the request.
+ *
+ * The retries (`requestRetrys`: an ordinary failure or a rejected answer uses one retry, an overload failure
+ * half a retry with `antiServerOverloads`), the plugins' before/after request replacers, escaping, and the response
+ * checks run here in the tab, around each `requestChatDataMain` attempt. The character's `request`
+ * trigger runs only for a server job's requests (`server/src/llm/outer.ts`); the tab's own requests go out without it.
+ * The response checks (`responseRejection` of `shared/llm/responseChecks.ts`: a banned script of `banCharacterset`,
+ * then the minimum length of the request's kind, which a continue request skips) read a buffered success after
+ * escaping and the after-replacers. A rejected answer becomes an ordinary failure with the rejection as its text, so
+ * it uses one retry of `requestRetrys` and is returned once they run out. A `previewBody` request skips the checks:
+ * its success is a redacted request body or a diagnostic, not an answer. A `multiline` answer is not checked.
+ * `escape` clears `useStreaming` and `forceStreaming`. A plugin provider can return a stream regardless: with `escape`
+ * that stream is read to its last snapshot and continues as a buffered success (escaping, after-replacers, response
+ * checks) or, for a stream error, as an ordinary failure. Without `escape` a stream returns as it is, unchecked.
  */
 export async function requestChatData(
     arg: requestDataArgument,
@@ -351,7 +383,15 @@ async function requestPinnedChatData(
     // below, the chat must still be the one the request began with.
     const target = arg.chatRef ?? pluginContext?.chatRef;
     const held = () => requestChatHeld(target, arg.chatOwner);
-    const tools = arg.tools ?? (await getTools(target, pluginContext));
+    let tools = arg.tools;
+    try {
+        tools ??= await getTools(target, pluginContext, abortSignal);
+    } catch (error) {
+        if (abortSignal?.aborted) {
+            return { type: "fail", result: "Aborted" };
+        }
+        throw error;
+    }
     if (!held()) {
         return requestChatGone();
     }
@@ -360,6 +400,7 @@ async function requestPinnedChatData(
 
     if (arg.escape) {
         arg.useStreaming = false;
+        arg.forceStreaming = false;
         console.warn("Escape is enabled, disabling streaming");
     }
 
@@ -403,6 +444,7 @@ async function requestPinnedChatData(
             {
                 ...arg,
                 tools: tools,
+                ...(arg.tools === undefined && tools.length === 0 ? { allowConfiguredTools: true } : {}),
             },
             model,
             abortSignal,
@@ -422,6 +464,19 @@ async function requestPinnedChatData(
             return requestChatGone();
         }
 
+        if (arg.escape && da.type === "streaming") {
+            da = await bufferStreamedReply(da, abortSignal);
+            if (abortSignal?.aborted) {
+                return {
+                    type: "fail",
+                    result: "Aborted",
+                };
+            }
+            if (!held()) {
+                return requestChatGone();
+            }
+        }
+
         if (da.type === "success" && arg.escape) {
             da.result = risuEscape(da.result);
         }
@@ -435,23 +490,11 @@ async function requestPinnedChatData(
             }
         }
 
-        if (da.type === "success" && settings.providers.banCharacterset?.length > 0) {
-            let failed = false;
-            for (const set of settings.providers.banCharacterset) {
-                const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
-
-                if (checkRegex.test(da.result)) {
-                    trys += 1;
-                    if (trys > settings.providers.requestRetrys) {
-                        return { type: "fail", result: `The model answered in a banned script (${set})` };
-                    }
-                    failed = true;
-                    break;
-                }
-            }
-
-            if (failed) {
-                continue;
+        if (da.type === "success" && !arg.previewBody) {
+            const { result, ...fields } = da;
+            const rejection = responseRejection(result, settings.providers, { mode: model, continue: arg.continue });
+            if (rejection !== null) {
+                da = { ...fields, type: "fail", result: rejection };
             }
         }
 
@@ -473,6 +516,54 @@ async function requestPinnedChatData(
     }
 }
 
+/**
+ * A streamed reply read to its end as a buffered one: a `success` with the last cumulative snapshot's first key, or a
+ * `fail` with the stream's error text; `model` and `special` carry over. An abort cancels the stream and ends the read.
+ */
+async function bufferStreamedReply(
+    da: Extract<requestDataResponse, { type: "streaming" }>,
+    abortSignal: AbortSignal | null,
+): Promise<requestDataResponse> {
+    const { result: stream, ...fields } = da;
+    const reader = stream.getReader();
+    const onAbort = () => {
+        reader.cancel(abortSignal?.reason).catch(() => {});
+    };
+    let text = "";
+    try {
+        if (abortSignal?.aborted) {
+            onAbort();
+            return { ...fields, type: "success", result: text };
+        }
+        abortSignal?.addEventListener("abort", onAbort, { once: true });
+        while (true) {
+            const { done, value } = await reader.read();
+            if (value) {
+                const firstKey = Object.keys(value)[0];
+                if (firstKey) {
+                    text = value[firstKey] ?? text;
+                }
+            }
+            if (done) {
+                break;
+            }
+        }
+        return { ...fields, type: "success", result: text };
+    } catch (error) {
+        return { ...fields, type: "fail", result: error instanceof Error ? error.message : `${error}` };
+    } finally {
+        abortSignal?.removeEventListener("abort", onAbort);
+        reader.releaseLock();
+    }
+}
+
+/**
+ * The tab's copy of `server/src/llm/request.ts` `reformater`, for the formats that run in the tab (Plugin, WebLLM),
+ * with the profile's system replacements. The leading system block kept with `hasFirstSystemPrompt` is left out of the
+ * role alternation and the start-with-user handling, and is put back in front afterwards.
+ * Message objects are mutated. Empty and all-system prompts still apply start-with-user handling and return with
+ * any collected system block restored at the front.
+ */
 export function reformater(
     formated: OpenAIChat[],
     modelInfo: LLMModel | LLMFlags[],
@@ -484,7 +575,7 @@ export function reformater(
 
     if (!flags.includes(LLMFlags.hasFullSystemPrompt)) {
         if (flags.includes(LLMFlags.hasFirstSystemPrompt)) {
-            while (formated[0].role === "system") {
+            while (formated.length > 0 && formated[0].role === "system") {
                 if (systemPrompt) {
                     systemPrompt.content += "\n\n" + formated[0].content;
                 } else {
@@ -560,6 +651,19 @@ export function reformater(
     return formated;
 }
 
+/**
+ * One request attempt. It resolves the slot with `resolveModelSlot` (the shared resolver over the captured model
+ * preset, with the request's `profileId`); a refusal fails with `noRetry`. `LLMFormat.Plugin` and `LLMFormat.WebLLM`
+ * run here with a detached copy of the resolved profile (its system replacement, plugin provider, and chat template)
+ * and its named-key decision (`credentialFor`; a refused binding fails with `noRetry`), through `requestPlugin` and
+ * `requestWebLLM` after `reformater`. Before `reformater`, the request interception rules of the request's mode
+ * (`settings.providers.requestInterceptions`, `shared/llm/interception.ts`) are inserted into the cloned prompt. Every
+ * other format goes to the server through `requestServer` (`src/ts/process/request/transport.ts`) with the caller's
+ * arguments as they came; the server inserts into those.
+ *
+ * It mutates its argument object: do not reuse the argument after the call. Plugin v3 calls it directly
+ * (`src/ts/plugins/apiV3/v3.svelte.ts`), skipping `requestChatData`'s retries and replacers.
+ */
 export async function requestChatDataMain(
     arg: requestDataArgument,
     model: ModelModeExtended,
@@ -620,7 +724,7 @@ export async function requestChatDataMain(
         });
     }
 
-    if (arg.blockPlugins && targ.modelInfo.id.startsWith("pluginmodel:::")) {
+    if (arg.blockPlugins && targ.modelInfo.format === LLMFormat.Plugin) {
         return {
             type: "fail",
             result: "Plugin calls are blocked by the caller.",
@@ -638,7 +742,11 @@ export async function requestChatDataMain(
         return { type: "fail", noRetry: true, result: language.sharedApiKeys.refused[credential.reason] };
     }
 
-    targ.formated = safeStructuredClone(arg.formated);
+    targ.formated = applyRequestInterceptions(
+        safeStructuredClone(arg.formated),
+        settings.providers.requestInterceptions,
+        model,
+    ).formated;
     targ.maxTokens = arg.maxTokens ?? (scopedPresetRoot(scope, "maxResponse") as number);
     targ.temperature = arg.temperature ?? (scopedPresetRoot(scope, "temperature") as number) / 100;
     targ.bias = arg.bias;
@@ -678,12 +786,12 @@ export async function requestChatDataMain(
 async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const isV3Model = arg.aiModel.startsWith("pluginmodel:::");
     const responseModel = isV3Model ? arg.aiModel : "custom";
+    const model = isV3Model
+        ? arg.aiModel.replace("pluginmodel:::", "")
+        : (presetFieldValue(arg.modelProfile, "currentPluginProvider") as string);
     try {
         const formated = arg.formated;
         const maxTokens = arg.maxTokens;
-        const model = isV3Model
-            ? arg.aiModel.replace("pluginmodel:::", "")
-            : (presetFieldValue(arg.modelProfile, "currentPluginProvider") as string);
         const providerFunction = pluginHooks.providers.get(model);
 
         if (arg.previewBody) {
@@ -767,9 +875,7 @@ async function requestPlugin(arg: RequestDataArgumentExtended): Promise<requestD
         console.error(error);
         return {
             type: "fail",
-            result:
-                `Plugin Error from ${presetFieldValue(arg.modelProfile, "currentPluginProvider")}: ` +
-                JSON.stringify(error),
+            result: `Plugin Error from ${model}: ` + JSON.stringify(error),
             model: responseModel,
         };
     }

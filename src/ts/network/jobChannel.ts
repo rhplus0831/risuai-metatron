@@ -1,11 +1,14 @@
 import { characterList } from "../storage/characterStore.svelte";
+import { isArchivedGroup } from "../storage/archivedGroup";
 import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { generationClientId, noteChannelCallbacks, reportCallbackDrained } from "./generationJobs";
 import { get } from "svelte/store";
+import { hostMode } from "./remoteHost";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
     CallbackFailure,
+    CallbackPayloads,
     CallbackTargets,
     ChannelAnswer,
     GenerationCallbackEvent,
@@ -13,11 +16,14 @@ import type {
     GenerationHooks,
     GenerationNotice,
     GenerationQuestionEvent,
+    GenerationTerminalEvent,
     HydrationReceipt,
     MemoryProgress,
     ScriptHookMode,
+    StreamingMessage,
 } from "../../../shared/jobs.ts";
 import {
+    MAX_LUA_INLAY_NAME_LENGTH,
     MAX_PROVIDER_TEXT_CHARS,
     MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
@@ -25,7 +31,7 @@ import {
     TAB_MCP_IDENTIFIERS,
 } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import { compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { type ChatReadRecord, compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     alertClear,
     alertConfirm,
@@ -46,19 +52,22 @@ import { language } from "../../lang";
 import type { MCPClientLike } from "../process/mcp/internalmcp";
 import { registeredCustomPluginMCPs } from "../process/mcp/pluginmcp";
 import type { character } from "../storage/database.svelte";
-import { invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
+import { capturePluginContext, invokeHook, type PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { pluginHooks } from "../plugins/pluginHooks";
 import {
-    chatList,
+    type ChatRef,
+    activeChatList,
     currentChatRef,
     findChat,
     heldChatRevision,
     loadChats,
     pinChats,
     prepareChatHydrationRefresh,
+    refusedChatItems,
     selectedChatId,
     withChatsCopy,
 } from "../storage/chatStore.svelte";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import {
     applyHydration,
     beginMutationScope,
@@ -66,6 +75,7 @@ import {
     heldRecordRevision,
     type HydrationRecord,
 } from "../storage/resourceSync.svelte";
+import { readWithDeadline } from "../storage/readDeadline";
 import { epochMismatch, getResourceEpoch, readRefs } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
 import {
@@ -83,7 +93,8 @@ import {
 
 /**
  * The client side of the job channel (`shared/jobs.ts`): it shows a job's notices, asks its
- * questions, and runs its plugin callbacks, answering through the job's socket.
+ * questions, and runs its plugin callbacks, answering through the job's socket. A viewer or pending
+ * takeover refuses callbacks as protocol failures; notices retain the server's audience routing.
  *
  * - Events are taken in socket order without waiting for a callback to finish, so an aux request's
  *   child callback can run while its parent waits.
@@ -94,14 +105,21 @@ import {
  *   job's dialog may wait behind local ones. A `cancel` removes the question's dialog, shown or
  *   still queued, and drops its answer.
  * - A callback runs behind the barrier: pending local work is flushed, the newest hydration of every
- *   record the server listed is applied again. A chat copy refused only by the acknowledged floor
- *   gets one fenced whole read, retaining valid job streaming metadata. Each record must be held at
- *   least as new as listed; otherwise the answer is `failed`/`barrier`. The hook set runs under the
- *   job's targets (`invokeHook`), then its changes are flushed in a mutation scope (also when it threw): a
- *   discarded key or a rejected flush is `failed`/`barrier`.
+ *   record the server listed is applied again. The server sends the job's chat only as it changed
+ *   since its socket's last copy (a patch, or nothing), so a job chat receipt still not held then
+ *   gets one fenced whole read, installed with the job's newest streaming metadata this tab received
+ *   (none received: no read); another chat's copy refused only by the acknowledged floor gets the
+ *   same read with its remembered streaming metadata. Each record must be held at least as new as
+ *   listed, and a chat must not be refused locally; otherwise the answer is `failed`/`barrier`. The
+ *   hook set runs under the job's targets (`invokeHook`), then its changes are flushed in a mutation
+ *   scope (also when it threw): a discarded key or a rejected flush is `failed`/`barrier`.
  * - Each request's state is kept in memory: a duplicate delivery never runs a callback twice (the
  *   cached answer is sent again), and a `replay` this page has no state for is refused
  *   (`failed`/`protocol`), since it may already have run on the page before a reload.
+ * - Provider streams use sequenced appends when the callback offers them, with snapshots on a
+ *   reconnect or resync request; older servers receive cumulative text. A negotiated stream's
+ *   final text is retained for replay until cancellation, job end, eviction, or the next new
+ *   callback, so the server can recover missing text before accepting its final sequence.
  * - One root callback runs at a time in this tab (the server's lane per client). A `cancel` only asks
  *   a running hook to stop: the callback stays outstanding until its hook settles, and a root that
  *   arrives meanwhile is refused. The server keeps the lane for a callback it cancelled until this tab
@@ -114,6 +132,7 @@ import {
 
 /** Where the dispatcher sends its answers for one job (the job's current follow). */
 export type ChannelTransport = {
+    viewing?(): boolean;
     send(message: ChannelAnswer | ChannelChunk | ChatResyncRequest | ReplyResyncRequest): boolean;
 };
 
@@ -127,6 +146,8 @@ type Outstanding = {
     abort: AbortController;
     /** Called when the server cancels the callback or its job ends (a provider's request is aborted). */
     onCancel?: () => void;
+    /** Sends a negotiated provider stream's live snapshot on replay or resynchronization. */
+    resendChunks?: () => void;
 };
 
 /** Marks a callback cancelled and tells its hook. */
@@ -145,6 +166,8 @@ function cancelOutstanding(entry: Outstanding) {
 
 /** How often a streaming provider's text is sent at most (the newest text each time). */
 const PROVIDER_CHUNK_INTERVAL_MS = 50;
+/** The bound of the barrier's chat read (`readWithDeadline`): a stalled read fails the callback. */
+const BARRIER_READ_DEADLINE_MS = 30_000;
 
 type UiItem =
     | { type: "notice"; jobId: string; notice: GenerationNotice }
@@ -153,10 +176,17 @@ type UiItem =
 const MAX_REMEMBERED = 500;
 
 /** A request's state; `callback` marks a callback delivery, run or refused (a cancel may then hold the server's lane). */
-type RequestState = { jobId: string; answer: ChannelAnswer | null; retired?: true; callback?: true };
+type RequestState = {
+    jobId: string;
+    answer: ChannelAnswer | null;
+    retired?: true;
+    callback?: true;
+    /** Kept after the provider reader finishes, until the server no longer needs stream recovery. */
+    providerSnapshot?: { seq: number; text: string };
+};
 
 const transports = new Map<string, ChannelTransport>();
-/** Request id → its state; a finished one keeps its answer for a duplicate delivery. */
+/** Request id → its state; finished streams also keep the snapshot needed before a cached answer. */
 const requests = new Map<string, RequestState>();
 const outstanding: Outstanding[] = [];
 /** One replacement child waits for the cancelled hooks of its parent to finish. */
@@ -181,6 +211,16 @@ let showing: {
 /** Each live job's newest hydration per record, retained only for its callback barriers. */
 const hydrations = new Map<string, Map<string, HydrationRecord>>();
 
+/** A job's `streaming` list for its own chat, as one of its chat events carried it at `revision`. */
+type JobStreaming = { characterId: string; id: string; revision: string; streaming: readonly StreamingMessage[] };
+
+/**
+ * Each live job's newest `streaming` list for its own chat (its chat `resource` and `chatPatch`
+ * events, applied or not), retained only for its callback barriers: a read of the job chat that a
+ * barrier installs goes with it.
+ */
+const jobStreaming = new Map<string, JobStreaming>();
+
 const recordKey = (kind: string, id: string, characterId?: string) =>
     kind === "chats" ? `chats\u0000${characterId ?? ""}\u0000${id}` : `${kind}\u0000${id}`;
 
@@ -198,6 +238,19 @@ function remember(id: string, entry: RequestState) {
     }
 }
 
+/** Replays the live stream or its retained final snapshot without invoking the provider again. */
+function resendProviderSnapshot(jobId: string, id: string) {
+    const state = requests.get(id);
+    if (state?.jobId !== jobId) return;
+    const running = outstanding.find((entry) => entry.id === id && entry.jobId === jobId);
+    if (running?.cancelled) return;
+    if (running?.resendChunks) {
+        running.resendChunks();
+    } else if (state.providerSnapshot) {
+        transports.get(jobId)?.send({ type: "chunk", id, ...state.providerSnapshot });
+    }
+}
+
 /** Keeps a job's newest hydration per record (by revision) for its later callback barriers. */
 export function rememberHydration(jobId: string, record: HydrationRecord) {
     let records = hydrations.get(jobId);
@@ -209,6 +262,23 @@ export function rememberHydration(jobId: string, record: HydrationRecord) {
     const held = records.get(key);
     if (!held || (compareRevision(record.revision, held.revision) ?? 1) >= 0) {
         records.set(key, record);
+    }
+}
+
+/**
+ * Keeps a job's newest `streaming` list for its own chat (by revision) for its later callback
+ * barriers. The list is kept as the event carried it: each entry's `seq` is the newest chunk that
+ * event's copy holds, not a chunk this tab received since.
+ */
+export function rememberJobStreaming(jobId: string, held: JobStreaming) {
+    const current = jobStreaming.get(jobId);
+    if (
+        !current ||
+        current.characterId !== held.characterId ||
+        current.id !== held.id ||
+        (compareRevision(held.revision, current.revision) ?? 1) >= 0
+    ) {
+        jobStreaming.set(jobId, held);
     }
 }
 
@@ -253,7 +323,15 @@ function showNotice(jobId: string, notice: GenerationNotice): boolean {
             alertMd(notice.payload.message);
             return true;
         case "alertToast":
-            alertToast(notice.payload.message, (status) => jobStatuses.set(jobId, status));
+            alertToast(
+                notice.payload.code &&
+                    ["rerollCandidateDropped", "rerollCandidateTooLarge", "scriptstateCheckpointSkipped"].includes(
+                        notice.payload.code,
+                    )
+                    ? language[notice.payload.code]
+                    : notice.payload.message,
+                (status) => jobStatuses.set(jobId, status),
+            );
             return false;
         case "alertWait":
             alertWait(notice.payload.message, (status) => jobStatuses.set(jobId, status));
@@ -369,6 +447,7 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             return;
         }
         case "tts": {
+            if (get(hostMode)) return;
             const { chaId, text } = notice.payload;
             const character = characterList().find((entry) => entry?.chaId === chaId);
             if (character && character.type !== "group") {
@@ -377,6 +456,7 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             return;
         }
         case "notification":
+            if (get(hostMode)) return;
             // The permission is asked only from a click (`pushNotifications.ts`), never here.
             if (settings.ui.notification) {
                 void import("./pushNotifications")
@@ -415,6 +495,10 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
     }
 }
 
+/**
+ * Alert questions relay the alert's raw result; the alert API has no separate dismissal result.
+ * `memoryTrim` and `memoryGap` map selection indices to their wire choices, or null.
+ */
 async function ask(event: GenerationQuestionEvent): Promise<unknown> {
     switch (event.kind) {
         case "alertInput":
@@ -452,6 +536,9 @@ async function ask(event: GenerationQuestionEvent): Promise<unknown> {
     }
 }
 
+/**
+ * Sends question results as `answered`, never `cancelled`; a server cancel drops the result.
+ */
 async function drainUi() {
     if (uiBusy) {
         return;
@@ -541,8 +628,16 @@ class CallbackFailed extends Error {
 
 const cancelledByServer = () => new CallbackFailed("protocol", "The server cancelled this callback");
 
-/** Whether this client holds `receipt`'s record at its revision or a newer one. */
+/** Whether this client holds `receipt`'s revision or newer, without a refused local chat draft. */
 function holds(receipt: HydrationReceipt): boolean {
+    if (
+        receipt.kind === "chats" &&
+        refusedChatItems().some(
+            (item) => item.kind === "chat" && item.chaId === receipt.characterId && item.chatId === receipt.id,
+        )
+    ) {
+        return false;
+    }
     const held =
         receipt.kind === "chats"
             ? heldChatRevision({ chaId: receipt.characterId ?? "", chatId: receipt.id })
@@ -553,20 +648,23 @@ function holds(receipt: HydrationReceipt): boolean {
 async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
     let discarded: string[];
     try {
-        ({ discarded } = await flushResources());
+        ({ discarded } = await waitForResourceFlush(flushResources(), entry.abort.signal));
     } catch (error) {
         throw new CallbackFailed("barrier", `Local changes could not be saved: ${errorText(error)}`);
     }
     if (discarded.length > 0) {
         throw new CallbackFailed("barrier", "A conflict discarded local changes before the callback", discarded);
     }
+    const jobChat = entry.targets.chatRef;
     for (const receipt of event.revisions) {
         const key = recordKey(receipt.kind, receipt.id, receipt.characterId);
         const record = hydrations.get(entry.jobId)?.get(key);
         if (record && !entry.cancelled && !holds(receipt)) {
             applyHydration(record);
         }
-        if (
+        if (receipt.kind === "chats" && receipt.characterId === jobChat.chaId && receipt.id === jobChat.chatId) {
+            await recoverJobChat(entry, event, receipt, record);
+        } else if (
             !entry.cancelled &&
             record?.kind === "chats" &&
             record.characterId !== undefined &&
@@ -574,40 +672,16 @@ async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
             (compareRevision(record.revision, receipt.revision) ?? -1) >= 0 &&
             !holds(receipt)
         ) {
-            const canApply = prepareChatHydrationRefresh(
+            // Another chat the job sent whole, whose remembered copy only the acknowledged floor refuses.
+            await readChatForReceipt(
+                entry,
+                event,
+                receipt,
                 { chaId: record.characterId, chatId: record.id },
                 record.revision,
+                record.job.streaming,
+                () => hydrations.get(entry.jobId)?.get(key) === record,
             );
-            if (canApply) {
-                const epoch = getResourceEpoch();
-                if (entry.cancelled) {
-                    throw cancelledByServer();
-                }
-                if (epoch !== event.epoch) {
-                    throw new CallbackFailed("barrier", "The callback's resource epoch changed");
-                }
-                const result = await readRefs([], { chats: [{ characterId: record.characterId, id: record.id }] });
-                if (entry.cancelled || !outstanding.includes(entry)) {
-                    throw cancelledByServer();
-                }
-                if (getResourceEpoch() !== epoch || result.epoch !== epoch) {
-                    throw new CallbackFailed("barrier", "The callback's resource epoch changed");
-                }
-                // A job resync may have satisfied the receipt while this read was in flight.
-                if (!holds(receipt)) {
-                    const fresh = result.chats?.find(
-                        (chat) => chat.characterId === record.characterId && chat.id === record.id,
-                    );
-                    if (
-                        hydrations.get(entry.jobId)?.get(key) === record &&
-                        fresh?.revision != null &&
-                        fresh.data != null &&
-                        canApply(fresh)
-                    ) {
-                        applyHydration({ ...record, revision: fresh.revision, data: fresh.data });
-                    }
-                }
-            }
         }
         if (!holds(receipt)) {
             throw new CallbackFailed(
@@ -622,11 +696,134 @@ async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
     }
 }
 
+/**
+ * The job chat's receipt when the flush and a remembered whole copy did not make it held. The server
+ * sends this tab's socket the job chat only as it changed since the copy a socket last took, or not
+ * at all, so this tab may hold no copy of the receipt's revision: none was remembered, the remembered
+ * one is older (a patch that did not apply, a replacement socket), or it was refused (by local work
+ * on arrival, or by the acknowledged floor). One fenced read of the chat then, installed with the
+ * job's newest streaming metadata this tab received for the chat (its chat events' `streaming`
+ * lists, or a remembered copy's when newer). Without any there is no read: an empty list would
+ * retire the job's live generations in the chat.
+ */
+async function recoverJobChat(
+    entry: Outstanding,
+    event: GenerationCallbackEvent,
+    receipt: HydrationReceipt,
+    record: HydrationRecord | undefined,
+) {
+    if (entry.cancelled || holds(receipt)) {
+        return;
+    }
+    const ref = { chaId: entry.targets.chatRef.chaId, chatId: entry.targets.chatRef.chatId };
+    const streamed = jobStreaming.get(entry.jobId);
+    let metadata =
+        streamed && streamed.characterId === ref.chaId && streamed.id === ref.chatId
+            ? { revision: streamed.revision, streaming: streamed.streaming }
+            : undefined;
+    if (
+        record?.job?.jobId === entry.jobId &&
+        (!metadata || (compareRevision(record.revision, metadata.revision) ?? -1) > 0)
+    ) {
+        metadata = { revision: record.revision, streaming: record.job.streaming };
+    }
+    if (!metadata) {
+        return;
+    }
+    // Metadata newer than the receipt (a copy or patch that arrived during the flush and did not
+    // apply) is what the read is fenced on and installed with.
+    const fence =
+        (compareRevision(metadata.revision, receipt.revision) ?? -1) > 0 ? metadata.revision : receipt.revision;
+    const key = recordKey(receipt.kind, receipt.id, receipt.characterId);
+    await readChatForReceipt(
+        entry,
+        event,
+        receipt,
+        ref,
+        fence,
+        metadata.streaming,
+        () => hydrations.get(entry.jobId)?.get(key) === record && jobStreaming.get(entry.jobId) === streamed,
+    );
+}
+
+/**
+ * One whole read of `ref`'s chat for a receipt the barrier does not hold, fenced on the callback, the
+ * epoch, and `prepareChatHydrationRefresh(ref, fence)` (chat owner, incarnation, local work, job
+ * metadata). The read goes through `applyHydration` with the job's `streaming` metadata, checking
+ * local work and the floor again, when the receipt is still not held, the job's metadata this tab
+ * keeps for the chat is `unchanged` since before the read, and the guard still passes.
+ */
+async function readChatForReceipt(
+    entry: Outstanding,
+    event: GenerationCallbackEvent,
+    receipt: HydrationReceipt,
+    ref: ChatRef,
+    fence: string,
+    streaming: readonly StreamingMessage[],
+    unchanged: () => boolean,
+) {
+    const canApply = prepareChatHydrationRefresh(ref, fence);
+    if (!canApply) {
+        return;
+    }
+    const epoch = getResourceEpoch();
+    if (entry.cancelled) {
+        throw cancelledByServer();
+    }
+    if (epoch !== event.epoch) {
+        throw new CallbackFailed("barrier", "The callback's resource epoch changed");
+    }
+    const result = await readWithDeadline(BARRIER_READ_DEADLINE_MS, "The callback's chat read timed out", (signal) =>
+        readRefs([], { chats: [{ characterId: ref.chaId, id: ref.chatId }], signal }),
+    );
+    if (entry.cancelled || !outstanding.includes(entry)) {
+        throw cancelledByServer();
+    }
+    if (getResourceEpoch() !== epoch || result.epoch !== epoch) {
+        throw new CallbackFailed("barrier", "The callback's resource epoch changed");
+    }
+    // A job resync may have satisfied the receipt while this read was in flight.
+    if (holds(receipt)) {
+        return;
+    }
+    const fresh = result.chats?.find(
+        (chat): chat is ChatReadRecord =>
+            chat.characterId === ref.chaId && chat.id === ref.chatId && chat.revision != null && chat.data != null,
+    );
+    if (unchanged() && fresh && canApply(fresh)) {
+        applyHydration({
+            kind: "chats",
+            ...fresh,
+            job: { jobId: entry.jobId, streaming },
+        });
+    }
+}
+
 function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-/** Runs the hook set a callback names, in order, under the job's targets. */
+/**
+ * Runs the hook set in registry order under the job's targets. Replacers and edit hooks stop at
+ * the first throw; body interceptors log and continue without the hook context. Plugin MCP calls
+ * receive the targets too. Registries are read at invocation, not snapshotted at job creation.
+ *
+ * `imggen`/`generateImage` call `stableDiff`/`generateAIImage` in `src/ts/process/stableDiff.ts`
+ * with the callback's abort signal; server cancellation or job end aborts it and suppresses late
+ * results. Providers receive the server-built argument and an abort signal. A missing provider
+ * or text beyond `MAX_PROVIDER_TEXT_CHARS` (4 Mi characters) fails as `hook`; a text answer is
+ * `{ success, content }`. Successful streams send `chunk` text immediately, at most every
+ * `PROVIDER_CHUNK_INTERVAL_MS` (50 ms), and finally before `{ success: true, streamed: true }`.
+ * A `chunks: "append"` offer enables sequenced appends, snapshots on reconnect/resync, and a final
+ * `seq` in the answer; the final snapshot stays available after reading ends. Without the offer,
+ * chunks carry cumulative text and the answer has no sequence.
+ * Failed streams are read whole into the answer; either reader is cancelled if the callback ends first.
+ *
+ * `mcpList`/`mcpTool` use the current `plugin:` registry or `readyTabClient` in
+ * `src/ts/process/mcp/mcp.ts` for `internal:fs`/`internal:googlesearch` (which may prompt for a
+ * directory or credentials). The callback signal reaches client listings and calls, including
+ * their cancellable network requests. A client's throw is a `hook` failure.
+ */
 async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Promise<unknown> {
     // The job's targets, and this callback as the parent of any aux request the hook makes.
     const context: PluginCallContext = { ...event.targets, channelCall: { jobId: entry.jobId, callbackId: event.id } };
@@ -709,7 +906,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 const registry = await import("../process/mcp/mcp");
                 // No picker or prompt is started for a callback the server already cancelled.
                 stillWanted();
-                client = await registry.readyTabClient(identifier);
+                client = await registry.readyTabClient(identifier, entry.abort.signal);
             } else {
                 client = registeredCustomPluginMCPs.get(identifier);
             }
@@ -718,7 +915,7 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             stillWanted();
             if (event.name === "mcpList") {
-                const tools = await (isTabClient ? client.getToolList() : client.getToolList(context));
+                const tools = await client.getToolList(isTabClient ? undefined : context, entry.abort.signal);
                 stillWanted();
                 return tools.map((tool) => ({
                     name: tool.name,
@@ -726,9 +923,12 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                     inputSchema: tool.inputSchema,
                 }));
             }
-            const content = await (isTabClient
-                ? client.callTool(String(payload.tool), payload.args)
-                : client.callTool(String(payload.tool), payload.args, context));
+            const content = await client.callTool(
+                String(payload.tool),
+                payload.args,
+                isTabClient ? undefined : context,
+                entry.abort.signal,
+            );
             stillWanted();
             return content;
         }
@@ -767,7 +967,18 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             const image = new Image();
             image.src = generated;
-            return { id: await writeInlayImage(image, { check: stillWanted }) };
+            // The script's label for the inlay; anything else leaves it named by its id.
+            const rawName = payload.name;
+            const name =
+                typeof rawName === "string" && rawName !== "" && rawName.length <= MAX_LUA_INLAY_NAME_LENGTH
+                    ? rawName
+                    : undefined;
+            return {
+                id: await writeInlayImage(
+                    image,
+                    name === undefined ? { check: stillWanted } : { name, check: stillWanted },
+                ),
+            };
         }
         case "inlayImage": {
             // An image the server cannot draw (no canvas there): a stored asset (Lua
@@ -796,52 +1007,9 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 if (objectUrl) URL.revokeObjectURL(objectUrl);
             }
         }
-        case "chatOutput": {
-            // The `chatOutput` listeners of a server send's reply, in order. Each gets the speaker and
-            // the chat as they are now (a plain copy) and indices looked up again: an earlier listener
-            // may have changed, reordered, or deleted them. A listener's throw is logged and the next
-            // one runs, as in the tab's own send.
-            const { chaId, chatId } = context.chatRef;
-            const messageId = String(payload.messageId);
-            const speakerId = String(payload.speakerId);
-            const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-            // The speaker's chats (another character in a group) are pinned and loaded before each
-            // listener: its copy carries them all, and an earlier listener may have changed them.
-            const releaseSpeaker = pinChats(speakerId);
-            try {
-                // The live set, as the tab's own send walks it: a listener an earlier one removed does not
-                // run, one it added does.
-                for (const listener of pluginHooks.chatOutput) {
-                    stillWanted();
-                    await loadChats(speakerId);
-                    stillWanted();
-                    // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
-                    const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
-                    const owner = characterList()[characterIndex];
-                    const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
-                    const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
-                    const speaker = characterList().find((entry) => entry?.chaId === speakerId);
-                    if (!owner || !chat || !speaker) {
-                        throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
-                    }
-                    try {
-                        await invokeHook(listener, context, {
-                            // The legacy shape a plugin listener gets: the speaker with its chats.
-                            char: withChatsCopy(plain(speaker)),
-                            chat: plain(chat),
-                            characterIndex,
-                            chatIndex,
-                            messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
-                        });
-                    } catch (error) {
-                        console.error(error);
-                    }
-                }
-            } finally {
-                releaseSpeaker();
-            }
+        case "chatOutput":
+            await runChatOutputListeners(context, payload as CallbackPayloads["chatOutput"], stillWanted);
             return true;
-        }
         case "imggen": {
             // The image view of a server send's reply: `stableDiff` with the tab's image settings and
             // keys; its prompt request runs for the job's chat, preset, and persona.
@@ -937,22 +1105,49 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                     finish();
                     return { success: false, content: fullText };
                 }
-                // The text so far goes out as `chunk` messages: the first at once, so the server knows
-                // it is a stream; then the newest text at most every 50 ms and at the end.
-                let sent: string | null = null;
+                // The first chunk announces the stream. Only new text follows at most every 50 ms;
+                // snapshots repair a failed send, a replaced transport, or a server's sequence gap.
+                const negotiated = event.chunks === "append";
+                let seq = 0;
+                let flushedLength: number | null = null;
+                let sentLength = 0;
+                let sentOn = transports.get(entry.jobId);
+                let needSnapshot = false;
                 let lastSent = 0;
-                const flush = () => {
+                const flush = (snapshot = false) => {
                     if (timer !== null) {
                         clearTimeout(timer);
                         timer = null;
                     }
-                    if (entry.cancelled || sent === fullText) {
+                    const transport = transports.get(entry.jobId);
+                    if (
+                        entry.cancelled ||
+                        (flushedLength === fullText.length &&
+                            !snapshot &&
+                            (!negotiated || (!needSnapshot && transport === sentOn)))
+                    ) {
                         return;
                     }
-                    sent = fullText;
+                    flushedLength = fullText.length;
                     lastSent = Date.now();
-                    transports.get(entry.jobId)?.send({ type: "chunk", id: entry.id, text: fullText });
+                    if (!negotiated) {
+                        transport?.send({ type: "chunk", id: entry.id, text: fullText });
+                        return;
+                    }
+                    seq += 1;
+                    const frame: ChannelChunk =
+                        snapshot || needSnapshot || transport !== sentOn
+                            ? { type: "chunk", id: entry.id, seq, text: fullText }
+                            : { type: "chunk", id: entry.id, seq, append: fullText.slice(sentLength) };
+                    if (transport?.send(frame)) {
+                        needSnapshot = false;
+                        sentLength = fullText.length;
+                        sentOn = transport;
+                    } else {
+                        needSnapshot = true;
+                    }
                 };
+                if (negotiated) entry.resendChunks = () => flush(true);
                 flush();
                 for (;;) {
                     const read = await reader.read();
@@ -974,11 +1169,17 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
                 }
                 finish();
                 flush();
+                if (negotiated) {
+                    const state = requests.get(entry.id);
+                    if (state && !entry.cancelled) state.providerSnapshot = { seq, text: fullText };
+                    return { success: true, streamed: true, seq };
+                }
                 return { success: true, streamed: true };
             } catch (error) {
                 release();
                 throw error;
             } finally {
+                entry.resendChunks = undefined;
                 if (timer !== null) {
                     clearTimeout(timer);
                     timer = null;
@@ -992,6 +1193,106 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
     }
 }
 
+/**
+ * The `chatOutput` listeners of a server send's reply, in order. Each gets the speaker and the chat
+ * as they are now (a plain copy) and indices looked up again: an earlier listener may have changed,
+ * reordered, or deleted them. A listener's throw is logged and the next one runs, as in the tab's
+ * own send. Throws `CallbackFailed` (`hook`) when the chat or the speaker is gone.
+ */
+async function runChatOutputListeners(
+    context: PluginCallContext,
+    payload: CallbackPayloads["chatOutput"],
+    stillWanted: () => void,
+): Promise<void> {
+    const { chaId, chatId } = context.chatRef;
+    const messageId = String(payload.messageId);
+    const speakerId = String(payload.speakerId);
+    const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+    const participants = () => {
+        const visible = characterList().filter((entry) => !isArchivedGroup(entry));
+        const characterIndex = visible.findIndex((entry) => entry?.chaId === chaId);
+        const speaker = visible.find((entry) => entry?.chaId === speakerId);
+        if (characterIndex === -1 || !speaker) {
+            throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+        }
+        return { characterIndex, speaker };
+    };
+    // Each listener gets a fresh copy of the speaker and all its chats.
+    const releaseSpeaker = pinChats(speakerId);
+    try {
+        // The live set, as the tab's own send walks it: a listener an earlier one removed does not
+        // run, one it added does.
+        for (const listener of pluginHooks.chatOutput) {
+            stillWanted();
+            participants();
+            await loadChats(speakerId, true);
+            stillWanted();
+            const { characterIndex, speaker } = participants();
+            const chatIndex = activeChatList(chaId).findIndex((entry) => entry.id === chatId);
+            const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
+            if (!chat) {
+                throw new CallbackFailed("hook", "The chat the output listeners run for is gone");
+            }
+            try {
+                await invokeHook(listener, context, {
+                    // The legacy shape a plugin listener gets: the speaker with its chats.
+                    char: withChatsCopy(plain(speaker)),
+                    chat: plain(chat),
+                    characterIndex,
+                    chatIndex,
+                    messageIndex: chat.message.findIndex((message) => message.chatId === messageId),
+                });
+            } catch (error) {
+                console.error(error);
+            }
+        }
+    } finally {
+        releaseSpeaker();
+    }
+}
+
+/**
+ * The `chatOutput` listeners a server job skipped because this tab was away when its replies
+ * completed (`done.skipped`), run now for each reply, in order, with the chat's own ids as the call
+ * context (no live callback: an aux request from a listener names no parent). The caller has made
+ * the chat current first and holds plugin work (`holdGenerationPluginWork`), so no deferred reload
+ * empties the registry meanwhile; the plugins' startup is awaited (`pluginsStarted`: a boot resume
+ * reaches here before the guests have registered their listeners). A chat or speaker gone meanwhile
+ * is logged, and the other hooks of the list (`editoutput`, `replacerafterRequest`) have nothing to
+ * run late. Nothing runs with no listener registered or no plugin context for the chat.
+ */
+export async function replaySkippedListeners(
+    ref: ChatRef,
+    terminal: Extract<GenerationTerminalEvent, { type: "done" }>,
+): Promise<void> {
+    const replies = (terminal.skipped ?? []).filter((entry) => entry.name === "chatOutput");
+    if (replies.length === 0) {
+        return;
+    }
+    const { pluginsStarted } = await import("../plugins/plugins.svelte");
+    await pluginsStarted();
+    if (pluginHooks.chatOutput.size === 0) {
+        return;
+    }
+    const context = capturePluginContext(ref);
+    if (!context) {
+        return;
+    }
+    for (const entry of replies) {
+        try {
+            await runChatOutputListeners(context, entry.payload, () => {});
+        } catch (error) {
+            console.error("[Channel]", error);
+        }
+    }
+}
+
+/**
+ * A barrier miss, discarded key, or failed flush answers `failed`/`barrier`; an ordinary hook throw
+ * answers `failed`/`hook` (explicit `CallbackFailed` preserves its class).
+ * `src/ts/storage/resourceSync.svelte.ts` flushes the mutation scope even after a hook throws;
+ * its barrier failure takes precedence over the hook error.
+ */
 async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): Promise<ChannelAnswer> {
     const failedAnswer = (failure: CallbackFailure, error: string, discarded?: string[]): ChannelAnswer => ({
         type: "answer",
@@ -1019,9 +1320,10 @@ async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): 
         threw = true;
         hookError = error;
     }
-    // The hook's changes are settled even when it threw: a barrier failure wins over its error.
+    // Start the scoped flush even if the hook threw. An interrupted wait fails the barrier
+    // while the write continues.
     try {
-        const { discarded } = await flushResources({ scope });
+        const { discarded } = await waitForResourceFlush(flushResources({ scope }), entry.abort.signal);
         if (discarded.length > 0) {
             return failedAnswer("barrier", "A conflict discarded changes the callback made", discarded);
         }
@@ -1092,10 +1394,28 @@ function holdChild(jobId: string, event: GenerationCallbackEvent, parent: Outsta
     heldChild = { jobId, event, parent, timer: setTimeout(expire, Math.max(0, event.deadline - Date.now())) };
 }
 
+/**
+ * Admits one live child of the top live root. A replacement waits for that root's cancelled child
+ * hooks to drain and never starts past its own deadline; `server/src/jobs/channel.ts` owns timeout
+ * outcomes. Duplicate deliveries use the cached answer; an unknown replay is refused as protocol.
+ */
 function handleCallback(jobId: string, event: GenerationCallbackEvent) {
+    if (transports.get(jobId)?.viewing?.()) {
+        console.warn("[Channel] Refused a callback on a viewer follow", jobId, event.id);
+        remember(event.id, { jobId, answer: null, callback: true });
+        answer(jobId, {
+            type: "answer",
+            id: event.id,
+            outcome: "failed",
+            failure: "protocol",
+            error: "A viewer cannot run callbacks",
+        });
+        return;
+    }
     const known = requests.get(event.id);
     if (known) {
-        // A duplicate (a reattach): never run twice; the answer goes out when it exists.
+        // A reattach may have lost even the last chunk: restore the text before the cached answer.
+        resendProviderSnapshot(jobId, event.id);
         if (known.answer) {
             answer(jobId, known.answer);
         }
@@ -1108,6 +1428,10 @@ function handleCallback(jobId: string, event: GenerationCallbackEvent) {
     if (event.replay) {
         refuse("The callback may already have run before this page loaded; it is not run again");
         return;
+    }
+    // A new callback means the server's client lane has settled every earlier finished callback.
+    for (const state of requests.values()) {
+        if (state.answer || state.retired) delete state.providerSnapshot;
     }
     const live = outstanding.filter((entry) => !entry.cancelled);
     const top = live[live.length - 1];
@@ -1219,6 +1543,7 @@ export function recentEmotions(chaId: string): Record<string, string[]> {
 
 /** Routes one channel event of `jobId`'s socket; answers go out through `transport`. */
 export function handleChannelEvent(jobId: string, event: GenerationChannelEvent, transport: ChannelTransport) {
+    if (event.type === "chunkResync" && transport.viewing?.()) return;
     transports.set(jobId, transport);
     switch (event.type) {
         case "notice": {
@@ -1266,6 +1591,9 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
         case "callback":
             handleCallback(jobId, event);
             return;
+        case "chunkResync":
+            resendProviderSnapshot(jobId, event.id);
+            return;
         case "cancel": {
             if (heldChild?.event.id === event.id) {
                 retireHeldChild();
@@ -1279,6 +1607,7 @@ export function handleChannelEvent(jobId: string, event: GenerationChannelEvent,
             }
             // A cancelled request is finished: it can be forgotten, and a late duplicate stays dropped.
             const state = requests.get(event.id);
+            if (state) delete state.providerSnapshot;
             const running = outstanding.some((entry) => entry.id === event.id);
             if (state && !state.answer && !running) {
                 state.retired = true;
@@ -1364,9 +1693,14 @@ export async function stopMemoryRun(jobId: string, runId: string): Promise<void>
     }
 }
 
-/** The job ended: its questions and statuses are dropped; modal notices stay and callbacks stop starting hooks. */
+/**
+ * The job ended: its questions and queued `alertWait`/`alertClear`/`alertToast` are dropped; modal
+ * notices stay and callbacks stop starting hooks. Its status clears only while that exact object
+ * still owns the alert slot, preserving a newer writer's status.
+ */
 export function endJobChannel(jobId: string) {
     hydrations.delete(jobId);
+    jobStreaming.delete(jobId);
     const status = jobStatuses.get(jobId);
     jobStatuses.delete(jobId);
     if (status) {
@@ -1404,8 +1738,11 @@ export function endJobChannel(jobId: string) {
     }
     resumeHeldChild();
     for (const [id, state] of requests) {
-        if (state.jobId === jobId && !state.answer && !outstanding.some((entry) => entry.id === id)) {
-            state.retired = true;
+        if (state.jobId === jobId) {
+            delete state.providerSnapshot;
+            if (!state.answer && !outstanding.some((entry) => entry.id === id)) {
+                state.retired = true;
+            }
         }
     }
     transports.delete(jobId);

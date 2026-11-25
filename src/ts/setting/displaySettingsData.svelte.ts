@@ -10,6 +10,7 @@ import { itemsById } from "./sections";
 import { updateAnimationSpeed } from "../gui/animation";
 import { guiSizeText, updateGuisize } from "../gui/guisize";
 import { updateTextThemeAndCSS } from "../gui/colorscheme";
+import { COMPLETION_WAIT_MAX_SECONDS } from "../../../shared/database.ts";
 
 /** Every Display item, in tab and section order. */
 export const displaySettingsItems: SettingItem[] = [
@@ -19,7 +20,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "theme",
         bindKey: "theme",
-        classes: "mt-4",
         options: {
             selectOptions: [
                 { value: "metatron", labelKey: "metatronTheme" },
@@ -52,7 +52,6 @@ export const displaySettingsItems: SettingItem[] = [
             max: 200,
             customText: (value) => `${value}%`,
         },
-        classes: "mt-4",
         keywords: ["waifu", "width"],
     },
     {
@@ -66,7 +65,6 @@ export const displaySettingsItems: SettingItem[] = [
             max: 150,
             customText: (value) => `${value}%`,
         },
-        classes: "mt-4",
         keywords: ["waifu", "width"],
     },
 
@@ -89,7 +87,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "textColor",
         bindKey: "textTheme",
-        classes: "mt-4",
         onChange: () => updateTextThemeAndCSS(),
         options: {
             selectOptions: [
@@ -112,7 +109,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "font",
         bindKey: "font",
-        classes: "mt-4",
         onChange: () => updateTextThemeAndCSS(),
         options: {
             selectOptions: [
@@ -146,7 +142,6 @@ export const displaySettingsItems: SettingItem[] = [
         labelKey: "customCSS",
         helpKey: "customCSS",
         bindKey: "customCSS",
-        classes: "mt-4",
         onChange: () => updateTextThemeAndCSS(),
         keywords: ["custom", "css"],
     },
@@ -157,7 +152,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "UISize",
         bindKey: "zoomsize",
-        classes: "mt-4",
         options: { min: 50, max: 200 },
         keywords: ["ui", "size", "zoom"],
     },
@@ -294,6 +288,7 @@ export const displaySettingsItems: SettingItem[] = [
         id: "display.showMemoryLimit",
         type: "check",
         labelKey: "showMemoryLimit",
+        helpKey: "showMemoryLimit",
         bindKey: "showMemoryLimit",
         keywords: ["memory", "limit"],
     },
@@ -457,7 +452,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "assetWidth",
         bindKey: "assetWidth",
-        classes: "mt-4",
         options: {
             min: -1,
             max: 40,
@@ -506,6 +500,19 @@ export const displaySettingsItems: SettingItem[] = [
 
     // Sound & notifications tab: Notifications
     { id: "display.notification", type: "custom", componentId: "NotificationToggle", keywords: ["notification"] },
+    {
+        id: "display.completionWaitMaxSeconds",
+        type: "number",
+        labelKey: "completionWaitMaxSeconds",
+        helpKey: "completionWaitMaxSeconds",
+        bindKey: "completionWaitMaxSeconds",
+        options: {
+            min: COMPLETION_WAIT_MAX_SECONDS.min,
+            max: COMPLETION_WAIT_MAX_SECONDS.max,
+            clampOnCommit: { defaultValue: COMPLETION_WAIT_MAX_SECONDS.default, wholeNumber: true },
+        },
+        keywords: ["notification", "plugin", "wait", "remote host", "time limit"],
+    },
 ];
 
 /** A tab of the Display page: its label and its sections. */
@@ -642,7 +649,7 @@ export const displaySettingsTabs: DisplaySettingsTab[] = [
             {
                 id: "display.sound.notifications",
                 labelKey: "settingsSectionNotifications",
-                items: itemsById(displaySettingsItems, ["display.notification"]),
+                items: itemsById(displaySettingsItems, ["display.notification", "display.completionWaitMaxSeconds"]),
             },
         ],
     },

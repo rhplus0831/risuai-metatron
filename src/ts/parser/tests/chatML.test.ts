@@ -1,5 +1,9 @@
 import fc from "fast-check";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import ts from "typescript";
 import { expect, test, vi } from "vitest";
+import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { parseChatML } from "../chatML";
 
 vi.mock(import("../parser.svelte"), () => ({
@@ -10,6 +14,51 @@ const anythingNotToken = fc
     .string({ unit: "grapheme" })
     .filter((s) => s !== "<|im_start|>" && s !== "<|im_sep|>" && s !== "<|im_end|>");
 const anyRole = fc.constantFrom("assistant", "system", "user");
+
+test("type-checks standalone and returns shared OpenAI messages", () => {
+    const filename = path.resolve("src/ts/parser/chatML.ts");
+    const options: ts.CompilerOptions = {
+        target: ts.ScriptTarget.ES2023,
+        module: ts.ModuleKind.ESNext,
+        moduleResolution: ts.ModuleResolutionKind.Bundler,
+        allowImportingTsExtensions: true,
+        noEmit: true,
+        strict: true,
+        skipLibCheck: true,
+        types: [],
+    };
+    const host = ts.createCompilerHost(options);
+    const getSourceFile = host.getSourceFile;
+    const boundaries = new Map([
+        [
+            path.resolve("src/ts/parser/parser.svelte.ts"),
+            "export declare function risuChatParser(text: string, arg: unknown): string;",
+        ],
+        [
+            path.resolve("src/ts/storage/chatStore.svelte.ts"),
+            "export interface ChatRef { chaId: string; chatId: string; }",
+        ],
+    ]);
+    host.getSourceFile = (file, target, onError, fresh) => {
+        const source = boundaries.get(file);
+        if (source !== undefined || file === filename) {
+            return ts.createSourceFile(file, source ?? readFileSync(file, "utf8"), target, true);
+        }
+        return getSourceFile(file, target, onError, fresh);
+    };
+    const program = ts.createProgram([filename], options, host);
+    expect(ts.getPreEmitDiagnostics(program).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"))).toEqual(
+        [],
+    );
+
+    const messages: OpenAIChat[] | null = parseChatML(
+        "<|im_start|>system<|im_sep|>Rules<|im_end|><|im_start|>assistant<|im_sep|><Thoughts>Reason</Thoughts>Answer<|im_end|>",
+    );
+    expect(messages).toEqual([
+        { role: "system", content: "Rules", thoughts: [] },
+        { role: "assistant", content: "Answer", thoughts: ["Reason"] },
+    ]);
+});
 
 test("returns null if input does not start with <|im_start|>", () => {
     fc.assert(

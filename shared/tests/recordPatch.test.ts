@@ -216,6 +216,27 @@ describe("checkItemPatch and applyItemPatch", () => {
 });
 
 describe("diffFields and diffItems", () => {
+    it("addresses declared name-keyed items by name while preferring unique ids", () => {
+        const old = [
+            { name: "first", enabled: true },
+            { name: "second", enabled: true },
+        ];
+        const next = [old[0], { ...old[1], enabled: false }];
+        expect(diffItems(old, next, { itemKey: "name" })).toEqual({
+            itemKey: "name",
+            items: [],
+            changes: [{ id: "second", set: { enabled: false }, remove: [] }],
+        });
+        expect(diffItems(old, next)).toBeNull();
+        const identified = old.map((entry, index) => ({ id: `id-${index}`, ...entry }));
+        expect(
+            diffItems(identified, [identified[0], { ...identified[1], enabled: false }], { itemKey: "name" }),
+        ).toEqual({
+            items: [],
+            changes: [{ id: "id-1", set: { enabled: false }, remove: [] }],
+        });
+    });
+
     it("diffFields finds the fields whose JSON text differs, own keys only, and gives up on a changed __proto__", () => {
         // Top-level key order is not a change; a nested value's key order is (the texts differ), so
         // such a field is carried again with the same value, never left out when its value changed.

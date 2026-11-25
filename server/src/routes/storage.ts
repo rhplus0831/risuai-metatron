@@ -16,17 +16,63 @@ import {
 import { assetExtension, assetMimeType, isActiveAssetExtension } from "../../../shared/assetMime.ts";
 import { mkdirDurable, syncDir } from "../data/durableWrite.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
-import { assetVerification, contentNameHash } from "../http/assetVerification.ts";
+import { assetVerification, contentNameHash, type AssetVerificationOptions } from "../http/assetVerification.ts";
 import {
     THUMBNAIL_VERSION,
     ThumbnailBusy,
     ThumbnailsUnavailable,
     type ThumbnailService,
 } from "../http/assetThumbnails.ts";
+import { bumpAssetLease, withAssetLocks } from "../http/assetLeases.ts";
 import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
+import { UNTRUSTED_CONTENT_CSP } from "../http/securityHeaders.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
+import { limitedBody, RequestBodyError } from "./limitedBody.ts";
+
+/**
+ * Logical asset-file storage, URL serving, and batch transfer. Only assets/ is a namespace; auth,
+ * resource databases, caches, and staging remain unreachable. Logical names become reversible,
+ * case-safe single path components through encodeFileName; headers and URL keys use strict hex
+ * UTF-8. Reads open regular files without following symlinks, and derive length and bytes from the
+ * same handle. Registration clears abandoned save/.tmp staging files; one process owns the save.
+ *
+ * Every route uses server/src/app.ts's storage limiter before JWT auth. GET /api/read returns an
+ * empty 200 for a missing/unresolvable key; GET /api/list returns only decodable regular files.
+ * GET /api/remove validates every $$-joined header key, attempts every removal, and lists failed
+ * logical keys in a 500 response. POST /api/write takes raw bytes, including empty files. Writes/removals
+ * enter the maintenance gate only for mutation and answer 503 with Retry-After: 5 while closed;
+ * reads stay available. Publication and reuse use claimAssetKey's lock and one-hour lease, shared
+ * with server/src/data/assetLifecycle.ts; in-process callers hold their own admission.
+ *
+ * POST /api/assets/write streams shared/assetBatch.ts records through flushed temporary files,
+ * admitting publication per record rather than across body reads. Failure drops the current stage,
+ * drains the body, and retains published records; success syncs target directories before answering.
+ * POST /api/assets/read returns an ordered no-store record stream, including duplicates and empty
+ * records for absent files. These routes and /api/write use the app's default 100 MiB body cap.
+ * POST /api/assets/missing instead authenticates before its 64 KiB body cap: 1..512 names, four
+ * concurrent hashes and 256 MiB of reads by default, sorted key locks through verified presence and
+ * lease renewal, missing names deduplicated in input order, and no-store on success only.
+ *
+ * GET/HEAD /api/asset/<hex> authenticates before file access (failures are 401); malformed keys are
+ * 400 and missing/non-regular files 404. shared/assetMime.ts supplies MIME/download classification;
+ * assetHeaders wraps errors, 304s, and redirects too. Content names verified by
+ * server/src/http/assetVerification.ts get strong SHA-256 validators and private year-long immutable
+ * caching; others use weak stat validators and private no-cache, queuing unknown content hashes.
+ * Matching If-None-Match precedes Range; one byte range can answer 206/416, malformed/multiple ranges
+ * are ignored, and HEAD, empty files, or any If-Range use full responses. Thumbnail queries have
+ * size/version-specific validators; deterministic originals and transient failures redirect 307 to
+ * the query-free URL with x-risu-thumbnail: original, unavailable, busy, or error. Failures use
+ * no-store and never produce a thumbnail 5xx.
+ */
+
+/** Awaited content-verified presence-check endpoint. */
+export const ASSET_MISSING_PATH = "/api/assets/missing";
+/** Maximum number of names accepted by one presence check. */
+export const MAX_ASSET_MISSING_NAMES = 512;
+/** Presence-check JSON body cap, applied after JWT authentication. */
+export const MAX_ASSET_MISSING_BODY_BYTES = 64 * 1024;
 
 /**
  * Folders under `save/` that hold user files. A logical key `<namespace>/<name>` is stored at
@@ -75,7 +121,8 @@ function percentEncodeByte(byte: number): string {
  * Returns null for an empty name or one that fits neither form.
  */
 export function encodeFileName(name: string): string | null {
-    if (name === "") {
+    // UTF-8 needs at least one byte per code unit, before either filename encoding.
+    if (name === "" || name.length > MAX_FILE_NAME_BYTES) {
         return null;
     }
     const bytes = Buffer.from(name, "utf-8");
@@ -188,10 +235,88 @@ export async function storageFileExists(savePath: string, key: string): Promise<
 }
 
 /**
- * Writes a stored file by logical key in-process (a server job's asset write), staged under
- * `save/.tmp/`, flushed, and renamed into place with its directory synced. The caller holds the job's
- * admission: a job ends before maintenance replaces the data. A caller that already hashed the
- * bytes can supply that digest; otherwise content names are hashed while streaming into staging.
+ * The publish/reuse contract. Verification, publication, and the one-hour lease share the sweep's
+ * key lock. Bytes use the private durable staging primitive; publish is for already-staged files.
+ * Never call writeStorageFile (or another claim) from either callback: this lock is not reentrant.
+ * Restore/import installation instead holds snapshots.exclusive through maintenance and epoch change.
+ */
+export async function claimAssetKey(
+    savePath: string,
+    key: string,
+    options: {
+        verify?: (fullPath: string) => Promise<boolean>;
+        publish?: (fullPath: string) => Promise<void>;
+        bytes?: Uint8Array | (() => Promise<Uint8Array>);
+        hashHex?: string;
+        signal?: AbortSignal;
+    } = {},
+): Promise<"present" | "published" | "missing"> {
+    const fullPath = resolveStorageKey(savePath, key);
+    if (fullPath === null) throw new Error(`No storage location for ${key}`);
+    return withAssetLocks(
+        [fullPath],
+        async () => {
+            if (await options.verify?.(fullPath)) {
+                options.signal?.throwIfAborted();
+                bumpAssetLease(fullPath);
+                return "present";
+            }
+            options.signal?.throwIfAborted();
+            if (options.publish) {
+                await options.publish(fullPath);
+            } else if (options.bytes !== undefined) {
+                const bytes = typeof options.bytes === "function" ? await options.bytes() : options.bytes;
+                options.signal?.throwIfAborted();
+                const staged = await stageStorageFile(savePath, key, bytes, options.hashHex);
+                try {
+                    options.signal?.throwIfAborted();
+                    await staged.publish(fullPath);
+                } finally {
+                    await staged.discard();
+                }
+            } else {
+                return "missing";
+            }
+            bumpAssetLease(fullPath);
+            return "published";
+        },
+        options.signal,
+    );
+}
+
+/**
+ * Stages bytes without a key lock. Its private publish callback must run under claimAssetKey:
+ * flush before rename, record the staged identity, then sync the destination directory.
+ */
+async function stageStorageFile(savePath: string, key: string, bytes: Uint8Array, hashHex?: string) {
+    const tmpPath = path.join(savePath, TMP_DIR);
+    await fs.mkdir(tmpPath, { recursive: true });
+    const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
+    const discard = () => fs.rm(stagedPath, { force: true }).catch(() => {});
+    const expectedHex = contentNameHash(key);
+    const hash = expectedHex !== null && hashHex === undefined ? createHash("sha256") : null;
+    try {
+        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx", flush: true });
+        const stat = expectedHex === null ? null : await fs.stat(stagedPath, { bigint: true });
+        const digest = hash ? hash.digest("hex") : hashHex;
+        return {
+            discard,
+            async publish(fullPath: string) {
+                await mkdirDurable(path.dirname(fullPath));
+                await fs.rename(stagedPath, fullPath);
+                if (stat) assetVerification.recordVerification(fullPath, stat, digest === expectedHex);
+                await syncDir(path.dirname(fullPath));
+            },
+        };
+    } catch (error) {
+        await discard();
+        throw error;
+    }
+}
+
+/**
+ * In-process writes stage outside the key lock, then publish and lease through claimAssetKey.
+ * The caller holds job/storage admission until completion; maintenance waits for admitted writes.
  */
 export async function writeStorageFile(
     savePath: string,
@@ -199,28 +324,12 @@ export async function writeStorageFile(
     bytes: Uint8Array,
     hashHex?: string,
 ): Promise<void> {
-    const fullPath = resolveStorageKey(savePath, key);
-    if (fullPath === null) {
-        throw new Error(`No storage location for ${key}`);
-    }
-    const tmpPath = path.join(savePath, TMP_DIR);
-    await mkdirDurable(path.dirname(fullPath));
-    await fs.mkdir(tmpPath, { recursive: true });
-    const stagedPath = path.join(tmpPath, `${randomUUID()}.tmp`);
-    const expectedHex = contentNameHash(key);
-    const hash = expectedHex !== null && hashHex === undefined ? createHash("sha256") : null;
+    if (resolveStorageKey(savePath, key) === null) throw new Error(`No storage location for ${key}`);
+    const staged = await stageStorageFile(savePath, key, bytes, hashHex);
     try {
-        await fs.writeFile(stagedPath, hash ? hashedChunks(bytes, hash) : bytes, { flag: "wx", flush: true });
-        const stat = expectedHex === null ? null : await fs.stat(stagedPath, { bigint: true });
-        const digest = hash ? hash.digest("hex") : hashHex;
-        await fs.rename(stagedPath, fullPath);
-        if (stat) {
-            assetVerification.recordVerification(fullPath, stat, digest === expectedHex);
-        }
-        await syncDir(path.dirname(fullPath));
-    } catch (error) {
-        await fs.rm(stagedPath, { force: true }).catch(() => {});
-        throw error;
+        await claimAssetKey(savePath, key, { publish: staged.publish });
+    } finally {
+        await staged.discard();
     }
 }
 
@@ -326,7 +435,13 @@ function matchedAssetEtag(header: string | undefined, representation: AssetRepre
           : null;
 }
 
-/** Owns the handle until a byte stream takes it, including conditional, HEAD, and range answers. */
+/**
+ * Owns the handle until a byte stream takes it, including conditional, HEAD, and range answers. A
+ * matching `If-None-Match` answers 304 before Range is looked at. One satisfiable `bytes=` range is a
+ * 206 with `Content-Range` and its own length, an unsatisfiable one a 416 whose `Content-Range` names
+ * only the size, and a malformed or multiple range is ignored; HEAD, an empty file, and any request
+ * with `If-Range` ignore Range (HEAD answers the full length, an empty file an empty 200).
+ */
 async function serveAssetFile(
     c: Context<AppEnv>,
     handle: FileHandle,
@@ -400,12 +515,14 @@ function thumbnailFailure(c: Context<AppEnv>, hex: string, error: unknown): Resp
     return thumbnailRedirect(c, hex, "error");
 }
 
-const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
+/**
+ * Runs after the asset route on every answer it gives, errors, 304s, and thumbnail redirects included:
+ * the CSP sandbox, `nosniff`, same-origin CORP, `Accept-Ranges: bytes`, `inline` unless the route
+ * chose `attachment`, and `no-store` on an error or an answer without its own `Cache-Control`.
+ */
+export const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
     await next();
-    c.header(
-        "Content-Security-Policy",
-        "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
-    );
+    c.header("Content-Security-Policy", UNTRUSTED_CONTENT_CSP);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Cross-Origin-Resource-Policy", "same-origin");
     c.header("Accept-Ranges", "bytes");
@@ -435,6 +552,8 @@ export function registerStorageRoutes(
         thumbnails: ThumbnailService;
         /** Most records of one batch write (default `MAX_ASSET_BATCH_RECORDS`; tests lower it). */
         maxBatchRecords?: number;
+        /** Limits for awaited content verification (defaults: four hashes and 256 MiB per request). */
+        missingVerification?: Omit<AssetVerificationOptions, "signal">;
     },
 ) {
     const { savePath, auth, limiter, maintenance, thumbnails, maxBatchRecords } = arg;
@@ -505,6 +624,27 @@ export function registerStorageRoutes(
         }
     });
 
+    // Stored asset bytes by URL (`<img src>`, media): the path suffix is the hex UTF-8 key. The JWT is
+    // checked before any file access (every failure a 401); a malformed key is a 400, a missing one,
+    // one with no storage location, or a missing or non-regular file a 404; the bytes, stat, and
+    // validators come from one open handle. The media type is the extension's (`shared/assetMime.ts`);
+    // an active type is an `application/octet-stream` attachment. An answer is `private, no-cache` with
+    // the weak tag `W/"<size>-<mtimeNs>-<ino>"` unless its canonical content name (`contentNameHash`)
+    // is verified against this handle's stat: then it is `private, max-age=31536000, immutable` with
+    // the strong `"sha256-<hex>"`, and the current weak tag still matches (the strong one first), so a
+    // 304 carries the tag a cached copy sent and upgrades a weak-tagged copy. An unverified content
+    // name queues a background verification for a later request.
+    //
+    // `?w=256` or `?w=512` (the short side's size class, not the output width; any other, empty, or
+    // repeated `w` is a 400) asks for the WebP thumbnail. Its tags add `-w<size>-v<THUMBNAIL_VERSION>`
+    // (the weak one also carries the device), so they never equal the original's, another size's, or
+    // another version's. A concrete tag match is a 304 before the service runs, with no decode; a lone
+    // `*` goes through it and applies to a WebP only. A WebP is served from its cache file with the
+    // original's Range, HEAD, and 304 rules. Otherwise the answer is a `307 Temporary Redirect` to the
+    // query-free `/api/asset/<hex>` without an ETag, `x-risu-thumbnail` naming why: `original` (the
+    // service's decision, with the original's Cache-Control and never a 304), or `unavailable` (the
+    // encoder failed to load), `busy` (a full queue), and `error` (any other failure, logged), each
+    // `no-store`. A thumbnail failure is never a 5xx.
     app.get("/api/asset/*", assetHeaders, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -550,6 +690,8 @@ export function registerStorageRoutes(
                 await handle.close();
                 return c.json({ error: "Not found" }, 404);
             }
+            // Recent use of this open handle, not an atomic claim of the pathname.
+            bumpAssetLease(fullPath);
             const expectedHex = contentNameHash(key);
             const verification =
                 expectedHex === null ? "unknown" : assetVerification.lookupVerification(fullPath, stat);
@@ -624,7 +766,8 @@ export function registerStorageRoutes(
         if (!header) {
             return c.json({ error: "File path required" }, 400);
         }
-        // Batch form: each key hex-encoded on its own, joined with `$$` (not a hex character).
+        // Batch form: each key hex-encoded on its own, joined with `$$` (not a hex character). Every
+        // segment is resolved before anything is deleted, so a bad one is a 400 that removes nothing.
         const fullPaths = new Map<string, string>();
         for (const segment of header.split("$$")) {
             if (!segment) {
@@ -641,12 +784,13 @@ export function registerStorageRoutes(
         if ("closed" in admitted) {
             return admitted.closed;
         }
+        const failedPaths: string[] = [];
         try {
-            // Sequential; a filesystem error (e.g. missing file) stops the batch with a 500 and
-            // leaves earlier deletions in place.
             for (const [fullPath, key] of fullPaths) {
                 try {
                     await fs.rm(fullPath);
+                } catch {
+                    failedPaths.push(key);
                 } finally {
                     assetVerification.forgetVerification(fullPath);
                     await thumbnails.removeKey(key).catch((error: unknown) => {
@@ -656,6 +800,9 @@ export function registerStorageRoutes(
             }
         } finally {
             admitted.leave();
+        }
+        if (failedPaths.length > 0) {
+            return c.json({ error: "Failed to remove files", failedPaths }, 500);
         }
         return c.json({ success: true });
     });
@@ -729,9 +876,11 @@ export function registerStorageRoutes(
     // across the body read, because maintenance waits for every admitted mutation. At the first
     // failure the writing stops and the staged file is removed, but the rest of the body is still read
     // and dropped before the answer: `@hono/node-server` resets a connection whose body is left unread,
-    // which the client would see as a network failure and resend. Records renamed before the failure
-    // stay in place. A successful batch syncs each target directory once, outside the gate, before
-    // answering; a failed batch skips that sync because none of its writes are acknowledged.
+    // which the client would see as a network failure and resend. A body past the app's cap is such a
+    // failure too, found while reading: it is drained the same way, then `limitedBody` answers 413.
+    // Records renamed before the failure stay in place. A successful batch syncs each target directory
+    // once, outside the gate, before answering; a failed batch skips that sync because none of its
+    // writes are acknowledged.
     app.post(ASSET_BATCH_WRITE_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {
@@ -742,6 +891,7 @@ export function registerStorageRoutes(
         const targetDirs = new Set<string>();
         /** The record whose bytes are being staged. */
         let staged: {
+            key: string;
             target: string;
             file: string;
             out: FileHandle;
@@ -773,6 +923,7 @@ export function registerStorageRoutes(
                 const file = path.join(tmpPath, `${randomUUID()}.tmp`);
                 const expectedHex = contentNameHash(event.name);
                 staged = {
+                    key: event.name,
                     target,
                     file,
                     out: await fs.open(file, "wx"),
@@ -798,11 +949,14 @@ export function registerStorageRoutes(
             try {
                 const targetDir = path.dirname(current.target);
                 await mkdirDurable(targetDir);
-                await fs.rename(current.file, current.target);
+                await claimAssetKey(savePath, current.key, {
+                    signal: c.req.raw.signal,
+                    publish: async (fullPath) => {
+                        await fs.rename(current.file, fullPath);
+                        if (stat) assetVerification.recordVerification(fullPath, stat, ok);
+                    },
+                });
                 targetDirs.add(targetDir);
-                if (stat) {
-                    assetVerification.recordVerification(current.target, stat, ok);
-                }
             } finally {
                 admitted.leave();
             }
@@ -839,8 +993,12 @@ export function registerStorageRoutes(
                     }
                 }
             } catch (error) {
-                // The body could not be read to its end: the client is gone.
+                // The body stopped before its end: past the cap, with the client still sending, or
+                // the client is gone, which leaves nothing to drain.
                 await dropStaged();
+                if (error instanceof RequestBodyError) {
+                    await error.drain();
+                }
                 throw error;
             }
         }
@@ -864,11 +1022,78 @@ export function registerStorageRoutes(
         return c.json({ success: true, written });
     });
 
+    // Verified presence, for an upload that skips what the server holds: `{ names }` (1 to
+    // `MAX_ASSET_MISSING_NAMES`, a body capped at `MAX_ASSET_MISSING_BODY_BYTES` and read only after
+    // `checkAuth`) answers `{ missing }`, each name not proven present once, in the order first asked.
+    // Only a canonical content name (`contentNameHash`) with a storage location can be present, and
+    // only when `assetVerification.verifyFiles` proves its bytes now (four hashes at once and 256 MiB
+    // of reads per request by default): an absent, empty, symlinked, corrupt, changed, or over-budget
+    // file is missing, so the tab uploads it again and the upload repairs it. The success answer is
+    // `no-store` (a 400 or 413 comes before that header). Sorted, abortable key locks cover verification
+    // and the lease of every present answer. No resource mutation, so it stays open during
+    // maintenance; a client that leaves stops the hashes not yet started.
+    app.post(
+        ASSET_MISSING_PATH,
+        limiter,
+        async (c, next) => {
+            const denied = await auth.checkAuth(c);
+            return denied ?? next();
+        },
+        limitedBody(MAX_ASSET_MISSING_BODY_BYTES),
+        async (c) => {
+            const parsed = await readJsonBody(c);
+            if (!parsed.ok) {
+                return parsed.response;
+            }
+            const names: unknown = parsed.body.names;
+            if (
+                !Array.isArray(names) ||
+                names.length === 0 ||
+                names.length > MAX_ASSET_MISSING_NAMES ||
+                names.some(
+                    (name) =>
+                        typeof name !== "string" ||
+                        name.length === 0 ||
+                        Buffer.byteLength(name, "utf-8") > MAX_ASSET_BATCH_NAME_BYTES,
+                )
+            ) {
+                return c.json({ error: `names must be a list of 1 to ${MAX_ASSET_MISSING_NAMES} names` }, 400);
+            }
+            const asked = new Map<string, string | null>();
+            const files = new Map<string, { fullPath: string; expectedHex: string }>();
+            for (const name of names as string[]) {
+                const expectedHex = contentNameHash(name);
+                const fullPath = expectedHex === null ? null : resolveStorageKey(savePath, name);
+                asked.set(name, fullPath);
+                if (fullPath !== null && expectedHex !== null) {
+                    files.set(fullPath, { fullPath, expectedHex });
+                }
+            }
+            const present = await withAssetLocks(
+                [...files.keys()],
+                async () => {
+                    const verified = await assetVerification.verifyFiles([...files.values()], {
+                        ...arg.missingVerification,
+                        signal: c.req.raw.signal,
+                    });
+                    c.req.raw.signal.throwIfAborted();
+                    for (const fullPath of verified) bumpAssetLease(fullPath);
+                    return verified;
+                },
+                c.req.raw.signal,
+            );
+            c.header("Cache-Control", "no-store");
+            return c.json({
+                missing: [...asked].filter(([, file]) => file === null || !present.has(file)).map(([name]) => name),
+            });
+        },
+    );
+
     // One record per asked key, in the order asked (duplicates included), each read as the backup
     // export reads a file (no symlinks, size and bytes from one handle). A key with no storage
     // location, a missing file, a symlink, or a non-regular file is a zero-length record, as `/api/read`
     // answers an empty 200. A file that cannot be read fails the stream. Like `/api/read`, it stays
-    // open under maintenance.
+    // open under maintenance. The answer is a `no-store` octet stream.
     app.post(ASSET_BATCH_READ_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

@@ -61,6 +61,10 @@ function parseConditions(value: unknown): CbsConditions | string {
     return out;
 }
 
+/**
+ * Validates the tab's correlation ids separately from cache identity; strips client emotions from
+ * the render environment. Binding and stored-data admission remain the service's responsibility.
+ */
 export function parseTransformRequest(body: Record<string, unknown>): TransformRequest | string {
     if (!isValidResourceId(body.clientId)) {
         return "clientId must be a resource id";
@@ -141,6 +145,12 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
         if (value.noCache !== undefined && typeof value.noCache !== "boolean") {
             return `targets[${index}].noCache must be a boolean`;
         }
+        if (
+            value.knownKey !== undefined &&
+            (typeof value.knownKey !== "string" || !/^[0-9a-f]{64}$/.test(value.knownKey))
+        ) {
+            return `targets[${index}].knownKey must be a string of exactly 64 lowercase hex characters`;
+        }
         targets.push({
             id: value.id,
             kind: value.kind as TransformTarget["kind"],
@@ -150,6 +160,7 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
             source: value.source,
             ...(cbsConditions ? { cbsConditions } : {}),
             ...(value.noCache ? { noCache: true } : {}),
+            ...(value.knownKey !== undefined ? { knownKey: value.knownKey as string } : {}),
         });
     }
     if (bytes > MAX_TRANSFORM_REQUEST_TEXT_BYTES) {
@@ -172,6 +183,10 @@ export function parseTransformRequest(body: Record<string, unknown>): TransformR
     };
 }
 
+/**
+ * Bounds handler texts, truncates handler errors and accepts cancellations; the service checks
+ * that these ids answer exactly the snapshot's pending targets, and consumes the snapshot only once.
+ */
 export function parseTransformContinue(body: Record<string, unknown>): TransformContinueRequest | string {
     if (!isValidResourceId(body.clientId)) {
         return "clientId must be a resource id";
@@ -186,19 +201,21 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
     const texts: TransformContinueRequest["texts"] = [];
     for (const [index, value] of body.texts.entries()) {
         if (!isPlainObject(value) || !isShortString(value.id, MAX_ID_CHARS)) {
-            return `texts[${index}] must be { id, text } or { id, error }`;
+            return `texts[${index}] must be { id, text }, { id, error } or { id, cancelled: true }`;
         }
-        if (typeof value.text === "string" && value.error === undefined) {
+        if (typeof value.text === "string" && value.error === undefined && value.cancelled === undefined) {
             const size = Buffer.byteLength(value.text);
             if (size > MAX_TRANSFORM_TEXT_BYTES) {
                 return `texts[${index}].text is over ${MAX_TRANSFORM_TEXT_BYTES} bytes`;
             }
             bytes += size;
             texts.push({ id: value.id, text: value.text });
-        } else if (typeof value.error === "string" && value.text === undefined) {
+        } else if (typeof value.error === "string" && value.text === undefined && value.cancelled === undefined) {
             texts.push({ id: value.id, error: value.error.slice(0, MAX_ERROR_CHARS) });
+        } else if (value.cancelled === true && value.text === undefined && value.error === undefined) {
+            texts.push({ id: value.id, cancelled: true });
         } else {
-            return `texts[${index}] must be { id, text } or { id, error }`;
+            return `texts[${index}] must be { id, text }, { id, error } or { id, cancelled: true }`;
         }
     }
     if (bytes > MAX_TRANSFORM_REQUEST_TEXT_BYTES) {
@@ -210,9 +227,14 @@ export function parseTransformContinue(body: Record<string, unknown>): Transform
 /**
  * The script transform: `POST /api/transform` (a `TransformRequest`) and
  * `POST /api/transform/continue` (the second call after the tab's plugin handlers), both answering
- * a `TransformResponse` as JSON. Authenticated, rate-limited, the body capped at
- * `MAX_TRANSFORM_BODY_BYTES`, the resource epoch checked (412 `EpochMismatch`). A render writes
- * nothing, so it does not hold the maintenance gate: a maintenance stops it (503, `Retry-After`). A
+ * a `TransformResponse` as JSON: the first call returns { results, same? }, with { snapshotId,
+ * pending } when targets await the tab's handlers. Continuations return full { results } for
+ * non-cancelled targets; cancelling all pending targets releases the snapshot without a run slot.
+ * `same` belongs only to the first call (`server/src/prompt/transform.ts` partitionKnownResults).
+ * Authenticated before the 8 MiB body cap (`MAX_TRANSFORM_BODY_BYTES`, 413), rate-limited, the
+ * resource epoch checked (412 `EpochMismatch`). Malformed bodies, including a knownKey other than
+ * 64 lowercase hex characters, are 400. A render writes nothing, so it does not hold the maintenance
+ * gate: maintenance stops it (503, Retry-After: 5), as do shutdown and service unavailability. A
  * missing chat, preset, or persona is 404; a snapshot that is gone is 409 `SnapshotExpired`; an id
  * that is not the chat's bound one (the display rule) is 409 `chatBindingMismatch`.
  */

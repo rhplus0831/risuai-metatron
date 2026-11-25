@@ -80,6 +80,37 @@ describe("the redactor", () => {
         expect(createRedactor([]).carries("anything")).toBe(false);
     });
 
+    it("redacts percent escapes in either hex case across text, nested values, and key carries", () => {
+        const redactor = createRedactor(["Ab+/é"]);
+        const forms = ["Ab%2B%2F%C3%A9", "Ab%2b%2f%c3%a9", "Ab%2b%2F%c3%A9"];
+        for (const form of forms) {
+            expect(redactor.text(`keep%2f ${form} keep%aB`)).toBe(`keep%2f ${REDACTED} keep%aB`);
+            expect(redactor.apply({ outer: [{ value: form }] })).toEqual({ outer: [{ value: REDACTED }] });
+            expect(redactor.carries({ outer: [{ [form]: "public" }] })).toBe(true);
+            expect(redactor.carries({ outer: [{ value: form }] })).toBe(true);
+        }
+        expect(redactor.text("ab%2b%2f%c3%a9")).toBe("ab%2b%2f%c3%a9");
+        expect(redactor.carries({ "ab%2b%2f%c3%a9": "public" })).toBe(false);
+    });
+
+    it("trims a bounded trailing encoded credential prefix even halfway through a lowercase hex pair", () => {
+        const redactor = createRedactor(["Ab+/é"]);
+        const captured = "keep%2f Ab%2b%2f%c3%a";
+        expect(redactor.trimPartial(redactor.text(captured))).toBe("keep%2f ");
+    });
+
+    it("preserves unmatched trailing percent spelling: a partial hex digit is not a literal credential prefix", () => {
+        const redactor = createRedactor(["Ab+/é"]);
+        expect(redactor.trimPartial("keep%2f ab%2b%2f%c3%a")).toBe("keep%2f ab%2b%2f%c3%a");
+    });
+
+    it("learns encoded credentials after construction and matches the longest before its encoded prefix", () => {
+        const redactor = createRedactor(["Ab+/"]);
+        redactor.add("Ab+/é");
+        expect(redactor.text("Ab%2b%2f%c3%a9 Ab%2b%2f")).toBe(`${REDACTED} ${REDACTED}`);
+        expect(redactor.carries({ "Ab%2b%2f%c3%a9": "value" })).toBe(true);
+    });
+
     it("collects every named credential's key, its colon-separated parts, and its client email, but not its name or project", () => {
         const secrets = collectSecrets({
             credentials: {

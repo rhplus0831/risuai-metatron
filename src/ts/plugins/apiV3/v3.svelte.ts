@@ -1,4 +1,12 @@
-import { selectedCharacter, characterList, characterSnapshot } from "../../storage/characterStore.svelte";
+import {
+    chatMemoryAlgorithm,
+    chatMemoryMode,
+    legacyMemoryAlgorithm,
+    type ChatMemorySettings,
+} from "../../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
+import { selectedCharacter, characterList } from "../../storage/characterStore.svelte";
+import { isArchivedGroup } from "../../storage/archivedGroup";
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
 import {
@@ -11,9 +19,22 @@ import {
     type PluginProviderOptions,
     type ReplacerFunction,
 } from "../pluginHooks";
-import { SandboxHost } from "./factory";
+import { hostCallSignal, SandboxHost } from "./factory";
+import { databaseAccessRecorderScript } from "./developMode";
 import {
-    addPreparedCharacter,
+    cachedDetachedChat,
+    cachedDetachedChatsForRead,
+    detachedChatReadHitCurrent,
+    type DetachedChatReadHit,
+    detachedChatCacheGeneration,
+    detachedChatCacheHitCurrent,
+    forgetDetachedChat,
+    rememberDetachedChat,
+    touchDetachedChatCache,
+    type DetachedChatCacheHit,
+} from "./detachedChatCache";
+import {
+    addPreparedCharacters,
     checkCharacterInput,
     prepareNewCharacter,
     removeCharacter,
@@ -27,27 +48,38 @@ import {
     setModules,
     setPersonas,
     setPluginArgument,
+    settingsWriteScope,
     updateSettings,
     upsertPlugin,
 } from "src/ts/storage/collectionStore.svelte";
-import { MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
+import { MutationTargetGoneError, MutationValidationError, requireArray } from "src/ts/storage/mutationValidation";
 import {
-    clearPluginStorage,
-    getPluginStorageValue,
-    pluginStorageKeys,
-    removePluginStorageItem,
+    clearOwnedPluginStorage,
+    getOwnedPluginStorageValue,
+    hasOwnedPluginStorageItem,
+    ownedPluginStorageKeyAt,
+    ownedPluginStorageKeyCount,
+    ownedPluginStorageKeys,
+    removeOwnedPluginStorageItem,
     replacePluginCustomStorage,
     setPluginCustomValue,
-    setPluginStorageItem,
+    setOwnedPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
-import { onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
-import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
+import { waitForResourceFlush } from "src/ts/storage/resourceFlushWait";
+import { assertSaveAdmission, flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
+import { selection, selectPersona } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
-import { isForwardedPresetRoot, missingPresetTarget } from "src/ts/storage/settingsViews.svelte";
-import { buildDatabaseSubset } from "src/ts/storage/snapshots.svelte";
+import { isForwardedPresetRoot, missingPresetTarget, type PresetScope } from "src/ts/storage/settingsViews.svelte";
+import {
+    archivedGroupIds,
+    buildDatabaseSubset,
+    pluginCharacterList,
+    pluginCharacterOrder,
+} from "src/ts/storage/snapshots.svelte";
 import {
     currentContext,
     enterContext,
+    hasReadOnlyContext,
     PluginTargetGoneError,
     takeHandoff,
     type PluginCallContext,
@@ -56,11 +88,23 @@ import {
     appendMessage,
     applyChatResult,
     captureChatBaseline,
-    chatList,
+    chatHasUnackedWork,
+    chatHydrationHold,
+    activeChatList,
+    activeChatCount,
+    isActiveChat,
+    installChatTrashState,
+    chatMemberPage,
+    chatMembershipVersion,
     chatOwnerToken,
+    chatProjectionState,
     currentChatRef,
     ensureChatLoaded,
+    chatEntry,
     findChat,
+    heldChatRevision,
+    installChatProjection,
+    isChatBehind,
     isCharacterGenerating,
     chatsLoaded,
     loadChats,
@@ -70,7 +114,12 @@ import {
     selectChat,
     selectedChatIndex,
     withChatsCopy,
+    type ChatBaseline,
+    type ChatRef,
 } from "src/ts/storage/chatStore.svelte";
+import { readChatRefsDetached, type DetachedChatRead } from "src/ts/storage/chatEdits";
+import { getResourceEpoch } from "src/ts/storage/resourceClient";
+import { readWithDeadline } from "src/ts/storage/readDeadline";
 import { SafeLocalPluginStorage, SafeLocalStorage, tagWhitelist } from "../pluginSafeClass";
 import DOMPurify from "dompurify";
 import {
@@ -84,19 +133,33 @@ import {
 } from "src/ts/stores.svelte";
 import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
-import { alertConfirm, alertError, alertNormal, terminalNoticeShown } from "src/ts/alert";
+import { alertConfirm, alertConfirmWithChecklist, alertError, alertNormal, terminalNoticeShown } from "src/ts/alert";
 import { language } from "src/lang";
 import { checkCharOrder, fetchNative, getFetchLogs, globalFetch, readImage, saveAsset } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
+import { applyDisplaySettings } from "src/ts/gui/displayApply";
+import { SECTION_FIELDS } from "../../../../shared/sections.ts";
 import { get } from "svelte/store";
 import { registerMCPModule, registeredCustomPluginMCPs, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
 import { getInlayAsset } from "src/ts/process/files/inlays";
 import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
-import { getLastGrantTime, hasPermissionGrant, recordPermissionGrants } from "./permissionStore";
+import {
+    getLastGrantTime,
+    getPermissionResetCount,
+    hasPermissionGrant,
+    hasStandingGrant,
+    onPermissionGrantsRemoved,
+    recordPermissionGrants,
+    revokePermissionGrants,
+    setStandingPermissionGrants,
+    StalePermissionListError,
+} from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat } from "src/ts/process/index.svelte";
 import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
+import { readStructuredMemoryProjection, readStructuredMemoryRevisions } from "src/ts/process/structuredMemory.svelte";
 import { anyLocalSend } from "src/ts/process/localSends";
 import {
     channelCallbacksRunning,
@@ -108,7 +171,19 @@ import { getModelInfoForMode } from "src/ts/model/modellist";
 import type { ModelModeExtended } from "src/ts/process/request/shared";
 import type { RegexScriptMode as ScriptMode } from "../../../../shared/scripts/regex.ts";
 import { supaMemoryOnCount } from "../../../../shared/characters.ts";
+import { plainClone } from "../../../../shared/presets.ts";
 import { mergeOwnerLore } from "../../../../shared/lore/overrides.ts";
+import {
+    isSealedHypaV3Data,
+    MEMORY_PROJECTIONS_PER_READ,
+    MEMORY_RECHECK_WINDOW_MS,
+    MEMORY_REFRESH_DEADLINE_MS,
+    MEMORY_REVISION_CHATS_MAX,
+    STRUCTURED_MEMORY_ALGORITHM,
+} from "../../../../shared/structuredMemory.ts";
+import type { Chat } from "../../../../shared/database.ts";
+import { compareRevision } from "../../../../shared/resources.ts";
+import { isModelDescriptor } from "../../../../shared/llm/validate.ts";
 import { requestChatDataMain, withRequestChat } from "src/ts/process/request/request";
 import { getModuleLorebooks } from "src/ts/process/modules";
 import {
@@ -123,24 +198,22 @@ import {
     type TTSHookFn,
 } from "src/ts/process/ttsHooks";
 
-/*
-    V3 API for RisuAI Plugins
-
-    Before adding new APIs here, please check the limitations
-
-    - APIs must be a functions
-        - If you want nested objects, first add as a plain function, `_getPluginStorage` for example
-            And add it too _getAliases function ({'pluginStorage':{'getItem': '_getPluginStorage', ... }})
-            This will make pluginStorage.getItem() work in plugins
-        - If you need constants, use _getPropertiesForInitialization to set them up
-            For example apiVersion and apiVersionCompatibleWith are set this way,
-            Accessable in plugins as risuai.apiVersion
-    - APIs must return, or accept as parameters, only the following types:
-        - Serializable data (string, number, boolean, null, array, object)
-        - Class instances marked with __classType = 'REMOTE_REQUIRED'
-        - Callback functions (only as parameters)
-        - Note that Class or Callbacks inside arrays or objects are not supported
-*/
+/**
+ * Host implementation of the guest's `risuai` global, declared by `src/ts/plugins/apiV3/risuai.d.ts`.
+ * `src/ts/plugins/apiV3/factory.ts` turns every guest call into async RPC: expose flat functions,
+ * describe nested aliases in `_getAliases`, and constants in `_getPropertiesForInitialization`.
+ * Values must be serializable data, remote instances marked `__classType = 'REMOTE_REQUIRED'`, or
+ * callback parameters; nested classes and callbacks inside arrays/objects are unsupported.
+ *
+ * Each loaded API object owns its hook context stack (`src/ts/plugins/apiV3/pluginContext.ts`).
+ * Selection-dependent APIs capture `currentContext` synchronously before awaiting, after any
+ * synchronous write refusal: hook calls keep their captured targets; calls without context use
+ * the current selection/settings views. Missing required targets are refused, never redirected.
+ * Host APIs that mutate shared application data check every active context before awaiting and
+ * refuse without throwing while a transform context is active. Plugin storage and the plugin's own
+ * arguments stay writable. New UI and hooks need `addPluginUnloadCallback` cleanup, and external
+ * HTML/URLs need sanitization.
+ */
 
 const pluginChannel = new Map<string, Function>();
 type TrackedEventListener = {
@@ -149,7 +222,31 @@ type TrackedEventListener = {
     listener: EventListenerOrEventListenerObject;
     options: AddEventListenerOptions;
 };
-const pluginEventListeners: TrackedEventListener[] = [];
+// Weaken the whole registration: retaining its listener would also retain the guest callback
+// and, for once listeners, the wrapper. Live targets keep records through pluginEventIds below.
+const pluginEventListeners: WeakRef<TrackedEventListener>[] = [];
+// Re-querying the same target must retain the IDs returned by earlier wrappers.
+const pluginEventIds = new WeakMap<EventTarget, Map<string, TrackedEventListener>>();
+
+function prunePluginEventListeners(removed?: TrackedEventListener) {
+    for (let i = pluginEventListeners.length - 1; i >= 0; i--) {
+        const tracked = pluginEventListeners[i].deref();
+        if (!tracked || tracked === removed) pluginEventListeners.splice(i, 1);
+    }
+}
+
+/**
+ * `data-plugin-secret` marks fields where a password or credential can be typed as visible text.
+ * Check the real event target and its closest marked container before scheduling key delivery;
+ * password inputs are secret according to their type at the time of the event.
+ */
+function isSecretKeyEvent(event: Event): boolean {
+    const target = event.target;
+    return (
+        target instanceof Element &&
+        (target.matches('input[type="password"]') || target.closest("[data-plugin-secret]") !== null)
+    );
+}
 
 class SafeElement {
     #element: HTMLElement;
@@ -162,6 +259,8 @@ class SafeElement {
         }
         this.#element = element;
         this.#eventTarget = eventTarget;
+        this.#eventIdMap = pluginEventIds.get(eventTarget) ?? new Map();
+        pluginEventIds.set(eventTarget, this.#eventIdMap);
     }
 
     public appendChild(child: SafeElement) {
@@ -338,7 +437,7 @@ class SafeElement {
     public scrollIntoView(options?: boolean | ScrollIntoViewOptions) {
         this.#element.scrollIntoView(options);
     }
-    #eventIdMap = new Map<string, TrackedEventListener>();
+    #eventIdMap: Map<string, TrackedEventListener>;
 
     public async addEventListener(
         type: string,
@@ -415,7 +514,7 @@ class SafeElement {
             modifiedListener = (event: any) => {
                 // No key typed while the terminal notice is up reaches a plugin: the notice stops
                 // only bubbling, and capture listeners on the document or the notice's ancestors run first.
-                if (terminalNoticeShown()) {
+                if (terminalNoticeShown() || isSecretKeyEvent(event)) {
                     return;
                 }
                 let delay = 0;
@@ -433,11 +532,17 @@ class SafeElement {
         const tracked: TrackedEventListener = {
             eventTarget: this.#eventTarget,
             type,
-            listener: modifiedListener,
+            listener: realOptions.once
+                ? (event) => {
+                      this.removeEventListener(type, id);
+                      modifiedListener(event);
+                  }
+                : modifiedListener,
             options: realOptions,
         };
         this.#eventIdMap.set(id, tracked);
-        pluginEventListeners.push(tracked);
+        prunePluginEventListeners();
+        pluginEventListeners.push(new WeakRef(tracked));
         tracked.eventTarget.addEventListener(tracked.type, tracked.listener, tracked.options);
         return id;
     }
@@ -448,8 +553,7 @@ class SafeElement {
         const tracked = this.#eventIdMap.get(id);
         if (tracked) {
             tracked.eventTarget.removeEventListener(tracked.type, tracked.listener, tracked.options);
-            const idx = pluginEventListeners.indexOf(tracked);
-            if (idx !== -1) pluginEventListeners.splice(idx, 1);
+            prunePluginEventListeners(tracked);
             this.#eventIdMap.delete(id);
         }
     }
@@ -497,6 +601,7 @@ type SafeMutationRecordObject = {
     type: string;
     target: SafeElement;
     addedNodes: SafeElement[];
+    removedNodes: SafeElement[];
 };
 
 class SafeClassArray<T> {
@@ -521,10 +626,12 @@ class SafeMutationRecord {
     #type: string;
     #target: SafeElement;
     #addedNodes: SafeClassArray<SafeElement>;
-    constructor(type: string, target: SafeElement, addedNodes: SafeElement[]) {
+    #removedNodes: SafeClassArray<SafeElement>;
+    constructor(type: string, target: SafeElement, addedNodes: SafeElement[], removedNodes: SafeElement[]) {
         this.#type = type;
         this.#target = target;
         this.#addedNodes = new SafeClassArray<SafeElement>(addedNodes);
+        this.#removedNodes = new SafeClassArray<SafeElement>(removedNodes);
     }
     getType(): string {
         return this.#type;
@@ -535,6 +642,9 @@ class SafeMutationRecord {
     getAddedNodes(): SafeClassArray<SafeElement> {
         return this.#addedNodes;
     }
+    getRemovedNodes(): SafeClassArray<SafeElement> {
+        return this.#removedNodes;
+    }
 }
 
 type SafeMutationCallback = (mutations: SafeClassArray<SafeMutationRecord>) => void;
@@ -544,7 +654,10 @@ class SafeMutationObserver {
     __classType = "REMOTE_REQUIRED" as const;
     constructor(callback: SafeMutationCallback) {
         this.#observer = new MutationObserver((mutations) => {
-            const safeMutations: SafeMutationRecordObject[] = mutations.map((mutation) => {
+            const safeMutations = mutations.flatMap<SafeMutationRecordObject>((mutation) => {
+                // Text mutations belong to their containing element; raw nodes cannot cross the sandbox.
+                const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+                if (!target) return [];
                 const elementMapHelper = (nodeList: NodeList): SafeElement[] => {
                     const elements: SafeElement[] = [];
                     nodeList.forEach((node) => {
@@ -555,17 +668,21 @@ class SafeMutationObserver {
                     return elements;
                 };
 
-                return {
-                    type: mutation.type,
-                    target: new SafeElement(mutation.target as HTMLElement),
-                    addedNodes: elementMapHelper(mutation.addedNodes),
-                    removedNodes: elementMapHelper(mutation.removedNodes),
-                };
+                return [
+                    {
+                        type: mutation.type,
+                        target: new SafeElement(target as HTMLElement),
+                        addedNodes: elementMapHelper(mutation.addedNodes),
+                        removedNodes: elementMapHelper(mutation.removedNodes),
+                    },
+                ];
             });
 
             const safeClassed = new SafeClassArray<SafeMutationRecord>([]);
             for (const record of safeMutations) {
-                safeClassed.push(new SafeMutationRecord(record.type, record.target, record.addedNodes));
+                safeClassed.push(
+                    new SafeMutationRecord(record.type, record.target, record.addedNodes, record.removedNodes),
+                );
             }
             callback(safeClassed);
         });
@@ -604,7 +721,32 @@ const makeMenuUnloadCallback = (menuId: string, menuStore: MenuDef[]) => {
     };
 };
 
+/** Whether sanitized HTML carries a style element (HTML or SVG): inserted into the main document, its rules are app-wide. */
+const hasStyleElement = (html: string): boolean => {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    return template.content.querySelector("style") !== null;
+};
+
+/** Sanitizes `content` without its style elements and their text; empty if one still survives. */
+const withoutStyleElements = (content: string): string => {
+    const html = DOMPurify.sanitize(content, { FORBID_TAGS: ["style"] });
+    return hasStyleElement(html) ? "" : html;
+};
+
+/**
+ * The count of calls per panel id, over every plugin (ids are one namespace): a `setChatPanel` that
+ * waited for consent applies only while its call is still the latest, and a removal counts as a call.
+ */
+const chatPanelCalls = new Map<string, number>();
+const claimChatPanel = (id: string): number => {
+    const call = (chatPanelCalls.get(id) ?? 0) + 1;
+    chatPanelCalls.set(id, call);
+    return call;
+};
+
 const removeChatPanel = (id: string) => {
+    claimChatPanel(id);
     const index = chatPanelStore.findIndex((item) => item.id === id);
     if (index !== -1) {
         chatPanelStore.splice(index, 1);
@@ -614,13 +756,22 @@ const removeChatPanel = (id: string) => {
 const removePluginChatPanels = (pluginName: string) => {
     for (let i = chatPanelStore.length - 1; i >= 0; i--) {
         if (chatPanelStore[i].pluginName === pluginName) {
+            claimChatPanel(chatPanelStore[i].id);
             chatPanelStore.splice(i, 1);
         }
     }
 };
 
+/**
+ * Runs per-plugin cleanup before terminating the sandbox (which rejects pending RPC callbacks).
+ * Hook registrations remove their replacers/script handlers; `registerMCP` unregisters only the
+ * client it installed, preserving a replacement at the same identifier. Async cleanup gets up to
+ * one second; the instance refuses new registrations from the start of its unload callbacks.
+ * Invalidates pending consent so a replacement script cannot inherit the unloaded instance's answer.
+ */
 const unloadV3Plugin = async (pluginName: string) => {
     forgetPluginPermissions(pluginName);
+    permissionResetGenerations.set(pluginName, (permissionResetGenerations.get(pluginName) ?? 0) + 1);
     const callbacks = pluginUnloadCallbacks.get(pluginName);
     const instance = v3PluginInstances.find((p) => p.name === pluginName);
     if (instance) {
@@ -650,13 +801,16 @@ const unloadV3Plugin = async (pluginName: string) => {
         console.error(`Error terminating plugin ${pluginName}:`, error);
     }
     notifyPluginWork();
+    notifyPluginActivity(pluginName);
 };
 
-// Plugin work (`plugins-mcp.md`): a reload after a remote plugin change waits
-// until `pluginWorkIdle`, and listeners of `onPluginWorkChange` hear whenever it may have become true.
+// A reload after a remote plugin change waits until `pluginWorkIdle`; `onPluginWorkChange` listeners hear
+// whenever it may have become true.
 const pluginWorkListeners = new Set<() => void>();
+const pluginActivityListeners = new Set<(name: string) => void>();
 // Host-side hook invocations still running (a wrapped hook, a provider awaiting its permission prompt).
 let runningHostHooks = 0;
+const runningHostHooksByName = new Map<string, number>();
 
 function notifyPluginWork() {
     for (const listener of [...pluginWorkListeners]) {
@@ -668,33 +822,62 @@ function notifyPluginWork() {
     }
 }
 
-function hostHookSettled() {
+function notifyPluginActivity(name: string) {
+    for (const listener of [...pluginActivityListeners]) {
+        try {
+            listener(name);
+        } catch (error) {
+            console.error(error);
+        }
+    }
+}
+
+function hostHookStarted(name: string) {
+    runningHostHooks++;
+    runningHostHooksByName.set(name, (runningHostHooksByName.get(name) ?? 0) + 1);
+}
+
+function hostHookSettled(name: string) {
     runningHostHooks--;
+    const remaining = runningHostHooksByName.get(name)! - 1;
+    if (remaining === 0) {
+        runningHostHooksByName.delete(name);
+    } else {
+        runningHostHooksByName.set(name, remaining);
+    }
     notifyPluginWork();
+    notifyPluginActivity(name);
 }
 
 /** Runs a hook invocation counted as plugin work until it returns or, for a promise, settles. */
-function trackHostHook<T>(run: () => T): T {
-    runningHostHooks++;
+function trackHostHook<T>(name: string, run: () => T): T {
+    hostHookStarted(name);
     let result: T;
     try {
         result = run();
     } catch (error) {
-        hostHookSettled();
+        hostHookSettled(name);
         throw error;
     }
     if (result && typeof (result as { then?: unknown }).then === "function") {
-        Promise.resolve(result).then(hostHookSettled, hostHookSettled);
+        const settled = () => hostHookSettled(name);
+        Promise.resolve(result).then(settled, settled);
     } else {
-        hostHookSettled();
+        hostHookSettled(name);
     }
     return result;
 }
 
+/** Resolves once every loaded guest has reported its startup (ready, failed, or stopped). */
+export function pluginGuestsSettled(): Promise<void> {
+    return Promise.allSettled(v3PluginInstances.map(({ host }) => host.startup)).then(() => undefined);
+}
+
 /**
- * No plugin work of this tab is in flight (a reload never interrupts it): no send
- * (`anyLocalSend`), no job that may still call its hooks (`generationPluginWorkActive`), no host-side hook
- * running, and every loaded sandbox idle (`SandboxHost.isIdle`).
+ * Whether a remote reload may replace this tab's hooks without interrupting work: no local send
+ * (`src/ts/process/localSends.ts`), no job that may still call hooks (`src/ts/network/generationJobs.ts`),
+ * no host hook invocation (including a provider awaiting permission), and every sandbox idle
+ * (`src/ts/plugins/apiV3/factory.ts:SandboxHost.isIdle`). Work with no end keeps reload waiting.
  */
 export function pluginWorkIdle(): boolean {
     return (
@@ -703,6 +886,23 @@ export function pluginWorkIdle(): boolean {
         runningHostHooks === 0 &&
         v3PluginInstances.every(({ host }) => host.isIdle?.() ?? true)
     );
+}
+
+/** Whether the named running plugin has sandbox work or host hooks in flight; false without an instance. */
+export function pluginBusy(name: string): boolean {
+    const instance = getV3PluginInstance(name);
+    return !!instance && (!(instance.host.isIdle?.() ?? true) || (runningHostHooksByName.get(name) ?? 0) > 0);
+}
+
+/**
+ * Reports the plugin's name on sandbox activity, host-hook settlement, and unload.
+ * Returns the unsubscribe function; listener errors are logged without interrupting other listeners.
+ */
+export function onPluginActivity(listener: (name: string) => void): () => void {
+    pluginActivityListeners.add(listener);
+    return () => {
+        pluginActivityListeners.delete(listener);
+    };
 }
 
 /** Calls `listener` whenever `pluginWorkIdle` may have changed; returns the unsubscribe function. */
@@ -717,7 +917,18 @@ export function onPluginWorkChange(listener: () => void): () => void {
     };
 }
 
-type PluginPermission = "fetchLogs" | "db" | "mainDom" | "replacer" | "provider" | "sendChat" | "inlay";
+const pluginPermissions = [
+    "fetchLogs",
+    "db",
+    "dbWrite",
+    "mainDom",
+    "replacer",
+    "provider",
+    "sendChat",
+    "inlay",
+    "globalStyle",
+] as const;
+type PluginPermission = (typeof pluginPermissions)[number];
 
 /** The plugin as it was loaded: the hash of this script, not of the database copy, keys its grants. */
 type PluginIdentity = { readonly name: string; readonly script: string };
@@ -730,9 +941,20 @@ type StorageDiscardedEvent = {
     customStorage: boolean;
 };
 
-/** Answers given this page load, per plugin and permission; cleared when the plugin unloads. */
-const permissionAnswers = new Map<string, boolean>();
+/** Answers given this page load, cleared on unload, reset, or removal of their persisted grant. */
+const permissionAnswers = new Map<string, { granted: boolean; grantKey: string }>();
+const permissionResetGenerations = new Map<string, number>();
 const permissionAnswerKey = (pluginName: string, permission: string) => `${pluginName}\u0000${permission}`;
+
+onPermissionGrantsRemoved((removed, resetPlugins) => {
+    for (const name of resetPlugins) {
+        permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+        forgetPluginPermissions(name);
+    }
+    for (const [key, answer] of permissionAnswers) {
+        if (answer.granted && removed.has(answer.grantKey)) permissionAnswers.delete(key);
+    }
+});
 
 const forgetPluginPermissions = (pluginName: string) => {
     for (const key of [...permissionAnswers.keys()]) {
@@ -742,35 +964,196 @@ const forgetPluginPermissions = (pluginName: string) => {
     }
 };
 
+const permissionTimeKeys = (name: string) =>
+    pluginPermissions.map((permission) => `${name}_${permission}_lastGrantTime`);
+const scriptHash = (script: string) => hasher(new TextEncoder().encode(script));
+
+/**
+ * Resets both settings and still-loaded scripts, invalidating local consent immediately and persisting
+ * a reset count to invalidate other tabs' pending consent even when no grants or times existed.
+ */
+export async function resetPluginPermissions(name: string, script: string): Promise<void> {
+    permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+    forgetPluginPermissions(name);
+    // Capture before the first await: a reload can unload the old script while hashing runs.
+    const scripts = new Set([script]);
+    for (const instance of v3PluginInstances) {
+        if (instance.name === name) scripts.add(instance.script);
+    }
+    const prefixes = (await Promise.all([...scripts].map(scriptHash))).map((hash) => `${hash}_`);
+    const timeKeys = new Set(permissionTimeKeys(name));
+    try {
+        await revokePermissionGrants(
+            (key) => prefixes.some((prefix) => key.startsWith(prefix)),
+            (key) => timeKeys.has(key),
+            name,
+        );
+    } finally {
+        forgetPluginPermissions(name);
+    }
+}
+
+/** Keeps grants for installed scripts and scripts still running during a deferred reload. */
+export async function removeOrphanPluginPermissionGrants(): Promise<void> {
+    const identities = [...(settings.plugins ?? []), ...v3PluginInstances];
+    const scripts = new Set(identities.map(({ script }) => script));
+    const timeKeys = new Set(identities.flatMap(({ name }) => permissionTimeKeys(name)));
+    const hashes = new Set(await Promise.all([...scripts].map(scriptHash)));
+    await revokePermissionGrants(
+        (key) => !hashes.has(key.split("_", 1)[0]),
+        (key) => !timeKeys.has(key),
+    );
+}
+
 type PluginV3ProviderOptions = PluginProviderOptions & {
     model?: LLMModel;
 };
 
+/** Provider model metadata; reset this array in place after unload because model-list consumers retain it. */
 export const customV3ProviderMetaStore: LLMModel[] = [];
 
+/** Read at prompt time so consent uses the current UI language. */
+const permissionConsentTexts: Record<PluginPermission, () => string> = {
+    fetchLogs: () => language.fetchLogConsent,
+    db: () => language.getFullDatabaseConsent,
+    dbWrite: () => language.dbWriteConsent,
+    mainDom: () => language.mainDomAccessConsent,
+    replacer: () => language.replacerPermissionConsent,
+    provider: () => language.providerPermissionConsent,
+    sendChat: () => language.sendChatConsent,
+    inlay: () => language.inlayPermissionConsent,
+    globalStyle: () => language.globalStyleConsent,
+};
+
 /**
- * Asks the user for a permission unless it was granted before (a grant is kept in the server-owned
- * `pluginPermissions` record, which no plugin API can read or write). `"periodically"` asks again
- * three days after the last grant.
+ * The settings permission list for one plugin, asked on its settings row and when a plugin is imported
+ * or updated: one dialog with every permission, checked where `script` holds a grant, or where
+ * `previousScript` (the version an update replaces) held one. Confirming makes the checked ones standing
+ * grants of `script`, revokes the unchecked ones (for the scripts of this name still running too), and
+ * counts a reset, so every tab reloads the plugin; the caller reloads this tab's plugins. Answers whether
+ * the permissions were saved: declining changes nothing, and neither does confirming a list that is
+ * already saved while no running script of the name and no cached answer holds an unchecked permission.
+ * A list that a reset of the plugin (from any tab, a removal included) made stale while it was open is
+ * not saved and throws; so is a confirmed list whose `stillCurrent` answers false (the caller's target,
+ * replaced meanwhile without a reset). `installing` tells the user that declining does not cancel the
+ * import.
  */
-const getPluginPermission = async (
+export async function reviewPluginPermissions(
+    plugin: { name: string; displayName?: string; script: string },
+    {
+        previousScript,
+        installing = false,
+        stillCurrent,
+    }: { previousScript?: string; installing?: boolean; stillCurrent?: () => boolean } = {},
+): Promise<boolean> {
+    const { name, script } = plugin;
+    const openedAtResets = getPermissionResetCount(name);
+    const hash = await scriptHash(script);
+    const previousHash =
+        previousScript !== undefined && previousScript !== script ? await scriptHash(previousScript) : undefined;
+    const carriedOver = (permission: PluginPermission) =>
+        previousHash !== undefined && hasPermissionGrant(`${previousHash}_${permission}`);
+    const message =
+        language.pluginPermissionsReview.replace("{name}", plugin.displayName ?? name) +
+        (pluginPermissions.some(carriedOver) ? `\n\n${language.pluginPermissionsCarriedOver}` : "") +
+        (installing ? `\n\n${language.pluginPermissionsInstallNote}` : "");
+    const answer = await alertConfirmWithChecklist(
+        message,
+        pluginPermissions.map((permission) => ({
+            id: permission,
+            label: language.pluginPermissionNames[permission],
+            checked: hasPermissionGrant(`${hash}_${permission}`) || carriedOver(permission),
+        })),
+    );
+    if (!answer.confirmed) return false;
+    if (stillCurrent?.() === false) throw new Error(language.pluginPermissionsStale);
+    const chosen = pluginPermissions.filter((permission) => answer.checked.includes(permission));
+    // Capture before the next await: a reload can unload the old script while hashing runs.
+    const running = v3PluginInstances.filter((instance) => instance.name === name).map((instance) => instance.script);
+    const hashes = new Set([hash, ...(await Promise.all(running.map(scriptHash)))]);
+    // Read now, not when the dialog opened: grants and answers may have changed meanwhile.
+    const saved = pluginPermissions.every((permission) =>
+        chosen.includes(permission)
+            ? hasStandingGrant(`${hash}_${permission}`)
+            : ![...hashes].some((each) => hasPermissionGrant(`${each}_${permission}`)) &&
+              permissionAnswers.get(permissionAnswerKey(name, permission))?.granted !== true,
+    );
+    if (saved) return false;
+
+    permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+    forgetPluginPermissions(name);
+    const revoked = pluginPermissions.filter((permission) => !chosen.includes(permission));
+    const revokedGrants = new Set([...hashes].flatMap((each) => revoked.map((permission) => `${each}_${permission}`)));
+    const revokedTimes = new Set(revoked.map((permission) => `${name}_${permission}_lastGrantTime`));
+    try {
+        await setStandingPermissionGrants(
+            name,
+            chosen.map((permission) => `${hash}_${permission}`),
+            (key) => revokedGrants.has(key),
+            (key) => revokedTimes.has(key),
+            openedAtResets,
+        );
+    } catch (error) {
+        if (error instanceof StalePermissionListError) throw new Error(language.pluginPermissionsStale);
+        throw error;
+    } finally {
+        forgetPluginPermissions(name);
+    }
+    return true;
+}
+
+/** Checks still deciding, by plugin, permission, reset generation and reconfirm mode. */
+const pendingPermissionChecks = new Map<string, Promise<boolean>>();
+
+/**
+ * Rejects unknown permission names before consulting grants or prompting. Known permissions use
+ * page-cached answers until unload, reset, or revocation. On an uncached check, a grant in the
+ * server-owned `pluginPermissions` resource avoids a prompt unless reconfirmation is required;
+ * `"periodically"` asks again when the last grant is older than three days, except for a standing
+ * grant (given from the settings permission list). A reset learned locally, through a live update,
+ * or on a write conflict invalidates pending consent; unload does too. Invalidated answers neither
+ * persist nor remain cached, including while the consent write waits in the permission store's queue.
+ * Calls of one plugin for the same permission and reconfirm mode share one check while it decides,
+ * so a plugin that repeats a call behind an open prompt opens no second prompt.
+ */
+const getPluginPermission = (
     plugin: PluginIdentity,
     permissionDesc: PluginPermission,
     reconfirm: boolean | "periodically" = false,
-) => {
-    const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
-    const answered = permissionAnswers.get(answerKey);
-    if (answered !== undefined) {
-        return answered;
-    }
+): Promise<boolean> => {
+    if (!Object.hasOwn(permissionConsentTexts, permissionDesc)) return Promise.resolve(false);
+    const answered = permissionAnswers.get(permissionAnswerKey(plugin.name, permissionDesc));
+    if (answered !== undefined) return Promise.resolve(answered.granted);
+    const generation = permissionResetGenerations.get(plugin.name) ?? 0;
+    const pendingKey = [plugin.name, permissionDesc, generation, reconfirm].join("\u0000");
+    const pending = pendingPermissionChecks.get(pendingKey);
+    if (pending) return pending;
+    const check = decidePluginPermission(plugin, permissionDesc, reconfirm, generation).finally(() => {
+        if (pendingPermissionChecks.get(pendingKey) === check) pendingPermissionChecks.delete(pendingKey);
+    });
+    pendingPermissionChecks.set(pendingKey, check);
+    return check;
+};
 
-    let requiresReconfirm = false;
+/** One uncached check of `getPluginPermission`, begun at reset generation `generation`. */
+const decidePluginPermission = async (
+    plugin: PluginIdentity,
+    permissionDesc: PluginPermission,
+    reconfirm: boolean | "periodically",
+    generation: number,
+) => {
+    const isCurrent = () => generation === (permissionResetGenerations.get(plugin.name) ?? 0);
+    const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
     const lastGrantTimeKey = plugin.name + "_" + permissionDesc + "_lastGrantTime";
 
+    const pluginHash = (await scriptHash(plugin.script)) + `_${permissionDesc}`;
+    if (!isCurrent()) return false;
+
+    let requiresReconfirm = false;
     if (reconfirm === "periodically") {
         const lastGrantTime = getLastGrantTime(lastGrantTimeKey);
         const now = Date.now();
-        if (!lastGrantTime || now - lastGrantTime > 3 * 24 * 60 * 60 * 1000) {
+        if (!hasStandingGrant(pluginHash) && (!lastGrantTime || now - lastGrantTime > 3 * 24 * 60 * 60 * 1000)) {
             //3 days
             requiresReconfirm = true;
         }
@@ -778,54 +1161,73 @@ const getPluginPermission = async (
         requiresReconfirm = true;
     }
 
-    const pluginHash = (await hasher(new TextEncoder().encode(plugin.script))) + `_${permissionDesc}`;
-
     if (!requiresReconfirm && hasPermissionGrant(pluginHash)) {
-        permissionAnswers.set(answerKey, true);
+        permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
         return true;
     }
 
     const pluginName = plugin.name;
-    let alertTitle =
-        permissionDesc === "fetchLogs"
-            ? language.fetchLogConsent.replace("{}", pluginName)
-            : permissionDesc === "db"
-              ? language.getFullDatabaseConsent.replace("{}", pluginName)
-              : permissionDesc === "mainDom"
-                ? language.mainDomAccessConsent.replace("{}", pluginName)
-                : permissionDesc === "replacer"
-                  ? language.replacerPermissionConsent.replace("{}", pluginName)
-                  : permissionDesc === "provider"
-                    ? language.providerPermissionConsent.replace("{}", pluginName)
-                    : permissionDesc === "sendChat"
-                      ? language.sendChatConsent.replace("{}", pluginName)
-                      : permissionDesc === "inlay"
-                        ? language.inlayPermissionConsent.replace("{}", pluginName)
-                        : `Error`;
-    if (alertTitle === "Error") {
-        return false;
-    }
-    const conf = await alertConfirm(alertTitle);
+    const conf = await alertConfirm(permissionConsentTexts[permissionDesc]().replace("{}", pluginName));
+    if (!isCurrent()) return false;
     if (conf) {
-        permissionAnswers.set(answerKey, true);
+        const answer = { granted: true, grantKey: pluginHash };
+        permissionAnswers.set(answerKey, answer);
         try {
-            await recordPermissionGrants({
-                grants: [pluginHash],
-                lastGrantTime: reconfirm === "periodically" ? { [lastGrantTimeKey]: Date.now() } : undefined,
-            });
+            await recordPermissionGrants(
+                {
+                    grants: [pluginHash],
+                    lastGrantTime: reconfirm === "periodically" ? { [lastGrantTimeKey]: Date.now() } : undefined,
+                },
+                isCurrent,
+            );
         } catch (error) {
-            // The grant still holds for this page load; it is asked again after a reload.
+            // Unless reset or unloaded, the grant holds for this page load and is asked again after reload.
             console.error(`[RisuAI Plugin: ${pluginName}] Could not save the permission grant:`, error);
         }
-        return true;
+        const stillCurrent = isCurrent();
+        if (!stillCurrent && permissionAnswers.get(answerKey) === answer) permissionAnswers.delete(answerKey);
+        return stillCurrent;
     }
-    permissionAnswers.set(answerKey, false);
+    permissionAnswers.set(answerKey, { granted: false, grantKey: pluginHash });
     return false;
 };
 
 const urlBlacklist = ["risuai.xyz", "risuai.net", "sionyw.com"];
 
+/** Validates standalone and page-relative hostnames, blocking listed domains and subdomains without changing the URL. */
+const assertPluginUrlAllowed = (url: string) => {
+    if (typeof url !== "string") {
+        throw new Error("Invalid URL");
+    }
+    const hostnames: string[] = [];
+    const pageUrl = globalThis.location?.href;
+    for (const base of pageUrl ? [undefined, pageUrl] : [undefined]) {
+        try {
+            hostnames.push(new URL(url, base).hostname.toLowerCase().replace(/\.+$/, ""));
+        } catch {}
+    }
+    if (hostnames.length === 0) {
+        throw new Error("Invalid URL");
+    }
+    for (const blocked of urlBlacklist) {
+        if (hostnames.some((hostname) => hostname === blocked || hostname.endsWith("." + blocked))) {
+            throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
+        }
+    }
+};
+
 const authorizationHeaders = ["x-api-key", "authorization", "proxy-authorization"];
+
+function pluginCharacter(chaId: string | undefined | null) {
+    if (chaId == null) return undefined;
+    return characterList().find((entry) => entry?.chaId === chaId && !isArchivedGroup(entry));
+}
+
+/** Check in the caller's turn before loading and again before using the loaded chat. */
+function checkPluginChat(ref: ChatRef, owner: string, loaded = true) {
+    if (!pluginCharacter(ref.chaId)) throw new PluginTargetGoneError("character");
+    if (!loaded || chatOwnerToken(ref.chaId) !== owner || !isActiveChat(ref)) throw new PluginTargetGoneError("chat");
+}
 
 /**
  * The character and chat a hook's context names, found by id as they are now. Throws
@@ -846,13 +1248,13 @@ function contextTarget(context: PluginCallContext) {
  * `PluginTargetGoneError` when either is gone. For checks before a load and for index reads.
  */
 function contextMember(context: PluginCallContext) {
-    const characters = characterList();
+    const characters = pluginCharacterList();
     const characterIndex = characters.findIndex((entry) => entry?.chaId === context.chatRef.chaId);
     const character = characters[characterIndex];
     if (!character) {
         throw new PluginTargetGoneError("character");
     }
-    const chatIndex = chatList(character.chaId).findIndex((entry) => entry.id === context.chatRef.chatId);
+    const chatIndex = activeChatList(character.chaId).findIndex((entry) => entry.id === context.chatRef.chatId);
     if (chatIndex === -1 || (context.owner !== undefined && chatOwnerToken(character.chaId) !== context.owner)) {
         // Gone, or replaced (its character's chats installed again) since the hook began.
         throw new PluginTargetGoneError("chat");
@@ -860,36 +1262,214 @@ function contextMember(context: PluginCallContext) {
     return { characterIndex, character, chatIndex };
 }
 
+/** The run asking about each chat now, by chat key: a read of that chat joins it instead of asking too. */
+const chatChecksInFlight = new Map<string, Promise<void>>();
+
+/**
+ * When each chat's last check settled (`performance.now()`), by chat key and oldest first: an update
+ * deletes and sets, and a refresh drops what is past the window, so this holds the chats checked within it.
+ */
+const chatChecksSettled = new Map<string, number>();
+
+/** Where the next cut of the chats asked, and of the moved ones fetched, starts (`rotatingWindow`). */
+const revisionCursor = { at: 0 };
+const projectionCursor = { at: 0 };
+
+/**
+ * `list` cut to `size`: its first entry, then a window of the rest from `cursor`, which moves past what
+ * it took, so that across reads a long list's tail gets its turn.
+ */
+function rotatingWindow<T>(list: readonly T[], size: number, cursor: { at: number }): readonly T[] {
+    if (list.length <= size) {
+        return list;
+    }
+    const [first, ...rest] = list;
+    const start = cursor.at % rest.length;
+    cursor.at = start + size - 1;
+    return [first, ...[...rest, ...rest].slice(start, cursor.at)];
+}
+
+/** Snapshot of selected ids; memoized selectors must reflect membership/order changes before returning. */
+type ChatMemberSelector = (chaId: string) => readonly { id: string }[];
+
+/**
+ * The selected members a read of `chaIds` returns (all by default), the chat it is about first:
+ * the hook's, else the selected one.
+ * That order is what `refreshChatProjections` keeps when it has to cut the list.
+ */
+function chatsOfRead(
+    chaIds: readonly (string | undefined)[],
+    context: PluginCallContext | undefined,
+    members: ChatMemberSelector = activeChatList,
+): ChatRef[] {
+    if (chaIds.length === 0) return [];
+    const about = context?.chatRef ?? currentChatRef();
+    const visible = new Set(pluginCharacterList().map(({ chaId }) => chaId));
+    const refs = chaIds.flatMap((chaId) =>
+        chaId === undefined || !visible.has(chaId) ? [] : members(chaId).map(({ id }) => ({ chaId, chatId: id })),
+    );
+    const first = refs.findIndex(({ chaId, chatId }) => chaId === about?.chaId && chatId === about.chatId);
+    return first > 0 ? [refs[first], ...refs.slice(0, first), ...refs.slice(first + 1)] : refs;
+}
+
+/**
+ * Brings the held projections of `refs` (`chatsOfRead`), which a plugin read is about to return, up to the
+ * chats' records. A read asks only about chats with no check in flight and none in the last
+ * `MEMORY_RECHECK_WINDOW_MS`, in one request, and only a chat whose revision moved costs a projection. It
+ * waits for that run and for any run already asking about its other chats, fetches included, so a read with
+ * nothing due takes what is held, with no request and no wait. For a chat using another algorithm its projection
+ * goes with no request, whatever the window says. A chat that is not loaded, that HypaV3 owns, or that is
+ * not on the server yet is left out, and so never counts as checked. Whatever fails, a deadline included,
+ * leaves the held value in place and counts as a check: this never rejects, so it never changes what the
+ * read would otherwise answer or throw.
+ *
+ * `src/ts/process/structuredMemory.svelte.ts` supplies both reads; `src/ts/storage/chatStore.svelte.ts`
+ * fences each answer through `installChatProjection`. A moved chat skipped by the projection cap keeps
+ * its held memory token, so a later check still finds it moved; server tokens are not cached separately.
+ */
+async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
+    try {
+        const chats = refs.flatMap((ref) => {
+            const state = chatProjectionState(ref);
+            if (!state) return [];
+            if (chatMemoryAlgorithm(chatMemorySettings(), state.chat) !== STRUCTURED_MEMORY_ALGORITHM) {
+                installChatProjection(ref, state, null);
+                return [];
+            }
+            return [{ ref, state }];
+        });
+        const now = performance.now();
+        for (const [key, settled] of chatChecksSettled) {
+            if (now - settled < MEMORY_RECHECK_WINDOW_MS) {
+                break;
+            }
+            chatChecksSettled.delete(key);
+        }
+        const eligible = chats
+            .filter(({ state }) => !state.hypaV3Owned && state.chatRevision !== null)
+            .map((chat) => ({ ...chat, key: `${chat.ref.chaId}\u0000${chat.ref.chatId}` }));
+        const runs = new Set(eligible.flatMap(({ key }) => chatChecksInFlight.get(key) ?? []));
+        // Only the chats this run asks count as checked: one past the cut is asked by the next read.
+        const asked = rotatingWindow(
+            eligible.filter(({ key }) => !chatChecksInFlight.has(key) && !chatChecksSettled.has(key)),
+            MEMORY_REVISION_CHATS_MAX,
+            revisionCursor,
+        );
+        if (asked.length > 0) {
+            const run = readWithDeadline(MEMORY_REFRESH_DEADLINE_MS, "The memory refresh timed out", async (signal) => {
+                const read = await readStructuredMemoryRevisions(
+                    asked.map(({ ref }) => ref),
+                    signal,
+                );
+                if (read.outcome !== "ok" || signal.aborted) {
+                    return;
+                }
+                const { revisions } = read.value;
+                asked.forEach(({ ref, state }, index) => {
+                    if (revisions[index] === null && pluginCharacter(ref.chaId)) {
+                        installChatProjection(ref, state, null);
+                    }
+                });
+                const moved = asked.filter(
+                    ({ state }, index) => revisions[index] !== null && revisions[index] !== state.memoryRevision,
+                );
+                for (const { ref, state } of rotatingWindow(moved, MEMORY_PROJECTIONS_PER_READ, projectionCursor)) {
+                    if (signal.aborted) {
+                        return;
+                    }
+                    if (!pluginCharacter(ref.chaId)) continue;
+                    const answer = await readStructuredMemoryProjection(ref, signal);
+                    if (answer.outcome === "ok" && !signal.aborted && pluginCharacter(ref.chaId)) {
+                        installChatProjection(ref, state, answer.value.hypaV3Data);
+                    }
+                }
+            })
+                .catch(() => {
+                    // The deadline, an ordinary failed answer: the read goes on with what is held.
+                })
+                .finally(() => {
+                    const settled = performance.now();
+                    for (const { key } of asked) {
+                        chatChecksInFlight.delete(key);
+                        chatChecksSettled.delete(key);
+                        chatChecksSettled.set(key, settled);
+                    }
+                });
+            for (const { key } of asked) {
+                chatChecksInFlight.set(key, run);
+            }
+            runs.add(run);
+        }
+        await Promise.all(runs);
+    } catch {
+        // A refresh never decides what the read answers.
+    }
+}
+
+/** Re-importing chats under a stored id replaces their owner. Deletions are left to the caller. */
+function checkPluginOwners(owners: ReadonlyMap<string, string>) {
+    for (const [chaId, owner] of owners) {
+        if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
+            throw new PluginTargetGoneError("character");
+        }
+    }
+}
+
 /**
  * Runs `run` (synchronous) once the chats of `chaIds` are loaded, with them pinned from before the
  * load until it returns. A character can gain a chat (not loaded) while another one loads, so every
  * target is checked again right before `run`, and loaded again (a few rounds) when it is incomplete.
- * The targets are captured by id before the load and found again inside `run`.
+ * The targets are captured by id before the load and found again inside `run`. Setters can pass
+ * owners captured before consent, so a replacement during the prompt also refuses the operation.
+ *
+ * A read that returns chats passes `refreshed`, the chats it returns once they are loaded, and waits for
+ * their projections (`refreshChatProjections`). The targets are checked once more after that await, since
+ * a collection update can add a chat to them during it, within the same rounds.
  */
-async function withChatsLoaded<T>(chaIds: readonly (string | undefined)[], run: () => T): Promise<T> {
+async function withChatsLoaded<T>(
+    chaIds: readonly (string | undefined)[],
+    run: () => T,
+    refreshed?: () => readonly ChatRef[],
+    capturedOwners?: ReadonlyMap<string, string>,
+    checkTargets?: () => void,
+): Promise<T> {
     const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
-    const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const owners = capturedOwners ?? new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const checkOwners = () => {
+        checkTargets?.();
+        checkPluginOwners(owners);
+    };
+    checkOwners();
     const releases = ids.map((chaId) => pinChats(chaId));
     try {
-        for (let round = 0; ; round++) {
-            const missing = ids.filter((chaId) => !chatsLoaded(chaId));
-            if (missing.length === 0) {
+        let round = 0;
+        let refresh = refreshed;
+        for (;;) {
+            const visible = ids.length ? new Set(pluginCharacterList().map(({ chaId }) => chaId)) : undefined;
+            const missing = ids.filter((chaId) => visible?.has(chaId) && !chatsLoaded(chaId, true));
+            if (missing.length > 0) {
+                if (round === 3) {
+                    throw new Error("The chats could not be loaded");
+                }
+                round += 1;
+                for (const chaId of missing) {
+                    if (pluginCharacter(chaId)) {
+                        try {
+                            await loadChats(chaId, true);
+                        } finally {
+                            checkOwners();
+                        }
+                    }
+                }
+            } else if (refresh) {
+                await refreshChatProjections(refresh());
+                checkOwners();
+                refresh = undefined;
+            } else {
                 break;
             }
-            if (round === 3) {
-                throw new Error("The chats could not be loaded");
-            }
-            for (const chaId of missing) {
-                await loadChats(chaId);
-            }
         }
-        // A character whose chats were replaced meanwhile (a re-import under the same id) is another
-        // owner: nothing is read or applied for it. A deleted one is left to `run` (it is gone).
-        for (const [chaId, owner] of owners) {
-            if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
-                throw new PluginTargetGoneError("character");
-            }
-        }
+        checkOwners();
         return run();
     } finally {
         for (const release of releases) {
@@ -898,76 +1478,699 @@ async function withChatsLoaded<T>(chaIds: readonly (string | undefined)[], run: 
     }
 }
 
+/** Whether the held-store snapshot would change this JSON value by dropping an own `__proto__`. */
+function needsChatSnapshot(value: unknown): boolean {
+    return (
+        value !== null &&
+        typeof value === "object" &&
+        (Object.hasOwn(value, "__proto__") || Object.values(value).some(needsChatSnapshot))
+    );
+}
+
+/** Detached server copies omit sealed projections outside structured memory, without changing the cache. */
+function detachedPluginChat(chat: Chat): Chat {
+    if (
+        chatMemoryAlgorithm(chatMemorySettings(), chat) !== STRUCTURED_MEMORY_ALGORITHM &&
+        isSealedHypaV3Data(chat.hypaV3Data)
+    ) {
+        const copy = { ...chat };
+        delete copy.hypaV3Data;
+        return copy;
+    }
+    return chat;
+}
+
+/** Small page fallbacks use individual loads; larger ones use the character loader's batched read. */
+const PAGE_SINGLE_LOAD_MAX = 32;
+const PAGE_LOAD_CONCURRENCY = 4;
+const PAGE_ASSEMBLY_ATTEMPTS = 3;
+
+const sameChatMembers = (before: readonly { id: string }[], after: readonly { id: string }[]) =>
+    before.length === after.length && before.every(({ id }, index) => id === after[index].id);
+
+/**
+ * Copies a page synchronously while its selected chats are pinned. The fast path requires every
+ * member held and current, so it never flushes global resource work. Fallback mode accepts held
+ * state (including behind/protected chats) and loads only missing page members, at most four at
+ * once. More than 32 missing members use the existing batched character loader. Owner and page
+ * order are rechecked after loading and projection refresh, with three attempts for moving pages.
+ * A fast-path miss returns undefined; fallback exhaustion refuses the read.
+ */
+async function withHeldChatPage<T>(
+    chaId: string,
+    run: () => T,
+    members: ChatMemberSelector,
+    load: boolean,
+): Promise<{ value: T } | undefined> {
+    const owner = chatOwnerToken(chaId);
+    const page = () => (pluginCharacter(chaId) ? members(chaId) : []);
+    const checkOwner = () => {
+        if (chatOwnerToken(chaId) !== owner && characterList().some((entry) => entry?.chaId === chaId)) {
+            throw new PluginTargetGoneError("character");
+        }
+    };
+    for (let attempt = 0; attempt < PAGE_ASSEMBLY_ATTEMPTS; attempt++) {
+        checkOwner();
+        const selected = page();
+        const refs = selected.map(({ id }) => ({ chaId, chatId: id }));
+        if (!load && refs.some((ref) => !findChat(ref) || isChatBehind(ref))) return undefined;
+        const releases = refs.map(pinChat);
+        try {
+            const missing = refs.filter((ref) => !findChat(ref));
+            if (missing.length > PAGE_SINGLE_LOAD_MAX) {
+                await withChatsLoaded([chaId], () => {});
+            } else {
+                for (let start = 0; start < missing.length; start += PAGE_LOAD_CONCURRENCY) {
+                    // Settle the group before releasing any pins, including when one load rejects.
+                    const results = await Promise.allSettled(
+                        missing.slice(start, start + PAGE_LOAD_CONCURRENCY).map(ensureChatLoaded),
+                    );
+                    checkOwner();
+                    const failure = results.find((result) => result.status === "rejected");
+                    if (failure?.status === "rejected") throw failure.reason;
+                    if (!sameChatMembers(selected, page())) break;
+                }
+            }
+            checkOwner();
+            if (!sameChatMembers(selected, page()) || refs.some((ref) => !findChat(ref))) continue;
+            await refreshChatProjections(chatsOfRead([chaId], undefined, () => selected));
+            checkOwner();
+            if (!sameChatMembers(selected, page()) || refs.some((ref) => !findChat(ref))) continue;
+            if (!load && refs.some(isChatBehind)) return undefined;
+            return { value: run() };
+        } finally {
+            for (const release of releases) release();
+        }
+    }
+    if (load) throw new Error("The chats could not be loaded");
+    return undefined;
+}
+
+type SharedDetachedRead = {
+    read: DetachedChatRead;
+    needsSnapshot: boolean;
+    /** Classification of the response body under the fallback captured before the read. */
+    structured: boolean;
+    /** Classification of the list entry when the read was claimed. */
+    capturedStructured: boolean;
+};
+const detachedReadsInFlight = new Map<string, Promise<SharedDetachedRead>>();
+
+/**
+ * Claim every cold ref before dispatching one batch. Identical overlapping callers join per-ref
+ * promises; epoch, owner, held revision, algorithm and cache generation separate incompatible reads.
+ * Snapshot scanning and cache sizing happen once per answer. Callers retain their own assembly and
+ * held-work checks, including the captured algorithm returned with every answer; rejection clears
+ * only the pending entries belonging to this batch.
+ */
+async function readSharedDetachedChats(
+    refs: readonly ChatRef[],
+    memorySettings: ChatMemorySettings,
+): Promise<Map<ChatRef, SharedDetachedRead>> {
+    const generation = detachedChatCacheGeneration();
+    const epoch = getResourceEpoch();
+    const legacyAlgorithm = legacyMemoryAlgorithm(memorySettings);
+    const claimed: {
+        ref: ChatRef;
+        key: string;
+        owner: string;
+        capturedStructured: boolean;
+        promise: Promise<SharedDetachedRead>;
+        resolve: (value: SharedDetachedRead) => void;
+        reject: (reason: unknown) => void;
+    }[] = [];
+    const pending = refs.map((ref) => {
+        const owner = chatOwnerToken(ref.chaId);
+        const capturedStructured = chatMemoryAlgorithm(memorySettings, chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM;
+        const key = JSON.stringify([
+            epoch,
+            owner,
+            ref.chaId,
+            ref.chatId,
+            heldChatRevision(ref),
+            capturedStructured,
+            legacyAlgorithm,
+            generation,
+        ]);
+        let promise = detachedReadsInFlight.get(key);
+        if (!promise) {
+            let resolve!: (value: SharedDetachedRead) => void;
+            let reject!: (reason: unknown) => void;
+            promise = new Promise<SharedDetachedRead>((done, fail) => {
+                resolve = done;
+                reject = fail;
+            });
+            claimed.push({ ref, key, owner, capturedStructured, promise, resolve, reject });
+            detachedReadsInFlight.set(key, promise);
+        }
+        return promise.then((value) => [ref, value] as const);
+    });
+    if (claimed.length > 0) {
+        void (async () => {
+            try {
+                const reads = await readChatRefsDetached(claimed.map(({ ref }) => ref));
+                const visible = new Set(pluginCharacterList().map(({ chaId }) => chaId));
+                for (const { ref, owner, capturedStructured, resolve } of claimed) {
+                    const read = reads.get(ref.chaId)?.get(ref.chatId) ?? "absent";
+                    if (
+                        typeof read !== "string" &&
+                        visible.has(ref.chaId) &&
+                        epoch === getResourceEpoch() &&
+                        owner === chatOwnerToken(ref.chaId)
+                    ) {
+                        installChatTrashState(ref, read.revision, read.trashedAt);
+                    }
+                    const needsSnapshot = typeof read !== "string" && needsChatSnapshot(read.data);
+                    const structured =
+                        typeof read === "string"
+                            ? capturedStructured
+                            : chatMemoryAlgorithm(memorySettings, read.data) === STRUCTURED_MEMORY_ALGORITHM;
+                    if (
+                        typeof read !== "string" &&
+                        !needsSnapshot &&
+                        visible.has(ref.chaId) &&
+                        epoch === getResourceEpoch() &&
+                        owner === chatOwnerToken(ref.chaId)
+                    ) {
+                        rememberDetachedChat(ref, read, structured, generation);
+                    }
+                    resolve({ read, needsSnapshot, structured, capturedStructured });
+                }
+            } catch (error) {
+                for (const { reject } of claimed) reject(error);
+            } finally {
+                for (const { key, promise } of claimed) {
+                    if (detachedReadsInFlight.get(key) === promise) detachedReadsInFlight.delete(key);
+                }
+            }
+        })();
+    }
+    return new Map(await Promise.all(pending));
+}
+
+/**
+ * Fully held current pages copy without flushing; other reads save queued work before using any
+ * unloaded server copies. Cold reads are shared across callers, keeping
+ * server copies outside the chat store. Cached bodies check their separate projection on every
+ * structured-memory reuse. Loaded members stay pinned and are copied in `run`'s synchronous pass.
+ * Unsafe copies use held-state loading; a page loads only its members within the single-load budget.
+ * Each caller rechecks owners, local work, cache hits and membership after awaits, with a few assembly
+ * attempts before held-state fallback. The optional selector names one character's page and limits
+ * its reads and refreshes to those members.
+ * Final synchronous assembly fences unloaded copies by the algorithm of both their read and the
+ * preceding settings flush. A chat's mode change discards only its copies; a global fallback change
+ * discards all detached copies. Either retries once after flushing; a second switch uses held-state
+ * loading. A body whose mode disagrees with its list entry takes the held path for that ref alone.
+ * A restore halt refuses every result, including fully held pages and held-state fallbacks.
+ */
+async function withDetachedDatabaseChats<T>(
+    chaIds: readonly (string | undefined)[],
+    run: (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => T,
+    selectMembers?: ChatMemberSelector,
+): Promise<T> {
+    const ids = [...new Set(chaIds.filter((chaId): chaId is string => typeof chaId === "string"))];
+    const owners = new Map(ids.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+    const visible = new Set<string>();
+    const members: ChatMemberSelector = (chaId) => (visible.has(chaId) ? (selectMembers ?? activeChatList)(chaId) : []);
+    const releases: (() => void)[] = [];
+    const pinned = new Set<string>();
+    const pinLoadedMembers = () => {
+        for (const chaId of ids) {
+            for (const { id } of members(chaId)) {
+                const ref = { chaId, chatId: id };
+                const key = `${chaId}\u0000${id}`;
+                if (!pinned.has(key) && findChat(ref)) {
+                    releases.push(pinChat(ref));
+                    pinned.add(key);
+                }
+            }
+        }
+    };
+    const checkOwners = () => {
+        assertSaveAdmission();
+        visible.clear();
+        for (const character of characterList()) {
+            const owner = owners.get(character.chaId);
+            if (owner !== undefined && chatOwnerToken(character.chaId) !== owner) {
+                throw new PluginTargetGoneError("character");
+            }
+            if (owner !== undefined && !isArchivedGroup(character)) visible.add(character.chaId);
+        }
+    };
+    checkOwners();
+    pinLoadedMembers();
+    const refreshed = () => chatsOfRead(ids, undefined, members);
+    const loaded = async () => {
+        checkOwners();
+        if (selectMembers) {
+            const result = await withHeldChatPage(
+                ids[0],
+                () => {
+                    checkOwners();
+                    return run();
+                },
+                members,
+                true,
+            );
+            return result!.value;
+        }
+        return withChatsLoaded(
+            ids,
+            () => {
+                checkOwners();
+                return run();
+            },
+            refreshed,
+        );
+    };
+    try {
+        if (selectMembers) {
+            const held = await withHeldChatPage(
+                ids[0],
+                () => {
+                    checkOwners();
+                    return run();
+                },
+                members,
+                false,
+            );
+            checkOwners();
+            if (held) return held.value;
+        }
+        const fallback = new Set<string>();
+        let flushedSettings = chatMemorySettings();
+        let flushedLegacyAlgorithm = legacyMemoryAlgorithm(flushedSettings);
+        const flush = async () => {
+            // Legacy bodies follow the persisted fallback, even when a stale list entry has an explicit mode.
+            flushedSettings = chatMemorySettings();
+            flushedLegacyAlgorithm = legacyMemoryAlgorithm(flushedSettings);
+            let flushed: Awaited<ReturnType<typeof flushResources>>;
+            try {
+                flushed = await waitForResourceFlush(flushResources());
+            } catch {
+                assertSaveAdmission();
+                return false;
+            }
+            checkOwners();
+            for (const chaId of ids) {
+                if (
+                    [...flushed.discarded, ...flushed.refused].some(
+                        (key) =>
+                            key === `characters/${chaId}` ||
+                            key === `chats/${chaId}` ||
+                            key.startsWith(`chats/${chaId}/`),
+                    )
+                ) {
+                    fallback.add(chaId);
+                }
+            }
+            return true;
+        };
+        if (!(await flush())) return await loaded();
+        const reads = new Map<string, Map<string, SharedDetachedRead>>();
+        const cacheHits = new Map<string, { ref: ChatRef; hit: DetachedChatReadHit }>();
+        const discardInvalidHits = () => {
+            let discarded = false;
+            for (const [key, { ref, hit }] of cacheHits) {
+                if (detachedChatReadHitCurrent(ref, hit)) continue;
+                reads.get(ref.chaId)?.delete(ref.chatId);
+                forgetDetachedChat(ref, hit.entry);
+                cacheHits.delete(key);
+                if (members(ref.chaId).some(({ id }) => id === ref.chatId)) discarded = true;
+            }
+            return discarded;
+        };
+        const needsLoaded = (chaId: string) =>
+            members(chaId).some(({ id }) => {
+                const ref = { chaId, chatId: id };
+                if (isChatBehind(ref)) return true;
+                if (findChat(ref)) return false;
+                if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none") return true;
+                const detached = reads.get(chaId)?.get(id);
+                // A mode change gets its per-ref retry at assembly. Its older response revision
+                // must not force all of this character's otherwise valid detached members to load.
+                if (
+                    detached &&
+                    detached.capturedStructured !==
+                        (chatMemoryAlgorithm(chatMemorySettings(), chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM)
+                )
+                    return false;
+                const read = detached?.read;
+                if (read === "gone" || read === "absent" || read?.trashedAt != null) return true;
+                const held = heldChatRevision(ref);
+                return read !== undefined && held !== null && (compareRevision(read.revision, held) ?? -1) < 0;
+            });
+        let refreshedAlgorithm = false;
+        for (let round = 0; round < 3; round++) {
+            checkOwners();
+            const prepared = selectMembers ? new Map(ids.map((chaId) => [chaId, members(chaId)])) : undefined;
+            pinLoadedMembers();
+            discardInvalidHits();
+            for (const chaId of ids) {
+                if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
+            }
+            if (selectMembers && fallback.size > 0) return await loaded();
+            const wanted = ids.flatMap((chaId) =>
+                fallback.has(chaId)
+                    ? []
+                    : members(chaId).flatMap(({ id }) =>
+                          findChat({ chaId, chatId: id }) || reads.get(chaId)?.has(id) ? [] : [{ chaId, chatId: id }],
+                      ),
+            );
+            const hits = await cachedDetachedChatsForRead(wanted, MEMORY_REFRESH_DEADLINE_MS);
+            checkOwners();
+            const missing: ChatRef[] = [];
+            for (const ref of wanted) {
+                if (!visible.has(ref.chaId)) continue;
+                const hit = hits.get(ref);
+                if (!hit || !detachedChatReadHitCurrent(ref, hit)) {
+                    missing.push(ref);
+                    continue;
+                }
+                let held = reads.get(ref.chaId);
+                if (!held) reads.set(ref.chaId, (held = new Map()));
+                held.set(ref.chatId, {
+                    read: { revision: hit.entry.revision, trashedAt: null, data: hit.data },
+                    needsSnapshot: false,
+                    structured: hit.entry.structured,
+                    capturedStructured: hit.entry.structured,
+                });
+                cacheHits.set(`${ref.chaId}\u0000${ref.chatId}`, { ref, hit });
+            }
+            if (missing.length > 0 && flushedLegacyAlgorithm === legacyMemoryAlgorithm(chatMemorySettings())) {
+                try {
+                    const read = await readSharedDetachedChats(missing, flushedSettings);
+                    for (const [ref, chat] of read) {
+                        let held = reads.get(ref.chaId);
+                        if (!held) reads.set(ref.chaId, (held = new Map()));
+                        held.set(ref.chatId, chat);
+                        // The normal snapshot drops own __proto__ keys; raw JSON would differ.
+                        if (chat.needsSnapshot) fallback.add(ref.chaId);
+                    }
+                } catch {
+                    assertSaveAdmission();
+                    return await loaded();
+                }
+            }
+            checkOwners();
+            discardInvalidHits();
+            for (const chaId of ids) {
+                if (!fallback.has(chaId) && needsLoaded(chaId)) fallback.add(chaId);
+            }
+            if (selectMembers && fallback.size > 0) return await loaded();
+            pinLoadedMembers();
+            const assembled = await withChatsLoaded(
+                [...fallback],
+                () => {
+                    checkOwners();
+                    const detached = new Map<string, Map<string, Chat>>();
+                    let retry = discardInvalidHits();
+                    const changedAlgorithms: ChatRef[] = [];
+                    const loadRefs: ChatRef[] = [];
+                    let globalChanged = false;
+                    const memorySettings = chatMemorySettings();
+                    for (const chaId of ids) {
+                        const selected = members(chaId);
+                        const before = prepared?.get(chaId);
+                        if (before && !sameChatMembers(before, selected)) {
+                            retry = true;
+                            continue;
+                        }
+                        if (fallback.has(chaId)) continue;
+                        // This check is after every read, fallback load, and projection refresh await.
+                        if (needsLoaded(chaId)) {
+                            fallback.add(chaId);
+                            retry = true;
+                            continue;
+                        }
+                        const copies = new Map<string, Chat>();
+                        detached.set(chaId, copies);
+                        for (const { id } of selected) {
+                            const ref = { chaId, chatId: id };
+                            if (findChat(ref)) continue;
+                            const read = reads.get(chaId)?.get(id);
+                            const entry = chatEntry(ref);
+                            const structured =
+                                chatMemoryAlgorithm(memorySettings, entry) === STRUCTURED_MEMORY_ALGORITHM;
+                            if (legacyMemoryAlgorithm(memorySettings) !== flushedLegacyAlgorithm) {
+                                globalChanged = true;
+                            } else if (read && read.capturedStructured !== structured) {
+                                changedAlgorithms.push(ref);
+                            } else if (read === undefined || typeof read.read === "string") {
+                                retry = true;
+                            } else if (chatMemoryMode(read.read.data) !== chatMemoryMode(entry)) {
+                                // A newer body can disagree with a stale summary. Load only this ref so
+                                // its own mode and projection are read together through the held path.
+                                loadRefs.push(ref);
+                            } else if (
+                                read.structured !== structured ||
+                                read.structured !==
+                                    (chatMemoryAlgorithm(memorySettings, read.read.data) ===
+                                        STRUCTURED_MEMORY_ALGORITHM)
+                            ) {
+                                changedAlgorithms.push(ref);
+                            } else {
+                                copies.set(id, read.read.data);
+                            }
+                        }
+                    }
+                    if (globalChanged || changedAlgorithms.length > 0 || loadRefs.length > 0)
+                        return { globalChanged, changedAlgorithms, loadRefs } as const;
+                    if (retry) return undefined;
+                    for (const copies of detached.values()) {
+                        for (const [id, chat] of copies) {
+                            copies.set(id, detachedPluginChat(chat));
+                        }
+                    }
+                    return { value: run(detached) };
+                },
+                prepared ? () => chatsOfRead(ids, undefined, (chaId) => prepared.get(chaId) ?? []) : refreshed,
+            );
+            checkOwners();
+            if (assembled && "changedAlgorithms" in assembled) {
+                const changed = assembled.globalChanged
+                    ? [...reads].flatMap(([chaId, chats]) => [...chats.keys()].map((chatId) => ({ chaId, chatId })))
+                    : [...assembled.changedAlgorithms, ...assembled.loadRefs];
+                for (const ref of changed) {
+                    const key = `${ref.chaId}\u0000${ref.chatId}`;
+                    forgetDetachedChat(ref, cacheHits.get(key)?.hit.entry);
+                    reads.get(ref.chaId)?.delete(ref.chatId);
+                    cacheHits.delete(key);
+                }
+                for (const ref of assembled.loadRefs) {
+                    if (!visible.has(ref.chaId)) continue;
+                    const key = `${ref.chaId}\u0000${ref.chatId}`;
+                    if (!pinned.has(key)) {
+                        releases.push(pinChat(ref));
+                        pinned.add(key);
+                    }
+                    await ensureChatLoaded(ref);
+                    checkOwners();
+                }
+                if (assembled.globalChanged || assembled.changedAlgorithms.length > 0) {
+                    if (refreshedAlgorithm) return await loaded();
+                    refreshedAlgorithm = true;
+                    if (!(await flush())) return await loaded();
+                    // The refreshed algorithm gets the same membership/assembly retry budget.
+                    round = -1;
+                }
+            } else if (assembled) {
+                return assembled.value;
+            }
+        }
+        return await loaded();
+    } finally {
+        for (const release of releases) release();
+    }
+}
+
+/** Read baselines belong to the loaded API instance, never its name or another plugin's context. */
+const pluginChatBaselines = new WeakMap<object, Map<string, ChatBaseline>>();
+/** Maximum retained chat reads per instance; rereading a chat refreshes its eviction order. */
+const PLUGIN_CHAT_BASELINES_MAX = 16;
+
+function rememberChatRead(owner: object, ref: ChatRef, copy: Chat) {
+    const baselines = pluginChatBaselines.get(owner);
+    // A getter that finishes after unload must not recreate the old instance's state.
+    if (!baselines) return;
+    const key = `${ref.chaId}\u0000${ref.chatId}`;
+    baselines.delete(key);
+    baselines.set(key, captureChatBaseline(ref, copy));
+    if (baselines.size > PLUGIN_CHAT_BASELINES_MAX) {
+        baselines.delete(baselines.keys().next().value!);
+    }
+}
+
+function rememberCharacterReads<T extends { chaId: string; chats: Chat[] }>(owner: object, copy: T): T {
+    for (const chat of copy.chats) {
+        rememberChatRead(owner, { chaId: copy.chaId, chatId: chat.id! }, chat);
+    }
+    return copy;
+}
+
+function peekChatRead(owner: object, ref: ChatRef): ChatBaseline | undefined {
+    return pluginChatBaselines.get(owner)?.get(`${ref.chaId}\u0000${ref.chatId}`);
+}
+
+/** Consumes only the captured read; a refused consent or a newer read keeps its retained baseline. */
+function takeChatRead(owner: object, ref: ChatRef, baseline: ChatBaseline | undefined): ChatBaseline | undefined {
+    const baselines = pluginChatBaselines.get(owner);
+    const key = `${ref.chaId}\u0000${ref.chatId}`;
+    if (baseline !== undefined && baselines?.get(key) === baseline) baselines.delete(key);
+    return baseline;
+}
+
+/** Snapshots this character's retained reads before consent without consuming them. */
+function captureCharacterChatReads(owner: object, chaId: string | undefined) {
+    const reads = new Map<string, ChatBaseline>();
+    for (const [key, baseline] of pluginChatBaselines.get(owner) ?? []) {
+        if (baseline.ref.chaId === chaId) reads.set(key, baseline);
+    }
+    return (ref: ChatRef) => takeChatRead(owner, ref, reads.get(`${ref.chaId}\u0000${ref.chatId}`));
+}
+
 /**
  * The hook's character with a context, else the selected one: a detached copy in the legacy shape,
  * with its chats (`withChatsCopy`). A hook's character reports the hook's chat as its `chatPage`, so
- * `chats[chatPage]` is the chat the hook runs for.
+ * `chats[chatPage]` is the chat the hook runs for. Retains bounded read baselines for its setters.
  */
-const getChar = async (context: PluginCallContext | undefined) => {
-    const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
-    if (chaId === undefined) {
-        return undefined;
-    }
-    return withChatsLoaded([chaId], () => {
-        if (context) {
-            const { character } = contextTarget(context);
-            return withChatsCopy($state.snapshot(character), context.chatRef.chatId);
-        }
-        const snapshot = characterSnapshot(chaId);
-        return snapshot === undefined ? undefined : withChatsCopy(snapshot);
-    });
+const getChar = async (context: PluginCallContext | undefined, owner: object) => {
+    const character = context ? contextMember(context).character : pluginCharacter(selection.characterId);
+    if (!character) return undefined;
+    const chaId = character.chaId;
+    return withChatsLoaded(
+        [chaId],
+        () => {
+            if (context) {
+                const { character } = contextTarget(context);
+                return rememberCharacterReads(owner, withChatsCopy($state.snapshot(character), context.chatRef.chatId));
+            }
+            const character = pluginCharacter(chaId);
+            return character && rememberCharacterReads(owner, withChatsCopy($state.snapshot(character)));
+        },
+        () => chatsOfRead([chaId], context),
+    );
 };
 
 /**
- * Applies a character to the hook's character with a context, else to the selected one (the one
- * selected when the call came; its chats are loaded first). Inside a hook, a `chatPage` naming the
- * hook's chat is what `getChar` reported, not a change of the user's chat selection, so it is not
- * applied.
+ * After dbWrite consent, applies to the character and owner captured at API entry, loading its chats
+ * first. The caller also captures whether `chatPage` reported the hook's chat: that value is omitted
+ * even if chats reorder during consent. Gone hook targets still throw after consent.
  */
-const setChar = async (context: PluginCallContext | undefined, char: any) => {
-    const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
-    if (context) {
-        // Before the load: a `chatPage` naming the hook's chat (as `getChar` reported it then) is not
-        // a selection change, whatever the order is after the load.
-        const { chatIndex } = contextMember(context);
-        if (char && typeof char === "object" && char.chatPage === chatIndex) {
-            const { chatPage: _reported, ...rest } = char;
-            char = rest;
+const setChar = async (
+    context: PluginCallContext | undefined,
+    char: any,
+    takeBaseline: (ref: ChatRef) => ChatBaseline | undefined,
+    chaId: string | undefined,
+    owners: ReadonlyMap<string, string>,
+    reportedHookChatPage: boolean,
+    archivedAtEntry: "target" | "payload" | undefined,
+) => {
+    const checkTarget = () => {
+        const archived = archivedCharacterWrite(char, chaId);
+        if (archivedAtEntry || archived) {
+            throw new ArchivedPluginCharacterError("character", archivedAtEntry === "target" || archived === "target");
         }
+        if (context) contextMember(context);
+    };
+    if (reportedHookChatPage) {
+        const { chatPage: _reported, ...rest } = char;
+        char = rest;
     }
-    await withChatsLoaded([chaId], () => {
-        if (!context) {
-            applyPluginCharacter(
-                chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
-                char,
-            );
-            return;
-        }
-        applyPluginCharacter(contextTarget(context).characterIndex, char);
-    });
+    try {
+        await withChatsLoaded(
+            [chaId],
+            () => {
+                if (context) contextTarget(context);
+                if (chaId === undefined) return;
+                const at = characterList().findIndex((entry) => entry?.chaId === chaId);
+                if (at !== -1) applyPluginCharacter(at, char, undefined, takeBaseline);
+            },
+            undefined,
+            owners,
+            checkTarget,
+        );
+    } catch (error) {
+        if (!(error instanceof ArchivedPluginCharacterError)) throw error;
+        warnMutationRefused("a character", error);
+        if (context && error.hiddenTarget) throw new PluginTargetGoneError("character");
+        if (context) contextMember(context);
+    }
 };
 
-/** Runs a plugin write; a refused value (`MutationValidationError`) is warned about and changes nothing. */
+/**
+ * A `MutationValidationError` becomes a `[Plugin] Refused ...` warning and keeps the old value, so
+ * later database keys can still apply. Gone-target errors and unexpected errors propagate.
+ */
 function warnRefused(what: string, write: () => void) {
     try {
         write();
     } catch (error) {
-        if (!(error instanceof MutationValidationError)) {
-            throw error;
-        }
-        console.warn(`[Plugin] Refused ${what}; the previous value was kept: ${error.message}`);
+        warnMutationRefused(what, error);
     }
 }
 
+function warnMutationRefused(what: string, error: unknown) {
+    if (!(error instanceof MutationValidationError)) throw error;
+    console.warn(`[Plugin] Refused ${what}; the previous value was kept: ${error.message}`);
+}
+
+function archivedPluginEntry(char: any, groups: ReadonlySet<string>) {
+    return isArchivedGroup(char) || groups.has(char?.chaId);
+}
+
+/** Capture the offending position without validating or matching any of the supplied chats. */
+function archivedEntryIndex(incoming: unknown, groups?: ReadonlySet<string>): number {
+    if (!Array.isArray(incoming)) return -1;
+    const hidden = groups ?? archivedGroupIds();
+    return incoming.findIndex((char) => archivedPluginEntry(char, hidden));
+}
+
+class ArchivedPluginCharacterError extends MutationValidationError {
+    readonly hiddenTarget: boolean;
+
+    constructor(key: string, hiddenTarget = false) {
+        super(key, "group chats are archived");
+        this.hiddenTarget = hiddenTarget;
+    }
+}
+
+function archivedCharacterWrite(char: unknown, chaId: string | undefined): "target" | "payload" | undefined {
+    const groups = archivedGroupIds();
+    if (chaId !== undefined && groups.has(chaId)) return "target";
+    if (archivedPluginEntry(char, groups)) return "payload";
+}
+
+const chatBindingKeys = ["promptPresetId", "modelPresetId", "bindedPersona", "bindingReview"] as const;
+
+function withoutNewPluginChatBindings(fields: Record<string, unknown>) {
+    if (!Array.isArray(fields.chats)) return fields;
+    const chats = fields.chats.map((chat) => {
+        const copy: Chat = { ...chat };
+        for (const key of chatBindingKeys) delete copy[key];
+        return copy;
+    });
+    return { ...fields, chats };
+}
+
 /**
- * Applies a whole character a plugin hands back (last writer wins). The same `chaId` as the
+ * Applies a whole character a plugin hands back. The same `chaId` as the
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
- * chats are reconciled by id through the chat module (changed chats diffed, new ones created,
- * missing ones deleted, the order and a given `chatPage` followed). Another `chaId` (or none):
+ * chats are reconciled by id through the chat module (diffed against the retained read captured at
+ * setter entry when supplied, else the current chat; new ones created,
+ * omitted ones kept, the order and a given `chatPage` followed). Database setters can mark
+ * chats unchanged after checking the whole list or when chats are omitted: only a numeric
+ * `chatPage` is then applied. Read-only `chatSummaries` never enter a character record.
+ * Another `chaId` (or none):
  * the character replaces the one at the index (`replaceCharacterAt`), unless that one is generating
  * a reply or the `chaId` is already another character's. A refusal is warned about.
  */
-function applyPluginCharacter(index: number, char: any) {
+function applyPluginCharacter(
+    index: number,
+    char: any,
+    unchangedChats: ReadonlySet<string> = new Set(),
+    takeBaseline?: (ref: ChatRef) => ChatBaseline | undefined,
+) {
     warnRefused("a character", () => {
         const current = characterList()[index];
         if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
@@ -984,24 +2187,46 @@ function applyPluginCharacter(index: number, char: any) {
                 console.warn("[Plugin] Skipped a character whose chaId another character already has");
                 return;
             }
-            replaceCharacterAt(index, char);
+            checkCharacterInput(char);
+            const { chatSummaries: _summaries, ...fields } = char;
+            replaceCharacterAt(index, withoutNewPluginChatBindings(fields));
             return;
         }
         // Turning memory on counts, as the sidebar toggle's (`supaMemoryOnCount`): it voids every
         // chat's "don't ask again" answer to the no-memory trim question. The stored count is kept
         // otherwise: the plugin's copy (stale, missing, or changed) never replaces it.
-        const { supaMemoryOnCount: _theirs, ...fields } = char;
+        const { supaMemoryOnCount: _theirs, lastInteraction: _derived, chatSummaries: _summaries, ...fields } = char;
+        // Snapshots expose derived chat activity. A same-character round trip keeps the frozen
+        // legacy value exactly as stored, including its absence.
+        if (Object.hasOwn(current, "lastInteraction")) {
+            fields.lastInteraction = current.lastInteraction;
+        }
         if (fields.supaMemory && !current.supaMemory) {
             fields.supaMemoryOnCount = supaMemoryOnCount(current) + 1;
         } else if (current.supaMemoryOnCount !== undefined) {
             fields.supaMemoryOnCount = current.supaMemoryOnCount;
         }
-        replaceCharacterFields(fields);
+        replaceCharacterFields(fields, index);
         const { chats, chatPage } = char;
-        if (Array.isArray(chats)) {
-            reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
-        } else if (typeof chatPage === "number") {
-            selectChat(current.chaId, chatPage);
+        if (Array.isArray(chats) && !unchangedChats.has(current.chaId)) {
+            reconcileCharacterChats(
+                current.chaId,
+                chats,
+                typeof chatPage === "number" ? chatPage : undefined,
+                takeBaseline,
+                chatBindingKeys,
+            );
+        } else if (typeof chatPage === "number" && Number.isInteger(chatPage) && chatPage >= 0) {
+            // An unchanged list names the chat by its own entry: a chat trashed in another tab while the
+            // write waited (a consent prompt) shifts the active positions, not the list the plugin read.
+            // `selectChat` refuses an id that is no longer active. A page with no list is an active position.
+            const named = Array.isArray(chats) ? chats[chatPage] : undefined;
+            const id = Array.isArray(chats)
+                ? named && typeof named === "object" && typeof named.id === "string"
+                    ? named.id
+                    : undefined
+                : chatMemberPage(current.chaId, chatPage, chatPage + 1)[0]?.id;
+            if (id !== undefined) selectChat(current.chaId, id, index);
         }
     });
 }
@@ -1013,10 +2238,20 @@ function applyPluginCharacter(index: number, char: any) {
  * `chaId` go through `applyPluginCharacter`, new ones are appended (prepared by `prepareNewCharacter`
  * before the list changes, their chats saved with them), and missing ones removed
  * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
- * warning). The mirror keeps its order.
+ * warning). Membership and existing positions are indexed once; new characters append in one batch
+ * after existing updates, repairing the order once when any were added. The mirror keeps its order.
+ * Entries marked as having unchanged chats still pass all validation and apply their character
+ * fields and numeric `chatPage`, without reconciling chats.
  */
-function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> = new Set()) {
+function applyPluginCharacters(
+    incoming: unknown,
+    vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
+) {
     requireArray("characters", incoming);
+    const groups = archivedGroupIds();
+    const archived = archivedEntryIndex(incoming, groups);
+    if (archived !== -1) throw new ArchivedPluginCharacterError(`characters[${archived}]`);
     const checked = Array.from(incoming, (char, i) => {
         checkCharacterInput(char, `characters[${i}]`);
         return char;
@@ -1024,40 +2259,45 @@ function applyPluginCharacters(incoming: unknown, vanished: ReadonlySet<string> 
     const checkedIds = checked
         .map((char) => char.chaId)
         .filter((id): id is string => typeof id === "string" && id !== "");
-    if (new Set(checkedIds).size !== checkedIds.length || new Set(checked).size !== checked.length) {
+    const checkedIdSet = new Set(checkedIds);
+    if (checkedIdSet.size !== checkedIds.length || new Set(checked).size !== checked.length) {
         throw new MutationValidationError("characters", "duplicate chaId values (or one object listed twice)");
     }
     // The whole list is checked first; then an entry whose existing character was deleted while its
     // chats loaded (`vanished`, captured before the load) is skipped, never turned into a creation.
-    if ([...vanished].some((chaId) => checkedIds.includes(chaId))) {
+    if ([...vanished].some((chaId) => checkedIdSet.has(chaId))) {
         console.warn("[Plugin] Skipped characters that were deleted while their chats loaded");
     }
     const entries = checked.filter((char) => !(typeof char.chaId === "string" && vanished.has(char.chaId)));
     const ids = checkedIds.filter((chaId) => !vanished.has(chaId));
     const kept = new Set(ids);
-    const existing = characterList().map((character) => character?.chaId);
+    const characters = characterList();
+    const existing = characters.map((character) => character?.chaId);
+    const existingIds = new Set(existing);
+    const positions = new Map(existing.map((chaId, index) => [chaId, index]));
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
     // changes, so an entry refused there leaves the whole list unapplied.
+    const reservedIds = new Set(existingIds);
     const prepared = new Map(
-        entries.flatMap((char, i) =>
-            typeof char.chaId === "string" && existing.includes(char.chaId)
-                ? []
-                : [[char, prepareNewCharacter(char, `characters[${i}]`)] as const],
-        ),
+        entries.flatMap((char, i) => {
+            if (typeof char.chaId === "string" && existingIds.has(char.chaId)) return [];
+            const { chatSummaries: _summaries, ...fields } = char;
+            const ready = prepareNewCharacter(withoutNewPluginChatBindings(fields), `characters[${i}]`);
+            if (reservedIds.has(ready.chaId)) {
+                throw new MutationValidationError("characters", `a character with chaId ${ready.chaId} already exists`);
+            }
+            reservedIds.add(ready.chaId);
+            return [[char, ready] as const];
+        }),
     );
     for (const char of entries) {
-        const ready = prepared.get(char);
-        if (ready) {
-            addPreparedCharacter(ready);
-        } else {
-            applyPluginCharacter(
-                characterList().findIndex((entry) => entry?.chaId === char.chaId),
-                char,
-            );
+        if (!prepared.has(char)) {
+            applyPluginCharacter(positions.get(char.chaId as string) ?? -1, char, unchangedChats);
         }
     }
+    addPreparedCharacters([...prepared.values()]);
     for (const chaId of existing) {
-        if (typeof chaId !== "string" || kept.has(chaId)) {
+        if (typeof chaId !== "string" || groups.has(chaId) || kept.has(chaId)) {
             continue;
         }
         if (isCharacterGenerating(chaId)) {
@@ -1160,16 +2400,21 @@ function selectPersonaAt(index: unknown) {
  * field, or a forwarded preset/profile root), and any other key into the top level of
  * `pluginCustomStorage`. Only the full setter passes `plugins`: the plugins the user confirmed,
  * added or updated by name.
+ * Character reconciliation keeps the mirror's order and appends new entries (`applyPluginCharacters`).
+ * `src/ts/storage/pluginStorageStore.svelte.ts` owns the storage writes. Model roots (`maxContext`,
+ * `seperateModels`, `seperateModelsForAxModels`) reach `writeModelRoot` through `updateSettings` in
+ * `src/ts/storage/collectionStore.svelte.ts`; a refused model-root value warns `[Settings] Refused ...`.
  */
 function applyPluginKey(
     key: string,
     value: unknown,
-    context: PluginCallContext | undefined,
+    scope: PresetScope,
     vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
 ) {
     switch (key) {
         case "characters":
-            return applyPluginCharacters(value, vanished);
+            return applyPluginCharacters(value, vanished, unchangedChats);
         case "personas":
             return setPersonas(value);
         case "modules":
@@ -1177,7 +2422,7 @@ function applyPluginKey(
         case "enabledModules":
             return setEnabledModules(value);
         case "characterOrder":
-            return setCharacterOrder(value);
+            return setCharacterOrder(pluginCharacterOrder(value));
         case "plugins":
             for (const plugin of value as RisuPlugin[]) {
                 upsertPlugin(plugin);
@@ -1191,7 +2436,8 @@ function applyPluginKey(
     if (allowedDbKeys.includes(key)) {
         // Validation stays in the mutation module; model roots then use `writeModelRoot` with this
         // captured scope, including its unchanged-value check before matching profiles.
-        updateSettings({ [key]: value }, { presetId: context?.presetId, modelPresetId: context?.modelPresetId });
+        updateSettings({ [key]: value }, scope);
+        if ((SECTION_FIELDS.ui as readonly string[]).includes(key)) applyDisplaySettings();
     } else {
         setPluginCustomValue(key, value);
     }
@@ -1200,62 +2446,237 @@ function applyPluginKey(
 /**
  * Both database setters: the lite setter has already dropped `plugins`, and the full setter has
  * confirmed the plugins to install. Each key is applied on its own, so a refused value (warned
- * about) keeps that key's previous value and the other keys still apply. A preset that is gone
- * (`MutationTargetGoneError`) and unexpected errors reach the plugin. Inside a hook (`context`), a
- * forwarded preset key goes to the hook's preset; when that preset is gone, nothing is applied
- * (`PluginTargetGoneError`).
+ * about) keeps that key's previous value and the other keys still apply. Forwarded preset keys use
+ * the captured scope. Before any key applies, a missing preset needed by those keys refuses the
+ * entire call: `PluginTargetGoneError` inside a hook (`context`), `MutationTargetGoneError` otherwise.
+ * With no forwarded preset keys, missing presets do not refuse the call. Unexpected errors reach the plugin.
  */
 function applyPluginDatabase(
     newDb: Record<string, unknown>,
     context: PluginCallContext | undefined,
+    scope: PresetScope,
     vanished: ReadonlySet<string> = new Set(),
+    unchangedChats: ReadonlySet<string> = new Set(),
 ) {
-    if (context) {
-        const missing = missingPresetTarget(
-            context,
-            Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && isForwardedPresetRoot(key)),
-        );
-        if (missing !== undefined) {
+    const missing = missingPresetTarget(
+        scope,
+        Object.keys(newDb).filter((key) => allowedDbKeys.includes(key) && isForwardedPresetRoot(key)),
+    );
+    if (missing !== undefined) {
+        if (context) {
             throw new PluginTargetGoneError(missing);
         }
+        throw new MutationTargetGoneError(`${missing} ${missing === "preset" ? scope.presetId : scope.modelPresetId}`);
     }
     // One queued write per settings record the call changed (`records.svelte.ts`).
     batchRecordWrites(() => {
         for (const key of pluginKeyOrder(newDb)) {
-            warnRefused(`the database key ${key}`, () => applyPluginKey(key, newDb[key], context, vanished));
+            warnRefused(`the database key ${key}`, () =>
+                applyPluginKey(key, newDb[key], scope, vanished, unchangedChats),
+            );
         }
     });
 }
 
-/** The existing characters whose chats a plugin's `characters` reconciles (loaded first). */
+/** The existing characters targeted by a plugin's `characters` list. */
 function charactersReconciled(newDb: Record<string, unknown>): string[] {
     const incoming = newDb && typeof newDb === "object" ? newDb.characters : undefined;
     if (!Array.isArray(incoming)) {
         return [];
     }
-    const existing = new Set(characterList().map((character) => character?.chaId));
+    const existing = new Set(pluginCharacterList().map((character) => character?.chaId));
     return incoming
         .map((char) => (char && typeof char === "object" ? (char as { chaId?: unknown }).chaId : undefined))
         .filter((chaId): chaId is string => typeof chaId === "string" && existing.has(chaId));
 }
 
-/** Which of `targets` (existing characters captured before the load) left the list during it. */
+/** Which existing targets left the list after capture, including during consent or chat loading. */
 function vanishedOf(targets: readonly string[]): Set<string> {
-    const present = new Set(characterList().map((character) => character?.chaId));
+    const present = new Set(pluginCharacterList().map((character) => character?.chaId));
     return new Set(targets.filter((chaId) => !present.has(chaId)));
 }
 
-//Keys outside allowedDbKeys are stored at the top level of db.pluginCustomStorage
-const setPluginDatabaseLite = async (newDb: any, context: PluginCallContext | undefined) => {
+/**
+ * Exact ordered JSON equality with held chats or still-valid detached copies; failures require loading.
+ * Rechecks reuse earlier equality for immutable cached copies, but always compare loaded chats again.
+ */
+function pluginChatsMatch(
+    chaId: string,
+    incoming: unknown,
+    hits: Map<string, DetachedChatCacheHit>,
+    recheck = false,
+): boolean {
+    try {
+        const members = activeChatList(chaId);
+        if (!Array.isArray(incoming) || incoming.length !== members.length) return false;
+        for (let i = 0; i < members.length; i++) {
+            const { id } = members[i];
+            if (incoming[i]?.id !== id) return false;
+            const ref = { chaId, chatId: id };
+            let held = findChat(ref);
+            if (held) {
+                // Reconciliation snapshots drop own __proto__ keys, so raw equality is not enough.
+                if (needsChatSnapshot(held)) return false;
+            } else {
+                if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none" || isChatBehind(ref)) return false;
+                const remembered = hits.get(id);
+                const hit = remembered ?? cachedDetachedChat(ref);
+                if (!hit || !detachedChatCacheHitCurrent(ref, hit)) return false;
+                // Neither this cached copy nor the host's incoming clone changed since their comparison.
+                if (recheck && remembered) continue;
+                hits.set(id, hit);
+                held = detachedPluginChat(hit.entry.data);
+            }
+            if (JSON.stringify(incoming[i]) !== JSON.stringify(held)) return false;
+        }
+        return true;
+    } catch {
+        // Cycles, BigInts, and other values that cannot be compared still take the ordinary path.
+        return false;
+    }
+}
+
+/** Chats unchanged at entry must stay untouched even if a live edit arrives during consent. */
+function captureUnchangedPluginChats(newDb: Record<string, unknown>, owners: ReadonlyMap<string, string>) {
+    const unchanged = new Set<string>();
+    for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
+        if (!char || !owners.has(char.chaId)) continue;
+        if (pluginChatsMatch(char.chaId, char.chats, new Map())) {
+            unchanged.add(char.chaId);
+        } else {
+            unchanged.delete(char.chaId);
+        }
+    }
+    return unchanged;
+}
+
+/**
+ * Both database setters skip chats unchanged at entry, omitted chats and exact chat round trips. Loaded matches stay
+ * pinned while other characters load; targets and owners captured before consent are required.
+ * All matches and original owners are checked synchronously
+ * before applying. A changed match falls back once to loading targets that supply chats before any key applies.
+ */
+async function applyPluginDatabaseWithChats(
+    newDb: Record<string, unknown>,
+    context: PluginCallContext | undefined,
+    scope: PresetScope,
+    targets: readonly string[],
+    owners: ReadonlyMap<string, string>,
+    unchangedChats: ReadonlySet<string>,
+) {
+    if (!Object.hasOwn(newDb, "characters")) {
+        applyPluginDatabase(newDb, context, scope);
+        return;
+    }
+    const releases: (() => void)[] = [];
+    const checkTargets = () => {
+        const archived = archivedEntryIndex(newDb.characters);
+        if (archived !== -1) throw new ArchivedPluginCharacterError(`characters[${archived}]`);
+    };
+    try {
+        checkTargets();
+        checkPluginOwners(owners);
+        const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
+        const omitted = new Set(unchangedChats);
+        for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
+            if (!char || !owners.has(char.chaId)) continue;
+            if (unchangedChats.has(char.chaId)) continue;
+            if (char.chats === undefined) {
+                omitted.add(char.chaId);
+                matches.delete(char.chaId);
+                continue;
+            }
+            omitted.delete(char.chaId);
+            const hits = new Map<string, DetachedChatCacheHit>();
+            if (pluginChatsMatch(char.chaId, char.chats, hits)) {
+                matches.set(char.chaId, { chats: char.chats, hits });
+            } else {
+                matches.delete(char.chaId);
+            }
+        }
+        const chatTargets = targets.filter((chaId) => !omitted.has(chaId));
+        const loading = chatTargets.filter((chaId) => !matches.has(chaId));
+        for (const chaId of matches.keys()) {
+            for (const { id } of activeChatList(chaId)) {
+                const ref = { chaId, chatId: id };
+                if (findChat(ref)) releases.push(pinChat(ref));
+            }
+        }
+        const applied = await withChatsLoaded(
+            loading,
+            () => {
+                const vanished = vanishedOf(targets);
+                for (const [chaId, { chats, hits }] of matches) {
+                    if (!vanished.has(chaId) && !pluginChatsMatch(chaId, chats, hits, true)) return false;
+                }
+                applyPluginDatabase(newDb, context, scope, vanished, new Set([...omitted, ...matches.keys()]));
+                return true;
+            },
+            undefined,
+            owners,
+            checkTargets,
+        );
+        if (!applied) {
+            await withChatsLoaded(
+                chatTargets,
+                () => {
+                    applyPluginDatabase(newDb, context, scope, vanishedOf(targets), omitted);
+                },
+                undefined,
+                owners,
+                checkTargets,
+            );
+        }
+    } catch (error) {
+        if (!(error instanceof ArchivedPluginCharacterError)) throw error;
+        warnMutationRefused("the database key characters", error);
+        const { characters: _refused, ...otherKeys } = newDb;
+        applyPluginDatabase(otherKeys, context, scope);
+    } finally {
+        for (const release of releases) release();
+    }
+}
+
+/**
+ * Called after dbWrite consent with the context, scope, characters and owners captured at API entry.
+ * Plugin installation needs the full setter's consent flow, so this setter drops `plugins`.
+ * Omitted chats and exact chat round trips skip loading and reconciliation; other targets load before applying.
+ * Character fields and a numeric `chatPage` still apply for unchanged chats. Preset fields use the hook's
+ * captured ids, or the settings write scope captured at call start. A missing target needed by those
+ * fields refuses the whole call before any key applies.
+ */
+const setPluginDatabaseLite = async (
+    newDb: any,
+    context: PluginCallContext | undefined,
+    scope: PresetScope,
+    targets: readonly string[],
+    owners: ReadonlyMap<string, string>,
+    unchangedChats: ReadonlySet<string>,
+) => {
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
         delete newDb.plugins;
     }
-    const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
+    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners, unchangedChats);
 };
 
-const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefined) => {
+/**
+ * Called after dbWrite consent with the context, scope, characters and owners captured at API entry.
+ * Preflights every supplied plugin and awaits all installation prompts before assigning any key,
+ * then loads supplied chats except for exact round trips and applies keys synchronously. Unchanged chats
+ * skip reconciliation while character fields and a numeric `chatPage` still apply. Preset fields target
+ * the hook's captured ids; without context they use the settings write scope captured at call start
+ * (`src/ts/storage/collectionStore.svelte.ts:settingsWriteScope`), before any waits. A missing target
+ * needed by those fields refuses the whole call before any key applies.
+ */
+const setPluginDatabase = async (
+    newDb: any,
+    context: PluginCallContext | undefined,
+    scope: PresetScope,
+    targets: readonly string[],
+    owners: ReadonlyMap<string, string>,
+    unchangedChats: ReadonlySet<string>,
+) => {
     if (Object.hasOwn(newDb, "plugins")) {
         console.warn(
             "[WARN] Plugin attempted to access plugin directly. this would be blocked in future versions. Instead, use the provided APIs to manage plugins. Attempting to handle plugin installation via plugin for new plugins in the provided database object.",
@@ -1271,9 +2692,8 @@ const setPluginDatabase = async (newDb: any, context: PluginCallContext | undefi
         // Only the plugins the user confirms are installed; the installed ones stay.
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
-    // After the chats load, no await: a forwarded preset field lands in the hook's preset, else in the one selected now.
-    const targets = charactersReconciled(newDb);
-    await withChatsLoaded(targets, () => applyPluginDatabase(newDb, context, vanishedOf(targets)));
+    // After chats load, no await: preflight the captured scope and apply every key synchronously.
+    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners, unchangedChats);
 };
 
 const readAssetImage = (path: string) => {
@@ -1288,23 +2708,92 @@ const readAssetImage = (path: string) => {
     return readImage("assets/" + path);
 };
 
-const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
+/**
+ * Creates one instance's API and context owner. Wrapped hooks consume `invokeHook`'s handoff before
+ * awaiting and keep it on this owner's stack until settlement; reloading creates a fresh owner.
+ */
+const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity: PluginIdentity) => {
     const safeLocalStorage = new SafeLocalStorage();
-    // Captured now: a plugin with database access could rewrite its own script in the database.
-    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
-    // The hooks this plugin registers, wrapped to take their call context (`pluginContext.ts`): a runner
-    // hands it over synchronously, and it stays on this plugin's stack until the hook settles. Keyed
-    // by the registered function, so a removal finds the wrapper it registered.
+    let unloading = false;
+    // Installed first, so every user unload callback and later async registration sees the fence.
+    addPluginUnloadCallback(plugin.name, () => {
+        unloading = true;
+    });
+    const refuseRegistration = (api: string): boolean => {
+        if (!unloading) return false;
+        console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api} after unload began`);
+        return true;
+    };
+    // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
-    // The owner of this instance's context stack: a reloaded instance of the plugin gets its own.
     const contextOwner = {};
+    pluginChatBaselines.set(contextOwner, new Map());
+    addPluginUnloadCallback(plugin.name, () => pluginChatBaselines.delete(contextOwner));
+    let hintedFullDatabase = false;
+    // Check synchronously at host entry, before validation, permission prompts or chat loading.
+    // Refusal must not throw: a failed transform would show raw text and schedule recovery retries.
+    const refuseTransformWrite = (api: string): boolean => {
+        if (!hasReadOnlyContext(contextOwner)) return false;
+        console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api} during a read-only transform continuation`);
+        return true;
+    };
+    /** Checks dbWrite once per setter call, warning without throwing when consent is refused. */
+    const refuseDbWrite = async (api: string): Promise<boolean> => {
+        if (await getPluginPermission(identity, "dbWrite", "periodically")) return false;
+        console.warn(`[RisuAI Plugin: ${identity.name}] Refused ${api}: the dbWrite permission was not granted`);
+        return true;
+    };
+    /** Capture the visible index or hook/selection target, and the hook chatPage match, before consent. */
+    const setCharacterWithPermission = async (api: string, char: any, index?: number) => {
+        if (refuseTransformWrite(api)) return;
+        const indexed = api === "setCharacterToIndex";
+        const context = indexed ? undefined : currentContext(contextOwner);
+        const chaId = indexed
+            ? pluginCharacterList()[index!]?.chaId
+            : (context?.chatRef.chaId ?? selectedCharacter()?.chaId);
+        const archivedAtEntry = archivedCharacterWrite(char, chaId);
+        const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
+        const takeBaseline = captureCharacterChatReads(contextOwner, chaId);
+        // Membership lookup cannot throw for a gone hook target; validation follows consent.
+        const hookChatIndex =
+            context && !archivedAtEntry
+                ? activeChatList(context.chatRef.chaId).findIndex((entry) => entry.id === context.chatRef.chatId)
+                : -1;
+        const reportedHookChatPage =
+            hookChatIndex >= 0 && char && typeof char === "object" && char.chatPage === hookChatIndex;
+        if (await refuseDbWrite(api)) return;
+        return setChar(context, char, takeBaseline, chaId, owners, !!reportedHookChatPage, archivedAtEntry);
+    };
+    const setDatabaseWithPermission = async (api: "setDatabase" | "setDatabaseLite", newDb: any) => {
+        if (refuseTransformWrite(api)) return;
+        const context = currentContext(contextOwner);
+        const scope = context ?? settingsWriteScope();
+        const archivedAtEntry = archivedEntryIndex(newDb?.characters);
+        const targets = archivedAtEntry === -1 ? charactersReconciled(newDb) : [];
+        const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+        const unchangedChats = archivedAtEntry === -1 ? captureUnchangedPluginChats(newDb, owners) : new Set<string>();
+        if (await refuseDbWrite(api)) return;
+        const archived = archivedAtEntry === -1 ? archivedEntryIndex(newDb?.characters) : archivedAtEntry;
+        if (archived !== -1) {
+            warnMutationRefused(
+                "the database key characters",
+                new ArchivedPluginCharacterError(`characters[${archived}]`),
+            );
+            const { characters: _refused, ...otherKeys } = newDb;
+            newDb = otherKeys;
+        } else {
+            checkPluginOwners(owners);
+        }
+        const write = api === "setDatabase" ? setPluginDatabase : setPluginDatabaseLite;
+        return write(newDb, context, scope, targets, owners, unchangedChats);
+    };
     const withContext = <F extends Function>(hook: F): F => {
         const cached = hookWrappers.get(hook);
         if (cached) {
             return cached as unknown as F;
         }
         const wrapped = (...args: unknown[]) =>
-            trackHostHook(() => {
+            trackHostHook(identity.name, () => {
                 const context = takeHandoff();
                 if (!context) {
                     return hook(...args);
@@ -1327,11 +2816,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             console.error(
                 `[DEPRECATION WARNING] risuFetch is deprecated and will be removed in future versions. Please use nativeFetch instead.`,
             );
-            for (const blocked of urlBlacklist) {
-                if (url.toLowerCase().includes(blocked)) {
-                    throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
-                }
-            }
+            assertPluginUrlAllowed(url);
 
             //scan headers
             const headers = options?.headers || {};
@@ -1345,11 +2830,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return globalFetch(url, options);
         },
         nativeFetch: async (url: string, options: RequestInit = {}) => {
-            for (const blocked of urlBlacklist) {
-                if (url.toLowerCase().includes(blocked)) {
-                    throw new Error(`Requests to ${blocked} are blocked for security reasons.`);
-                }
-            }
+            const callSignal = hostCallSignal();
+            assertPluginUrlAllowed(url);
 
             // Normalize both sandbox-supported forms before scanning or logging their names.
             const normalizedHeaders = new Headers(options.headers ?? {});
@@ -1390,10 +2872,19 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 }
             }
             // RequestInit is public; internal routing, logging and interceptor options are not.
-            return fetchNative(url, { method, headers, body, signal: options.signal });
+            return fetchNative(url, { method, headers, body, signal: options.signal ?? callSignal });
         },
-        getChar: () => getChar(currentContext(contextOwner)),
-        setChar: (char: any) => setChar(currentContext(contextOwner), char),
+        getChar: () => getChar(currentContext(contextOwner), contextOwner),
+        /** Requires dbWrite and keeps the character captured at entry; see `setChar`. */
+        setChar: (char: any) => setCharacterWithPermission("setChar", char),
+        /**
+         * Replaces registrations by name: the latest callback, options, and model metadata win,
+         * with one entry in each provider list. Invalid model descriptors throw before any registry
+         * changes, using the same validator as the server's hook list. Every invocation checks
+         * `provider` permission with periodic reconfirmation (answers are cached for this page).
+         * Denial or an abort while awaiting permission returns `{ success: false, content }` without calling the guest;
+         * `src/ts/network/jobChannel.ts` and `src/ts/process/request/request.ts` expose that failure.
+         */
         addProvider: (
             name: string,
             func: (
@@ -1402,41 +2893,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             ) => Promise<{ success: boolean; content: string | ReadableStream<string> }>,
             options?: PluginV3ProviderOptions,
         ) => {
+            if (refuseRegistration("addProvider")) return;
             console.warn(
                 `[WARN] addProvider is a powerful API that can potentially be unsafe if used incorrectly. addProvider's functionality might be limited or changed in future updates to ensure security. please use other APIs if possible.`,
             );
-            const provs = get(customProviderStore);
-            (pluginHooks.providers.set(name, async (arg, abortSignal) => {
-                // The request's call context is taken before the first await (the permission prompt).
-                const context = takeHandoff();
-                const exit = context ? enterContext(contextOwner, context) : undefined;
-                // Plugin work from here, the permission prompt included (no guest callback is pending yet).
-                runningHostHooks++;
-                try {
-                    const conf = await getPluginPermission(identity, "provider", "periodically");
-                    if (!conf) {
-                        return {
-                            success: false,
-                            content: language.pluginProviderPermissionDenied.replace("{}", identity.name),
-                        };
-                    }
-                    if (abortSignal?.aborted) {
-                        return { success: false, content: language.pluginProviderRequestAborted };
-                    }
-                    //mode is overridden to v3, due to vulnerabilities using mode.
-                    //Alternative to mode will be added in future
-                    arg.mode = "v3";
-                    return await func(arg, abortSignal);
-                } finally {
-                    exit?.();
-                    hostHookSettled();
-                }
-            }),
-                pluginHooks.providerOptions.set(name, options ?? {}));
-            if (!provs.includes(name)) {
-                customProviderStore.set([...provs, name]);
-            }
-
             const modelData: LLMModel = {
                 id: `pluginmodel:::${name}`,
                 name: options?.model?.name ?? name,
@@ -1459,6 +2919,41 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 ],
                 tokenizer: options?.model?.tokenizer ?? LLMTokenizer.Unknown,
             };
+            if (!isModelDescriptor(modelData)) {
+                throw new TypeError("Invalid plugin provider model descriptor");
+            }
+            const provs = get(customProviderStore);
+            (pluginHooks.providers.set(name, async (arg, abortSignal) => {
+                // The request's call context is taken before the first await (the permission prompt).
+                const context = takeHandoff();
+                const exit = context ? enterContext(contextOwner, context) : undefined;
+                // Plugin work from here, the permission prompt included (no guest callback is pending yet).
+                hostHookStarted(identity.name);
+                try {
+                    const conf = await getPluginPermission(identity, "provider", "periodically");
+                    if (!conf) {
+                        return {
+                            success: false,
+                            content: language.pluginProviderPermissionDenied.replace("{}", identity.name),
+                        };
+                    }
+                    if (abortSignal?.aborted) {
+                        return { success: false, content: language.pluginProviderRequestAborted };
+                    }
+                    //mode is overridden to v3, due to vulnerabilities using mode.
+                    //Alternative to mode will be added in future
+                    arg.mode = "v3";
+                    return await func(arg, abortSignal);
+                } finally {
+                    exit?.();
+                    hostHookSettled(identity.name);
+                }
+            }),
+                pluginHooks.providerOptions.set(name, options ?? {}));
+            if (!provs.includes(name)) {
+                customProviderStore.set([...provs, name]);
+            }
+
             const modelIndex = customV3ProviderMetaStore.findIndex((model) => model.id === modelData.id);
             if (modelIndex === -1) {
                 customV3ProviderMetaStore.push(modelData);
@@ -1467,14 +2962,17 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
         },
         addTTSPreprocessor: async (func: TTSHookFn<BeforeTTSContext, BeforeTTSResult>) => {
+            if (refuseRegistration("addTTSPreprocessor")) return;
             registerTTSPreprocessor(func);
             addPluginUnloadCallback(plugin.name, () => unregisterTTSPreprocessor(func));
         },
         addTTSPostprocessor: async (func: TTSHookFn<AfterTTSContext, AfterTTSResult>) => {
+            if (refuseRegistration("addTTSPostprocessor")) return;
             registerTTSPostprocessor(func);
             addPluginUnloadCallback(plugin.name, () => unregisterTTSPostprocessor(func));
         },
         addRisuScriptHandler: (name: ScriptMode, func: EditFunction) => {
+            if (refuseRegistration("addRisuScriptHandler")) return;
             const handler = withContext(func);
             addRisuScriptHandler(name, handler);
             addPluginUnloadCallback(plugin.name, () => pluginHooks["edit" + name]?.delete(handler));
@@ -1482,9 +2980,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         removeRisuScriptHandler: (name: ScriptMode, func: EditFunction) =>
             removeRisuScriptHandler(name, registered(func)),
         addRisuReplacer: async (name: string, func: Function) => {
+            if (refuseRegistration("addRisuReplacer")) return;
             //permission check for replacer
             const conf = await getPluginPermission(identity, "replacer", "periodically");
-            if (!conf) {
+            if (!conf || refuseRegistration("addRisuReplacer")) {
                 return;
             }
             // Removed when the plugin unloads: the registry is not reset on reload, and a replacer of an
@@ -1495,9 +2994,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         removeRisuReplacer: (name: string, func: ReplacerFunction) => removeRisuReplacer(name, registered(func)),
         addRisuChatListener: async (mode: "output", func: Function) => {
+            if (refuseRegistration("addRisuChatListener")) return;
             //permission check, lets use same as replacer
             const conf = await getPluginPermission(identity, "replacer", "periodically");
-            if (!conf) {
+            if (!conf || refuseRegistration("addRisuChatListener")) {
                 return;
             }
             const listener = withContext(func) as any;
@@ -1506,8 +3006,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         removeRisuChatListener: (mode: string, func: ChatOutputListener) =>
             removeRisuChatListener(mode, registered(func)),
-        setDatabaseLite: (newDb: any) => setPluginDatabaseLite(newDb, currentContext(contextOwner)),
-        setDatabase: (newDb: any) => setPluginDatabase(newDb, currentContext(contextOwner)),
+        setDatabaseLite: (newDb: any) => setDatabaseWithPermission("setDatabaseLite", newDb),
+        setDatabase: (newDb: any) => setDatabaseWithPermission("setDatabase", newDb),
         loadPlugins: loadPlugins,
         readImage: readAssetImage,
         readInlay: async (id: string) => {
@@ -1517,40 +3017,133 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             return await getInlayAsset(id);
         },
-        saveAsset: (data: Uint8Array) => {
+        saveAsset: async (data: Uint8Array) => {
+            if (refuseTransformWrite("saveAsset")) return "";
             return saveAsset(data);
         },
-        //Same functionality, but new implementation
-        getDatabase: async (includeOnly: string[] | "all" = "all") => {
+        /** Full chat snapshots by default; summaries read only this tab's held metadata, even inside hooks. */
+        getDatabase: async (includeOnly: string[] | "all" = "all", options?: { chats?: "full" | "summaries" }) => {
             const context = currentContext(contextOwner);
+            if (options !== undefined && (options === null || typeof options !== "object")) {
+                throw new Error(`Invalid getDatabase options: ${String(options)}`);
+            }
+            if (options?.chats !== undefined && options.chats !== "full" && options.chats !== "summaries") {
+                throw new Error(`Invalid getDatabase chats option: ${String(options.chats)}`);
+            }
             const conf = await getPluginPermission(identity, "db", "periodically");
             if (!conf) {
                 return null;
             }
             const included = (key: string) => includeOnly === "all" || includeOnly.includes(key);
-            // The characters' chats are loaded (and pinned) first; then every key is read in one
-            // synchronous pass, so the snapshot is one state of the tab.
-            const characterIds = included("characters") ? characterList().map((character) => character?.chaId) : [];
+            // Outside a hook: the chats this tab has loaded as it holds them, and the others as the
+            // server holds them after this tab's queued changes were saved. Keys are assembled synchronously.
+            const characterIds = included("characters")
+                ? pluginCharacterList().map((character) => character?.chaId)
+                : [];
             const keys = allowedDbKeys.filter(included);
-            const liteDB = await withChatsLoaded(characterIds, () => {
+            const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
                 // Inside a hook, the forwarded preset keys come from the hook's preset (refused when it
                 // is gone), so a read-modify-write through setDatabase stays in one preset.
                 const missing = context ? missingPresetTarget(context, keys) : undefined;
                 if (missing !== undefined) {
                     throw new PluginTargetGoneError(missing);
                 }
-                return buildDatabaseSubset(keys, context ?? null);
-            });
-            return liteDB;
+                const result = buildDatabaseSubset(keys, context ?? null, detached, options?.chats);
+                if (
+                    !hintedFullDatabase &&
+                    settings.ui.enableDevTools &&
+                    includeOnly === "all" &&
+                    options?.chats !== "summaries"
+                ) {
+                    const characters = result.characters as { chats: Chat[] }[];
+                    const count = characters.reduce((total, character) => total + character.chats.length, 0);
+                    if (count > 200) {
+                        hintedFullDatabase = true;
+                        console.info(
+                            `[RisuAI Plugin: ${identity.name}] getDatabase() returned ${count} chats. Prefer getDatabase(keys, { chats: "summaries" }), getChats(chaId, { offset, limit }), or getCharacter() to read only what you need.`,
+                        );
+                    }
+                }
+                return result;
+            };
+            if (options?.chats === "summaries") return read();
+            if (included("characters")) {
+                touchDetachedChatCache();
+                try {
+                    return await (context
+                        ? withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context))
+                        : withDetachedDatabaseChats(characterIds, read));
+                } finally {
+                    touchDetachedChatCache();
+                }
+            }
+            return withChatsLoaded(characterIds, read, () => chatsOfRead(characterIds, context));
+        },
+
+        /**
+         * A page in current member order, with the same copies and cache as full database reads.
+         * Selects only its ids and reuses them until membership changes, including across awaits.
+         */
+        getChats: async (chaId: string, { offset = 0, limit }: { offset?: number; limit?: number } = {}) => {
+            const context = currentContext(contextOwner);
+            if (!Number.isSafeInteger(offset) || offset < 0) {
+                throw new Error(`Invalid getChats offset: ${String(offset)}; expected a non-negative safe integer`);
+            }
+            if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) {
+                throw new Error(`Invalid getChats limit: ${String(limit)}; expected a non-negative safe integer`);
+            }
+            const visibleAtEntry = !!pluginCharacter(chaId);
+            const conf = await getPluginPermission(identity, "db", "periodically");
+            if (!conf || !visibleAtEntry || !pluginCharacter(chaId)) return null;
+            const pages = new Map<string, { version: number; entries: readonly { id: string }[] }>();
+            const members: ChatMemberSelector = (id) => {
+                const version = chatMembershipVersion(id);
+                let page = pages.get(id);
+                if (!page || page.version !== version) {
+                    page = {
+                        version,
+                        entries: chatMemberPage(id, offset, limit === undefined ? undefined : offset + limit),
+                    };
+                    pages.set(id, page);
+                }
+                return page.entries;
+            };
+            const read = (detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>) => {
+                // Owner checks deliberately ignore deletions, so resolve the character again here.
+                if (!pluginCharacter(chaId)) return null;
+                const chats = members(chaId).map(({ id }) => {
+                    const held = findChat({ chaId, chatId: id });
+                    if (held) return plainClone($state.snapshot(held)) as Chat;
+                    const copy = detached?.get(chaId)?.get(id);
+                    if (!copy) throw new Error(`The chat ${id} of ${chaId} is not loaded`);
+                    return copy;
+                });
+                return { chats, total: activeChatCount(chaId) };
+            };
+            touchDetachedChatCache();
+            try {
+                if (members(chaId).length === 0) return read();
+                const result = await (context
+                    ? withChatsLoaded([chaId], read, () => chatsOfRead([chaId], context, members))
+                    : withDetachedDatabaseChats([chaId], read, members));
+                return pluginCharacter(chaId) ? result : null;
+            } catch (error) {
+                if (!pluginCharacter(chaId)) return null;
+                throw error;
+            } finally {
+                touchDetachedChatCache();
+            }
         },
 
         installPlugin: handlePluginInstallViaPlugin,
 
         // --- Color Scheme APIs ---
         changeColorScheme: (name: string) => {
+            if (refuseTransformWrite("changeColorScheme")) return;
             changeColorScheme(name);
         },
         setColorScheme: (scheme: ColorScheme) => {
+            if (refuseTransformWrite("setColorScheme")) return;
             const requiredKeys = [
                 "bgcolor",
                 "darkbg",
@@ -1573,6 +3166,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             updateSettings({ colorSchemeName: "custom", customColorScheme: scheme, colorScheme: scheme });
             updateColorScheme();
+            updateTextThemeAndCSS();
         },
         getColorScheme: () => {
             return {
@@ -1583,6 +3177,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
         // --- Text Theme APIs ---
         changeTextTheme: (name: string) => {
+            if (refuseTransformWrite("changeTextTheme")) return;
             if (!["standard", "highcontrast"].includes(name)) {
                 throw new Error(`Invalid text theme: ${name}`);
             }
@@ -1597,6 +3192,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             FontColorQuote1: string;
             FontColorQuote2: string;
         }) => {
+            if (refuseTransformWrite("setCustomTextTheme")) return;
             const requiredKeys = [
                 "FontColorStandard",
                 "FontColorBold",
@@ -1623,7 +3219,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         //Deprecated APIs
         //Use getArgument / setArgument instead if possible
         getArg: getArg,
-        setArg: setArg,
+        setArg: (arg: string, value: string | number) => {
+            if (arg.split("::")[0] !== identity.name && refuseTransformWrite("setArg")) return;
+            setArg(arg, value);
+        },
 
         //New APIs for v3
         getArgument: async (key: string) => {
@@ -1638,40 +3237,54 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         },
         // The plugin index APIs address the character list by position (creation order).
         getCharacterFromIndex: async (index: number) => {
-            const chaId = characterList()[index]?.chaId;
+            const context = currentContext(contextOwner);
+            const chaId = pluginCharacterList()[index]?.chaId;
             if (chaId === undefined) {
                 return null;
             }
-            return withChatsLoaded([chaId], () => {
-                const snapshot = characterSnapshot(chaId);
-                return snapshot === undefined ? null : withChatsCopy(snapshot);
-            });
+            return withChatsLoaded(
+                [chaId],
+                () => {
+                    const character = pluginCharacter(chaId);
+                    return character === undefined
+                        ? null
+                        : rememberCharacterReads(contextOwner, withChatsCopy($state.snapshot(character)));
+                },
+                () => chatsOfRead([chaId], context),
+            );
         },
-        setCharacterToIndex: async (index: number, char: any) => {
-            // The character at the index when the call came, found again by id after its chats load.
-            const chaId = characterList()[index]?.chaId;
-            if (chaId === undefined) {
-                return;
-            }
-            await withChatsLoaded([chaId], () => {
-                const at = characterList().findIndex((entry) => entry?.chaId === chaId);
-                if (at !== -1) {
-                    applyPluginCharacter(at, char);
-                }
-            });
-        },
+        /** Captures the indexed character and owner before dbWrite consent, then loads and writes it. */
+        setCharacterToIndex: (index: number, char: any) =>
+            setCharacterWithPermission("setCharacterToIndex", char, index),
+        /** Captures one member's id before loading; a non-integer or negative chat index returns null. */
         getChatFromIndex: async (characterIndex: number, chatIndex: number) => {
-            const chaId = characterList()[characterIndex]?.chaId;
-            const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
+            if (!Number.isInteger(chatIndex) || chatIndex < 0) return null;
+            const chaId = pluginCharacterList()[characterIndex]?.chaId;
+            const chatId = chaId === undefined ? undefined : chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id;
             if (chaId === undefined || chatId === undefined) {
                 return null;
             }
             const ref = { chaId, chatId };
-            await ensureChatLoaded(ref);
-            // Found again after the load: the chat as it is now (none when it was deleted meanwhile).
-            const chat = findChat(ref);
-            return chat ? $state.snapshot(chat) : null;
+            const release = pinChat(ref);
+            try {
+                await ensureChatLoaded(ref);
+                if (!pluginCharacter(chaId)) return null;
+                await refreshChatProjections([ref]);
+                // Found again after both: the chat as it is now (none when it was deleted meanwhile).
+                const chat = findChat(ref);
+                if (!pluginCharacter(chaId) || !chat || !isActiveChat(ref)) return null;
+                const copy = $state.snapshot(chat) as Chat;
+                rememberChatRead(contextOwner, ref, copy);
+                return copy;
+            } finally {
+                release();
+            }
         },
+        /**
+         * Keeps the hook's chat, presets, and persona through chat loading and parsing via
+         * `src/ts/parser/parser.svelte.ts:risuChatParserScoped`. A missing preset or persona also
+         * throws `PluginTargetGoneError`. Without context, captures the selected chat before loading.
+         */
         parseRisuChat: async (
             text: string,
             options?: {
@@ -1684,6 +3297,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 cbsConditions?: CbsConditions;
             },
         ) => {
+            const readOnly = hasReadOnlyContext(contextOwner);
             const context = currentContext(contextOwner);
             // The hook's chat (refused at once when it is gone), else the one selected when the call
             // came, loaded first; the target is found again after the load.
@@ -1695,16 +3309,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 // The same chat after the load: deleted or replaced meanwhile (even under the same
                 // ids) refuses the call.
                 const owner = chatOwnerToken(ref.chaId);
-                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
-                    throw new PluginTargetGoneError("chat");
-                }
+                checkPluginChat(ref, owner);
+                const loaded = await ensureChatLoaded(ref);
+                checkPluginChat(ref, owner, !!loaded);
             }
             const target = context ? contextTarget(context) : undefined;
-            const char = target
-                ? target.character
-                : ref
-                  ? characterList().find((entry) => entry?.chaId === ref.chaId)
-                  : selectedCharacter();
+            const char = target?.character ?? pluginCharacter(ref?.chaId ?? selection.characterId);
             if (!char) {
                 throw new Error("No character selected");
             }
@@ -1729,7 +3339,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 chatRef,
                 chatID,
                 role,
-                runVar: options?.runVar,
+                runVar: readOnly ? false : options?.runVar,
                 rmVar: options?.rmVar,
                 tokenizeAccurate: options?.tokenizeAccurate,
                 cbsConditions,
@@ -1759,34 +3369,66 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return (await serverProcessScript(char, parsed, "editprocess", chatID, cbsConditions, transform, "message"))
                 .data;
         },
+        /**
+         * Captures the indexed chat and owner before dbWrite consent and loading. Invalid indexes and
+         * deleted or replaced owners write nothing; even invalid indexes require consent first.
+         */
         setChatToIndex: async (characterIndex: number, chatIndex: number, chat: any) => {
-            // The chat at the indexes when the call came, by id, loaded first.
-            const chaId = characterList()[characterIndex]?.chaId;
-            const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
+            if (refuseTransformWrite("setChatToIndex")) return;
+            const chaId = pluginCharacterList()[characterIndex]?.chaId;
+            const chatId =
+                chaId !== undefined && Number.isInteger(chatIndex) && chatIndex >= 0
+                    ? chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id
+                    : undefined;
+            const owner = chaId === undefined ? undefined : chatOwnerToken(chaId);
+            const baseline =
+                chaId !== undefined && chatId !== undefined ? peekChatRead(contextOwner, { chaId, chatId }) : undefined;
+            if (await refuseDbWrite("setChatToIndex")) return;
             if (chaId === undefined || chatId === undefined || !chat || typeof chat !== "object") {
                 return;
             }
+            if (!pluginCharacter(chaId) || chatOwnerToken(chaId) !== owner) return;
             const ref = { chaId, chatId };
-            if (!(await ensureChatLoaded(ref))) {
-                return;
-            }
-            // Last writer wins: the plugin's chat is diffed against the chat as it is now.
+            const release = pinChat(ref);
             try {
-                applyChatResult(captureChatBaseline(ref), { ...chat, id: chatId });
-            } catch (error) {
-                console.warn("[Plugin] Skipped a chat change (a message being generated, or a refused field)", error);
+                if (
+                    !isActiveChat(ref) ||
+                    !(await ensureChatLoaded(ref)) ||
+                    !pluginCharacter(chaId) ||
+                    !isActiveChat(ref) ||
+                    chatOwnerToken(chaId) !== owner
+                )
+                    return;
+                // Consume the entry read once; writes without one diff against the current chat.
+                try {
+                    applyChatResult(
+                        takeChatRead(contextOwner, ref, baseline) ?? captureChatBaseline(ref),
+                        { ...chat, id: chatId },
+                        chatBindingKeys,
+                    );
+                } catch (error) {
+                    console.warn(
+                        "[Plugin] Skipped a chat change (a message being generated, or a refused field)",
+                        error,
+                    );
+                }
+            } finally {
+                release();
             }
         },
         getCurrentCharacterIndex: () => {
             const context = currentContext(contextOwner);
-            return context ? contextMember(context).characterIndex : selectedIndex();
+            if (context) return contextMember(context).characterIndex;
+            return pluginCharacterList().findIndex((entry) => entry?.chaId === selection.characterId);
         },
         getCurrentChatIndex: () => {
             const context = currentContext(contextOwner);
             if (context) {
                 return contextMember(context).chatIndex;
             }
-            return selectedChatIndex(selectedCharacter().chaId);
+            const char = pluginCharacter(selection.characterId);
+            if (!char) throw new TypeError("No character selected");
+            return selectedChatIndex(char.chaId);
         },
         getCurrentLorebookEntries: async () => {
             // The hook's chat, else the one selected when the call came, loaded first (its local lore
@@ -1797,19 +3439,19 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
             const ref = context ? context.chatRef : currentChatRef();
             if (!ref) {
-                const char = selectedCharacter();
+                const char = pluginCharacter(selection.characterId);
                 return char ? $state.snapshot([...(char.globalLore ?? []), ...getModuleLorebooks()]) : [];
             }
             const owner = chatOwnerToken(ref.chaId);
             const release = pinChat(ref);
             try {
-                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
-                    throw new PluginTargetGoneError("chat");
-                }
+                checkPluginChat(ref, owner);
+                const loaded = await ensureChatLoaded(ref);
+                checkPluginChat(ref, owner, !!loaded);
                 const { character, chat } = context
                     ? contextTarget(context)
                     : {
-                          character: characterList().find((entry) => entry?.chaId === ref.chaId),
+                          character: pluginCharacter(ref.chaId),
                           chat: findChat(ref),
                       };
                 if (!character || !chat) {
@@ -1825,8 +3467,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             }
         },
         //New names for character APIs, to match API naming conventions
-        getCharacter: () => getChar(currentContext(contextOwner)),
-        setCharacter: (char: any) => setChar(currentContext(contextOwner), char),
+        getCharacter: () => getChar(currentContext(contextOwner), contextOwner),
+        /** Requires dbWrite and keeps the character captured at entry; see `setChar`. */
+        setCharacter: (char: any) => setCharacterWithPermission("setCharacter", char),
 
         showContainer: (
             //more types may be added in future
@@ -1873,6 +3516,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             iconType: "html" | "img" | "none" = "none",
             id?: string,
         ) => {
+            if (refuseRegistration("registerSetting")) return;
             if (iconType !== "html" && iconType !== "img" && iconType !== "none") {
                 throw new Error("iconType must be 'html', 'img' or 'none'");
             }
@@ -1898,9 +3542,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return { id: menuId };
         },
         registerBodyIntercepter: async (callback: (body: any, type: string) => any) => {
+            if (refuseRegistration("registerBodyIntercepter")) return;
             if ((await getPluginPermission(identity, "replacer")) === false) {
                 return null;
             }
+            if (refuseRegistration("registerBodyIntercepter")) return null;
 
             const id = v4();
             bodyIntercepterStore.push({
@@ -1933,6 +3579,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             },
             callback: () => void,
         ) => {
+            if (refuseRegistration("registerButton")) return;
             let { name, icon, iconType, location, id: providedId } = arg;
             location = location || "action";
             if (iconType !== "html" && iconType !== "img" && iconType !== "none") {
@@ -1995,7 +3642,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 className?: string;
             } = {},
         ) => {
+            if (refuseRegistration("setChatPanel")) return;
             const id = options.id || `${plugin.name}:default`;
+            // A call that waits for consent applies only while it is still the latest for its panel.
+            const call = claimChatPanel(id);
 
             if (content === null || content === "") {
                 removeChatPanel(id);
@@ -2006,26 +3656,33 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 throw new Error("content must be a string or null");
             }
 
-            const panel = {
-                id,
-                pluginName: plugin.name,
-                html: DOMPurify.sanitize(content),
-                className:
-                    typeof options.className === "string"
-                        ? DOMPurify.sanitize(options.className, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] })
-                        : undefined,
+            const className =
+                typeof options.className === "string"
+                    ? DOMPurify.sanitize(options.className, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] })
+                    : undefined;
+            const show = (html: string) => {
+                const panel = { id, pluginName: plugin.name, html, className };
+                const existingIndex = chatPanelStore.findIndex((item) => item.id === id);
+                if (existingIndex !== -1) {
+                    chatPanelStore[existingIndex] = panel;
+                } else {
+                    chatPanelStore.push(panel);
+                }
+                addPluginUnloadCallback(plugin.name, () => removePluginChatPanels(plugin.name));
+                return { id };
             };
 
-            const existingIndex = chatPanelStore.findIndex((item) => item.id === id);
-            if (existingIndex !== -1) {
-                chatPanelStore[existingIndex] = panel;
-            } else {
-                chatPanelStore.push(panel);
-            }
-            addPluginUnloadCallback(plugin.name, () => removePluginChatPanels(plugin.name));
-            return { id };
+            const html = DOMPurify.sanitize(content);
+            if (!hasStyleElement(html)) return show(html);
+            // The panel is inserted into the main document, where a style element's rules reach the whole app.
+            return getPluginPermission(identity, "globalStyle").then((allowed) => {
+                if (refuseRegistration("setChatPanel")) return;
+                if (chatPanelCalls.get(id) !== call) return { id };
+                return show(allowed ? html : withoutStyleElements(content));
+            });
         },
         registerMCP: (...[arg, getToolList, callTool]: Parameters<typeof registerMCPModule>) => {
+            if (refuseRegistration("registerMCP")) return;
             const client = registerMCPModule(arg, withContext(getToolList), withContext(callTool));
             addPluginUnloadCallback(plugin.name, () => {
                 if (registeredCustomPluginMCPs.get(arg.identifier) === client) {
@@ -2052,6 +3709,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             console.log(`[RisuAI Plugin: ${plugin.name}] ${message}`);
         },
         createMutationObserver(callback: SafeMutationCallback): SafeMutationObserver {
+            if (refuseRegistration("createMutationObserver")) return;
             const observer = new SafeMutationObserver(callback);
             addPluginUnloadCallback(plugin.name, () => {
                 observer.disconnect();
@@ -2059,15 +3717,35 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             return observer;
         },
         onUnload: (callback: () => void) => {
+            if (refuseRegistration("onUnload")) return;
             addPluginUnloadCallback(plugin.name, callback);
         },
-        //Storage writes resolve when queued; a conflict that discards unsaved ones (another tab or
-        //device wrote the same key) is told to every listener, not to the write's promise
+        /**
+         * Storage writes resolve when queued; later losses from `src/ts/storage/resourceSync.svelte.ts`
+         * go to every listener. `customStorage` only flags custom keys or a reserved namespace's own
+         * shape: revealing custom key names requires `db` permission. This listener needs no permission
+         * and gets no hook context; an existing ambient context can still apply. It is not awaited;
+         * rejections are logged and unload removes it.
+         */
         onStorageDiscarded: (callback: (event: StorageDiscardedEvent) => unknown) => {
+            if (refuseRegistration("onStorageDiscarded")) return;
             const unsubscribe = onPluginStorageDiscarded((lost) => {
+                const keys = new Set(lost.pluginStorage);
+                if (!identity.name.includes("\u0000")) {
+                    const prefix = `${identity.name}\u0000`;
+                    for (const key of lost.ownedPluginStorage) {
+                        if (key.startsWith(prefix)) keys.add(key.slice(prefix.length));
+                    }
+                    if (lost.ownedPluginStorage.includes(identity.name)) {
+                        // A rolled-back clear can expose legacy keys again in the now-settled store.
+                        for (const key of ownedPluginStorageKeys(identity.name)) {
+                            if (!hasOwnedPluginStorageItem(identity.name, key)) keys.add(key);
+                        }
+                    }
+                }
                 const event: StorageDiscardedEvent = {
                     type: "storageDiscarded",
-                    pluginStorage: lost.pluginStorage,
+                    pluginStorage: [...keys],
                     localPluginStorage: lost.localPluginStorage,
                     customStorage: lost.customStorage,
                 };
@@ -2116,7 +3794,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
         getLocalPluginStorage: () => {
             return new SafeLocalPluginStorage();
         },
-        checkCharOrder: checkCharOrder,
+        checkCharOrder: () => {
+            if (refuseTransformWrite("checkCharOrder")) return;
+            return checkCharOrder();
+        },
         requestPluginPermission: (permission: string) => {
             return getPluginPermission(identity, permission as any);
         },
@@ -2131,30 +3812,29 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
 
             return v;
         },
-        //v3 pluginStorage lives under its own key in db.pluginCustomStorage,
-        //apart from the custom properties setDatabase/setDatabaseLite store at its top level
+        // The mutation boundary scopes v3 storage to the loaded plugin's identity.
         _getPluginStorage: async (key: string) => {
-            return getPluginStorageValue(String(key));
+            return getOwnedPluginStorageValue(identity.name, String(key));
         },
         _setPluginStorage: async (key: string, value: any) => {
-            //JSON round trip rejects values the save file cannot hold, e.g. BigInt
+            //JSON round trip rejects values the save file cannot hold, e.g. BigInt; the store rejects a removed plugin
             const json = JSON.stringify(value);
-            setPluginStorageItem(String(key), json === undefined ? null : JSON.parse(json));
+            setOwnedPluginStorageItem(identity.name, String(key), json === undefined ? null : JSON.parse(json));
         },
         _removePluginStorage: async (key: string) => {
-            removePluginStorageItem(String(key));
+            removeOwnedPluginStorageItem(identity.name, String(key));
         },
         _clearPluginStorage: async () => {
-            clearPluginStorage();
+            clearOwnedPluginStorage(identity.name);
         },
         _keyPluginStorage: async (index: number) => {
-            return pluginStorageKeys()[index] ?? null;
+            return ownedPluginStorageKeyAt(identity.name, index);
         },
         _keysPluginStorage: async () => {
-            return pluginStorageKeys();
+            return ownedPluginStorageKeys(identity.name);
         },
         _lengthPluginStorage: async () => {
-            return pluginStorageKeys().length;
+            return ownedPluginStorageKeyCount(identity.name);
         },
         _getSafeLocalStorage: (key: string) => safeLocalStorage.getItem(key),
         _setSafeLocalStorage: (key: string, value: string) => safeLocalStorage.setItem(key, value),
@@ -2189,6 +3869,14 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                 },
             };
         },
+        /**
+         * Pins the hook's chat and passes its context to parsing and provider hooks through
+         * `src/ts/process/request/request.ts`. Model selection uses the captured prompt/model preset
+         * ids and their current values; a gone preset returns a failed request. Without context the
+         * settings views supply the presets. Any model whose resolved format is Plugin needs
+         * `allowPlugins: true`: `pluginmodel:::` models, the legacy `custom` model, and reverse-proxy
+         * profiles using that format.
+         */
         runLLMModel: async (options: {
             mode: ModelModeExtended;
             messages: OpenAIChat[];
@@ -2206,8 +3894,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             const chatOwner = context ? chatOwnerToken(context.chatRef.chaId) : undefined;
             return withRequestChat(
                 context?.chatRef ?? null,
-                () =>
-                    requestChatDataMain(
+                () => {
+                    if (context) contextMember(context);
+                    return requestChatDataMain(
                         {
                             formated: options.messages,
                             bias: {},
@@ -2224,25 +3913,29 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
                             blockPlugins: !options.allowPlugins,
                         },
                         options.mode,
-                    ),
+                    );
+                },
                 chatOwner,
             );
         },
         sendChat: async (message: string) => {
+            if (refuseTransformWrite("sendChat")) return false;
             const context = currentContext(contextOwner);
+            // Consent must not move a context-free send to a chat opened while the dialog waits.
+            const ref = context ? context.chatRef : currentChatRef();
+            const owner = ref ? chatOwnerToken(ref.chaId) : undefined;
+            const missingCharacter = ref && !pluginCharacter(ref.chaId);
             const conf = await getPluginPermission(identity, "sendChat");
             if (!conf) {
                 return false;
             }
-
-            // Inside a hook, the send goes to the hook's chat, else to the selection after permission.
-            const ref = context ? context.chatRef : currentChatRef();
 
             if (typeof message !== "string") {
                 throw new Error("Message must be a string");
             }
 
             // A hook's chat that is gone refuses the call at once.
+            if (missingCharacter || (ref && !pluginCharacter(ref.chaId))) throw new PluginTargetGoneError("character");
             if (context) {
                 contextMember(context);
             }
@@ -2263,48 +3956,54 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             };
             refuseBusy();
 
-            // Loaded first, the target found again after the load.
-            if (ref) {
-                // The same chat after the load: deleted or replaced meanwhile (even under the same
-                // ids) refuses the call.
-                const owner = chatOwnerToken(ref.chaId);
-                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
-                    throw new PluginTargetGoneError("chat");
+            const release = ref ? pinChat(ref) : undefined;
+            try {
+                // Loaded first, the target found again after the load.
+                if (ref) {
+                    // The same chat after the load: deleted or replaced meanwhile (even under the same
+                    // ids) refuses the call.
+                    checkPluginChat(ref, owner!);
+                    const loaded = await ensureChatLoaded(ref);
+                    checkPluginChat(ref, owner!, !!loaded);
                 }
-            }
-            const target = context ? contextTarget(context) : undefined;
-            const char = target
-                ? target.character
-                : ref
-                  ? characterList().find((entry) => entry?.chaId === ref.chaId)
-                  : selectedCharacter();
-            if (!char) {
-                throw new Error("No character selected");
-            }
+                const target = context ? contextTarget(context) : undefined;
+                const char = target?.character ?? pluginCharacter(ref?.chaId ?? selection.characterId);
+                if (!char) {
+                    throw new Error("No character selected");
+                }
 
-            const chat = target ? target.chat : ref ? findChat(ref) : undefined;
-            if (!chat) {
-                throw new Error("No active chat found");
-            }
+                const chat = target ? target.chat : ref ? findChat(ref) : undefined;
+                if (!chat) {
+                    throw new Error("No active chat found");
+                }
 
-            // Again after the load: from here to the send's registry entry nothing awaits.
-            refuseBusy();
+                // Again after the load: from here to the send's registry entry nothing awaits.
+                refuseBusy();
 
-            if (message && chat.id) {
-                appendMessage(
-                    { chaId: char.chaId, chatId: chat.id },
-                    { role: "user", data: message, time: Date.now() },
+                // The hook's chat, else the selection captured before consent.
+                const sendTarget = { chaId: char.chaId, chatId: chat.id };
+                // Orphaned lore overrides refuse it before the message is appended, as the server would
+                // after: the alert names them, and the answer is false like a refused send.
+                if (refuseOrphanedOverrides(sendTarget)) {
+                    return false;
+                }
+
+                checkPluginChat(sendTarget, owner!);
+                if (message && chat.id) {
+                    appendMessage(sendTarget, { role: "user", data: message, time: Date.now() });
+                    checkPluginChat(sendTarget, owner!);
+                }
+
+                return await processSendChat(
+                    -1,
+                    context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
                 );
+            } finally {
+                release?.();
             }
-
-            // The chat captured before the load (the hook's, else the selection after permission).
-            const sendTarget = { chaId: char.chaId, chatId: chat.id };
-            return await processSendChat(
-                -1,
-                context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
-            );
         },
         addPluginChannelListener: (channelName: string, callback: Function) => {
+            if (refuseRegistration("addPluginChannelListener")) return;
             pluginChannel.set(plugin.name + channelName, callback);
             addPluginUnloadCallback(plugin.name, () => {
                 pluginChannel.delete(plugin.name + channelName);
@@ -2347,19 +4046,24 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin) => {
             //TODO: Implement server-side secret storage with write-only access for plugins, to enhance security when handling sensitive information like API keys.
             //This will have rate-limit, to prevent saving it publicly and writing as secret every time before using it.
             console.warn(
-                `[RisuAI Plugin: ${plugin.name}] saveServerSecret is not implemented yet. This API is intended for securely storing sensitive information like API keys with write-only access for plugins. Please avoid using this API until it is implemented.`,
+                `[RisuAI Plugin: ${plugin.name}] saveSecretHeader is not implemented yet. This API is intended for securely storing sensitive information like API keys with write-only access for plugins. Please avoid using this API until it is implemented.`,
             );
         },
     };
 };
 
-type V3PluginInstance = {
-    name: string;
+type V3PluginInstance = PluginIdentity & {
     host: SandboxHost;
 };
 
 const v3PluginInstances: V3PluginInstance[] = [];
 
+/**
+ * Replaces a snapshot of the loaded instances, waiting for unload cleanup and termination first.
+ * Resets providers and model metadata again in place as a backstop after fenced unload, then
+ * removes tracked DOM listeners from their original targets before starting replacements.
+ * `src/ts/plugins/plugins.svelte.ts` serializes callers and passes only enabled API `3.0` entries.
+ */
 export async function loadV3Plugins(plugins: RisuPlugin[]) {
     await Promise.all(
         [...v3PluginInstances].map(async (instance) => {
@@ -2367,12 +4071,15 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
         }),
     );
 
-    // Unloading instances can still register providers until their sandboxes terminate.
+    // Keep the final reset as a backstop; unloading instances refuse all new registrations.
     clearPluginProviders();
     customV3ProviderMetaStore.length = 0;
 
-    for (const entry of pluginEventListeners) {
+    for (const registration of pluginEventListeners) {
+        const entry = registration.deref();
+        if (!entry) continue;
         entry.eventTarget.removeEventListener(entry.type, entry.listener, entry.options);
+        pluginEventIds.get(entry.eventTarget)?.clear();
     }
     pluginEventListeners.length = 0;
 
@@ -2380,6 +4087,10 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
     await Promise.all(loadPromises);
 }
 
+/**
+ * Starts at most one sandbox per internal name. Resolution means the iframe was installed, not
+ * that guest startup settled; boot observes `SandboxHost.startup` separately.
+ */
 export async function executePluginV3(plugin: RisuPlugin) {
     const alreadyRunning = v3PluginInstances.find((p) => p.name === plugin.name);
     if (alreadyRunning) {
@@ -2390,13 +4101,29 @@ export async function executePluginV3(plugin: RisuPlugin) {
     const iframe = document.createElement("iframe");
     iframe.style.display = "none";
     document.body.appendChild(iframe);
-    const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin));
-    host.onActivityChanged?.(notifyPluginWork);
+    // Both the API and instance retain the script actually loaded, even if settings change later.
+    const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
+    const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin, identity));
+    host.onActivityChanged?.(() => {
+        notifyPluginWork();
+        notifyPluginActivity(identity.name);
+    });
+    try {
+        // Developer diagnostics are selected at load time; changing the setting applies on the next load.
+        host.run(
+            iframe,
+            identity.script,
+            settings.ui.enableDevTools ? { guestPrelude: databaseAccessRecorderScript(plugin.name) } : undefined,
+        );
+    } catch (error) {
+        host.terminate();
+        if (iframe.isConnected) iframe.remove();
+        throw error;
+    }
     v3PluginInstances.push({
-        name: plugin.name,
+        ...identity,
         host,
     });
-    host.run(iframe, plugin.script);
     console.log(`[RisuAI Plugin: ${plugin.name}] Loaded API V3 plugin.`);
 }
 

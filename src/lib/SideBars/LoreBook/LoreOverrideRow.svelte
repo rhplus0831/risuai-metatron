@@ -11,6 +11,15 @@
     import SegmentedControl from "../../UI/GUI/SegmentedControl.svelte";
     import LoreEntryFields from "./LoreEntryFields.svelte";
 
+    /**
+     * One row of `LoreOverrideList.svelte`. The `stateFor(name)` control shows an entry's state from its override
+     * (Original: none, Override: `off: false`, Off: `off: true`) and a folder's On or Off; it binds through a
+     * getter/setter pair, so a refused, cancelled, or aborted change keeps the old segment. An entry's editable body
+     * is keyed by its override object and bound through `liveOverride`, which returns a throwaway once the draft
+     * released the object or switched chats; without an override the body shows the original, disabled. `locked` (a
+     * send or job runs in the chat) disables the control, the folder buttons, and the override's fields.
+     */
+
     interface Props {
         original: () => loreBook;
         override?: ChatLoreOverride;
@@ -21,12 +30,17 @@
         setRowState: (next: EntryState | FolderState) => void;
         /** Folder only: the overrides inside it (entries, and nested folders that are off). */
         changed?: number;
+        /** Folder only: the entries inside it that are not off. */
+        entriesOn?: number;
         /** Folder only: it or an enclosing folder is off, so the overrides inside it do not apply. */
         notApplied?: boolean;
         /** The row sits inside an off folder. */
         inOffFolder?: boolean;
         offNotice?: boolean;
         releaseAll?: () => void;
+        turnOffAll?: () => void;
+        /** The chat's overrides are read-only while a send or job runs in it. */
+        locked?: boolean;
         children?: Snippet;
     }
     let {
@@ -37,10 +51,13 @@
         rowState,
         setRowState,
         changed = 0,
+        entriesOn = 0,
         notApplied = false,
         inOffFolder = false,
         offNotice = false,
         releaseAll,
+        turnOffAll,
+        locked = false,
         children,
     }: Props = $props();
     const indicatorId = $props.id();
@@ -95,6 +112,7 @@
                 {options}
                 size="sm"
                 margin={false}
+                disabled={locked}
                 label={strings.stateFor(name)}
                 describedBy={folder && changed > 0 ? indicatorId : undefined}
             />
@@ -114,11 +132,23 @@
     {#if open}
         {#if folder}
             <div class="flex flex-col gap-2 mt-2 ml-2 border-l border-selected pl-2">
-                {#if changed > 0 && releaseAll}
-                    <button
-                        class="self-start rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
-                        onclick={releaseAll}>{strings.releaseAll}</button
-                    >
+                {#if (entriesOn > 0 && turnOffAll) || (changed > 0 && releaseAll)}
+                    <div class="flex flex-wrap gap-2">
+                        {#if entriesOn > 0 && turnOffAll}
+                            <button
+                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={locked}
+                                onclick={turnOffAll}>{strings.turnOffAll}</button
+                            >
+                        {/if}
+                        {#if changed > 0 && releaseAll}
+                            <button
+                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={locked}
+                                onclick={releaseAll}>{strings.releaseAll}</button
+                            >
+                        {/if}
+                    </div>
                 {/if}
                 {@render children?.()}
             </div>
@@ -127,6 +157,7 @@
             {#each override ? [override] : [] as target (target)}
                 <div class="mt-2">
                     <LoreEntryFields
+                        disabled={locked}
                         bind:value={() => liveOverride(target).entry, (next) => replaceEntry(target, next)}
                     />
                 </div>

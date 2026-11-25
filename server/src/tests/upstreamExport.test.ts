@@ -1,10 +1,13 @@
 // @vitest-environment node
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { memoryRecords, projectionHistory, writeMemory } from "./memoryFixtures.ts";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Credential, ModelPreset, ModelProfile, RisuPersona, botPreset } from "../../../shared/database.ts";
+import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { LLMFormat, LLMTokenizer } from "../../../shared/llm.ts";
 import { RESOURCE_KIND, type ResourceKindName } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, DROPPED_FIELDS, SECTION_KIND } from "../../../shared/sections.ts";
@@ -12,7 +15,7 @@ import type { UpstreamReportEntry } from "../../../shared/upstreamBackup.ts";
 import type { UpstreamExportReport } from "../../../shared/upstreamExportReport.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ValidatedSnapshot } from "../data/resourceStore.ts";
-import { collectUpstreamAssetReferences } from "../data/upstream/assetReferences.ts";
+import { collectAssetReferences, collectUpstreamAssetReferences } from "../data/upstream/assetReferences.ts";
 import { buildUpstreamDatabase, type UpstreamExportOptions } from "../data/upstream/exportDatabase.ts";
 import { convertUpstreamDatabase, type UpstreamConversion } from "../data/upstream/importDatabase.ts";
 import { decodeUpstreamDatabase, encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
@@ -323,7 +326,13 @@ function seedLibrary(w: Writer): void {
 }
 
 /** Seeds a store, copies it as the route does, and reads the copy back. */
-async function snapshotOf(seed: (w: Writer) => void = seedLibrary): Promise<ValidatedSnapshot> {
+async function snapshotOf(
+    seed: (w: Writer) => void = seedLibrary,
+    options: {
+        populate?: (store: ReturnType<typeof createResourceStore>) => void;
+        editCopy?: (db: DatabaseSync) => void;
+    } = {},
+): Promise<ValidatedSnapshot> {
     const store = createResourceStore({ file: ":memory:", kinds });
     try {
         const w: Writer = {
@@ -340,14 +349,67 @@ async function snapshotOf(seed: (w: Writer) => void = seedLibrary): Promise<Vali
             },
         };
         seed(w);
+        options.populate?.(store);
         const dir = mkdtempSync(path.join(os.tmpdir(), "risu-upstream-export-"));
         dirs.push(dir);
         const file = path.join(dir, "copy.sqlite");
         await store.backupTo(file);
+        if (options.editCopy) {
+            const db = new DatabaseSync(file);
+            try {
+                options.editCopy(db);
+            } finally {
+                db.close();
+            }
+        }
         return store.readSnapshot(file);
     } finally {
         store.close();
     }
+}
+
+async function candidateSnapshot() {
+    return snapshotOf((w) => {
+        w.put("characters", "choices", { chaId: "choices", name: "Choices", type: "character" });
+        w.put("characters", "group", { chaId: "group", name: "Group", type: "group", characters: ["choices"] });
+        w.chat("choices", "chat", {
+            message: [
+                {
+                    chatId: "reply",
+                    role: "char",
+                    data: "Selected reply",
+                    candidates: [
+                        { id: "discarded", data: "Discarded reply" },
+                        { id: "selected", data: "Selected reply" },
+                    ],
+                    selected: 1,
+                    candidatesRevision: 7,
+                    scriptstateCheckpoint: { before: null, after: { score: 2 } },
+                },
+                {
+                    chatId: "checkpoint",
+                    role: "char",
+                    data: "Checkpoint only",
+                    scriptstateCheckpoint: { before: { score: 2 } },
+                },
+            ],
+        });
+        w.chat("group", "chat", {
+            message: [
+                {
+                    chatId: "group-reply",
+                    role: "char",
+                    data: "Group selected",
+                    candidates: [
+                        { id: "gs", data: "Group selected" },
+                        { id: "gd", data: "Group discarded" },
+                    ],
+                    selected: 0,
+                    candidatesRevision: 3,
+                },
+            ],
+        });
+    });
 }
 
 const SELECT_A: UpstreamExportOptions = {
@@ -551,6 +613,138 @@ describe("buildUpstreamDatabase: presets and the root", () => {
 });
 
 describe("buildUpstreamDatabase: settings", () => {
+    it.each([
+        ["contextMeter", false],
+        ["contextMeterTurnUnit", "message"],
+        ["contextMeterFixedWarn", 75],
+        ["contextMeterLookahead", false],
+        ["completionWaitMaxSeconds", 300],
+        ["chatTrashDays", 7],
+        ["realmTermsAccepted", "accepted"],
+        ["scrollToReplyStartAfterStreaming", false],
+        ["disableAutoPopupMessageEditor", true],
+    ])("omits %s from upstream backups and reports only a non-default value", async (field, value) => {
+        const defaults = exportOf(await snapshotOf((w) => w.put(SECTION_KIND.ui, "main", {})));
+        const configured = exportOf(await snapshotOf((w) => w.put(SECTION_KIND.ui, "main", { [field]: value })));
+
+        expect(configured.db).not.toHaveProperty(field);
+        expect(excluded(configured.report, "metatron-settings")).toMatchObject({ count: 1, examples: [field] });
+        expect(defaults.db).not.toHaveProperty(field);
+        expect(excluded(defaults.report, "metatron-settings")).toBeUndefined();
+    });
+
+    it("omits all six configured response minimums from an upstream export", async () => {
+        const minimums = {
+            minResponseLengthModel: 1,
+            minResponseLengthSubmodel: 2,
+            minResponseLengthMemory: 3,
+            minResponseLengthEmotion: 4,
+            minResponseLengthOtherAx: 5,
+            minResponseLengthTranslate: 6,
+        };
+        const snapshot = await snapshotOf((w) => w.put(SECTION_KIND.providers, "main", minimums));
+        const { db } = exportOf(snapshot);
+        for (const field of Object.keys(minimums)) {
+            expect(db).not.toHaveProperty(field);
+        }
+    });
+
+    it("omits non-empty request interceptions and reports them as excluded metatron settings", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put(SECTION_KIND.providers, "main", {
+                requestInterceptions: [
+                    {
+                        id: "private-rule",
+                        enabled: true,
+                        modes: ["model"],
+                        position: "start",
+                        prompt: { type: "plain", type2: "normal", role: "system", text: "Private instruction." },
+                    },
+                ],
+            });
+        });
+        const { db, report } = exportOf(snapshot);
+
+        expect(db).not.toHaveProperty("requestInterceptions");
+        expect(excluded(report, "metatron-settings")).toMatchObject({
+            examples: expect.arrayContaining(["requestInterceptions"]),
+        });
+    });
+
+    it("omits the input hook list and Draft hook ids from every exported chat", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put("inputHooks", "main", [
+                { id: "polish", name: "Polish", type: "draft", prompt: "Private prompt.", model: { mode: "inherit" } },
+            ]);
+            for (const type of ["character", "group"]) {
+                w.put("characters", type, { chaId: type, name: type, type });
+                for (const id of ["one", "two"]) {
+                    w.chat(type, id, {
+                        name: id,
+                        draftHookId: id === "one" ? "polish" : "missing-hook",
+                        message: [{ role: "user", data: `${type} ${id}`, chatId: "m" }],
+                    });
+                }
+            }
+        });
+        const { db } = exportOf(snapshot);
+        expect(db).not.toHaveProperty("inputHooks");
+        for (const type of ["character", "group"]) {
+            const chats = chatsOf(db, type);
+            expect(chats.map((chat) => chat.name)).toEqual(["one", "two"]);
+            for (const chat of chats) {
+                expect(chat).not.toHaveProperty("draftHookId");
+                expect(chat.message).toEqual([{ role: "user", data: `${type} ${chat.name}`, chatId: "m" }]);
+            }
+        }
+    });
+
+    it("omits owned plugin storage from upstream exports and counts every excluded entry", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put(RESOURCE_KIND.pluginStorage, "main", {
+                keep: { custom: true },
+                _pluginStorage: { legacy: 1 },
+                _safeLocalPluginStorage: { local: 2 },
+                _ownedPluginStorage: {
+                    "plug\u0000key": 3,
+                    "other\u0000key": 4,
+                    plug: { legacyHidden: true },
+                },
+            });
+        });
+        const { db, report } = exportOf(snapshot);
+        expect(db.pluginCustomStorage).toEqual({ keep: { custom: true } });
+        expect(excluded(report, "plugin-storage")).toMatchObject({ count: 5 });
+    });
+
+    it("omits the generation progress window setting from upstream exports even when disabled", async () => {
+        const snapshot = await snapshotOf((writer) => {
+            seedLibrary(writer);
+            writer.put(SECTION_KIND.ui, "main", { generationProgressWindow: false });
+        });
+        expect(exportOf(snapshot).db).not.toHaveProperty("generationProgressWindow");
+    });
+
+    it("omits Half Streaming from upstream exports for either stored preference", async () => {
+        for (const halfStreaming of [false, true]) {
+            const snapshot = await snapshotOf((writer) => {
+                seedLibrary(writer);
+                writer.put(SECTION_KIND.providers, "main", { halfStreaming, useStreaming: false });
+            });
+            const { db } = exportOf(snapshot);
+            expect(db).not.toHaveProperty("halfStreaming");
+            expect(db.useStreaming).toBe(false);
+        }
+    });
+
+    it("omits the lore budget send warning from upstream exports even when disabled", async () => {
+        const snapshot = await snapshotOf((writer) => {
+            seedLibrary(writer);
+            writer.put(SECTION_KIND.ui, "main", { loreBudgetStop: false });
+        });
+        expect(exportOf(snapshot).db).not.toHaveProperty("loreBudgetStop");
+    });
+
     it("writes formatversion 5, keeps upstream shapes, and strips metatron-only settings with a report", async () => {
         const { db, report } = exportOf(await snapshotOf());
         expect(db.formatversion).toBe(5);
@@ -588,6 +782,25 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(settings.examples).not.toContain("credentials");
     });
 
+    it("omits both folder collections, reports only non-empty folders, and imports them as empty", async () => {
+        for (const nonempty of ["moduleFolders", "personaFolders"] as const) {
+            const empty = nonempty === "moduleFolders" ? "personaFolders" : "moduleFolders";
+            const snapshot = await snapshotOf((w) => {
+                w.put(COLLECTION_KIND[nonempty], "main", [{ id: "folder", name: "Private folder", data: ["item"] }]);
+                w.put(COLLECTION_KIND[empty], "main", []);
+            });
+            const { exported, decoded, imported } = libraryRoundTrip(snapshot);
+            expect(exported.db).not.toHaveProperty("moduleFolders");
+            expect(exported.db).not.toHaveProperty("personaFolders");
+            expect(decoded).not.toHaveProperty("moduleFolders");
+            expect(decoded).not.toHaveProperty("personaFolders");
+            expect(excluded(exported.report, "metatron-settings")?.examples).toContain(nonempty);
+            expect(excluded(exported.report, "metatron-settings")?.examples).not.toContain(empty);
+            expect(record(imported, COLLECTION_KIND.moduleFolders)).toEqual([]);
+            expect(record(imported, COLLECTION_KIND.personaFolders)).toEqual([]);
+        }
+    });
+
     it("converts translator presets to upstream's shape from the first enabled step and selects by position", async () => {
         const { db, report } = exportOf(await snapshotOf());
         expect(db.translatorPresets).toEqual([
@@ -618,10 +831,11 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(characterNamed(db, "Alice").globalLore).toEqual([{ key: "g", content: "global" }]);
         expect(chatsOf(db, "Alice")[1].localLore).toEqual([{ key: "l", content: "local" }]);
         const repaired = converted(report, "shape-repaired")!;
-        expect(repaired.count).toBe(7);
+        // The store's normalizer already dropped the folder's non-string member, so characterOrder[1] needs no repair.
+        expect(repaired.count).toBe(6);
         expect(repaired.examples).toHaveLength(5);
         expect(repaired.examples).toEqual(
-            expect.arrayContaining(["characterOrder[1]", "characterOrder[2]", "loreBook[0]", "modules[0].lorebook"]),
+            expect.arrayContaining(["characterOrder[2]", "loreBook[0]", "modules[0].lorebook"]),
         );
     });
 
@@ -635,7 +849,202 @@ describe("buildUpstreamDatabase: settings", () => {
     });
 });
 
+describe("buildUpstreamDatabase: HypaV3 budgets", () => {
+    const newFields = [
+        "budgetMode",
+        "memoryBudgetTokens",
+        "lookaheadHeadroomTokens",
+        "extraSummarizationTokens",
+        "structured",
+    ];
+    const ratios = { memoryTokensRatio: 0.25, lookaheadHeadroomRatio: 0.125, extraSummarizationRatio: 0.5 };
+    const tokenPreset = (id: string, memory: number, headroom: number, extra: number) =>
+        createHypaV3Preset(
+            id,
+            {
+                ...ratios,
+                budgetMode: "tokens",
+                memoryBudgetTokens: memory,
+                lookaheadHeadroomTokens: headroom,
+                extraSummarizationTokens: extra,
+            },
+            id,
+        );
+
+    it("exports token amounts as rounded and clamped ratios of the selected root context without changing stored presets", async () => {
+        const presets = [
+            tokenPreset("rounded", 2666, 1234, 875),
+            tokenPreset("capped", 16000, 24000, 8000),
+            tokenPreset("extra-capped", 2666, 0, 12000),
+            tokenPreset("zero", 0, 0, 0),
+            createHypaV3Preset("Ratio", { ...ratios, budgetMode: "ratio" }, "ratio"),
+        ];
+        const snapshot = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(COLLECTION_KIND.hypaV3Presets, "main", { items: presets, selectedId: "rounded" });
+        });
+        const before = structuredClone(snapshot);
+        // Prompt A overrides the profile's 4000 with 8000; B uses the profile. These are
+        // configured amounts / C, irrespective of maxResponse or the runtime reduction.
+        const cases = [
+            {
+                promptPresetId: "ppA",
+                context: 8000,
+                ratios: [
+                    [0.33, 0.15, 0.11],
+                    [1, 0.99, 0],
+                    [0.33, 0, 0.67],
+                    [0, 0, 0],
+                    [0.25, 0.125, 0.5],
+                ],
+            },
+            {
+                promptPresetId: "ppB",
+                context: 4000,
+                ratios: [
+                    [0.67, 0.31, 0.22],
+                    [1, 0.99, 0],
+                    [0.67, 0, 0.33],
+                    [0, 0, 0],
+                    [0.25, 0.125, 0.5],
+                ],
+            },
+        ];
+        for (const testCase of cases) {
+            const { db } = exportOf(snapshot, { promptPresetId: testCase.promptPresetId });
+            expect(db.maxContext).toBe(testCase.context);
+            const exported = db.hypaV3Presets as { settings: Root }[];
+            expect(exported).toHaveLength(presets.length);
+            for (const [i, preset] of exported.entries()) {
+                const [memoryTokensRatio, lookaheadHeadroomRatio, extraSummarizationRatio] = testCase.ratios[i];
+                const kept = Object.fromEntries(
+                    Object.entries(presets[i].settings).filter(([key]) => !newFields.includes(key)),
+                );
+                expect(preset.settings).toEqual({
+                    ...kept,
+                    memoryTokensRatio,
+                    lookaheadHeadroomRatio,
+                    extraSummarizationRatio,
+                });
+                for (const field of newFields) expect(preset.settings).not.toHaveProperty(field);
+            }
+            expect(snapshot).toEqual(before);
+        }
+    });
+
+    it("keeps stored ratios when the exported root context is not positive while dropping token fields", async () => {
+        const preset = tokenPreset("tokens", 6000, 4000, 1000);
+        const snapshot = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(COLLECTION_KIND.hypaV3Presets, "main", { items: [preset], selectedId: preset.id });
+        });
+        for (const context of [0, -1]) {
+            // Raw export rows let the boundary see a context the profile normalization keeps.
+            const rows = snapshot.rows.map((row) => {
+                if (row.kind !== COLLECTION_KIND.modelProfiles) return row;
+                const profiles = JSON.parse(row.text) as Root[];
+                profiles.find((profile) => profile.id === "pMain")!.maxContext = context;
+                return { ...row, text: JSON.stringify(profiles) };
+            });
+            const before = structuredClone(rows);
+            const { db } = buildUpstreamDatabase(rows, snapshot, { ...SELECT_A, promptPresetId: "ppB" });
+            expect(db.maxContext).toBe(context);
+            const settings = (db.hypaV3Presets as { settings: Root }[])[0].settings;
+            expect(settings).toMatchObject(ratios);
+            for (const field of newFields) expect(settings).not.toHaveProperty(field);
+            expect(rows).toEqual(before);
+        }
+    });
+});
+
 describe("buildUpstreamDatabase: characters and chats", () => {
+    it("strips reroll fields from every message, keeps selected text, and counts messages with candidates once", async () => {
+        const { db, report } = exportOf(await candidateSnapshot());
+        const messages = (db.characters as Root[]).flatMap((character) =>
+            (character.chats as Root[]).flatMap((chat) => chat.message as Root[]),
+        );
+        expect(messages.map(({ data }) => data)).toEqual(["Selected reply", "Checkpoint only", "Group selected"]);
+        for (const message of messages) {
+            for (const field of ["candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"]) {
+                expect(message).not.toHaveProperty(field);
+            }
+        }
+        expect(
+            report.excluded
+                .filter(({ code }) => code === "message-candidates")
+                .map(({ code, count }) => ({ code, count })),
+        ).toEqual([{ code: "message-candidates", count: 2 }]);
+    });
+
+    it("strips a checkpoint without reporting candidate loss when no message has candidates", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put("characters", "choices", { chaId: "choices", name: "Choices", type: "character" });
+            w.chat("choices", "chat", {
+                message: [
+                    {
+                        chatId: "reply",
+                        role: "char",
+                        data: "Only reply",
+                        scriptstateCheckpoint: { before: null, after: { score: 1 } },
+                    },
+                ],
+            });
+        });
+        const { db, report } = exportOf(snapshot);
+        expect(chatsOf(db, "Choices")[0].message).toEqual([{ chatId: "reply", role: "char", data: "Only reply" }]);
+        expect(excluded(report, "message-candidates")).toBeUndefined();
+    });
+
+    it("omits writer settings from every preset and Structured Memory overrides from characters, groups, and their chats", async () => {
+        const snapshot = await snapshotOf((w) => {
+            seedLibrary(w);
+            w.put(COLLECTION_KIND.hypaV3Presets, "main", {
+                items: [
+                    createHypaV3Preset(
+                        "Ratio",
+                        { structured: { language: "ko", instructions: "Writer only" } },
+                        "ratio",
+                    ),
+                    createHypaV3Preset("Tokens", { budgetMode: "tokens", structured: { language: "ja" } }, "tokens"),
+                ],
+                selectedId: "tokens",
+            });
+            for (const type of ["character", "group"]) {
+                w.put(RESOURCE_KIND.characters, type, {
+                    chaId: type,
+                    name: type,
+                    type,
+                    structuredMemoryLanguage: "ko",
+                    structuredMemoryInstructions: "Always record HP and MP.",
+                });
+                for (const id of ["one", "two"]) {
+                    w.chat(type, id, {
+                        name: id,
+                        message: [{ role: "user", data: `${type} ${id}`, chatId: "m" }],
+                        structuredMemoryLanguage: "ja",
+                        structuredMemoryHighlight: id === "one" ? "none" : "all",
+                    });
+                }
+            }
+        });
+        const { db } = exportOf(snapshot);
+        const presets = db.hypaV3Presets as { name: string; settings: Root }[];
+        expect(presets.map((preset) => preset.name)).toEqual(["Ratio", "Tokens"]);
+        for (const preset of presets) expect(preset.settings).not.toHaveProperty("structured");
+        for (const type of ["character", "group"]) {
+            const owner = characterNamed(db, type);
+            expect(owner).not.toHaveProperty("structuredMemoryLanguage");
+            expect(owner).not.toHaveProperty("structuredMemoryInstructions");
+            const chats = chatsOf(db, type);
+            expect(chats.map((chat) => chat.name)).toEqual(["one", "two"]);
+            for (const chat of chats) {
+                expect(chat).not.toHaveProperty("structuredMemoryLanguage");
+                expect(chat).not.toHaveProperty("structuredMemoryHighlight");
+                expect(chat.message).toEqual([{ role: "user", data: `${type} ${chat.name}`, chatId: "m" }]);
+            }
+        }
+    });
+
     it("strips lore overrides from every exported character and group chat", async () => {
         const snapshot = await snapshotOf((w) => {
             for (const type of ["character", "group"]) {
@@ -658,6 +1067,26 @@ describe("buildUpstreamDatabase: characters and chats", () => {
                 expect(chat.message).toEqual([{ role: "user", data: `${type} ${chat.name}`, chatId: "m" }]);
             }
         }
+    });
+
+    it("omits trashed chats before locating the selected chat in the upstream chat order", async () => {
+        const snapshot = await snapshotOf(
+            (w) => {
+                w.put("characters", "c", { chaId: "c", type: "character", name: "Story" });
+                w.chat("c", "selected", { name: "Selected" });
+                w.chat("c", "first", { name: "First" }, 0);
+                w.chat("c", "hidden", { name: "Hidden" }, 0);
+            },
+            {
+                editCopy(db) {
+                    db.prepare("UPDATE chats SET trashedAt = ? WHERE id = 'hidden'").run(NOW - 1);
+                },
+            },
+        );
+        const { db } = exportOf(snapshot, { selectedChat: { characterId: "c", chatId: "selected" } });
+        const character = characterNamed(db, "Story");
+        expect((character.chats as Root[]).map((chat) => chat.id)).toEqual(["first", "selected"]);
+        expect(character.chatPage).toBe(1);
     });
 
     it("rebuilds chats in chatOrders order, strips metatron chat fields and translations, and sets lastDate", async () => {
@@ -793,6 +1222,26 @@ describe("buildUpstreamDatabase: assets", () => {
             { key: "assets/shared.png", owner: "A", role: "profile" },
             { key: "assets/user.png", owner: "", role: "userIcon" },
         ]);
+    });
+
+    it("uses the same nested plugin references on import and export and keeps the first owner of shared keys", () => {
+        const characters = [{ name: "A", image: "assets/shared.png" }];
+        const pluginStorage = {
+            firstPlugin: { images: [["assets/shared.png", "assets/plugin.png"]] },
+            secondPlugin: ["assets/plugin.png", { image: "assets/second.png" }],
+        };
+        const expected = [
+            { key: "assets/shared.png", owner: "A", role: "profile" },
+            { key: "assets/plugin.png", owner: "firstPlugin", role: "plugin" },
+            { key: "assets/second.png", owner: "secondPlugin", role: "plugin" },
+        ];
+        expect(collectUpstreamAssetReferences({ characters, pluginCustomStorage: pluginStorage })).toEqual(expected);
+        expect(
+            collectAssetReferences([
+                { kind: RESOURCE_KIND.characters, data: characters[0] },
+                { kind: RESOURCE_KIND.pluginStorage, data: pluginStorage },
+            ]),
+        ).toEqual(expected);
     });
 });
 
@@ -1033,6 +1482,20 @@ describe("buildUpstreamDatabase: purity", () => {
 });
 
 describe("buildUpstreamDatabase: round trip through the import converter", () => {
+    it("round trips selected reply text through the bin codec while reporting and losing reroll candidates", async () => {
+        const { exported, imported } = libraryRoundTrip(await candidateSnapshot());
+        const stored = await stage(imported);
+        const messages = stored.messages.map((message) => JSON.parse(message.data) as Root);
+        expect(messages.map(({ data }) => data)).toEqual(["Selected reply", "Checkpoint only", "Group selected"]);
+        for (const message of messages) {
+            for (const field of ["candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"]) {
+                expect(message).not.toHaveProperty(field);
+            }
+        }
+        expect(excluded(exported.report, "message-candidates")).toMatchObject({ code: "message-candidates", count: 2 });
+        expect(imported.report.converted.find(({ code }) => code === "message-swipes")).toBeUndefined();
+    });
+
     it("brings the settings, translator and HypaV3 selections back", async () => {
         const { imported } = roundTrip(await snapshotOf());
         const translator = record<{ items: Root[]; selectedId: string }>(imported, COLLECTION_KIND.translatorPresets);
@@ -1295,4 +1758,223 @@ describe("buildUpstreamDatabase: round trip through the import converter", () =>
         expect(characterNamed(again.db, "Bob").trashTime).toBe(NOW);
         expect(converted(again.report, "trash-time-refreshed")).toBeUndefined();
     });
+});
+
+describe("Structured Memory export", () => {
+    const real = { summaries: [{ text: "Real HypaV3", chatMemos: [], isImportant: false }] };
+    it("counts omitted pages and threads even without events or after a chat changes memory mode", async () => {
+        const history = projectionHistory();
+        const pages = memoryRecords(["manual", "notes"], "Manual gate notes").pages;
+        pages[0].sections[0].userCorrected = true;
+        const threads = memoryRecords(["gate", "keeper", "key"], "Find the gate keeper").threads;
+        const snapshot = await snapshotOf(
+            (w) => {
+                w.put("characters", "memory", { chaId: "memory", type: "character", name: "Memory" });
+                for (const id of ["events", "no-events", "changed-mode"]) {
+                    w.chat("memory", id, { name: id, memoryMode: "structuredMemory", message: history.messages });
+                }
+            },
+            {
+                populate: (store) => {
+                    writeMemory(store, "memory", "events", {
+                        events: history.events,
+                        pages: pages.slice(0, 1),
+                        threads: threads.slice(0, 1),
+                    });
+                    writeMemory(store, "memory", "no-events", { pages: pages.slice(1) });
+                    writeMemory(store, "memory", "changed-mode", { threads: threads.slice(1) });
+                    store.applyChanges({
+                        chats: [
+                            {
+                                characterId: "memory",
+                                chatId: "changed-mode",
+                                baseRevision: store.chatRevision("memory", "changed-mode")!,
+                                ops: [{ op: "meta", set: { memoryMode: "hypaV3" } }],
+                            },
+                        ],
+                    });
+                },
+                editCopy: (db) => {
+                    for (const [table, expected] of [
+                        ["memory_pages", pages],
+                        ["memory_threads", threads],
+                    ] as const) {
+                        const rows = db.prepare(`SELECT data FROM ${table} ORDER BY seq`).all();
+                        expect(rows.map((row) => JSON.parse(row.data as string))).toEqual(expected);
+                    }
+                },
+            },
+        );
+        const before = JSON.stringify(snapshot);
+        const { db, report } = exportOf(snapshot);
+        expect(excluded(report, "memory-pages")).toEqual({ code: "memory-pages", count: 2, examples: [] });
+        expect(excluded(report, "memory-threads")).toEqual({ code: "memory-threads", count: 3, examples: [] });
+        expect(converted(report, "memory-projected")).toMatchObject({ count: 1 });
+        expect(chatsOf(db, "Memory").find((chat) => chat.name === "events")!.hypaV3Data).toEqual(history.expected);
+        expect(JSON.stringify(db)).not.toContain("Manual gate notes");
+        expect(JSON.stringify(db)).not.toContain("Find the gate keeper");
+        expect(JSON.stringify(snapshot)).toBe(before);
+    });
+
+    async function memorySnapshot(algorithm = "structuredMemory", editCopy?: (db: DatabaseSync) => void) {
+        const history = projectionHistory();
+        return snapshotOf(
+            (w) => {
+                w.put(SECTION_KIND.ui, "main", { memoryAlgorithmType: algorithm });
+                w.put("characters", "memory", { chaId: "memory", type: "character", name: "Memory" });
+                for (const [id, hypaV3Data] of [
+                    ["projected", undefined],
+                    ["empty", { summaries: [] }],
+                    ["owned", real],
+                    ["no-events", undefined],
+                ] as const) {
+                    w.chat("memory", id, {
+                        name: id,
+                        note: "Stored note",
+                        message: history.messages,
+                        ...(hypaV3Data ? { hypaV3Data } : {}),
+                    });
+                }
+            },
+            {
+                populate: (store) => {
+                    for (const id of ["projected", "empty", "owned"])
+                        writeMemory(store, "memory", id, { events: history.events });
+                },
+                editCopy,
+            },
+        );
+    }
+
+    it("exports records as HypaV3 summaries only for chats whose own mode selects Structured Memory", async () => {
+        const history = projectionHistory();
+        for (const algorithm of ["structuredMemory", "hypaV3"]) {
+            const snapshot = await snapshotOf(
+                (w) => {
+                    w.put(SECTION_KIND.ui, "main", { memoryAlgorithmType: algorithm });
+                    w.put("memoryTranslateMedia", "main", { hypaV3: true, supaModelType: "none" });
+                    w.put("characters", "memory", { chaId: "memory", type: "character", name: "Memory" });
+                    for (const [id, memoryMode] of [
+                        ["structured", "structuredMemory"],
+                        ["hypa", "hypaV3"],
+                        ["owned", "structuredMemory"],
+                    ] as const) {
+                        w.chat("memory", id, {
+                            name: id,
+                            message: history.messages,
+                            memoryMode,
+                            memoryEnabled: false,
+                            ...(id === "owned" ? { hypaV3Data: real } : {}),
+                        });
+                    }
+                },
+                {
+                    populate: (store) => {
+                        for (const id of ["structured", "hypa", "owned"])
+                            writeMemory(store, "memory", id, { events: history.events });
+                    },
+                },
+            );
+            const { db } = exportOf(snapshot);
+            const chats = chatsOf(db, "Memory");
+            expect(chats.find(({ name }) => name === "structured")!.hypaV3Data).toEqual(history.expected);
+            expect(chats.find(({ name }) => name === "hypa")).not.toHaveProperty("hypaV3Data");
+            expect(chats.find(({ name }) => name === "owned")!.hypaV3Data).toEqual(real);
+        }
+    });
+
+    it("exports the reconciled chronological projection unsealed using the snapshot algorithm and stored summary ownership", async () => {
+        for (const algorithm of ["structuredMemory", "hypaV3"]) {
+            const snapshot = await memorySnapshot(algorithm);
+            const { db, report } = exportOf(snapshot);
+            const chats = chatsOf(db, "Memory");
+            const chat = (id: string) => chats.find((chat) => chat.name === id)!;
+            expect(chat("owned").hypaV3Data).toEqual(real);
+            expect(chat("no-events")).not.toHaveProperty("hypaV3Data");
+            if (algorithm === "structuredMemory") {
+                for (const id of ["projected", "empty"])
+                    expect(chat(id).hypaV3Data).toEqual(projectionHistory().expected);
+                expect(converted(report, "memory-projected")).toMatchObject({ count: 2 });
+            } else {
+                expect(chat("projected")).not.toHaveProperty("hypaV3Data");
+                expect(chat("empty").hypaV3Data).toEqual({ summaries: [] });
+                expect(converted(report, "memory-projected")).toBeUndefined();
+            }
+            expect(JSON.stringify(db)).not.toContain("structuredMemoryProjection");
+        }
+    });
+
+    it("exports stored chats and reports unreadable memory after malformed events or a failed memory walk, but refuses other corrupt tables", async () => {
+        const malformed = await memorySnapshot("structuredMemory", (db) => {
+            db.prepare(
+                "UPDATE memory_events SET data = json_set(data, '$.sources', 42) WHERE chatSeq = (SELECT seq FROM chats WHERE id = 'projected') AND id = 'early'",
+            ).run();
+        });
+        const exported = exportOf(malformed);
+        expect(chatsOf(exported.db, "Memory").find((chat) => chat.name === "projected")).not.toHaveProperty(
+            "hypaV3Data",
+        );
+        expect(chatsOf(exported.db, "Memory").find((chat) => chat.name === "empty")!.hypaV3Data).toEqual(
+            projectionHistory().expected,
+        );
+        expect(excluded(exported.report, "memory-unreadable")).toMatchObject({ count: 1 });
+        const broken = await memorySnapshot("structuredMemory", (db) => db.exec("DROP TABLE memory_runs"));
+        expect(broken.memoryEvents).toBeNull();
+        const fallback = exportOf(broken);
+        const chats = chatsOf(fallback.db, "Memory");
+        expect(chats.find((chat) => chat.name === "projected")).not.toHaveProperty("hypaV3Data");
+        expect(chats.find((chat) => chat.name === "empty")!.hypaV3Data).toEqual({ summaries: [] });
+        expect(chats.find((chat) => chat.name === "owned")!.hypaV3Data).toEqual(real);
+        expect(excluded(fallback.report, "memory-unreadable")).toBeDefined();
+        expect(converted(fallback.report, "memory-projected")).toBeUndefined();
+        await expect(
+            memorySnapshot("structuredMemory", (db) => db.exec("UPDATE chats SET meta = 'null'")),
+        ).rejects.toThrow();
+    });
+});
+
+it("exports each owner's resolved memory switch and strips the four chat-only settings", async () => {
+    const memory = {
+        memoryMode: "structuredMemory",
+        memoryPresetId: "chat-preset",
+        memoryProfileId: "chat-connection",
+    };
+    const snapshot = await snapshotOf((w) => {
+        w.put("memoryTranslateMedia", "main", { hypaV3: true, supaModelType: "none" });
+        w.put("hypaV3Presets", "main", {
+            items: [
+                createHypaV3Preset("Manual", { alwaysToggleOn: false }, "manual"),
+                createHypaV3Preset("Auto", { alwaysToggleOn: true }, "automatic"),
+            ],
+            selectedId: "automatic",
+        });
+        for (const [id, supaMemory] of [
+            ["mixed", false],
+            ["off", true],
+            ["default", false],
+            ["empty", false],
+        ] as const) {
+            w.put("characters", id, { chaId: id, type: "character", name: id, supaMemory });
+        }
+        w.chat("mixed", "off", { name: "off", message: [], ...memory, memoryEnabled: false });
+        w.chat("mixed", "on", { name: "on", message: [], ...memory, memoryEnabled: true });
+        w.chat("off", "off", { name: "off", message: [], ...memory, memoryEnabled: false });
+        w.chat("default", "default", { name: "default", message: [] });
+    });
+    const { db } = exportOf(snapshot);
+    expect(["mixed", "off", "default", "empty"].map((name) => characterNamed(db, name).supaMemory)).toEqual([
+        true,
+        false,
+        true,
+        true,
+    ]);
+    // The selected preset is second, and must be resolved before its id becomes upstream's index.
+    expect(db.hypaV3PresetId).toBe(1);
+    for (const character of db.characters as Root[]) {
+        for (const chat of character.chats as Root[]) {
+            for (const key of ["memoryEnabled", "memoryMode", "memoryPresetId", "memoryProfileId"]) {
+                expect(chat).not.toHaveProperty(key);
+            }
+        }
+    }
 });

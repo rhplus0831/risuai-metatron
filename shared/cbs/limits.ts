@@ -6,6 +6,14 @@
  * The limits are checked at points inside the evaluator and the registry, so they are not a hard
  * deadline (one operation between two checks runs to its end) and not a heap bound (the lengths of
  * the amplifying operations are charged before they allocate, other results after they return).
+ *
+ * What is charged (`spendCbsWork`): the evaluator charges a unit per scanned character and per character a
+ * function returns, the stack moves of each `{{` and of the drain of unfinished syntax at the end, each `#each`
+ * piece and each `call::` argument substitution before it is built (`replaceAllBound`), the `#each` splice into
+ * the text, and a `#pure_display` result's escapes. A parse also fails at once when its text is longer than the
+ * work left, or its result longer than `maxWork`. The registry charges its counted loops and allocations through
+ * `CBSRegisterArg.spend` (`types.ts`), a no-op in an evaluator without limits. The evaluator's swallow-all
+ * `catch` around a function call lets `CbsLimitError` through.
  */
 
 /** Shared client/server work allowance, with room for large data URLs (scanned at about 80 ns per character). */
@@ -16,6 +24,11 @@ export type CbsUsage = {
     usedMs: number;
 };
 
+/**
+ * A host's limits (`CbsHost.limits`): the server's `serverCbsLimits` (`server/src/jobs/cbsHost.ts`, with a job's
+ * shared `total`) and the client's `CLIENT_CBS_LIMITS` (`src/ts/parser/parser.svelte.ts`, no `total`), both with
+ * `DEFAULT_CBS_MAX_WORK`. Non-positive or NaN values are refused when the evaluator is created (`createCbsBudget`).
+ */
 export type CbsLimits = {
     /**
      * Work one top-level parse may spend, nested parses included: one unit per character scanned and
@@ -30,6 +43,10 @@ export type CbsLimits = {
     now?: () => number;
 };
 
+/**
+ * `work`: `maxWork` spent, or a parse refused up front because its text is longer than the work left; `time`:
+ * `maxMs` passed; `total`: the shared allowance used up, which can refuse a parse before it starts.
+ */
 export type CbsLimitReason = "work" | "time" | "total";
 
 /** A limit was reached. The evaluator's own `catch` blocks let it through; it is never a function's failure. */

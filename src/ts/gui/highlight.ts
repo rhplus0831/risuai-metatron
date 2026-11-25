@@ -1,3 +1,16 @@
+/**
+ * CBS highlighting and autocomplete for the editor textareas (`src/lib/UI/GUI/TextAreaInput.svelte`), through
+ * the CSS Custom Highlight API: one global `CSS.highlights` entry per type (`cbsnest0`..`cbsnest4` by nesting
+ * depth, `cbsdisplay`, `comment`, `decorator`, `deprecated`), styled by the `::highlight(...)` rules in
+ * `src/styles.css`. Without `CSS.highlights` nothing is highlighted.
+ * - The function lists (`normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, `nestedCBS`, `specialCBS`, the
+ *   deprecated ones) and `AllCBS` are maintained by hand, not read from the registry (`shared/cbs/registry.ts`):
+ *   a new CBS function is highlighted and offered only once it is added here.
+ * - Highlighting follows those lists' rules, not the registry's vocabulary: `normalCBS` and `deprecatedCBS` match
+ *   the whole call, the lists with arguments match `name::`, `specialCBS` matches any call starting with an entry
+ *   (so `{{#ifanything}}` highlights), and a call starting with `// ` is a comment.
+ */
+
 type HighlightType =
     | "decorator"
     | "deprecated"
@@ -14,7 +27,12 @@ type HighlightInt = [HighLightRange, HighlightType];
 type HighlightIntRanged = [Range, HighlightType];
 
 let highLights = new Map<number, HighlightIntRanged[]>();
+const ownedHighlights = new Map<string, Highlight>();
 
+/**
+ * Highlights the text nodes under `highlightDom` as editor `id`'s ranges (matching case-insensitively) and
+ * repaints every editor's ranges; any error is swallowed.
+ */
 export const highlighter = (highlightDom: HTMLElement, id: number) => {
     try {
         if (highlightDom) {
@@ -115,9 +133,17 @@ const runHighlight = () => {
         }
     }
 
+    for (const key of ownedHighlights.keys()) {
+        if (!formatedRanges[key]) {
+            CSS.highlights.delete(key);
+            ownedHighlights.delete(key);
+        }
+    }
+
     for (const key in formatedRanges) {
         const highlight = new Highlight(...formatedRanges[key]);
         CSS.highlights.set(key, highlight);
+        ownedHighlights.set(key, highlight);
     }
 };
 
@@ -127,8 +153,26 @@ export const getNewHighlightId = () => {
     return highlightIds++;
 };
 
+/**
+ * Synchronously deletes only editor `id`'s ranges from the shared highlights, preserving other editors' ranges
+ * and deleting empty types from `CSS.highlights`. Without `CSS.highlights`, only the editor's saved ranges are removed.
+ */
 export const removeHighlight = (id: number) => {
+    const ranges = highLights.get(id);
     highLights.delete(id);
+    if (!ranges || typeof CSS === "undefined" || !CSS.highlights) {
+        return;
+    }
+    for (const [range, type] of ranges) {
+        const highlight = ownedHighlights.get(type);
+        if (highlight) {
+            highlight.delete(range);
+            if (highlight.size === 0) {
+                CSS.highlights.delete(type);
+                ownedHighlights.delete(type);
+            }
+        }
+    }
 };
 
 const normalCBS = [
@@ -271,6 +315,7 @@ const deprecatedCBS = ["personality", "scenario", "main_prompt", "system_prompt"
 
 const deprecatedCBSwithParams = ["remaind", "pow"];
 
+/** Lorebook decorator names, highlighted after `@@` or `@@@`. */
 export const decorators = [
     "activate_only_after",
     "activate_only_every",
@@ -300,6 +345,7 @@ export const decorators = [
 
 const deprecatedDecorators = ["end", "assistant", "user", "system"];
 
+/** The autocomplete list, filtered by prefix: the plain names, the names with arguments plus `:`, and the blocks. */
 export const AllCBS = [
     ...normalCBS,
     ...normalCBSwithParams.concat(displayRelatedCBS).map((v) => {
@@ -326,7 +372,7 @@ const highlighterSyntax = [
 function simpleCBSHighlightParser(text: string) {
     let depth = 0;
     let pointer = 0;
-    let depthStarts = new Uint8Array(100);
+    let depthStarts = new Int32Array(100);
     let highlightMode = new Uint8Array(100);
 
     const ranges: HighlightInt[] = [];
@@ -430,7 +476,7 @@ function simpleCBSHighlightParser(text: string) {
             pointer++;
             depthStarts[depth] = pointer + 1;
             highlightMode[depth] = 0;
-        } else if (c === "}" && nextC === "}") {
+        } else if (c === "}" && nextC === "}" && depth > 0) {
             if (highlightMode[depth] === 0) {
                 checkHighlight();
             } else {

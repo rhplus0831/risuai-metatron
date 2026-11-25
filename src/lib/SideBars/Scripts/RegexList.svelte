@@ -6,16 +6,27 @@
     import { onDestroy, onMount } from "svelte";
     import { DownloadIcon, HardDriveUploadIcon, PlusIcon } from "@lucide/svelte";
     import { exportRegex, importRegex } from "src/ts/process/regexFiles";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
+
+    /**
+     * Sortable regex list with file import and export through `src/ts/process/regexFiles.ts`.
+     * Drag order sets the script array's execution order unless an enabled `<order n>` overrides
+     * it in `shared/scripts/regex.ts`.
+     */
+
     interface Props {
         value?: customscript[];
         buttons?: boolean;
+        /** The record the scripts belong to; a popup opened on another record is discarded. */
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable([]), buttons = false }: Props = $props();
+    let { value = $bindable([]), buttons = false, popupEditorContext = undefined }: Props = $props();
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
     let opened = 0;
+    let destroyed = false;
     const createStb = () => {
         stb = Sortable.create(ele, {
             onEnd: async () => {
@@ -57,6 +68,7 @@
     onMount(createStb);
 
     onDestroy(() => {
+        destroyed = true;
         if (stb) {
             try {
                 stb.destroy();
@@ -77,12 +89,15 @@
             <RegexData
                 idx={i}
                 bind:value={value[i]}
+                {popupEditorContext}
                 {onOpen}
                 {onClose}
-                onRemove={() => {
-                    let customscript = value;
-                    customscript.splice(i, 1);
-                    value = customscript;
+                onRemove={(row) => {
+                    if (destroyed) return;
+                    const index = value.findIndex((script) => recordValueIdentity(script) === row);
+                    if (index < 0) return;
+                    value.splice(index, 1);
+                    value = value;
                 }}
             />
         {/each}
@@ -112,7 +127,11 @@
         <button
             class="rounded-md text-textcolor2 hover:text-textcolor focus-within:text-textcolor"
             onclick={async () => {
-                value = await importRegex(value);
+                const owner = popupEditorContext;
+                const list = recordValueIdentity(value);
+                const scripts = await importRegex($state.snapshot(value));
+                if (destroyed || !Object.is(owner, popupEditorContext) || list !== recordValueIdentity(value)) return;
+                value = scripts;
             }}><HardDriveUploadIcon /></button
         >
     </div>

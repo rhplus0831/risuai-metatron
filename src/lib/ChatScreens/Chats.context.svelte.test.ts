@@ -30,14 +30,15 @@ vi.mock("src/ts/stores.svelte", async () =>
             messageId !== undefined ? `m:${messageId}` : `i:${idx}`,
     }),
 );
-vi.mock("src/ts/storage/chatStore.svelte", () => ({
-    currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
-    selectedChatId: () => "chat",
-    streamingEntry: () => null,
-    isMessageLocked: () => false,
-    isMessageStreamed: () => false,
-}));
-vi.mock("src/ts/globalApi.svelte", () => ({ chatFoldedStateMessageIndex: { index: -1 } }));
+vi.mock("src/ts/storage/chatStore.svelte", async () =>
+    (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
+        currentChatRef: () => ({ chaId: "c", chatId: "chat" }),
+        selectedChatId: () => "chat",
+    }),
+);
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ chatFoldedStateMessageIndex: { index: -1 } }),
+);
 
 import Chats from "./Chats.svelte";
 

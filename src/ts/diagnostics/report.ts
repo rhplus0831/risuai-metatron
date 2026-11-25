@@ -1,8 +1,10 @@
 import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH } from "../../../shared/diagnostics.ts";
 import { buildDiagnosticReport, REPORT_FILE_PATTERN } from "../../../shared/diagnosticsReport.ts";
 import versionData from "../../../version.json";
+import { buildId } from "../buildInfo";
 import { authFetch } from "../storage/serverAuth";
 import { clientDiagnosticEvents } from "./collector";
+import { readWorkerRecords } from "./workerRecords";
 
 /**
  * The Diagnostics panel's report: built here from this tab's ring and the server's `GET /api/diagnostics`,
@@ -92,13 +94,21 @@ export async function readServerDiagnostics(waitMs: number = SERVER_WAIT_MS): Pr
     }
 }
 
-/** The report of this tab and the server now. Never throws. */
+/**
+ * The report of this tab and the server now. The browser's events are this tab's ring and the service
+ * worker's push records (`readWorkerRecords`, read for at most 1 s), sorted by time before the report's
+ * per-source cut to the newest 300; worker records that could not be read count as one omitted event.
+ * Never throws.
+ */
 export async function createDiagnosticReport(): Promise<string> {
-    const server = await readServerDiagnostics();
+    const [server, worker] = await Promise.all([readServerDiagnostics(), readWorkerRecords()]);
+    // Both lists are projected already, so every `at` is a time; the sort is stable.
+    const browser = [...clientDiagnosticEvents(), ...worker.events].sort((a, b) => a.at - b.at);
     const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
     return buildDiagnosticReport({
         meta: {
             version: versionData.version,
+            build: buildId,
             browser: browserFamily(userAgent),
             os: osFamily(userAgent),
             online: typeof navigator === "undefined" ? false : navigator.onLine,
@@ -106,7 +116,8 @@ export async function createDiagnosticReport(): Promise<string> {
             exportedAt: Date.now(),
         },
         server,
-        browser: clientDiagnosticEvents(),
+        browser,
+        omittedEvents: worker.failed ? 1 : 0,
     });
 }
 

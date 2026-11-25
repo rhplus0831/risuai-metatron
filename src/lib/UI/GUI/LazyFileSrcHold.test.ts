@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactiveProps } from "../tests/reactiveProps.svelte";
 
 const holds = vi.hoisted(() => vi.fn());
-vi.mock("src/ts/globalApi.svelte", () => ({ holdFileSrc: holds }));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ holdFileSrc: holds }),
+);
 import LazyFileSrc from "./LazyFileSrc.svelte";
 
 class Observer {

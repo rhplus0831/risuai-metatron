@@ -1,10 +1,19 @@
 import type { ModelProfile } from "../../../shared/database.ts";
 import { auxFetch } from "../network/auxFetch";
+import { ResourceFlushTimeoutError } from "../storage/resourceFlushWait";
 import type { ModelGridItem } from "./modelGrid";
+
+/**
+ * OpenRouter discovery for the model pickers. Both lists go through `auxFetch` (`src/ts/network/auxFetch.ts`) with the
+ * edited profile, so the server sends that profile's bound key, or the flat default key when it binds none; a refused
+ * binding fails on the server (`server/src/llm/auxOps.ts` `planAuxOp`) and reads as an empty list here, never a
+ * default-account list. The free-model pick for `risu/free` lives on the server (`server/src/llm/openrouter.ts`).
+ */
 
 /** Per-1M-token price entry. undefined means the field is not available for this model. */
 export type PriceEntry = number | undefined;
 
+/** A picker model with legacy price text, clean labels, and optional per-million-token price breakdowns. */
 export type OpenRouterModelInfo = {
     id: string;
     /** Original name with price appended, kept for backward compatibility */
@@ -31,6 +40,7 @@ export type OpenRouterModelInfo = {
     internalReasoningPrice1M: PriceEntry;
 };
 
+/** Reads provider names/slugs for the profile and sorts by name; fetch/parsing/mapping failures return []. */
 export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ name: string; slug: string }[]> {
     try {
         // With the stored OpenRouter key, on the server (`auxFetch`).
@@ -46,6 +56,11 @@ export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ 
     }
 }
 
+/**
+ * Reads the profile's model list, splitting provider labels and converting available price fields to per million.
+ * Models with negative or nonnumeric weighted prices are excluded; the rest sort by (prompt * 3 + completion) / 4.
+ * Save timeouts reach the grid. Responses are parsed without checking HTTP status, and other failures return an empty list.
+ */
 export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenRouterModelInfo[]> {
     try {
         const aim = await auxFetch("openrouter-models", "https://openrouter.ai/api/v1/models", {
@@ -93,10 +108,12 @@ export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenR
                 return a.price - b.price;
             });
     } catch (error) {
+        if (error instanceof ResourceFlushTimeoutError) throw error;
         return [];
     }
 }
 
+/** Formats available price breakdowns for the grid, using clean labels and the weighted price for sorting. */
 export function toModelGridItem(m: OpenRouterModelInfo): ModelGridItem {
     const fmt = (p: PriceEntry): string | null => {
         if (p === undefined) return null;

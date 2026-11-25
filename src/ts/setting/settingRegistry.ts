@@ -15,6 +15,7 @@ import SettingCustom from "src/lib/Setting/Wrappers/SettingCustom.svelte";
 
 type WrapperComponent = Component<{ item: SettingItem; ctx: SettingContext }>;
 
+/** Every `SettingType` maps to its Svelte wrapper, rendered by `src/lib/Setting/SettingRenderer.svelte`. */
 export const settingRegistry: Record<SettingType, WrapperComponent> = {
     check: SettingCheck,
     text: SettingText,

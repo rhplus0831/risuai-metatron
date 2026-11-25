@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ensureAuth } from "src/ts/storage/serverAuth";
+import type { MCPPrompt, MCPTool } from "../mcplib";
 
 // The tab's remote MCP client (`src/ts/process/mcp/mcplib.ts` `MCPClient`) over a fake
 // `fetchNative` (no network). Its event stream framed by `shared/mcp/sse.ts` (CRLF, CR, and
@@ -10,10 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // missing, empty, or non-string token, or for an answer without a usable access token); and
 // retirement (`destroy()`: no request, refresh, discovery, or stream reader started afterwards,
 // late answers refused, a cached list refused) against the session reset after a 401 that keeps the
-// client usable. Not asserted: the cleanup of a stream that ends without its answer (a recorded
-// hazard, `plugins-mcp.md`). The framer alone: `server/src/tests/mcpSse.test.ts`.
+// client usable. Not asserted here: a stream that ends without its answer (JSON-RPC error -32000,
+// `mcp.md`; `mcplibStreams.test.ts` covers it). The framer alone: `server/src/tests/mcpSse.test.ts`.
 
-type Call = { url: string; method: string; headers: Record<string, string>; body: any };
+type Call = { url: string; method: string; headers: Record<string, string>; body: any; signal?: AbortSignal };
 type Reply = {
     status: number;
     statusText: string;
@@ -23,32 +25,45 @@ type Reply = {
 };
 
 const { calls, server } = vi.hoisted(() => ({
-    calls: [] as { url: string; method: string; headers: Record<string, string>; body: any }[],
+    calls: [] as { url: string; method: string; headers: Record<string, string>; body: any; signal?: AbortSignal }[],
     server: { handle: null as null | ((call: Call) => Promise<unknown> | unknown) },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    fetchNative: vi.fn(
-        async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
-            let body: any = init?.body ?? null;
-            if (typeof body === "string") {
-                try {
-                    body = JSON.parse(body);
-                } catch {
-                    body = Object.fromEntries(new URLSearchParams(body));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        fetchNative: vi.fn(
+            async (
+                url: string,
+                init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+            ) => {
+                let body: any = init?.body ?? null;
+                if (typeof body === "string") {
+                    try {
+                        body = JSON.parse(body);
+                    } catch {
+                        body = Object.fromEntries(new URLSearchParams(body));
+                    }
                 }
-            }
-            const call = { url, method: init?.method ?? "GET", headers: { ...(init?.headers ?? {}) }, body };
-            calls.push(call);
-            if (!server.handle) {
-                throw new Error(`unexpected fetchNative(${url})`);
-            }
-            return await server.handle(call);
-        },
-    ),
-    openURL: vi.fn(),
-}));
+                const call = {
+                    url,
+                    method: init?.method ?? "GET",
+                    headers: { ...(init?.headers ?? {}) },
+                    body,
+                    signal: init?.signal,
+                };
+                calls.push(call);
+                if (!server.handle) {
+                    throw new Error(`unexpected fetchNative(${url})`);
+                }
+                return await server.handle(call);
+            },
+        ),
+    }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock(),
+);
 
 const enc = new TextEncoder();
 
@@ -136,6 +151,7 @@ beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
 });
 
@@ -294,6 +310,73 @@ describe("MCPClient refresh rotation", () => {
         }
     });
 
+    it("registers a refresh token from a full login only when it is a non-empty string", async () => {
+        for (const refreshToken of [undefined, "", 42, null, "from-login"]) {
+            calls.length = 0;
+            const client = await newClient();
+            client.getRefreshToken = async () => undefined;
+            const register = vi.fn();
+            client.registerRefreshToken = register;
+            server.handle = (call) => {
+                switch (call.url) {
+                    case "http://mcp.test/.well-known/oauth-authorization-server":
+                        return reply({ status: 404 });
+                    case "http://mcp.test/register":
+                        return reply({ status: 201, json: { client_id: "c1", client_secret: "s1" } });
+                    case "https://account.sionyw.com/oauthhelper/api":
+                        return reply({ json: { success: true, payload: { code: "server-code" } } });
+                    case first.tokenUrl:
+                        return reply({
+                            json: {
+                                access_token: "logged-in",
+                                ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
+                            },
+                        });
+                    default:
+                        throw new Error(`unexpected fetchNative(${call.url})`);
+                }
+            };
+
+            await client.oauthLogin();
+            expect(client.accessToken).toBe("logged-in");
+            expect(calls.at(-1)).toMatchObject({
+                url: first.tokenUrl,
+                method: "POST",
+                body: { grant_type: "authorization_code" },
+            });
+            if (refreshToken === "from-login") {
+                expect(register).toHaveBeenCalledExactlyOnceWith({ ...first, refreshToken: "from-login" });
+            } else {
+                expect(register).not.toHaveBeenCalled();
+            }
+        }
+    });
+
+    it("goes straight to discovery without refreshing when the stored refresh token is missing or empty", async () => {
+        for (const record of [
+            { clientId: "c1", clientSecret: "s1", tokenUrl: first.tokenUrl },
+            { ...first, refreshToken: "" },
+        ]) {
+            calls.length = 0;
+            const client = await newClient();
+            client.getRefreshToken = async () => record;
+            server.handle = (call) => {
+                if (call.url === first.tokenUrl) {
+                    return reply({ status: 400, json: { error: "invalid_grant" } });
+                }
+                throw new Error("discovery reached");
+            };
+
+            await expect(client.oauthLogin()).rejects.toThrow("discovery reached");
+            expect(calls).toEqual([
+                expect.objectContaining({
+                    url: "http://mcp.test/.well-known/oauth-authorization-server",
+                    method: "GET",
+                }),
+            ]);
+        }
+    });
+
     it("registers no rotated token from an answer without a usable access token or with a failed status: the login goes on to discovery", async () => {
         const answers = [
             () => reply({ json: { refresh_token: "r2" } }),
@@ -321,6 +404,182 @@ describe("MCPClient refresh rotation", () => {
                 "http://mcp.test/.well-known/oauth-authorization-server",
             ]);
         }
+    });
+});
+
+describe("MCPClient tool listing", () => {
+    it("rejects a failed later tool-list page and retries every page before caching a complete list", async () => {
+        const failures: ((call: Call) => Reply)[] = [
+            (call) =>
+                reply({
+                    json: { jsonrpc: "2.0", id: call.body.id, error: { code: -32603, message: "listing failed" } },
+                }),
+            (call) =>
+                reply({
+                    json: {
+                        jsonrpc: "2.0",
+                        id: call.body.id,
+                        error: { code: -32603, message: "listing failed" },
+                        result: { tools: [] },
+                    },
+                }),
+            (call) => reply({ status: 503, json: { jsonrpc: "2.0", id: call.body.id, result: { tools: [] } } }),
+            (call) => rpcJson(call, {}),
+            (call) => rpcJson(call, { tools: {} }),
+        ];
+        const alpha = { name: "alpha", inputSchema: { type: "object" } };
+        const beta = { name: "beta", inputSchema: { type: "object" } };
+        for (const fail of failures) {
+            const client = await newClient();
+            let healthy = false;
+            const pages: string[] = [];
+            server.handle = (call) => {
+                if (call.body.id === undefined) return reply({ status: 202 });
+                if (call.body.method === "initialize") return rpcJson(call, INFO);
+                const cursor = call.body.params?.cursor ?? "first";
+                pages.push(cursor);
+                if (cursor === "first") return rpcJson(call, { tools: [alpha], nextCursor: "second" });
+                return healthy ? rpcJson(call, { tools: [beta] }) : fail(call);
+            };
+            try {
+                await expect(client.getToolList()).rejects.toThrow("Failed to list MCP tools");
+                expect(pages).toEqual(["first", "second"]);
+                healthy = true;
+                expect(await client.getToolList()).toEqual([alpha, beta]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+                expect(await client.getToolList()).toEqual([alpha, beta]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+            } finally {
+                client.destroy();
+            }
+        }
+        const client = await newClient();
+        server.handle = (call) => {
+            if (call.body.id === undefined) return reply({ status: 202 });
+            return rpcJson(call, call.body.method === "initialize" ? INFO : { tools: [] });
+        };
+        try {
+            const start = calls.length;
+            expect(await client.getToolList()).toEqual([]);
+            expect(calls.slice(start).map((call) => call.body.method)).toEqual([
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+            ]);
+        } finally {
+            client.destroy();
+        }
+    });
+});
+
+describe.each(["tools", "prompts"] as const)("MCPClient %s pagination limits", (kind) => {
+    type Page = { entries: (MCPTool | MCPPrompt)[]; nextCursor?: string };
+    const listName = kind === "tools" ? "tool list" : "prompt list";
+    const entry =
+        kind === "tools"
+            ? { name: "entry", description: "", inputSchema: { type: "object" } }
+            : { name: "entry", description: "", arguments: [{ name: "input" }] };
+
+    function servePages(pages: Page[]) {
+        const cursors: (string | undefined)[] = [];
+        server.handle = (call) => {
+            if (call.body.id === undefined) return reply({ status: 202 });
+            if (call.body.method === "initialize") {
+                return rpcJson(call, { ...INFO, capabilities: { [kind]: {} } });
+            }
+            expect(call.body.method).toBe(`${kind}/list`);
+            const page = pages[cursors.length];
+            cursors.push(call.body.params?.cursor);
+            if (!page) throw new Error("Unexpected extra listing page");
+            return rpcJson(call, { [kind]: page.entries, nextCursor: page.nextCursor });
+        };
+        return cursors;
+    }
+
+    async function expectFailureThenRecovery(
+        pages: Page[],
+        error: string,
+        expectedCursors: (string | undefined)[],
+        recoveryPages: Page[],
+    ) {
+        const client = await newClient();
+        const list = () => (kind === "tools" ? client.getToolList() : client.getPromptList());
+        try {
+            const cursors = servePages(pages);
+            await expect(list().then((entries) => entries.length)).rejects.toThrow(
+                `The MCP server's ${listName} ${error}`,
+            );
+            expect(cursors).toEqual(expectedCursors);
+
+            const retryCursors = servePages(recoveryPages);
+            const expectedRetry = [undefined, ...recoveryPages.slice(0, -1).map((page) => page.nextCursor)];
+            const complete = recoveryPages.flatMap((page) => page.entries);
+            expect(await list()).toEqual(complete);
+            expect(retryCursors).toEqual(expectedRetry);
+            expect(await list()).toEqual(complete);
+            expect(retryCursors).toEqual(expectedRetry);
+        } finally {
+            client.destroy();
+        }
+    }
+
+    it("rejects a repeated cursor and restarts discovery from the first page", async () => {
+        const first = { entries: [entry], nextCursor: "second" };
+        const second = { entries: [{ ...entry, name: "second-entry" }] };
+        await expectFailureThenRecovery(
+            [first, { ...second, nextCursor: "second" }, second],
+            "repeats a cursor",
+            [undefined, "second"],
+            [first, second],
+        );
+    });
+
+    it("accepts 32 pages and rejects a cursor for page 33", async () => {
+        const firstPages = Array.from({ length: 31 }, (_, index) => ({
+            entries: [{ ...entry, name: `entry-${index + 1}` }],
+            nextCursor: `page-${index + 2}`,
+        }));
+        const last = { entries: [{ ...entry, name: "entry-32" }] };
+        const extra = { entries: [{ ...entry, name: "entry-33" }] };
+        await expectFailureThenRecovery(
+            [...firstPages, { ...last, nextCursor: "page-33" }, extra],
+            "has too many pages",
+            [undefined, ...firstPages.map((page) => page.nextCursor)],
+            [...firstPages, last],
+        );
+    });
+
+    it("accepts 512 entries and rejects a 513th entry across pages", async () => {
+        const entries = Array.from({ length: 512 }, (_, index) => ({ ...entry, name: `entry-${index}` }));
+        const first = { entries: entries.slice(0, 256), nextCursor: "second" };
+        const second = { entries: entries.slice(256) };
+        await expectFailureThenRecovery(
+            [first, { entries: [...second.entries, { ...entry, name: "extra" }] }],
+            "is too large",
+            [undefined, "second"],
+            [first, second],
+        );
+    });
+
+    it("accepts 1 MiB of UTF-8 entries and rejects one extra byte across pages", async () => {
+        // Each entry is 8 KiB in UTF-8. The fake transport reuses the description across all entries.
+        const asciiEntry = { ...entry, name: "entry-000" };
+        const padding = 8 * 1024 - JSON.stringify(asciiEntry).length;
+        const description = "한".repeat(Math.floor(padding / 3)) + "x".repeat(padding % 3);
+        const entries = Array.from({ length: 128 }, (_, index) => ({
+            ...entry,
+            name: `entry-${String(index).padStart(3, "0")}`,
+            description,
+        }));
+        const first = { entries: entries.slice(0, 64), nextCursor: "second" };
+        const second = { entries: entries.slice(64) };
+        const extraByte = { ...entries[127], description: description + "x" };
+        await expectFailureThenRecovery(
+            [first, { entries: [...second.entries.slice(0, -1), extraByte] }],
+            "is too large",
+            [undefined, "second"],
+            [first, second],
+        );
     });
 });
 
@@ -473,5 +732,315 @@ describe("MCPClient retirement (destroy) against the session reset", () => {
         ]);
         expect(client.accessToken).toBeNull();
         expect((await client.request("tools/list")).rpc.result).toEqual({ ok: "tools/list" });
+    });
+});
+
+// Promise checkpoints keep cancellation assertions independent of the host clock.
+async function checkpoint(predicate: () => boolean) {
+    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
+    expect(predicate()).toBe(true);
+}
+
+describe("caller cancellation and deadlines", () => {
+    it("aborts discovery before headers with the caller reason and installs no handshake", async () => {
+        const client = await newClient();
+        const controller = new AbortController();
+        const reason = new Error("discovery cancelled");
+        server.handle = (call) =>
+            new Promise((_, reject) =>
+                call.signal!.addEventListener("abort", () => reject(call.signal!.reason), { once: true }),
+            );
+        const answer = client.getToolList(undefined, controller.signal);
+        let failure: unknown;
+        const settled = answer.catch((error) => {
+            failure = error;
+        });
+        try {
+            await checkpoint(() => calls.length === 1);
+            controller.abort(reason);
+            await checkpoint(() => failure !== undefined);
+            expect(failure).toBe(reason);
+            expect(calls[0].signal?.aborted).toBe(true);
+            expect(client.initialized).toBe(false);
+        } finally {
+            client.destroy();
+        }
+        await settled;
+    });
+
+    it("aborts a tool call before headers and releases the caller's abort listener", async () => {
+        const client = await newClient();
+        server.handle = (call) => (call.body.method === "initialize" ? rpcJson(call, INFO) : reply({ status: 202 }));
+        await client.checkHandshake();
+        const controller = new AbortController();
+        const reason = new Error("tool cancelled");
+        const removed = vi.spyOn(controller.signal, "removeEventListener");
+        server.handle = (call) =>
+            new Promise((_, reject) =>
+                call.signal!.addEventListener("abort", () => reject(call.signal!.reason), { once: true }),
+            );
+        let failure: unknown;
+        const call = client.callTool("echo", {}, undefined, controller.signal).catch((error) => {
+            failure = error;
+        });
+        try {
+            await checkpoint(() => calls.some((call) => call.body.method === "tools/call"));
+            controller.abort(reason);
+            await checkpoint(() => failure !== undefined);
+            expect(failure).toBe(reason);
+            expect(calls[calls.length - 1].signal?.aborted).toBe(true);
+            expect(removed).toHaveBeenCalledWith("abort", expect.any(Function));
+        } finally {
+            client.destroy();
+        }
+        await call;
+    });
+
+    it("rejects an aborted paginated JSON listing and never caches its late page", async () => {
+        const client = await newClient();
+        const controller = new AbortController();
+        const late = deferred<unknown>();
+        let waiting = false;
+        let lists = 0;
+        server.handle = (call) => {
+            if (call.body.method === "initialize") return rpcJson(call, INFO);
+            if (call.body.id === undefined) return reply({ status: 202 });
+            if (++lists === 1)
+                return rpcJson(call, { tools: [{ name: "first", inputSchema: {} }], nextCursor: "page2" });
+            if (lists === 2)
+                return reply({
+                    json: async () => {
+                        waiting = true;
+                        return late.promise;
+                    },
+                });
+            return rpcJson(call, TOOLS);
+        };
+        try {
+            const listing = client.getToolList(undefined, controller.signal);
+            await checkpoint(() => waiting);
+            const reason = new Error("listing cancelled");
+            controller.abort(reason);
+            late.resolve({
+                jsonrpc: "2.0",
+                id: calls[calls.length - 1].body.id,
+                result: { tools: [{ name: "late", inputSchema: {} }] },
+            });
+            await expect(listing).rejects.toBe(reason);
+            expect((await client.getToolList()).map((tool) => tool.name)).toEqual(["echo"]);
+            expect(calls.filter((call) => call.body.method === "tools/list")[1].body.params).toEqual({
+                cursor: "page2",
+            });
+        } finally {
+            client.destroy();
+        }
+    });
+
+    it("times out a custom transport at five minutes and removes its listener and timer", async () => {
+        const client = await newClient();
+        vi.useFakeTimers();
+        const listeners = new Set<(message: import("../mcplib").JsonRPC) => void>();
+        const sent: unknown[] = [];
+        client.customTransport = {
+            addListener: (listener) => {
+                listeners.add(listener);
+            },
+            removeListener: (listener) => {
+                listeners.delete(listener);
+            },
+            send: async (message) => {
+                sent.push(message);
+            },
+        };
+        try {
+            const request = client.request("silent");
+            const rejected = expect(request).rejects.toThrow("The MCP request timed out");
+            await checkpoint(() => sent.length === 1);
+            await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+            expect(listeners.size).toBe(1);
+            await vi.advanceTimersByTimeAsync(1);
+            await rejected;
+            expect(listeners.size).toBe(0);
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            client.destroy();
+        }
+    });
+
+    it("lets a caller leave an OAuth prompt without waiting for the prompt answer", async () => {
+        const client = await newClient();
+        const controller = new AbortController();
+        const login = deferred<void>();
+        const prompt = vi.spyOn(client, "oauthLogin").mockImplementation(() => login.promise);
+        server.handle = () => reply({ status: 401 });
+        const reason = new Error("owner left prompt");
+        const handshake = client.checkHandshake(controller.signal);
+        let failure: unknown;
+        const settled = Promise.resolve(handshake).catch((error) => {
+            failure = error;
+        });
+        try {
+            await checkpoint(() => prompt.mock.calls.length === 1);
+            controller.abort(reason);
+            await checkpoint(() => failure !== undefined);
+            expect(failure).toBe(reason);
+            expect(client.initialized).toBe(false);
+        } finally {
+            client.destroy();
+            login.resolve();
+        }
+        await settled;
+    });
+});
+
+describe("remote MCP OAuth", () => {
+    const discoveryUrl = "http://mcp.test/.well-known/oauth-authorization-server";
+    const registrationUrl = "http://mcp.test/register";
+    const helperUrl = "https://account.sionyw.com/oauthhelper/api";
+    const refreshToken = {
+        clientId: "c1",
+        clientSecret: "s1",
+        refreshToken: "stored-refresh",
+        tokenUrl: "http://mcp.test/token",
+    };
+    const credentials = (attempt: string) => ({
+        access_token: `${attempt}-access`,
+        refresh_token: `${attempt}-refresh`,
+    });
+
+    function oauthResponse(call: Call): Reply {
+        switch (call.url) {
+            case discoveryUrl:
+                return reply({
+                    json: {
+                        authorization_endpoint: "http://mcp.test/authorize",
+                        registration_endpoint: registrationUrl,
+                        token_endpoint: refreshToken.tokenUrl,
+                    },
+                });
+            case registrationUrl:
+                return reply({ status: 201, json: { client_id: "c1", client_secret: "s1" } });
+            case helperUrl:
+                return reply({ json: { success: true, payload: { code: "server-code" } } });
+            case refreshToken.tokenUrl:
+                return reply({ json: credentials("current") });
+            case "http://mcp.test/mcp":
+                if (!call.headers.Authorization) return reply({ status: 401 });
+                if (call.body.id === undefined) return reply({ status: 202 });
+                return rpcJson(call, call.body.method === "initialize" ? INFO : TOOLS);
+            default:
+                throw new Error(`Unexpected fetchNative(${call.url})`);
+        }
+    }
+
+    beforeEach(() => {
+        vi.spyOn(crypto.subtle, "digest").mockResolvedValue(new ArrayBuffer(32));
+    });
+
+    it.each([
+        { stage: "discovery", url: discoveryUrl, part: "headers" },
+        { stage: "client registration", url: registrationUrl, part: "JSON body" },
+        { stage: "authorization-code helper", url: helperUrl, part: "headers" },
+        { stage: "token exchange", url: refreshToken.tokenUrl, part: "JSON body" },
+        { stage: "token refresh", url: refreshToken.tokenUrl, part: "JSON body" },
+    ])("fails a tool listing at 30 seconds when $stage stalls on $part", async ({ stage, url, part }) => {
+        const client = await newClient();
+        vi.useFakeTimers();
+        const signedIn = deferred<void>();
+        const discovered = deferred<void>();
+        const released = deferred<void>();
+        const followsDiscovery = stage !== "discovery" && stage !== "token refresh";
+        if (stage === "token refresh") client.getRefreshToken = async () => refreshToken;
+        if (stage === "discovery") vi.mocked(ensureAuth).mockReturnValueOnce(signedIn.promise);
+        let waiting: Call | undefined;
+        server.handle = (call) => {
+            const answer = oauthResponse(call);
+            if (followsDiscovery && call.url === discoveryUrl) return discovered.promise.then(() => answer);
+            if (call.url !== url) return answer;
+            if (part === "headers") {
+                waiting = call;
+                return released.promise.then(() => answer);
+            }
+            return {
+                ...answer,
+                json: async () => {
+                    waiting = call;
+                    await released.promise;
+                    return answer.json();
+                },
+            };
+        };
+        let failure: unknown;
+        const listing = client.getToolList().catch((error: unknown) => {
+            failure = error;
+        });
+        try {
+            if (stage === "discovery") {
+                await vi.advanceTimersByTimeAsync(30_001);
+                expect(waiting, "OAuth exchange during sign-in").toBeUndefined();
+                expect(failure).toBeUndefined();
+                signedIn.resolve();
+            }
+            if (followsDiscovery) {
+                await vi.advanceTimersByTimeAsync(0);
+                expect(calls.at(-1)?.url).toBe(discoveryUrl);
+                await vi.advanceTimersByTimeAsync(10_000);
+                discovered.resolve();
+            }
+            await vi.advanceTimersByTimeAsync(0);
+            expect(waiting?.url).toBe(url);
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(failure).toBeUndefined();
+            expect(waiting?.signal?.aborted).not.toBe(true);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(failure).toMatchObject({ message: "MCP Handshake Failed" });
+            expect(waiting?.signal?.aborted).toBe(true);
+        } finally {
+            client.destroy();
+            signedIn.resolve();
+            discovered.resolve();
+            released.resolve();
+            await listing;
+            vi.mocked(ensureAuth).mockReset();
+        }
+    });
+
+    it.each([
+        { stage: "token exchange", grantType: "authorization_code" },
+        { stage: "token refresh", grantType: "refresh_token" },
+    ])("keeps the replacement credentials when an abandoned $stage answers", async ({ grantType }) => {
+        const client = await newClient();
+        if (grantType === "refresh_token") client.getRefreshToken = async () => refreshToken;
+        const register = vi.fn();
+        client.registerRefreshToken = register;
+        const late = deferred<ReturnType<typeof credentials>>();
+        let abandoned: Call | undefined;
+        server.handle = (call) => {
+            if (call.url === refreshToken.tokenUrl && call.body.grant_type === grantType && !abandoned) {
+                return reply({
+                    json: () => {
+                        abandoned = call;
+                        return late.promise;
+                    },
+                });
+            }
+            return oauthResponse(call);
+        };
+        const first = client.getToolList().catch((error: unknown) => error);
+        try {
+            await checkpoint(() => abandoned !== undefined);
+            expect(await client.getToolList()).toEqual(TOOLS.tools);
+            late.resolve(credentials("abandoned"));
+            const result = await first;
+
+            expect(client.accessToken).toBe("current-access");
+            expect(register).toHaveBeenCalledExactlyOnceWith({ ...refreshToken, refreshToken: "current-refresh" });
+            expect(result).toMatchObject({ message: "MCP Handshake Failed" });
+            expect(abandoned?.signal?.aborted).toBe(true);
+        } finally {
+            client.destroy();
+            late.resolve(credentials("abandoned"));
+            await first;
+        }
     });
 });

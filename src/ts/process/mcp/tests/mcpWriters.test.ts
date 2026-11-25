@@ -52,17 +52,7 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     hasher: vi.fn(async () => ""),
     risuChatParser: vi.fn((text: string) => text),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    openURL: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 // The remote MCP client, without a server: the handshake answers fixed server info and, when the
 // test asks, registers a refresh token through the callback `initializeMCPs` installs.
 vi.mock("src/ts/process/mcp/mcplib", () => {
@@ -192,7 +182,11 @@ describe("importMCPModule", () => {
         const added = settings.modules[0];
         expect(added.id).toEqual(expect.any(String));
         expect(added.id).not.toBe("");
-        expect(added).toMatchObject({ name: "Remote Server", description: "MCP from https://mcp.example/sse" });
+        expect(added).toMatchObject({
+            name: "Remote Server",
+            description: "MCP from https://mcp.example/sse",
+            mcp: { url: "https://mcp.example/sse" },
+        });
         await sync.flushResources();
         expect(record("modules")).toEqual([
             {

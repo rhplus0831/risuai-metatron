@@ -20,17 +20,28 @@ vi.mock("./stores.svelte", async () =>
     }),
 );
 vi.mock("./storage/database.svelte", () => ({ getDatabase: () => ({}) }));
-vi.mock("../lang", () => ({ language: { errors: {}, addCharacter: "add", chatOptions: "options" } }));
+vi.mock("../lang", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../lang")>()),
+    language: {
+        ...(await import("../lang/en")).languageEnglish,
+        errors: {},
+        addCharacter: "add",
+        chatOptions: "options",
+    },
+}));
 
 import {
     alertCardExport,
     alertChatOptions,
     alertClear,
     alertConfirm,
+    alertConfirmWithCheckbox,
+    alertConfirmWithChecklist,
     alertError,
     alertErrorWait,
     alertInput,
     alertJobError,
+    jobErrorText,
     alertNormal,
     alertNormalWait,
     alertRequestData,
@@ -401,6 +412,7 @@ describe("dialog key gate", () => {
         gate.keydown(enter);
         expect(gate.accepts(enter)).toBe(true);
         expect(gate.accepts({ ...enter, isComposing: true })).toBe(false);
+        expect(gate.accepts({ ...enter, keyCode: 229 })).toBe(false);
         gate.keyup(escape);
         gate.keyup(enter);
         alerts.answer("");
@@ -429,6 +441,49 @@ describe("alert helpers over the queue", () => {
     });
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it("formats collected job errors with the displayed text without opening a dialog", () => {
+        const base = {
+            type: "error" as const,
+            epoch: "e",
+            reason: "failed" as const,
+            status: 500,
+            message: "  provider failed  ",
+        };
+        expect(jobErrorText(base)).toBe("provider failed");
+        expect(jobErrorText({ ...base, message: " {} " })).toBeNull();
+        expect(jobErrorText({ ...base, message: "windowChanged", code: "memoryRecordSkipped" })).toBe(
+            "Recording stopped: the chat changed during recording",
+        );
+        expect(jobErrorText({ ...base, message: "aborted", reason: "aborted" })).toBe("aborted");
+        expect(current()).toEqual(none);
+        expect(holder.queue.hasDialogs()).toBe(false);
+    });
+
+    it("translates skipped recording reasons in the job-error dialog and hides unknown tokens", async () => {
+        for (const [reason, message] of [
+            ["windowChanged", "Recording stopped: the chat changed during recording"],
+            ["writerPaused", "Recording stopped: recording is paused after repeated failures"],
+            ["futureSkipReason", "Recording stopped before it could finish."],
+        ]) {
+            const end = {
+                type: "error" as const,
+                epoch: "e",
+                message: reason,
+                status: 409,
+                reason: "failed" as const,
+                code: "memoryRecordSkipped" as const,
+            };
+            alertJobError("record-job", end, 123);
+            expect(current()).toMatchObject({
+                type: "error",
+                msg: message,
+                jobFailure: { jobId: "record-job", at: 123, end },
+            });
+            expect(current().msg).not.toContain(reason);
+            await answer("");
+        }
     });
 
     it("resolves each awaited helper with its own dialog's answer, parsed as before, in order", async () => {
@@ -470,6 +525,52 @@ describe("alert helpers over the queue", () => {
         await expect(normal).resolves.toBeUndefined();
         await expect(error).resolves.toBeUndefined();
         expect(current()).toEqual(none);
+    });
+
+    it("returns each checkbox confirmation's current state through the button answer path", async () => {
+        const first = alertConfirmWithCheckbox("Remove plug?", "Also delete its stored data");
+        const second = alertConfirmWithCheckbox("Remove other?", "Also delete its stored data");
+        expect(current()).toMatchObject({
+            type: "ask",
+            msg: "Remove plug?",
+            confirmCheckbox: { label: "Also delete its stored data", checked: true },
+        });
+        holder.queue.setConfirmChecked(false, current());
+        holder.queue.answerConfirm(true, current());
+        await expect(first).resolves.toEqual({ confirmed: true, checked: false });
+        expect(await settled(second)).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(current()).toMatchObject({ msg: "Remove other?", confirmCheckbox: { checked: true } });
+        holder.queue.answerConfirm(false, current());
+        await expect(second).resolves.toEqual({ confirmed: false, checked: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(holder.queue.hasDialogs()).toBe(false);
+    });
+
+    it("returns a checklist confirmation's checked ids, changed one item at a time, on either answer", async () => {
+        const items = [
+            { id: "db", label: "Read the database", checked: true },
+            { id: "mainDom", label: "Access the main document", checked: false },
+        ];
+        const first = alertConfirmWithChecklist("Permissions?", items);
+        const second = alertConfirmWithChecklist("Permissions?", items);
+        expect(current()).toMatchObject({ type: "ask", msg: "Permissions?", confirmChecklist: items });
+        const shown = current();
+        holder.queue.setConfirmChecked(true, shown, "mainDom");
+        holder.queue.setConfirmChecked(false, shown, "db");
+        holder.queue.setConfirmChecked(true, shown, "unknown");
+        // Changing an item keeps the dialog's identity, which the key gate compares.
+        expect(current()).toBe(shown);
+        holder.queue.answerConfirm(true, shown);
+        await expect(first).resolves.toEqual({ confirmed: true, checked: ["mainDom"] });
+        // The caller's items are not changed, so the second dialog starts from them.
+        expect(items.map((item) => item.checked)).toEqual([true, false]);
+        await vi.advanceTimersByTimeAsync(0);
+        holder.queue.setConfirmChecked(true, current(), "mainDom");
+        holder.queue.answer("", current());
+        await expect(second).resolves.toEqual({ confirmed: false, checked: ["db", "mainDom"] });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(holder.queue.hasDialogs()).toBe(false);
     });
 
     it("keeps a shown confirm unanswered through a status writer's wait and alertClear", async () => {

@@ -8,6 +8,7 @@ src/ts/rpack/
 pnpm-lock.yaml
 **/__snapshots__/
 dist/
+/host-profile/
 
 # Doc comment contains a literal "*/" that closes the comment early; Prettier cannot parse it
 src/ts/plugins/apiV3/risuai.d.ts

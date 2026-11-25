@@ -21,8 +21,9 @@
 </script>
 
 <script lang="ts">
-    import { findChat, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
-    import { untrack } from "svelte";
+    import { findChat, isChatGenerating, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { memoryEditorWriteFence } from "src/ts/storage/chatFieldDraft.svelte";
+    import { onDestroy, untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { alertRequestLogs, type alertData } from "../../ts/alert";
     import { jobDebugInfo } from "../../ts/diagnostics/jobDebugInfo";
@@ -33,10 +34,12 @@
     import { ChevronRightIcon, User } from "@lucide/svelte";
     import { isCharacterHasAssets } from "src/ts/characterCards";
     import TextInput from "../UI/GUI/TextInput.svelte";
-    import { aiLawApplies } from "src/ts/globalApi.svelte";
+    import { aiLawApplies, openURL } from "src/ts/globalApi.svelte";
+    import { REALM_PRIVACY_URL, REALM_TERMS_URL } from "src/ts/realmTerms";
     import Button from "../UI/GUI/Button.svelte";
     import { XIcon, CopyIcon, CheckIcon } from "@lucide/svelte";
     import RequestLogsPopup from "./RequestLogs/RequestLogsPopup.svelte";
+    import AlertToast from "./AlertToast.svelte";
     import UpstreamImportReport from "../Setting/Pages/UpstreamImportReport.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
@@ -51,10 +54,27 @@
     import { translateStackTrace } from "../../ts/sourcemap";
     import { getDetailedOSLabel, getFallbackOSLabel, getRisuEnvironmentLabel } from "src/ts/platform";
     import versionData from "../../../version.json";
+    import { buildId } from "src/ts/buildInfo";
+
+    /**
+     * Renders the alert slot from `src/ts/stores.svelte.ts`. A UI dismissal must answer
+     * the shown dialog so its waiting caller settles. Render branches outside the first
+     * guard must also be excluded from that guard.
+     *
+     * Dialog keyboard handling belongs to `src/ts/hotkey.ts`: handled Escape answers
+     * ""; eligible Enter shortcuts answer ask/normal/error or the alert input's value.
+     * Focused buttons retain gated native activation. The hotkey handler can return
+     * early for other text-entry targets.
+     *
+     * Answer this error before opening request history. Trace translation results and
+     * failures from `src/ts/sourcemap.ts` are ignored after the alert changes or this
+     * component is destroyed, so a later error cannot inherit an earlier result.
+     */
 
     const currentCharacter = $derived(selectedCharacter());
     const hypaV2Ref = $derived($alertStore.type === "hypaV2" ? $alertStore.chatRef : undefined);
     const hypaV2Data = $derived(hypaV2Ref ? findChat(hypaV2Ref)?.hypaV2Data : undefined);
+    const hypaV2Fence = $derived(hypaV2Ref ? memoryEditorWriteFence(hypaV2Ref) : null);
     /** A `requestdata` dialog's own generation info and message, captured when it was opened. */
     const requestInfo = $derived($alertStore.type === "requestdata" ? $alertStore.generationInfo : undefined);
     const requestMessage = $derived(requestInfo?.message);
@@ -64,6 +84,10 @@
     let translatedStackTrace = $state("");
     let stackTraceTranslationFailed = $state(false);
     let isTranslating = $state(false);
+    let traceRun = 0;
+    onDestroy(() => {
+        traceRun += 1;
+    });
     let osLabel = $state(getFallbackOSLabel());
     const displayedStackTrace = $derived(translatedStackTrace || $alertStore.stackTrace || "");
     const risuVersion = versionData.version;
@@ -72,6 +96,7 @@
     const stackTraceCodeBlock = $derived.by(() => {
         const lines = [
             `Risu version: ${risuVersion}`,
+            `Risu build: ${buildId}`,
             `OS: ${osLabel}`,
             `User-Agent: ${userAgent}`,
             `Risu environment: ${risuEnvironment}`,
@@ -108,6 +133,10 @@
         void loadDetailedOSLabel();
     });
 
+    function cancelCardExport() {
+        alertStore.answer(JSON.stringify({ type: "cancel", type2: cardExportType2 }));
+    }
+
     async function copyToClipboard(text: string, key: string) {
         try {
             await navigator.clipboard.writeText(text);
@@ -135,6 +164,7 @@
     }
 
     $effect.pre(() => {
+        traceRun += 1;
         showDetails = false;
         translatedStackTrace = "";
         stackTraceTranslationFailed = false;
@@ -234,19 +264,24 @@
 
     async function loadTranslatedTrace() {
         if (isTranslating || translatedStackTrace || stackTraceTranslationFailed || !$alertStore.stackTrace) return;
+        const run = ++traceRun;
+        const stackTrace = $alertStore.stackTrace;
         isTranslating = true;
         try {
-            const result = await translateStackTrace($alertStore.stackTrace);
+            const result = await translateStackTrace(stackTrace);
+            if (run !== traceRun) return;
             if (result.didTranslate) {
                 translatedStackTrace = result.stackTrace;
             } else {
                 stackTraceTranslationFailed = true;
             }
         } catch (e) {
-            console.error("Failed to translate stack trace:", e);
-            stackTraceTranslationFailed = true;
+            if (run === traceRun) {
+                console.error("Failed to translate stack trace:", e);
+                stackTraceTranslationFailed = true;
+            }
         } finally {
-            isTranslating = false;
+            if (run === traceRun) isTranslating = false;
         }
     }
 
@@ -262,7 +297,7 @@
     function setHypaV2ChunkText(list: "chunks" | "mainChunks", index: number, text: string) {
         const ref = hypaV2Ref;
         const data = ref ? findChat(ref)?.hypaV2Data : undefined;
-        if (!ref || !data?.[list]?.[index]) {
+        if (!ref || !data?.[list]?.[index] || memoryEditorWriteFence(ref)) {
             return;
         }
         const next = JSON.parse(JSON.stringify(data)) as Chat["hypaV2Data"];
@@ -271,10 +306,12 @@
     }
 </script>
 
+<!-- Every alert branch paints at layer 1100, above a plugin's full-screen container (z-index 1000).
+     Delegated branches use positioned z-1100 wrappers because display: contents forms no stacking context. -->
 {#if $alertStore.type !== "none" && $alertStore.type !== "toast" && $alertStore.type !== "cardexport" && $alertStore.type !== "branches" && $alertStore.type !== "selectModule" && $alertStore.type !== "pukmakkurit" && $alertStore.type !== "requestlogs" && $alertStore.type !== "upstreamImportReport"}
     <div
         data-alert-dialog
-        class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center"
+        class="absolute w-full h-full z-1100 bg-black/50 flex justify-center items-center"
         class:vis={$alertStore.type === "wait2"}
     >
         <div
@@ -288,6 +325,8 @@
                 <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">Confirm</h2>
             {:else if $alertStore.type === "pluginconfirm"}
                 <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">Plugin Import</h2>
+            {:else if $alertStore.type === "realmTerms"}
+                <h2 class="text-green-700 mt-0 mb-2 max-w-full">{language.realmTerms.title}</h2>
             {:else if $alertStore.type === "selectChar"}
                 <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">Select</h2>
             {:else if $alertStore.type === "input"}
@@ -322,10 +361,27 @@
                     {/if}
                     <p class="confirm-message">{confirmMessage}</p>
                 </div>
+            {:else if $alertStore.type === "realmTerms"}
+                <div class="text-textcolor whitespace-pre-wrap">{language.realmTerms.body}</div>
+                <div class="flex flex-wrap gap-4 mt-4">
+                    <button
+                        class="text-green-600 hover:text-green-500 transition-colors duration-200"
+                        onclick={() => openURL(REALM_TERMS_URL)}>{language.realmTerms.termsOfService}</button
+                    >
+                    <button
+                        class="text-green-600 hover:text-green-500 transition-colors duration-200"
+                        onclick={() => openURL(REALM_PRIVACY_URL)}>{language.realmTerms.privacyPolicy}</button
+                    >
+                </div>
             {:else if $alertStore.type !== "select" && $alertStore.type !== "requestdata" && $alertStore.type !== "addchar" && $alertStore.type !== "hypaV2" && $alertStore.type !== "chatOptions"}
                 <span class="text-gray-300 whitespace-pre-wrap">{$alertStore.msg}</span>
                 {#if $alertStore.submsg && $alertStore.type !== "progress"}
                     <span class="text-gray-500 text-sm">{$alertStore.submsg}</span>
+                {/if}
+                {#if $alertStore.type === "wait" && $alertStore.onCancel}
+                    <Button styled="outlined" className="mt-4 self-end" onclick={$alertStore.onCancel}>
+                        {language.cancel}
+                    </Button>
                 {/if}
 
                 {#if $alertStore.type === "error" && $alertStore.stackTrace}
@@ -364,7 +420,7 @@
                         <Button
                             styled="outlined"
                             size="sm"
-                            onclick={() => copyToClipboard(jobDebugInfo(failure, risuVersion), "job-debug")}
+                            onclick={() => copyToClipboard(jobDebugInfo(failure, risuVersion, buildId), "job-debug")}
                         >
                             {#if copiedKey === "job-debug"}
                                 <CheckIcon size={14} class="inline mr-2 text-success-500" />
@@ -402,18 +458,60 @@
             {/if}
 
             {#if $alertStore.type === "ask" || $alertStore.type === "pluginconfirm"}
+                {#if shown.confirmCheckbox}
+                    <label class="mt-4 flex items-center gap-2 text-textcolor">
+                        <input
+                            type="checkbox"
+                            checked={shown.confirmCheckbox.checked}
+                            onchange={(event) => alertStore.setConfirmChecked(event.currentTarget.checked, shown)}
+                        />
+                        <span>{shown.confirmCheckbox.label}</span>
+                    </label>
+                {/if}
+                {#if shown.confirmChecklist}
+                    <div class="mt-4 flex flex-col gap-2">
+                        {#each shown.confirmChecklist as item (item.id)}
+                            <label class="flex items-start gap-2 text-textcolor">
+                                <input
+                                    class="mt-1"
+                                    type="checkbox"
+                                    checked={item.checked}
+                                    onchange={(event) =>
+                                        alertStore.setConfirmChecked(event.currentTarget.checked, shown, item.id)}
+                                />
+                                <span>{item.label}</span>
+                            </label>
+                        {/each}
+                    </div>
+                {/if}
                 <div class="flex gap-2 w-full">
                     <Button
                         className="mt-4 grow"
                         onclick={() => {
-                            alertStore.answer("yes");
+                            alertStore.answerConfirm(true, shown);
                         }}>YES</Button
                     >
                     <Button
                         className="mt-4 grow"
                         onclick={() => {
-                            alertStore.answer("no");
+                            alertStore.answerConfirm(false, shown);
                         }}>NO</Button
+                    >
+                </div>
+            {:else if $alertStore.type === "realmTerms"}
+                <div class="flex gap-2 w-full">
+                    <Button
+                        className="mt-4 grow"
+                        onclick={() => {
+                            alertStore.answer("yes");
+                        }}>{language.realmTerms.accept}</Button
+                    >
+                    <Button
+                        styled="outlined"
+                        className="mt-4 grow"
+                        onclick={() => {
+                            alertStore.answer("no");
+                        }}>{language.realmTerms.decline}</Button
                     >
                 </div>
             {:else if $alertStore.type === "select"}
@@ -451,6 +549,7 @@
                 <TextInput
                     value={$alertStore.defaultValue}
                     id="alert-input"
+                    secret={$alertStore.secret}
                     autocomplete="off"
                     marginTop
                     list="alert-input-list"
@@ -703,7 +802,7 @@
                         </div>
                     {/if}
                 {/if}
-            {:else if $alertStore.type === "hypaV2" && hypaV2Data}
+            {:else if $alertStore.type === "hypaV2"}
                 <div class="flex flex-wrap gap-2 mb-4 max-w-full w-124">
                     <Button
                         selected={generationInfoMenuIndex === 0}
@@ -730,10 +829,14 @@
                         }}>✖</button
                     >
                 </div>
+                {#if hypaV2Fence}
+                    <p class="text-sm text-textcolor2 mb-2" role="status">{hypaV2Fence}</p>
+                {/if}
                 {#if generationInfoMenuIndex === 0}
                     <div class="flex flex-col gap-2 w-full">
-                        {#each hypaV2Data.chunks as chunk, i}
+                        {#each hypaV2Data?.chunks ?? [] as chunk, i}
                             <TextAreaInput
+                                readonly={!!hypaV2Fence}
                                 bind:value={() => chunk.text, (text) => setHypaV2ChunkText("chunks", i, text)}
                             />
                         {/each}
@@ -741,7 +844,7 @@
                         <!-- Adding non-bound chunk is not okay, change the user flow to edit existing ones. -->
                     </div>
                 {:else}
-                    {#each hypaV2Data.mainChunks as chunk, i}
+                    {#each hypaV2Data?.mainChunks ?? [] as chunk, i}
                         <!-- Summarized should be mainChunks, afaik. Be aware of that chunks are created with mainChunks, however this editing would not change related chunks. -->
                         <div class="flex flex-col p-2 rounded-md border-darkborderc border">
                             {#if i === 0}
@@ -750,6 +853,7 @@
                                 <span>Inactive</span>
                             {/if}
                             <TextAreaInput
+                                readonly={!!hypaV2Fence}
                                 bind:value={() => chunk.text, (text) => setHypaV2ChunkText("mainChunks", i, text)}
                             />
                         </div>
@@ -822,7 +926,8 @@
                         {language.chatOptions}
                     </h1>
                     <button
-                        class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
+                        class="border-darkborderc border py-2 px-8 flex rounded-md enabled:hover:ring-2 items-center mt-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={$alertStore.chatRef !== undefined && isChatGenerating($alertStore.chatRef)}
                         onclick={() => {
                             alertStore.answer("0");
                         }}
@@ -841,7 +946,8 @@
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
-                            <span>{language.chatBinding.chatSettings}</span>
+                            <span>{language.createSettingsCopy}</span>
+                            <span class="text-sm text-textcolor2">{language.createSettingsCopyDesc}</span>
                         </div>
                         <div class="ml-9 float-right flex-1 flex justify-end">
                             <ChevronRightIcon />
@@ -851,6 +957,19 @@
                         class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
                         onclick={() => {
                             alertStore.answer("2");
+                        }}
+                    >
+                        <div class="flex flex-col justify-start items-start">
+                            <span>{language.chatBinding.chatSettings}</span>
+                        </div>
+                        <div class="ml-9 float-right flex-1 flex justify-end">
+                            <ChevronRightIcon />
+                        </div>
+                    </button>
+                    <button
+                        class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
+                        onclick={() => {
+                            alertStore.answer("3");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
@@ -878,10 +997,10 @@
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
         data-alert-dialog
-        class="fixed top-0 left-0 h-full w-full bg-black/50 flex flex-col z-50 items-center justify-center"
+        class="fixed top-0 left-0 h-full w-full bg-black/50 flex flex-col z-1100 items-center justify-center"
         role="button"
         tabindex="0"
-        onclick={close}
+        onclick={cancelCardExport}
     >
         <div
             class="bg-darkbg rounded-md p-4 max-w-full flex flex-col w-2xl"
@@ -895,17 +1014,7 @@
                 <span>
                     {language.shareExport}
                 </span>
-                <button
-                    class="float-right text-textcolor2 hover:text-green-500"
-                    onclick={() => {
-                        alertStore.answer(
-                            JSON.stringify({
-                                type: "cancel",
-                                type2: cardExportType2,
-                            }),
-                        );
-                    }}
-                >
+                <button class="float-right text-textcolor2 hover:text-green-500" onclick={cancelCardExport}>
                     <XIcon />
                 </button>
             </h1>
@@ -959,19 +1068,12 @@
         </div>
     </div>
 {:else if $alertStore.type === "toast"}
-    <!-- Keyed: each toast runs its own animation, and its end clears the status only while it is still that toast. -->
+    <!-- Keyed: each toast runs its own timer, and its close clears the status only while it is still that toast. -->
     {#each [$alertStore] as toast (toast)}
-        <div
-            class="toast-anime absolute right-0 bottom-0 bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-11/12 overflow-y-auto z-50 text-textcolor"
-            onanimationend={() => {
-                alertStore.clearStatus(toast);
-            }}
-        >
-            {toast.msg}
-        </div>
+        <AlertToast msg={toast.msg} onclose={() => alertStore.clearStatus(toast)} />
     {/each}
 {:else if $alertStore.type === "selectModule"}
-    <div data-alert-dialog class="contents">
+    <div data-alert-dialog class="fixed inset-0 z-1100">
         <ModuleChatMenu
             alertMode
             close={(d) => {
@@ -983,7 +1085,7 @@
     <!-- Log Generator by dootaang, GPL3 -->
     <!-- Svelte, Typescript version by Kwaroran -->
 
-    <div data-alert-dialog class="absolute w-full h-full z-50 bg-black/50 flex justify-center items-center">
+    <div data-alert-dialog class="absolute w-full h-full z-1100 bg-black/50 flex justify-center items-center">
         <div class="bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-full overflow-y-auto">
             <h2 class="text-green-700 mt-0 mb-2 w-40 max-w-full">{language.preview}</h2>
         </div>
@@ -991,7 +1093,7 @@
 {:else if $alertStore.type === "branches"}
     <div
         data-alert-dialog
-        class="absolute w-full h-full z-50 bg-black/80 flex justify-center items-center overflow-x-auto overflow-y-auto"
+        class="absolute w-full h-full z-1100 bg-black/80 flex justify-center items-center overflow-x-auto overflow-y-auto"
     >
         {#if branchHover !== null}
             <div
@@ -1068,11 +1170,11 @@
         {/each}
     </div>
 {:else if $alertStore.type === "requestlogs"}
-    <div data-alert-dialog class="contents">
+    <div data-alert-dialog class="fixed inset-0 z-1100">
         <RequestLogsPopup />
     </div>
 {:else if $alertStore.type === "upstreamImportReport"}
-    <div data-alert-dialog class="contents">
+    <div data-alert-dialog class="fixed inset-0 z-1100">
         <UpstreamImportReport />
     </div>
 {/if}
@@ -1102,22 +1204,6 @@
         word-break: normal;
         overflow-wrap: anywhere;
     }
-    @keyframes toastAnime {
-        0% {
-            opacity: 0;
-        }
-        50% {
-            opacity: 1;
-        }
-        100% {
-            opacity: 0;
-        }
-    }
-
-    .toast-anime {
-        animation: toastAnime 1s ease-out;
-    }
-
     .vis {
         opacity: 1 !important;
         --tw-bg-opacity: 1 !important;

@@ -6,7 +6,8 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
 </script>
 
-<div class="flex items-center mt-2">
+<!-- No top margin: the field above it in Display's Colors & typography section ends with its own 1rem. -->
+<div class="flex items-center">
     <Check
         check={settings.ui.customBackground !== ""}
         onChange={async (check) => {

@@ -1,20 +1,24 @@
-import type { Chat, character, groupChat } from "../../../shared/database.ts";
+import { isRetiredMultisend } from "../../../shared/slashCommands.ts";
+import type { Chat, character, groupChat, loreBook } from "../../../shared/database.ts";
 import { greetingText } from "../../../shared/greetings.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import type { RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
+import type { RequestArgs } from "../../../shared/llm/request.ts";
 import {
     displayAllowList,
     requestAllowList,
+    type GlobalLoreChange,
     type triggerEffect,
     type triggerEffectV2,
     type triggerscript,
 } from "../../../shared/triggers.ts";
 import {
+    applyGlobalLoreChange,
     type CharacterPatchListener,
     type LuaBindingServices,
     LuaJobFatalError,
     type LuaWorkingCopy,
 } from "../lua/bindings.ts";
+import { collectStreamingText } from "../llm/outer.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import type { RegexMatch, RegexOp } from "../scripts/worker.ts";
 import { stripThoughtsBlock } from "./thoughts.ts";
@@ -36,7 +40,9 @@ export { displayAllowList, requestAllowList };
  * `v2RunTrigger` keeps the display mode, display data, and temporary variables; `v2Command` always
  * targets the job's chat; Lua character setters reach the native getters of the running triggers;
  * `v2CheckSimilarity` searches with the server's embeddings (a failure of the search is the run's
- * error, as on the client); `v2ConsoleLog` goes to the server log.
+ * error, as on the client); `v2ConsoleLog` goes to the server log. Lore effects write only their target
+ * entry in the current record (by id, or a checked index for legacy entries); their working copy follows
+ * each effect.
  */
 
 export type TriggerMode = "start" | "manual" | "output" | "input" | "display" | "request";
@@ -53,6 +59,8 @@ export type TriggerArg = {
     displayMode?: boolean;
     displayData?: string;
     tempVars?: Record<string, string>;
+    /** Apply pending copy edits and return a fresh copy of the live chat at a command boundary. */
+    syncChat?: (chat: Chat) => Chat;
 };
 
 export type TriggerResult = {
@@ -91,8 +99,8 @@ export type TriggerHost = {
     selectedPersonaPrompt: string;
     /** `v2SetPersonaDesc`: the job's effective persona (a bound persona wins). */
     effectivePersonaId: string | null;
-    /** `v2Command`: a command line on the job's chat. */
-    runCommand(line: string): Promise<unknown>;
+    /** `v2Command`: a command line on the job's chat, with the initiating trigger's grant. */
+    runCommand(line: string, lowLevelAccess: boolean): Promise<unknown>;
     /** Every effect the job ran, across nested runs and `/trigger`. */
     effects: { count: number };
     /** A monotonic clock in milliseconds for the effect loop's yield (default `performance.now`). */
@@ -186,32 +194,6 @@ export function parseChatML(data: string, parse: (text: string) => string): Open
         });
 }
 
-/** `collectStreamingText` of the client: the last snapshot's first key. */
-async function collectStreamingText(stream: ReadableStream<StreamResponseChunk>): Promise<string> {
-    const reader = stream.getReader();
-    let lastChunk = "";
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (value) {
-                const firstKey = Object.keys(value)[0];
-                if (firstKey) {
-                    lastChunk = (value as Record<string, string>)[firstKey] ?? lastChunk;
-                }
-            }
-            if (done) {
-                break;
-            }
-        }
-    } finally {
-        reader.releaseLock();
-    }
-    return lastChunk;
-}
-
-/** The deprecated lore effects index an entry as an array (`[key, content, active]`), as the client does. */
-type LegacyLore = Record<number, unknown>;
-
 /** A pause that ends early with the run's abort. */
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -252,6 +234,28 @@ function triggerCopy(source: character): character {
     return Object.fromEntries(
         entries.map(([key, value]) => [key, SHARED_CHARACTER_FIELDS.has(key) ? value : copied[key]]),
     ) as unknown as character;
+}
+
+/**
+ * A value an effect stores in a variable. The JSON extraction effects (`v2GetArrayVar`, `v2GetDictVar`,
+ * pop, shift) pass the parsed element as it is, as upstream does; one holding a non-finite number
+ * anywhere (JSON `1e400` parses to Infinity), which the store refuses, becomes the text a read
+ * returns (`getVar` answers `toString()`). Every other value passes unchanged.
+ */
+function storableVar(value: string): string {
+    const pending: unknown[] = [value];
+    while (pending.length > 0) {
+        const item = pending.pop();
+        if (typeof item === "number" && !Number.isFinite(item)) {
+            return String(value);
+        }
+        if (item !== null && typeof item === "object") {
+            for (const child of Object.values(item)) {
+                pending.push(child);
+            }
+        }
+    }
+    return value;
 }
 
 /** One turn of the event loop, so a long run or a deep recursion lets other work in. */
@@ -311,6 +315,8 @@ export function hasRequestTriggers(owner: character | groupChat | undefined, mod
 
 export function createTriggerRuntime(host: TriggerHost) {
     const { services, ctx } = host;
+    // Nested runs share these prompt objects; every contributor to a slot must permit remote counting.
+    const promptAccess = new WeakMap<AdditionalSysPrompt, Record<keyof AdditionalSysPrompt, boolean>>();
     const now = host.now ?? (() => performance.now());
     let lastEffectYieldAt = now();
     /**
@@ -350,9 +356,9 @@ export function createTriggerRuntime(host: TriggerHost) {
         return result;
     };
     /** The job's counter, fenced on both sides: an abort during a count starts no other one. */
-    const tokenize = async (text: string) => {
+    const tokenize = async (text: string, lowLevelAccess: boolean) => {
         services.fence(ctx);
-        const tokens = await services.tokenize(text);
+        const tokens = await services.tokenize(text, lowLevelAccess);
         services.fence(ctx);
         return tokens;
     };
@@ -363,6 +369,11 @@ export function createTriggerRuntime(host: TriggerHost) {
         }
         return result.value as T;
     };
+
+    /** Whether the character or the job's modules have any triggers, regardless of mode. */
+    function hasTriggers(char: character): boolean {
+        return (char.triggerscript?.length ?? 0) > 0 || host.moduleTriggers().length > 0;
+    }
 
     async function runTrigger(
         sourceChar: character,
@@ -375,6 +386,9 @@ export function createTriggerRuntime(host: TriggerHost) {
         await yieldTurn();
         lastEffectYieldAt = now();
         services.fence(ctx);
+        if (!hasTriggers(sourceChar)) {
+            return null;
+        }
         // Always a copy: display and request runs edit their lore effects on it, not on a stored record.
         const char = triggerCopy(sourceChar);
         // A Lua setter of this run (or a nested one) writes the record; the run's copy follows it.
@@ -422,11 +436,25 @@ export function createTriggerRuntime(host: TriggerHost) {
                 console.warn("[Trigger] The character is gone; a character change was not saved");
             }
         };
+        const writeLore = (change: GlobalLoreChange) => {
+            const next = applyGlobalLoreChange(char.globalLore, change);
+            if (next) char.globalLore = next;
+            if (!arg.displayMode && !services.patchCharacter({}, ctx, change)) {
+                console.warn("[Trigger] The character or lore entry is gone or changed; the lore change was not saved");
+            }
+        };
         let additonalSysPrompt: AdditionalSysPrompt = arg.additonalSysPrompt ?? {
             start: "",
             historyend: "",
             promptend: "",
         };
+        // Pre-existing text without provenance stays local even if this run's triggers are granted.
+        const additionalPromptAccess = promptAccess.get(additonalSysPrompt) ?? {
+            start: !additonalSysPrompt.start,
+            historyend: !additonalSysPrompt.historyend,
+            promptend: !additonalSysPrompt.promptend,
+        };
+        promptAccess.set(additonalSysPrompt, additionalPromptAccess);
         const triggers: triggerscript[] = (char.triggerscript ?? [])
             .map((v) => {
                 v.lowLevelAccess = CharacterlowLevelAccess;
@@ -436,16 +464,16 @@ export function createTriggerRuntime(host: TriggerHost) {
         const defaultVariables = parseKeyValue(char.defaultVariables).concat(
             parseKeyValue(host.templateDefaultVariables),
         );
+        if (!triggers || triggers.length === 0) {
+            return null;
+        }
+
         // The trigger's working copy. A display run copies only the chat and its message list (it runs
         // for every rendered message); its effects replace messages instead of editing them in place.
         // Never edit nested metadata in place in a display run: the live scope keeps its objects across refreshes.
         let chat = (
             arg.displayMode ? { ...arg.chat, message: [...arg.chat.message] } : structuredClone(arg.chat)
         ) as Chat;
-
-        if (!triggers || triggers.length === 0) {
-            return null;
-        }
 
         // The run owns the map (a nested run shares it) and returns it.
         arg.tempVars ??= {};
@@ -548,8 +576,9 @@ export function createTriggerRuntime(host: TriggerHost) {
             return state.toString();
         }
 
-        function setVar(key: string, value: string): boolean {
+        function setVar(key: string, raw: string): boolean {
             services.fence(ctx);
+            const value = storableVar(raw);
             if (arg.displayMode) {
                 if (tempVars[key] === value) {
                     return false;
@@ -852,10 +881,15 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2BreakLoop": {
+                        // Track outdents so a later sibling loop is skipped.
+                        let indent = effect.indent;
                         for (; index < trigger.effect.length; index++) {
                             const ef = trigger.effect[index] as triggerEffectV2;
-                            if (ef.type === "v2EndIndent" && ef.endOfLoop) {
-                                break;
+                            if (ef.type === "v2EndIndent" && ef.indent <= indent) {
+                                if (ef.endOfLoop) {
+                                    break;
+                                }
+                                indent = ef.indent - 1;
                             }
                         }
                         break;
@@ -872,6 +906,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                                 displayMode: arg.displayMode,
                                 displayData: arg.displayData,
                                 tempVars,
+                                syncChat: arg.syncChat,
                             });
                             services.fence(ctx);
                             if (r) {
@@ -922,6 +957,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                     }
                     case "v2SystemPrompt": {
                         const value = operand(effect.valueType, effect.value);
+                        additionalPromptAccess[effect.location] &&= trigger.lowLevelAccess ?? false;
                         additonalSysPrompt[effect.location] += value + "\n\n";
                         break;
                     }
@@ -935,11 +971,14 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2Command": {
+                        // The line's CBS would run before the executor could recognize the retired command.
+                        if (effect.valueType === "value" && isRetiredMultisend(effect.value)) break;
                         const value = operand(effect.valueType, effect.value);
-                        // Its writes go to the job's chat (the client's display runs fall back to the
-                        // selected chat).
-                        await host.runCommand(value);
+                        // Commands read live storage; settle earlier copy edits, then follow their newer writes.
+                        chat = arg.syncChat?.(chat) ?? chat;
+                        await host.runCommand(value, trigger.lowLevelAccess ?? false);
                         services.fence(ctx);
+                        chat = arg.syncChat?.(chat) ?? chat;
                         break;
                     }
                     case "v2SendAIprompt": {
@@ -1067,27 +1106,23 @@ export function createTriggerRuntime(host: TriggerHost) {
                         setVar(parse(effect.outputVar), chat.message.length.toString());
                         break;
                     }
+                    // Deprecated lore effects use key, content and alwaysActive on stored lore objects.
                     case "v2ModifyLorebook": {
                         char.globalLore = char.globalLore ?? [];
                         const target = operand(effect.targetType, effect.target);
                         const value = operand(effect.valueType, effect.value);
 
-                        const at = char.globalLore.findIndex((v) => (v as unknown as LegacyLore)[0] === target);
+                        const at = char.globalLore.findIndex((v) => v.key === target);
                         if (at !== -1) {
-                            (char.globalLore[at] as unknown as LegacyLore)[1] = value;
+                            writeLore({ type: "set", index: at, before: char.globalLore[at], set: { content: value } });
                         }
-
-                        writeCharacter({ globalLore: char.globalLore });
                         break;
                     }
                     case "v2GetLorebook": {
                         char.globalLore = char.globalLore ?? [];
                         const target = operand(effect.targetType, effect.target);
-                        const at = char.globalLore.findIndex((v) => (v as unknown as LegacyLore)[0] === target);
-                        setVar(
-                            parse(effect.outputVar),
-                            (at === -1 ? "null" : (char.globalLore[at] as unknown as LegacyLore)[1]) as string,
-                        );
+                        const at = char.globalLore.findIndex((v) => v.key === target);
+                        setVar(parse(effect.outputVar), at === -1 ? "null" : char.globalLore[at].content);
                         break;
                     }
                     case "v2GetLorebookCount": {
@@ -1104,10 +1139,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         if (Number.isNaN(at)) {
                             at = 0;
                         }
-                        setVar(
-                            parse(effect.outputVar),
-                            ((char.globalLore[at] as unknown as LegacyLore | undefined)?.[1] ?? "null") as string,
-                        );
+                        setVar(parse(effect.outputVar), char.globalLore[at]?.content ?? "null");
                         break;
                     }
                     case "v2SetLorebookActivation": {
@@ -1121,16 +1153,19 @@ export function createTriggerRuntime(host: TriggerHost) {
                             console.warn("[Trigger] No lorebook entry at this index; the activation was not changed");
                             break;
                         }
-                        (char.globalLore[at] as unknown as LegacyLore)[2] = value;
-
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({
+                            type: "set",
+                            index: at,
+                            before: char.globalLore[at],
+                            set: { alwaysActive: value },
+                        });
 
                         break;
                     }
                     case "v2GetLorebookIndexViaName": {
                         char.globalLore = char.globalLore ?? [];
                         const name = operand(effect.nameType, effect.name);
-                        const at = char.globalLore.findIndex((v) => (v as unknown as LegacyLore)[0] === name);
+                        const at = char.globalLore.findIndex((v) => v.key === name);
                         setVar(parse(effect.outputVar), at.toString());
                         break;
                     }
@@ -1242,6 +1277,9 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2SetPersonaDesc": {
+                        if (!trigger.lowLevelAccess) {
+                            break;
+                        }
                         const value = operand(effect.valueType, effect.value);
                         // The job's effective persona (a bound persona wins). Never in display runs.
                         if (arg.displayMode) {
@@ -1632,7 +1670,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         const value = operand(effect.valueType, effect.value);
                         // The client resolves the output name before it awaits the count.
                         const outputKey = parse(effect.outputVar);
-                        const tokens = await tokenize(value);
+                        const tokens = await tokenize(value, trigger.lowLevelAccess ?? false);
                         setVar(outputKey, tokens.toString());
                         break;
                     }
@@ -1699,18 +1737,19 @@ export function createTriggerRuntime(host: TriggerHost) {
                                 ? Number(parse(effect.insertOrder))
                                 : Number(getVar(parse(effect.insertOrder)));
 
-                        char.globalLore.push({
-                            key: key,
-                            comment: name,
-                            content: content,
-                            mode: "normal",
-                            insertorder: Number.isNaN(insertOrder) ? 100 : insertOrder,
-                            alwaysActive: false,
-                            secondkey: "",
-                            selective: false,
+                        writeLore({
+                            type: "append",
+                            entry: {
+                                key: key,
+                                comment: name,
+                                content: content,
+                                mode: "normal",
+                                insertorder: Number.isFinite(insertOrder) ? insertOrder : 100,
+                                alwaysActive: false,
+                                secondkey: "",
+                                selective: false,
+                            },
                         });
-
-                        writeCharacter({ globalLore: char.globalLore });
                         break;
                     }
                     case "v2ModifyLorebookByIndex": {
@@ -1725,27 +1764,28 @@ export function createTriggerRuntime(host: TriggerHost) {
                         }
 
                         const currentLore = char.globalLore[at];
+                        const set: Partial<loreBook> = {};
 
                         let name = operand(effect.nameType, effect.name);
                         name = name.replace(/{{slot}}/g, currentLore.comment || "");
-                        char.globalLore[at].comment = name;
+                        set.comment = name;
 
                         let key = operand(effect.keyType, effect.key);
                         key = key.replace(/{{slot}}/g, currentLore.key || "");
-                        char.globalLore[at].key = key;
+                        set.key = key;
 
                         let content = operand(effect.contentType, effect.content);
                         content = content.replace(/{{slot}}/g, currentLore.content || "");
-                        char.globalLore[at].content = content;
+                        set.content = content;
 
                         let insertOrder = operand(effect.insertOrderType, effect.insertOrder);
                         insertOrder = insertOrder.replace(/{{slot}}/g, (currentLore.insertorder || 100).toString());
                         const insertOrderNum = Number(insertOrder);
-                        if (!Number.isNaN(insertOrderNum)) {
-                            char.globalLore[at].insertorder = insertOrderNum;
+                        if (Number.isFinite(insertOrderNum)) {
+                            set.insertorder = insertOrderNum;
                         }
 
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({ type: "set", index: at, before: currentLore, set });
                         break;
                     }
                     case "v2DeleteLorebookByIndex": {
@@ -1759,9 +1799,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                             break;
                         }
 
-                        char.globalLore.splice(at, 1);
-
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({ type: "remove", index: at, before: char.globalLore[at] });
                         break;
                     }
                     case "v2GetLorebookCountNew": {
@@ -1780,9 +1818,12 @@ export function createTriggerRuntime(host: TriggerHost) {
                             break;
                         }
 
-                        char.globalLore[at].alwaysActive = effect.value;
-
-                        writeCharacter({ globalLore: char.globalLore });
+                        writeLore({
+                            type: "set",
+                            index: at,
+                            before: char.globalLore[at],
+                            set: { alwaysActive: effect.value },
+                        });
                         break;
                     }
                     case "v2RegexTest": {
@@ -2010,13 +2051,13 @@ export function createTriggerRuntime(host: TriggerHost) {
 
         let caculatedTokens = 0;
         if (additonalSysPrompt.start) {
-            caculatedTokens += await tokenize(additonalSysPrompt.start);
+            caculatedTokens += await tokenize(additonalSysPrompt.start, additionalPromptAccess.start);
         }
         if (additonalSysPrompt.historyend) {
-            caculatedTokens += await tokenize(additonalSysPrompt.historyend);
+            caculatedTokens += await tokenize(additonalSysPrompt.historyend, additionalPromptAccess.historyend);
         }
         if (additonalSysPrompt.promptend) {
-            caculatedTokens += await tokenize(additonalSysPrompt.promptend);
+            caculatedTokens += await tokenize(additonalSysPrompt.promptend, additionalPromptAccess.promptend);
         }
         if (varChanged) {
             services.notice({ kind: "updateGUI", payload: {} });
@@ -2033,5 +2074,5 @@ export function createTriggerRuntime(host: TriggerHost) {
         };
     }
 
-    return { runTrigger };
+    return { runTrigger, hasTriggers };
 }

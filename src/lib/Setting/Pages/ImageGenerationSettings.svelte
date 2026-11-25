@@ -1,5 +1,7 @@
 <script lang="ts">
+    import { recoverDirectAssetElement } from "src/ts/globalApi.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -7,14 +9,26 @@
     import { saveAsset, globalFetch } from "src/ts/globalApi.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
     import { getCharImage } from "src/ts/characters";
     import { alertError, alertNormal } from "src/ts/alert";
-    import { onMount } from "svelte";
+    import { onMount, untrack } from "svelte";
+    import { heldRecordRevision, saving } from "src/ts/storage/resourceSync.svelte";
+    import { SECTION_KIND } from "../../../../shared/sections.ts";
+    import { SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
+    import { HardDriveUploadIcon } from "@lucide/svelte";
+
+    /**
+     * Image-provider controls and the owning `NAIApiKey` input. WaveSpeed LoRA rows are an editing copy,
+     * published only by an edit or an unsupported-model reset. Divergent incoming values keep a divergent
+     * local draft and flag a conflict; an edit (republish), Use saved, or matching incoming values clear it.
+     * A `secrets` revision alone is no conflict.
+     */
 
     // The NovelAI key is edited only here; NovelAI TTS links to it. A link shows it even while
     // another image provider is selected.
@@ -22,6 +36,29 @@
     onMount(() => {
         if (revealNovelAIKey) void scrollToCredential("NAIApiKey");
     });
+
+    // Loads a ComfyUI API workflow file into the workflow field as written, after checking that it parses as JSON.
+    async function importComfyWorkflow() {
+        const file = await selectSingleFile(["json"]);
+        if (!file) {
+            return;
+        }
+        const text = new TextDecoder().decode(file.data);
+        try {
+            JSON.parse(text);
+        } catch {
+            alertError(language.comfyWorkflowInvalidJson);
+            return;
+        }
+        settings.memoryTranslateMedia.comfyConfig.workflow = text;
+    }
+
+    function setVibeInfoExtracted(value: unknown) {
+        const infoExtracted = Number(value);
+        if (Number.isFinite(infoExtracted)) {
+            settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = infoExtracted;
+        }
+    }
 
     // wavespeed
     interface WavespeedModel {
@@ -38,16 +75,55 @@
     let wavespeedModels = $state<WavespeedModel[]>([]);
     let isWavespeedLoading = $state(false);
     let wavespeedSearchQuery = $state("");
-    // The rows start from the saved LoRAs (padded to three), so the sync effect below does not clear
-    // them when the page mounts. A malformed saved value starts blank rows, as before.
-    const storedLoras: unknown = settings.secrets.wavespeedImage?.loras;
-    const savedLoras = (Array.isArray(storedLoras) ? storedLoras : [])
-        .filter((item): item is LoraItem => typeof item?.path === "string" && item.path.trim() !== "")
-        .map(({ path, scale }) => ({ path, scale: typeof scale === "number" ? scale : 1.0 }));
-    let wavespeedLoras = $state<LoraItem[]>([
-        ...savedLoras,
-        ...Array.from({ length: Math.max(0, 3 - savedLoras.length) }, () => ({ path: "", scale: 1.0 })),
-    ]);
+    function normalizeLoras(value: unknown): LoraItem[] {
+        return (Array.isArray(value) ? value : [])
+            .filter((item): item is LoraItem => typeof item?.path === "string" && item.path.trim() !== "")
+            .map(({ path, scale }) => ({ path, scale: typeof scale === "number" ? scale : 1.0 }));
+    }
+
+    function padLoras(loras: LoraItem[]): LoraItem[] {
+        return [
+            ...loras.map((lora) => ({ ...lora })),
+            ...Array.from({ length: Math.max(0, 3 - loras.length) }, () => ({ path: "", scale: 1.0 })),
+        ];
+    }
+
+    function sameLoras(a: LoraItem[], b: LoraItem[]): boolean {
+        return a.length === b.length && a.every((lora, i) => lora.path === b[i].path && lora.scale === b[i].scale);
+    }
+
+    let loraBase = normalizeLoras(settings.secrets.wavespeedImage?.loras);
+    let wavespeedLoras = $state<LoraItem[]>(padLoras(loraBase));
+    let lastPublishedLoras: LoraItem[] | null = null;
+    let publishedLoraRevision: string | null | undefined;
+    let loraConflict = $state(false);
+
+    function publishLoras() {
+        if (!settings.secrets.wavespeedImage) return;
+        lastPublishedLoras = normalizeLoras(wavespeedLoras);
+        publishedLoraRevision = saving.state
+            ? undefined
+            : heldRecordRevision(SECTION_KIND.secrets, SINGLETON_RESOURCE_ID);
+        settings.secrets.wavespeedImage.loras = lastPublishedLoras;
+        loraConflict = false;
+    }
+
+    function editLora(lora: LoraItem, change: Partial<LoraItem>) {
+        if (!wavespeedLoras.includes(lora)) return;
+        Object.assign(lora, change);
+        publishLoras();
+    }
+
+    function adoptLoras(loras: LoraItem[]) {
+        wavespeedLoras = padLoras(loras);
+        loraBase = loras;
+        lastPublishedLoras = null;
+        loraConflict = false;
+    }
+
+    function loadSavedLoras() {
+        adoptLoras(normalizeLoras(settings.secrets.wavespeedImage?.loras));
+    }
 
     /**
      * Fetch models from WaveSpeed API dynamically
@@ -131,7 +207,8 @@
 
         // Reset loras if model doesn't support them
         if (!selectedModel?.supportsLoras) {
-            settings.secrets.wavespeedImage.loras = undefined;
+            adoptLoras([]);
+            publishLoras();
         }
     }
 
@@ -158,16 +235,36 @@
         });
     }
 
-    $effect(() => {
-        // Sync loras to DB, filtering out empty URLs
-        if (settings.secrets.wavespeedImage) {
-            settings.secrets.wavespeedImage.loras = wavespeedLoras
-                .filter((item) => item.path && item.path.trim() !== "")
-                .map((item) => ({
-                    path: item.path,
-                    scale: item.scale,
-                }));
-        }
+    $effect.pre(() => {
+        const incoming = normalizeLoras(settings.secrets.wavespeedImage?.loras);
+        const isSaving = saving.state;
+        untrack(() => {
+            if (lastPublishedLoras !== null && sameLoras(incoming, lastPublishedLoras)) {
+                // A publish during a save uses that batch's final revision as its baseline.
+                if (isSaving) return;
+                const heldRevision = heldRecordRevision(SECTION_KIND.secrets, SINGLETON_RESOURCE_ID);
+                if (publishedLoraRevision === undefined) {
+                    publishedLoraRevision = heldRevision;
+                } else if (heldRevision !== publishedLoraRevision) {
+                    loraBase = lastPublishedLoras;
+                    lastPublishedLoras = null;
+                    loraConflict = false;
+                }
+                return;
+            }
+            const draft = normalizeLoras(wavespeedLoras);
+            if (sameLoras(incoming, draft)) {
+                loraBase = incoming;
+                lastPublishedLoras = null;
+                loraConflict = false;
+            } else if (!sameLoras(incoming, loraBase)) {
+                if (sameLoras(draft, loraBase)) {
+                    adoptLoras(incoming);
+                } else {
+                    loraConflict = true;
+                }
+            }
+        });
     });
     // End wavespeed
 </script>
@@ -196,7 +293,7 @@
 {#if revealNovelAIKey && settings.memoryTranslateMedia.sdProvider !== "novelai"}
     <div class="flex flex-col" data-credential="NAIApiKey">
         <span class="text-textcolor">Novel AI API Key</span>
-        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+        <TextInput secret size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
     </div>
 {/if}
 
@@ -256,12 +353,13 @@
     />
     <div class="flex flex-col" data-credential="NAIApiKey">
         <span class="text-textcolor">API Key</span>
-        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+        <TextInput secret size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
     </div>
 
     <span class="text-textcolor">Model</span>
     <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgModel}>
         <OptionInput value="nai-diffusion-5-full">nai-diffusion-5-full</OptionInput>
+        <OptionInput value="nai-diffusion-5-full-medium">nai-diffusion-5-full-medium</OptionInput>
         <OptionInput value="nai-diffusion-5-curated">nai-diffusion-5-curated</OptionInput>
         <OptionInput value="nai-diffusion-4-5-full">nai-diffusion-4-5-full</OptionInput>
         <OptionInput value="nai-diffusion-4-5-curated">nai-diffusion-4-5-curated</OptionInput>
@@ -269,7 +367,6 @@
         <OptionInput value="nai-diffusion-4-curated-preview">nai-diffusion-4-curated-preview</OptionInput>
         <OptionInput value="nai-diffusion-3">nai-diffusion-3</OptionInput>
         <OptionInput value="nai-diffusion-furry-3">nai-diffusion-furry-3</OptionInput>
-        <OptionInput value="nai-diffusion-2">nai-diffusion-2</OptionInput>
     </SelectInput>
 
     <span class="text-textcolor">Width</span>
@@ -396,9 +493,7 @@
                                 const encodings = vibeData.encodings[selectedModel];
                                 const firstKey = Object.keys(encodings)[0];
                                 if (firstKey) {
-                                    settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = Number(
-                                        encodings[firstKey].params.information_extracted,
-                                    );
+                                    setVibeInfoExtracted(encodings[firstKey].params.information_extracted);
                                 }
                             }
                         }
@@ -463,9 +558,7 @@
                             ];
                         const firstKey = Object.keys(encodings)[0];
                         if (firstKey) {
-                            settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = Number(
-                                encodings[firstKey].params.information_extracted,
-                            );
+                            setVibeInfoExtracted(encodings[firstKey].params.information_extracted);
                         }
                     }
                 }}
@@ -485,12 +578,20 @@
             </SelectInput>
 
             <span class="text-textcolor">Information Extracted</span>
-            <SelectInput className="mb-2" bind:value={settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted}>
+            <SelectInput
+                className="mb-2"
+                bind:value={
+                    () => settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted,
+                    (value) => setVibeInfoExtracted(value)
+                }
+            >
                 {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection && settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection]}
                     {#each Object.entries(settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection]) as [key, value]}
-                        <OptionInput value={value.params.information_extracted}
-                            >{value.params.information_extracted}</OptionInput
-                        >
+                        {#if Number.isFinite(value.params.information_extracted)}
+                            <OptionInput value={value.params.information_extracted}
+                                >{value.params.information_extracted}</OptionInput
+                            >
+                        {/if}
                     {/each}
                 {/if}
             </SelectInput>
@@ -541,6 +642,7 @@
                         </div>
                     {:then im}
                         <img
+                            onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                             src={im}
                             class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                             alt="Base Preview"
@@ -622,6 +724,7 @@
                         </div>
                     {:then im}
                         <img
+                            onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                             src={im}
                             class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                             alt="Base Preview"
@@ -675,7 +778,7 @@
 
 {#if settings.memoryTranslateMedia.sdProvider === "stability"}
     <span class="text-textcolor">Stability API Key</span>
-    <TextInput size="sm" marginBottom placeholder="..." bind:value={settings.secrets.stabilityKey} />
+    <TextInput secret size="sm" marginBottom placeholder="..." bind:value={settings.secrets.stabilityKey} />
 
     <span class="text-textcolor">Stability Model</span>
     <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.stabilityModel}>
@@ -719,8 +822,24 @@
         bind:value={settings.memoryTranslateMedia.comfyUiUrl}
     />
 
-    <span class="text-textcolor">Workflow <Help key="comfyWorkflow" /></span>
-    <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.comfyConfig.workflow} />
+    <span class="text-textcolor">{language.comfyWorkflow} <Help key="comfyWorkflow" /></span>
+    <TextAreaInput
+        size="sm"
+        fullwidth
+        height="32"
+        ariaLabel={language.comfyWorkflow}
+        bind:value={settings.memoryTranslateMedia.comfyConfig.workflow}
+    />
+    <div class="mt-2 mb-4 flex items-center">
+        <button
+            class="text-textcolor2 hover:text-green-500 cursor-pointer"
+            aria-label={language.comfyWorkflowUpload}
+            title={language.comfyWorkflowUpload}
+            onclick={importComfyWorkflow}
+        >
+            <HardDriveUploadIcon size={24} />
+        </button>
+    </div>
 
     <span class="text-textcolor">Timeout (sec)</span>
     <NumberInput
@@ -790,7 +909,7 @@
 
 {#if settings.memoryTranslateMedia.sdProvider === "fal"}
     <span class="text-textcolor">Fal.ai API Key</span>
-    <TextInput size="sm" marginBottom placeholder="..." bind:value={settings.secrets.falToken} />
+    <TextInput secret size="sm" marginBottom placeholder="..." bind:value={settings.secrets.falToken} />
 
     <span class="text-textcolor mt-4">Width</span>
     <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={settings.memoryTranslateMedia.sdConfig.width} />
@@ -863,6 +982,7 @@
 
     <span class="text-textcolor">API Key</span>
     <TextInput
+        secret
         size="sm"
         marginBottom
         placeholder="sk-..."
@@ -894,6 +1014,7 @@
 {#if settings.memoryTranslateMedia.sdProvider === "wavespeed"}
     <span class="text-textcolor">API Key</span>
     <TextInput
+        secret
         size="sm"
         marginBottom
         placeholder="sk-..."
@@ -926,16 +1047,33 @@
     </SelectInput>
 
     <span class="text-textcolor mt-4">LoRAs</span>
+    {#if loraConflict}
+        <Alert status="warning" className="my-2">
+            {language.wavespeedLoraConflict}
+            {#snippet actions()}
+                <button class="bg-darkbutton text-textcolor rounded-md px-3 py-2" onclick={loadSavedLoras}>
+                    {language.wavespeedLoraUseSaved}
+                </button>
+            {/snippet}
+        </Alert>
+    {/if}
     {#if wavespeedModels.find((m) => m.model_id === settings.secrets.wavespeedImage.model)?.supportsLoras}
-        {#each wavespeedLoras as lora, index}
+        {#each wavespeedLoras as lora, index (lora)}
             <TextInput
                 size="sm"
                 marginBottom
                 marginTop
                 placeholder={`LoRA ${index + 1} URL (optional)`}
-                bind:value={lora.path}
+                bind:value={() => lora.path, (path) => editLora(lora, { path })}
             />
-            <SliderInput marginBottom min={0} max={4} step={0.1} fixed={1} bind:value={lora.scale} />
+            <SliderInput
+                marginBottom
+                min={0}
+                max={4}
+                step={0.1}
+                fixed={1}
+                bind:value={() => lora.scale, (scale) => editLora(lora, { scale })}
+            />
         {/each}
         <span class="text-textcolor2 text-xs mb-2 block">
             Only .safetensors files are supported. Use owner/model-name (Hugging Face) or direct URL (Civitai).
@@ -988,6 +1126,7 @@
                             </div>
                         {:then im}
                             <img
+                                onerror={(event) => void recoverDirectAssetElement(event.currentTarget)}
                                 src={im}
                                 class="rounded-md h-40 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"
                                 alt="Base Preview"

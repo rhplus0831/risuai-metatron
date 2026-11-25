@@ -10,14 +10,23 @@ import type { ChatRef } from "../storage/chatStore.svelte";
  * A module of its own (no runes, type-only imports) so its readers are not reached by the
  * hand-written mocks of `index.svelte`.
  */
+
 const sends = writable<ReadonlyMap<string, ChatRef | null>>(new Map());
 
 const TAB_SEND_KEY = "";
+
+/** Releases the entry acquired by `beginLocalSend`. */
+export type LocalSendReservation = () => void;
 
 function localSendKey(ref: ChatRef): string {
     return `${ref.chaId}\u0000${ref.chatId}`;
 }
 
+/**
+ * This tab's send registry, read-only: one entry per chat with a send, plus the tab entry (key `""`)
+ * for a send without a chat. Synchronous admission (`beginLocalSend`, `isLocalSend`) reads this Map,
+ * never the derived `anyLocalSend`.
+ */
 export const localSends: Readable<ReadonlyMap<string, ChatRef | null>> = { subscribe: sends.subscribe };
 
 /**
@@ -31,7 +40,7 @@ export const anyLocalSend: Readable<boolean> = derived(sends, (current) => curre
  * calls do nothing); null when that entry is already held. A held entry refuses a second take, so a
  * release never removes a newer send's entry.
  */
-export function beginLocalSend(ref: ChatRef | null): (() => void) | null {
+export function beginLocalSend(ref: ChatRef | null): LocalSendReservation | null {
     const key = ref ? localSendKey(ref) : TAB_SEND_KEY;
     if (get(sends).has(key)) {
         return null;

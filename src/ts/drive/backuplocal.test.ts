@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackupArchiveManifest } from "../../../shared/resources.ts";
+import { language } from "src/lang";
+import { languageEnglish } from "src/lang/en";
+import { languageKorean } from "src/lang/ko";
 
 // Local backups over the server's export/import routes (`backuplocal.ts`): every change is flushed
 // first, the archive stream goes to the file writer while the manifest is read from its head, the
 // missing-asset report names what the database referenced, a failed or cancelled download cancels
 // the response and aborts the writer, and a restore posts the file and reloads.
 
-const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExport, hooks, persisted } = vi.hoisted(
-    () => ({
+const { alerts, flush, refused, writer, requests, exportResponse, upstream, upstreamExport, hooks, persisted } =
+    vi.hoisted(() => ({
         alerts: {
             alertError: vi.fn(),
             alertNormal: vi.fn(),
@@ -17,7 +20,11 @@ const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExpor
             alertUpstreamImportReport: vi.fn(async () => true),
             alertStore: { set: vi.fn() },
         },
-        flush: vi.fn(async () => ({ discarded: [] as string[] })),
+        flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+            discarded: [],
+            refused: [],
+        })),
+        refused: vi.fn<(typeof import("../storage/resourceSync.svelte"))["refusedItems"]>(() => []),
         /** The upstream import routes' answers (`upstreamBackupClient.ts`), set per test. */
         upstream: {
             prepare: null as (() => Response | Promise<Response>) | null,
@@ -45,22 +52,24 @@ const { alerts, flush, writer, requests, exportResponse, upstream, upstreamExpor
         },
         requests: [] as { path: string; init: RequestInit }[],
         exportResponse: { current: null as (() => Response) | null },
-    }),
-);
+    }));
 
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock(alerts));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: flush,
-    beforeRestoreReload: (fn: () => void) => {
-        hooks.current = fn;
-        return () => {
-            if (hooks.current === fn) {
-                hooks.current = null;
-            }
-            hooks.unregistered += 1;
-        };
-    },
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: flush,
+        refusedItems: refused,
+        beforeRestoreReload: (fn: () => void) => {
+            hooks.current = fn;
+            return () => {
+                if (hooks.current === fn) {
+                    hooks.current = null;
+                }
+                hooks.unregistered += 1;
+            };
+        },
+    }),
+);
 vi.mock("../storage/selection.svelte", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../storage/selection.svelte")>()),
     persistSelection: persisted,
@@ -70,6 +79,13 @@ vi.mock("src/lang", () => ({
         partialBackupFirstConfirm: "first?",
         partialBackupSecondConfirm: "second?",
         backupDiscardedChanges: "changes replaced",
+        backupRefusedChanges: "Refused local changes were left out of the backup.",
+        uploadRefusedByProxy: "a proxy refused the file's size",
+        backupRestoreUnconfirmed: "connection lost while restoring; reload to check",
+        refusedData: {
+            chatLabel: (chatName: string, characterName: string) => `${characterName} / ${chatName}`,
+            orderLabel: (name: string) => `Chat order: ${name}`,
+        },
         upstreamExport: {
             includeKeys: "Include API keys?",
             preparing: "Preparing...",
@@ -109,29 +125,32 @@ vi.mock("src/lang", () => ({
         },
     },
 }));
-vi.mock("../globalApi.svelte", () => ({
-    LocalWriter: class {
-        writer = { abort: writer.abort };
-        async init(name = "Binary") {
-            writer.names.push(name);
-            if (writer.initResult instanceof Error) {
-                throw writer.initResult;
+vi.mock("../globalApi.svelte", async () =>
+    (await import("../tests/globalApiMock")).createGlobalApiMock({
+        LocalWriter: class {
+            writer = { abort: writer.abort };
+            async init(name = "Binary") {
+                writer.names.push(name);
+                if (writer.initResult instanceof Error) {
+                    throw writer.initResult;
+                }
+                return writer.initResult;
             }
-            return writer.initResult;
-        }
-        async write(data: Uint8Array) {
-            if (writer.chunks.length === writer.failWriteAt) {
-                throw new Error("disk full");
+            async write(data: Uint8Array) {
+                if (writer.chunks.length === writer.failWriteAt) {
+                    throw new Error("disk full");
+                }
+                writer.chunks.push(new Uint8Array(data));
             }
-            writer.chunks.push(new Uint8Array(data));
-        }
-        async close() {
-            await writer.close();
-        }
-    },
-}));
+            async close() {
+                await writer.close();
+            }
+        },
+    }),
+);
 vi.mock("../storage/serverAuth", () => ({
-    authFetch: async (path: string, init: RequestInit = {}) => {
+    authFetch: async (path: string, init: RequestInit = {}, options: { beforeDispatch?: () => void } = {}) => {
+        options.beforeDispatch?.();
         requests.push({ path, init });
         if (path === "/api/backups/export") {
             return exportResponse.current!();
@@ -141,8 +160,26 @@ vi.mock("../storage/serverAuth", () => ({
             if (header.get("x-resource-epoch") !== "epoch-1") {
                 return Response.json({ error: "EpochMismatch", epoch: "epoch-2" }, { status: 412 });
             }
-            if ((await new Response(init.body as Blob).text()).includes("refuse-me")) {
+            const text = await new Response(init.body as Blob).text();
+            if (text.includes("refuse-me")) {
                 return Response.json({ error: "The archive is from before this version" }, { status: 400 });
+            }
+            // What a proxy or tunnel in front of the server answers: HTML, or no answer.
+            if (text.includes("proxy-413")) {
+                return new Response("<html>Request too large</html>", { status: 413 });
+            }
+            if (text.includes("proxy-524")) {
+                return new Response("<html>A timeout occurred</html>", { status: 524 });
+            }
+            if (text.includes("server-500")) {
+                // The server's own error handler answers a thrown error in plain text.
+                return new Response("Internal Server Error", { status: 500 });
+            }
+            if (text.includes("server-503")) {
+                return Response.json({ error: "The server is shutting down" }, { status: 503 });
+            }
+            if (text.includes("drop-me")) {
+                throw new TypeError("Failed to fetch");
             }
             return Response.json({ epoch: "epoch-1", assetsWritten: 1, assetsSkipped: 0 });
         }
@@ -168,8 +205,8 @@ vi.mock("../storage/serverAuth", () => ({
     },
 }));
 
-import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
-import { installFlatDatabase } from "../storage/tests/installFlatDatabase";
+import { setEpochMismatchListener, setMutationAdmission, setResourceEpoch } from "../storage/resourceClient";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "../storage/tests/installFlatDatabase";
 import {
     LoadLocalBackup,
     readFirstRecordName,
@@ -279,6 +316,7 @@ const written = () => {
 };
 
 beforeEach(() => {
+    refused.mockReset().mockReturnValue([]);
     requests.length = 0;
     writer.chunks.length = 0;
     writer.names.length = 0;
@@ -303,6 +341,68 @@ afterEach(() => {
     vi.clearAllMocks();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("backups with refused local drafts", () => {
+    it.each([
+        ["SaveLocalBackup", SaveLocalBackup],
+        ["SavePartialLocalBackup", SavePartialLocalBackup],
+        ["SaveUpstreamLocalBackup", SaveUpstreamLocalBackup],
+    ])("%s writes the archive and names every refused chat in its success alert or report", async (name, save) => {
+        const { language } = await import("src/lang");
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "alice",
+                    name: "Alice",
+                    type: "character",
+                    chats: [{ id: "k", name: "Morning", message: [] }],
+                },
+                { chaId: "group", name: "Group", type: "group", chats: [{ id: "j", name: "Evening", message: [] }] },
+            ],
+        });
+        refused.mockReturnValue([
+            { kind: "chat", key: "chats\u0000alice\u0000k", chaId: "alice", chatId: "k", reason: "invalid chat" },
+            { kind: "chat", key: "chats\u0000group\u0000j", chaId: "group", chatId: "j", reason: "invalid chat" },
+            { kind: "order", key: "chatOrder\u0000group", chaId: "group", reason: "invalid order" },
+        ]);
+        flush.mockResolvedValueOnce({ discarded: [], refused: ["chats/alice/k", "chats/group/j", "chats/group"] });
+        const bytes =
+            name === "SaveUpstreamLocalBackup"
+                ? record("database.risudat", new Uint8Array([1, 2, 3]))
+                : archive({
+                      partial: name === "SavePartialLocalBackup",
+                      missing: name === "SavePartialLocalBackup" ? ["assets/missing.png"] : [],
+                  });
+        const stream = streamed(bytes, 7);
+        exportResponse.current = stream.response;
+        upstreamExport.prepare = () =>
+            Response.json({
+                token: "0b9c4f1e-2d3a-4b5c-8d6e-7f8091a2b3c4",
+                report: { counts: { characters: 2, chats: 2, assets: 0 }, converted: [], excluded: [], missing: [] },
+            });
+        upstreamExport.download = stream.response;
+
+        await save();
+
+        expect(written()).toEqual(bytes);
+        expect(writer.close).toHaveBeenCalledTimes(1);
+        expect(writer.abort).not.toHaveBeenCalled();
+        expect(alerts.alertError).not.toHaveBeenCalled();
+        const report =
+            name === "SaveUpstreamLocalBackup"
+                ? alerts.alertConfirm.mock.calls[1]?.[0]
+                : name === "SavePartialLocalBackup"
+                  ? alerts.alertMd.mock.calls[0]?.[0]
+                  : alerts.alertNormal.mock.calls[0]?.[0];
+        expect(report).toContain(language.backupRefusedChanges);
+        expect(report).toContain("Alice / Morning");
+        expect(report).toContain("Group / Evening");
+        expect(report).toContain("Chat order: Group");
+        if (name === "SaveUpstreamLocalBackup") {
+            expect(alerts.alertNormal).toHaveBeenCalledWith(language.upstreamExport.success);
+        }
+    });
 });
 
 describe("SaveLocalBackup", () => {
@@ -337,7 +437,7 @@ describe("SaveLocalBackup", () => {
     });
 
     it("says so in the success alert when the pre-backup flush discarded a change (its `discarded` list)", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["characters/alice", "chats/alice/k"] });
+        flush.mockResolvedValueOnce({ discarded: ["characters/alice", "chats/alice/k"], refused: [] });
         exportResponse.current = streamed(
             archive({ assets: ["assets/alice.png", "assets/happy.png", "assets/group.png", "assets/icon.png"] }),
             1024,
@@ -349,7 +449,7 @@ describe("SaveLocalBackup", () => {
     });
 
     it("puts the discard ahead of the missing-asset report", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["presets/main"] });
+        flush.mockResolvedValueOnce({ discarded: ["presets/main"], refused: [] });
         exportResponse.current = streamed(archive({ assets: ["assets/alice.png", "assets/icon.png"] }), 1024).response;
         await SaveLocalBackup();
         expect(alerts.alertNormal).not.toHaveBeenCalled();
@@ -429,7 +529,7 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
         const order: string[] = [];
         flush.mockImplementationOnce(async () => {
             order.push("flush");
-            return { discarded: [] };
+            return { discarded: [], refused: [] };
         });
         const file = download();
         let prepareBody: Record<string, unknown> | null = null;
@@ -488,7 +588,7 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
     });
 
     it("sends a yes to the keys question as includeSecrets, and names the flush's discarded changes in the report", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["presets/main"] });
+        flush.mockResolvedValueOnce({ discarded: ["presets/main"], refused: [] });
         let prepareBody: Record<string, unknown> | null = null;
         upstreamExport.prepare = (body) => {
             prepareBody = body;
@@ -501,6 +601,56 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
         expect(alerts.alertConfirm.mock.calls[1][0]).toContain("changes replaced\n\nDownload it now?");
         expect(alerts.alertNormal).toHaveBeenCalledWith("Saved.");
     });
+
+    it.each([
+        [
+            "English",
+            languageEnglish.upstreamExport,
+            "Structured Memory pages",
+            "Structured Memory threads",
+            "Structured Memory pages (2) and threads (3) are not part of a compatible export. The native backup includes them.",
+        ],
+        [
+            "Korean",
+            languageKorean.upstreamExport,
+            "Structured Memory 페이지",
+            "Structured Memory 스레드",
+            "Structured Memory 페이지 2개와 스레드 3개는 호환 내보내기에 포함되지 않습니다. 기본 백업에는 들어 있습니다.",
+        ],
+    ] as const)(
+        "names omitted pages and threads and the native backup in the %s confirmation",
+        async (_locale, catalog, pagesLabel, threadsLabel, notice) => {
+            const previous = language.upstreamExport;
+            language.upstreamExport = catalog;
+            try {
+                for (const [pages, threads] of [
+                    [2, 3],
+                    [0, 3],
+                    [2, 0],
+                    [0, 0],
+                ]) {
+                    const excluded = [
+                        ...(pages ? [{ code: "memory-pages", count: pages, examples: [] }] : []),
+                        ...(threads ? [{ code: "memory-threads", count: threads, examples: [] }] : []),
+                    ];
+                    upstreamExport.prepare = () =>
+                        Response.json({ token: TOKEN, report: { ...exportReport, excluded } });
+                    alerts.alertConfirm.mockClear();
+                    answer(false, false);
+                    await SaveUpstreamLocalBackup();
+                    const text = alerts.alertConfirm.mock.calls[1][0];
+                    const expectedNotice = notice.replace("2", String(pages)).replace("3", String(threads));
+                    if (pages || threads) expect(text).toContain(expectedNotice);
+                    else expect(text).not.toContain(expectedNotice);
+                    expect(text.includes(`- ${pagesLabel}: ${pages}`)).toBe(pages > 0);
+                    expect(text.includes(`- ${threadsLabel}: ${threads}`)).toBe(threads > 0);
+                    expect(alerts.alertError).not.toHaveBeenCalled();
+                }
+            } finally {
+                language.upstreamExport = previous;
+            }
+        },
+    );
 
     it("cancels the prepared export when the report is declined, without downloading", async () => {
         upstreamExport.prepare = () => Response.json({ token: TOKEN, report: exportReport });
@@ -595,7 +745,7 @@ describe("SavePartialLocalBackup", () => {
     });
 
     it("says so in the success alert when the pre-backup flush discarded a change", async () => {
-        flush.mockResolvedValueOnce({ discarded: ["characters/alice"] });
+        flush.mockResolvedValueOnce({ discarded: ["characters/alice"], refused: [] });
         exportResponse.current = streamed(archive({ partial: true, assets: ["assets/alice.png"] }), 32).response;
         await SavePartialLocalBackup();
         expect(alerts.alertNormal).toHaveBeenCalledWith("Success\n\nchanges replaced");
@@ -693,6 +843,34 @@ describe("LoadLocalBackup", () => {
     it("shows the server's refusal and does not reload", async () => {
         await load(versionTwoFile("refuse-me"));
         expect(alerts.alertError).toHaveBeenCalledWith("The archive is from before this version");
+        expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("names a proxy's 413 and says a lost answer may hide a finished restore, keeping the server's own texts", async () => {
+        const cases: [string, string][] = [
+            ["proxy-413", "a proxy refused the file's size"],
+            ["proxy-524", "connection lost while restoring; reload to check"],
+            ["drop-me", "connection lost while restoring; reload to check"],
+            ["server-503", "The server is shutting down"],
+            ["server-500", "Request failed (500)"],
+        ];
+        for (const [marker, message] of cases) {
+            alerts.alertError.mockClear();
+            await load(versionTwoFile(marker));
+            expect(alerts.alertError, marker).toHaveBeenCalledWith(message);
+            expect((location as any).reload, marker).not.toHaveBeenCalled();
+        }
+    });
+
+    it("shows a request refused before it was sent as it is, not as a possible restore", async () => {
+        setMutationAdmission(() => false);
+        try {
+            await load(versionTwoFile());
+        } finally {
+            setMutationAdmission(null);
+        }
+        expect(requests).toEqual([]);
+        expect(alerts.alertError).toHaveBeenCalledWith("Saving stopped: the server data was restored");
         expect((location as any).reload).not.toHaveBeenCalled();
     });
 
@@ -804,6 +982,11 @@ describe("LoadLocalBackup with a RisuAI backup (the upstream import)", () => {
                 "This backup was encrypted with a Risu Account",
             ],
             ["too large", () => Response.json({ error: "File too large" }, { status: 413 }), "too large"],
+            [
+                "a proxy's 413",
+                () => new Response("<html>Request too large</html>", { status: 413 }),
+                "a proxy refused the file's size",
+            ],
             ["a refusal without a body", () => new Response("<html>", { status: 502 }), "failed (502)"],
             [
                 "a failed conversion",
@@ -882,6 +1065,37 @@ describe("LoadLocalBackup with a RisuAI backup (the upstream import)", () => {
         expect(alerts.alertError).toHaveBeenCalledWith("connection lost while restoring; it may have been restored");
         expect(hooks.current).not.toBeNull();
         expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("says the restore may have happened on a proxy's 5xx during the commit, keeping the hook", async () => {
+        upstream.prepare = () => ndjson([prepared]);
+        upstream.commit = () => new Response("<html>A timeout occurred</html>", { status: 524 });
+        await load(upstreamFile());
+        expect(alerts.alertError).toHaveBeenCalledWith("connection lost while restoring; it may have been restored");
+        expect(hooks.current).not.toBeNull();
+        expect(hooks.unregistered).toBe(0);
+        expect((location as any).reload).not.toHaveBeenCalled();
+    });
+
+    it("shows the server's own 5xx answers at the commit and unregisters the hook", async () => {
+        const cases: [() => Response, string][] = [
+            [
+                () => Response.json({ error: "The server is shutting down" }, { status: 503 }),
+                "The server is shutting down",
+            ],
+            [() => new Response("Internal Server Error", { status: 500 }), "failed (500)"],
+        ];
+        for (const [answer, message] of cases) {
+            requests.length = 0;
+            alerts.alertError.mockClear();
+            hooks.unregistered = 0;
+            upstream.prepare = () => ndjson([prepared]);
+            upstream.commit = answer;
+            await load(upstreamFile());
+            expect(alerts.alertError, message).toHaveBeenCalledWith(message);
+            expect(hooks.current, message).toBeNull();
+            expect(hooks.unregistered, message).toBe(1);
+        }
     });
 
     it("shows a commit refused by the server and unregisters the hook", async () => {

@@ -12,6 +12,8 @@ import { createGenerationLock } from "../jobs/generationLock.ts";
 import { loadJobScope, refreshCharacter, refreshChat, refreshChatAfterWrite, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import { loadRequestDb } from "../llm/settings.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { applyOwnWrite } from "./ownWrite.ts";
 
 // Operation counts, not timings: unchanged transcripts and character records must stay unread.
 // Each assertion drives the same scope, bindings, or result boundary used by a running job.
@@ -49,7 +51,7 @@ function setup() {
         store.put(characters, id, { chaId: id, type: "character", name, desc: "before", firstMessage: "hello" }, null);
     }
     const write = (ops: ChatOp[], baseRevision = store.chatRevision("c", "k")) =>
-        store.applyChanges({
+        applyOwnWrite(store, {
             chats: [{ characterId: "c", chatId: "k", baseRevision, ops }],
         });
     write([
@@ -99,7 +101,7 @@ function setup() {
         emit() {},
         emitRecords: vi.fn(() => []),
         onClientMessage: () => () => {},
-        write: (build) => store.applyChanges(build(), { epoch: store.epoch() }),
+        write: (build) => applyOwnWrite(store, build(), { epoch: store.epoch() }),
     };
     const run = (scope = load()) =>
         createRunSetup(
@@ -149,7 +151,13 @@ describe("metadata job scope", () => {
         expect(scope.chatRevision).toBe(h.store.chatRevision("c", "k"));
         expect(refreshChat(h.store, scope)).toBe(true);
         expect(h.reads() - before).toBe(1);
-        h.write([{ op: "delete" }]);
+        // A spare active chat lets `k` go to the trash and be deleted.
+        h.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
+        deleteChatThroughTrash(h.store, "c", "k");
         expect(refreshChat(h.store, scope)).toBe(false);
         expect(scopeChat(scope)).toBeUndefined();
     });
@@ -164,8 +172,8 @@ describe("metadata job scope", () => {
         Object.defineProperty(messages, "toJSON", { value: serialize });
         const ops: ChatOp[] = [{ op: "meta", set: { note: "new", scriptstate: { $x: "1" } }, unset: ["fmIndex"] }];
         const before = h.reads();
-        const result = h.write(ops, scope.chatRevision).chats[0];
-        expect(refreshChatAfterWrite(h.store, scope, ops, result)).toBe(true);
+        const applied = h.write(ops, scope.chatRevision);
+        expect(refreshChatAfterWrite(h.store, scope, applied.chats[0], applied.written?.chats[0])).toBe(true);
         expect(h.reads() - before).toBe(0);
         expect(serialize).not.toHaveBeenCalled();
         expect(scopeChat(scope)).toMatchObject({ note: "new", scriptstate: { $x: "1" } });
@@ -183,10 +191,10 @@ describe("metadata job scope", () => {
             const ops: ChatOp[] = [{ op: "meta", set: { note: "own" } }];
             const external = () => h.write([{ op: "setText", id: "m", text: "external message" }]);
             if (reason === "stale base") external();
-            const result = h.write(ops, scope.chatRevision).chats[0];
+            const applied = h.write(ops, scope.chatRevision);
             if (reason === "subsequent write") external();
             const before = h.reads();
-            expect(refreshChatAfterWrite(h.store, scope, ops, result)).toBe(true);
+            expect(refreshChatAfterWrite(h.store, scope, applied.chats[0], applied.written?.chats[0])).toBe(true);
             expect(h.reads() - before).toBe(1);
             expect(scopeChat(scope)).toMatchObject({ note: "own", message: [{ data: "external message" }] });
             expect(scope.chatRevision).toBe(h.store.chatRevision("c", "k"));

@@ -11,14 +11,13 @@ export const memorySettingsItems: SettingItem[] = [
         labelKey: "loreBookDepth",
         bindKey: "loreBookDepth",
         options: { min: 0, max: 20 },
-        classes: "mt-4",
     },
     {
         id: "adv.lbToken",
         type: "number",
         labelKey: "loreBookToken",
         bindKey: "loreBookToken",
-        options: { min: 0, max: 4096 },
+        options: { min: 0 },
     },
     {
         id: "acc.localActivationInGlobalLorebook",
@@ -40,7 +39,6 @@ export const memorySettingsItems: SettingItem[] = [
         labelKey: "removePunctuationHypa",
         bindKey: "removePunctuationHypa",
         helpKey: "removePunctuationHypa",
-        classes: "mb-4",
     },
 ];
 

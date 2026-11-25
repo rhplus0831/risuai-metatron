@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { isRecordWrapper } from "../records.svelte";
-import { bootMutations, m, refJ, refK } from "./mutationStoresHarness";
+import { settleFlush } from "./flushRetry";
+import { bootMutations, m, refJ, refK, SAVE_DEBOUNCE_MS } from "./mutationStoresHarness";
 
 // The chats live in the chat module's own store, not in the character records. Against the real
 // save adapter and server store (`storeBackedServer.ts`): character `c` with chats `k` (messages A,
@@ -15,8 +16,8 @@ import { bootMutations, m, refJ, refK } from "./mutationStoresHarness";
 // - Pins count per lifetime; a removal, a replacement, and ids named like `Object.prototype`
 //   members; `withChatsCopy`; the remote collections over the held store.
 // - `readChatsDetached` saves first and reads every chat of several characters in the server
-//   order, refuses after a discard of a requested character's chat or a failed save; and
-//   `exportAsDataset` over it.
+//   order, refuses after a discard of a requested character's chat, while its chat or chat order
+//   stays refused from an earlier save, or after a failed save; and `exportAsDataset` over it.
 // The reactive probe and `flushSync` come from the test's module graph (`vi.resetModules()`), the
 // one the chat module's `$state` belongs to.
 
@@ -83,7 +84,28 @@ async function boot() {
     const probe = await import("./reactiveProbe.svelte");
     const { flushSync } = await import("svelte");
     const ids = (chaId: string) => booted.chat.chatList(chaId).map((entry) => entry.id);
-    return { ...booted, chatEdits, dataset, downloads, ids, createProbe: probe.createProbe, flushSync };
+    const trash = await import("../../checkpoints/chatTrash");
+    /** Deletes a chat for good from this tab, as the trash view does: the trash route, then its delete. */
+    const deleteForever = async (ref: { chaId: string; chatId: string }) => {
+        expect(await trash.trashChat(ref, booted.chat.chatTrashRevision(ref))).toBe(true);
+        expect(await trash.deleteChatForever(ref, booted.chat.chatTrashRevision(ref))).toBe(true);
+    };
+    /** Another tab deletes a chat for good, and a whole read of it finds it gone. */
+    const deletedElsewhere = (ref: { chaId: string; chatId: string }) => {
+        booted.fake.deleteChatForever(ref.chaId, ref.chatId);
+        booted.chat.acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
+    };
+    return {
+        ...booted,
+        chatEdits,
+        dataset,
+        downloads,
+        ids,
+        deleteForever,
+        deletedElsewhere,
+        createProbe: probe.createProbe,
+        flushSync,
+    };
 }
 
 beforeAll(async () => {
@@ -144,7 +166,7 @@ describe("the records are chat-free", () => {
 
 describe("the readers", () => {
     it("chatList follows the listed fields, the membership, and the order, and not a message; selectedChat follows the selection", async () => {
-        const { chat, characterStore, createProbe, flushSync } = await boot();
+        const { chat, characterStore, sync, deletedElsewhere, createProbe, flushSync } = await boot();
         characterStore.selectCharacter("c");
         const list = createProbe(() =>
             chat
@@ -182,7 +204,8 @@ describe("the readers", () => {
             chat.createChat("c", newChat("n", "N"), { index: 0 });
             flushSync();
             expect(list.seen.at(-1)).toBe("n:N,j:J,k:K renamed");
-            chat.deleteChat({ chaId: "c", chatId: "n" });
+            await sync.flushResources();
+            deletedElsewhere({ chaId: "c", chatId: "n" });
             flushSync();
             expect(list.seen).toEqual([
                 "k:K,j:J",
@@ -209,7 +232,7 @@ describe("the readers", () => {
     });
 
     it("selection: by id or index, kept across a reorder, falls back to the first chat when its chat leaves, and a read never writes it", async () => {
-        const { chat, characterStore } = await boot();
+        const { chat, characterStore, deleteForever } = await boot();
         characterStore.selectCharacter("c");
         chat.selectChat("c", "j");
         expect([chat.selectedChatId("c"), chat.selectedChatIndex("c")]).toEqual(["j", 1]);
@@ -221,14 +244,14 @@ describe("the readers", () => {
         chat.selectChat("c", 5);
         chat.selectChat("c", "nope");
         expect(chat.selectedChatId("c")).toBe("k");
-        chat.deleteChat(refK);
+        await deleteForever(refK);
         expect([chat.selectedChatId("c"), chat.selectedChat()?.id]).toEqual(["j", "j"]);
         // A remembered chat that is not in the list reads as the first chat, without a write: once
         // the chat is listed again it is the selection.
         chat.createChat("c", newChat("k", "K back"));
         expect(chat.selectedChatId("c")).toBe("j");
         chat.selectChat("c", "k");
-        chat.deleteChat(refJ);
+        await deleteForever(refJ);
         expect(chat.selectedChatId("c")).toBe("k");
         expect(chat.chatCount("c")).toBe(1);
         expect(chat.chatCount("nobody")).toBe(0);
@@ -433,6 +456,52 @@ describe("membership of the store", () => {
 });
 
 describe("detached reads", () => {
+    it("readChatsDetached rejects an old-epoch export answer and new exports while the restore notice is open", async () => {
+        const { fake, chatEdits } = await boot();
+        const client = await import("../resourceClient");
+        const { alertTerminal } = await import("../../alert");
+        const reload = vi.spyOn(location, "reload").mockImplementation(() => {});
+        const notice = gate();
+        vi.mocked(alertTerminal).mockImplementationOnce(() => notice.promise);
+        const entered = gate();
+        const release = gate();
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                // The answer belongs to the old epoch even though it is delivered after the halt.
+                const response = await fake.fetch(path, init);
+                if (path === "/api/resources/read") {
+                    entered.resolve();
+                    await release.promise;
+                }
+                return response;
+            },
+        };
+        const reading = chatEdits.readChatsDetached(["c"]);
+        const rejected = expect(reading).rejects.toThrow(/restored/);
+        try {
+            await entered.promise;
+            fake.failNext = {
+                status: 412,
+                body: { error: "EpochMismatch", epoch: "restored-epoch" },
+                times: 1,
+                match: (path) => path === "/api/resources/ui/main",
+            };
+            await expect(client.getResource("ui", "main")).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+            expect(alertTerminal).toHaveBeenCalledTimes(1);
+            expect(reload).not.toHaveBeenCalled();
+
+            release.resolve();
+            await rejected;
+            await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow(/restored/);
+            expect(reload).not.toHaveBeenCalled();
+        } finally {
+            release.resolve();
+            await Promise.allSettled([rejected]);
+            server.current = fake;
+            notice.resolve();
+        }
+    });
+
     it("readChatsDetached saves first and answers every chat of several characters in the server order; an empty request reads nothing; a character without an order gets []", async () => {
         const { chat, characterStore, chatEdits, sync, fake, ids } = await boot();
         characterStore.addCharacter({ chaId: "d", name: "D", chats: [newChat("kd", "KD")] });
@@ -453,14 +522,16 @@ describe("detached reads", () => {
             result
                 .get("c")!
                 .find((entry) => entry.id === "k")!
-                .message.map((message) => message.data),
+                .data.message.map((message) => message.data),
         ).toEqual(["A", "B", "C", "D"]);
+        // Each answer is the chat's record: its identity and the trash mark beside its data.
+        expect(result.get("c")!.every((entry) => entry.characterId === "c" && entry.trashedAt === null)).toBe(true);
         expect(result.get("d")!.map((entry) => entry.id)).toEqual(ids("d"));
         expect(result.get("c")!.length + result.get("d")!.length).toBe(13);
         expect(result.get("nobody")).toEqual([]);
         expect(fake.requests.map((request) => request.path)).toContain("/api/resources/read");
         // The copies are detached from the store.
-        result.get("c")![0].name = "changed in the copy";
+        result.get("c")![0].data.name = "changed in the copy";
         expect(chat.chatList("c").map((entry) => entry.name)).not.toContain("changed in the copy");
 
         fake.requests.length = 0;
@@ -492,9 +563,58 @@ describe("detached reads", () => {
         const read = await chatEdits.readChatsDetached(["d"]);
         expect(read.get("d")!.map((entry) => entry.id)).toEqual(["kd"]);
 
+        // The save fails and the flush's resend stays unanswered: the read is refused at the save
+        // deadline, and nothing is read.
         chat.appendMessage(refK, m("z", "Z"));
-        fake.failNext = { status: 500, times: 3, match: (path) => path.includes("/api/resources/batch") };
-        await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow();
+        fake.failNext = { status: 500, times: 1, match: (path) => path.includes("/api/resources/batch") };
+        fake.holdNextBatch = true;
+        fake.requests.length = 0;
+        const { ResourceFlushTimeoutError } = await import("../resourceFlushWait");
+        await expect(settleFlush(chatEdits.readChatsDetached(["c"]))).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+        expect(fake.releaseBatch).not.toBeNull();
+        expect(fake.requests.filter((request) => (request.body as any)?.chatCollections)).toEqual([]);
+        fake.releaseBatch!();
+    });
+
+    it("readChatsDetached refuses while a requested character's chat or chat order stays refused from an earlier save (not another's), and reads again once the draft is discarded", async () => {
+        const { chat, characterStore, chatEdits, fake, sync, ids } = await boot();
+        characterStore.addCharacter({ chaId: "d", name: "D", chats: [newChat("kd", "KD")] });
+        await sync.flushResources();
+        // The server refuses `k`'s edit for its content: the draft is held in this tab only, and the
+        // flush before a later read reports it as refused, not discarded.
+        chat.setMessageText(refK, "a", "draft kept in this tab");
+        chat.setChatMeta(refK, { fmIndex: "invalid" as any });
+        await sync.flushResources();
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "chat", chaId: "c", chatId: "k" })]);
+        alerts.error.mockClear();
+        await expect(chatEdits.readChatsDetached(["c"])).rejects.toThrow(/refused.*chats\/c\/k/);
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        // Only the requested characters' refusals refuse.
+        const read = await chatEdits.readChatsDetached(["d"]);
+        expect(read.get("d")!.map((entry) => entry.id)).toEqual(["kd"]);
+        expect(alerts.error).not.toHaveBeenCalled();
+
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        const result = await chatEdits.readChatsDetached(["c"]);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(
+            result
+                .get("c")!
+                .find((entry) => entry.id === "k")!
+                .data.message.map((message) => message.data),
+        ).toEqual(["A", "B", "C"]);
+
+        // A refused chat order of a requested character refuses the read too.
+        fake.failNext = {
+            status: 413,
+            body: { error: "order too large" },
+            times: 1,
+            match: (path) => path === "/api/resources/batch",
+        };
+        chat.reorderChats("c", [...ids("c")].reverse());
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "order", chaId: "c" })]);
+        await expect(chatEdits.readChatsDetached(["d", "c"])).rejects.toThrow(/refused.*chats\/c$/);
         fake.failNext = null;
     });
 
@@ -529,12 +649,16 @@ describe("detached reads", () => {
         // The unsent message was saved by the export's read.
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "Z"]);
 
+        // The save fails and the flush's resend stays unanswered: the export stops at the save
+        // deadline and downloads nothing.
         chat.appendMessage(refK, m("y", "Y"));
-        fake.failNext = { status: 500, times: 3, match: (path) => path.includes("/api/resources/batch") };
-        await dataset.exportAsDataset();
-        fake.failNext = null;
+        fake.failNext = { status: 500, times: 1, match: (path) => path.includes("/api/resources/batch") };
+        fake.holdNextBatch = true;
+        await settleFlush(dataset.exportAsDataset());
+        expect(fake.releaseBatch).not.toBeNull();
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(downloads).toHaveLength(1);
-        await sync.flushResources();
+        fake.releaseBatch!();
+        await settleFlush(sync.flushResources());
     });
 });

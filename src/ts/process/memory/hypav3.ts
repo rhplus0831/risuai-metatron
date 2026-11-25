@@ -11,9 +11,34 @@ import { chatCompletion, unloadEngine } from "../webllm";
 import { hypaV3ProgressStore } from "src/ts/stores.svelte";
 import { type ChatTokenizer } from "src/ts/tokenizer";
 import { inlayTokenRegex } from "src/ts/util/inlayTokens";
-import type { HypaV3Preset, HypaV3Data, SerializableHypaV3Data, Summary } from "../../../../shared/memory.ts";
-import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+import type {
+    HypaV3Preset,
+    HypaV3Settings,
+    HypaV3Data,
+    SerializableHypaV3Data,
+    Summary,
+} from "../../../../shared/memory.ts";
+import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
+
+/**
+ * The tab's HypaMemory V3, kept for the HypaV3 modal (its resummarize and reroll call `summarize`)
+ * and the memory oracle test (`memoryOracle.test.ts`, the legacy `hypaMemoryV3`). A send's V3 step
+ * is the server's port (`server/src/prompt/memory/hypav3.ts`), split into parts there; this copy
+ * changes only with shared legacy behavior, and the server-only work (detached tasks, source
+ * validation, the writer lease, token-budget mode, lookahead) is not here.
+ *
+ * The standard flow of one step:
+ * 1. When the count is over the context, summarize the oldest chats after the last summary's last
+ *    message, `maxChatsPerSummary` at a time and never the last `queryChatCount`, into `Summary`
+ *    records until the count is at the extra-summarization target, or earlier once it fits the
+ *    context and only those last chats are left or the next window would go below the target.
+ * 2. Select summaries within the memory budget: important, then recent, then similar (by
+ *    embeddings, `HypaProcesserEx`), then random.
+ * 3. Record the selection in `metrics` (indices into `summaries`).
+ * 4. Prepend the selected summaries, in chronological order, as one `<Past Events Summary>` card with
+ *    `memo: "supaMemory"`.
+ */
 
 /**
  * Whose request a summary is: the chat it summarizes and the plugin call context captured when the
@@ -32,7 +57,7 @@ export type {
     SerializableSummary,
 } from "../../../../shared/memory.ts";
 export { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { chatHypaV3Preset, chatMemoryProfileId, type ChatMemoryInput } from "../../../../shared/chatMemory.ts";
 
 interface SummaryChunk {
     text: string;
@@ -63,6 +88,12 @@ function splitBySeparator(text: string, separator: string): string[] {
     }
 }
 
+/**
+ * The legacy composition only (the oracle test runs it): the experimental main when the chat's
+ * preset has `useExperimentalImpl`, else the standard one. A missing preset is thrown as it is (it is
+ * looked up first); the mains' errors are thrown with the `[HypaV3]` prefix. A local summarization
+ * model's WebLLM engine is unloaded afterwards.
+ */
 export async function hypaMemoryV3(
     chats: OpenAIChat[],
     currentTokens: number,
@@ -72,7 +103,7 @@ export async function hypaMemoryV3(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const settings = getCurrentHypaV3Preset(room).settings;
 
     try {
         if (settings.useExperimentalImpl) {
@@ -117,7 +148,8 @@ async function hypaMemoryV3MainExp(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const settings = getCurrentHypaV3Preset(room).settings;
+    const profileId = chatMemoryProfileId(room);
 
     // Validate settings
     if (settings.recentMemoryRatio + settings.similarMemoryRatio > 1) {
@@ -316,7 +348,9 @@ async function hypaMemoryV3MainExp(
             });
         };
 
-        const summarizationTasks = toSummarizeArray.map((item) => () => summarize(item, false, context));
+        const summarizationTasks = toSummarizeArray.map(
+            (item) => () => summarizeWithSettings(item, false, context, settings, profileId),
+        );
 
         // Start of performance measurement: summarize
         console.log(logPrefix, `Starting ${toSummarizeArray.length} summarization.`);
@@ -819,7 +853,8 @@ async function hypaMemoryV3Main(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const settings = getCurrentHypaV3Preset(room).settings;
+    const profileId = chatMemoryProfileId(room);
 
     // Validate settings
     if (settings.recentMemoryRatio + settings.similarMemoryRatio > 1) {
@@ -992,7 +1027,7 @@ async function hypaMemoryV3Main(
             console.log(logPrefix, "Attempting summarization:", "\nTarget:", toSummarize);
 
             try {
-                const summarizeResult = await summarize(toSummarize, false, context);
+                const summarizeResult = await summarizeWithSettings(toSummarize, false, context, settings, profileId);
 
                 data.summaries.push({
                     text: summarizeResult,
@@ -1205,7 +1240,13 @@ async function hypaMemoryV3Main(
                 console.log(logPrefix, "Attempting summarization for similarity search:", "\nTarget:", recentChats);
 
                 try {
-                    const summarizeResult = await summarize(recentChats, false, context);
+                    const summarizeResult = await summarizeWithSettings(
+                        recentChats,
+                        false,
+                        context,
+                        settings,
+                        profileId,
+                    );
 
                     queries.push(summarizeResult);
                 } catch (error) {
@@ -1479,13 +1520,38 @@ function sanitizeSummaryContent(content: string): string {
     return content.replace(inlayTokenRegex, "[Image]");
 }
 
+/**
+ * One summary of `oaiMessages` (`isResummarize` picks the re-summarization prompt): inlay tokens
+ * become `[Image]`, the prompt with `{{slot}}` expanded goes through `parseChatML` for the context's
+ * chat, and then:
+ * - `subModel`: `requestChatData(..., "memory")` with the chat's named connection and plugin context
+ *   (`context`, else captured now); `<Thoughts>` blocks are stripped.
+ * - Any other value is a WebLLM model: `chatCompletion` with the system message first; `<think>`
+ *   blocks are stripped.
+ *
+ * A failed or empty answer throws. The preset and connection are read before awaiting from the
+ * context's chat list entry, or the current chat when no context was supplied. The modal passes the
+ * chat captured when the action began.
+ */
 export async function summarize(
     oaiMessages: OpenAIChat[],
     isResummarize: boolean = false,
     context?: SummarizeContext,
 ): Promise<string> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const ref = context ? (context.chatRef ?? context.pluginContext?.chatRef) : currentChatRef();
+    const settings = getCurrentHypaV3Preset(ref ? chatEntry(ref) : undefined).settings;
+    const profileId = chatMemoryProfileId(ref ? chatEntry(ref) : undefined);
+    return summarizeWithSettings(oaiMessages, isResummarize, context, settings, profileId);
+}
 
+/** The legacy composition keeps its room's preset settings and connection across awaited windows. */
+async function summarizeWithSettings(
+    oaiMessages: OpenAIChat[],
+    isResummarize: boolean,
+    context: SummarizeContext | undefined,
+    settings: HypaV3Settings,
+    profileId: string | undefined,
+): Promise<string> {
     const strMessages = oaiMessages.map((chat) => `${chat.role}: ${sanitizeSummaryContent(chat.content)}`).join("\n");
 
     const summarizationPrompt = isResummarize
@@ -1515,9 +1581,9 @@ export async function summarize(
         const scope = context?.pluginContext ?? capturePluginContext(context?.chatRef);
         let modelId = "";
         try {
-            modelId = resolveModelSlot("memory", scope).modelId ?? "";
+            modelId = resolveModelSlot("memory", scope, undefined, profileId).modelId ?? "";
         } catch {
-            // A gone model preset: the request below refuses it.
+            // A gone model preset or named connection: the request below refuses it.
         }
         console.log(logPrefix, `Using ax model ${modelId} for summarization.`);
 
@@ -1528,6 +1594,7 @@ export async function summarize(
                 useStreaming: false,
                 noMultiGen: true,
                 ...(context?.chatRef ? { chatRef: context.chatRef } : {}),
+                ...(profileId !== undefined ? { profileId } : {}),
                 ...(scope ? { pluginContext: scope } : {}),
             },
             "memory",
@@ -1586,11 +1653,9 @@ export async function summarize(
     return result;
 }
 
-export function getCurrentHypaV3Preset(): HypaV3Preset {
-    const preset = selectedHypaV3Preset({
-        hypaV3Presets: appSettings.hypaV3Presets.items,
-        hypaV3PresetId: appSettings.hypaV3Presets.selectedId,
-    });
+/** The chat's memory preset, falling back to the Settings default; throws when the list is empty. */
+export function getCurrentHypaV3Preset(chat: ChatMemoryInput | null | undefined): HypaV3Preset {
+    const preset = chatHypaV3Preset(appSettings.hypaV3Presets.items, appSettings.hypaV3Presets.selectedId, chat);
 
     if (!preset) {
         throw new Error("Preset not found. Please select a valid preset.");
@@ -1684,6 +1749,13 @@ interface SummaryChunkVector {
     vector: memoryVector;
 }
 
+/**
+ * The standard implementation's processor: vectors per summary chunk. A contextual model's chunk
+ * vectors are cached under their context-qualified key (the text, then the provider's suffix: the
+ * model and, for a summary of more than one chunk, the hash of its chunks), so an equal paragraph in
+ * another summary's context keeps its own vector. Unlike the server's key (`contextualChunkCacheKey`
+ * in `server/src/prompt/embeddings.ts`) it has no chunk position or key version.
+ */
 class HypaProcesserEx extends HypaProcesser {
     // Maintain references to SummaryChunks and their associated memoryVectors
     summaryChunkVectors: SummaryChunkVector[] = [];

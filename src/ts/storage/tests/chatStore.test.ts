@@ -1,8 +1,12 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { sealHypaV3Data } from "../../../../shared/structuredMemory.ts";
 import type { MessageTranslation } from "../../../../shared/database.ts";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
-import { warmMutationGraph } from "./mutationStoresHarness";
+import { SMALL_FEED_PATCH_BYTES } from "../../../../shared/resources.ts";
+import { MAX_OOC_EXCHANGE_BYTES } from "../../../../shared/ooc.ts";
+import { textHash } from "../../../../shared/textHash.ts";
+import { recoverOldDelete, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // The chat mutation module (`chatStore.svelte.ts`) on a fresh module graph per test, against the real
@@ -24,7 +28,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 type ChatModule = typeof import("../chatStore.svelte");
@@ -169,7 +173,7 @@ async function boot(server?: StoreBackedServer) {
     };
 }
 
-beforeAll(() => warmMutationGraph(), 60_000);
+beforeAll(() => warmMutationGraph(() => import("./reactiveProbe.svelte")), 60_000);
 
 beforeEach(() => {
     localStorage.clear();
@@ -184,7 +188,523 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+describe("idle refresh work", () => {
+    it("reports work exactly when a loaded or summary refresh is eligible", async () => {
+        for (const state of ["unmarked", "loaded", "summary", "inflight"] as const) {
+            const { chat, server, ref, take } = await boot();
+            try {
+                if (state === "summary") {
+                    const read = server.store.readKinds([server.kind("characters")], { chatSummaries: true });
+                    chat.assembleChats([{ chaId: "c" }], read.chatSummaries!, read.chatOrders!);
+                }
+                if (state === "inflight") {
+                    chat.setChatMeta(ref, { note: "saving" });
+                    expect(take().groups).toHaveLength(1);
+                }
+                if (state !== "unmarked") expect(chat.markChatStale(ref)).toBe(true);
+
+                // Probe first: the full-list readers must not settle anything on its behalf.
+                const hasWork = chat.hasIdleRefresh();
+                const chats = chat.idleChatRefreshes();
+                const summaries = chat.idleSummaryRefreshes();
+                expect(chats, state).toEqual(state === "loaded" ? [ref] : []);
+                expect(summaries, state).toEqual(state === "summary" ? ["c"] : []);
+                expect(hasWork, state).toBe(chats.length > 0 || summaries.length > 0);
+            } finally {
+                server.close();
+            }
+        }
+    });
+
+    it("drops answered notices even when another stale chat makes the probe return early", async () => {
+        const { chat, server, ref, take, apply, ack, commit } = await boot();
+        const other = { chaId: "c", chatId: "j" };
+        chat.createChat("c", { id: "j", name: "J", message: [] } as any);
+        commit();
+        chat.markChatStale(other);
+        chat.setChatMeta(ref, { note: "saved" });
+        const work = take();
+        const answer = apply(work);
+        chat.noteRemoteChat(ref, answer.chats[0].revision);
+        ack(work, answer);
+        expect(chat.chatNoticeSeq(ref)).toBeGreaterThan(0);
+
+        expect(chat.hasIdleRefresh()).toBe(true);
+
+        expect(chat.chatNoticeSeq(ref)).toBe(0);
+        expect(chat.idleChatRefreshes()).toEqual([other]);
+        server.close();
+    });
+});
+
+describe("chat membership", () => {
+    it("follows inserted, removed, replaced, reordered, and recreated chat lists", async () => {
+        const { chat, server, ref, character, commit, take } = await boot();
+        const at = (chatId: string) => ({ chaId: "c", chatId });
+        const input = (id: string) => ({ id, name: id, message: [] });
+        // Cache a miss before each insertion or replacement, so an old set cannot hide the write.
+        expect(await chat.ensureChatLoaded(at("j"))).toBeUndefined();
+        chat.createChat("c", input("j") as any);
+        expect((await chat.ensureChatLoaded(at("j")))?.id).toBe("j");
+        commit();
+
+        expect(await chat.ensureChatLoaded(at("s"))).toBeUndefined();
+        server.chatBatch([
+            { characterId: "c", chatId: "s", baseRevision: null, ops: [{ op: "create", chat: input("s") as any }] },
+        ]);
+        chat.acceptRemoteChat(server.chat("c", "s")!);
+        expect(chat.noteRemoteChat(at("s"), null)).toBe("collection");
+        expect((await chat.ensureChatLoaded(at("s")))?.id).toBe("s");
+        // Another tab deletes `s` for good; a whole read of it finds it gone.
+        server.deleteChatForever("c", "s");
+        chat.acceptRemoteChat({ characterId: "c", id: "s", revision: null, data: null });
+        expect(chat.noteRemoteChat(at("s"), null)).toBe("ignored");
+        expect(chat.chatCount("c")).toBe(2);
+        expect(await chat.ensureChatLoaded(at("s"))).toBeUndefined();
+        expect(take().groups).toEqual([]);
+
+        expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
+        chat.installCharacterChats("c", [input("j"), input("replacement")] as any, character());
+        expect(chat.chatCount("c")).toBe(2);
+        expect((await chat.ensureChatLoaded(at("replacement")))?.id).toBe("replacement");
+        expect(await chat.ensureChatLoaded(ref)).toBeUndefined();
+
+        chat.reorderChats("c", ["replacement", "j"]);
+        expect(chat.chatSummaryList("c").map((entry) => entry.id)).toEqual(["replacement", "j"]);
+        expect((await chat.ensureChatLoaded(at("j")))?.id).toBe("j");
+        expect((await chat.ensureChatLoaded(at("replacement")))?.id).toBe("replacement");
+
+        chat.forgetCharacterChats("c");
+        expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
+        chat.installCharacterChats("c", [input("recreated")] as any, character());
+        expect((await chat.ensureChatLoaded(at("recreated")))?.id).toBe("recreated");
+        expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
+        server.close();
+    });
+
+    it("updates reactive refresh readers after a same-length membership replacement", async () => {
+        const { chat, server, ref } = await boot();
+        const { createProbe } = await import("./reactiveProbe.svelte");
+        const { flushSync } = await import("svelte");
+        const revision = server.chat("c", "k")!.revision;
+        const summary = (id: string) => ({ characterId: "c", id, revision, name: id, fmIndex: -1 });
+        const order = (id: string) => ({ characterId: "c", revision, ids: [id] });
+        chat.seedChats([summary("k"), summary("j")], [order("j")]);
+        chat.assembleChats([{ chaId: "c" }], [summary("j")], [order("j")]);
+        chat.markChatStale(ref);
+        // k is absent: this read does not subscribe to any loaded-chat field or ids array.
+        const probe = createProbe(() => chat.idleChatRefreshes());
+        try {
+            expect(probe.seen).toEqual([[ref]]);
+            expect(probe.derived()).toEqual([ref]);
+
+            expect(chat.applyRemoteCollection({ characterId: "c", order: order("k"), chats: [summary("k")] })).toBe(
+                true,
+            );
+            chat.markChatStale(ref);
+            flushSync();
+
+            expect(probe.seen).toEqual([[ref], []]);
+            expect(probe.derived()).toEqual([]);
+            expect(chat.idleSummaryRefreshes()).toEqual(["c"]);
+        } finally {
+            probe.dispose();
+            server.close();
+        }
+    });
+});
+
+describe("display install state", () => {
+    afterEach(() => vi.clearAllMocks());
+
+    it("advances only when an acknowledgment empties the chat's work and keeps quarantine unacknowledged until discard", async () => {
+        const { server, chat, ref, take, apply, ack } = await boot();
+        const initial = chat.chatInstallVersion(ref);
+        const other = { chaId: "c", chatId: "unrelated" };
+        const otherVersion = chat.chatInstallVersion(other);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        chat.setMessageText(ref, "a", "first edit");
+        expect(chat.chatInstallVersion(ref)).toBe(initial);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        expect(chat.chatHasUnackedWork(other)).toBe(false);
+        const first = take();
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        const firstAnswer = apply(first);
+        chat.setMessageText(ref, "b", "second edit");
+        ack(first, firstAnswer);
+        expect(chat.chatInstallVersion(ref)).toBe(initial);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        const last = take();
+        ack(last, apply(last));
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
+        expect(chat.chatInstallVersion(other)).toBe(otherVersion);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+
+        chat.setMessageText(ref, "a", "refused edit");
+        const refused = take();
+        chat.quarantineChat(refused.groups[0], "refused");
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        expect(take().groups).toEqual([]);
+        expect(await chat.discardRefusedChat(chat.refusedChatItems()[0].key, () => true)).toBe(true);
+        expect(chat.findChat(ref)!.message[0].data).toBe(server.texts("c", "k")[0]);
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 2);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+    });
+
+    it.each(["chat", "order"] as const)(
+        "times out discarding a refused %s at the chat read deadline and preserves the refusal and local copy",
+        async (kind) => {
+            const { server, chat, ref, take, commit } = await boot();
+            const { language } = await import("src/lang");
+            if (kind === "chat") {
+                chat.setMessageText(ref, "a", "refused edit");
+                chat.quarantineChat(take().groups[0], "refused");
+            } else {
+                chat.createChat("c", { id: "j", name: "J", message: [] } as any);
+                commit();
+                chat.reorderChats("c", ["j", "k"]);
+                chat.quarantineChatOrder(take().orders[0], "refused");
+            }
+            const refused = chat.refusedChatItems();
+            expect(refused).toMatchObject([{ kind }]);
+            const local = clone(chat.findChat(ref));
+            const read = vi.spyOn(server, "fetch").mockImplementation(() => new Promise<Response>(() => {}));
+            let failure: unknown;
+            const discarding = chat
+                .discardRefusedChat(refused[0].key, () => true)
+                .catch((error: unknown) => {
+                    failure = error;
+                    return false;
+                });
+
+            const CHAT_READ_DEADLINE_MS = 60_000;
+            await vi.advanceTimersByTimeAsync(CHAT_READ_DEADLINE_MS);
+            expect(failure).toEqual(new Error(language.chatLoadTimedOut));
+            await discarding;
+            expect(read).toHaveBeenCalledTimes(1);
+            expect(read.mock.calls[0][1]?.signal?.aborted).toBe(true);
+            expect(chat.refusedChatItems()).toEqual(refused);
+            expect(chat.findChat(ref)).toEqual(local);
+            expect(chat.chatList("c").map(({ id }) => id)).toEqual(kind === "chat" ? ["k"] : ["j", "k"]);
+        },
+    );
+
+    it("does not advance for a stale acknowledgment that only requests a refresh", async () => {
+        const { server, chat, ref, commit } = await boot();
+        const initial = chat.chatInstallVersion(ref);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "a", text: "remote edit" }],
+            },
+        ]);
+        chat.setMessageText(ref, "b", "local edit");
+        const { result } = commit();
+        expect(result.chats[0].stale).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(true);
+        expect(chat.chatInstallVersion(ref)).toBe(initial);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        expect(chat.finishIdleChatRefresh(server.chat("c", "k")!)).toBe(true);
+        expect(chat.chatInstallVersion(ref)).toBe(initial + 1);
+    });
+
+    it("an idle read that takes while a later idle read of the chat is out leaves the stale mark for that read's copy", async () => {
+        const { server, chat, ref } = await boot();
+        const copy = server.chat("c", "k")!;
+        expect(chat.markChatStale(ref)).toBe(true);
+        chat.noteIdleChatRead(ref, 1);
+        chat.noteIdleChatRead(ref, 2);
+        // The earlier read's copy takes, and the mark stays for the later read.
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 1 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(true);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 2 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(false);
+        // The only read out: its copy ends the mark.
+        expect(chat.markChatStale(ref)).toBe(true);
+        chat.noteIdleChatRead(ref, 3);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 3 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(false);
+        // The newest read's answer ends the bookkeeping even when the gate ignores its copy: the next
+        // lone read's copy does not leave the mark behind.
+        chat.noteIdleChatRead(ref, 4);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 4 } as any)).toBe(false);
+        expect(chat.markChatStale(ref)).toBe(true);
+        chat.noteIdleChatRead(ref, 5);
+        expect(chat.finishIdleChatRefresh({ ...copy, readStamp: 5 } as any)).toBe(true);
+        expect(chat.isChatStale(ref)).toBe(false);
+    });
+
+    it("shows a quiet reply from the final job chat event over an empty accepted buffer without resync", async () => {
+        const { server, chat, ref, take } = await boot();
+        const write = (text: string) => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "c", text }],
+                },
+            ]);
+            return server.chat("c", "k")!;
+        };
+        const streaming = [{ messageId: "c", generationId: "g", seq: 0 }];
+        expect(chat.hydrateChat(write(""), { jobId: "J", streaming })).toBe(true);
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "c", generationId: "g", text: "", seq: 0 });
+        expect(chat.findChat(ref)!.message.at(-1)!.data).toBe("");
+        expect(chat.isMessageLocked(ref, "c")).toBe(true);
+        server.requests.length = 0;
+
+        const baseRevision = chat.heldChatRevision(ref)!;
+        const final = write("The completed reply.");
+        expect(
+            chat.hydrateChatPatch(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: final.revision,
+                    count: 3,
+                    messages: [{ after: "b", message: final.data.message.at(-1)! }],
+                },
+                { jobId: "J", streaming },
+            ),
+        ).toBe("applied");
+        expect(chat.findChat(ref)!.message.at(-1)!.data).toBe("The completed reply.");
+        expect(chat.hydrateChat(final, { jobId: "J", streaming: [] })).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.findChat(ref)!.message.at(-1)!.data).toBe("The completed reply.");
+        expect(chat.isMessageLocked(ref, "c")).toBe(false);
+        expect(chat.isChatStale(ref)).toBe(false);
+        expect(take().groups).toEqual([]);
+        expect(server.requests).toEqual([]);
+    });
+
+    it("keeps a deferred collection reload unacknowledged after the job unlocks", async () => {
+        const { server, chat, ref, take } = await boot();
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        // Another tab deletes `k` for good, which needs a sibling outside the trash.
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "j",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { name: "J", message: [] } as any }],
+            },
+        ]);
+        server.deleteChatForever("c", "k");
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]);
+        expect(chat.isChatDeferred("c\u0000k")).toBe(true);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        expect(take().groups).toEqual([]);
+        chat.endServerJob("J");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.chatHasUnackedWork(ref)).toBe(true);
+        chat.finishDeferredReload({ characterId: "c", id: "k", revision: null, data: null });
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+    });
+
+    it("advances for remote installs, authoritative patches, job hydration, whole collections, and loaded reads, but not stream chunks", async () => {
+        const { server, chat, ref } = await boot();
+        const initial = chat.chatInstallVersion(ref);
+        const remote = (text: string) => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "a", text }],
+                },
+            ]);
+            return server.chat("c", "k")!;
+        };
+        const other = { chaId: "c", chatId: "unrelated" };
+        const otherVersion = chat.chatInstallVersion(other);
+        chat.acceptRemoteChat(remote("remote"));
+        expect(chat.chatInstallVersion(ref), "remote install").toBe(initial + 1);
+        const baseRevision = chat.heldChatRevision(ref)!;
+        const patched = remote("patch");
+        expect(
+            chat.hydrateChatPatch({
+                characterId: "c",
+                id: "k",
+                baseRevision,
+                revision: patched.revision,
+                count: 3,
+                messages: [{ after: null, message: patched.data.message[0] }],
+            }),
+        ).toBe("applied");
+        expect(chat.chatInstallVersion(ref), "authoritative patch").toBe(initial + 2);
+        expect(chat.hydrateChat(remote("job"), { jobId: "J", streaming: [] })).toBe(true);
+        expect(chat.chatInstallVersion(ref), "job hydration").toBe(initial + 3);
+        remote("collection");
+        expect(
+            chat.applyRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]),
+        ).toBe(true);
+        expect(chat.chatInstallVersion(ref), "whole collection install").toBe(initial + 4);
+        remote("accepted collection");
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]);
+        expect(chat.chatInstallVersion(ref), "accepted whole collection").toBe(initial + 5);
+        remote("read");
+        expect((await chat.loadChat(ref))!.message[0].data).toBe("read");
+        expect(chat.chatInstallVersion(ref), "installed read").toBe(initial + 6);
+
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });
+        expect(
+            chat.applyServerGenerationChunk(ref, "J", {
+                type: "chunk",
+                epoch: server.store.epoch(),
+                messageId: "a",
+                generationId: "g",
+                seq: 1,
+                base: 0,
+                keep: 6,
+                text: " chunk",
+            }),
+        ).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.findChat(ref)!.message[0].data).toBe("stream chunk");
+        expect(chat.chatInstallVersion(ref), "stream chunks and unlock").toBe(initial + 6);
+        expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        expect(chat.chatInstallVersion(other)).toBe(otherVersion);
+        expect(chat.chatHasUnackedWork(other)).toBe(false);
+    });
+});
+
 describe("mirror and queue", () => {
+    async function bootCandidateReply() {
+        const h = await boot(await StoreBackedServer.create({ feed: true }));
+        // A by-id write cannot add snapshots to a row holding none; a whole-chat write can.
+        const stored = h.server.chat("c", "k")!;
+        h.server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: stored.revision,
+                ops: [
+                    {
+                        op: "replace",
+                        chat: {
+                            ...stored.data,
+                            message: stored.data.message.map((message) =>
+                                message.chatId === "c"
+                                    ? {
+                                          ...message,
+                                          data: "Second",
+                                          candidates: [
+                                              { id: "first", data: "First", scriptstateAfter: { $x: "1" } },
+                                              { id: "second", data: "Second", scriptstateAfter: { $x: "2" } },
+                                          ],
+                                          selected: 1,
+                                          scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+                                      }
+                                    : message,
+                            ),
+                        },
+                    },
+                ],
+            },
+        ]);
+        h.chat.acceptRemoteChat(h.server.chat("c", "k")!);
+        h.server.requests.length = 0;
+        return { ...h, row: () => h.chat.findChat(h.ref)!.message.find((message) => message.chatId === "c")! };
+    }
+
+    it("adopts append cleanup from the acknowledgement before ignoring its feed echo", async () => {
+        const { server, chat, ref, row, take, apply, ack } = await bootCandidateReply();
+        chat.appendMessage(ref, m("next", "Next question"));
+        const work = take();
+        const result = apply(work);
+        expect(row().scriptstateCheckpoint).toEqual({ before: { $x: "0" }, after: { $x: "2" } });
+        expect(row().candidatesRevision).toBe(1);
+
+        ack(work, result);
+        const expected = {
+            ...m("c", "Second", "char"),
+            candidates: [
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ],
+            selected: 1,
+            candidatesRevision: 2,
+        };
+        expect(clone(row())).toEqual(expected);
+        expect(server.chat("c", "k")!.data.message.find((message) => message.chatId === "c")).toEqual(expected);
+
+        const event = server.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected the committed append");
+        const change = event.changes.chats[0];
+        expect(change.revision).toBe(result.chats[0].revision);
+        expect(chat.noteRemoteChat(ref, change.revision, change.rowDelta ?? change.delta ?? change.patch)).toBe(
+            "ignored",
+        );
+        expect(clone(row())).toEqual(expected);
+        expect(
+            server.requests.filter((request) => request.path === "/api/resources/read" && request.body.chats?.length),
+        ).toEqual([]);
+    });
+
+    it.each(["after acknowledgement", "while append is in flight"] as const)(
+        "keeps cleaned snapshots out of a whole-row edit queued %s",
+        async (when) => {
+            const { server, chat, ref, row, take, apply, ack, commit } = await bootCandidateReply();
+            chat.appendMessage(ref, m("next", "Next question"));
+            const append = take();
+            const result = apply(append);
+            const edit = () => chat.replaceMessage(ref, { ...clone(row()), name: "Edited name" });
+            if (when === "while append is in flight") edit();
+            ack(append, result);
+            if (when === "after acknowledgement") edit();
+
+            const { work } = commit();
+            expect(work.groups[0].ops).toMatchObject([
+                { op: "setMessage", message: { chatId: "c", name: "Edited name" } },
+            ]);
+            const stored = server.chat("c", "k")!.data.message.find((message) => message.chatId === "c")!;
+            expect(stored).not.toHaveProperty("scriptstateCheckpoint");
+            expect(stored.candidates).toEqual([
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ]);
+            expect(stored).toMatchObject({ name: "Edited name", selected: 1, candidatesRevision: 2 });
+            expect(clone(row())).toEqual(stored);
+        },
+    );
+
+    it("clears server and mirror snapshots when an append and an older whole-row edit share a sent group", async () => {
+        const { server, chat, ref, row, take, apply, ack } = await bootCandidateReply();
+        const old = clone(row());
+        chat.appendMessage(ref, m("next", "Next question"));
+        chat.replaceMessage(ref, { ...old, name: "Edited name" });
+        const work = take();
+        expect(work.groups).toHaveLength(1);
+        expect(work.groups[0].ops).toEqual([
+            { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            { op: "setMessage", message: { ...old, name: "Edited name" } },
+        ]);
+
+        const result = apply(work);
+        expect(row().scriptstateCheckpoint).toEqual({ before: { $x: "0" }, after: { $x: "2" } });
+        expect(result.chats[0].candidateRows).toEqual([{ id: "c", candidatesRevision: 2, cleared: true }]);
+        ack(work, result);
+
+        const expected = {
+            ...m("c", "Second", "char"),
+            name: "Edited name",
+            candidates: [
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ],
+            selected: 1,
+            candidatesRevision: 2,
+        };
+        expect(server.chat("c", "k")!.data.message.find((message) => message.chatId === "c")).toEqual(expected);
+        expect(clone(row())).toEqual(expected);
+    });
+
     it("updates the mirror synchronously from detached copies of the input and the anchor", async () => {
         const { server, chat, ref, commit } = await boot();
         const input = m("x", "X");
@@ -234,6 +754,25 @@ describe("mirror and queue", () => {
         expect(take().groups).toEqual([]);
     });
 
+    it("keeps the first lore override per id, as the server stores them, in the mirror and the queue", async () => {
+        const { chat, ref, take } = await boot();
+        const entry = (content: string, id = "owner") => ({ id, key: "gate", content }) as any;
+        const first = { entry: entry("first"), off: false };
+        const other = { entry: entry("other", "other"), off: true };
+        chat.setChatMeta(ref, { loreOverrides: [first, other, { entry: entry("later"), off: true }] });
+        expect(chat.findChat(ref)?.loreOverrides).toEqual([first, other]);
+        expect(take().groups[0].ops).toEqual([{ op: "meta", set: { loreOverrides: [first, other] }, unset: [] }]);
+        // Repeating an id over the same list is no change.
+        chat.setChatMeta(ref, { loreOverrides: [first, other, { entry: entry("again"), off: false }] });
+        expect(chat.hasChatWork()).toBe(false);
+        // A whole-chat write too, whichever way it reaches the store.
+        const repeated = [first, { entry: entry("later"), off: true }];
+        chat.replaceChat(ref, { ...chat.findChat(ref)!, loreOverrides: repeated });
+        expect(chat.findChat(ref)?.loreOverrides).toEqual([first]);
+        const created = chat.createChat("c", { id: "n", name: "N", message: [], loreOverrides: repeated } as any);
+        expect(created.loreOverrides).toEqual([first]);
+    });
+
     it("queues a metadata value that differs from the mirror only in a nested own __proto__ key", async () => {
         const { server, chat, ref, commit } = await boot();
         const stored = () => (server.chat("c", "k")!.data as any).scriptstate;
@@ -273,35 +812,108 @@ describe("mirror and queue", () => {
 });
 
 describe("membership and selection", () => {
-    it("cancels a create that was never sent, but keeps a delete behind a create that was", async () => {
+    it("validates message data without mutating a valid chat input", async () => {
+        const { chat } = await boot();
+        const input = { message: [m(undefined, "A"), m("b", "B")] };
+        const before = clone(input);
+        expect(chat.validateChatInput(input)).toBeUndefined();
+        expect(input).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("refuses non-string message data during validation", async () => {
+        const { chat } = await boot();
+        const input = { message: [m(undefined, "A"), { ...m("b", "B"), data: 42 }] };
+        const before = clone(input);
+        expect(() => chat.validateChatInput(input)).toThrow("message.data must be a string");
+        expect(input).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("refuses the OOC fields the server would refuse and accepts valid ones during validation", async () => {
+        const { chat } = await boot();
+        const exchange = { id: "q", segment: "s", anchorMessageId: null, question: "Why?", time: 1 };
+        const valid = {
+            message: [m("a", "A")],
+            oocLog: { q: exchange },
+            oocSegment: { id: "s", anchorMessageId: null },
+            oocToggles: { ooc: "1" },
+        };
+        expect(chat.validateChatInput(valid)).toBeUndefined();
+        const refused: [object, string][] = [
+            [{ oocLog: { q: null } }, "a chat.oocLog entry must be a plain object"],
+            [
+                { oocLog: { q: { ...exchange, answer: "x".repeat(MAX_OOC_EXCHANGE_BYTES) } } },
+                `a chat.oocLog entry must be at most ${MAX_OOC_EXCHANGE_BYTES} bytes`,
+            ],
+            [{ oocLog: null }, "chat.oocLog must be a plain object"],
+            [{ oocSegment: { id: "", anchorMessageId: null } }, "chat.oocSegment must be a plain object"],
+            [{ oocToggles: { ooc: 1 } }, "chat.oocToggles must be a plain object with string values"],
+        ];
+        for (const [fields, error] of refused) {
+            expect(() => chat.validateChatInput({ ...valid, ...fields } as any), error).toThrow(error);
+        }
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("refuses numeric message data with a plain Error before creating a chat", async () => {
+        const { chat, character } = await boot();
+        const before = clone(character().chats);
+        let failure: unknown;
+        try {
+            chat.createChat("c", {
+                id: "invalid-data",
+                name: "Invalid message data",
+                note: "",
+                localLore: [],
+                message: [{ role: "user", data: 123 }],
+            } as unknown as Parameters<ChatModule["createChat"]>[1]);
+        } catch (error) {
+            failure = error;
+        }
+
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({ constructor: Error, message: "message.data must be a string" });
+        expect(clone(character().chats)).toEqual(before);
+        expect(chat.findChat({ chaId: "c", chatId: "invalid-data" })).toBeUndefined();
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("gives a chat no trash token until its create is acknowledged (never sent, or resent after a failure), and queues nothing for it", async () => {
         const { server, chat, take, commit, open } = await boot();
+        const refN = { chaId: "c", chatId: "n" };
+        const refP = { chaId: "c", chatId: "p" };
         chat.createChat("c", { id: "n", name: "N", message: [] } as any);
-        chat.deleteChat({ chaId: "c", chatId: "n" });
-        expect(take().groups).toEqual([]);
-        expect(open()).toEqual([]);
-        expect(server.chat("c", "n")).toBeNull();
+        // The trash client says the chat is still saving and sends nothing.
+        expect(chat.chatTrashRevision(refN)).toBeNull();
+        expect(chat.isActiveChat(refN)).toBe(true);
 
         chat.createChat("c", { id: "p", name: "P", message: [] } as any);
         const attempt = take();
-        expect(attempt.groups.map((group) => group.ops[0].op)).toEqual(["create"]);
-        // The request failed before anything was known to have landed.
+        expect(attempt.groups.map((group) => [group.chatId, group.ops[0].op])).toEqual([
+            ["n", "create"],
+            ["p", "create"],
+        ]);
+        // The request failed before anything was known to have landed: the creates are in doubt.
         chat.requeueChatWork(attempt);
-        chat.deleteChat({ chaId: "c", chatId: "p" });
+        expect(chat.chatTrashRevision(refN)).toBeNull();
+        expect(chat.chatTrashRevision(refP)).toBeNull();
         const obligations = chat.captureChatObligations();
-        // The create is resent alone (it may have landed), the delete waits for its answer.
+        // Only the creates go out; nothing deletes either chat.
         const { work } = commit();
-        expect(work.groups.map((group) => group.ops.map((op) => op.op))).toEqual([["create"]]);
-        expect(work.orders).toEqual([]);
-        expect(server.chat("c", "p")).not.toBeNull();
-        expect(chat.unsettledChatObligations(obligations)).toEqual(["c\u0000p"]);
-        const second = commit();
-        expect(second.work.groups.map((group) => group.ops)).toEqual([[{ op: "delete" }]]);
-        expect(server.chat("c", "p")).toBeNull();
+        expect(work.groups.map((group) => group.ops.map((op) => op.op))).toEqual([["create"], ["create"]]);
         expect(chat.unsettledChatObligations(obligations)).toEqual([]);
-        expect(server.order("c")!.ids).toEqual(["k"]);
+        expect(open()).toEqual([]);
+        // Acknowledged: the token is the server's revision.
+        expect(chat.chatTrashRevision(refN)).toBe(server.chat("c", "n")!.revision);
+        expect(chat.chatTrashRevision(refP)).toBe(server.chat("c", "p")!.revision);
+        expect(server.order("c")!.ids).toEqual(["k", "n", "p"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "n", "p"]);
+        expect(take().groups).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("keeps the selection on the chat id through creates, reorders, and deletes, and remembers it for the next boot", async () => {
+    it("keeps the selection on the chat id through creates, reorders, and permanent deletions, and remembers it for the next boot", async () => {
         const { server, chat, character, commit } = await boot();
         expect(character().chatPage).toBe(0);
         chat.createChat("c", { id: "j", name: "J", message: [] } as any, { select: true });
@@ -318,9 +930,16 @@ describe("membership and selection", () => {
         const next = await boot(server);
         expect(next.character().chats.map((entry: any) => entry.id)).toEqual(["j", "k"]);
         expect(next.character().chatPage).toBe(1);
-        next.chat.deleteChat({ chaId: "c", chatId: "k" });
+        // Another tab deletes the selected chat for good; a whole read of it finds it gone.
+        server.deleteChatForever("c", "k");
+        next.chat.acceptRemoteChat({ characterId: "c", id: "k", revision: null, data: null });
+        expect(next.character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
+        expect(next.chat.selectedChatId("c")).toBe("j");
         expect(next.character().chatPage).toBe(0);
-        expect(() => next.chat.deleteChat({ chaId: "c", chatId: "j" })).toThrow(/at least one chat/);
+        // The last chat outside the trash cannot leave: the server refuses its trash.
+        expect(next.chat.activeChatCount("c")).toBe(1);
+        expect(() => server.deleteChatForever("c", "j")).toThrow(/lastActiveChat/);
+        expect(next.chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
     });
 
     it("follows a remote deletion of the selected chat to the first chat, and gives a chatless character a new one", async () => {
@@ -328,9 +947,7 @@ describe("membership and selection", () => {
         chat.createChat("c", { id: "j", name: "J", message: [] } as any, { select: true });
         commit();
         expect(character().chatPage).toBe(1);
-        server.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: server.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        server.deleteChatForever("c", "j");
         chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "edit on a chat another tab deleted" });
         recover(take());
         expect(character().chats.map((entry: any) => entry.id)).toEqual(["k"]);
@@ -338,9 +955,10 @@ describe("membership and selection", () => {
         expect(chat.chatDiscardsSince(0)).toEqual(["c/j"]);
         expect(chat.hasChatWork()).toBe(false);
 
-        server.chatBatch([
-            { characterId: "c", chatId: "k", baseRevision: server.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        // A character's last chat outside the trash cannot be deleted for good: another writer
+        // deletes the character (its chats go with it) and creates it again under its id, chatless.
+        server.store.delete(server.kind("characters"), "c", server.record("characters", "c")!.revision);
+        server.set("characters", "c", { chaId: "c", name: "C" });
         chat.setChatMeta({ chaId: "c", chatId: "k" }, { note: "edit on the last chat" });
         recover(take());
         // The character has a fresh chat, and it can be saved.
@@ -355,7 +973,13 @@ describe("membership and selection", () => {
     it("assembles chats in the server order and repairs an order naming a missing chat or missing a chat", async () => {
         const { chat } = await boot();
         const characters = [{ chaId: "z", chats: [], chatPage: 3 }] as any[];
-        const record = (id: string) => ({ characterId: "z", id, revision: "r", data: { id, message: [] } as any });
+        const record = (id: string) => ({
+            characterId: "z",
+            id,
+            revision: "r",
+            trashedAt: null,
+            data: { id, message: [] } as any,
+        });
         chat.assembleChats(
             characters,
             [record("one"), record("two"), record("extra")],
@@ -370,6 +994,44 @@ describe("membership and selection", () => {
 });
 
 describe("generation lock", () => {
+    it("refuses to trash a chat with a known generation until the job ends; the trash then keeps it a member outside the active list", async () => {
+        const { server, chat, ref, character, take, commit } = await boot();
+        const trash = await import("../../checkpoints/chatTrash");
+        const { alertError } = await import("../../alert");
+        const { language } = await import("src/lang");
+        chat.createChat("c", { id: "j", name: "J", message: [] } as any);
+        commit();
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "partial", seq: 0 });
+
+        expect(chat.isChatGenerating(ref)).toBe(true);
+        expect(await trash.confirmTrashChat(ref, "K")).toBe(false);
+        expect(alertError).toHaveBeenCalledWith(language.chatGenerating);
+        expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "j"]);
+        expect(texts(chat.findChat(ref))).toEqual(["partial", "B", "C"]);
+        expect(take().groups).toEqual([]);
+        expect(server.order("c")!.ids).toEqual(["k", "j"]);
+        expect(server.chat("c", "k")!.trashedAt).toBeNull();
+
+        chat.endServerJob("J");
+        expect(chat.isChatGenerating(ref)).toBe(false);
+        // The trash route's answer, installed as the trash client installs it.
+        const answer = server.store.changeChatTrash(
+            "trash",
+            { characterId: "c", chatId: "k", revision: chat.chatTrashRevision(ref)! },
+            server.store.epoch(),
+            server.chatHeld,
+        );
+        if ("error" in answer) throw new Error(answer.error);
+        chat.noteRemoteChat(ref, answer.revision, undefined, answer);
+        expect(chat.isActiveChat(ref)).toBe(false);
+        expect(chat.activeChatList("c").map((entry) => entry.id)).toEqual(["j"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(chat.trashedChatList("c")).toEqual([expect.objectContaining({ id: "k", trashedAt: answer.trashedAt })]);
+        expect(server.chat("c", "k")).not.toBeNull();
+        expect(server.order("c")!.ids).toEqual(["k", "j"]);
+        expect(take().groups).toEqual([]);
+    });
+
     it("refuses edits, removals, and a chat replacement touching a message a server job locks, keeps the other messages editable, and keeps the lock until the job ends", async () => {
         const { server, chat, ref, take, commit } = await boot();
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g1", text: "partial", seq: 0 });
@@ -546,7 +1208,7 @@ describe("conflict recovery", () => {
         expect(server.texts("c", "k")).toEqual(["remote", "B", "C"]);
     });
 
-    it("puts a chat whose delete was refused back at its server position", async () => {
+    it("puts a chat whose delete, recovered from an earlier build's journal, was refused back at its server position", async () => {
         const { server, chat, ref, character, take, recover, commit } = await boot();
         chat.createChat("c", { id: "j", name: "J", message: [] } as any);
         commit();
@@ -558,9 +1220,11 @@ describe("conflict recovery", () => {
                 ops: [{ op: "setText", id: "b", text: "remote edit" }],
             },
         ]);
-        chat.deleteChat(ref);
+        recoverOldDelete(chat, ref);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
-        recover(take());
+        expect(recover(take()).conflicts).toEqual([
+            expect.objectContaining({ kind: "chat", id: "k", reason: "useTrash" }),
+        ]);
         // The recovered list brings `k` back as its summary: listed at its server position, in the
         // facade (the loaded chats) only once it is loaded.
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
@@ -602,6 +1266,54 @@ describe("conflict recovery", () => {
 });
 
 describe("applyChatResult", () => {
+    it("clones a supplied read as the baseline, preserving independent changes through a saved round trip", async () => {
+        const { chat, ref, server, commit } = await boot();
+        chat.setChatMeta(ref, { scriptstate: { $kept: "read", $plugin: "read" } });
+        commit();
+        const copy = clone(chat.captureChatBaseline(ref).chat);
+        const result = clone(copy);
+        chat.setMessageText(ref, "b", "B meanwhile");
+        chat.setChatMeta(ref, { name: "Name meanwhile" });
+        chat.mergeChatMeta(ref, "scriptstate", { $kept: "user", $added: "user" });
+        const baseline = chat.captureChatBaseline(ref, copy);
+        // Neither the caller's read nor the live mirror may alias the retained baseline.
+        copy.message[0].data = "mutated read";
+        copy.scriptstate!.$kept = "mutated read";
+        result.message[0].data = "A plugin";
+        result.scriptstate!.$plugin = "plugin";
+        chat.applyChatResult(baseline, result);
+        commit();
+        expect(server.chat("c", "k")!.data).toMatchObject({
+            name: "Name meanwhile",
+            scriptstate: { $kept: "user", $plugin: "plugin", $added: "user" },
+            message: [
+                { chatId: "a", data: "A plugin" },
+                { chatId: "b", data: "B meanwhile" },
+                { chatId: "c", data: "C" },
+            ],
+        });
+    });
+
+    it("reconciles with supplied read baselines and falls back to current state for an uncached chat", async () => {
+        const { chat, ref, server, commit } = await boot();
+        const other = { chaId: "c", chatId: "j" };
+        chat.createChat("c", { id: "j", name: "J", message: [m("j-a", "J original")] } as any);
+        commit();
+        const baseline = chat.captureChatBaseline(ref);
+        const result = clone(baseline.chat);
+        const uncached = clone(chat.captureChatBaseline(other).chat);
+        chat.setMessageText(ref, "b", "B meanwhile");
+        chat.setMessageText(other, "j-a", "J meanwhile");
+        chat.appendMessage(ref, m("d", "D meanwhile"));
+        result.message[0].data = "A plugin";
+        chat.reconcileCharacterChats("c", [result, uncached], 0, (target) =>
+            target.chatId === "k" ? baseline : undefined,
+        );
+        commit();
+        expect(server.texts("c", "k")).toEqual(["A plugin", "B meanwhile", "C", "D meanwhile"]);
+        expect(server.texts("c", "j")).toEqual(["J original"]);
+    });
+
     it("applies only what the hook changed, keeping edits, appends, and removals made meanwhile", async () => {
         const { server, chat, ref, commit } = await boot();
         const baseline = chat.captureChatBaseline(ref);
@@ -727,8 +1439,8 @@ describe("applyChatResult", () => {
         expect(server.chat("c", "k")!.data.message.map((message) => message.chatId)).toEqual(ids(mirror));
     });
 
-    it("reconciles a whole character's chats from a plugin: diff by id, create, delete, order, selection", async () => {
-        const { server, chat, ref, character, commit } = await boot();
+    it("reconciles a whole character's chats from a plugin: diff by id, create, order, selection; an omitted chat stays a member in its slot", async () => {
+        const { server, chat, ref, character, commit, take } = await boot();
         chat.createChat("c", { id: "j", name: "J", message: [] } as any);
         commit();
         const incoming = clone(character().chats) as any[];
@@ -736,16 +1448,28 @@ describe("applyChatResult", () => {
         incoming[0].message[1].data = "B by plugin";
         const fresh = { name: "P", message: [m(undefined, "P1")] };
         chat.reconcileCharacterChats("c", [fresh as any, incoming[0]], 1);
+        // The plugin's order fills the slots of the chats it listed; `j`, omitted, keeps its slot.
         const chats = character().chats as any[];
-        expect(chats.map((entry) => entry.name)).toEqual(["P", "K"]);
-        expect(character().chatPage).toBe(1);
+        expect(chats.map((entry) => entry.name)).toEqual(["P", "J", "K"]);
+        // `chatPage` indexes the plugin's list: its second chat, `k`.
+        expect(chat.selectedChatId("c")).toBe("k");
+        expect(character().chatPage).toBe(2);
         expect((chat.findChat(ref) as any).note).toBe("plugin note");
         expect(texts(chat.findChat(ref))).toEqual(["A", "B by plugin", "C"]);
-        commit();
-        expect(server.order("c")!.ids).toEqual([chats[0].id, "k"]);
-        expect(server.chat("c", "j")).toBeNull();
+        const { work } = commit();
+        expect(work.groups.map((group) => [group.chatId, group.ops.map((op) => op.op)])).toEqual([
+            [chats[0].id, ["create"]],
+            ["k", ["patchMessage", "meta"]],
+        ]);
+        expect(work.orders.map((order) => order.ids)).toEqual([[chats[0].id, "j", "k"]]);
+        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual([chats[0].id, "j", "k"]);
+        expect(server.order("c")!.ids).toEqual([chats[0].id, "j", "k"]);
+        expect(server.chat("c", "j")).not.toBeNull();
         expect(server.texts("c", chats[0].id)).toEqual(["P1"]);
         expect((server.chat("c", "k")!.data as any).note).toBe("plugin note");
+        expect(take().groups).toEqual([]);
+        expect(chat.hasChatWork()).toBe(false);
     });
 
     it("refuses a result that touches a locked message before changing anything", async () => {
@@ -838,7 +1562,7 @@ describe("applyChatResult", () => {
         ]);
     });
 
-    it("merges a changed map field entry by entry: a map the baseline lacked counts as empty, removed entries are unset, and a transition from or to a non-map is a whole-field write", async () => {
+    it("merges a changed map field entry by entry: a map the baseline lacked counts as empty, removed entries are unset, a dropped map removes only its baseline entries, and a transition from or to a non-map is a whole-field write", async () => {
         const { server, chat, ref, commit } = await boot();
         const saved = () => server.chat("c", "k")!.data as any;
         // No `scriptstate` in the baseline; another tab adds `$b` meanwhile: the hook's `$a` is merged.
@@ -882,7 +1606,7 @@ describe("applyChatResult", () => {
         expect(saved().scriptstate).toEqual({ $a: "1x", $d: "4" });
 
         // A map replaced by a value that is not one, and a map replacing such a value, are whole-field
-        // sets; removing the field is an unset.
+        // sets.
         baseline = chat.captureChatBaseline(ref);
         result = clone(baseline.chat) as any;
         result.scriptstate = "text";
@@ -895,13 +1619,40 @@ describe("applyChatResult", () => {
         chat.applyChatResult(baseline, result);
         expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: { scriptstate: { $e: "5" } }, unset: [] }]);
         expect(saved().scriptstate).toEqual({ $e: "5" });
+
+        // A map the hook dropped (the field deleted, or set to undefined) is an emptied map, as on
+        // the server (`applyTriggerChat`): its baseline entries are removed one by one, never the
+        // whole field, so an entry another tab added meanwhile survives.
+        baseline = chat.captureChatBaseline(ref);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", merge: { scriptstate: { $f: "6" } } }],
+            },
+        ]);
+        result = clone(baseline.chat) as any;
+        delete result.scriptstate;
+        chat.applyChatResult(baseline, result);
+        expect((chat.findChat(ref) as any).scriptstate).toEqual({});
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", mergeUnset: { scriptstate: ["$e"] } }]);
+        expect(saved().scriptstate).toEqual({ $f: "6" });
+        chat.mergeChatMeta(ref, "scriptstate", { $g: "7" });
+        commit();
+        baseline = chat.captureChatBaseline(ref);
+        result = clone(baseline.chat) as any;
+        result.scriptstate = undefined;
+        chat.applyChatResult(baseline, result);
+        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", mergeUnset: { scriptstate: ["$g"] } }]);
+        expect(saved().scriptstate).toEqual({ $f: "6" });
+        // Dropping a map that was already empty queues nothing.
         baseline = chat.captureChatBaseline(ref);
         result = clone(baseline.chat) as any;
         delete result.scriptstate;
         chat.applyChatResult(baseline, result);
-        expect(commit().work.groups[0].ops).toEqual([{ op: "meta", set: {}, unset: ["scriptstate"] }]);
-        expect(saved()).not.toHaveProperty("scriptstate");
-        expect(chat.findChat(ref)).not.toHaveProperty("scriptstate");
+        expect(commit().work.groups).toEqual([]);
+        expect(saved().scriptstate).toEqual({ $f: "6" });
     });
 });
 
@@ -1000,7 +1751,7 @@ describe("unload work (pagehide)", () => {
         expect(server.texts("c", "k")).toEqual(["third"]);
     });
 
-    it("takes only a by-id prefix, leaves a chat's request out whole when it does not fit the remaining budget, and skips a chat with a request in flight", async () => {
+    it("takes only whole by-id batches, leaves a chat's request out whole when it does not fit the remaining budget, and skips a chat with a request in flight", async () => {
         const { server, chat, ref, take, apply, ack, commit } = await boot();
         const refJ = { chaId: "c", chatId: "j" };
         const bytes = (body: string) => new TextEncoder().encode(body).length;
@@ -1008,40 +1759,45 @@ describe("unload work (pagehide)", () => {
         commit();
         const long = "long ".repeat(400);
         chat.setMessageText(ref, "a", long);
-        // A bulk removal needs the current revision: it and everything after it stay queued.
+        // A bulk removal needs the current revision: the whole batch it is in waits for a normal save.
         chat.removeMessages(ref, ["b", "c"]);
         chat.setChatMeta(ref, { note: "after the removal" });
         chat.setChatMeta(refJ, { note: "small" });
+        expect(chat.unloadPendingChatWork(LIMIT).map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
+        const saved = take();
+        expect(saved.groups.find((group) => group.chatId === "k")!.ops.map((op) => op.op)).toEqual([
+            "setText",
+            "remove",
+            "meta",
+        ]);
+        ack(saved, apply(saved));
+        expect(server.texts("c", "k")).toEqual([long]);
 
+        chat.setMessageText(ref, "a", "short");
+        chat.setChatMeta(ref, { note: long });
+        chat.setChatMeta(refJ, { note: "small again" });
         const both = chat.unloadPendingChatWork(LIMIT);
         expect(both.map((request) => request.work.groups[0].chatId)).toEqual(["k", "j"]);
         const [requestK, requestJ] = both;
-        expect(requestK.work.groups[0].ops).toEqual([{ op: "setText", id: "a", text: long }]);
-        // Part of the chat's queue: settling it settles nothing (sequence 0).
-        expect(requestK.work.groups[0].seq).toBe(0);
+        expect(requestK.work.groups[0].ops.map((op) => op.op)).toEqual(["setText", "meta"]);
 
         // A budget one byte short of k's request: k is left out whole (never a part of its ops), and
         // the next chat that fits still goes.
         const onlyJ = chat.unloadPendingChatWork(bytes(requestK.body) - 1);
         expect(onlyJ.map((request) => request.work.groups[0].chatId)).toEqual(["j"]);
-        // Built again: the same request but for its fresh group id.
-        const withoutId = (body: string) => JSON.parse(body, (key, value) => (key === "groupId" ? undefined : value));
-        expect(withoutId(onlyJ[0].body)).toEqual(withoutId(requestJ.body));
-        expect(bytes(onlyJ[0].body)).toBe(bytes(requestJ.body));
+        // Built again: the same request, under the same batch id.
+        expect(onlyJ[0].body).toBe(requestJ.body);
         expect(chat.unloadPendingChatWork(bytes(requestJ.body) - 1)).toEqual([]);
 
-        // Sent: only the prefix leaves k's queue; the rest goes after the answer.
+        // Sent: the whole batch leaves k's queue, and its answer settles it.
         chat.trackUnloadWork(requestK.work);
         const workJ = take();
         expect(workJ.groups.map((group) => group.chatId)).toEqual(["j"]);
         ack(workJ, apply(workJ));
         const answer = server.store.applyChanges(JSON.parse(requestK.body));
         chat.settleUnloadWork(requestK.work, answer.chats);
-        const rest = take();
-        expect(rest.groups.map((group) => group.chatId)).toEqual(["k"]);
-        expect(rest.groups[0].ops.map((op) => op.op)).toEqual(["remove", "meta"]);
-        ack(rest, apply(rest));
-        expect(server.texts("c", "k")).toEqual([long]);
+        expect(take().groups).toEqual([]);
+        expect(server.texts("c", "k")).toEqual(["short"]);
 
         // A chat with a request in flight is skipped until its answer.
         chat.setChatMeta(ref, { note: "k again" });
@@ -1728,6 +2484,371 @@ describe("message translations", () => {
     });
 });
 
+describe("message positions", () => {
+    let frames: FrameRequestCallback[];
+
+    beforeEach(() => {
+        frames = [];
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => frames.push(callback));
+    });
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    const since = (chat: ChatModule, before: ReturnType<ChatModule["messagePositionStats"]>) => {
+        const after = chat.messagePositionStats();
+        return { builds: after.builds - before.builds, lookups: after.lookups - before.lookups };
+    };
+
+    it("appends a hook's fresh tail messages with one position build and ordered anchors", async () => {
+        const { chat, ref, take } = await boot();
+        const baseline = chat.captureChatBaseline(ref);
+        const added = Array.from({ length: 8 }, (_, index) => m(`new-${index}`, `New ${index}`));
+        const result = clone(baseline.chat);
+        result.message.push(...added);
+        const before = chat.messagePositionStats();
+
+        chat.applyChatResult(baseline, result);
+
+        expect(since(chat, before).builds).toBeLessThanOrEqual(1);
+        expect(chat.findChat(ref)!.message).toEqual([...baseline.chat.message, ...added]);
+        expect(take().groups.map((group) => group.ops)).toEqual([
+            added.map((message, index) => ({
+                op: "append",
+                messages: [message],
+                anchor: { after: index === 0 ? "c" : `new-${index - 1}` },
+            })),
+        ]);
+    });
+
+    it("caches repeated misses and finds ids after append, insertion and rename", async () => {
+        const { chat, ref } = await boot();
+        const before = chat.messagePositionStats();
+        for (let repeat = 0; repeat < 4; repeat++) {
+            expect(chat.messagePositionOf(ref, "new-tail")).toBe(-1);
+            expect(chat.heldMessageById(ref, "new-tail")).toBeUndefined();
+        }
+        expect(since(chat, before).builds).toBeLessThanOrEqual(1);
+
+        chat.appendMessage(ref, m("new-tail", "Tail"));
+        expect(chat.messagePositionOf(ref, "new-tail")).toBe(3);
+        expect(chat.heldMessageById(ref, "new-tail")).toEqual(m("new-tail", "Tail"));
+
+        const cached = chat.messagePositionStats();
+        for (const id of ["inserted", "renamed"]) {
+            for (let repeat = 0; repeat < 4; repeat++) {
+                expect(chat.messagePositionOf(ref, id)).toBe(-1);
+                expect(chat.heldMessageById(ref, id)).toBeUndefined();
+            }
+        }
+        expect(since(chat, cached).builds).toBe(0);
+        chat.appendMessage(ref, m("inserted", "Between A and B"), { anchor: { after: "a" } });
+        expect(chat.messagePositionOf(ref, "inserted")).toBe(1);
+        expect(chat.heldMessageById(ref, "inserted")).toEqual(m("inserted", "Between A and B"));
+        expect(chat.messagePositionOf(ref, "b")).toBe(2);
+        expect(chat.messagePositionOf(ref, "renamed")).toBe(-1);
+
+        const replacement = clone(chat.findChat(ref)!);
+        chat.replaceChat(ref, {
+            ...replacement,
+            message: replacement.message.map((row, index) => (index === 2 ? { ...row, chatId: "renamed" } : row)),
+        });
+        expect(chat.messagePositionOf(ref, "renamed")).toBe(2);
+        expect(chat.heldMessageById(ref, "renamed")).toEqual(m("renamed", "B"));
+        expect(chat.messagePositionOf(ref, "b")).toBe(-1);
+        expect(ids(chat.findChat(ref))).toEqual(["a", "inserted", "renamed", "c", "new-tail"]);
+    });
+
+    it("reactive missing-id reads find an appended row in effects and derived values", async () => {
+        const { chat, ref } = await boot();
+        const { createProbe } = await import("./reactiveProbe.svelte");
+        const { flushSync } = await import("svelte");
+        // Start with a cached index so the reads depend on the miss itself.
+        expect(chat.messagePositionOf(ref, "a")).toBe(0);
+        const position = createProbe(() => chat.messagePositionOf(ref, "later"));
+        const row = createProbe(() => chat.heldMessageById(ref, "later"));
+        try {
+            expect(position.seen).toEqual([-1]);
+            expect(position.derived()).toBe(-1);
+            expect(row.seen).toEqual([undefined]);
+            expect(row.derived()).toBeUndefined();
+
+            chat.appendMessage(ref, m("later", "Now present"));
+            flushSync();
+
+            expect(position.seen).toEqual([-1, 3]);
+            expect(position.derived()).toBe(3);
+            expect(row.seen).toEqual([undefined, m("later", "Now present")]);
+            expect(row.derived()).toEqual(m("later", "Now present"));
+        } finally {
+            position.dispose();
+            row.dispose();
+        }
+    });
+
+    it("removes the tail of a 200,000-row chat and queues its remove op", async () => {
+        const { chat, ref, server, take } = await boot();
+        const record = server.chat("c", "k")!;
+        const count = 200_000;
+        chat.acceptRemoteChat({
+            ...record,
+            data: {
+                ...record.data,
+                message: Array.from({ length: count }, (_, index) => m(`row-${index}`, "")),
+            },
+        });
+
+        chat.removeMessagesUnasked(ref, [`row-${count - 1}`]);
+
+        const survivors = chat.findChat(ref)!.message;
+        expect(survivors).toHaveLength(count - 1);
+        expect(survivors[0].chatId).toBe("row-0");
+        expect(survivors.at(-1)!.chatId).toBe(`row-${count - 2}`);
+        expect(take().groups.map((group) => group.ops)).toEqual([[{ op: "remove", ids: [`row-${count - 1}`] }]]);
+    });
+
+    it("removes discontiguous ids in one op while preserving survivor order", async () => {
+        const { chat, ref, server, take } = await boot();
+        const record = server.chat("c", "k")!;
+        chat.acceptRemoteChat({
+            ...record,
+            data: { ...record.data, message: ["a", "b", "c", "d", "e", "f", "g"].map((id) => m(id, id)) },
+        });
+
+        chat.removeMessagesUnasked(ref, ["f", "b", "d"]);
+
+        expect(chat.findChat(ref)!.message).toEqual([m("a", "a"), m("c", "c"), m("e", "e"), m("g", "g")]);
+        expect(take().groups.map((group) => group.ops)).toEqual([[{ op: "remove", ids: ["f", "b", "d"] }]]);
+    });
+
+    it.each([100, 10_000])(
+        "shares one lazy index across 200 streamed tail updates in a %i-message chat",
+        async (count) => {
+            const { chat, ref, server } = await boot();
+            const before = chat.messagePositionStats();
+            chat.replaceChat(ref, {
+                ...clone(chat.findChat(ref)!),
+                message: Array.from({ length: count }, (_, index) => m(`row-${index}`, `text-${index}`, "char")),
+            });
+            expect(since(chat, before)).toEqual({ builds: 0, lookups: 0 });
+            const messageId = `row-${count - 1}`;
+            expect(
+                chat.applyServerGeneration(ref, { jobId: "J", messageId, generationId: "g", text: "reply-0", seq: 0 }),
+            ).toBe(true);
+            expect(since(chat, before).builds).toBe(1);
+
+            // A burst shares the stream buffer; later updates each get their own controlled frame.
+            for (let seq = 1; seq < 200; seq++) {
+                const lookups = chat.messagePositionStats().lookups;
+                const applied =
+                    seq % 2 === 0
+                        ? chat.applyServerGeneration(ref, {
+                              jobId: "J",
+                              messageId,
+                              generationId: "g",
+                              text: `reply-${seq}`,
+                              seq,
+                          })
+                        : chat.applyServerGenerationChunk(ref, "J", {
+                              type: "chunk",
+                              epoch: server.store.epoch(),
+                              messageId,
+                              generationId: "g",
+                              base: seq - 1,
+                              seq,
+                              keep: 0,
+                              text: `reply-${seq}`,
+                          });
+                expect(applied).toBe(true);
+                expect(chat.messagePositionStats().lookups).toBeGreaterThan(lookups);
+                if (seq < 10) {
+                    expect(chat.findChat(ref)!.message[count - 1].data).toBe("reply-0");
+                    expect(frames).toHaveLength(1);
+                } else {
+                    const beforeFrame = chat.messagePositionStats();
+                    frames.shift()!(0);
+                    expect(since(chat, beforeFrame).builds).toBe(0);
+                    expect(chat.findChat(ref)!.message[count - 1].data).toBe(`reply-${seq}`);
+                }
+            }
+
+            expect(chat.messagePositionOf(ref, messageId)).toBe(count - 1);
+            expect(chat.heldMessageById(ref, messageId)).toMatchObject({ chatId: messageId, data: "reply-199" });
+            expect(chat.findChat(ref)!.message[count - 2].data).toBe(`text-${count - 2}`);
+            expect(since(chat, before).builds).toBe(1);
+        },
+    );
+
+    it("keeps the index across a tail append and rebuilds once after removal and chat replacement", async () => {
+        const { chat, ref } = await boot();
+        const stream = (seq: number, text: string, jobId = "J", generationId = "g") =>
+            chat.applyServerGeneration(ref, { jobId, generationId, messageId: "c", seq, text });
+        const before = chat.messagePositionStats();
+        expect(stream(0, "first")).toBe(true);
+        expect(since(chat, before).builds).toBe(1);
+
+        chat.appendMessage(ref, m("d", "D"));
+        const appended = chat.messagePositionStats();
+        expect(stream(1, "after append")).toBe(true);
+        frames.shift()!(0);
+        expect(chat.messagePositionOf(ref, "c")).toBe(2);
+        expect(chat.heldMessageById(ref, "c")!.data).toBe("after append");
+        expect(chat.findChat(ref)!.message[3].data).toBe("D");
+        expect(since(chat, appended).builds).toBe(0);
+
+        chat.removeMessagesUnasked(ref, ["a"]);
+        const removed = chat.messagePositionStats();
+        expect(stream(2, "after removal")).toBe(true);
+        frames.shift()!(0);
+        expect(chat.messagePositionOf(ref, "c")).toBe(1);
+        expect(texts(chat.findChat(ref))).toEqual(["B", "after removal", "D"]);
+        expect(since(chat, removed).builds).toBe(1);
+        const missing = chat.messagePositionStats();
+        expect(chat.messagePositionOf(ref, "a")).toBe(-1);
+        expect(since(chat, missing)).toEqual({ builds: 0, lookups: 1 });
+
+        chat.endServerJob("J");
+        chat.replaceChat(ref, {
+            ...clone(chat.findChat(ref)!),
+            message: [m("b", "replacement B"), m("c", "replacement C", "char"), m("d", "replacement D")],
+        });
+        const replaced = chat.messagePositionStats();
+        expect(stream(0, "after replacement", "J2", "g2")).toBe(true);
+        expect(chat.messagePositionOf(ref, "c")).toBe(1);
+        expect(chat.heldMessageById(ref, "c")!.data).toBe("after replacement");
+        expect(texts(chat.findChat(ref))).toEqual(["replacement B", "after replacement", "replacement D"]);
+        expect(since(chat, replaced).builds).toBe(1);
+    });
+
+    it("shares one rebuilt index with job hydration and patch tails while restoring newer streamed text", async () => {
+        const { chat, ref, server } = await boot();
+        for (const messageId of ["a", "c"]) {
+            chat.applyServerGeneration(ref, {
+                jobId: "J",
+                generationId: `g-${messageId}`,
+                messageId,
+                text: `live-${messageId}`,
+                seq: 3,
+            });
+        }
+        const streaming = ["a", "c"].map((messageId) => ({ messageId, generationId: `g-${messageId}`, seq: 1 }));
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: server.chat("c", "k")!.revision,
+                ops: [{ op: "meta", set: { note: "server note" } }],
+            },
+        ]);
+        const hydrated = chat.messagePositionStats();
+        expect(chat.hydrateChat(server.chat("c", "k")!, { jobId: "J", streaming })).toBe(true);
+        expect(texts(chat.findChat(ref))).toEqual(["live-a", "B", "live-c"]);
+        expect(since(chat, hydrated).builds).toBe(1);
+        expect(since(chat, hydrated).lookups).toBeGreaterThanOrEqual(2);
+
+        const baseRevision = chat.heldChatRevision(ref)!;
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision,
+                ops: [{ op: "append", messages: [m("d", "D")], anchor: { end: true } }],
+            },
+        ]);
+        const patched = chat.messagePositionStats();
+        expect(
+            chat.hydrateChatPatch(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: server.chat("c", "k")!.revision,
+                    count: 4,
+                    messages: [{ after: "c", message: m("d", "D") }],
+                },
+                { jobId: "J", streaming },
+            ),
+        ).toBe("applied");
+        expect(since(chat, patched).builds).toBe(1);
+        expect(chat.messagePositionOf(ref, "d")).toBe(3);
+        expect(chat.heldMessageById(ref, "c")!.data).toBe("live-c");
+        expect(texts(chat.findChat(ref))).toEqual(["live-a", "B", "live-c", "D"]);
+        expect(since(chat, patched).builds).toBe(1);
+    });
+
+    it("rebuilds once after normalizing a new character's message ids", async () => {
+        const { chat, records } = await boot();
+        const refN = { chaId: "n", chatId: "new-chat" };
+        chat.installCharacterChats(
+            "n",
+            [
+                {
+                    id: "new-chat",
+                    name: "New",
+                    note: "",
+                    localLore: [],
+                    message: [
+                        m("stable", "Stable"),
+                        m("dup", "First duplicate"),
+                        m("dup", "Second duplicate"),
+                        m(undefined, "Missing id"),
+                    ],
+                },
+            ],
+            {},
+        );
+        records.insertCharacterRecord({ chaId: "n", name: "N" });
+        expect(chat.messagePositionOf(refN, "stable")).toBe(0);
+        const before = chat.messagePositionStats();
+        chat.normalizeNewCharacter("n");
+        expect(chat.messagePositionOf(refN, "stable")).toBe(0);
+        expect(since(chat, before).builds).toBe(1);
+        expect(chat.heldMessageById(refN, "dup")!.data).toBe("First duplicate");
+        const normalized = chat.findChat(refN)!;
+        const renamed = normalized.message[2].chatId!;
+        expect(renamed).not.toBe("dup");
+        expect(chat.messagePositionOf(refN, renamed)).toBe(2);
+        expect(chat.heldMessageById(refN, renamed)!.data).toBe("Second duplicate");
+        expect(chat.heldMessageById(refN, normalized.message[3].chatId!)!.data).toBe("Missing id");
+        expect(since(chat, before).builds).toBe(1);
+    });
+
+    it.each(["create", "replace"] as const)(
+        "rebuilds once when a server %s acknowledgment adopts a renamed message id",
+        async (op) => {
+            const { chat, ref, take, apply, ack, server } = await boot();
+            const target = op === "create" ? { chaId: "c", chatId: "new-chat" } : ref;
+            const data = {
+                id: target.chatId,
+                name: "Renamed",
+                note: "",
+                localLore: [],
+                message: [m("stable", "Stable"), m("bad\tid", "Renamed row", "char")],
+            };
+            if (op === "create") chat.createChat("c", data);
+            else chat.replaceChat(target, data);
+            const work = take();
+            const result = apply(work);
+            const renamed = server.chat("c", target.chatId)!.data.message[1].chatId!;
+            expect(renamed).not.toBe("bad\tid");
+            expect(chat.messagePositionOf(target, "stable")).toBe(0);
+            expect(chat.heldMessageById(target, "bad\tid")!.data).toBe("Renamed row");
+            const before = chat.messagePositionStats();
+            ack(work, result);
+            // This unchanged id must also see the structural invalidation.
+            expect(chat.messagePositionOf(target, "stable")).toBe(0);
+            expect(since(chat, before).builds).toBe(1);
+            expect(chat.messagePositionOf(target, renamed)).toBe(1);
+            expect(chat.heldMessageById(target, renamed)).toMatchObject({ chatId: renamed, data: "Renamed row" });
+            const edited = chat.messagePositionStats();
+            chat.setMessageText(target, renamed, "Edited under adopted id");
+            expect(since(chat, edited).builds).toBe(0);
+            expect(chat.heldMessageById(target, renamed)!.data).toBe("Edited under adopted id");
+            expect(since(chat, before).builds).toBe(1);
+            expect(chat.messagePositionOf(target, "bad\tid")).toBe(-1);
+        },
+    );
+});
+
 describe("stream updates per frame", () => {
     // The frames the chat module asked for, run by hand (the timers are fake: the fallback waits).
     let frames: FrameRequestCallback[] = [];
@@ -1747,6 +2868,125 @@ describe("stream updates per frame", () => {
         generationId,
         text,
         seq,
+    });
+
+    it("detaches without retiring a generation that a later hydration, accepted reply and chunk resume", async () => {
+        const { chat, ref, server } = await boot();
+        const job = { jobId: "J", streaming: [{ messageId: "a", generationId: "g", seq: 0 }] };
+        expect(chat.hydrateChat(server.chat("c", "k")!, job)).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(1, "first stream"))).toBe(true);
+
+        chat.detachServerJob("J");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+        expect(chat.hydrateChat(server.chat("c", "k")!, job)).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(2, "retaken"))).toBe(true);
+        expect(
+            chat.applyServerGenerationChunk(ref, "J", {
+                type: "chunk",
+                epoch: server.store.epoch(),
+                messageId: "a",
+                generationId: "g",
+                base: 2,
+                seq: 3,
+                keep: 7,
+                text: " live",
+            }),
+        ).toBe(true);
+        frames.splice(0).forEach((frame) => frame(0));
+        expect(chat.findChat(ref)!.message[0].data).toBe("retaken live");
+        expect(chat.isMessageLocked(ref, "a")).toBe(true);
+    });
+
+    it("restores the last proven stored text on detach so the next feed text diff uses the server prefix", async () => {
+        const { chat, ref, server } = await boot(await StoreBackedServer.create({ feed: true }));
+        const stored = "stored ".repeat(SMALL_FEED_PATCH_BYTES);
+        const streamed = "stream ".repeat(SMALL_FEED_PATCH_BYTES);
+        const write = (text: string) =>
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "a", text }],
+                },
+            ]);
+        chat.applyServerGeneration(ref, update(2, streamed));
+        write(stored);
+        expect(
+            chat.hydrateChat(server.chat("c", "k")!, {
+                jobId: "J",
+                streaming: [{ messageId: "a", generationId: "g", seq: 1 }],
+            }),
+        ).toBe(true);
+        expect(chat.findChat(ref)!.message[0].data).toBe(streamed);
+
+        chat.detachServerJob("J");
+        expect(chat.findChat(ref)!.message[0].data).toBe(stored);
+        expect(chat.isChatStale(ref)).toBe(false);
+        write(stored + "server suffix");
+        const event = server.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected the committed text change");
+        const change = event.changes.chats[0];
+        expect(change.rowDelta?.rowDiffs).toEqual([
+            {
+                id: "a",
+                text: {
+                    keep: stored.length,
+                    text: "server suffix",
+                    base: { length: stored.length, hash: textHash(stored) },
+                },
+            },
+        ]);
+        expect(chat.noteRemoteChat(ref, change.revision, change.rowDelta)).toBe("ignored");
+        expect(chat.findChat(ref)!.message[0].data).toBe(stored + "server suffix");
+        expect(server.texts("c", "k")).toEqual([stored + "server suffix", "B", "C"]);
+        expect(chat.isChatStale(ref)).toBe(false);
+    });
+
+    it("marks the chat stale on detach when an ahead compact checkpoint leaves the stored text unknown", async () => {
+        const { chat, ref, server } = await boot();
+        const streaming = (seq: number) => [{ messageId: "a", generationId: "g", seq }];
+        expect(chat.hydrateChat(server.chat("c", "k")!, { jobId: "J", streaming: streaming(0) })).toBe(true);
+        chat.applyServerGeneration(ref, update(2, "checkpoint plus newer stream"));
+        const baseRevision = server.chat("c", "k")!.revision;
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision,
+                ops: [{ op: "setText", id: "a", text: "checkpoint" }],
+            },
+        ]);
+        expect(
+            chat.hydrateChatPatch(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: server.chat("c", "k")!.revision,
+                    count: 3,
+                    messages: [{ after: null, id: "a", streamed: { generationId: "g", seq: 1 } }],
+                },
+                { jobId: "J", streaming: streaming(1) },
+            ),
+        ).toBe("applied");
+        expect(chat.findChat(ref)!.message[0].data).toBe("checkpoint plus newer stream");
+        expect(chat.isChatStale(ref)).toBe(false);
+        chat.detachServerJob("J");
+        expect(chat.isChatStale(ref)).toBe(true);
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
+    });
+
+    it("retires an ended job's generation so even a later hydration cannot admit its late accepted reply", async () => {
+        const { chat, ref, server } = await boot();
+        const job = { jobId: "J", streaming: [{ messageId: "a", generationId: "g", seq: 0 }] };
+        chat.hydrateChat(server.chat("c", "k")!, job);
+        chat.applyServerGeneration(ref, update(1, "last stream"));
+        chat.endServerJob("J");
+        expect(chat.hydrateChat(server.chat("c", "k")!, job)).toBe(true);
+        expect(chat.applyServerGeneration(ref, update(2, "late accepted"))).toBe(false);
+        expect(chat.findChat(ref)!.message[0].data).toBe("A");
+        expect(chat.isMessageLocked(ref, "a")).toBe(false);
     });
 
     it("writes a generation's first update at once, holds the later ones, and writes the newest at the next frame", async () => {
@@ -1824,19 +3064,20 @@ describe("stream updates per frame", () => {
 describe("a lost delete with the chat created again under its id, and a lost create", () => {
     const refJ = { chaId: "c", chatId: "j" };
     const chatJ = { id: "j", name: "J", note: "", localLore: [], message: [m("x", "X")] } as any;
-    /** `k` deleted here with its answer lost (`landed`: the server applied it), then created again under its id. */
+    /**
+     * `k`'s delete recovered from an earlier build's journal with its answer never seen (`landed`:
+     * the server no longer has it), then created again under its id.
+     */
     async function lostDelete(landed: boolean) {
         const booted = await boot();
-        const { server, chat, ref, take, apply, commit } = booted;
+        const { server, chat, ref, commit } = booted;
         chat.createChat("c", chatJ);
         commit();
-        chat.deleteChat(ref);
-        const work = take();
-        expect(work.groups.map((group) => group.ops)).toEqual([[{ op: "delete" }]]);
+        const sent = recoverOldDelete(chat, ref);
         if (landed) {
-            apply(work);
+            // The server no longer has the chat (a delete that landed before the server refused delete ops).
+            server.deleteChatForever("c", "k");
         }
-        chat.requeueChatWork(work, { lost: true });
         expect(server.chat("c", "k") === null).toBe(landed);
         const recreated = chat.createChat("c", {
             id: "k",
@@ -1847,11 +3088,11 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         } as any);
         expect(recreated.id).toBe("k");
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j", "k"]);
-        return { ...booted, sent: work.groups[0] };
+        return { ...booted, sent };
     }
 
-    it("keeps the recreation in the list while the server's list still shows the old chat, sends the delete first (its id, retry) and the create after it", async () => {
-        const { server, chat, ref, take, apply, ack, sent } = await lostDelete(false);
+    it("keeps the recreation in the list while the server's list still shows the old chat and sends the delete first (its id, retry); the server refuses it, keeps the old chat, and the recreation is discarded", async () => {
+        const { server, chat, ref, take, recover, sent } = await lostDelete(false);
         chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0] as any);
         // The recreation, at the old chat's server position.
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
@@ -1860,16 +3101,22 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         expect(resend.groups.map((group) => [group.ops, group.groupId, group.inDoubt])).toEqual([
             [[{ op: "delete" }], sent.groupId, true],
         ]);
-        const answer = apply(resend);
-        expect(answer.chats[0].revision).toBeNull();
-        ack(resend, answer);
-        expect(chat.hasChatWork()).toBe(true);
-        const create = take();
-        expect(create.groups.map((group) => group.ops[0].op)).toEqual(["create"]);
-        ack(create, apply(create));
-        expect(server.texts("c", "k")).toEqual(["N"]);
+        // The server refuses the delete op (`useTrash`), which also covers the retry of one it never
+        // applied: the old chat stays, the recreation is discarded, and its create is never sent.
+        expect(recover(resend).conflicts).toEqual([
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "k",
+                revision: server.chat("c", "k")!.revision,
+                reason: "useTrash",
+            },
+        ]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(texts(chat.findChat(ref))).toEqual(["A", "B", "C"]);
+        expect(server.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(server.order("c")!.ids).toEqual(["k", "j"]);
-        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
         expect(take().groups).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
     });
@@ -1888,17 +3135,26 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("keeps the unresolved delete when the recreation is deleted again, so the old chat does not survive on the server", async () => {
-        const { server, chat, ref, take, apply, ack, sent, open } = await lostDelete(false);
-        chat.deleteChat(ref);
-        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
+    it("gives the recreation no trash token while the unresolved delete waits; the server refuses the resend and the old chat comes back with its own token", async () => {
+        const { server, chat, ref, take, recover, sent, open } = await lostDelete(false);
+        chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0] as any);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        // The trash client says the chat is still saving and sends nothing.
+        expect(chat.chatTrashRevision(ref)).toBeNull();
         const resend = take();
         expect(resend.groups.map((group) => [group.ops, group.groupId, group.inDoubt])).toEqual([
             [[{ op: "delete" }], sent.groupId, true],
         ]);
-        ack(resend, apply(resend));
-        expect(server.chat("c", "k")).toBeNull();
-        // The newer delete has nothing left to delete: settled without a request.
+        // The server refuses the delete op (`useTrash`): the old chat survives on the server and
+        // comes back here; the recreation behind it has nothing left to send.
+        expect(recover(resend).conflicts).toEqual([
+            expect.objectContaining({ kind: "chat", characterId: "c", id: "k", reason: "useTrash" }),
+        ]);
+        expect(server.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(texts(chat.findChat(ref))).toEqual(["A", "B", "C"]);
+        expect(chat.chatTrashRevision(ref)).toBe(server.chat("c", "k")!.revision);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
         expect(take().groups).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
         expect(open()).toEqual([]);
@@ -1911,11 +3167,10 @@ describe("a lost delete with the chat created again under its id, and a lost cre
     });
 
     it("counts a lost delete without a recreation as fulfilled by the character's deletion elsewhere", async () => {
-        const { chat, ref, take, commit } = await boot();
+        const { chat, ref, commit } = await boot();
         chat.createChat("c", chatJ);
         commit();
-        chat.deleteChat(ref);
-        chat.requeueChatWork(take(), { lost: true });
+        recoverOldDelete(chat, ref);
         expect(chat.forgetCharacter("c", { discard: true })).toBe(false);
         expect(chat.chatDiscardsSince(0)).toEqual([]);
     });
@@ -1952,5 +3207,638 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         expect(note.result.chats[0].stale).toBeUndefined();
         expect((server.chat("c", "j")!.data as any).note).toBe("behind the resend");
         expect(chat.hasChatWork()).toBe(false);
+    });
+});
+
+describe("deleting cited messages", () => {
+    function deferred<T>() {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((done) => {
+            resolve = done;
+        });
+        return { promise, resolve };
+    }
+
+    it("removes cited messages from the captured chat after selection changes during the coverage read", async () => {
+        const { server, chat, ref, selection, take, commit } = await boot();
+        const branch = { chaId: "c", chatId: "j" };
+        chat.createChat("c", { ...clone(chat.findChat(ref)), id: "j", name: "Branch" });
+        commit();
+        selection.selectCharacter("c");
+        chat.selectChat("c", "k");
+        const { settings } = await import("../settingsViews.svelte");
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+
+        const reading = deferred<void>();
+        const coverage = deferred<Response>();
+        const question = deferred<void>();
+        const decision = deferred<boolean>();
+        const { alertConfirm } = await import("../../alert");
+        vi.mocked(alertConfirm)
+            .mockReset()
+            .mockImplementation(() => {
+                question.resolve();
+                return decision.promise;
+            });
+        const fetch = server.fetch.bind(server);
+        vi.spyOn(server, "fetch").mockImplementation((path, init) => {
+            if (path.includes("/coverage")) {
+                reading.resolve();
+                return coverage.promise;
+            }
+            return fetch(path, init);
+        });
+
+        chat.removeMessages(ref, ["a"]);
+        await reading.promise;
+        chat.selectChat("c", "j");
+        coverage.resolve(
+            Response.json({
+                revision: "memory-revision",
+                next: null,
+                runs: [],
+                events: [{ id: "e", status: "active", messageIds: ["a"] }],
+            }),
+        );
+        await question.promise;
+        expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+        expect(ids(chat.findChat(branch))).toEqual(["a", "b", "c"]);
+        expect(take().groups).toEqual([]);
+        decision.resolve(true);
+        await vi.dynamicImportSettled();
+
+        expect(ids(chat.findChat(ref))).toEqual(["b", "c"]);
+        expect(ids(chat.findChat(branch))).toEqual(["a", "b", "c"]);
+        const { work } = commit();
+        expect(work.groups.map(({ characterId, chatId, ops }) => ({ characterId, chatId, ops }))).toEqual([
+            { characterId: "c", chatId: "k", ops: [{ op: "remove", ids: ["a"], retract: true }] },
+        ]);
+        expect(server.texts("c", "k")).toEqual(["B", "C"]);
+        expect(server.texts("c", "j")).toEqual(["A", "B", "C"]);
+        server.close();
+    });
+
+    it("asks before deleting cited messages, preserves a declined delete, and deletes unmarked when coverage fails", async () => {
+        for (const answer of ["confirmed", "declined", "failed read"] as const) {
+            const { server, chat, ref, take } = await boot();
+            const { settings } = await import("../settingsViews.svelte");
+            settings.ui.memoryAlgorithmType = "structuredMemory";
+            const { alertConfirm } = await import("../../alert");
+            const confirm = vi.mocked(alertConfirm).mockReset();
+            const question = deferred<void>();
+            const decision = deferred<boolean>();
+            confirm.mockImplementation(() => {
+                question.resolve();
+                return decision.promise;
+            });
+            const fetch = server.fetch.bind(server);
+            vi.spyOn(server, "fetch").mockImplementation((path, init) =>
+                path.includes("/coverage")
+                    ? Promise.resolve(
+                          new Response(
+                              JSON.stringify(
+                                  answer === "failed read"
+                                      ? { error: "Offline" }
+                                      : {
+                                            revision: "memory-revision",
+                                            next: null,
+                                            runs: [],
+                                            events: [
+                                                { id: "e", status: "active", messageIds: ["a"] },
+                                                { id: "retired", status: "retracted", messageIds: ["a"] },
+                                            ],
+                                        },
+                              ),
+                              { status: answer === "failed read" ? 503 : 200 },
+                          ),
+                      )
+                    : fetch(path, init),
+            );
+            expect(chat.removeMessages(ref, ["a"])).toBeUndefined();
+            expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+            if (answer !== "failed read") {
+                await question.promise;
+                const { language } = await import("src/lang");
+                expect(confirm).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.removeRetracts(1));
+                expect(take().groups).toEqual([]);
+                decision.resolve(answer === "confirmed");
+            }
+            // The read may still be running with no question to wait on; a decision leaves only microtasks.
+            if (answer === "failed read")
+                await vi.waitFor(() => expect(ids(chat.findChat(ref))).toEqual(["b", "c"]), { timeout: 10_000 });
+            await vi.dynamicImportSettled();
+            expect(ids(chat.findChat(ref)), answer).toEqual(answer === "declined" ? ["a", "b", "c"] : ["b", "c"]);
+            expect(
+                take().groups.map(({ ops }) => ops),
+                answer,
+            ).toEqual(
+                answer === "declined"
+                    ? []
+                    : [
+                          [
+                              {
+                                  op: "remove",
+                                  ids: ["a"],
+                                  ...(answer === "confirmed" ? { retract: true } : {}),
+                              },
+                          ],
+                      ],
+            );
+            if (answer === "failed read") expect(confirm).not.toHaveBeenCalled();
+            server.close();
+        }
+    });
+
+    it("keeps removals and locked-message errors synchronous for other memory algorithms", async () => {
+        for (const algorithm of [undefined, "supaMemory"] as const) {
+            const { server, chat, ref, take } = await boot();
+            const { settings } = await import("../settingsViews.svelte");
+            settings.ui.memoryAlgorithmType = algorithm;
+            const { alertConfirm } = await import("../../alert");
+            vi.mocked(alertConfirm).mockClear();
+            const fetch = vi.spyOn(server, "fetch");
+            chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "partial", seq: 0 });
+            expect(() => chat.removeMessages(ref, ["a"]), String(algorithm)).toThrow(/being generated/);
+            expect(chat.removeMessages(ref, ["b"]), String(algorithm)).toBeUndefined();
+            expect(ids(chat.findChat(ref)), String(algorithm)).toEqual(["a", "c"]);
+            expect(take().groups[0].ops).toEqual([{ op: "remove", ids: ["b"] }]);
+            expect(fetch).not.toHaveBeenCalled();
+            expect(alertConfirm).not.toHaveBeenCalled();
+            chat.endServerJob("J");
+            server.close();
+        }
+    });
+});
+
+describe("Structured Memory projections in the chat mirror", () => {
+    const plainMemory = (text = "Projected event") => ({ summaries: [{ text, chatMemos: ["a"], isImportant: false }] });
+    async function projectedBoot() {
+        const b = await boot();
+        const { settings } = await import("../settingsViews.svelte");
+        const { alertToast } = await import("../../alert");
+        const toast = vi.mocked(alertToast).mockClear();
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const projection = sealHypaV3Data(plainMemory());
+        const install = (value = projection) =>
+            b.chat.acceptRemoteChat({
+                ...b.server.chat("c", "k")!,
+                data: { ...b.server.chat("c", "k")!.data, hypaV3Data: value },
+            });
+        install();
+        expect(b.chat.findChat(b.ref)!.hypaV3Data).toEqual(projection);
+        return { ...b, settings, toast, projection, install };
+    }
+
+    it("keeps the read projection in the mirror and baseline while excluding it from replacements and journal snapshots", async () => {
+        const { chat, ref, server, projection, commit } = await projectedBoot();
+        const baseline = chat.captureChatBaseline(ref)!;
+        expect(baseline.chat.hypaV3Data).toEqual(projection);
+        chat.replaceChat(ref, { ...clone(chat.findChat(ref)!), note: "Replacement note" });
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+        const journal = chat.chatJournal.project({ scope: "chat", target: "c\u0000k" });
+        expect(JSON.stringify(journal)).toContain("Replacement note");
+        expect(JSON.stringify(journal)).not.toContain("hypaV3Data");
+        const { work } = commit();
+        expect(work.groups[0].ops[0]).toMatchObject({ op: "replace", chat: { note: "Replacement note" } });
+        expect(JSON.stringify(chat.chatWorkBody(work))).not.toContain("hypaV3Data");
+        expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+    });
+
+    it("silently keeps intact and older projections, but refuses plugin edits with one toast per chat while applying the other fields", async () => {
+        const { chat, ref, projection, install, toast, commit, server } = await projectedBoot();
+        const baseline = chat.captureChatBaseline(ref)!;
+        chat.applyChatResult(baseline, clone(baseline.chat));
+        expect(chat.hasChatWork()).toBe(false);
+        expect(console.warn).not.toHaveBeenCalled();
+        expect(toast).not.toHaveBeenCalled();
+        const fresh = sealHypaV3Data(plainMemory("Newly recorded event"));
+        install(fresh);
+        chat.applyChatResult(chat.captureChatBaseline(ref)!, { ...clone(baseline.chat), note: "Plugin's older read" });
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(fresh);
+        expect(console.warn).not.toHaveBeenCalled();
+        expect(toast).not.toHaveBeenCalled();
+        commit();
+        for (const hypaV3Data of [
+            { ...clone(projection), categories: [{ id: "plugin", name: "Changed category" }] },
+            plainMemory("Unsealed replacement"),
+        ]) {
+            const base = chat.captureChatBaseline(ref)!;
+            const result = clone(base.chat);
+            result.hypaV3Data = hypaV3Data;
+            result.note = "Plugin note";
+            result.message[1].data = "Plugin message";
+            chat.applyChatResult(base, result);
+            expect(chat.findChat(ref)).toMatchObject({ note: "Plugin note", hypaV3Data: fresh });
+            expect(chat.findChat(ref)!.message[1].data).toBe("Plugin message");
+            commit();
+        }
+        expect(console.warn).toHaveBeenCalledTimes(2);
+        expect(toast).toHaveBeenCalledTimes(1);
+        const { language } = await import("../../../lang");
+        expect(toast).toHaveBeenCalledWith(language.structuredMemory.projectionWriteRefused);
+        expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+        const other = chat.createChat("c", { ...clone(chat.findChat(ref)!), id: "other" });
+        commit();
+        const remote = server.chat("c", other.id!)!;
+        chat.acceptRemoteChat({ ...remote, data: { ...remote.data, hypaV3Data: projection } });
+        const input = clone(chat.withChatsCopy({ chaId: "c" }).chats);
+        input[1].hypaV3Data = plainMemory("Plugin changed second chat");
+        input[1].note = "Second note";
+        chat.reconcileCharacterChats("c", input, 0);
+        expect(chat.findChat({ chaId: "c", chatId: other.id! })).toMatchObject({
+            hypaV3Data: projection,
+            note: "Second note",
+        });
+        expect(toast).toHaveBeenCalledTimes(2);
+        expect(console.warn).toHaveBeenCalledTimes(3);
+    });
+
+    it("returns only refused unsealed recovery memory without a plugin toast, while ordinary writes still notify", async () => {
+        const { chat, ref, projection, toast, commit, server } = await projectedBoot();
+        const memory = plainMemory("Recovered memory");
+        expect(chat.setChatMeta(ref, { note: "Recovered note", hypaV3Data: memory }, [], "recovery")).toEqual(memory);
+        expect(chat.setChatMeta(ref, { hypaV3Data: memory }, [], "recovery")).toEqual(memory);
+        for (const sealed of [
+            sealHypaV3Data(plainMemory("Another intact projection")),
+            { ...clone(projection), summaries: plainMemory("Changed sealed projection").summaries },
+        ]) {
+            expect(chat.setChatMeta(ref, { hypaV3Data: sealed }, [], "recovery")).toBeUndefined();
+        }
+        expect(chat.findChat(ref)).toMatchObject({ note: "Recovered note", hypaV3Data: projection });
+        expect(toast).not.toHaveBeenCalled();
+        commit();
+        expect(server.chat("c", "k")!.data.note).toBe("Recovered note");
+        expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+
+        expect(chat.setChatMeta(ref, { hypaV3Data: memory })).toBeUndefined();
+        const { language } = await import("../../../lang");
+        expect(toast).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.projectionWriteRefused);
+    });
+
+    it("drops carried projections from creates and character installs, notices changed seals, and preserves real new memory", async () => {
+        const { chat, ref, projection, toast, server, commit } = await projectedBoot();
+        for (const install of [false, true]) {
+            const intactId = install ? "installed-intact" : "created-intact";
+            const changedId = install ? "installed-changed" : "created-changed";
+            const realId = install ? "installed-real" : "created-real";
+            const base = chat.captureChatBaseline(ref).chat;
+            const copies = [
+                { ...base, id: intactId, hypaV3Data: projection },
+                {
+                    ...base,
+                    id: changedId,
+                    hypaV3Data: { ...projection, summaries: plainMemory("Changed seal").summaries },
+                },
+                { ...base, id: realId, hypaV3Data: plainMemory("Real new memory") },
+            ];
+            if (install)
+                chat.installCharacterChats("c", [...clone(chat.withChatsCopy({ chaId: "c" }).chats), ...copies], {});
+            else for (const copy of copies) chat.createChat("c", copy);
+            for (const id of [intactId, changedId]) {
+                expect(chat.findChat({ chaId: "c", chatId: id })).not.toHaveProperty("hypaV3Data");
+                const journal = chat.chatJournal.project({ scope: "chat", target: `c\u0000${id}` });
+                expect(JSON.stringify(journal)).toContain(id);
+                expect(JSON.stringify(journal)).not.toContain("hypaV3Data");
+            }
+            expect(chat.findChat({ chaId: "c", chatId: realId })!.hypaV3Data).toEqual(plainMemory("Real new memory"));
+            const { work } = commit();
+            for (const id of [intactId, changedId]) {
+                const group = work.groups.find((group) => group.chatId === id)!;
+                expect(group.ops[0].op).toBe("create");
+                expect(JSON.stringify(group.ops)).not.toContain("hypaV3Data");
+                expect(server.chat("c", id)!.data).not.toHaveProperty("hypaV3Data");
+            }
+            expect(server.chat("c", realId)!.data.hypaV3Data).toEqual(plainMemory("Real new memory"));
+            expect(toast).toHaveBeenCalledTimes(install ? 2 : 1);
+            expect(console.warn).toHaveBeenCalledTimes(install ? 2 : 1);
+        }
+    });
+
+    it("allows real HypaV3 writes after an algorithm change and on chats that already own summaries", async () => {
+        const { chat, ref, settings, toast, commit, server } = await projectedBoot();
+        settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        const real = plainMemory("Real replacement");
+        const baseline = chat.captureChatBaseline(ref)!;
+        chat.applyChatResult(baseline, { ...clone(baseline.chat), hypaV3Data: real });
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(real);
+        commit();
+        expect(server.chat("c", "k")!.data.hypaV3Data).toEqual(real);
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        chat.setChatMeta(ref, { hypaV3Data: plainMemory("Owned HypaV3 edit") });
+        commit();
+        expect(server.chat("c", "k")!.data.hypaV3Data).toEqual(plainMemory("Owned HypaV3 edit"));
+        expect(toast).not.toHaveBeenCalled();
+        expect(console.warn).not.toHaveBeenCalled();
+    });
+
+    it("keeps projections through stored job copies and whole metadata patches until a whole read or owning value replaces them", async () => {
+        const { chat, ref, projection, install, server } = await projectedBoot();
+        for (const mode of ["copy", "patch"] as const) {
+            for (const value of [
+                undefined,
+                { summaries: [] },
+                plainMemory("Real job memory"),
+                sealHypaV3Data(plainMemory("New projection")),
+                sealHypaV3Data({ summaries: [] }),
+            ]) {
+                install();
+                const baseRevision = chat.heldChatRevision(ref)!;
+                server.chatBatch([
+                    { characterId: "c", chatId: "k", baseRevision, ops: [{ op: "meta", set: { note: "Job note" } }] },
+                ]);
+                const remote = server.chat("c", "k")!;
+                const data = { ...remote.data, ...(value === undefined ? {} : { hypaV3Data: value }) };
+                if (mode === "copy") expect(chat.hydrateChat({ ...remote, data })).toBe(true);
+                else {
+                    const { message: _message, ...meta } = data;
+                    expect(
+                        chat.hydrateChatPatch({
+                            characterId: "c",
+                            id: "k",
+                            baseRevision,
+                            revision: remote.revision,
+                            count: data.message.length,
+                            meta,
+                        }),
+                    ).toBe("applied");
+                }
+                expect(chat.findChat(ref)!.note).toBe("Job note");
+                expect(chat.findChat(ref)!.hypaV3Data).toEqual(
+                    value && ("structuredMemoryProjection" in value || value.summaries.length > 0) ? value : projection,
+                );
+            }
+        }
+        install();
+        chat.acceptRemoteChat(server.chat("c", "k")!);
+        expect(chat.findChat(ref)).not.toHaveProperty("hypaV3Data");
+    });
+});
+
+describe("projection refresh installation", () => {
+    it("refuses stale captures, older tokens and another incarnation while preserving real memory", async () => {
+        const { chat, ref, server } = await boot();
+        const { settings } = await import("../settingsViews.svelte");
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const remote = server.chat("c", "k")!;
+        const [epoch, seq] = remote.revision.split(":");
+        const projection = (revision: number, chatSeq = seq, chatEpoch = epoch) =>
+            sealHypaV3Data(
+                { summaries: [{ text: `Revision ${revision}`, chatMemos: ["a"], isImportant: false }] },
+                `${chatEpoch}:${chatSeq}:${revision}`,
+            );
+        const installWhole = () =>
+            chat.acceptRemoteChat({ ...remote, data: { ...clone(remote.data), hypaV3Data: projection(2) } });
+        installWhole();
+        for (const bad of [
+            projection(1),
+            projection(2),
+            projection(3, String(Number(seq) + 1)),
+            projection(3, seq, "00000000-0000-4000-8000-000000000000"),
+            { ...projection(3), structuredMemoryRevision: `${epoch}:${seq}:4` },
+        ]) {
+            expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, bad)).toBe(false);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection(2));
+        }
+        const pending = chat.chatProjectionState(ref)!;
+        expect(chat.installChatProjection(ref, pending, projection(3))).toBe(true);
+        expect(chat.installChatProjection(ref, pending, null)).toBe(false);
+        expect(chat.installChatProjection(ref, pending, projection(4))).toBe(false);
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection(3));
+        // Each public whole install invalidates the captured object even when it keeps the same seal.
+        for (const replace of [
+            () => installWhole(),
+            () => chat.replaceChat(ref, clone(chat.findChat(ref)!)),
+            () => chat.installCharacterChats("c", [clone(chat.captureChatBaseline(ref).chat)], { firstMsgIndex: -1 }),
+        ]) {
+            installWhole();
+            const state = chat.chatProjectionState(ref)!;
+            replace();
+            const held = clone(chat.findChat(ref)!).hypaV3Data;
+            expect(chat.installChatProjection(ref, state, projection(9))).toBe(false);
+            expect(chat.installChatProjection(ref, state, null)).toBe(false);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(held);
+        }
+        // The save loop's whole-read installation also invalidates a captured refresh.
+        installWhole();
+        const beforeLoad = chat.chatProjectionState(ref)!;
+        const newerChat = {
+            ...remote,
+            revision: `${epoch}:${seq}:20`,
+            data: { ...clone(remote.data), note: "Whole read" },
+        };
+        chat.noteRemoteChat(ref, newerChat.revision);
+        expect(chat.finishIdleChatRefresh(newerChat)).toBe(true);
+        expect(chat.installChatProjection(ref, beforeLoad, projection(9))).toBe(false);
+        expect(chat.findChat(ref)!.note).toBe("Whole read");
+        const real = { summaries: [{ text: "Real HypaV3", chatMemos: [], isImportant: true }] };
+        chat.acceptRemoteChat({ ...remote, data: { ...clone(remote.data), hypaV3Data: real } });
+        const owned = chat.chatProjectionState(ref)!;
+        expect(chat.installChatProjection(ref, owned, null)).toBe(false);
+        expect(chat.installChatProjection(ref, owned, projection(10))).toBe(false);
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(real);
+    });
+
+    it("installs without moving chat versions, dirtying a queued create journal or leaking projections into outgoing work", async () => {
+        const { chat, ref, server, take, apply, ack } = await boot();
+        const { settings } = await import("../settingsViews.svelte");
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+        const projection = sealHypaV3Data(
+            { summaries: [{ text: "Fresh event", chatMemos: ["a"], isImportant: false }] },
+            server.chat("c", "k")!.revision,
+        );
+        const versions = () => [
+            chat.captureChatBaseline(ref).version,
+            chat.chatSaveVersion(ref),
+            chat.chatInstallVersion(ref),
+        ];
+        const before = versions();
+        expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, projection)).toBe(true);
+        expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+        expect(versions()).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+        chat.replaceChat(ref, { ...clone(chat.findChat(ref)!), note: "Write after refresh" });
+        expect(JSON.stringify(chat.chatJournal.project({ scope: "chat", target: "c\u0000k" }))).not.toContain(
+            "hypaV3Data",
+        );
+        const replaced = take();
+        expect(JSON.stringify(chat.chatWorkBody(replaced))).not.toContain("hypaV3Data");
+        const result = apply(replaced);
+        ack(replaced, result);
+        // A create can be queued while a read discovers its server revision, before its acknowledgement.
+        const createdChat = chat.createChat("c", { ...clone(chat.findChat(ref)!), id: "new" });
+        const newRef = { chaId: "c", chatId: createdChat.id! };
+        const create = take();
+        const created = apply(create);
+        chat.requeueChatWork(create);
+        const row = server.chat("c", newRef.chatId)!;
+        chat.seedChats([server.chat("c", "k")!, row], []);
+        const key = { scope: "chat" as const, target: `c\u0000${newRef.chatId}` };
+        const journal = chat.chatJournal.project(key);
+        const changed = vi.fn();
+        chat.chatJournal.setListener(changed);
+        changed.mockClear();
+        const version = chat.captureChatBaseline(newRef).version;
+        try {
+            const sealed = sealHypaV3Data({ summaries: [] }, row.revision);
+            expect(chat.installChatProjection(newRef, chat.chatProjectionState(newRef)!, sealed)).toBe(true);
+            expect(chat.captureChatBaseline(newRef).version).toBe(version);
+            expect(changed).not.toHaveBeenCalled();
+            expect(chat.chatJournal.project(key)).toEqual(journal);
+            const queued = take();
+            expect(JSON.stringify(chat.chatWorkBody(queued))).not.toContain("hypaV3Data");
+            ack(queued, created);
+        } finally {
+            chat.chatJournal.setListener(null);
+        }
+    });
+});
+
+describe("chat memory modes", () => {
+    const summary = (text: string) => ({ summaries: [{ text, chatMemos: ["a"], isImportant: false }] });
+
+    it("installs projections only for Structured chats despite the opposing global algorithm", async () => {
+        const { chat, ref, server, commit } = await boot();
+        try {
+            const { settings } = await import("../settingsViews.svelte");
+            Object.assign(settings.memoryTranslateMedia, {
+                hypaV3: true,
+                hypav2: false,
+                hanuraiEnable: false,
+                supaModelType: "none",
+            });
+            chat.setChatMeta(ref, { memoryMode: "structuredMemory" });
+            commit();
+            settings.ui.memoryAlgorithmType = "hypaV3";
+            const projection = sealHypaV3Data(summary("Structured event"), server.chat("c", "k")!.revision);
+            expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, projection)).toBe(true);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+            chat.setChatMeta(ref, { memoryMode: "hypaV3" });
+            commit();
+            settings.ui.memoryAlgorithmType = "structuredMemory";
+            const newer = sealHypaV3Data(summary("Must stay dormant"), server.chat("c", "k")!.revision);
+            expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, newer)).toBe(false);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+        } finally {
+            server.close();
+        }
+    });
+
+    it.each(["metadata", "plugin whole-chat diff"])(
+        "%s protects held memory by the mode the write leaves",
+        async (writer) => {
+            const { chat, ref, server, commit } = await boot();
+            try {
+                const { settings } = await import("../settingsViews.svelte");
+                Object.assign(settings.memoryTranslateMedia, {
+                    hypaV3: true,
+                    hypav2: false,
+                    hanuraiEnable: false,
+                    supaModelType: "none",
+                });
+                const { alertToast } = await import("../../alert");
+                const projection = sealHypaV3Data(summary("Held Structured event"));
+                const incoming = summary("New HypaV3 summary");
+                for (const mode of ["structuredMemory", "hypaV3"] as const) {
+                    const opposite = mode === "structuredMemory" ? "hypaV3" : "structuredMemory";
+                    settings.ui.memoryAlgorithmType = opposite;
+                    // Install a server copy with a held projection, then change mode and memory in one write.
+                    chat.acceptRemoteChat({
+                        ...server.chat("c", "k")!,
+                        data: { ...server.chat("c", "k")!.data, memoryMode: opposite, hypaV3Data: projection },
+                    });
+                    vi.mocked(alertToast).mockClear();
+                    const patch = { memoryMode: mode, hypaV3Data: incoming, note: `Written by ${writer}` };
+                    if (writer === "metadata") chat.setChatMeta(ref, patch);
+                    else {
+                        const baseline = chat.captureChatBaseline(ref);
+                        chat.applyChatResult(baseline, { ...clone(baseline.chat), ...patch });
+                    }
+                    expect(chat.findChat(ref)).toMatchObject({
+                        memoryMode: mode,
+                        note: patch.note,
+                        hypaV3Data: mode === "structuredMemory" ? projection : incoming,
+                    });
+                    const { work } = commit();
+                    expect(work.groups[0].ops).toEqual([
+                        {
+                            op: "meta",
+                            set: {
+                                memoryMode: mode,
+                                ...(mode === "hypaV3" ? { hypaV3Data: incoming } : {}),
+                                // The second write leaves the note as already stored.
+                                ...(mode === "structuredMemory" ? { note: patch.note } : {}),
+                            },
+                            unset: [],
+                        },
+                    ]);
+                    expect(vi.mocked(alertToast)).toHaveBeenCalledTimes(mode === "structuredMemory" ? 1 : 0);
+                    if (mode === "hypaV3") expect(server.chat("c", "k")!.data.hypaV3Data).toEqual(incoming);
+                    else expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+                }
+            } finally {
+                server.close();
+            }
+        },
+    );
+
+    it("asks before removing cited messages only in a Structured-mode chat", async () => {
+        const { chat, ref, server, commit, take } = await boot();
+        try {
+            const { settings } = await import("../settingsViews.svelte");
+            Object.assign(settings.memoryTranslateMedia, {
+                hypaV3: true,
+                hypav2: false,
+                hanuraiEnable: false,
+                supaModelType: "none",
+            });
+            const { alertConfirm } = await import("../../alert");
+            const { language } = await import("src/lang");
+            chat.setChatMeta(ref, { memoryMode: "structuredMemory" });
+            commit();
+            settings.ui.memoryAlgorithmType = "hypaV3";
+            let decide!: (answer: boolean) => void;
+            const answer = new Promise<boolean>((resolve) => {
+                decide = resolve;
+            });
+            const confirm = vi
+                .mocked(alertConfirm)
+                .mockReset()
+                .mockImplementation(() => {
+                    return answer;
+                });
+            const fetch = server.fetch.bind(server);
+            const requests = vi.spyOn(server, "fetch").mockImplementation((path, init) =>
+                path.includes("/coverage")
+                    ? Promise.resolve(
+                          Response.json({
+                              revision: "memory-revision",
+                              next: null,
+                              runs: [],
+                              events: [{ id: "event", status: "active", messageIds: ["a"] }],
+                          }),
+                      )
+                    : fetch(path, init),
+            );
+            chat.removeMessages(ref, ["a"]);
+            await vi.dynamicImportSettled();
+            expect(confirm).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.removeRetracts(1));
+            expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+            expect(take().groups).toEqual([]);
+            decide(false);
+            await vi.dynamicImportSettled();
+            expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+            chat.setChatMeta(ref, { memoryMode: "hypaV3" });
+            commit();
+            settings.ui.memoryAlgorithmType = "structuredMemory";
+            requests.mockClear();
+            confirm.mockClear();
+            chat.removeMessages(ref, ["a"]);
+            expect(ids(chat.findChat(ref))).toEqual(["b", "c"]);
+            expect(take().groups[0].ops).toEqual([{ op: "remove", ids: ["a"] }]);
+            expect(requests).not.toHaveBeenCalled();
+            expect(confirm).not.toHaveBeenCalled();
+        } finally {
+            server.close();
+        }
     });
 });

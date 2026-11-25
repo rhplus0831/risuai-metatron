@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Chat, ChatLoreOverride, Message, loreBook } from "../../../shared/database.ts";
 import {
     activateLore,
+    searchMatch,
     type LoreActivation,
     type LoreActivationInput,
     type LoreHost,
@@ -97,6 +98,75 @@ afterEach(() => {
 });
 
 describe("chat lore overrides", () => {
+    it("exposes the same recent-message matching rules used by lore activation", async () => {
+        const cases = [
+            { text: "The BLUEBIRD arrives", key: "Blue Bird", depth: 1, matched: true },
+            { text: "{{// Blue Bird }} Nothing", key: "Blue Bird", depth: 1, matched: false },
+            { text: "{{comment:Blue Bird}} Nothing", key: "Blue Bird", depth: 1, matched: false },
+            { text: "Nothing", key: "Blue Bird", depth: 1, matched: false },
+            { text: "Nothing", key: "Blue Bird", depth: 2, matched: true },
+        ];
+        for (const { text, key, depth, matched } of cases) {
+            const messages = [user("Blue Bird was here"), char(text)];
+            const host = makeHost();
+            expect(
+                await searchMatch(
+                    messages,
+                    {
+                        keys: [key],
+                        searchDepth: depth,
+                        fullWordMatching: false,
+                        dontSearchWhenRecursive: true,
+                    },
+                    { host, userName: "User", charName: "Bot", recursivePrompt: [], matchLog: [] },
+                ),
+                text,
+            ).toBe(matched);
+            const activated = await activateLore(
+                makeInput([lore("bird", key, "Bird lore")], messages, {
+                    loreBookDepth: depth,
+                }),
+                host,
+            );
+            expect(
+                activated.actives.map(({ prompt }) => prompt),
+                text,
+            ).toEqual(matched ? ["Bird lore"] : []);
+        }
+    });
+
+    it("searches the first message of a short chat at or above its length, but no rows at depth zero", async () => {
+        const messages = [user("Blue Bird was here"), char("Nothing here"), user("Still nothing")];
+        for (const { depth, matched } of [
+            { depth: 5, matched: true },
+            { depth: 3, matched: true },
+            { depth: 0, matched: false },
+        ]) {
+            const host = makeHost();
+            expect(
+                await searchMatch(
+                    messages,
+                    {
+                        keys: ["Blue Bird"],
+                        searchDepth: depth,
+                        fullWordMatching: false,
+                        dontSearchWhenRecursive: true,
+                    },
+                    { host, userName: "User", charName: "Bot", recursivePrompt: [], matchLog: [] },
+                ),
+                `depth ${depth}`,
+            ).toBe(matched);
+            const activated = await activateLore(
+                makeInput([lore("bird", "Blue Bird", "Bird lore")], messages, { loreBookDepth: depth }),
+                host,
+            );
+            expect(
+                activated.actives.map(({ prompt }) => prompt),
+                `depth ${depth}`,
+            ).toEqual(matched ? ["Bird lore"] : []);
+        }
+    });
+
     it("replaces or removes only the first owner match, keeps the first override, and reports orphans without mutating inputs", () => {
         const owners = [
             lore("no id", "x", "unlinked"),
@@ -715,13 +785,155 @@ describe("the token budget", () => {
             { loreBookToken: 12 },
         );
         expect(result.actives.map((active) => [active.source, active.prompt])).toEqual([["child", "vvvv ii"]]);
-        expect(result.budget).toEqual({ used: 6, limit: 12, rejectedCount: 1, rejectedTokens: 14 });
+        expect(result.budget).toEqual({
+            used: 6,
+            limit: 12,
+            rejectedCount: 1,
+            rejectedTokens: 14,
+            rejected: [{ name: "parent", tokens: 14 }],
+        });
         // Nothing rejected, and the character's own budget is the limit.
         const within = await run([lore("a", "x", "aaaa")], [user("x")], makeHost(), {
             loreBookToken: 10_000,
             loreSettings: { tokenBudget: 8 },
         });
-        expect(within.budget).toEqual({ used: 4, limit: 8, rejectedCount: 0, rejectedTokens: 0 });
+        expect(within.budget).toEqual({ used: 4, limit: 8, rejectedCount: 0, rejectedTokens: 0, rejected: [] });
+    });
+
+    it("leaves every after-match flag unwritten when a required entry exceeds the budget", async () => {
+        const input = makeInput(
+            [
+                lore("keep", "x", "@@keep_activate_after_match\naaaa", { id: "keep", insertorder: 2 }),
+                lore("dont", "x", "@@dont_activate_after_match\nbbbbb", { id: "dont", insertorder: 1 }),
+            ],
+            [user("x")],
+            { loreBookToken: 4 },
+        );
+        const host = makeHost();
+        const writes = vi.spyOn(host, "setChatVar");
+        const stopped = await activateLore({ ...input, stopOverBudget: true }, host);
+        expect(stopped).toMatchObject({ stopped: true, actives: [] });
+        expect(writes).not.toHaveBeenCalled();
+        expect(stopped.budget).toEqual({
+            used: 4,
+            limit: 4,
+            rejectedCount: 1,
+            rejectedTokens: 5,
+            rejected: [{ name: "dont", tokens: 5 }],
+        });
+
+        const ordinary = await activateLore(input, host);
+        expect(ordinary).not.toHaveProperty("stopped");
+        expect(sources(ordinary)).toEqual(["keep"]);
+        expect(ordinary.budget).toEqual(stopped.budget);
+        expect(writes.mock.calls).toEqual([
+            ["__internal_ka_keep", "true"],
+            ["__internal_da_dont", "true"],
+        ]);
+    });
+
+    it("preserves activation and after-match flags when all entries fit with the option", async () => {
+        const input = makeInput(
+            [
+                lore("keep", "x", "@@keep_activate_after_match\na", { id: "keep", insertorder: 2 }),
+                lore("dont", "x", "@@dont_activate_after_match\nb", { id: "dont", insertorder: 1 }),
+            ],
+            [user("x")],
+            { loreBookToken: 2 },
+        );
+        const host = makeHost();
+        const writes = vi.spyOn(host, "setChatVar");
+        const result = await activateLore({ ...input, stopOverBudget: true }, host);
+        expect(result).toEqual(await activateLore(input, makeHost()));
+        expect(result).not.toHaveProperty("stopped");
+        expect(sources(result)).toEqual(["dont", "keep"]);
+        expect(writes.mock.calls).toEqual([
+            ["__internal_ka_keep", "true"],
+            ["__internal_da_dont", "true"],
+        ]);
+    });
+
+    it.each([
+        { label: "only decorated rejections", plain: false },
+        { label: "a plain rejection at priority -1000", plain: true },
+    ])("uses the ignore decorator to decide whether to stop with $label", async ({ plain }) => {
+        const host = makeHost();
+        const writes = vi.spyOn(host, "setChatVar");
+        const result = await run(
+            [
+                lore("droppable", "x", "@@ignore_on_max_context\n@@priority 200\n@@keep_activate_after_match\naa", {
+                    id: "drop",
+                    insertorder: 2,
+                }),
+                lore(
+                    "other",
+                    "x",
+                    `${plain ? "" : "@@ignore_on_max_context\n"}@@priority -1000\n@@dont_activate_after_match\nbb`,
+                    {
+                        id: "other",
+                        insertorder: 1,
+                    },
+                ),
+            ],
+            [user("x")],
+            host,
+            { loreBookToken: 1, stopOverBudget: true },
+        );
+        expect(result.budget).toEqual({
+            used: 0,
+            limit: 1,
+            rejectedCount: 2,
+            rejectedTokens: 4,
+            rejected: [
+                { name: "droppable", tokens: 2 },
+                { name: "other", tokens: 2 },
+            ],
+        });
+        expect(result.actives).toEqual([]);
+        if (plain) {
+            expect(result.stopped).toBe(true);
+            expect(writes).not.toHaveBeenCalled();
+        } else {
+            expect(result).not.toHaveProperty("stopped");
+            expect(writes.mock.calls).toEqual([
+                ["__internal_ka_drop", "true"],
+                ["__internal_da_other", "true"],
+            ]);
+        }
+    });
+
+    it("names the rejected entries in the order the pass tried them, by comment, then key, then index", async () => {
+        const result = await run(
+            [
+                lore(" late ", "x", "l".repeat(9), { insertorder: 10 }),
+                lore("kept", "x", "aaaa", { insertorder: 300 }),
+                lore("  ", "x", "b".repeat(8), { insertorder: 200 }),
+                lore("", "", "c".repeat(7), { alwaysActive: true, insertorder: 100 }),
+            ],
+            [user("x")],
+            makeHost(),
+            { loreBookToken: 6 },
+        );
+        expect(sources(result)).toEqual(["kept"]);
+        expect(result.budget.rejected).toEqual([
+            { name: "x", tokens: 8 },
+            { name: "lorebook 3", tokens: 7 },
+            { name: "late", tokens: 9 },
+        ]);
+    });
+
+    it("names a rejected child by its linked entry, key included, since the child inherits no key", async () => {
+        const result = await run(
+            [
+                // Not matched itself (no "Castle" in the chat), so its child activates with its content.
+                lore("  ", "Castle", "tower text", { id: "p" }),
+                lore("", "", "", { id: "p", mode: "child", alwaysActive: true }),
+            ],
+            [user("x")],
+            makeHost(),
+            { loreBookToken: 4 },
+        );
+        expect(result.budget.rejected).toEqual([{ name: "Castle", tokens: "tower text".length }]);
     });
 });
 

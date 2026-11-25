@@ -12,6 +12,7 @@ server/node/ssl/certificate
 # Local data and tool output: the server's storage (`save/`, the `pnpm dev:agent` copies), test
 # reports, handovers.
 save
+host-profile
 save-agent
 save-agent.lock
 .save-agent.*

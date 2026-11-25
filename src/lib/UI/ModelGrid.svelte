@@ -3,11 +3,20 @@
     import { language } from "src/lang";
     import TextInput from "./GUI/TextInput.svelte";
 
+    /**
+     * A searchable, sortable grid of discovered models (`ModelGridItem`s the caller fetched: OpenRouter, NanoGPT, or
+     * Ollama), with optional pinned entries. Choosing writes only the bindable `value` (an item also calls
+     * `onselect`); the caller binds it to a profile field such as `openrouterRequestModel`. It fetches nothing: the
+     * caller refetches its items on the binding identity or key version (`src/ts/model/credentials.ts`
+     * `credentialStatusFor`).
+     */
+
     interface Props {
         value?: string;
         items?: ModelGridItem[];
         pinnedItems?: ModelGridPinnedItem[];
         loading?: boolean;
+        loadError?: string;
         showSubBadge?: boolean;
         selectedLabelOverride?: string;
         onselect?: (id: string, displayName: string) => void;
@@ -18,6 +27,7 @@
         items = [],
         pinnedItems = [],
         loading = false,
+        loadError,
         showSubBadge = false,
         selectedLabelOverride,
         onselect,
@@ -147,7 +157,7 @@
 
                 {#if items.length === 0}
                     <p class="col-span-full py-4 text-center text-sm text-textcolor2">
-                        {language.modelGridCouldNotLoad}
+                        {loadError ?? language.modelGridCouldNotLoad}
                     </p>
                 {:else if filteredItems.length === 0}
                     <p class="col-span-full py-4 text-center text-sm text-textcolor2">

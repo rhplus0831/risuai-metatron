@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { expect, test, type Page, type Request } from "@playwright/test";
-import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
+import { expect, test, type Page, type Request } from "./fixtures";
+import { openApp } from "../util/playwright/stack.mjs";
 
-// `getFileSrc` (the uncontrolled-page fix, `global-api.md`) in the real app against the isolated
+// `getFileSrc` (the uncontrolled-page fix, `assets.md`) in the real app against the isolated
 // stack of `playwright.config.ts`, with the app's own service worker. Before the fix, on a page's
 // first load (the worker registered but not controlling the page yet) the worker check reached the
 // network, the read answered `undefined`, and every later read of the same path waited forever; a
@@ -139,7 +139,6 @@ test("a controlled page displays a content-named direct asset and reloads it fro
     browserName,
 }) => {
     test.skip(browserName !== "chromium", "This cache check uses Chromium's service-worker network events.");
-    await clearSafeBootAttempts(page);
     await openApp(page, baseURL!);
     await page.reload();
     await openApp(page, baseURL!);

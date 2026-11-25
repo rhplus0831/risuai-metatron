@@ -7,6 +7,21 @@ import { createServerContext } from "./app.ts";
 import { errorFields } from "./diagnostics/log.ts";
 import { readListenConfig } from "./listenConfig.ts";
 
+/**
+ * The process entry (`pnpm run server`): the working directory is the root (`dist/`, `save/`,
+ * `server/ssl/`). It listens with HTTPS when both `server/ssl/certificate/server.key` and
+ * `server.crt` can be read, else with HTTP (the read error is logged, never fatal), and hands
+ * `TRUST_PROXY` to `createServerContext` (`server/src/http/clientIp.ts` parses it). WebSocket
+ * upgrades and the background tasks (`attachWebSocket`, `startBackgroundTasks` in
+ * `server/src/app.ts`) start only after `serve()` is set up, and SIGINT or SIGTERM runs the
+ * shutdown below once. Request receipt is bounded at four hours so large imports can arrive.
+ * Shutdown begins context refusal/aborts before closing the listener, allows eight seconds for
+ * HTTP draining, destroys remaining connections, then waits for context disposal before exit.
+ * Fatal runtime errors are recorded through uncaughtExceptionMonitor without changing Node's
+ * exit behavior; server errors are recorded before exit, and the startup catch logs, then exits
+ * with code 1.
+ */
+
 const rootDir = process.cwd();
 const SHUTDOWN_GRACE_MS = 8_000;
 /**
@@ -39,15 +54,15 @@ async function startServer() {
         authBypass: listen.authBypass,
         trustProxy: process.env.TRUST_PROXY,
     });
-    // A fault that ends the process lands in the diagnostics folder first (its event and the state,
-    // written synchronously). A monitor leaves Node's behavior as it is: with no `unhandledRejection`
-    // listener in this process, an unhandled rejection reaches it too (origin `unhandledRejection`)
-    // before the process exits. A failure `startServer`'s own catch takes (here, or in `serve()`'s
-    // setup) is not recorded.
+    // A fault that ends the process lands in the diagnostics folder first: what the journal still
+    // has queued, its event, and the state, all written synchronously (`recordFatal`), since no other
+    // `uncaughtException` listener exists and the process ends right after the monitor. A monitor
+    // leaves Node's behavior as it is: with no `unhandledRejection` listener in this process, an
+    // unhandled rejection reaches it too (origin `unhandledRejection`) before the process exits. A
+    // failure `startServer`'s own catch takes (here, or in `serve()`'s setup) is not recorded.
     process.on("uncaughtExceptionMonitor", (error, origin) => {
         try {
-            context.diagnostics.record({ kind: "runtime", origin, ...errorFields(error) });
-            context.diagnostics.writeState();
+            context.diagnostics.recordFatal({ kind: "runtime", origin, ...errorFields(error) });
         } catch {}
     });
     const port = listen.port;
@@ -78,8 +93,7 @@ async function startServer() {
     ) as http.Server;
     server.on("error", (error) => {
         try {
-            context.diagnostics.record({ kind: "runtime", origin: "serverError", ...errorFields(error) });
-            context.diagnostics.writeState();
+            context.diagnostics.recordFatal({ kind: "runtime", origin: "serverError", ...errorFields(error) });
         } catch {}
         console.error("[Server] Failed to start server :", error);
         process.exit(1);

@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { CHAT_SUMMARY_FORMAT } from "../../../shared/chats.ts";
 import {
     BOOT_CACHED_KINDS,
     BOOT_ITEM_HASH_PATTERN,
     BOOT_ITEM_KINDS,
     BOOT_RESOURCE_FORMAT,
+    chatCollectionClaim,
     type ResourceBootItem,
     type ResourceBootRecord,
     type ResourceBootResult,
@@ -16,7 +18,7 @@ import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts"
  * the read. The route in `resources.ts` adds auth, the body cap, and compression.
  */
 
-/** Most kinds, record claims plus item hashes, and item entries one boot request may name (each). */
+/** Most kinds, combined record/item/collection claims, and item entries one boot request may name (each). */
 export const MAX_BOOT_ENTRIES = 5000;
 /** Longest revision string a record claim may carry (a token is ~50 characters). */
 const MAX_BOOT_REVISION_LENGTH = 256;
@@ -29,6 +31,8 @@ export type BootRequest = {
     revisions: Map<string, string | null>;
     /** Kind name → every hash the client named for it. */
     hashes: Map<string, Set<string>>;
+    /** Character id → its collection claim, or null for conflicting claims. */
+    chatCollections: Map<string, string | null>;
 };
 
 const recordKey = (kind: string, id: string) => `${kind}\u0000${id}`;
@@ -75,13 +79,14 @@ export function parseBootRequest(body: unknown, kinds: ResourceKindRegistry): Bo
     }
     const records = known?.records === undefined ? [] : known.records;
     const items = known?.items === undefined ? [] : known.items;
-    if (!Array.isArray(records) || !Array.isArray(items)) {
-        return "known.records and known.items must be arrays";
+    const collections = known?.chatCollections === undefined ? [] : known.chatCollections;
+    if (!Array.isArray(records) || !Array.isArray(items) || !Array.isArray(collections)) {
+        return "known.records, known.items and known.chatCollections must be arrays";
     }
     if (items.length > MAX_BOOT_ENTRIES) {
         return `known.items must have at most ${MAX_BOOT_ENTRIES} entries`;
     }
-    let count = records.length;
+    let count = records.length + collections.length;
     for (const [index, entry] of records.entries()) {
         if (
             !isPlainObject(entry) ||
@@ -107,7 +112,17 @@ export function parseBootRequest(body: unknown, kinds: ResourceKindRegistry): Bo
         }
     }
     if (count > MAX_BOOT_ENTRIES) {
-        return `known must name at most ${MAX_BOOT_ENTRIES} records and hashes in all`;
+        return `known must name at most ${MAX_BOOT_ENTRIES} records, hashes and collections in all`;
+    }
+    for (const [index, entry] of collections.entries()) {
+        if (
+            !isPlainObject(entry) ||
+            !isValidResourceId(entry.characterId) ||
+            typeof entry.claim !== "string" ||
+            !/^[0-9a-f]{32}$/.test(entry.claim)
+        ) {
+            return `known.chatCollections[${index}] must be { characterId, claim } with a valid id and hash`;
+        }
     }
 
     const cachedNames = new Set(selected.filter(isCachedKind).map((kind) => kind.name));
@@ -131,7 +146,14 @@ export function parseBootRequest(body: unknown, kinds: ResourceKindRegistry): Bo
         }
         hashes.set(entry.kind, set);
     }
-    return { kinds: selected, chatSummaries: chatSummaries === true, revisions, hashes };
+    const chatCollections = new Map<string, string | null>();
+    if (chatSummaries) {
+        for (const { characterId, claim } of collections as { characterId: string; claim: string }[]) {
+            const previous = chatCollections.get(characterId);
+            chatCollections.set(characterId, previous === undefined || previous === claim ? claim : null);
+        }
+    }
+    return { kinds: selected, chatSummaries: chatSummaries === true, revisions, hashes, chatCollections };
 }
 
 /** An item's hash (`BOOT_ITEM_HASH_PATTERN`). */
@@ -169,7 +191,32 @@ export function readBoot(
         }
     }
     const read = stale.length > 0 ? store.readRefs(stale).items : [];
-    const rest = store.readKinds(otherKinds, { chatSummaries: request.chatSummaries });
+    const cachedChatCollections = new Set<string>();
+    if (request.chatSummaries && request.chatCollections.size > 0) {
+        const revisions = store.listRevisions();
+        const chats = new Map<string, { id: string; revision: string }[]>();
+        for (const row of revisions.chats) {
+            if (!request.chatCollections.has(row.characterId)) continue;
+            const group = chats.get(row.characterId) ?? [];
+            group.push(row);
+            chats.set(row.characterId, group);
+        }
+        const orders = new Map(revisions.chatOrders.map((row) => [row.characterId, row.revision]));
+        for (const [characterId, claim] of request.chatCollections) {
+            const summaries = chats.get(characterId) ?? [];
+            const order = orders.get(characterId) ?? null;
+            if (
+                (summaries.length > 0 || order !== null) &&
+                claim === chatCollectionClaim(CHAT_SUMMARY_FORMAT, characterId, order, summaries)
+            ) {
+                cachedChatCollections.add(characterId);
+            }
+        }
+    }
+    const rest = store.readKinds(otherKinds, {
+        chatSummaries: request.chatSummaries,
+        skipChatCollections: cachedChatCollections,
+    });
 
     const fresh = new Map(read.map((item) => [recordKey(item.kind, item.id), item]));
     const result: ResourceBootResult["kinds"] = Object.create(null);
@@ -198,6 +245,13 @@ export function readBoot(
         format: BOOT_RESOURCE_FORMAT,
         epoch: rest.epoch,
         kinds: result,
-        ...(request.chatSummaries ? { chatSummaries: rest.chatSummaries, chatOrders: rest.chatOrders } : {}),
+        ...(request.chatSummaries
+            ? {
+                  chatSummaries: rest.chatSummaries,
+                  chatOrders: rest.chatOrders,
+                  chatSummaryFormat: CHAT_SUMMARY_FORMAT,
+                  cachedChatCollections: [...cachedChatCollections],
+              }
+            : {}),
     };
 }

@@ -8,13 +8,15 @@ import {
 import type { MemoryTaskState, MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { compareRevision, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { chatEntry, findChat, heldChatRevision, type ChatRef } from "../storage/chatStore.svelte";
+import { readWithDeadline } from "../storage/readDeadline";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, GenerationBlockedError, noteRemoteChanges } from "../storage/resourceSync.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
-import { authFetch } from "../storage/serverAuth";
+import { authFetch, ensureAuth } from "../storage/serverAuth";
 
 /**
- * The tab's view of the server's HypaV3 memory tasks (`server/src/prompt/memory/memoryTasks.ts`):
- * each chat's task status from the live-update socket (`memoryTask` frames and the `hello`
+ * The tab's view of the server's memory tasks (`server/src/prompt/memory/memoryTasks.ts`), of either
+ * kind: each chat's task status from the live-update socket (`memoryTask` frames and the `hello`
  * snapshot, routed here by `eventFeed.ts`), and each chat's hydration-pending fence, which keeps the
  * HypaV3 modal from writing its whole memory copy while a task can commit or before this tab holds
  * what a task committed.
@@ -97,12 +99,14 @@ function parseEntry(value: unknown): MemoryTaskEntry | null {
     if (typeof fields.taskId !== "string" || !isCount(fields.done) || !isCount(fields.total)) {
         return null;
     }
+    const kind = fields.kind === "structuredMemory" ? { kind: "structuredMemory" as const } : {};
     if (LIVE_STATES.has(state)) {
         return {
             characterId,
             chatId,
             status: {
                 taskId: fields.taskId,
+                ...kind,
                 state: state as "queued" | "running",
                 done: fields.done,
                 total: fields.total,
@@ -121,6 +125,7 @@ function parseEntry(value: unknown): MemoryTaskEntry | null {
         chatId,
         status: {
             taskId: fields.taskId,
+            ...kind,
             state: state as "done" | "failed" | "cancelled" | "skipped",
             done: fields.done,
             total: fields.total,
@@ -218,7 +223,8 @@ export function noteMemoryTaskFrame(frame: unknown) {
 /**
  * A `hello` of the loaded epoch: its snapshot replaces the status map. A chat live in it is fenced
  * as live; every other chat this tab tracked (a status or a fence) or the snapshot lists waits for
- * the reconnect's revision listing (`noteMemoryTaskListing` with the returned token), since a task
+ * the reconnect's revision listing (fetched or from a digest-matched advertised map;
+ * `noteMemoryTaskListing` with the returned token), since a task
  * may have committed while the tab was disconnected and its terminal may have expired. A manual
  * start still in flight keeps its fence for its answer. Returns the token for the listing.
  */
@@ -250,7 +256,8 @@ export function noteMemoryTaskHello(entries: unknown): number {
 }
 
 /**
- * The revision listing read after the `hello` that returned `hello`: each chat still waiting for it
+ * The revision listing for the `hello` that returned `hello`, fetched or from a digest-matched
+ * advertised map: each chat still waiting for it
  * waits for its listed revision (none when the chat is not listed, or the mirror already holds it).
  * A listing of an older `hello` changes nothing; a failed listing leaves the chats waiting for the
  * next connection's.
@@ -317,7 +324,8 @@ export function memoryTaskRequestPending(ref: ChatRef): boolean {
 }
 
 /**
- * The chats whose task is queued or running, by chat status key, each with its count while it runs
+ * The chats whose memory task is queued or running, by chat status key, for both HypaV3 summaries
+ * and the Structured Memory writer. Each has its count (summaries or writer windows) while it runs
  * with a known total (null otherwise). Reactive.
  */
 export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> {
@@ -333,8 +341,23 @@ export function summarizingChats(): ReadonlyMap<string, MemoryTaskCount | null> 
     return result;
 }
 
+/**
+ * Why a start or cancel was refused: the server's answer (`notEnabled`, `groupArchived`, `queueFull`, `shuttingDown`,
+ * `maintenance`; `chatGone` for a 404; `epoch` for another resource epoch), or, for a start, its save
+ * of the tab's pending changes first: `discarded` (a conflict discarded some), `refused` (the server
+ * refused this chat's), or `generating` (saving is blocked by a generation).
+ */
 export type MemoryTaskRefusal =
-    "notEnabled" | "chatGone" | "queueFull" | "shuttingDown" | "maintenance" | "epoch" | "discarded" | "generating";
+    | "notEnabled"
+    | "chatGone"
+    | "groupArchived"
+    | "queueFull"
+    | "shuttingDown"
+    | "maintenance"
+    | "epoch"
+    | "discarded"
+    | "refused"
+    | "generating";
 
 /** What a start or cancel came to; the caller shows the notice. */
 export type MemoryTaskActionResult =
@@ -358,6 +381,16 @@ async function readBody(response: Response): Promise<Record<string, unknown>> {
     }
 }
 
+/** Bounds a manual Start or Cancel request and its body read after sign-in. */
+async function requestMemoryTask(path: string, init: RequestInit) {
+    await ensureAuth();
+    return await readWithDeadline(30_000, "The memory task request timed out", async (signal) => {
+        const response = await authFetch(path, { ...init, signal });
+        signal.throwIfAborted();
+        return { response, body: await readBody(response) };
+    });
+}
+
 /** The refusal or failure of a route's non-2xx answer (a 412 resets this module and halts saving). */
 function refusalOf(response: Response, body: Record<string, unknown>): MemoryTaskActionResult {
     if (response.status === 412 && body.error === "EpochMismatch") {
@@ -367,6 +400,9 @@ function refusalOf(response: Response, body: Record<string, unknown>): MemoryTas
     }
     if (response.status === 404) {
         return { outcome: "refused", reason: "chatGone" };
+    }
+    if (response.status === 409 && body.error === "groupArchived") {
+        return { outcome: "refused", reason: "groupArchived" };
     }
     switch (body.reason) {
         case "notEnabled":
@@ -404,12 +440,13 @@ async function exclusive(
 }
 
 /**
- * "Summarize now" for a chat: fences before saving the tab's pending changes (any change a conflict
- * discarded refuses the start, as a send does), then asks the server. The answer's status is taken
- * only when no frame or hello of the chat arrived meanwhile; a live answer cannot revive the fence
- * of a known terminal task. A refusal, a `pendingManual` answer, or a save failure puts back the
- * prior fence, including feed updates during the request. A transport failure or unrecognized
- * answer replaces this request's fence with `uncertain`, awaiting feed evidence or a live retry.
+ * A manual memory task start for a chat: fences before saving the tab's pending changes (a discarded
+ * change or a still-refused target chat or order refuses the start, as a send does), then asks the server. The
+ * answer's status is taken only when no frame or hello of the chat arrived meanwhile; a live answer
+ * cannot revive the fence of a known terminal task. A refusal, a `pendingManual` answer, or a save
+ * failure puts back the prior fence, including feed updates during the request. A transport failure
+ * or unrecognized answer replaces this request's fence with `uncertain`, awaiting feed evidence or a
+ * live retry.
  */
 export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
     const key = keyOf(ref.chaId, ref.chatId);
@@ -431,10 +468,14 @@ export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
             }
         };
         try {
-            const { discarded } = await flushResources();
+            const { discarded, refused } = await waitForResourceFlush(flushResources());
             if (discarded.length > 0) {
                 release();
                 return { outcome: "refused", reason: "discarded" };
+            }
+            if (refused.includes(`chats/${ref.chaId}/${ref.chatId}`) || refused.includes(`chats/${ref.chaId}`)) {
+                release();
+                return { outcome: "refused", reason: "refused" };
             }
         } catch (error) {
             release();
@@ -448,13 +489,12 @@ export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
         }
         let result: MemoryTaskActionResult;
         try {
-            const response = await authFetch(MEMORY_TASKS_PATH, {
+            const { response, body } = await requestMemoryTask(MEMORY_TASKS_PATH, {
                 method: "POST",
                 cache: "no-store",
                 headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
                 body: JSON.stringify({ characterId: ref.chaId, chatId: ref.chatId }),
             });
-            const body = await readBody(response);
             if (!current()) {
                 return { outcome: "superseded" };
             }
@@ -510,11 +550,10 @@ export function cancelMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> 
     const key = keyOf(ref.chaId, ref.chatId);
     return exclusive(key, async (_token, current) => {
         try {
-            const response = await authFetch(
+            const { response, body } = await requestMemoryTask(
                 `${MEMORY_TASKS_PATH}/${encodeURIComponent(ref.chaId)}/${encodeURIComponent(ref.chatId)}`,
                 { method: "DELETE", cache: "no-store", headers: { [RESOURCE_EPOCH_HEADER]: getResourceEpoch() } },
             );
-            const body = await readBody(response);
             if (!current()) {
                 return { outcome: "superseded" };
             }

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { get } from "svelte/store";
 
 // The v3 `setDatabase` and `setDatabaseLite` host setters route every `allowedDbKeys` key to the
 // mutation that owns it, on the live settings records as the app runs them (read through the
@@ -42,16 +43,7 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
@@ -101,6 +93,8 @@ import { rootSnapshot } from "src/ts/storage/snapshots.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { executePluginV3 } from "./v3.svelte";
+import { updateColorScheme, updateTextThemeAndCSS } from "src/ts/gui/colorscheme";
+import { CustomCSSStore } from "src/ts/stores.svelte";
 
 const ui = () => settings.ui as any;
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
@@ -213,6 +207,39 @@ afterEach(() => {
 });
 
 describe("the routing table: settings keys", () => {
+    it("both database setters repaint text and custom CSS, keeping the display after a refused ui write", async () => {
+        const api = await makeApi();
+        const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+        for (const setter of ["setDatabaseLite", "setDatabase"] as const) {
+            liveDatabase();
+            updateColorScheme();
+            updateTextThemeAndCSS();
+            expect(css("--FontColorBold")).toBe("#0f172a");
+            expect(get(CustomCSSStore)).toBe("");
+
+            await api[setter]({ textTheme: "highcontrast" });
+            expect(css("--FontColorBold")).toBe("#8BE9FD");
+            expect(css("--FontColorItalic")).toBe("#F1FA8C");
+
+            await api[setter]({ customCSS: ".chattext { color: red; }" });
+            expect(get(CustomCSSStore)).toBe(".chattext { color: red; }");
+
+            const displayed = document.documentElement.style.cssText;
+            await api[setter]({ textTheme: null, customCSS: null });
+
+            expect(ui().textTheme).toBe("highcontrast");
+            expect(ui().customCSS).toBe(".chattext { color: red; }");
+            expect(document.documentElement.style.cssText).toBe(displayed);
+            expect(get(CustomCSSStore)).toBe(".chattext { color: red; }");
+        }
+        expect(warnings()).toEqual([
+            expect.stringMatching(/^\[Plugin\] Refused the database key textTheme;/),
+            expect.stringMatching(/^\[Plugin\] Refused the database key customCSS;/),
+            expect.stringMatching(/^\[Plugin\] Refused the database key textTheme;/),
+            expect.stringMatching(/^\[Plugin\] Refused the database key customCSS;/),
+        ]);
+    });
+
     it.each([
         ["moduleIntergration", "m1", "m2"],
         ["temperature", 11, 12],
@@ -359,11 +386,11 @@ describe("the routing table: collections, the selection, and custom keys", () =>
         expect(ui().lineHeight).toBe(3);
     });
 
-    it("pluginCustomStorage replaces the whole object through both setters, and a list is refused", async () => {
+    it("pluginCustomStorage replaces the top level through both setters, keeping an omitted reserved dictionary, and a list is refused", async () => {
         settings.pluginStorage = { old: 1, _pluginStorage: { k: 1 } };
         const api = await makeApi();
         await api.setDatabaseLite({ pluginCustomStorage: { lite: true } });
-        expect(plain(settings.pluginStorage)).toEqual({ lite: true });
+        expect(plain(settings.pluginStorage)).toEqual({ lite: true, _pluginStorage: { k: 1 } });
         await api.setDatabase({ pluginCustomStorage: { _pluginStorage: { full: 1 } } });
         expect(plain(settings.pluginStorage)).toEqual({ _pluginStorage: { full: 1 } });
         expect(await api._getPluginStorage("full")).toBe(1);
@@ -605,15 +632,16 @@ describe("the per-key contract", () => {
         ]);
     });
 
-    it("a preset field written while the selected preset is gone throws MutationTargetGoneError to the plugin", async () => {
+    it("a preset field written while the selected preset is gone refuses the whole call with MutationTargetGoneError", async () => {
         const api = await makeApi();
+        const theme = ui().theme;
         selectPreset("gone");
         await expect(api.setDatabaseLite({ theme: "first", temperature: 1 })).rejects.toBeInstanceOf(
             MutationTargetGoneError,
         );
-        expect(ui().theme).toBe("first");
-        // The setters are async (they load the chats first): the selection's repair ran during the
-        // first call's awaits, so the preset is gone again for the second.
+        // The preset is checked before any key applies, so the section field did not land either.
+        expect(ui().theme).toBe(theme);
+        // The selection's repair may have run during the first call's awaits; select the gone preset again.
         selectPreset("gone");
         await expect(api.setDatabase({ temperature: 2 })).rejects.toBeInstanceOf(MutationTargetGoneError);
         expect(preset("a").temperature).toBeUndefined();
@@ -817,8 +845,53 @@ describe("the full setter's plugins key", () => {
 });
 
 describe("reserved storage namespaces a plugin replaced", () => {
+    it.each(["setDatabase", "setDatabaseLite"])(
+        "%s keeps omitted reserved names in fresh and returned pluginCustomStorage objects and replaces supplied names",
+        async (setter) => {
+            liveDatabase({
+                pluginCustomStorage: {
+                    obsolete: true,
+                    _pluginStorage: { otherPlugin: { count: 1 } },
+                    _safeLocalPluginStorage: { otherPlugin: ["local"] },
+                },
+            });
+            const api = await makeApi();
+            const local = api.getLocalPluginStorage();
+
+            await api[setter]({ pluginCustomStorage: { custom: "updated" } });
+
+            expect(await api._getPluginStorage("otherPlugin")).toEqual({ count: 1 });
+            expect(await local.getItem("otherPlugin")).toEqual(["local"]);
+            const returned = await api.getDatabase(["pluginCustomStorage"]);
+            expect(returned).toEqual({
+                pluginCustomStorage: {
+                    custom: "updated",
+                    _pluginStorage: { otherPlugin: { count: 1 } },
+                    _safeLocalPluginStorage: { otherPlugin: ["local"] },
+                },
+            });
+
+            returned.pluginCustomStorage._pluginStorage = { replacement: "new v3" };
+            delete returned.pluginCustomStorage._safeLocalPluginStorage;
+            await api[setter](returned);
+
+            expect(await api._getPluginStorage("otherPlugin")).toBeNull();
+            expect(await api._getPluginStorage("replacement")).toBe("new v3");
+            expect(await local.getItem("otherPlugin")).toEqual(["local"]);
+            expect(await api.getDatabase(["pluginCustomStorage"])).toEqual({
+                pluginCustomStorage: {
+                    custom: "updated",
+                    _pluginStorage: { replacement: "new v3" },
+                    _safeLocalPluginStorage: { otherPlugin: ["local"] },
+                },
+            });
+        },
+    );
+
     it("a list in _pluginStorage is read by index, listed, removed from, and written to without losing an entry", async () => {
-        const api = await makeApi();
+        // Owned writes need the plugin installed (`setOwnedPluginStorageItem`).
+        settings.plugins = [{ name: "routing-list", script: "", version: "3.0" }] as any;
+        const api = await makeApi("routing-list");
         await api.setDatabaseLite({ _pluginStorage: ["saved", { deep: true }] });
         expect(await api._getPluginStorage("0")).toBe("saved");
         expect(await api._getPluginStorage("1")).toEqual({ deep: true });
@@ -827,16 +900,15 @@ describe("reserved storage namespaces a plugin replaced", () => {
         expect(await api._keyPluginStorage(1)).toBe("1");
         expect(await api._lengthPluginStorage()).toBe(2);
 
+        // A new key goes to the plugin's own storage; the legacy list keeps every entry.
         await api._setPluginStorage("2", "next");
-        expect(plain(settings.pluginStorage._pluginStorage)).toEqual({
-            "0": "saved",
-            "1": { deep: true },
-            "2": "next",
-        });
+        expect(plain(settings.pluginStorage._pluginStorage)).toEqual(["saved", { deep: true }]);
+        expect(await api._getPluginStorage("2")).toBe("next");
         expect(await api._getPluginStorage("0")).toBe("saved");
 
         await api._removePluginStorage("1");
-        expect(await api._keysPluginStorage()).toEqual(["0", "2"]);
+        expect(plain(settings.pluginStorage._pluginStorage)).toEqual({ "0": "saved" });
+        expect(await api._keysPluginStorage()).toEqual(["2", "0"]);
         expect(console.warn).not.toHaveBeenCalled();
     });
 
@@ -860,7 +932,9 @@ describe("reserved storage namespaces a plugin replaced", () => {
     });
 
     it("own constructor and __proto__ entries of a replaced namespace stay readable, writable, and removable", async () => {
-        const api = await makeApi();
+        // Owned writes need the plugin installed (`setOwnedPluginStorageItem`).
+        settings.plugins = [{ name: "routing-proto", script: "", version: "3.0" }] as any;
+        const api = await makeApi("routing-proto");
         await api.setDatabaseLite({ _pluginStorage: JSON.parse('{"constructor": 1, "__proto__": 2, "plain": 3}') });
         expect(await api._getPluginStorage("constructor")).toBe(1);
         expect(await api._getPluginStorage("__proto__")).toBe(2);
@@ -883,6 +957,23 @@ describe("reserved storage namespaces a plugin replaced", () => {
 });
 
 describe("setArg, setArgument, and the theme APIs", () => {
+    it("setColorScheme immediately applies dark text when switching from a dark to a light scheme", async () => {
+        liveDatabase({ colorScheme: { ...lightScheme, type: "dark", bgcolor: "#111111" } });
+        const api = await makeApi();
+        const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+        updateColorScheme();
+        updateTextThemeAndCSS();
+        expect(css("--FontColorStandard")).toBe("#fafafa");
+        expect(css("--FontColorBold")).toBe("#fafafa");
+
+        api.setColorScheme({ ...lightScheme });
+
+        expect(css("--risu-theme-bgcolor")).toBe("#ffffff");
+        expect(document.documentElement.style.colorScheme).toBe("light");
+        expect(css("--FontColorStandard")).toBe("#0f172a");
+        expect(css("--FontColorBold")).toBe("#0f172a");
+    });
+
     it("setArg and setArgument write the plugin's argument through setPluginArgument, and a bad value is refused", async () => {
         settings.plugins = [
             { name: "other", script: "", version: "3.0", realArg: { foo: "bar" } },

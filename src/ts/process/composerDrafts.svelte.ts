@@ -1,0 +1,552 @@
+import { findChat, onChatRemoved, type ChatRef, type ChatRemoval } from "../storage/chatStore.svelte";
+import { canSelectCharacter } from "../storage/selection.svelte";
+import {
+    pageDraftJournal,
+    type ComposerRecovery,
+    type ComposerValue,
+    type DraftJournal,
+} from "../storage/draftJournal";
+import { composerSendText, sameComposerSnapshot, type ComposerRetry, type SendDraft } from "./sendDraft";
+import { getInlayMetadata } from "./files/inlays";
+
+/**
+ * The chat screen's composers, one per chat (`createComposer`). `input`, `draft`, `translate`, and `files` belong
+ * to the shown chat; `switchTo(key)` stashes the previous chat's draft and loads the next one, and
+ * `at(key)` routes a delayed write to the chat it captured. Setters track edits; getters never schedule
+ * writes, and opening an empty composer is not an edit. A separate text revision invalidates hook
+ * results after main or draft text changes, but not translation or attachment changes.
+ *
+ * Without a journal everything stays in memory. With one (the screen passes `pageDraftJournal()`), edits
+ * are journaled after `debounceMs` (500 ms) of quiet per chat, and every dirty chat flushes on page hide
+ * and when the screen is destroyed. A chat has a draft row and a send's hand-off row:
+ *
+ * - `beginSend` journals the consumed composer at once as the hand-off, with its message id and, when
+ *   the caller passes one (an ordinary Send; Continue passes none), its request id and the current
+ *   epoch. A draft send marks which box was sent and retains the whole raw composer. Typing or clearing
+ *   during the send writes only the draft row.
+ * - `settleSend` with `landed` false updates the request identity of both rows, for hidden or unmounted
+ *   chats too (`updateComposerRequest` in `src/ts/storage/draftJournal.ts`: a known end clears its
+ *   request id from the matching attempt, an uncertain end adds it to a matching row that has none, and
+ *   a row with another request id is left alone). That hand-off stays until `placeSend` or `restore`
+ *   replaces it; a landed send's is removed.
+ * - Active send ids are module-level (`sending`) and outlive the screen, so a remount never restores a
+ *   send still running.
+ * - `restore` applies a journal read only to the same still-empty, unchanged composer; a draft typed
+ *   during a send wins over the hand-off. The caller's `RestoreChecks` decide the rest: a landed send is
+ *   dropped, an unknown load outcome keeps the draft and its message id, a missing inlay is dropped and a
+ *   failed lookup keeps it, and dropping an attachment drops both ids and the sent-box marker. It returns
+ *   the sent text and, for a draft send, the whole composer for recovery. It returns a request id only when
+ *   the row's `requestEpoch` is the current epoch; another epoch keeps the text and message id.
+ * - A module-level `onChatRemoved` subscription clears the chat's journal rows even without a mounted
+ *   screen, invalidates pending restores and writes, and fences late `at(key)` callbacks until the key
+ *   is shown again.
+ */
+
+/** A chat composer's main text, draft text, translation text, and ordered attachment ids. */
+export type ComposerDraft = { input: string; draft: string; translate: string; files: string[] };
+/** A chat's live composer while shown, or its stashed draft otherwise. */
+export type ComposerView = ComposerDraft & { addFile(id: string): void; removeFileAt(index: number): void };
+
+type ComposerOptions = {
+    journal?: DraftJournal;
+    debounceMs?: number;
+    epoch?: () => string;
+    adopt?: (key: string, send: SendDraft) => void;
+    clearRetry?: (ref: ChatRef) => void;
+    retryIdFor?: (key: string, composer: ComposerDraft) => ComposerRetry | undefined;
+};
+type RestoreChecks = {
+    landed(userMessageId: string): Promise<boolean | undefined>;
+    inlayExists?(id: string): Promise<boolean | undefined>;
+};
+
+async function inlayExists(id: string): Promise<boolean | undefined> {
+    try {
+        return (await getInlayMetadata(id)) !== null;
+    } catch {
+        return undefined;
+    }
+}
+
+async function missingInlays(files: string[], exists = inlayExists): Promise<Set<string>> {
+    const present = await Promise.all(files.map(exists));
+    return new Set(files.filter((_, i) => present[i] === false));
+}
+
+class ComposerState implements ComposerDraft {
+    input = $state("");
+    draft = $state("");
+    translate = $state("");
+    files: string[] = $state([]);
+}
+
+const empty = (draft: ComposerDraft) =>
+    draft.input === "" && draft.draft === "" && draft.translate === "" && draft.files.length === 0;
+const snapshot = (draft?: Omit<ComposerDraft, "draft"> & { draft?: string }): ComposerDraft => ({
+    input: draft?.input ?? "",
+    draft: draft?.draft ?? "",
+    translate: draft?.translate ?? "",
+    files: [...(draft?.files ?? [])],
+});
+const composers = new Set<{
+    journal?: DraftJournal;
+    flush(): Promise<void>;
+    forget(removal: ChatRemoval): void;
+    restoreRecovered(entry: ComposerRecovery): Promise<boolean>;
+}>();
+// A send can outlive its screen; a remount must still leave its hand-off alone.
+const sending = new Map<string, Set<string>>();
+let watchingVisibility = false;
+
+function watchVisibility() {
+    if (watchingVisibility || typeof document === "undefined") return;
+    watchingVisibility = true;
+    const flush = () => {
+        for (const composer of composers) void composer.flush();
+    };
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") flush();
+    });
+    window.addEventListener("pagehide", flush);
+}
+
+onChatRemoved((removal) => {
+    for (const key of sending.keys()) {
+        if (
+            removal.chatId === null
+                ? key.startsWith(`${removal.chaId}\u0000`)
+                : key === `${removal.chaId}\u0000${removal.chatId}`
+        ) {
+            sending.delete(key);
+        }
+    }
+    const journals = new Set([pageDraftJournal()]);
+    for (const composer of composers) {
+        composer.forget(removal);
+        if (composer.journal) journals.add(composer.journal);
+    }
+    for (const journal of journals) void journal.removeComposersOf(removal.chaId, removal.chatId ?? undefined);
+});
+
+/** Explicit recovery writes through the mounted composer, rechecking the destination at placement. */
+export async function restoreComposerDraft(entry: ComposerRecovery): Promise<boolean> {
+    for (const composer of composers) {
+        if (composer.journal === pageDraftJournal() && (await composer.restoreRecovered(entry))) return true;
+    }
+    return false;
+}
+
+/** Keeps per-chat composers, optionally journaling their edits and send hand-offs in this browser. */
+export function createComposer({
+    journal,
+    debounceMs = 500,
+    epoch,
+    retryIdFor,
+    adopt,
+    clearRetry,
+}: ComposerOptions = {}) {
+    const live = new ComposerState();
+    const drafts = new Map<string, ComposerDraft>();
+    const dirty = new Set<string>();
+    const edits = new Map<string, number>();
+    const textRevisions = new Map<string, number>();
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    const lastWritten = new Map<string, string>();
+    const removedKeys = new Set<string>();
+    const removedCharacters = new Set<string>();
+    const reopened = new Set<string>();
+    let shown: string | null = null;
+    let generation = 0;
+    let destroyed = false;
+
+    const read = (key: string) => (key === shown ? live : drafts.get(key));
+    const version = (key: string) => edits.get(key) ?? 0;
+    const textRevision = (key: string) => textRevisions.get(key) ?? 0;
+    const textChanged = (key: string | null) => {
+        if (key !== null) textRevisions.set(key, textRevision(key) + 1);
+    };
+    const removed = (key: string) =>
+        removedKeys.has(key) || (removedCharacters.has(key.split("\u0000")[0]) && !reopened.has(key));
+    const requestIdentity = (requestId?: string) => {
+        const requestEpoch = epoch?.();
+        return requestId === undefined || requestEpoch === undefined ? undefined : { requestId, requestEpoch };
+    };
+    function cancelTimer(key: string) {
+        clearTimeout(timers.get(key));
+        timers.delete(key);
+    }
+    function changed(key: string | null) {
+        if (key === null) return;
+        edits.set(key, version(key) + 1);
+        schedule(key);
+    }
+    function schedule(key: string) {
+        if (!journal || destroyed || removed(key)) return;
+        dirty.add(key);
+        cancelTimer(key);
+        timers.set(
+            key,
+            setTimeout(() => void write(key), debounceMs),
+        );
+    }
+
+    /**
+     * With `takeOver`, the written draft replaces that send's hand-off, whose text the composer now
+     * holds; it keeps the send's ids only while its text still equals the sent text.
+     */
+    async function write(key: string, takeOver?: string): Promise<void> {
+        cancelTimer(key);
+        if (!journal || !dirty.has(key) || removed(key)) return;
+        const edit = version(key);
+        const draft = snapshot(read(key));
+        if (empty(draft)) {
+            lastWritten.delete(key);
+            dirty.delete(key);
+            await journal.removeComposer(key);
+            return;
+        }
+        const retry = retryIdFor?.(key, draft);
+        const value: ComposerValue = {
+            ...draft,
+            ...(retry === undefined
+                ? {}
+                : {
+                      userMessageId: retry.userMessageId,
+                      ...requestIdentity(retry.requestId),
+                      ...(retry.sent ? { sent: retry.sent } : {}),
+                  }),
+        };
+        const text = JSON.stringify(value);
+        if (takeOver === undefined && lastWritten.get(key) === text) {
+            dirty.delete(key);
+            return;
+        }
+        lastWritten.delete(key);
+        const outcome = await journal.putComposer(key, value, takeOver);
+        if (outcome === "written" && version(key) === edit && !removed(key)) {
+            lastWritten.set(key, text);
+            dirty.delete(key);
+        }
+    }
+
+    async function flush(): Promise<void> {
+        await Promise.all([...dirty].map((key) => write(key)));
+    }
+
+    /** Stashes the previous chat's nonempty draft and loads the next chat's composer. */
+    function switchTo(key: string | null): void {
+        if (destroyed) return;
+        if (key !== null) {
+            removedKeys.delete(key);
+            reopened.add(key);
+        }
+        if (key === shown) return;
+        generation++;
+        textChanged(shown);
+        textChanged(key);
+        if (shown !== null) {
+            if (empty(live) || removed(shown)) drafts.delete(shown);
+            else drafts.set(shown, snapshot(live));
+        }
+        const draft = key === null ? undefined : drafts.get(key);
+        shown = key;
+        if (key !== null) drafts.delete(key);
+        Object.assign(live, snapshot(draft));
+    }
+
+    function view(keyOf: () => string | null): ComposerView {
+        const current = () => {
+            const key = keyOf();
+            return key === null ? live : read(key);
+        };
+        function set<K extends keyof ComposerDraft>(field: K, value: ComposerDraft[K]) {
+            const key = keyOf();
+            if (destroyed || (key !== null && removed(key))) return;
+            let draft = current();
+            const previous = draft?.[field] ?? (field === "files" ? [] : "");
+            if (
+                Array.isArray(value) && Array.isArray(previous)
+                    ? value.length === previous.length && value.every((id, i) => id === previous[i])
+                    : value === previous
+            )
+                return;
+            if (!draft) {
+                draft = snapshot();
+                drafts.set(key!, draft);
+            }
+            draft[field] = value;
+            if (field === "input" || field === "draft") textChanged(key);
+            changed(key);
+        }
+        return {
+            get input() {
+                return current()?.input ?? "";
+            },
+            set input(value: string) {
+                set("input", value);
+            },
+            get draft() {
+                return current()?.draft ?? "";
+            },
+            set draft(value: string) {
+                set("draft", value);
+            },
+            get translate() {
+                return current()?.translate ?? "";
+            },
+            set translate(value: string) {
+                set("translate", value);
+            },
+            get files() {
+                return current()?.files ?? [];
+            },
+            set files(value: string[]) {
+                set("files", [...value]);
+            },
+            addFile(id) {
+                set("files", [...(current()?.files ?? []), id]);
+            },
+            removeFileAt(index) {
+                set(
+                    "files",
+                    (current()?.files ?? []).filter((_, i) => i !== index),
+                );
+            },
+        };
+    }
+
+    /** Routes reads and writes to this chat even after the shown chat changes. */
+    function at(key: string): ComposerView {
+        return view(() => key);
+    }
+
+    function beginSend(
+        key: string,
+        send: { snapshot: ComposerDraft; userMessageId: string; requestId?: string; sent?: "draft" },
+    ): void {
+        if (destroyed || removed(key)) return;
+        cancelTimer(key);
+        dirty.delete(key);
+        edits.set(key, version(key) + 1);
+        lastWritten.delete(key);
+        const ids = sending.get(key) ?? new Set<string>();
+        ids.add(send.userMessageId);
+        sending.set(key, ids);
+        void journal?.putComposerSend(
+            key,
+            {
+                ...snapshot(send.snapshot),
+                state: "sending",
+                userMessageId: send.userMessageId,
+                ...requestIdentity(send.requestId),
+                ...(send.sent ? { sent: send.sent } : {}),
+            },
+            {
+                landed: (id) => {
+                    const [chaId, chatId] = key.split("\u0000");
+                    return (
+                        findChat({ chaId, chatId })?.message.some((m) => m.role === "user" && m.chatId === id) ?? false
+                    );
+                },
+                notify: () => {
+                    void import("../storage/recoveryDrafts.svelte").then(({ recoveryDrafts }) =>
+                        recoveryDrafts.refresh(),
+                    );
+                },
+            },
+        );
+    }
+
+    function settleSend(
+        key: string,
+        userMessageId: string,
+        landed: boolean,
+        request: { requestId?: string; retainedRequestId?: string } = {},
+    ): void {
+        sending.get(key)?.delete(userMessageId);
+        if (sending.get(key)?.size === 0) sending.delete(key);
+        if (!removed(key)) {
+            lastWritten.delete(key);
+            // A failed send's hand-off stays until its text is placed back in the composer.
+            if (landed) void journal?.settleComposerSend(key, userMessageId);
+            else
+                void journal?.updateComposerRequest(
+                    key,
+                    { userMessageId, requestId: request.requestId },
+                    requestIdentity(request.retainedRequestId),
+                );
+        }
+    }
+
+    /**
+     * Restores a failed draft send's whole composer, or an ordinary send's text into the main box, and
+     * writes at once, replacing the hand-off. The caller gates a draft send on all four parts being empty;
+     * an ordinary send leaves queued files alone, making a new input without the send's ids.
+     */
+    function placeSend(key: string, send: SendDraft): void {
+        if (send.composer) Object.assign(at(key), snapshot(send.composer));
+        else at(key).input = send.input;
+        if (!journal || destroyed || removed(key)) return;
+        dirty.add(key);
+        void write(key, send.userMessageId);
+    }
+
+    async function restore(
+        key: string,
+        checks: RestoreChecks,
+    ): Promise<
+        | { userMessageId: string; text: string; requestId?: string; composer?: ComposerDraft; sharedId?: true }
+        | undefined
+    > {
+        const edit = version(key);
+        const switched = generation;
+        const current = () =>
+            !destroyed &&
+            !removed(key) &&
+            shown === key &&
+            generation === switched &&
+            version(key) === edit &&
+            empty(live);
+        if (!journal || !current()) return;
+        const draft = await journal.readComposer(key);
+        if (!current()) return;
+        // A draft typed during a send comes first; the send's hand-off waits for an empty composer.
+        const handoff = draft ? null : await journal.readComposerSend(key);
+        const value = draft ?? handoff;
+        if (!current() || !value) return;
+        if (value.state === "sending" && sending.get(key)?.has(value.userMessageId!)) return;
+        let sharedId = false;
+        if (value.userMessageId !== undefined) {
+            const landed = await checks.landed(value.userMessageId);
+            if (!current()) return;
+            if (landed) {
+                if (handoff) await journal.settleComposerSend(key, handoff.userMessageId);
+                else await journal.removeComposer(key, { userMessageId: value.userMessageId });
+                return;
+            }
+            // Older pages could stamp a different original with the hand-off's id when only the sent text matched.
+            if (draft?.sent === "draft" && !draft.state) {
+                const pending = await journal.readComposerSend(key);
+                if (!current()) return;
+                sharedId =
+                    !!pending && pending.userMessageId === draft.userMessageId && !sameComposerSnapshot(pending, draft);
+            }
+        }
+        const missing = await missingInlays(value.files, checks.inlayExists);
+        if (!current()) return;
+        const files = value.files.filter((id) => !missing.has(id));
+        Object.assign(live, snapshot({ ...value, files }));
+        textChanged(key);
+        if (handoff) {
+            // The restored draft replaces the hand-off at once, so neither an edit nor clearing the
+            // composer can bring the send's text back later. A dropped attachment drops both ids.
+            const { state, ...sent } = handoff;
+            const restored: ComposerValue = files.length === value.files.length ? sent : snapshot(live);
+            const text = JSON.stringify(restored);
+            void journal.putComposer(key, restored, handoff.userMessageId).then((outcome) => {
+                if (outcome === "written" && version(key) === edit && !removed(key)) lastWritten.set(key, text);
+            });
+        }
+        if (files.length === value.files.length) {
+            if (!handoff) lastWritten.set(key, JSON.stringify(value));
+            if (value.userMessageId !== undefined)
+                return {
+                    userMessageId: value.userMessageId,
+                    text: composerSendText(live, value.sent),
+                    ...(sharedId ? { sharedId: true } : {}),
+                    ...(value.sent === "draft" ? { composer: snapshot(live) } : {}),
+                    ...(value.requestId !== undefined && value.requestEpoch === epoch?.()
+                        ? { requestId: value.requestId }
+                        : {}),
+                };
+        } else if (!handoff) {
+            lastWritten.delete(key);
+            schedule(key);
+        }
+    }
+
+    function forget({ chaId, chatId }: ChatRemoval): void {
+        const key = chatId === null ? null : `${chaId}\u0000${chatId}`;
+        const matches = (candidate: string) =>
+            key === null ? candidate.startsWith(`${chaId}\u0000`) : candidate === key;
+        if (key === null) removedCharacters.add(chaId);
+        else removedKeys.add(key);
+        for (const candidate of new Set([
+            ...drafts.keys(),
+            ...edits.keys(),
+            ...textRevisions.keys(),
+            ...reopened,
+            ...(shown === null ? [] : [shown]),
+        ])) {
+            if (!matches(candidate)) continue;
+            cancelTimer(candidate);
+            edits.set(candidate, version(candidate) + 1);
+            textChanged(candidate);
+            dirty.delete(candidate);
+            drafts.delete(candidate);
+            lastWritten.delete(candidate);
+            reopened.delete(candidate);
+        }
+    }
+
+    async function restoreRecovered(entry: ComposerRecovery): Promise<boolean> {
+        const key = entry.chatKey;
+        const edit = version(key);
+        const switched = generation;
+        const current = () =>
+            !destroyed &&
+            !removed(key) &&
+            shown === key &&
+            switched === generation &&
+            edit === version(key) &&
+            empty(live) &&
+            !sending.has(key);
+        if (!journal || !current()) return false;
+        // A just-cleared box can still have an editable row until its debounce fires.
+        if (dirty.has(key)) await write(key);
+        const missing = await missingInlays(entry.value.files);
+        return journal.restoreComposerDraft(
+            entry,
+            (value) => {
+                if (!current()) return false;
+                const [chaId, chatId] = key.split("\u0000");
+                if (!canSelectCharacter(chaId)) return false;
+                const ref = { chaId, chatId };
+                const chat = findChat(ref);
+                if (!chat || chat.message.some((m) => m.role === "user" && m.chatId === entry.value.userMessageId))
+                    return false;
+                edits.set(key, edit + 1);
+                textChanged(key);
+                Object.assign(live, snapshot(value));
+                lastWritten.delete(key);
+                if (value.userMessageId !== undefined)
+                    adopt?.(key, {
+                        input: composerSendText(value, value.sent),
+                        userMessageId: value.userMessageId,
+                        ...(value.sent ? { composer: snapshot(value) } : {}),
+                        ...(value.requestEpoch === epoch?.() ? { requestId: value.requestId } : {}),
+                    });
+                else clearRetry?.(ref);
+                return true;
+            },
+            missing,
+        );
+    }
+
+    const registration = { journal, flush, forget, restoreRecovered };
+    composers.add(registration);
+    if (journal) watchVisibility();
+    function destroy(): void {
+        if (destroyed) return;
+        void flush();
+        destroyed = true;
+        generation++;
+        for (const key of timers.keys()) cancelTimer(key);
+        composers.delete(registration);
+    }
+
+    return Object.assign(
+        view(() => shown),
+        { switchTo, at, flush, beginSend, settleSend, placeSend, restore, destroy, textRevision },
+    );
+}

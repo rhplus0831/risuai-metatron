@@ -140,6 +140,31 @@ const promptRecordFields: readonly PresetField[] = [
 const modelRecordFields: readonly PresetField[] = ["name", ...MODEL_PRESET_FIELDS];
 
 describe("normalizePreset", () => {
+    it("fills an empty ooba with its defaults and remains a fixed point", () => {
+        const preset = normalizePreset({ ooba: {} });
+
+        expect(preset.ooba).toEqual(defaultOoba);
+        expect(normalizePreset(preset)).toEqual(preset);
+    });
+
+    it("fills missing ooba defaults while keeping supplied values and remains a fixed point", () => {
+        const preset = normalizePreset({
+            ooba: {
+                temperature: 0,
+                do_sample: false,
+                formating: { header: "Custom header", userPrefix: "", useName: true },
+            },
+        });
+
+        expect(preset.ooba).toEqual({
+            ...defaultOoba,
+            temperature: 0,
+            do_sample: false,
+            formating: { ...defaultOoba.formating, header: "Custom header", userPrefix: "", useName: true },
+        });
+        expect(normalizePreset(preset)).toEqual(preset);
+    });
+
     it("fills an empty input with the prompt fields' defaults plus a v4 id, and never a model or unset field", () => {
         const preset = normalizePreset({}) as unknown as Record<string, unknown>;
         expect(preset.id).toMatch(UUID_V4);
@@ -830,9 +855,9 @@ describe("field-to-resource partition", () => {
         );
     });
 
-    it("derives the forwarded lists from the owners: 47 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
+    it("derives the forwarded lists from the owners: 48 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         expect(FORWARDED_PRESET_KEYS).toEqual(PROMPT_PRESET_FIELDS.map((field) => presetToRootName[field] ?? field));
-        expect(FORWARDED_PRESET_KEYS).toHaveLength(47);
+        expect(FORWARDED_PRESET_KEYS).toHaveLength(48);
         // The profile's options at root, without its record metadata (`modelId`, `credentialId`).
         expect(MODEL_PROFILE_ROOT_FIELDS).toEqual(
             MODEL_PROFILE_FIELDS.filter((field) => field !== "modelId" && field !== "credentialId"),
@@ -879,7 +904,7 @@ describe("field-to-resource partition", () => {
             ...PERSONA_ROOT_KEYS,
             ...SELECTION_KEYS,
         ]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(47 + 38 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(48 + 38 + 4 + 3);
         expect(FORWARDED_ROOT_KEYS).not.toContain("proxyKey");
         expect(DROPPED_FIELDS).toEqual(expect.arrayContaining(["proxyKey", "apiType", "proxyCredentialId"]));
     });
@@ -1055,15 +1080,21 @@ describe("field-to-resource partition", () => {
         expect(COLLECTION_FIELDS.statics).toBe("statics");
     });
 
-    it("lists five sections and sixteen collections, two of them with a selection field, modelPresets and modelProfiles among them", () => {
+    it("lists five sections and nineteen collections, two of them with a selection field, modelPresets, modelProfiles, inputHooks, moduleFolders, and personaFolders among them", () => {
         expect(Object.keys(SECTION_KIND)).toHaveLength(5);
         expect(Object.keys(SECTION_FIELDS).sort()).toEqual(Object.keys(SECTION_KIND).sort());
-        expect(Object.keys(COLLECTION_KIND)).toHaveLength(16);
+        expect(Object.keys(COLLECTION_KIND)).toHaveLength(19);
         expect(Object.keys(COLLECTION_FIELDS).sort()).toEqual(Object.keys(COLLECTION_KIND).sort());
         expect(COLLECTION_KIND.modelPresets).toBe("modelPresets");
         expect(COLLECTION_FIELDS.modelPresets).toBe("modelPresets");
         expect(COLLECTION_KIND.modelProfiles).toBe("modelProfiles");
         expect(COLLECTION_FIELDS.modelProfiles).toBe("modelProfiles");
+        expect(COLLECTION_KIND.inputHooks).toBe("inputHooks");
+        expect(COLLECTION_FIELDS.inputHooks).toBe("inputHooks");
+        expect(COLLECTION_KIND.moduleFolders).toBe("moduleFolders");
+        expect(COLLECTION_FIELDS.moduleFolders).toBe("moduleFolders");
+        expect(COLLECTION_KIND.personaFolders).toBe("personaFolders");
+        expect(COLLECTION_FIELDS.personaFolders).toBe("personaFolders");
         expect(COLLECTION_SELECTION_FIELDS).toEqual({
             translatorPresets: "translatorPresetId",
             hypaV3Presets: "hypaV3PresetId",

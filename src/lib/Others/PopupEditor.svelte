@@ -1,20 +1,33 @@
 <script lang="ts">
     import { currentChatRef, findChat } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
-    import { onDestroy, onMount } from "svelte";
-    import { popUpEditorStore } from "../../ts/stores.svelte";
+    import { onDestroy, untrack } from "svelte";
+    import { closePopupEditorSession, popUpEditorStore } from "../../ts/stores.svelte";
     import type MonacoEditorType from "./MonacoEditor.svelte";
     import { language } from "src/lang";
     import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
     import { countTokens, tokenScopeKey } from "src/ts/tokenizer";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import Toggles from "../SideBars/Toggles.svelte";
+    import CheckInput from "../UI/GUI/CheckInput.svelte";
+    import { readPopupEditorMonaco, writePopupEditorMonaco } from "src/ts/gui/popupEditorMode";
 
+    /**
+     * The full-page popup editor over `popUpEditorStore` (`src/ts/popupEditorSession.svelte.ts`). `src/App.svelte`
+     * mounts it keyed by the session id, so each open gets a new instance, and it closes only the session it was
+     * mounted for. It edits the store's text only: the field that opened it polls the session and writes the text
+     * back. Monaco or the plain textarea is a per-device choice (`src/ts/gui/popupEditorMode.ts`).
+     */
+
+    const sessionId = untrack(() => popUpEditorStore.sessionId);
+    const countLiteralTokens = untrack(() => popUpEditorStore.mode === "literal");
     let languageMode = $state(popUpEditorStore.language || "markdown");
+    const readonly = $derived(popUpEditorStore.isReadOnly?.() ?? false);
     let previewing = $state(false);
     let tokens = $state(0);
     let MonacoComponent: typeof MonacoEditorType | null = $state(null);
     let showToggles = $state(false);
+    let useMonaco = $state(readPopupEditorMonaco());
 
     let chatParserValue = $derived.by(() => {
         if (!previewing) {
@@ -29,8 +42,8 @@
         return risuChatParserForDisplay(popUpEditorStore.value);
     });
 
-    type PreviewTokenCountInput = { text: string; scope: string } | { error: unknown };
-    const tokenField = createTokenCountField<PreviewTokenCountInput>({
+    type PopupTokenCountInput = { text: string; scope: string } | { error: unknown };
+    const tokenField = createTokenCountField<PopupTokenCountInput>({
         count: async (input, signal) => {
             if ("error" in input) throw input.error;
             return countTokens(input.text, undefined, signal);
@@ -40,13 +53,16 @@
     });
 
     $effect(() => {
-        if (!previewing) {
+        if (!previewing && !countLiteralTokens) {
             tokenField.reset();
             return;
         }
-        let input: PreviewTokenCountInput;
+        let input: PopupTokenCountInput;
         try {
-            input = { text: chatParserValue, scope: tokenScopeKey() };
+            input = {
+                text: countLiteralTokens ? popUpEditorStore.value : chatParserValue,
+                scope: tokenScopeKey(),
+            };
         } catch (error) {
             input = { error };
         }
@@ -55,7 +71,9 @@
 
     onDestroy(() => tokenField.dispose());
 
-    onMount(() => {
+    // Monaco loads only once it is chosen, so a device that keeps the textarea never downloads it.
+    $effect(() => {
+        if (!useMonaco || MonacoComponent) return;
         import("./MonacoEditor.svelte").then((module) => {
             MonacoComponent = module.default;
         });
@@ -66,14 +84,23 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
     class="fixed top-0 left-0 w-full h-full bg-black/50 backdrop-blur-sm flex items-center justify-center z-50"
-    onclick={() => (popUpEditorStore.open = false)}
+    onclick={() => closePopupEditorSession(sessionId)}
 >
     <div class="bg-darkbg rounded-lg p-4 w-11/12 h-11/12 flex flex-col gap-2" onclick={(e) => e.stopPropagation()}>
         <!-- <h2 class="text-xl font-bold">Popup Editor</h2> -->
         <!-- Header Toolbar -->
-        <div class="flex items-center justify-between">
+        <div class="flex flex-wrap items-center justify-between gap-2">
             <h2 class="text-xl font-bold">Popup Editor</h2>
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+                {#if !previewing}
+                    <CheckInput
+                        bind:check={useMonaco}
+                        onChange={(check) => writePopupEditorMonaco(check)}
+                        name={language.popupEditorMonaco}
+                        margin={false}
+                        className="text-sm"
+                    />
+                {/if}
                 {#if ["markdown", "cbs"].includes(languageMode)}
                     {#if !previewing}
                         <select
@@ -92,10 +119,13 @@
                     </button>
                 {:else}
                     <span class="bg-bgcolor border-none rounded px-2 py-1 text-sm">{languageMode}</span>
+                    {#if countLiteralTokens}
+                        <span class="text-sm">{language.tokens}: {tokens}</span>
+                    {/if}
                 {/if}
                 <button
                     class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 transition"
-                    onclick={() => (popUpEditorStore.open = false)}
+                    onclick={() => closePopupEditorSession(sessionId)}
                 >
                     X
                 </button>
@@ -133,8 +163,20 @@
                         </div>
                     {/if}
                 </div>
+            {:else if !useMonaco}
+                <textarea
+                    class="block w-full h-full resize-none bg-bgcolor text-textcolor p-2 font-mono text-sm focus:outline-none"
+                    aria-label={language.hotkeyDesc.popupEditor}
+                    {readonly}
+                    spellcheck="false"
+                    bind:value={popUpEditorStore.value}></textarea>
             {:else if MonacoComponent}
-                <MonacoComponent bind:value={popUpEditorStore.value} language={languageMode} theme="vs-dark" />
+                <MonacoComponent
+                    {readonly}
+                    bind:value={popUpEditorStore.value}
+                    language={languageMode}
+                    theme="vs-dark"
+                />
             {:else}
                 <div class="flex items-center justify-center h-full text-gray-500">{language.loading}</div>
             {/if}

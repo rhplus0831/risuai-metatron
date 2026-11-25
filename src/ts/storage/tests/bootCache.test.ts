@@ -1,10 +1,12 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
+import { CHAT_SUMMARY_FORMAT } from "../../../../shared/chats.ts";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventInput } from "../../../../shared/diagnostics.ts";
 import {
     BOOT_RESOURCE_FORMAT,
+    chatCollectionClaim,
     RESOURCE_KIND,
     type ResourceBootRequest,
     type ResourceReadKindsResult,
@@ -43,6 +45,8 @@ import {
 // equivalence over the real route is `bootCacheServer.test.ts`.
 
 const DB_NAME = "risu-boot-cache";
+/** The version the app opens; a fixture of a newer app uses one above it. */
+const DB_VERSION = 2;
 const APP = "v1";
 const ALL_KINDS = Object.values(RESOURCE_KIND) as string[];
 const hashOf = (item: unknown) => createHash("sha256").update(JSON.stringify(item)).digest("base64url").slice(0, 22);
@@ -162,7 +166,7 @@ function seededServer() {
 /** The three stores of the fake database, raw. */
 async function dump() {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => {
             for (const name of ["records", "items", "meta"]) {
                 if (!request.result.objectStoreNames.contains(name)) {
@@ -201,7 +205,7 @@ async function dump() {
 /** Writes raw entries into the fake database (a corrupt or foreign cache). */
 async function seedRaw(entries: { records?: [string, unknown][]; items?: [string, unknown][]; meta?: unknown }) {
     const db = await new Promise<IDBDatabase>((resolve) => {
-        const request = indexedDB.open(DB_NAME, 1);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => {
             for (const name of ["records", "items", "meta"]) {
                 if (!request.result.objectStoreNames.contains(name)) {
@@ -384,7 +388,7 @@ describe("the boot request", () => {
         expect(context.hashes.get("presets")).toEqual(new Set());
     });
 
-    it("claims nothing past 5,000 claims or a 2 MiB body, keeping the plain request", () => {
+    it("counts collections with records and hashes and claims nothing past 5,000 claims or a 2 MiB body", () => {
         const many = Array.from({ length: MAX_BOOT_CLAIMS + 1 }, (_, index) => ({
             kind: "characters",
             id: `c${index}`,
@@ -405,6 +409,37 @@ describe("the boot request", () => {
         const bytes = prepareBootRequest(contents(big));
         expect(bytes.request).not.toHaveProperty("known");
         expect(bytes.claims.size).toBe(0);
+        const collection = (id: string): CachedRecord => {
+            const order = { characterId: id, revision: "00000000-0000-0000-0000-000000000001:1:1", ids: [] };
+            return {
+                kind: "@chatCollection",
+                id,
+                revision: chatCollectionClaim(CHAT_SUMMARY_FORMAT, id, order.revision, []),
+                text: JSON.stringify({ format: CHAT_SUMMARY_FORMAT, summaries: [], order }),
+            };
+        };
+        const hash = hashOf(module("m"));
+        const item: CachedRecord = { kind: "modules", id: "main", revision: "r", hashes: [hash] };
+        const items: [string, string][] = [[itemKey("modules", hash), JSON.stringify(module("m"))]];
+        const mixed = [...many.slice(0, 4997), item, collection("one")];
+        const atLimit = prepareBootRequest(contents(mixed, items));
+        expect(atLimit.request.known?.records).toHaveLength(4998);
+        expect(atLimit.request.known?.items).toEqual([{ kind: "modules", hashes: [hash] }]);
+        expect(atLimit.request.known?.chatCollections).toEqual([{ characterId: "one", claim: mixed.at(-1)!.revision }]);
+        const overCount = prepareBootRequest(contents([...mixed, collection("two")], items));
+        expect(Object.hasOwn(overCount.request, "known")).toBe(false);
+        const longCollections = Array.from({ length: 2000 }, (_, index) => collection(`${index}`.padStart(512, "x")));
+        // Each half fits; their combined body exceeds 2 MiB with fewer than 5,000 claims.
+        expect(prepareBootRequest(contents(big.slice(0, 2000))).request).toHaveProperty("known");
+        expect(prepareBootRequest(contents(longCollections)).request.known?.chatCollections).toHaveLength(2000);
+        const overBytes = prepareBootRequest(contents([...big.slice(0, 2000), ...longCollections]));
+        for (const context of [overCount, overBytes]) {
+            expect(Object.hasOwn(context.request, "known")).toBe(false);
+            expect(context.request).toEqual({ kinds: ALL_KINDS, chatSummaries: true });
+            expect(context.claims.size).toBe(0);
+            expect(context.hashes.size).toBe(0);
+            expect(context.chatCollections.size).toBe(0);
+        }
     });
 });
 
@@ -928,9 +963,120 @@ describe("the boot over the IndexedDB cache", () => {
         }
     });
 
+    it("a version-1 database without stores is repaired on boot and retains the committed cache", async () => {
+        await new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                request.result.close();
+                resolve();
+            };
+        });
+        const server = seededServer();
+        const store = cacheStore();
+        const deps = depsFor(server, store);
+        const boot = await loadBootSnapshot(deps);
+        expect(boot.snapshot).toEqual(server.full());
+        expect(fallbacks(deps)).toEqual([]);
+        await boot.commit();
+        expect(deps.events).toEqual([]);
+
+        const next = depsFor(server, store);
+        expect((await loadBootSnapshot(next)).snapshot).toEqual(server.full());
+        expect(next.requests[0].known?.records).toContainEqual({
+            kind: "characters",
+            id: "c1",
+            revision: server.state.kinds.characters[0].revision,
+        });
+        expect(next.fullReads).toBe(0);
+        expect(fallbacks(next)).toEqual([]);
+    });
+
+    it("a version-1 database with only records keeps its contents through repair and accepts a boot write", async () => {
+        const server = seededServer();
+        const key = recordKey("characters", "c1");
+        const record = {
+            kind: "characters",
+            id: "c1",
+            revision: server.state.kinds.characters[0].revision,
+            text: JSON.stringify(character("c1")),
+        };
+        await new Promise<void>((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onupgradeneeded = () => request.result.createObjectStore("records").put(record, key);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                request.result.close();
+                resolve();
+            };
+        });
+        const store = cacheStore();
+        const deps = depsFor(server, store);
+        const boot = await loadBootSnapshot(deps);
+        expect(fallbacks(deps)).toEqual([]);
+        // Inspect before the boot write can replace the entry with the server's copy.
+        expect((await dump()).records).toEqual(new Map([[key, record]]));
+        await boot.commit();
+        const written = await store.load();
+        expect(written.records).toContainEqual(record);
+        expect(written.items.get(itemKey("modules", hashOf(module("m1"))))).toBe(JSON.stringify(module("m1")));
+        expect(deps.events).toEqual([]);
+    });
+
+    it("a version-1 connection blocking the upgrade falls back before the timeout and a late connection closes", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const blocker = await new Promise<IDBDatabase>((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, 1);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve(request.result);
+        });
+        try {
+            const open = vi.spyOn(indexedDB, "open");
+            const server = seededServer();
+            const deps = depsFor(server, indexedDbBootCacheStore(APP));
+            const loading = loadBootSnapshot(deps);
+            let settled = false;
+            void loading.then(() => {
+                settled = true;
+            });
+            const request = open.mock.results[0].value as IDBOpenDBRequest;
+            await new Promise<void>((resolve) => request.addEventListener("blocked", () => resolve(), { once: true }));
+            await vi.advanceTimersByTimeAsync(BOOT_CACHE_TIMEOUT_MS - 1);
+            expect(settled).toBe(true);
+            const boot = await loading;
+            expect(boot.snapshot).toEqual(server.full());
+            expect(deps.fullReads).toBe(1);
+            expect(deps.requests).toEqual([]);
+            expect(fallbacks(deps)).toEqual([
+                { kind: "bootCache", phase: "fallback", reason: "unavailable", records: 0, items: 0 },
+            ]);
+            await boot.commit();
+
+            const late = new Promise<void>((resolve, reject) => {
+                request.addEventListener("success", () => resolve(), { once: true });
+                request.addEventListener("error", () => reject(request.error), { once: true });
+            });
+            blocker.close();
+            await late;
+            const version = await new Promise<number>((resolve, reject) => {
+                const upgrade = indexedDB.open(DB_NAME, DB_VERSION + 1);
+                upgrade.onblocked = () => reject(new Error("The late cache connection blocked a later upgrade"));
+                upgrade.onerror = () => reject(upgrade.error);
+                upgrade.onsuccess = () => {
+                    const found = upgrade.result.version;
+                    upgrade.result.close();
+                    resolve(found);
+                };
+            });
+            expect(version).toBe(DB_VERSION + 1);
+        } finally {
+            blocker.close();
+        }
+    });
+
     it("a database another version holds (a newer app opened it) cannot be opened: `readFailed`, and the cache is left alone", async () => {
         await new Promise<void>((resolve) => {
-            const request = indexedDB.open(DB_NAME, 2);
+            const request = indexedDB.open(DB_NAME, DB_VERSION + 1);
             request.onupgradeneeded = () => request.result.createObjectStore("records");
             request.onsuccess = () => {
                 request.result.close();
@@ -956,7 +1102,7 @@ describe("the boot over the IndexedDB cache", () => {
         await loadBootSnapshot(depsFor(server, store));
         const blocked = vi.fn();
         const version = await new Promise<number>((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, 2);
+            const request = indexedDB.open(DB_NAME, DB_VERSION + 1);
             request.onblocked = blocked;
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
@@ -965,7 +1111,7 @@ describe("the boot over the IndexedDB cache", () => {
                 resolve(found);
             };
         });
-        expect(version).toBe(2);
+        expect(version).toBe(DB_VERSION + 1);
         expect(blocked).not.toHaveBeenCalled();
     });
 
@@ -1081,6 +1227,57 @@ describe("the boot over the IndexedDB cache", () => {
         expect([...(await dump()).records.keys()].sort()).toEqual(
             [recordKey("characters", "c1"), recordKey("modules", "main"), recordKey("presets", "main")].sort(),
         );
+    });
+
+    it("never claims planted credential-bearing or plugin records or collections from another or missing summary format", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const server = seededServer();
+        const store = cacheStore();
+        await (await loadBootSnapshot(depsFor(server, store))).commit();
+        const never = [
+            "llmSecrets",
+            "secrets",
+            "providers",
+            "authRefreshes",
+            "credentials",
+            "customModels",
+            "memoryTranslateMedia",
+            "modelProfiles",
+            "plugins",
+            "pluginStorage",
+            "pluginPermissions",
+        ];
+        const planted: [string, unknown][] = never.map((kind) => [
+            recordKey(kind, "main"),
+            { kind, id: "main", revision: "e1:1:1", text: "{}" },
+        ]);
+        for (const format of [CHAT_SUMMARY_FORMAT + 1, undefined]) {
+            const id = format === undefined ? "missing" : "foreign";
+            const order = { characterId: id, revision: "00000000-0000-0000-0000-000000000001:1:1", ids: [] };
+            planted.push([
+                recordKey("@chatCollection", id),
+                {
+                    kind: "@chatCollection",
+                    id,
+                    // Recompute even the foreign entry's hash, so only the format makes it unusable.
+                    revision: chatCollectionClaim(format!, id, order.revision, []),
+                    text: JSON.stringify({ format, summaries: [], order }),
+                },
+            ]);
+        }
+        await seedRaw({ records: planted });
+        const deps = depsFor(server, store);
+        const boot = await loadBootSnapshot(deps);
+        const known = deps.requests[0].known!;
+        expect(known.records?.map(({ kind, id }) => `${kind}/${id}`).sort()).toEqual(
+            ["characters/c1", "modules/main", "presets/main"].sort(),
+        );
+        expect(known.chatCollections ?? []).toEqual([]);
+        expect(JSON.stringify(boot.snapshot)).toBe(JSON.stringify(server.full()));
+        expect(deps.fullReads).toBe(0);
+        await boot.commit();
+        const state = await dump();
+        for (const [key] of planted) expect(state.records.has(key), key).toBe(false);
     });
 
     it("a cached character holding a credential (a foreign write) is installed, advertised once, and dropped by the commit", async () => {
@@ -1294,4 +1491,41 @@ describe("the idle commit", () => {
         expect(calls).toEqual([{ timeout: 123 }]);
         expect(commit).toHaveBeenCalledTimes(1);
     });
+});
+
+it("drops pre-memory summary collections on warm boot and installs the current memory metadata", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const server = seededServer();
+    const store = cacheStore();
+    await (await loadBootSnapshot(depsFor(server, store))).commit();
+    const revision = "00000000-0000-0000-0000-000000000001:1:1";
+    const order = { characterId: "c1", revision, ids: ["k"] };
+    const oldSummary = { characterId: "c1", id: "k", revision, name: "K", fmIndex: -1 };
+    const memory = {
+        memoryEnabled: false,
+        memoryMode: "structuredMemory",
+        memoryPresetId: "memory-preset",
+        memoryProfileId: "memory-connection",
+        memoryTrimAck: 7,
+    };
+    server.state.chatOrders = [order];
+    server.state.chatSummaries = [{ ...oldSummary, ...memory }];
+    await seedRaw({
+        records: [
+            [
+                recordKey("@chatCollection", "c1"),
+                {
+                    kind: "@chatCollection",
+                    id: "c1",
+                    revision: chatCollectionClaim(1, "c1", revision, [oldSummary]),
+                    text: JSON.stringify({ format: 1, summaries: [oldSummary], order }),
+                },
+            ],
+        ],
+    });
+    const deps = depsFor(server, store);
+    const boot = await loadBootSnapshot(deps);
+    expect(deps.requests[0].known?.chatCollections ?? []).toEqual([]);
+    expect(boot.snapshot.chatSummaries).toEqual([{ ...oldSummary, ...memory }]);
+    await boot.commit();
 });

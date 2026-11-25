@@ -7,9 +7,10 @@
         value: string;
         className?: string;
         onInput?: any;
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable(), className = "", onInput = () => {} }: Props = $props();
+    let { value = $bindable(), className = "", onInput = () => {}, popupEditorContext = undefined }: Props = $props();
     let parsed = parseMultilangString(value);
     if (parsed["en"] === undefined) {
         parsed["en"] = parsed["xx"];
@@ -77,6 +78,7 @@
 <TextAreaInput
     autocomplete="off"
     bind:value={valueObject[selectedLang]}
+    {popupEditorContext}
     onInput={() => {
         updateValue();
         onInput();

@@ -7,13 +7,26 @@
     import { openURL } from "src/ts/globalApi.svelte";
     import { hubURL } from "src/ts/characterCards";
     import TriggerV2List from "./TriggerV2List.svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
+    import { onDestroy } from "svelte";
+
+    /**
+     * The first trigger's first effect selects the editor: `v2Header` for v2, `triggerlua` for Lua.
+     * Other non-empty lists, including legacy v1 data and `triggercode`, show
+     * `triggerLegacyUnsupported`. Switching modes replaces a non-empty list only after
+     * `triggerSwitchWarn` confirmation.
+     */
 
     interface Props {
         value?: triggerscript[];
         lowLevelAble?: boolean;
+        /** The record the triggers belong to; a popup opened on another record is discarded. */
+        popupEditorContext?: unknown;
     }
 
-    let { value = $bindable([]), lowLevelAble = false }: Props = $props();
+    let { value = $bindable([]), lowLevelAble = false, popupEditorContext = undefined }: Props = $props();
+    let destroyed = false;
+    onDestroy(() => (destroyed = true));
 </script>
 
 <div class="flex items-start mt-2 gap-2">
@@ -22,11 +35,18 @@
         class:ring-1={value?.[0]?.effect?.[0]?.type === "v2Header"}
         onclick={async (e) => {
             e.stopPropagation();
+            const owner = popupEditorContext;
+            const list = recordValueIdentity(value);
             const codeType = value?.[0]?.effect?.[0]?.type;
             if (codeType !== "v2Header") {
                 if (value && value.length > 0) {
                     const t = await alertConfirm(language.triggerSwitchWarn);
-                    if (!t) {
+                    if (
+                        !t ||
+                        destroyed ||
+                        !Object.is(owner, popupEditorContext) ||
+                        list !== recordValueIdentity(value)
+                    ) {
                         return;
                     }
                 }
@@ -58,10 +78,17 @@
         class:ring-1={value?.[0]?.effect?.[0]?.type === "triggerlua"}
         onclick={async (e) => {
             e.stopPropagation();
+            const owner = popupEditorContext;
+            const list = recordValueIdentity(value);
             if (value?.[0]?.effect?.[0]?.type !== "triggerlua") {
                 if (value && value.length > 0) {
                     const t = await alertConfirm(language.triggerSwitchWarn);
-                    if (!t) {
+                    if (
+                        !t ||
+                        destroyed ||
+                        !Object.is(owner, popupEditorContext) ||
+                        list !== recordValueIdentity(value)
+                    ) {
                         return;
                     }
                 }
@@ -83,7 +110,12 @@
     >
 </div>
 {#if value?.[0]?.effect?.[0]?.type === "triggerlua"}
-    <TextAreaInput margin="both" autocomplete="off" bind:value={value[0].effect[0].code} popupLanguage="lua"
+    <TextAreaInput
+        margin="both"
+        autocomplete="off"
+        bind:value={value[0].effect[0].code}
+        {popupEditorContext}
+        popupLanguage="lua"
     ></TextAreaInput>
     <Button
         onclick={() => {
@@ -91,7 +123,7 @@
         }}>{language.helpBlock}</Button
     >
 {:else if value?.[0]?.effect?.[0]?.type === "v2Header"}
-    <TriggerV2List bind:value {lowLevelAble} />
+    <TriggerV2List bind:value {lowLevelAble} {popupEditorContext} />
 {:else if value && value.length > 0}
     <span class="text-draculared">{language.triggerLegacyUnsupported}</span>
 {/if}

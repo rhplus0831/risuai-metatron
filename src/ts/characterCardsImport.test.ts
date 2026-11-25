@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV2, cardV3, characterBook, charx, nested, pngWithText } from "./storage/tests/importFixtures";
+import { settleFlush } from "./storage/tests/flushRetry";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { createFakeLockManager } from "./storage/tests/fakeLockManager";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
 
 // `importCharacterProcess` creates its records through `addCharacter` over the real save adapter and
 // the real server store (`storeBackedServer.ts`). A JSON V2 card, an off-spec JSON card, a PNG
@@ -22,6 +24,8 @@ const { server, alerts, picker, assets } = vi.hoisted(() => ({
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
+        // "0" imports a card that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         store: { set: vi.fn(), subscribe: vi.fn() },
     },
     /** The files the next `selectFileByDom` answers with. */
@@ -39,6 +43,7 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertStore: alerts.store,
     }),
 );
@@ -56,21 +61,15 @@ vi.mock("./process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
-// The real RPack reads its byte map through `fetch` of a Vite asset; the map comes from disk here.
-vi.mock("./rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "./rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+const originalGlobals = new Map(
+    ["location", "safeStructuredClone", "indexedDB", "IDBKeyRange"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 
 async function boot() {
     vi.resetModules();
@@ -143,7 +142,10 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     server.current?.close();
 });
 
@@ -210,6 +212,45 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(fake.batchCount()).toBe(0);
     });
 
+    // A book's own settings override the user's global lorebook settings, so the notice warns and lists
+    // them beside the global values; a book without them (the first test) gets the plain notice.
+    it("a card whose book carries its own lore settings warns in the import notice, beside the global values", async () => {
+        const { cards, ids, added, settings } = await boot();
+        settings.memoryTranslateMedia.loreBookDepth = 5;
+        settings.providers.loreBookToken = 1200;
+        const before = ids();
+        const book = {
+            ...characterBook("Tuned", "tuned lore"),
+            scan_depth: 12,
+            token_budget: 300,
+            recursive_scanning: false,
+            extensions: { risu_fullWordMatching: true },
+        };
+        await cards.importCharacterProcess({
+            name: "card.json",
+            data: encode(cardV2("Tuned", { character_book: book })),
+        });
+        const { character } = await added(before);
+        expect(character.loreSettings).toEqual({
+            scanDepth: 12,
+            tokenBudget: 300,
+            recursiveScanning: false,
+            fullWordMatching: true,
+        });
+        const text = language.importedLoreSettings;
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(
+            [
+                language.importedCharacter,
+                "",
+                text.warning,
+                `${language.recursiveScanning}: ${text.off} ${text.global(text.on)}`,
+                `${language.fullWordMatching}: ${text.on} ${text.global(text.off)}`,
+                `${language.loreBookDepth}: 12 ${text.global("5")}`,
+                `${language.loreBookToken}: 300 ${text.global("1200")}`,
+            ].join("\n"),
+        );
+    });
+
     it("an off-spec JSON card (name, description, first message) goes through convertOffSpecCards and addCharacter", async () => {
         const { cards, ids, added } = await boot();
         const before = ids();
@@ -222,6 +263,112 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(record).toMatchObject({ name: "Off", desc: "off desc" });
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
     });
+
+    it("imports the off-spec char_name alias, preferring name and keeping the missing-name fallback", async () => {
+        const { cards, ids, added } = await boot();
+        for (const [names, expected] of [
+            [{ char_name: "Alias" }, "Alias"],
+            [{ name: "Explicit", char_name: "Alias" }, "Explicit"],
+            [{}, "unknown name"],
+        ] as const) {
+            const before = ids();
+            const card = { ...names, description: "off desc", first_mes: "off greeting" };
+            // JSON admission requires a name; unnamed PNG cards reach the same converter's fallback.
+            await cards.importCharacterProcess(
+                Object.keys(names).length > 0
+                    ? { name: "off.json", data: encode(card) }
+                    : { name: "off.png", data: pngWithText({ chara: card }) },
+            );
+            const { character, record } = await added(before);
+            expect(character).toMatchObject({ name: expected, desc: "off desc", firstMessage: "off greeting" });
+            expect(record).toMatchObject({ name: expected, desc: "off desc", firstMessage: "off greeting" });
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("retains legacy JSON card aliases, falling back only for nullish canonical content", async () => {
+        const { cards, ids, added } = await boot();
+        const aliases = { char_name: "Keeper", char_persona: "Keeps the lighthouse", char_greeting: "Come inside" };
+        for (const [canonical, expected] of [
+            [{}, { name: "Keeper", desc: "Keeps the lighthouse", firstMessage: "Come inside" }],
+            [
+                { name: null, description: null, first_mes: null },
+                { name: "Keeper", desc: "Keeps the lighthouse", firstMessage: "Come inside" },
+            ],
+            [
+                { name: "Captain", description: "Sails the coast", first_mes: "Welcome aboard" },
+                { name: "Captain", desc: "Sails the coast", firstMessage: "Welcome aboard" },
+            ],
+            [
+                { name: "", description: "", first_mes: "" },
+                { name: "", desc: "", firstMessage: "" },
+            ],
+        ] as const) {
+            const before = ids();
+            await cards.importCharacterProcess({ name: "legacy.json", data: encode({ ...aliases, ...canonical }) });
+            const { character, record } = await added(before);
+            expect(character).toMatchObject(expected);
+            expect(record).toMatchObject(expected);
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["V2", lowLevelAccessAnswer.cancel, cardV2],
+        ["V3", lowLevelAccessAnswer.cancel, cardV3],
+        ["V3", lowLevelAccessAnswer.escape, cardV3],
+    ] as const)(
+        "a declined %s JSON card with V1 fields imports nothing and alerts nothing (answer %j)",
+        async (_version, answer, makeCard) => {
+            const { cards, ids, order, sync, record } = await boot();
+            const before = ids();
+            const beforeOrder = order();
+            const card = {
+                ...makeCard("Privileged", {}, { lowLevelAccess: true }),
+                name: "V1 fallback",
+                description: "V1 description",
+                first_mes: "V1 greeting",
+            };
+            alerts.select.mockResolvedValueOnce(answer);
+
+            await cards.importCharacterProcess({ name: "declined.json", data: encode(card) });
+
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+            expect(ids()).toEqual(before);
+            expect(order()).toEqual(beforeOrder);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.normalWait).not.toHaveBeenCalled();
+            await sync.flushResources();
+            expect(record("characterOrder")).toEqual(beforeOrder);
+        },
+    );
+
+    it.each([
+        ["JSON", "with", lowLevelAccessAnswer.with, true],
+        ["JSON", "without", lowLevelAccessAnswer.without, false],
+        ["PNG", "without", lowLevelAccessAnswer.without, false],
+    ] as const)(
+        "a %s card imported %s low-level access stores the chosen lowLevelAccess",
+        async (format, _choice, answer, expected) => {
+            const { cards, ids, added } = await boot();
+            const before = ids();
+            const card = cardV3("Privileged", {}, { lowLevelAccess: true });
+            alerts.select.mockResolvedValueOnce(answer);
+
+            await cards.importCharacterProcess(
+                format === "PNG"
+                    ? { name: "privileged.png", data: pngWithText({ ccv3: card }) }
+                    : { name: "privileged.json", data: encode(card) },
+            );
+
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+            const { character, record } = await added(before);
+            expect(character).toMatchObject({ name: "Privileged", lowLevelAccess: expected });
+            expect(record).toMatchObject({ name: "Privileged", lowLevelAccess: expected });
+            expect(alerts.error).not.toHaveBeenCalled();
+        },
+    );
 
     it("a PNG card (`chara` chunk): the image is saved, the stamp goes up by one, and the character is saved", async () => {
         const { cards, ids, added, imports } = await boot();
@@ -268,6 +415,105 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(ids()).toEqual(before);
         expect(order()).not.toContain((char as any).chaId);
         expect(imports()).toBe(1);
+    });
+});
+
+describe("character import save confirmation", () => {
+    it("announces standard cards and off-spec JSON and PNG cards only after the character and first chat are acknowledged", async () => {
+        const h = await boot();
+        const offSpec = { name: "Off", description: "off desc", first_mes: "hello" };
+        for (const file of [
+            { name: "card.json", data: encode(cardV2("Standard")) },
+            { name: "off.json", data: encode(offSpec) },
+            { name: "off.png", data: pngWithText({ chara: offSpec }) },
+        ]) {
+            alerts.normal.mockClear();
+            h.fake.holdNextBatch = true;
+            let completed = false;
+            const importing = h.cards.importCharacterProcess(file).then((id) => {
+                completed = true;
+                return id;
+            });
+            try {
+                await vi.advanceTimersByTimeAsync(0);
+                expect(completed).toBe(false);
+                expect(alerts.normal).not.toHaveBeenCalled();
+                expect(h.fake.releaseBatch).not.toBeNull();
+            } finally {
+                h.fake.releaseBatch?.();
+                await importing;
+            }
+            const chaId = (await importing)!;
+            expect(h.record("characters", chaId)).toMatchObject({ chaId });
+            const chatId = h.character(chaId).chats[0].id;
+            expect(h.fake.chat(chaId, chatId)).not.toBeNull();
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.importedCharacter);
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("reports an unconfirmed save and retains the imported character and first chat in memory and the journal", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const pendingTransactions = new Set<Promise<void>>();
+        const transaction = IDBDatabase.prototype.transaction;
+        vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+            const tx = transaction.apply(this, args);
+            if (args[1] === "readwrite") {
+                const completion = new Promise<void>((resolve) => {
+                    const done = () => {
+                        pendingTransactions.delete(completion);
+                        resolve();
+                    };
+                    tx.addEventListener("complete", done);
+                    tx.addEventListener("abort", done);
+                });
+                pendingTransactions.add(completion);
+            }
+            return tx;
+        });
+        const h = await boot();
+        const journal = (await import("./storage/draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            // The server never answers the save (a failed request is retried by the flush): the import
+            // stops waiting at its save deadline.
+            h.fake.holdNextBatch = true;
+            expect(
+                await settleFlush(
+                    h.cards.importCharacterProcess({ name: "card.json", data: encode(cardV2("Pending")) }),
+                ),
+            ).toBeNull();
+            expect(h.fake.releaseBatch).not.toBeNull();
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.importSavePending);
+            const character = h.characterList().find((entry) => entry.name === "Pending")!;
+            expect(character.chats).toHaveLength(1);
+            const chatId = character.chats[0].id;
+            expect(character.chats[0].message).toEqual([]);
+            expect(h.record("characters", character.chaId)).toBeUndefined();
+            expect(h.fake.chat(character.chaId, chatId)).toBeNull();
+
+            window.dispatchEvent(new Event("pagehide"));
+            await vi.advanceTimersByTimeAsync(0);
+            while (pendingTransactions.size) {
+                await Promise.all([...pendingTransactions]);
+                await vi.advanceTimersByTimeAsync(0);
+            }
+            const rows = await journal.readOwn();
+            expect(rows).toContainEqual(
+                expect.objectContaining({ scope: "record", target: `characters\u0000${character.chaId}` }),
+            );
+            expect(rows).toContainEqual(
+                expect.objectContaining({ scope: "chat", target: `${character.chaId}\u0000${chatId}` }),
+            );
+            expect(h.fake.batchCount()).toBe(1);
+        } finally {
+            h.sync.stopResourceSync();
+            h.fake.releaseBatch?.();
+            await journal.close();
+        }
     });
 });
 

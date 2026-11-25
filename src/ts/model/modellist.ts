@@ -17,12 +17,21 @@ import {
     type LLMModel,
 } from "./types";
 import { BASE_LLM_MODELS, dynamicModelOf, resolveModelInfo } from "../../../shared/llm/models.ts";
+import { credentialSlotOf } from "../../../shared/llm/credentialSlots.ts";
 import type { ModelProfile } from "../../../shared/database.ts";
 import type { ModelModeExtended } from "../../../shared/llm/request.ts";
 import { presetFieldValue } from "../../../shared/presets.ts";
 import { auxFetch } from "../network/auxFetch";
 import { isSecretSet } from "../storage/llmSecrets.svelte";
 import { customV3ProviderMetaStore } from "../plugins/apiV3/v3.svelte";
+
+/**
+ * The tab's model catalogue, discovery registry, and picker grouping over `shared/llm/models.ts`.
+ * Discovery appends to a detached base catalogue and tracks its ids separately; plugin descriptors are added only
+ * when listing or resolving. Profile capability overrides follow an explicit profile or captured preset scope,
+ * with null selecting schema defaults. Provider discovery uses server-held default or profile credentials through
+ * `src/ts/network/auxFetch.ts`; dynamic-id reconstruction itself does not require discovery to have run.
+ */
 
 // Re-export types for backwards compatibility
 export { LLMFlags, LLMProvider, LLMFormat, LLMTokenizer, ProviderNames, OpenAIParameters, ClaudeParameters };
@@ -46,16 +55,30 @@ function pushDynamicModel(model: LLMModel) {
     dynamicModelIds.add(model.id);
 }
 
-export async function registerModelDynamic() {
+/**
+ * When `dynamicModelRegistry` is on, fetches the Google (models with `generateContent` only), Anthropic, and OpenAI
+ * (`gpt-` ids only) model lists. With `profileId`, only that stored profile's credential slot is discovered, using
+ * its binding (including the server's default/refusal rules); otherwise each provider needs its default key set.
+ * Appends to `LLMModels` every model whose id or `internalID` is not already listed. Every descriptor field comes from
+ * `shared/llm/models.ts` `dynamicModelOf` except the display names and recommendations; an OpenAI model also gets its
+ * `-response-api` twin. A failed list is logged (OpenAI's silently dropped) and the others still register.
+ */
+export async function registerModelDynamic(profileId?: string) {
     if (!settings.providers.dynamicModelRegistry) {
         return;
     }
+    const profile = profileId === undefined ? undefined : settings.modelProfiles.find((p) => p.id === profileId);
+    if (profileId !== undefined && !profile) return;
+    const profileSlot = profile
+        ? credentialSlotOf(profile.modelId, getModelInfo(profile.modelId, undefined, profile))?.slot
+        : undefined;
     //google
     try {
         // The three lists use the stored keys on the server (`auxFetch`).
-        if (isSecretSet({ kind: "nested", field: "google" })) {
+        if (profile ? profileSlot === "google" : isSecretSet({ kind: "nested", field: "google" })) {
             const res = await auxFetch("google-models", "https://generativelanguage.googleapis.com/v1beta/models", {
                 method: "GET",
+                profileId,
             });
             const json = await res.json();
             console.log("Google models response", json);
@@ -87,9 +110,10 @@ export async function registerModelDynamic() {
 
     //Anthropic
     try {
-        if (isSecretSet({ kind: "flat", field: "claudeAPIKey" })) {
+        if (profile ? profileSlot === "anthropic" : isSecretSet({ kind: "flat", field: "claudeAPIKey" })) {
             const res = await auxFetch("anthropic-models", "https://api.anthropic.com/v1/models", {
                 method: "GET",
+                profileId,
                 headers: {
                     "anthropic-version": "2023-06-01",
                 },
@@ -120,8 +144,11 @@ export async function registerModelDynamic() {
     }
 
     try {
-        if (isSecretSet({ kind: "flat", field: "openAIKey" })) {
-            const res = await auxFetch("openai-models", "https://api.openai.com/v1/models", { method: "GET" });
+        if (profile ? profileSlot === "openai" : isSecretSet({ kind: "flat", field: "openAIKey" })) {
+            const res = await auxFetch("openai-models", "https://api.openai.com/v1/models", {
+                method: "GET",
+                profileId,
+            });
             const json = await res.json();
             console.log(json);
             if (!json.data) {
@@ -161,6 +188,9 @@ globalThis.registerModelDynamic = registerModelDynamic;
 /**
  * A definition with the main profile's flags (the captured pair when supplied), or an explicit
  * profile's flags. Null means no profile and uses schema defaults, never the active main profile.
+ * It is `shared/llm/models.ts` `resolveModelInfo` over those custom flags (`profile`, else the main profile of
+ * `scope`'s model preset, a request's captured pair, else of the selected one), `settings.customModels` (the record
+ * views), this tab's `LLMModels`, and `customV3ProviderMetaStore` (the plugin models).
  */
 export function getModelInfo(id?: string | null, scope?: PresetScope, profile?: ModelProfile | null): LLMModel {
     const field = (name: "enableCustomFlags" | "customFlags") =>
@@ -179,8 +209,8 @@ export function getModelInfo(id?: string | null, scope?: PresetScope, profile?: 
 }
 
 /** Catalogue metadata for a mode, using the same profile routing as requests on both runtimes. */
-export function getModelInfoForMode(mode: ModelModeExtended, scope?: PresetScope): LLMModel {
-    const resolved = resolveModelSlot(mode, scope);
+export function getModelInfoForMode(mode: ModelModeExtended, scope?: PresetScope, profileId?: string): LLMModel {
+    const resolved = resolveModelSlot(mode, scope, undefined, profileId);
     return getModelInfo(resolved.modelId ?? "", scope, resolved.kind === "profile" ? resolved.profile : null);
 }
 
@@ -189,6 +219,11 @@ interface GetModelListGroup {
     models: LLMModel[];
 }
 
+/**
+ * The models for the UI: grouped by provider name (each AsIs and NanoGPT model its own `@as-is` group, plugin models
+ * last as `Plugins`), or a new ungrouped array of the catalogue then the plugin models. Listing never appends plugins
+ * to `LLMModels`.
+ */
 export function getModelList<T extends boolean>(
     arg: {
         recommendedOnly?: boolean;

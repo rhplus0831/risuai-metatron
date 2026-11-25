@@ -4,8 +4,16 @@ import type { OpenAIChat } from "../../../../shared/openai.ts";
 import { HypaProcesser } from "../embeddings.ts";
 import type { MemoryHost, MemoryTokenizer } from "./host.ts";
 
-// `hypaMemoryV2` of the former `src/ts/process/memory/hypav2.ts`, statement for statement, on a `MemoryHost`.
-// A provider's answer in an error text is redacted.
+/**
+ * HypaMemory V2 on the server (`db.hypav2`, `server/src/prompt/assemble.ts`): `hypaMemoryV2` of the
+ * former `src/ts/process/memory/hypav2.ts`, statement for statement, on the job's `MemoryHost`
+ * (`host.ts`). A provider's answer in an error text is redacted.
+ *
+ * Summaries come from `supaModelType` (the local `distilbart` summarizer, OpenAI completions with the
+ * stored memory key, or the job's `memory` request); retrieval uses the job's embeddings. The
+ * module writes nothing: `hypaMemoryV2` returns the new `hypaV2Data`, which the caller places onto
+ * the value stored at the write (`mergeHypaV2Write`, `shared/memory.ts`).
+ */
 
 async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ success: boolean; data: string }> {
     const db = host.db;
@@ -52,15 +60,7 @@ async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ suc
                 };
             }
 
-            result = (await da.data)?.choices[0]?.text?.trim();
-
-            if (!result) {
-                return {
-                    success: false,
-                    data: "SupaMemory: HTTP: " + host.redact(JSON.stringify(da)),
-                };
-            }
-
+            result = (await da.data)?.choices[0]?.text?.trim() ?? "";
             return { success: true, data: result };
         } catch (error) {
             return {
@@ -99,6 +99,7 @@ async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ suc
 } // No, I am not going to touch any http API calls.
 
 // Helper function start
+/** The old stored shape (chunks addressed by `targetId`), converted on read by `convertOldToNewHypaV2Data`. */
 export interface OldHypaV2Data {
     chunks: {
         text: string;
@@ -259,8 +260,9 @@ function toSerializableHypaV2Data(data: HypaV2Data): SerializableHypaV2Data {
 }
 
 function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
+    const mainChunks = data.mainChunks ?? [];
     // Handle corrupted data due to invalid json serialization
-    data.mainChunks.forEach((mainChunk) => {
+    mainChunks.forEach((mainChunk) => {
         if (!Array.isArray(mainChunk.chatMemos)) {
             mainChunk.chatMemos = [];
         }
@@ -268,13 +270,22 @@ function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
 
     return {
         ...data,
-        mainChunks: data.mainChunks.map((mainChunk) => ({
+        chunks: data.chunks ?? [],
+        mainChunks: mainChunks.map((mainChunk) => ({
             ...mainChunk,
             chatMemos: new Set(mainChunk.chatMemos),
         })),
     };
 }
 
+/**
+ * One HypaV2 step: reads `room.hypaV2Data` (the old shape converted), drops the main chunks whose
+ * messages are no longer all in `chats`, summarizes from after the last main chunk while the count is
+ * over the context, and returns the history after the summarized messages behind one `supaMemory`
+ * card (`<Past Events Summary>` and `<Past Events Details>`), with the whole new value as `memory`.
+ * The last four chats are never summarized and the last two always stay; an error result carries no
+ * `memory`. It counts with the legacy subtraction of `maxResponse`.
+ */
 export async function hypaMemoryV2(
     host: MemoryHost,
     chats: OpenAIChat[],
@@ -299,6 +310,7 @@ export async function hypaMemoryV2(
     // Subtract maxResponse from currentTokens to fix the token calculation issue.
     // This is not a fundamental solution but rather a temporary fix.
     // It is designed to minimize impact on other code.
+    // The job's final token recheck keeps the response budget free afterwards.
     currentTokens -= db.maxResponse;
 
     if (room.hypaV2Data) {
@@ -406,7 +418,7 @@ export async function hypaMemoryV2(
         // Summarize the accumulated chunk
         const summaryData = await summary(host, stringlizedChat);
 
-        if (!summaryData.success) {
+        if (!summaryData.success || !summaryData.data.trim()) {
             summarizationFailures++;
             if (summarizationFailures >= maxSummarizationFailures) {
                 return {
@@ -415,7 +427,8 @@ export async function hypaMemoryV2(
                     error: "[HypaV2] Summarization failed multiple times. Aborting to prevent infinite loop.",
                 };
             }
-            // If summarization fails, try again in next iteration
+            // Retry the same messages so a later chunk cannot advance coverage past a failed window.
+            idx = startIdx;
             continue;
         }
 

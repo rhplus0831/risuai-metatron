@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import type { Message } from "../../../shared/database.ts";
+import { projectionHistory } from "./memoryFixtures.ts";
 import { RESOURCE_KIND, type ResourceKindName } from "../../../shared/resources.ts";
 import { COLLECTION_KIND } from "../../../shared/sections.ts";
 import { createUpstreamImportReport, type UpstreamImportReport } from "../../../shared/upstreamBackup.ts";
@@ -708,6 +710,262 @@ describe("convertUpstreamDatabase: cold storage", () => {
 });
 
 describe("convertUpstreamDatabase: chats and messages", () => {
+    it("reports decoded chat and message values once each with the character name and keeps their JSON forms", () => {
+        const values = () => ({
+            date: new Date("2024-01-02T03:04:05.000Z"),
+            bytes: new Uint16Array([7, 513]),
+            map: new Map([["key", "value"]]),
+            list: [undefined],
+            absent: undefined,
+        });
+        const out = convert({
+            formatversion: 5,
+            characters: [
+                {
+                    chaId: "archivist",
+                    name: "Archivist",
+                    chats: [
+                        {
+                            id: "chat",
+                            extra: values(),
+                            toolCalls: {
+                                t1: {
+                                    call: { id: "t1", name: "fn", arg: new Date("2024-01-02T03:04:05.000Z") },
+                                    response: [],
+                                },
+                            },
+                            message: [msg("user", "keep", { chatId: "message", extra: values() })],
+                        },
+                    ],
+                },
+            ],
+        });
+        const [chat] = chatsOf(out, "archivist");
+        const expected = {
+            date: "2024-01-02T03:04:05.000Z",
+            bytes: { "0": 7, "1": 513 },
+            map: {},
+            list: [null],
+        };
+        expect(chat.extra).toStrictEqual(expected);
+        expect(chat.message).toStrictEqual([msg("user", "keep", { chatId: "message", extra: expected })]);
+        expect(chat.toolCalls).toEqual({
+            t1: { call: { id: "t1", name: "fn", arg: "2024-01-02T03:04:05.000Z" }, response: [] },
+        });
+        expect(converted(out, "messagepack-value")).toEqual({
+            code: "messagepack-value",
+            count: 9,
+            examples: ["Archivist (Date)", "Archivist (Uint16Array)", "Archivist (Map)", "Archivist (undefined)"],
+        });
+    });
+
+    function importSwipes(messages: Dict[], name = "Swipes") {
+        const out = convert({
+            formatversion: 5,
+            characters: [{ chaId: "swipes", name, chats: [{ message: messages }] }],
+        });
+        return { out, messages: chatsOf(out, "swipes")[0].message as unknown as Message[] };
+    }
+
+    function expectForeignFieldsRemoved(messages: Message[]) {
+        for (const message of messages) {
+            for (const field of ["swipes", "swipeId", "scriptstateSwipeCheckpoints"]) {
+                expect(message).not.toHaveProperty(field);
+            }
+        }
+    }
+
+    it("converts PocketRisu swipes with fresh ids and copies only the selected reply's bounded metadata", () => {
+        const generationInfo = {
+            model: "imported-model",
+            inputTokens: 23,
+            outputTokens: 7,
+            context: projectionHistory().messages[0].generationInfo!.context,
+        };
+        const promptInfo = {
+            promptName: "Imported prompt",
+            promptToggles: [{ key: "tone", value: "warm" }],
+            promptText: [{ role: "user", content: "Private prompt" }],
+        };
+        const translation = { text: "선택한 답변", sourceHash: "source", targetLanguage: "ko", translatedAt: 123 };
+        const source = msg("char", "Displayed reply", {
+            swipes: ["Discarded reply", "Displayed reply", "Another reply"],
+            swipeId: 1,
+            generationInfo,
+            promptInfo,
+            translation,
+        });
+        const { out, messages } = importSwipes([
+            source,
+            msg("user", "Next question", { swipes: ["foreign"], swipeId: 0 }),
+        ]);
+        const reply = messages[0];
+        expect(reply.data).toBe("Displayed reply");
+        expect(reply.selected).toBe(1);
+        expect(reply.candidates).toEqual([
+            { id: expect.any(String), data: "Discarded reply" },
+            {
+                id: expect.any(String),
+                data: "Displayed reply",
+                generationInfo: { model: "imported-model", inputTokens: 23, outputTokens: 7 },
+                promptInfo: { promptName: "Imported prompt", promptToggles: [{ key: "tone", value: "warm" }] },
+                translation,
+            },
+            { id: expect.any(String), data: "Another reply" },
+        ]);
+        const ids = reply.candidates!.map(({ id }) => id);
+        expect(ids.every((id) => id.length > 0 && id.length <= 32)).toBe(true);
+        expect(new Set(ids).size).toBe(3);
+        const second = importSwipes([source]).messages[0].candidates!;
+        expect(second.every(({ id }) => !ids.includes(id))).toBe(true);
+        expect(messages[1]).not.toHaveProperty("candidates");
+        expectForeignFieldsRemoved(messages);
+        expect(out.report.converted.filter(({ code }) => code === "message-swipes")).toEqual([
+            { code: "message-swipes", count: 1, examples: ["Swipes"] },
+        ]);
+    });
+
+    it("remaps swipe selection past holes and non-strings and appends displayed text when selection is ambiguous or different", () => {
+        const sparse: unknown[] = ["First reply", , 42, null, "Displayed reply", "Last reply"];
+        const rows = [
+            { swipes: sparse, swipeId: 4, expected: ["First reply", "Displayed reply", "Last reply"], selected: 1 },
+            { swipes: sparse, swipeId: 2, expected: ["First reply", "Displayed reply", "Last reply"], selected: 1 },
+            {
+                swipes: ["Displayed reply", "Other reply"],
+                swipeId: 1,
+                expected: ["Displayed reply", "Other reply", "Displayed reply"],
+                selected: 2,
+            },
+            {
+                swipes: ["First reply", "Last reply"],
+                swipeId: -1,
+                expected: ["First reply", "Last reply", "Displayed reply"],
+                selected: 2,
+            },
+            {
+                swipes: ["Displayed reply", "Displayed reply"],
+                swipeId: 99,
+                expected: ["Displayed reply", "Displayed reply", "Displayed reply"],
+                selected: 2,
+            },
+        ];
+        const { out, messages } = importSwipes(
+            rows.map(({ swipes, swipeId }) => msg("char", "Displayed reply", { swipes, swipeId })),
+        );
+        messages.forEach((reply, index) => {
+            expect(reply.data).toBe("Displayed reply");
+            expect(reply.selected).toBe(rows[index].selected);
+            expect(reply.candidates!.map(({ data }) => data)).toEqual(rows[index].expected);
+            expect(reply.candidates![reply.selected!].data).toBe(reply.data);
+        });
+        expectForeignFieldsRemoved(messages);
+        expect(converted(out, "message-swipes")).toEqual({ code: "message-swipes", count: 5, examples: ["Swipes"] });
+    });
+
+    it("keeps RisuBard variable checkpoints only on the newest non-comment reply and takes each swipe's own after state", () => {
+        const before = { score: 0 };
+        const checkpoints = [{ before: { score: -1 }, after: { score: 1 } }, null, { before, after: { score: 3 } }];
+        const foreign = {
+            swipes: ["Old choice", "Middle choice", "Displayed reply"],
+            swipeId: 2,
+            scriptstateCheckpoint: { before, after: { score: 3 } },
+            scriptstateSwipeCheckpoints: checkpoints,
+        };
+        const { out, messages } = importSwipes([
+            msg("char", "Displayed reply", foreign),
+            msg("user", "Choose again"),
+            msg("char", "Displayed reply", foreign),
+            msg("char", "Displayed reply", { isComment: true, ...foreign }),
+        ]);
+        expect(messages[0].candidates!.map(({ data }) => data)).toEqual([
+            "Old choice",
+            "Middle choice",
+            "Displayed reply",
+        ]);
+        expect(messages[0]).not.toHaveProperty("scriptstateCheckpoint");
+        expect(messages[0].candidates!.every((candidate) => !Object.hasOwn(candidate, "scriptstateAfter"))).toBe(true);
+        expect(messages[3]).not.toHaveProperty("scriptstateCheckpoint");
+        expect(messages[3].candidates!.every((candidate) => !Object.hasOwn(candidate, "scriptstateAfter"))).toBe(true);
+        expect(messages[2].scriptstateCheckpoint).toEqual({ before, after: { score: 3 } });
+        expect(messages[2].candidates).toEqual([
+            { id: expect.any(String), data: "Old choice", scriptstateAfter: { score: 1 } },
+            { id: expect.any(String), data: "Middle choice" },
+            { id: expect.any(String), data: "Displayed reply", scriptstateAfter: { score: 3 } },
+        ]);
+        expectForeignFieldsRemoved(messages);
+        expect(converted(out, "message-swipes")).toEqual({ code: "message-swipes", count: 3, examples: ["Swipes"] });
+        const followed = importSwipes([msg("char", "Displayed reply", foreign), msg("user", "Committed")]).messages[0];
+        expect(followed).not.toHaveProperty("scriptstateCheckpoint");
+        expect(followed.candidates!.every((candidate) => !Object.hasOwn(candidate, "scriptstateAfter"))).toBe(true);
+
+        const { scriptstateCheckpoint: _checkpoint, ...swipesOnly } = foreign;
+        const fallback = importSwipes([msg("char", "Displayed reply", swipesOnly)]).messages[0];
+        expect(fallback.scriptstateCheckpoint).toEqual({ before: { score: 0 }, after: { score: 3 } });
+        expect(fallback.selected).toBe(2);
+        expect(fallback.candidates).toEqual([
+            { id: expect.any(String), data: "Old choice", scriptstateAfter: { score: 1 } },
+            { id: expect.any(String), data: "Middle choice" },
+            { id: expect.any(String), data: "Displayed reply", scriptstateAfter: { score: 3 } },
+        ]);
+        expectForeignFieldsRemoved([fallback]);
+    });
+
+    it("bounds 1,000 swipes to the selected reply and newest others and reports every dropped swipe", () => {
+        const swipes = Array.from({ length: 1_000 }, (_, index) => `Reply ${index}`);
+        const { out, messages } = importSwipes([msg("char", "Reply 500", { swipes, swipeId: 500 })]);
+        const reply = messages[0];
+        expect(reply.candidates).toHaveLength(16);
+        expect(reply.candidates!.map(({ data }) => data)).toEqual([
+            "Reply 500",
+            ...Array.from({ length: 15 }, (_, index) => `Reply ${985 + index}`),
+        ]);
+        expect(reply.selected).toBe(0);
+        expect(reply.data).toBe("Reply 500");
+        expectForeignFieldsRemoved(messages);
+        expect(converted(out, "message-swipes")).toEqual({ code: "message-swipes", count: 1, examples: ["Swipes"] });
+        expect(excluded(out, "invalid-data")).toEqual({ code: "invalid-data", count: 984, examples: ["Swipes"] });
+    });
+
+    it("reports missing inlays once per chat when only alternate swipe candidates reference them", () => {
+        for (const syntax of ["inlay", "inlayed", "inlayeddata"]) {
+            const swipes = [`First {{${syntax}::missing-one}}`, `Second {{${syntax}::missing-two}}`, "Displayed reply"];
+            const { out, messages } = importSwipes([msg("char", "Displayed reply", { swipes, swipeId: 2 })]);
+            const reply = messages[0];
+            expect(reply.data).toBe("Displayed reply");
+            expect(reply.selected).toBe(2);
+            expect(reply.candidates!.map(({ data }) => data)).toEqual(swipes);
+            expect(excluded(out, "inlays-not-in-backup"), syntax).toEqual({
+                code: "inlays-not-in-backup",
+                count: 1,
+                examples: ["Swipes"],
+            });
+        }
+    });
+
+    it("converts swipes after discarding empty native candidates but preserves valid native candidates", () => {
+        const swipes = ["Foreign alternate", "Displayed reply"];
+        const native = [
+            { id: "native-alternate", data: "Native alternate" },
+            { id: "native-selected", data: "Displayed reply" },
+        ];
+        const { out, messages } = importSwipes([
+            msg("char", "Displayed reply", { candidates: [], swipes, swipeId: 1 }),
+            msg("char", "Displayed reply", { candidates: native, selected: 1, swipes, swipeId: 1 }),
+        ]);
+        expect(messages[0].candidates).toEqual([
+            { id: expect.any(String), data: "Foreign alternate" },
+            { id: expect.any(String), data: "Displayed reply" },
+        ]);
+        expect(messages[0].selected).toBe(1);
+        expect(messages[0].data).toBe("Displayed reply");
+        expect(messages[1].candidates).toEqual(native);
+        expect(messages[1].selected).toBe(1);
+        expect(messages[1].data).toBe("Displayed reply");
+        expectForeignFieldsRemoved(messages);
+        expect(converted(out, "message-swipes")).toEqual({ code: "message-swipes", count: 1, examples: ["Swipes"] });
+        expect(excluded(out, "invalid-data")).toEqual({ code: "invalid-data", count: 1, examples: ["Swipes"] });
+    });
+
     it("binds every chat to the converted selection and keeps bindedPersona only when it names a persona", () => {
         const out = convert(fixture(), { cold: cold() });
         expect(out.selection).toEqual({
@@ -826,12 +1084,35 @@ describe("convertUpstreamDatabase: chats and messages", () => {
 });
 
 describe("convertUpstreamDatabase: collections, modules, plugins", () => {
+    it("keeps an imported group and its chat while omitting the group from character order and folders", () => {
+        const out = convert({
+            formatversion: 5,
+            characters: [
+                { chaId: "a", type: "character", name: "A" },
+                { chaId: "b", type: "character", name: "B" },
+                {
+                    chaId: "g",
+                    type: "group",
+                    name: "Group",
+                    characters: ["a"],
+                    chats: [{ id: "gk", name: "Group chat", message: [msg("user", "group history", { chatId: "m" })] }],
+                },
+            ],
+            characterOrder: ["a", "g", { id: "f", name: "Folder", data: ["g", "b"] }],
+        });
+
+        expect(record(out, COLLECTION_KIND.characterOrder)).toEqual(["a", { id: "f", name: "Folder", data: ["b"] }]);
+        expect(characterNamed(out, "Group")).toMatchObject({ id: "g", data: { type: "group", characters: ["a"] } });
+        expect(chatsOf(out, "g")).toMatchObject([
+            { id: "gk", name: "Group chat", message: [{ role: "user", data: "group history", chatId: "m" }] },
+        ]);
+    });
+
     it("keeps only kept characters' ids in characterOrder, folders included, and reports other entries", () => {
         const out = convert(fixture(), { cold: cold() });
         expect(record<unknown[]>(out, COLLECTION_KIND.characterOrder)).toEqual([
             "a",
             { id: "f", name: "F", data: ["b"], color: "", img: "assets/f.png" },
-            "g",
         ]);
         expect(excluded(out, "invalid-setting")?.examples).toContain("characterOrder[4]");
         expect(

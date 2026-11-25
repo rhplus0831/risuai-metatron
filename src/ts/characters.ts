@@ -1,7 +1,9 @@
 import { selectCharacter } from "./storage/selection.svelte";
+import { isArchivedGroup } from "./storage/archivedGroup";
 import { settings } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import { saveImage, type character, type Chat, defaultSdDataFunc } from "./storage/database.svelte";
+import type { StructuredMemoryFileEntry, StructuredMemoryFileRecords } from "../../shared/structuredMemory.ts";
 import {
     alertAddCharacter,
     alertClear,
@@ -39,52 +41,49 @@ import {
     downloadFile,
     getFileSrc,
     getThumbSrc,
+    recoverDirectAssetElement,
 } from "./globalApi.svelte";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
+import { escapeHtml, sanitizeExportHtml } from "./parser/safeHtml";
 import { translateHTML } from "./translator/translator";
 import { captureTransform } from "./parser/transformClient";
-import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
+import {
+    createChat,
+    ensureChat,
+    ensureChatLoaded,
+    findChat,
+    isCharacterGenerating,
+    pinChat,
+    validateChatInput,
+    type ChatRef,
+} from "./storage/chatStore.svelte";
 import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { importedChatTranslation } from "./translator/chatTranslation.svelte";
 import { importedChatTogglePreset } from "./toggles/chatToggles.svelte";
 import { readChatsDetached } from "./storage/chatEdits";
+import { beginMutationScope } from "./storage/resourceSync.svelte";
+import { type ChatMemoryRestore, restoreChatMemory } from "./process/chatMemoryInherit.svelte";
+import { chatFileMemory, exportChatMemory, readStructuredMemoryFile } from "./process/structuredMemory.svelte";
 import { importCharacter } from "./characterCards";
 import { savePickedFiles } from "./storage/assetQueue";
 import { PngChunk } from "./pngChunk";
 
+/**
+ * Characters in the tab: creation (`createNewCharacter` and the add dialog
+ * `addCharacter`), selection (`changeChar`), deletion (`removeChar`, `restoreChar`), a character's chats as files
+ * (`importChat`, `exportChat`, `exportAllChats`), its images (`selectCharImg`, `changeCharImage`, `makeGroupImage`),
+ * and its emotion images (`addCharEmotion`, `rmCharEmotion`).
+ *
+ * An importer or a creator adds a character only through `addCharacter` of `src/ts/storage/characterStore.svelte.ts`
+ * (imported here as `addCharacterRecord`); this module's own `addCharacter` is the add dialog. An action that awaits a
+ * dialog or a save captures the character's id first and finds its record again afterwards, since it can be deleted
+ * meanwhile.
+ */
+
+export { isArchivedGroup };
+
 export function createNewCharacter() {
     return addCharacterRecord(createBlankChar());
-}
-
-export function createNewGroup() {
-    const chaId = addCharacterRecord({
-        type: "group",
-        name: "",
-        firstMessage: "",
-        chats: [
-            {
-                id: uuidv4(),
-                message: [],
-                note: "",
-                name: "Chat 1",
-                localLore: [],
-            },
-        ],
-        chatFolders: [],
-        chatPage: 0,
-        viewScreen: "none",
-        globalLore: [],
-        characters: [],
-        autoMode: false,
-        useCharacterLore: true,
-        emotionImages: [],
-        customscript: [],
-        chaId: uuidv4(),
-        firstMsgIndex: -1,
-        characterTalks: [],
-        characterActive: [],
-    });
-    return chaId;
 }
 
 export async function getCharImage(loc: string, type: "plain" | "css" | "contain" | "lgcss", thumb?: 256 | 512) {
@@ -213,6 +212,10 @@ export function changeCharImage(chaId: string, changeIndex: number) {
 
 export const addingEmotion = writable(false);
 
+/**
+ * Adds picked images as emotion images of `chaId`: the files are saved first (`savePickedFiles`), then every row is
+ * appended in one write to the list as it then is, if the character still exists; a failed save alerts and adds none.
+ */
 export async function addCharEmotion(chaId: string) {
     addingEmotion.set(true);
     try {
@@ -244,10 +247,11 @@ export function rmCharEmotion(chaId: string, emotionId: number) {
     }
 }
 
-/** Exports one chat of the selected character (by id), whatever the selection is after the dialogs. */
-export async function exportChat(chatId: string) {
+/** Exports the named chat. A bare chat id uses the character selected before the dialogs. */
+export async function exportChat(target: string | ChatRef) {
     try {
-        const chaId = selectedCharacter()?.chaId;
+        const { chaId, chatId } =
+            typeof target === "string" ? { chaId: selectedCharacter()?.chaId, chatId: target } : target;
         const mode = await alertSelect([
             "Export as JSON",
             "Export as TXT",
@@ -262,20 +266,33 @@ export async function exportChat(chatId: string) {
             mode === "2" || mode === "3"
                 ? (await alertSelect([language.includePersonaName, language.hidePersonaName])) === "1"
                 : false;
-        if (chaId !== undefined) {
-            await ensureChatLoaded({ chaId, chatId });
-        }
-        // Found again after the load: the chat as it is now.
-        const char = chaId === undefined ? undefined : characterRecord(chaId);
-        const found = char ? findChat({ chaId: char.chaId, chatId }) : undefined;
-        if (!char || !found) {
+        if (chaId === undefined) {
             return;
         }
-        // A copy: the chat can change while the export translates.
-        const chat = JSON.parse(JSON.stringify(found)) as Chat;
+        const ref = { chaId, chatId };
+        const release = pinChat(ref);
+        let char: ReturnType<typeof characterRecord>;
+        let chat: Chat;
+        let memory: Awaited<ReturnType<typeof readStructuredMemoryFile>> | undefined;
+        try {
+            await ensureChatLoaded(ref);
+            // Read before the copy below: a chat newer than its records leaves a turn uncovered, while records
+            // newer than the chat would put pages ahead of their messages.
+            memory = mode === "0" || mode === "2" ? await readStructuredMemoryFile(ref) : undefined;
+            // Found again after the load: the chat as it is now.
+            char = characterRecord(chaId);
+            const found = char ? findChat(ref) : undefined;
+            if (!char || !found) {
+                return;
+            }
+            // A copy: the chat can change while the export translates.
+            chat = JSON.parse(JSON.stringify(found)) as Chat;
+        } finally {
+            release();
+        }
+        const fileMemory = memory && exportChatMemory(chat, memory);
         // The exported chat's persona name and render context, read now: it need not be the selected
         // chat, and the selection can change during the awaits below.
-        const ref = { chaId: char.chaId, chatId };
         const userName = getUserName(ref);
         const transform = doTranslate ? captureTransform(-1, { chatRef: ref }) : null;
         const date = new Date().toJSON();
@@ -293,7 +310,7 @@ export async function exportChat(chatId: string) {
                 v = v.replace(new RegExp(`${excapedName}`, "gi"), "×××");
             }
 
-            return v;
+            return sanitizeExportHtml(v);
         };
 
         if (mode === "0") {
@@ -307,6 +324,7 @@ export async function exportChat(chatId: string) {
                     ver: 2,
                     data: chat,
                     folders: folders,
+                    ...(fileMemory?.entry ? { structuredMemory: [fileMemory.entry] } : {}),
                 }),
                 "utf-8",
             );
@@ -326,7 +344,7 @@ export async function exportChat(chatId: string) {
                         ? "×××"
                         : userName;
                 chatContentHTML += `<div class="chat">
-                    <h2>${name}</h2>
+                    <h2>${escapeHtml(name)}</h2>
                     <div>${await htmlChatParse(v.data)}</div>
                 </div>`;
             }
@@ -335,7 +353,7 @@ export async function exportChat(chatId: string) {
                 <!DOCTYPE html>
                 <html>
                     <head>
-                        <title>${char.name} Chat</title>
+                        <title>${escapeHtml(char.name)} Chat</title>
                         <style>
                             body{
                                 font-family: Arial, sans-serif;
@@ -372,7 +390,7 @@ export async function exportChat(chatId: string) {
                     <body>
                         <div class="container">
                             <div class="chat">
-                                <h2>${char.name}</h2>
+                                <h2>${escapeHtml(char.name)}</h2>
                                 <div>${await htmlChatParse(
                                     chat.fmIndex === -1
                                         ? char.firstMessage
@@ -381,7 +399,7 @@ export async function exportChat(chatId: string) {
                             </div>
                             ${chatContentHTML}
                         </div>
-                        <div class="idat">${JSON.stringify(chat).replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+                        <div class="idat">${escapeHtml(JSON.stringify(chat))}</div>
                     </body>
             `;
 
@@ -404,7 +422,7 @@ export async function exportChat(chatId: string) {
                         ? "×××"
                         : userName;
                 chatContentHTML += `<tr>
-                    <td>${name}</td>
+                    <td>${escapeHtml(name)}</td>
                     <td>${await htmlChatParse(v.data)}</td>
                 </tr>`;
             }
@@ -416,7 +434,7 @@ export async function exportChat(chatId: string) {
                         <th>Message</th>
                     </tr>
                     <tr>
-                        <td>${char.name}</td>
+                        <td>${escapeHtml(char.name)}</td>
                         <td>${await htmlChatParse(char.firstMessage)}</td>
                     </tr>
                     ${chatContentHTML}
@@ -454,12 +472,23 @@ export async function exportChat(chatId: string) {
                 Buffer.from(stringl, "utf-8"),
             );
         }
-        alertNormal(language.successExport);
+        // Only JSON can hold records, and one dialog at a time: both of these queue.
+        if (mode === "0" && fileMemory?.failed) {
+            alertError(language.structuredMemory.memoryFile.exportedWithoutRecords);
+        } else {
+            alertNormal(language.successExport);
+        }
     } catch (error) {
         alertError(error);
     }
 }
 
+/**
+ * Imports chats from a file into the character selected when it starts: its id is captured before the file dialog
+ * and resolved again afterwards (a deleted one stops with `importTargetGone`). Only the Tavern `.jsonl` import
+ * switches to the new chat, and only while that character is still selected; the JSON and HTML imports leave the open
+ * chat as it is, and a `.txt` file adds nothing and alerts nothing.
+ */
 export async function importChat() {
     // The character is the one selected when the import starts, captured by id before the file dialog.
     const chaId = selectedCharacter()?.chaId;
@@ -481,16 +510,34 @@ export async function importChat() {
          * needed). Every format passes here: each chat keeps only the bound ids that exist here and
          * waits for the user's confirmation before its first send (`importedChatBinding`), and keeps its
          * translator and toggle presets only when they exist here (`importedChatTranslation`,
-         * `importedChatTogglePreset`).
+         * `importedChatTogglePreset`). Its memory preset and connection ids are kept only when they exist here. `records`
+         * holds what the file held of each chat's memory, by the chat's place in `chats`; the restores run behind
+         * the action. Every chat is validated before the first write, so a refused chat leaves the import unapplied.
          */
-        const addChats = (chats: Chat[]) => {
-            chats.forEach((chat, index) => {
-                delete chat.pinned;
-                importedChatBinding(chat);
-                importedChatTranslation(chat);
-                importedChatTogglePreset(chat);
-                createChat(chaId, chat, { index });
-            });
+        const addChats = (chats: Chat[], records: (StructuredMemoryFileRecords | undefined)[] = []) => {
+            chats.forEach(validateChatInput);
+            const scope = beginMutationScope();
+            const restores: ChatMemoryRestore[] = [];
+            try {
+                chats.forEach((chat, index) => {
+                    delete chat.pinned;
+                    importedChatBinding(chat);
+                    importedChatTranslation(chat);
+                    importedChatTogglePreset(chat);
+                    if (!settings.hypaV3Presets.items.some((preset) => preset.id === chat.memoryPresetId)) {
+                        delete chat.memoryPresetId;
+                    }
+                    if (!settings.modelProfiles.some((profile) => profile.id === chat.memoryProfileId)) {
+                        delete chat.memoryProfileId;
+                    }
+                    const { id, name } = createChat(chaId, chat, { index });
+                    if (records[index]) {
+                        restores.push({ chatId: id, name, records: records[index] });
+                    }
+                });
+            } finally {
+                restoreChatMemory(chaId, restores, scope);
+            }
         };
 
         if (dat.name.endsWith("jsonl")) {
@@ -539,6 +586,7 @@ export async function importChat() {
             if ((json.type === "risuAllChats" || json.type === "risuChat") && json.ver === 2) {
                 const folders = json.folders || [];
                 const chats = Array.isArray(json.data) ? json.data : [json.data];
+                chats.forEach(validateChatInput);
                 let folderIdMap = {};
                 folders.forEach((folder) => {
                     if (target.chatFolders?.some((f) => f.id === folder.id)) {
@@ -550,13 +598,15 @@ export async function importChat() {
                     }
                 });
                 updateCharacter(chaId, { chatFolders: [...(target.chatFolders ?? []), ...folders] });
+                const fileMemory = chatFileMemory(json.structuredMemory);
+                const records = chats.map((chat) => fileMemory.get(chat.id));
                 chats.forEach((chat) => {
                     if (chat.folderId && folderIdMap[chat.folderId]) {
                         chat.folderId = folderIdMap[chat.folderId];
                     }
                     chat.id = v4();
                 });
-                addChats(chats);
+                addChats(chats, records);
                 alertNormal(language.successImport);
                 return;
             }
@@ -607,7 +657,7 @@ export async function importChat() {
             const doc = new DOMParser().parseFromString(Buffer.from(dat.data).toString("utf-8"), "text/html");
             const chat = doc.querySelector(".idat").textContent;
             const json = JSON.parse(chat);
-            if (json.message && json.note && json.name && json.localLore) {
+            if (json.message && (json.note || json.note === "") && json.name && json.localLore) {
                 addChats([json]);
                 alertNormal(language.successImport);
             } else {
@@ -627,18 +677,35 @@ export async function exportAllChats() {
         const chaId = char.chaId;
         const name = char.name;
         const allFolders = JSON.parse(JSON.stringify(char.chatFolders ?? []));
-        const allChats = (await readChatsDetached([chaId])).get(chaId) ?? [];
+        const records = (await readChatsDetached([chaId])).get(chaId) ?? [];
+        const allChats = records.filter((record) => record.trashedAt == null).map((record) => record.data);
+        // One chat at a time: one that cannot be read goes out with no records, and the others go on.
+        const structuredMemory: StructuredMemoryFileEntry[] = [];
+        let withoutRecords = 0;
+        for (const chat of allChats) {
+            const memory = await readStructuredMemoryFile({ chaId, chatId: chat.id });
+            const { entry, failed } = exportChatMemory(chat, memory);
+            if (entry) {
+                structuredMemory.push(entry);
+            }
+            withoutRecords += failed ? 1 : 0;
+        }
         const stringl = Buffer.from(
             JSON.stringify({
                 type: "risuAllChats",
                 ver: 2,
                 data: allChats,
                 folders: allFolders,
+                ...(structuredMemory.length > 0 ? { structuredMemory } : {}),
             }),
             "utf-8",
         );
         await downloadFile(`${name}_all_chats_${date}`.replace(/[<>:"/\\|?*.,]/g, "") + ".json", stringl);
-        alertNormal(language.successExport);
+        if (withoutRecords > 0) {
+            alertError(language.structuredMemory.memoryFile.allExportedWithoutRecords(withoutRecords));
+        } else {
+            alertNormal(language.successExport);
+        }
     } catch (error) {
         alertError(error);
     }
@@ -712,6 +779,11 @@ export function createBlankChar(): character {
     };
 }
 
+/**
+ * Draws the selected group's icon as a grid of its members' portraits and sets it on the group. A member image that
+ * fails to load is skipped: the grid holds the images that loaded, in the order they loaded. The loading status is
+ * cleared after the save; a dialog that opened meanwhile stays.
+ */
 export async function makeGroupImage() {
     try {
         const group = selectedCharacter();
@@ -749,7 +821,9 @@ export async function makeGroupImage() {
                             images.push(img);
                             resolve();
                         };
-                        img.onerror = () => resolve();
+                        img.onerror = async () => {
+                            if (!(await recoverDirectAssetElement(img))) resolve();
+                        };
                         img.src = url;
                     }),
             ),
@@ -802,6 +876,12 @@ export function restoreChar(chaId: string) {
     checkCharOrder();
 }
 
+/**
+ * Deletes a character after two confirmations (`permanentForce` asks none), found by its id after them (an index
+ * `identifier` is read before them): `normal` is a soft delete (`trashTime`, undone by `restoreChar`), `permanent`
+ * and `permanentForce` remove it for good and are refused while a reply is generated for it. A deletion clears the
+ * selection.
+ */
 export async function removeChar(
     identifier: string | number,
     name: string,
@@ -837,6 +917,18 @@ export async function removeChar(
     selectCharacter(null);
 }
 
+/**
+ * Opens the card file picker (`importCharacter`) and selects the last character it imported; nothing is selected when
+ * it imported none. The add dialog's import choice and the home screen's import card both run it.
+ */
+export async function importCharacterAndSelect() {
+    const created = await importCharacter();
+    if (created) {
+        changeChar(created);
+    }
+}
+
+/** Opens Realm or selects the character created from scratch or imported from a card. */
 export async function addCharacter(
     arg: {
         reseter?: () => any;
@@ -851,36 +943,33 @@ export async function addCharacter(
     }
     reseter();
     // The character this call created or imported is selected (not whichever is last in the list).
-    let created: string | null;
     switch (r) {
         case "createfromScratch":
-            created = createNewCharacter();
-            break;
-        case "createGroup":
-            created = createNewGroup();
-            break;
+            changeChar(createNewCharacter());
+            return;
         case "importCharacter":
-            created = await importCharacter();
-            break;
+            await importCharacterAndSelect();
+            return;
         default:
             return;
     }
-    if (created) {
-        changeChar(created);
-    }
 }
 
+/**
+ * Selects `chaId`, first making sure it has a chat (`ensureChat`). An archived group cannot be opened.
+ */
 export async function changeChar(
     chaId: string,
     arg: {
         reseter?: () => any;
     } = {},
 ) {
-    const reseter = arg.reseter ?? (() => {});
-    reseter();
-    // A selection only makes sure the character has a chat and shows its chat (it no longer stamps
-    // `lastInteraction`; a send does). The defaults come from creation and the server.
-    if (characterRecord(chaId)) {
+    const character = characterRecord(chaId);
+    if (isArchivedGroup(character)) return;
+    arg.reseter?.();
+    // A selection only makes sure the character has a chat and shows it. Last-chatted time comes
+    // from the chats; defaults come from creation and the server.
+    if (character) {
         ensureChat(chaId);
     }
     selectCharacter(chaId);

@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, refJ, refK, warmMutationGraph } from "./mutationStoresHarness";
@@ -35,17 +33,6 @@ vi.mock("../../process/files/inlays", () => ({
     writeInlayImage: vi.fn(),
 }));
 vi.mock("../../tokenizer", () => ({ tokenize: vi.fn(async (text: string) => text.length) }));
-vi.mock("../../rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../../rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 import type { RisuModule } from "../../process/modules";
 
@@ -120,6 +107,34 @@ afterEach(() => {
 });
 
 describe("module membership cache", () => {
+    it("keeps a removed and re-added module globally disabled until explicitly enabled, invalidating tracked membership", async () => {
+        const { collectionStore: c, ids, modules, createProbe, flushSync, sync, record } = await boot();
+        await sync.flushResources();
+        const probe = createProbe(() => modules.getModules().map((entry) => entry.name));
+        try {
+            expect(probe.derived()).toEqual(["a", "b"]);
+            c.removeModule("a");
+            expect(ids()).toEqual(["b"]);
+            c.addModule(module("a", { name: "Replacement A" }));
+            expect(ids()).toEqual(["b"]);
+            expect(probe.derived()).toEqual(["b"]);
+            flushSync();
+            expect(probe.seen.at(-1)).toEqual(["b"]);
+            await sync.flushResources();
+            expect(record("enabledModules")).toEqual(["b"]);
+            expect(record("modules").find((entry: { id: string }) => entry.id === "a").name).toBe("Replacement A");
+            c.setModuleEnabled("a", true);
+            expect(ids()).toEqual(["b", "a"]);
+            expect(probe.derived()).toEqual(["b", "Replacement A"]);
+            flushSync();
+            expect(probe.seen.at(-1)).toEqual(["b", "Replacement A"]);
+            await sync.flushResources();
+            expect(record("enabledModules")).toEqual(["b", "a"]);
+        } finally {
+            probe.dispose();
+        }
+    });
+
     it("resolves a remote replacement immediately and wakes tracked readers without reading displaced wrappers", async () => {
         const { fake, sync, modules, ids, createProbe, flushSync } = await boot();
         await sync.flushResources();
@@ -182,6 +197,7 @@ describe("module membership cache", () => {
             c.removeModule("a");
             check(["b"]);
             c.addModule(module("a"));
+            c.setModuleEnabled("a", true);
             check(["b", "a"]);
             settings.modules.reverse();
             check(["a", "b"]);
@@ -413,6 +429,57 @@ describe("module reloads", () => {
             toggle("contextmenu", 0);
             toggle("click", 0);
             toggle("contextmenu", 1);
+        } finally {
+            await unmount(component);
+            target.remove();
+        }
+    });
+
+    it("a single character module toggle removes every copy of that ID", async () => {
+        const { character, collectionStore: c, flushSync, mount, record, sync, unmount } = await boot();
+        c.setEnabledModules([]);
+        character("c").modules = ["b", "a", "off", "a", "b"];
+        await sync.flushResources();
+        const Menu = (await import("../../../lib/Setting/Pages/Module/ModuleChatMenu.svelte")).default;
+        const target = document.createElement("div");
+        document.body.append(target);
+        const component = mount(Menu, { target });
+        flushSync();
+        try {
+            const row = [...target.querySelectorAll("span")].find((span) => span.textContent === "a")!.parentElement!;
+            const button = row.querySelector("button")!;
+            expect(button.classList.contains("text-violet-500")).toBe(true);
+
+            button.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            flushSync();
+
+            expect(character("c").modules).toEqual(["b", "off", "b"]);
+            expect(button.classList.contains("text-violet-500")).toBe(false);
+            await sync.flushResources();
+            expect(record("characters", "c").modules).toEqual(["b", "off", "b"]);
+        } finally {
+            await unmount(component);
+            target.remove();
+        }
+    });
+
+    it("shows the folder's enabled and total counts in the module picker without a bulk switch", async () => {
+        const { chat, collectionStore: c, settings, flushSync, mount, unmount } = await boot();
+        c.setEnabledModules(["a"]);
+        settings.moduleFolders = [{ id: "options", name: "Options", data: ["a", "b"] }];
+        const Menu = (await import("../../../lib/Setting/Pages/Module/ModuleChatMenu.svelte")).default;
+        const target = document.createElement("div");
+        document.body.append(target);
+        const component = mount(Menu, { target, props: { alertMode: true } });
+        flushSync();
+        try {
+            const folder = target.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+            expect(folder.textContent).toContain("1 / 2");
+            expect(folder.parentElement!.querySelector("button:has(.lucide-circle-check)")).toBeNull();
+
+            chat.setChatMeta(refK, { modules: ["b"] });
+            flushSync();
+            expect(folder.textContent).toContain("2 / 2");
         } finally {
             await unmount(component);
             target.remove();

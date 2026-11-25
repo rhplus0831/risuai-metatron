@@ -32,6 +32,8 @@ export type RequestContext = {
     /** The request's own signal (the client went away, the server is shutting down). */
     signal: AbortSignal;
     transport: Transport;
+    /** A job's own request only: reports immediately before an adapter re-sends a failed provider request. */
+    reportRetry?: () => void;
     /**
      * The first byte of a provider's answer on a path outside `transport` (a local model's answer, a
      * WebSocket's first frame, an SDK's own fetch, Horde's terminal response); the request layer keeps
@@ -50,6 +52,8 @@ export type RequestContext = {
         profileId: string | null;
         profileName: string | null;
         provider: string | null;
+        /** The request interception prompts inserted into `formated`; given only when positive. */
+        interceptions?: number;
     }) => void;
     /** `alertError(message)` in the client's tab (an `Error` sends its message). */
     alertError: (message: string | Error) => void;
@@ -60,7 +64,7 @@ export type RequestContext = {
     redactText: (text: string) => string;
     /** `tokenizeNum` with the main model's tokenizer (`db.aiModel`), as the client counts. */
     tokenizeNum: (text: string) => Promise<ArrayLike<number>>;
-    /** `strongBan` (`src/ts/tokenizer.ts`), its cache on the server. */
+    /** `strongBan` (once in the client's `src/ts/tokenizer.ts`), its cache on the server. */
     strongBan: (text: string, bias: { [key: number]: number }) => Promise<{ [key: number]: number }>;
     /**
      * `risuChatParser(text)` (with `{ chatRef }` when given), evaluated in the client's tab in call

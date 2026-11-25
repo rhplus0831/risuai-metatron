@@ -9,6 +9,13 @@
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import NumberInput from "../UI/GUI/NumberInput.svelte";
 
+    /**
+     * Multimodal image-text translation through `src/ts/process/request/request.ts`
+     * `requestChatData` in translate mode. Auto uses the full image; manual uses a
+     * selected region. The JSON result drives translated text overlays on the canvas.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 10.
+     */
+
     const autoPrompt =
         'extract text chunk from the image, with all the positions and background color, and translate them to {{slot}} in a JSON format.Format of: \n\n [\n  {\n    "bg_hex_color": string\n    "content": string\n    "text_hex_color": string,\n    "x_max": number,\n    "x_min": number,\n    "y_max": number,\n    "y_min": number\n    "translation": string,\n  }\n]\n\n each properties is:\n - x_min, y_min, x_max, y_max: range of 0 (most left/top point of the image) to 1 (most bottom/right point of the image), it is the bounding boxes of the original text chunk.\n - bg_hex_color is the color of the background.\n - text_hex_color is the color of the text.\n - translation is the translated text.\n - content is the original text chunk.'.replace(
             /\n/g,

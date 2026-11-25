@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type GenerationHooks, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 
-// The jobs' plugin-work lease (`plugins-mcp.md` Flows step 6): a reload after a remote plugin
+// The jobs' plugin-work lease (`plugin-sandbox.md` Deferred reload): a reload after a remote plugin
 // change waits while `generationPluginWorkActive()` and hears each change through
 // `onGenerationPluginWork`. A job is held from its creation request (before the hooks are listed)
 // or its follow until `releaseGenerationJob`; a saved job counts; each busy attempt holds its own
@@ -18,6 +18,7 @@ const stubs = vi.hoisted(() => ({
     registeredHooks: vi.fn<() => Promise<GenerationHooks>>(),
     handleChannelEvent: vi.fn(),
     rememberHydration: vi.fn(),
+    rememberJobStreaming: vi.fn(),
     endJobChannel: vi.fn(),
 }));
 
@@ -28,26 +29,35 @@ vi.mock("../storage/serverAuth", () => ({
             stubs.auth.push({ resolve, reject });
         }),
 }));
-vi.mock("../storage/chatStore.svelte", () => ({
-    applyServerGeneration: vi.fn(() => true),
-    applyServerGenerationChunk: vi.fn(() => true),
-    endServerJob: vi.fn(),
-    isChatStale: vi.fn(() => false),
-    chatHydrationHold: vi.fn(() => "none"),
-}));
-vi.mock("../storage/resourceSync.svelte", () => ({
-    applyHydration: vi.fn(() => true),
-    applyPatchHydration: vi.fn(() => "applied"),
-    flushResources: vi.fn(async () => ({ discarded: [] })),
-}));
+vi.mock("../storage/chatStore.svelte", async () =>
+    (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
+        applyServerGeneration: vi.fn(() => true),
+        applyServerGenerationChunk: vi.fn(() => true),
+    }),
+);
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        applyHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyHydration>(() => true),
+        applyPatchHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyPatchHydration>(
+            () => "applied",
+        ),
+        flushResources: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(async () => ({
+            discarded: [],
+            refused: [],
+        })),
+    }),
+);
 vi.mock("./jobChannel", () => ({
     registeredHooks: stubs.registeredHooks,
     handleChannelEvent: stubs.handleChannelEvent,
     rememberHydration: stubs.rememberHydration,
+    rememberJobStreaming: stubs.rememberJobStreaming,
     endJobChannel: stubs.endJobChannel,
 }));
 vi.mock("../storage/presets.svelte", () => ({ changeToPreset: vi.fn() }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: vi.fn() }));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),
+);
 
 type Transport = typeof import("./generationJobs");
 
@@ -125,6 +135,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
@@ -146,7 +157,7 @@ describe("a job of this tab", () => {
         expect(active()).toBe(true);
 
         answer.resolve(json(200, { jobId: "j1" }));
-        await expect(creating).resolves.toBe("j1");
+        await expect(creating).resolves.toEqual({ outcome: "created", jobId: "j1" });
         expect(active()).toBe(true);
         // The saved copy is one hold, the created job another: forgetting the save keeps it held.
         transport.forgetGenerationJob("j1");
@@ -162,8 +173,26 @@ describe("a job of this tab", () => {
         stubs.fetch.mockResolvedValueOnce(json(409, { error: "stale" }));
         await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ name: "GenerationStaleError" });
         expect(active()).toBe(false);
-        stubs.fetch.mockRejectedValueOnce(new Error("offline"));
-        await expect(transport.createGenerationJob(body)).rejects.toMatchObject({ status: 0 });
+        // A request without an answer stays held through its retries after 1, 2, and 4 s, then holds nothing.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            stubs.fetch.mockRejectedValueOnce(new Error("offline"));
+        }
+        const failing = transport.createGenerationJob(body).then(
+            () => "answered",
+            (error: unknown) => error,
+        );
+        for (const delay of [1_000, 2_000, 4_000]) {
+            expect(active()).toBe(true);
+            await vi.advanceTimersByTimeAsync(delay);
+        }
+        const failed = await failing;
+        expect(failed).toBeInstanceOf(transport.GenerationCreateError);
+        expect(failed).toMatchObject({ uncertain: true, cause: { name: "ResourceRequestError", status: 0 } });
+        const sent = stubs.fetch.mock.calls.slice(1).map(([, init]) => String(init!.body));
+        expect(sent).toHaveLength(4);
+        expect(new Set(sent).size).toBe(1);
+        expect(JSON.parse(sent[0]).requestId).toMatch(/^[0-9a-f-]{36}$/);
         expect(active()).toBe(false);
         expect(listener).toHaveBeenCalledTimes(2);
     });
@@ -189,7 +218,10 @@ describe("a job of this tab", () => {
         await flush();
         expect(active()).toBe(false);
         expect(listener).toHaveBeenCalled();
-        await expect(follow.closed).resolves.toEqual({ terminal: { type: "done", epoch: EPOCH, revision: null } });
+        await expect(follow.closed).resolves.toEqual({
+            terminal: { type: "done", epoch: EPOCH, revision: null },
+            received: true,
+        });
     });
 });
 

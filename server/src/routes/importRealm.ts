@@ -189,7 +189,7 @@ export function createRealmStaging(options: { ttlMs?: number; timer?: RealmStagi
  *
  * `POST /api/import/realm/commit` with `{ token }`: `serveStagedImport`'s lifecycle (404
  * `REALM_IMPORT_EXPIRED` for a token that names no waiting import; 409 while another import holds the
- * slot and 503 during maintenance, the staged import kept); then the staged file's assets (and a PNG's
+ * slot and 503 during maintenance, without taking the staged import); then the file's assets (and a PNG's
  * trimmed image) are written by the CharX or PNG lines, and the folder is removed when the answer
  * ends. `POST /api/import/realm/cancel` with `{ token }`: the staged import is removed, a 204 whether
  * it still waited or not. Both are authenticated first and read a 4 KiB JSON body (400 `Invalid
@@ -229,6 +229,13 @@ export function registerRealmImportRoutes(
     const readers = { savePath, snapshots, diagnostics };
 
     // The body is read only once the import is authenticated and admitted (`readRealmId`).
+    /**
+     * POST /api/import/realm { id }, authenticated without epoch, body at most 4 KiB. Downloads and
+     * validates without publishing assets; NDJSON has one { kind: "charx" | "png", token, card, ... }
+     * or { kind: "json", body } line, or { error } (`shared/realmImport.ts`). Before streaming:
+     * 400 invalid request/card, 409 slot busy or REALM_TOO_MANY_STAGED, 413 request/download cap,
+     * 502 Realm's text or REALM_DOWNLOAD_FAILED, 503 maintenance/shutdown with Retry-After: 5.
+     */
     app.post(REALM_IMPORT_PATH, limiter, (c) =>
         serveFileImport<RealmPlan, RealmKind>(c, deps, {
             stagingPrefix: "realm",
@@ -262,6 +269,14 @@ export function registerRealmImportRoutes(
         }),
     );
 
+    /**
+     * POST /api/import/realm/commit { token }, authenticated without epoch, body at most 4 KiB.
+     * NDJSON { done, total }, then { kind: "charx", assets, excluded } or { kind: "png", image,
+     * assets }, or final { error }. 400 invalid token/body, 404 "Import expired", 409 busy, 413 body
+     * cap, 503 maintenance/shutdown with Retry-After: 5. Busy/maintenance refusals do not consume the
+     * waiting import; its existing TTL still applies, and shutdown removes waiting imports. Once
+     * taken, the stream's finalizer owns removal (`http/fileImport.ts`).
+     */
     app.post(REALM_COMMIT_PATH, limiter, (c) =>
         serveStagedImport<RealmStagedPlan>(c, deps, {
             find: async (c) => {
@@ -290,6 +305,8 @@ export function registerRealmImportRoutes(
         }),
     );
 
+    /** POST /api/import/realm/cancel { token }, authenticated without epoch, body at most 4 KiB:
+     * 204 even if already gone, 400 malformed token/body, 413 cap, 503 during shutdown (`server/src/app.ts`). */
     app.post(REALM_CANCEL_PATH, limiter, async (c) => {
         const denied = await auth.checkAuth(c);
         if (denied) {

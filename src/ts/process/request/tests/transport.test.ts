@@ -18,7 +18,8 @@ const stubs = vi.hoisted(() => ({
     flush: vi.fn<() => Promise<unknown>>(),
     alertError: vi.fn(),
     appendFetchLog: vi.fn(),
-    callTool: vi.fn<(name: string, args: unknown) => Promise<unknown>>(),
+    callTool: vi.fn<typeof import("../../mcp/mcp").callTool>(),
+    getTools: vi.fn<typeof import("../../mcp/mcp").getTools>(),
     decodeToolCall: vi.fn<(inner: string) => Promise<unknown>>(),
     encodeToolCall: vi.fn<(record: unknown) => Promise<string>>(),
     saveInlayedSignature: vi.fn<(id: string, signature: unknown) => Promise<string>>(),
@@ -28,7 +29,7 @@ const stubs = vi.hoisted(() => ({
     /** `readRefs`: answers each requested chat with an empty chat of that id (a load of an unloaded chat). */
     readRefs: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
     epochMismatch: vi.fn((epoch: string) =>
-        Object.assign(new Error(`replaced ${epoch}`), { name: "ResourceEpochMismatchError" }),
+        Object.assign(new Error(`replaced ${epoch}`), { name: "ResourceEpochMismatchError", epoch }),
     ),
     dynamicIds: new Set<string>(),
     /** Each `getModelInfoForMode` call's arguments: the mode and the request's preset scope. */
@@ -50,7 +51,9 @@ vi.mock("src/ts/alert", async () =>
         alertError: stubs.alertError,
     }),
 );
-vi.mock("src/ts/globalApi.svelte", () => ({ appendFetchLog: stubs.appendFetchLog }));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ appendFetchLog: stubs.appendFetchLog }),
+);
 vi.mock("src/ts/model/modellist", async () => {
     // The mode's model id is resolved through the real slot routing (`resolveModelSlot`), so the
     // metadata follows the main profile of the model preset the scope names.
@@ -62,6 +65,7 @@ vi.mock("src/ts/model/modellist", async () => {
         flags: id === "with-images" ? [3] : [],
     });
     return {
+        LLMFormat: { Plugin: -1, WebLLM: -2 },
         LLMFlags: { hasImageInput: 3 },
         getModelInfo: (id: string) => infoOf(id),
         getModelInfoForMode: (mode: string, scope?: { presetId: string; modelPresetId: string }) => {
@@ -71,30 +75,54 @@ vi.mock("src/ts/model/modellist", async () => {
         isDynamicModel: (id: string) => stubs.dynamicIds.has(id),
     };
 });
-vi.mock("src/ts/network/generationJobs", () => ({ generationClientId: () => "tab-1" }));
-vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
+vi.mock("src/ts/network/generationJobs", async () =>
+    (await import("src/ts/network/tests/generationJobsMock")).createGenerationJobsMock({
+        generationClientId: () => "tab-1",
+    }),
+);
+vi.mock("src/ts/parser/parser.svelte", () => ({
+    risuChatParserScoped: stubs.parserScoped,
+    risuEscape: (text: string) => text,
+    risuUnescape: (text: string) => text,
+}));
 vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
     // The capture is the real display rule over the real records and selection: the chat's bound ids
     // where they exist, else the selected ones.
     const { chatDisplayIds } = await import("src/ts/storage/chatBinding.svelte");
     return {
+        invokeHook: async (fn: (...args: unknown[]) => unknown, _context: unknown, ...args: unknown[]) => fn(...args),
         capturePluginContext: (chatRef: { chaId: string; chatId: string } | null) =>
             chatRef ? { chatRef, ...chatDisplayIds(chatRef) } : undefined,
     };
 });
 vi.mock("src/ts/plugins/pluginHooks", () => ({
-    pluginHooks: { providerOptions: new Map([["legacy", { tokenizer: "llama" }]]) },
+    pluginHooks: {
+        providerOptions: new Map([["legacy", { tokenizer: "llama" }]]),
+        replacerbeforeRequest: new Set(),
+        replacerafterRequest: new Set(),
+    },
 }));
+vi.mock("src/ts/process/transformers", () => ({ runTransformers: vi.fn() }));
+vi.mock("src/ts/process/templates/chatTemplate", () => ({ applyChatTemplate: vi.fn() }));
+vi.mock("src/ts/process/stringlize", () => ({ unstringlizeChat: vi.fn() }));
 vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
 }));
-vi.mock("src/ts/storage/resourceClient", () => ({
-    epochMismatch: stubs.epochMismatch,
-    getResourceEpoch: () => "epoch-1",
-    // The chat module's own reads (a load of a chat the transport needs).
-    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
-}));
-vi.mock("src/ts/storage/resourceSync.svelte", () => ({ flushResources: () => stubs.flush() }));
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        epochMismatch: stubs.epochMismatch,
+        getResourceEpoch: () => "epoch-1",
+        // The chat module's own reads (a load of a chat the transport needs).
+        readRefs: (...args: unknown[]) => stubs.readRefs(...args),
+    }),
+);
+vi.mock("src/ts/storage/resourceSync.svelte", async () =>
+    (await import("../../../tests/bootMocks")).createBootMock("resourceSync", {
+        // These fixtures drive only the save barrier, with arbitrary resolved values or a void latch.
+        flushResources: () =>
+            stubs.flush() as ReturnType<typeof import("../../../storage/resourceSync.svelte").flushResources>,
+    }),
+);
 vi.mock("src/ts/util", () => ({ checkPersonaBinded: () => stubs.selected.bound }));
 vi.mock("../../files/inlays", () => ({
     saveInlayedSignature: stubs.saveInlayedSignature,
@@ -102,6 +130,7 @@ vi.mock("../../files/inlays", () => ({
     setInlayAsset: stubs.setInlayAsset,
 }));
 vi.mock("../../mcp/mcp", () => ({
+    getTools: stubs.getTools,
     callTool: stubs.callTool,
     decodeToolCall: stubs.decodeToolCall,
     encodeToolCall: stubs.encodeToolCall,
@@ -113,11 +142,12 @@ import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from 
 import { activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestServer } from "../transport";
+import { requestChatData } from "../request";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import {
+    acceptRemoteChat,
     assembleChats,
     createChat,
-    deleteChat,
     findChat,
     installCharacterChats,
 } from "src/ts/storage/chatStore.svelte";
@@ -150,7 +180,7 @@ function assembleFixture(unloaded: readonly string[]) {
         char.chats.map((chat) =>
             unloaded.includes(char.chaId)
                 ? { characterId: char.chaId, id: chat.id, revision: "r1", name: chat.id, fmIndex: -1 }
-                : { characterId: char.chaId, id: chat.id, revision: "r1", data: chat as never },
+                : { characterId: char.chaId, id: chat.id, revision: "r1", trashedAt: null, data: chat as never },
         ),
     );
     const orders = characters.map((char) => ({
@@ -271,6 +301,7 @@ beforeEach(() => {
         path.endsWith("/answer") ? Response.json({ accepted: true }) : sseResponse([accepted, success]),
     );
     stubs.callTool.mockResolvedValue([{ type: "text", text: "tool says" }]);
+    stubs.getTools.mockResolvedValue([]);
     stubs.decodeToolCall.mockResolvedValue(undefined);
     stubs.encodeToolCall.mockResolvedValue("<tool_call>x</tool_call>");
     stubs.saveInlayedSignature.mockResolvedValue("sig");
@@ -299,6 +330,19 @@ afterEach(() => {
 });
 
 describe("the request body", () => {
+    it("preserves configured-tool intent for omitted, automatic empty, and explicit empty tool lists", async () => {
+        // A direct transport caller may omit its list; the outer request discovers one first.
+        expect(await requestServer(baseArg() as never, "model", null, modelInfo)).toMatchObject({ type: "success" });
+        expect(await requestChatData(baseArg(), "model")).toMatchObject({ type: "success" });
+        expect(stubs.getTools).toHaveBeenCalledTimes(1);
+        expect(await requestChatData({ ...baseArg(), tools: [] }, "model")).toMatchObject({ type: "success" });
+        expect(stubs.getTools).toHaveBeenCalledTimes(1);
+
+        const bodies = stubs.fetch.mock.calls.map(([, init]) => JSON.parse(init!.body as string) as LlmRequestBody);
+        expect(bodies.map((body) => body.tools)).toEqual([[], [], []]);
+        expect(bodies.map((body) => body.arg.allowConfiguredTools)).toEqual([true, true, undefined]);
+    });
+
     it("captures the ids, the tokenizer scope, and the arguments before the flush, so a selection change while saving does not move the request", async () => {
         let release!: () => void;
         stubs.flush.mockReturnValue(new Promise<void>((resolve) => (release = resolve)));
@@ -435,6 +479,7 @@ describe("the request body", () => {
             bias: {},
             useStreaming: false,
             profileId: "step-profile",
+            allowConfiguredTools: true,
         });
         expect(body.arg).not.toHaveProperty("requestIds");
         expect(body.arg).not.toHaveProperty("chatRef");
@@ -1005,6 +1050,46 @@ describe("the events", () => {
 });
 
 describe("the callbacks", () => {
+    it("passes the exact request controller to an MCP call and aborts its pending fetch when the consumer cancels", async () => {
+        const controlled = controlledResponse();
+        let requestSignal: AbortSignal | undefined;
+        let toolSignal: AbortSignal | undefined;
+        let aborted = false;
+        let started = false;
+        stubs.fetch.mockImplementationOnce(async (_path, init) => {
+            requestSignal = init?.signal as AbortSignal;
+            return controlled.response;
+        });
+        stubs.callTool.mockImplementationOnce(async (_name, _args, _target, _context, signal) => {
+            toolSignal = signal;
+            started = true;
+            return new Promise((_, reject) =>
+                signal!.addEventListener(
+                    "abort",
+                    () => {
+                        aborted = true;
+                        reject(signal!.reason);
+                    },
+                    { once: true },
+                ),
+            );
+        });
+        const pending = requestServer({ ...baseArg(), useStreaming: true } as never, "model", null, modelInfo);
+        controlled.event(accepted);
+        controlled.event({ type: "streaming" });
+        const response = (await pending) as { result: ReadableStream<StreamResponseChunk> };
+        const reader = response.result.getReader();
+        controlled.event({ type: "callback", id: "cancel-tool", name: "mcpTool", payload: { name: "read", args: {} } });
+        for (let i = 0; i < 300 && !started; i++) await Promise.resolve();
+        expect(started).toBe(true);
+        expect(toolSignal).toBe(requestSignal);
+        expect(toolSignal).toBeInstanceOf(AbortSignal);
+        await reader.cancel("consumer ended");
+        for (let i = 0; i < 100; i++) await Promise.resolve();
+        expect(aborted).toBe(true);
+        expect(answers()).toEqual([]);
+    });
+
     it("parses a `cbs` callback with the captured chat and scope (or the payload's chat), and answers each callback once by id", async () => {
         // The scope is the request chat's binding, not the selection (`preset-2` is selected meanwhile).
         selectPreset("preset-2");
@@ -1052,6 +1137,7 @@ describe("the callbacks", () => {
             { sides: 6 },
             { chaId: "char-9", chatId: "chat-9" },
             expect.objectContaining({ chatRef: { chaId: "char-9", chatId: "chat-9" }, ...scope }),
+            expect.any(AbortSignal),
         );
         const sent = answers();
         expect(sent.every((entry) => entry.path === "/api/llm/request/req-1/answer")).toBe(true);
@@ -1154,30 +1240,26 @@ describe("the request's chats", () => {
     it("loads a `cbs` callback's other chat before the parse when it is not loaded, and fails the callback for a chat that is not listed", async () => {
         assembleFixture(["other"]);
         expect(findChat({ chaId: "other", chatId: "k" })).toBeUndefined();
-        stubs.fetch.mockResolvedValueOnce(
-            sseResponse([
-                accepted,
-                {
-                    type: "callback",
-                    id: "cb-1",
-                    name: "cbs",
-                    payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "k" } },
-                },
-                {
-                    type: "callback",
-                    id: "cb-2",
-                    name: "cbs",
-                    payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "zz" } },
-                },
-                success,
-            ]),
-        );
-        expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
-            type: "success",
-            result: "ok",
+        // As on the server, the result follows the callbacks' answers.
+        const controlled = controlledResponse();
+        stubs.fetch.mockResolvedValueOnce(controlled.response);
+        const pending = requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo);
+        controlled.event(accepted);
+        controlled.event({
+            type: "callback",
+            id: "cb-1",
+            name: "cbs",
+            payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "k" } },
         });
-        await flushTick();
-        await flushTick();
+        controlled.event({
+            type: "callback",
+            id: "cb-2",
+            name: "cbs",
+            payload: { text: "{{char}}", chatRef: { chaId: "other", chatId: "zz" } },
+        });
+        await vi.waitFor(() => expect(answers()).toHaveLength(2));
+        controlled.event(success);
+        expect(await pending).toEqual({ type: "success", result: "ok" });
         expect(stubs.readRefs).toHaveBeenCalledTimes(1);
         expect((stubs.readRefs.mock.calls[0][1] as { chats: unknown }).chats).toEqual([
             { characterId: "other", id: "k" },
@@ -1205,16 +1287,18 @@ describe("the request's chats", () => {
         expect(answers()).toHaveLength(2);
     });
 
-    it("posts nothing when the request's chat is deleted or replaced under the same ids during the flush", async () => {
-        // A second chat, so `chat-9` can be deleted.
+    it("posts nothing when the request's chat is deleted for good or replaced under the same ids during the flush", async () => {
+        // A second chat, so `chat-9` leaves the list when it is deleted.
         createChat("char-9", { id: "chat-9b", name: "B", note: "", localLore: [], message: [] } as never);
         stubs.flush.mockImplementationOnce(async () => {
-            deleteChat(chat9);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            acceptRemoteChat({ characterId: chat9.chaId, id: chat9.chatId, revision: null, data: null });
         });
         expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
             type: "fail",
             result: gone,
         });
+        expect(findChat(chat9)).toBeUndefined();
         expect(posted()).toHaveLength(0);
         installSettings();
         stubs.flush.mockImplementationOnce(async () => {

@@ -18,14 +18,17 @@
      * The entries a query shows: an entry on its `comment`, `key` and `secondkey` (a
      * chat's `child` link also on the entry it links, whose name it shows), a folder on its name.
      * A folder whose name matches shows all of its entries; a shown entry shows its folders.
+     * Entries appended at or after `addedFrom` also count as their own matches.
      */
     function filterMatches(
         list: readonly loreBook[],
         query: PreparedQuery,
         linked: (id: string) => loreBook | undefined,
+        addedFrom: number,
     ): Set<loreBook> {
         const fields = (book: loreBook) => [book.comment, book.key, book.secondkey];
-        const ownMatch = (book: loreBook) => {
+        const ownMatch = (book: loreBook, index: number) => {
+            if (index >= addedFrom) return true;
             if (book.mode === "folder") return matchesAny([book.comment], query);
             if (matchesAny(fields(book), query)) return true;
             const parent = book.mode === "child" && book.id ? linked(book.id) : undefined;
@@ -36,7 +39,7 @@
             if (book.mode === "folder" && !folders.has(book.key)) folders.set(book.key, book);
         }
         const shown = new Set<loreBook>();
-        for (const book of list) {
+        for (const [index, book] of list.entries()) {
             const chain: loreBook[] = [];
             let named = false;
             for (let key = book.folder; key;) {
@@ -47,7 +50,7 @@
                 named ||= matchesAny([parent.comment], query);
                 key = parent.folder;
             }
-            if (named || ownMatch(book)) {
+            if (named || ownMatch(book, index)) {
                 shown.add(book);
                 for (const parent of chain) shown.add(parent);
             }
@@ -70,6 +73,30 @@
     import { prepareQuery } from "src/ts/util/koreanSearch";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
 
+    /**
+     * A lorebook list: the selected character's (`submenu` 0), the selected chat's local draft (1), or
+     * `externalLoreBooks` (a module's); a folder's entries are a nested list (`showFolder`, mounted by
+     * `LoreBookData.svelte`). `removeEntry` deletes by identity (a folder with its entries), returning whether it
+     * removed the entry, and does nothing when the shown list no longer holds it.
+     *
+     * Open details count only `mode !== "folder"` rows, and drag is off while any is open; a nested list owns its
+     * members' open state. A membership change (an owner switch or a chat draft resync included) prunes stale open
+     * refs and recounts, recreating Sortable synchronously at zero; creation never adds a second live instance.
+     *
+     * Filter: the outermost list owns the query and the match set; folder lists read them through the `LORE_FILTER`
+     * context. The query resets when the owner changes (the character, the chat, or the tab between them). Matches
+     * (`filterMatches`) are computed once at the root from a tracked copy of the list, reading fields untracked, so a
+     * row renamed under the filter stays shown until the query or the membership changes. Entries appended while a
+     * query stands, and their folder chains, stay shown until the query changes, including across chat draft resyncs.
+     * Hidden rows stay mounted, keeping their open details; a shown folder opens through `forceOpen` without writing
+     * `openedRefs` until a member opens inside it, which records its folder chain as open so those details stay
+     * mounted across query changes. Every SortableJS instance is disabled while the query is non-empty, and a drop
+     * that ends while filtering writes nothing.
+     *
+     * `locked` (a chat's lore while a send or job runs in the chat, passed down to folder lists) disables drag the same
+     * way, and its rows disable their write controls.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     // The selected chat's local lorebook is edited on a copy that is saved through the chat module.
     const localLore = useLocalLoreDraft();
@@ -79,12 +106,22 @@
         lorePlus?: boolean;
         externalLoreBooks?: loreBook[];
         showFolder?: string;
+        onMemberOpen?: () => void;
+        /** The list is read-only: no drag, and every row's write controls are disabled. */
+        locked?: boolean;
     }
 
-    let { submenu = 0, lorePlus = false, externalLoreBooks = null, showFolder = "" }: Props = $props();
+    let {
+        submenu = 0,
+        lorePlus = false,
+        externalLoreBooks = null,
+        showFolder = "",
+        onMemberOpen,
+        locked = false,
+    }: Props = $props();
     let stb: Sortable = null;
     let destroyed = false;
-    // The `disabled` option `stb` has now (set while the filter is non-empty).
+    // The `disabled` option `stb` has now (set while the filter is non-empty or the list is locked).
     let stbDisabled = false;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
@@ -108,21 +145,34 @@
         return "";
     });
     const preparedQuery = $derived(isRootList ? prepareQuery(query) : null);
+    // A position survives chat draft resyncs, which replace every entry with a JSON copy.
+    let additionsQuery: PreparedQuery | null | undefined;
+    let addedFrom = 0;
     // Matched once for the whole list (nested lists show the same array). The entries are read as a
     // tracked copy, so any membership change matches again; their fields are read untracked, so a
     // row renamed under the filter stays shown while it is edited.
     const rootMatches = $derived.by(() => {
         const prepared = preparedQuery;
-        if (!prepared) return null;
         try {
             const list = shownList();
             const books = list ? [...list] : [];
+            if (prepared !== additionsQuery) {
+                additionsQuery = prepared;
+                addedFrom = books.length;
+            }
+            addedFrom = Math.min(addedFrom, books.length);
+            if (!prepared) return null;
             return untrack(() =>
-                filterMatches(books, prepared, (id) => selectedCharacter()?.globalLore.find((e) => e.id === id)),
+                filterMatches(
+                    books,
+                    prepared,
+                    (id) => selectedCharacter()?.globalLore.find((e) => e.id === id),
+                    addedFrom,
+                ),
             );
         } catch (error) {
             // The list can belong to a removed record (for example a deleted module).
-            if (error instanceof DetachedWrapperError) return new Set<loreBook>();
+            if (error instanceof DetachedWrapperError) return prepared ? new Set<loreBook>() : null;
             throw error;
         }
     });
@@ -154,6 +204,8 @@
               },
     );
     const filtering = () => (parentFilter ? parentFilter.query : preparedQuery) !== null;
+    /** No drag reorders a filtered view or a locked list. */
+    const dragOff = () => filtering() || locked;
     const matches = $derived(parentFilter ? parentFilter.matches : rootMatches);
     /** Whether the filter hides `book` (a row the shown list holds). */
     const filteredOut = (book: loreBook) => !!matches && !matches.has(book);
@@ -261,8 +313,8 @@
 
     const createStb = () => {
         if (stb || destroyed || !ele || openedDetails > 0) return;
-        // No drag reorders a filtered view: every instance starts disabled while filtering.
-        const disabled = untrack(filtering);
+        // Every instance starts disabled while filtering or locked.
+        const disabled = untrack(dragOff);
         stbDisabled = disabled;
         stb = Sortable.create(ele, {
             ...sortableOptions,
@@ -288,8 +340,8 @@
                     return;
                 }
 
-                // Cancel movement; a drag that ends after the filter started writes nothing either
-                if ((evt.oldIndex === evt.newIndex && evt.from === evt.to) || untrack(filtering)) {
+                // Cancel movement; a drag that ends after the filter started or the list locked writes nothing either
+                if ((evt.oldIndex === evt.newIndex && evt.from === evt.to) || untrack(dragOff)) {
                     // The re-render below rebuilds this list only: take the row back from another one.
                     if (evt.item.parentNode !== evt.from) {
                         evt.from.insertBefore(evt.item, evt.from.children[evt.oldIndex] ?? null);
@@ -448,10 +500,10 @@
 
     onMount(createStb);
 
-    // Turn drag off while filtering and back on after clearing (an instance created meanwhile
-    // already has the current state).
+    // Turn drag off while filtering or locked and back on after both clear (an instance created
+    // meanwhile already has the current state).
     $effect(() => {
-        const disabled = filtering();
+        const disabled = dragOff();
         untrack(() => {
             if (stb && stbDisabled !== disabled) {
                 stb.option("disabled", disabled);
@@ -570,6 +622,7 @@
         if (bookRef) {
             openedRefs.add(bookRef);
             openedRefs = new Set(openedRefs); // Trigger reactivity
+            onMemberOpen?.();
         }
     };
     const onClose = (isDetail: boolean, bookRef: loreBook) => {
@@ -634,6 +687,7 @@
                             onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
+                            {locked}
                             {externalLoreBooks}
                         />
                     {:else}
@@ -668,6 +722,7 @@
                             onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
+                            {locked}
                             {lorePlus}
                             bind:externalLoreBooks={currentCharacter.globalLore}
                         />
@@ -703,6 +758,7 @@
                             onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
+                            {locked}
                             {lorePlus}
                             bind:externalLoreBooks={localLore.value}
                         />

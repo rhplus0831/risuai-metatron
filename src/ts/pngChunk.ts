@@ -3,6 +3,23 @@ import crc32 from "crc/crc32";
 import { AppendableBuffer, VirtualWriter, type LocalWriter } from "./globalApi.svelte";
 import { blobToUint8Array } from "./util";
 
+/**
+ * The in-tab PNG text-chunk reader and writer (`PngChunk`): a card's `chara`, `ccv3`, and `chara-ext-asset_*` chunks,
+ * a persona's `persona` chunk. No chunk has a size cap: its data is held whole, also when streamed; a caller decides
+ * what it keeps (`importCharacterProcess` in `src/ts/characterCards.ts` for the card text). A reader takes the
+ * keyword from the first 70 bytes of a chunk's data (no NUL there: the empty key).
+ *
+ * CRC is checked only with `checkCrc`, which no production caller passes (tests do), and `readGenerator` checks it
+ * only for bytes in hand, never for a stream or a streamed `Blob`. `write` and `trim` drop every `tEXt` chunk of the
+ * image; `streamWriter` drops only the card's.
+ */
+
+/**
+ * `PngChunk.streamWriter`, the card export's PNG writer, which writes to the stream as it goes. `init` copies every
+ * chunk of the portrait whole, CRC included, up to `IEND`, except the `chara` and `ccv3` text chunks it replaces; that
+ * keyword is read from the chunk's own start (at most 79 bytes, up to its NUL), so other `tEXt` chunks survive with
+ * valid CRCs. `write` appends one `tEXt` chunk; `end` writes `IEND` and awaits the writer's close.
+ */
 class StreamChunkWriter {
     constructor(
         private data: Uint8Array,
@@ -128,11 +145,15 @@ export const PngChunk = {
      * `File` is one) is streamed with `stream()`, or read into bytes where `stream` is missing (happy-dom).
      * A `Blob` is anything that is neither bytes nor a stream: no `instanceof Blob`, since in tests
      * `Response.blob()` is not the environment's `Blob`.
+     * With `ranges`, text chunks also carry the value's absolute byte offsets (`start` inclusive,
+     * `end` exclusive), only when a NUL is found within the first 70 data bytes. Without it, yields
+     * stay `{ key, value }`. Finishing or closing releases buffered input and cancels/unlocks the
+     * stream reader; the stripped image yielded with `returnTrimed` remains usable.
      */
     readGenerator: async function* (
         input: Blob | Uint8Array | ReadableStream<Uint8Array>,
-        arg: { checkCrc?: boolean; returnTrimed?: boolean } = {},
-    ): AsyncGenerator<{ key: string; value: string } | AppendableBuffer, null> {
+        arg: { checkCrc?: boolean; returnTrimed?: boolean; ranges?: boolean } = {},
+    ): AsyncGenerator<{ key: string; value: string; start?: number; end?: number } | AppendableBuffer, null> {
         let data: Uint8Array | null = null;
         let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
         if (input instanceof Uint8Array) {
@@ -171,56 +192,75 @@ export const PngChunk = {
             }
         }
 
-        await appendTrimed(await slice(0, 8));
-        let pos = 8;
-        const size = data ? data.length : Infinity;
-        while (pos < size) {
-            // A stream keeps only the current chunk: a chunk's reads never go back before its start, so
-            // the bytes before `pos` are dropped once they pass 200 KB (bounded by what was read: a `tEXt`
-            // chunk's CRC is skipped unread).
-            if (reader) {
-                const consumed = Math.min(pos, readableStreamData.length()) - readableStreamData.deapended;
-                if (consumed > 200000) {
-                    readableStreamData.deappend(consumed);
-                }
-            }
-            const dataPart = await slice(pos, pos + 4);
-            const len = dataPart[0] * 0x1000000 + dataPart[1] * 0x10000 + dataPart[2] * 0x100 + dataPart[3];
-            const type = await slice(pos + 4, pos + 8);
-            const typeString = new TextDecoder().decode(type);
-            if (arg.checkCrc && data) {
-                //crc check is not supported for stream
-                const dataPart = await slice(pos + 8 + len, pos + 12 + len);
-                const crc = dataPart[0] * 0x1000000 + dataPart[1] * 0x10000 + dataPart[2] * 0x100 + dataPart[3];
-                const crcCheck = crc32((await slice(pos + 4, pos + 8 + len)) as Buffer);
-                if (crc !== crcCheck) {
-                    throw new Error("crc check failed");
-                }
-            }
-            if (typeString === "IEND") {
-                await appendTrimed(await slice(pos, pos + 12 + len));
-                break;
-            } else if (typeString === "tEXt") {
-                const chunkData = await slice(pos + 8, pos + 8 + len);
-                let key = "";
-                let value = "";
-                for (let i = 0; i < 70; i++) {
-                    if (chunkData[i] === 0) {
-                        key = new TextDecoder().decode(chunkData.slice(0, i));
-                        value = new TextDecoder().decode(chunkData.slice(i + 1));
-                        break;
+        try {
+            await appendTrimed(await slice(0, 8));
+            let pos = 8;
+            const size = data ? data.length : Infinity;
+            while (pos < size) {
+                // A stream keeps only the current chunk: a chunk's reads never go back before its start, so
+                // the bytes before `pos` are dropped once they pass 200 KB (bounded by what was read: a `tEXt`
+                // chunk's CRC is skipped unread).
+                if (reader) {
+                    const consumed = Math.min(pos, readableStreamData.length()) - readableStreamData.deapended;
+                    if (consumed > 200000) {
+                        readableStreamData.deappend(consumed);
                     }
                 }
-                yield { key, value };
-            } else {
-                await appendTrimed(await slice(pos, pos + 12 + len));
+                const dataPart = await slice(pos, pos + 4);
+                const len = dataPart[0] * 0x1000000 + dataPart[1] * 0x10000 + dataPart[2] * 0x100 + dataPart[3];
+                const type = await slice(pos + 4, pos + 8);
+                const typeString = new TextDecoder().decode(type);
+                if (arg.checkCrc && data) {
+                    //crc check is not supported for stream
+                    const dataPart = await slice(pos + 8 + len, pos + 12 + len);
+                    const crc = dataPart[0] * 0x1000000 + dataPart[1] * 0x10000 + dataPart[2] * 0x100 + dataPart[3];
+                    const crcCheck = crc32((await slice(pos + 4, pos + 8 + len)) as Buffer);
+                    if (crc !== crcCheck) {
+                        throw new Error("crc check failed");
+                    }
+                }
+                if (typeString === "IEND") {
+                    await appendTrimed(await slice(pos, pos + 12 + len));
+                    break;
+                } else if (typeString === "tEXt") {
+                    const chunkData = await slice(pos + 8, pos + 8 + len);
+                    let key = "";
+                    let value = "";
+                    let range: { start: number; end: number } | undefined;
+                    for (let i = 0; i < 70; i++) {
+                        if (chunkData[i] === 0) {
+                            key = new TextDecoder().decode(chunkData.slice(0, i));
+                            value = new TextDecoder().decode(chunkData.slice(i + 1));
+                            if (arg.ranges) {
+                                range = { start: pos + 8 + i + 1, end: pos + 8 + len };
+                            }
+                            break;
+                        }
+                    }
+                    yield { key, value, ...range };
+                } else {
+                    await appendTrimed(await slice(pos, pos + 12 + len));
+                }
+                pos += 12 + len;
             }
-            pos += 12 + len;
+            if (arg.returnTrimed) {
+                yield trimedData;
+            }
+            return null;
+        } finally {
+            data = null;
+            readableStreamData = new AppendableBuffer();
+            if (reader) {
+                try {
+                    await reader.cancel();
+                } catch {
+                    // An errored stream must not replace the read failure during cleanup.
+                } finally {
+                    reader.releaseLock();
+                    reader = null;
+                }
+            }
         }
-        if (arg.returnTrimed) {
-            yield trimedData;
-        }
-        return null;
     },
 
     trim: (data: Uint8Array) => {

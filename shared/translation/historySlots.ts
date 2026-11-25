@@ -1,12 +1,13 @@
 import type { Message } from "../database.ts";
+import type { DeepReadonly } from "../readonly.ts";
 import { storedTranslation } from "./messageTranslation.ts";
 
 /**
  * The translator's history slots: `{{slot::history::N}}` (the source text of the N messages before
  * the translated one) and `{{slot::historytrans::N}}` (their fresh stored translations). Pure: the
- * server runner counts the tokens (`buildTranslatorHistory`'s `countTokens`); the pipeline fills
- * the slots from the result (`TranslatorSlotValues.history`). Anywhere without one (the tab), they
- * fill in empty.
+ * server translator and the tab's input hook runner (`src/ts/process/inputHooks.ts`) supply token
+ * counts through `buildTranslatorHistory`'s `countTokens`. Callers fill slots from the result;
+ * the tab's translator still fills its history slots in empty.
  */
 
 export const TRANSLATOR_HISTORY_MAX_COUNT = 50;
@@ -49,7 +50,7 @@ export interface TranslatorHistoryEntry {
  * translation, after the translation's freshness is read from the stored message.
  */
 export function collectTranslatorHistory(
-    messages: readonly Message[],
+    messages: readonly DeepReadonly<Message>[],
     messageIndex: number,
     count: number,
     transformText: (text: string) => string = (text) => text,
@@ -92,7 +93,7 @@ export function translatorHistoryBlock(role: TranslatorHistoryEntry["role"], bod
  * `collectTranslatorHistory`, so the blocks are counted as they are shown.
  */
 export async function buildTranslatorHistory(input: {
-    messages: readonly Message[];
+    messages: readonly DeepReadonly<Message>[];
     messageIndex: number;
     counts: readonly number[];
     maxTokens: unknown;

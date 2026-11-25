@@ -13,8 +13,11 @@ import { StoreBackedServer } from "./storeBackedServer";
 // tests call `noteRemoteChanges` directly at that boundary with the revision the server store
 // holds; the socket, its epoch filtering, and its frame parsing are outside this file. A send whose
 // flush is refused because a change waits for another tab's job shows `chatGenerating`
-// (`GenerationBlockedError`). The save adapter, the chat module, the job transport, and
-// `runServerJob` run for real against the real server store guarded by the real generation lock.
+// (`GenerationBlockedError`). A follow of this tab's job that is lost (the server out of reach) or
+// gone (the job unknown) reads the chat again itself, whether or not the job still locked anything
+// in it, so the reply the job left shows and the chat's controls are free without opening another
+// chat. The save adapter, the chat module, the job transport, and `runServerJob` run for real
+// against the real server store guarded by the real generation lock.
 
 const { server, alerts } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -41,7 +44,12 @@ vi.mock("../../alert", async (importOriginal) => {
     });
 });
 vi.mock("src/lang", () => ({
-    language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    language: {
+        resourceReloaded: "reloaded",
+        resourceRestored: "restored",
+        chatGenerating: "generating",
+        serverJob: { lost: "job lost", endedAway: "ended away" },
+    },
     changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
@@ -51,7 +59,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -143,12 +151,19 @@ async function boot() {
     const character = () => (characterList() as any[]).find((entry: any) => entry.chaId === "c");
     const mirrorChat = (id = "k") => character().chats.find((entry: any) => entry.id === id) as Chat | undefined;
     /** The feed's change set for chat `id` of `c`, at the revision the server store holds now (null: deleted). */
-    const notify = (id: string) =>
-        sync.noteRemoteChanges({
+    /** Another tab's change of chat `id`, as the feed announces it (with the mark, unless it is a deletion). */
+    const notify = (id: string) => {
+        const record = fake.chat("c", id);
+        return sync.noteRemoteChanges({
             resources: [],
-            chats: [{ characterId: "c", id, revision: fake.chat("c", id)?.revision ?? null }],
+            chats: [
+                record
+                    ? { characterId: "c", id, revision: record.revision, trashedAt: record.trashedAt }
+                    : { characterId: "c", id, revision: null },
+            ],
             chatOrders: [],
         });
+    };
     return { fake, sync, chat, transport, character, mirrorChat, notify };
 }
 
@@ -226,7 +241,11 @@ describe("a chat another tab announced", () => {
         // the work the job blocks.
         chat.setMessageText(refK, "b", "edited");
         chat.setMessageText(refK, "a", "mine");
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
+        // The refusal names the chat whose work waits.
+        await expect(sync.flushResources()).rejects.toMatchObject({
+            message: expect.stringMatching(/still being generated/),
+            chats: [refK],
+        });
         const reads = readsOf(fake);
         const timeouts = vi.spyOn(globalThis, "setTimeout");
         const clears = vi.spyOn(globalThis, "clearTimeout");
@@ -305,8 +324,7 @@ describe("a chat another tab announced", () => {
 
     it("removes a chat the server deleted", async () => {
         const { fake, character, notify } = await boot();
-        const r0 = fake.chat("c", "j")!.revision;
-        fake.chatBatch([{ characterId: "c", chatId: "j", baseRevision: r0, ops: [{ op: "delete" } as any] }]);
+        fake.deleteChatForever("c", "j");
         notify("j");
         await vi.advanceTimersByTimeAsync(3000);
         expect(character().chats.map((c: any) => c.id)).toEqual(["k"]);
@@ -325,7 +343,7 @@ describe("a chat another tab announced", () => {
         expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["local", "B", "R1"]);
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(chat.hasUnsavedChatWork()).toBe(false);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
     });
 });
 
@@ -371,7 +389,7 @@ describe("a send while another tab's job holds the chat", () => {
 });
 
 describe("a send on a clean tab", () => {
-    it("uploads no character record before the job is created: the `lastInteraction` stamp is the server job's", async () => {
+    it("uploads no character record before the job is created: a send writes no character field", async () => {
         const { fake, character } = await boot();
         const commands = await import("../../process/serverCommands");
         const before = fake.record("characters", "c")!;
@@ -386,6 +404,91 @@ describe("a send on a clean tab", () => {
         expect(fake.batchCount()).toBe(0);
         expect(fake.record("characters", "c")).toEqual(before);
         expect(fake.requests.filter((r) => r.path === "/api/resources/batch")).toEqual([]);
+    });
+});
+
+// The job's socket never opens (the device came back after the server collected the job, or the
+// server is out of reach): every attach closes at once, and the status reads decide.
+describe("a lost or gone follow of this tab's job", () => {
+    class ClosedSocket {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSING = 2;
+        static readonly CLOSED = 3;
+        readyState = ClosedSocket.CLOSED;
+        onopen: (() => void) | null = null;
+        onmessage: ((event: { data: string }) => void) | null = null;
+        onerror: (() => void) | null = null;
+        onclose: ((event: { code: number }) => void) | null = null;
+        constructor(readonly url: string) {
+            queueMicrotask(() => this.onclose?.({ code: 1006 }));
+        }
+        send() {}
+        close() {}
+    }
+    /** The attaches' waits (1, 2, 4, 8 s) and every deadline on the way. */
+    const RETRIES_MS = 20_000;
+
+    /** Boots with the job's reply written on the server while this tab still holds the chat as it was. */
+    async function bootBehind() {
+        const booted = await boot();
+        vi.stubGlobal("WebSocket", ClosedSocket);
+        const commands = await import("../../process/serverCommands");
+        const chatStatus = await import("../../process/chatStatus.svelte");
+        const { alertToast } = await import("../../alert");
+        const r0 = booted.fake.chat("c", "k")!.revision;
+        booted.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: r0,
+                ops: [{ op: "setText", id: "c", text: "reply" } as any],
+            },
+        ]);
+        expect(booted.mirrorChat()!.message.map((m) => m.data)).toEqual(["A", "B", "C"]);
+        return { ...booted, commands, chatStatus, alertToast };
+    }
+
+    /** The chat shows the server's copy, is not known to be behind, and nothing holds its controls. */
+    function expectCurrent(booted: Awaited<ReturnType<typeof bootBehind>>) {
+        const { chat, chatStatus, commands, mirrorChat } = booted;
+        expect(mirrorChat()!.message.map((m) => m.data)).toEqual(["A", "B", "reply"]);
+        expect(chat.isChatBehind(refK)).toBe(false);
+        expect(chat.isChatGenerating(refK)).toBe(false);
+        expect(chat.lockedChatKeys()).toEqual(new Set());
+        expect(chatStatus.isChatBusy(refK)).toBe(false);
+        expect(get(commands.followedJobs).size).toBe(0);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
+    }
+
+    it("reads the chat again after a follow the server stayed out of reach for (lost), with the lost alert, although the job held no lock in it", async () => {
+        const booted = await bootBehind();
+        const { fake, commands, alertToast } = booted;
+        fake.failNext = { status: 0, times: 5, match: (path) => path.startsWith("/api/generations/") };
+        const end = commands.followJobToEnd("job-1", refK);
+        await vi.advanceTimersByTimeAsync(RETRIES_MS);
+        expect(await end).toBe("lost");
+        expect(fake.requests.filter((r) => r.path.startsWith("/api/generations/"))).toHaveLength(5);
+        expect(alerts.error.mock.calls).toEqual([["job lost"]]);
+        expect(alertToast).not.toHaveBeenCalled();
+        expectCurrent(booted);
+        expect(fake.requests.filter((r) => r.path === "/api/resources/read")).toHaveLength(1);
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
+    it("reads the chat again after a follow of a job the server no longer knows (gone), then shows the `endedAway` toast and no lost alert", async () => {
+        const booted = await bootBehind();
+        const { fake, commands, alertToast } = booted;
+        fake.failNext = { status: 404, times: 1, match: (path) => path.startsWith("/api/generations/") };
+        const end = commands.followJobToEnd("job-2", refK);
+        await vi.advanceTimersByTimeAsync(RETRIES_MS);
+        expect(await end).toBe("lost");
+        expect(fake.requests.filter((r) => r.path.startsWith("/api/generations/"))).toHaveLength(1);
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(alertToast).toHaveBeenCalledTimes(1);
+        expect(alertToast).toHaveBeenCalledWith("ended away");
+        expectCurrent(booted);
+        expect(alerts.normal).not.toHaveBeenCalled();
     });
 });
 

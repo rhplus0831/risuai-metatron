@@ -44,7 +44,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 const opsOf = (fake: StoreBackedServer) => fake.batchBodies().flatMap((batch: any) => batch.ops ?? []);
 const characterOps = (fake: StoreBackedServer) => opsOf(fake).filter((op: any) => op.kind === "characters");
@@ -122,6 +122,8 @@ describe("server copies of a character", () => {
             globalLore: [{ key: "k", content: "server" }],
         });
         element.desc = "conflicting local edit";
+        // Both tabs renamed it: a same-field conflict, so the whole record is reloaded.
+        element.name = "local name";
         const result = await sync.flushResources();
         expect(result.discarded).toEqual(["characters/c"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");

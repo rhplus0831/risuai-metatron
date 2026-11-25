@@ -1,6 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, settle, test, type BrowserContext, type Page } from "./fixtures";
 import { chatBindingFixture, modelFixtureOps } from "../util/playwright/modelProfiles.mjs";
 import { openApp } from "../util/playwright/stack.mjs";
 
@@ -37,9 +37,6 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
     await new Promise((resolve) => provider.close(resolve));
 });
-
-/** Lets the save loop run: the debounce is 500 ms, and a boot pass may send more than one cycle. */
-const settle = (page: Page) => page.waitForTimeout(2500);
 
 interface Session {
     page: Page;
@@ -353,7 +350,8 @@ test("boot holds summaries, chats load when selected, the trim keeps eight idle 
     expect(view.loaded).not.toContain("s1");
     expect(view.list.find((entry) => entry.id === "s1")?.name).toBe("S1 renamed");
 
-    // A second client: the boot shows the rename as a summary; a later rename converges live, without a load.
+    // A second client: the boot shows the rename as a summary; a later rename converges live from the feed
+    // entry's summary, without a load or a read of the character's summary list.
     const contextB = await browser.newContext();
     const b = await session(contextB, baseURL!);
     await b.open();
@@ -372,7 +370,7 @@ test("boot holds summaries, chats load when selected, the trim keeps eight idle 
     expect(viewB.loaded).toEqual([]);
     expect(viewB.list.find((entry) => entry.id === "s2")?.folderId).toBe("folder-1");
     expect(b.reads.flatMap((read) => read.chats)).toEqual([]);
-    expect(b.reads.some((read) => read.summaries.includes(chaId))).toBe(true);
+    expect(b.reads.some((read) => read.summaries.includes(chaId))).toBe(false);
     expect(b.batches).toBe(0);
 
     // A send while `big` is not loaded: the reply streams into the selected chat; `big` stays unloaded.

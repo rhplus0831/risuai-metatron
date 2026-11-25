@@ -152,6 +152,7 @@
   "textTheme": "standard",
   "emotionPrompt2": "",
   "requestRetrys": 2,
+  "halfStreaming": false,
   "useSayNothing": true,
   "bias": [],
   "showUnrecommended": false,
@@ -310,6 +311,7 @@
   "assetWidth": -1,
   "animationSpeed": 0.4,
   "blockedRealmCreators": [],
+  "realmTermsAccepted": "",
   "colorScheme": {
     "bgcolor": "#282a36",
     "darkbg": "#21222c",
@@ -406,6 +408,7 @@
   "textAreaTextSize": 0,
   "combineTranslation": false,
   "customPromptTemplateToggle": "",
+  "oocToggles": {},
   "globalChatVariables": {},
   "templateDefaultVariables": "",
   "moduleIntergration": "",
@@ -475,6 +478,11 @@
         "reSummarizationPrompt": "",
         "memoryTokensRatio": 0.2,
         "extraSummarizationRatio": 0,
+        "lookaheadHeadroomRatio": 0.15,
+        "budgetMode": "tokens",
+        "memoryBudgetTokens": 6000,
+        "lookaheadHeadroomTokens": 4000,
+        "extraSummarizationTokens": 0,
         "maxChatsPerSummary": 6,
         "recentMemoryRatio": 0.4,
         "similarMemoryRatio": 0.4,
@@ -490,7 +498,49 @@
         "embeddingMaxConcurrent": 1,
         "alwaysToggleOn": false,
         "queryChatCount": 3,
-        "gapConfirmTokens": 10000
+        "gapConfirmTokens": 10000,
+        "structured": {
+          "language": "",
+          "cadence": "everyTurn",
+          "cadenceTurns": 5,
+          "cadenceTokens": 4000,
+          "cadenceRatio": 0.1,
+          "windowTurns": 3,
+          "flowEvents": 8,
+          "flowKeyLineEvents": 3,
+          "laneSplit": "auto",
+          "laneTargets": {
+            "flow": 1500,
+            "pages": 2000,
+            "events": 1500,
+            "evidence": 700,
+            "threads": 300
+          },
+          "laneShares": {
+            "flow": 25,
+            "pages": 45,
+            "events": 15,
+            "evidence": 10,
+            "threads": 5
+          },
+          "requiredCap": 1500,
+          "screening": {
+            "refusal": [],
+            "format": []
+          },
+          "instructions": "",
+          "keyLineGuidance": false,
+          "omitUserMessages": false,
+          "fineTuning": false,
+          "analysisPrompt": "",
+          "patchPrompt": "",
+          "highlightMode": "important",
+          "highlightKinds": ["create", "contradiction", "delete"],
+          "highlightChangeGrade": 5,
+          "eventsPerGroup": 10,
+          "chapterAuto": false,
+          "volatileBeforeLastUser": false
+        }
       }
     }
   ],
@@ -550,6 +600,17 @@
   "seperateModelsForAxModels": false,
   "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
   "customModels": [],
+  "moduleFolders": [],
+  "personaFolders": [],
+  "inputHooks": [
+    {
+      "id": "default-translate",
+      "name": "Translate",
+      "type": "draft",
+      "prompt": "Translate the following user message into English. Preserve names, commands, markdown, and inlay tags. Output only the translated message.",
+      "model": { "mode": "inherit" }
+    }
+  ],
   "credentials": [],
   "modelPresets": [
     {
@@ -636,12 +697,25 @@
   "saveSignatures": false,
   "requestHistoryContent": true,
   "requestHistoryLimit": 1000,
+  "requestInterceptions": [],
+  "minResponseLengthModel": 0,
+  "minResponseLengthSubmodel": 0,
+  "minResponseLengthMemory": 0,
+  "minResponseLengthEmotion": 0,
+  "minResponseLengthOtherAx": 0,
+  "minResponseLengthTranslate": 0,
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
+  "disableAutoPopupMessageEditor": false,
   "moveInsteadOfCopyOnCMPConvert": false,
   "contextMeter": true,
   "contextMeterTurnUnit": "user",
   "contextMeterFixedWarn": 60,
+  "completionWaitMaxSeconds": 180,
+  "chatTrashDays": 30,
+  "contextMeterLookahead": true,
+  "loreBudgetStop": true,
+  "generationProgressWindow": true,
   "formatversion": 5,
   "characterOrder": []
 }

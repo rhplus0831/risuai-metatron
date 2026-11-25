@@ -8,7 +8,17 @@ import {
     INVALID_CHARX_FILE,
     MAX_CHARX_ENTRY_BYTES,
 } from "../../../../shared/charxImport.ts";
-import type { ChatOp, ChatOrderRecord, ChatRecord, ChatSummary } from "../../../../shared/chats.ts";
+import type {
+    ChatOp,
+    ChatOrderRecord,
+    ChatRecord,
+    ChatSummary,
+    ChatTrashAction,
+    ChatTrashAnswer,
+    ChatTrashConflict,
+    ChatTrashRequest,
+} from "../../../../shared/chats.ts";
+import type { StreamingMessage } from "../../../../shared/jobs.ts";
 import { parseSecretPath, writeSecret } from "../../../../shared/llmSecrets.ts";
 import {
     decodeModuleMain,
@@ -22,7 +32,14 @@ import {
 } from "../../../../shared/moduleImport.ts";
 import type { RisuModule } from "../../../../shared/modules.ts";
 import { decodeRPack } from "../../../../shared/rpack.ts";
-import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../../shared/resources.ts";
+import { STRUCTURED_MEMORY_PATH, type SealedHypaV3Data } from "../../../../shared/structuredMemory.ts";
+import {
+    type ChangeSet,
+    RESOURCE_EPOCH_HEADER,
+    type ResourceReadEntries,
+    type ResourceReadRefsResult,
+    type ResourceRevisionListing,
+} from "../../../../shared/resources.ts";
 
 /**
  * An `authFetch` stand-in over the real server resource store (`createResourceStore`, SQLite in
@@ -33,9 +50,10 @@ import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } f
  * kinds' contract: a kind's `project` on every read, its `prepareWrite` on every plain write, and
  * `/api/llm-secrets/*` for the credential writes; and `POST /api/import/module`, the `.risum`
  * import's answer without its asset store, and `POST /api/import/charx`, the CharX import's answer
- * without its asset store. The
- * hooks mirror `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied,
- * fail requests.
+ * without its asset store, and `POST /api/assets/missing`, which answers every key present, since
+ * these tests take the keys the import routes and `saveAsset` spies hand out as stored. The chat
+ * trash routes pass the request epoch and chat lock to the store. The hooks mirror
+ * `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied, fail requests.
  *
  * The server modules are loaded at run time (`create`) through a computed specifier: the client
  * `tsconfig.json` is not strict and must not type-check the strict server sources, so a static
@@ -45,6 +63,20 @@ import { type ChangeSet, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } f
 
 /** The subset of the server store the tests call (`server/src/data/resourceStore.ts`). */
 export type ServerStore = {
+    memory: {
+        readContents(characterId: string, chatId: string): { revision: string };
+        write(
+            characterId: string,
+            chatId: string,
+            options: { epoch: string; baseRevision: string },
+            changes: unknown,
+        ): string;
+        readProjectionRevisions(refs: readonly { characterId: string; chatId: string }[]): (string | null)[];
+        readProjection(
+            characterId: string,
+            chatId: string,
+        ): { revision: string | null; data: SealedHypaV3Data | null } | null;
+    };
     epoch(): string;
     close(): void;
     get(kind: unknown, id: string): { revision: string; data: any } | null;
@@ -52,7 +84,7 @@ export type ServerStore = {
     delete(kind: unknown, id: string, baseRevision: string): void;
     readKinds(
         kinds: readonly unknown[],
-        options?: { chats?: boolean; chatSummaries?: boolean },
+        options?: { chats?: boolean; chatSummaries?: boolean; memoryProjection?: boolean },
     ): {
         epoch: string;
         kinds: Record<string, { id: string; revision: string; data: any }[]>;
@@ -64,16 +96,24 @@ export type ServerStore = {
         refs: readonly { kind: unknown; id: string }[],
         options?: {
             chats?: readonly { characterId: string; id: string }[];
+            chatRows?: ResourceReadEntries["chatRows"];
             chatCollections?: readonly string[];
             chatSummaryCollections?: readonly string[];
+            memoryProjection?: boolean;
         },
     ): {
         epoch: string;
         items: { kind: string; id: string; revision: string | null; data: unknown }[];
         chats: (ChatRecord | { characterId: string; id: string; revision: null; data: null })[];
+        chatRows?: ResourceReadRefsResult["chatRows"];
         chatCollections: { characterId: string; order: ChatOrderRecord | null; chats: ChatRecord[] }[];
         chatSummaryCollections?: { characterId: string; order: ChatOrderRecord | null; chats: ChatSummary[] }[];
     };
+    readRefsWithinBudget(
+        refs: Parameters<ServerStore["readRefs"]>[0],
+        options: NonNullable<Parameters<ServerStore["readRefs"]>[1]>,
+        budget: number,
+    ): ReturnType<ServerStore["readRefs"]> & { unanswered?: ResourceReadEntries };
     applyChanges(
         batch: { ops?: readonly unknown[]; chats?: unknown; chatOrders?: unknown },
         options?: {
@@ -92,6 +132,13 @@ export type ServerStore = {
     /** The revision listing (`GET /api/resources/revisions`, for live updates). */
     listRevisions(): ResourceRevisionListing;
     transaction<T>(fn: () => T): T;
+    /** Trash, restore, or permanent deletion (`POST /api/chat-trash/*`), on the request's revision token. */
+    changeChatTrash(
+        action: ChatTrashAction,
+        request: ChatTrashRequest,
+        expectedEpoch: string | undefined,
+        chatHeld: (characterId: string, id: string) => boolean,
+    ): ChatTrashAnswer | ChatTrashConflict;
 };
 
 /** A chat's generation locks on a published change (`shared/events.ts` `ChatStreaming`). */
@@ -118,6 +165,7 @@ export type ServerGenerationLock = {
     ): unknown;
     release(ref: { characterId: string; chatId: string; messageId: string }, token: string, generationId: string): void;
     endJob(token: string): void;
+    chatHolders(characterId: string, chatId: string): ReadonlySet<string>;
 };
 
 type LockModule = { createGenerationLock(): ServerGenerationLock };
@@ -190,6 +238,10 @@ export class StoreBackedServer {
         StoreModule,
         "ResourceConflictError" | "ResourceBatchConflictError" | "ResourceValidationError"
     >;
+    /** Opt-in stored-byte budget for HTTP reads that request continuation. */
+    readResponseBytes?: number;
+    /** Opt in to the real memory store's read routes; false models a server without those routes. */
+    structuredMemoryReads = false;
     requests: { method: string; path: string; body: any }[] = [];
     /** Resolves a held batch; set while `holdNextBatch` is pending. */
     releaseBatch: (() => void) | null = null;
@@ -208,6 +260,13 @@ export class StoreBackedServer {
     feedEvents: ServerFeedEvent[] = [];
     /** Receives each published event as it is published (synchronously, right after the commit). */
     onFeed: ((event: ServerFeedEvent) => void) | null = null;
+    /** Whole-read lock snapshots; undefined keeps the older server's omitted-field behavior. */
+    streamingForChat?: (characterId: string, id: string) => StreamingMessage[] | undefined;
+
+    private withStreaming<T extends { characterId: string; id: string; revision: string | null }>(chat: T) {
+        const streaming = chat.revision === null ? undefined : this.streamingForChat?.(chat.characterId, chat.id);
+        return streaming === undefined ? chat : { ...chat, streaming };
+    }
 
     private constructor(
         storeModule: StoreModule,
@@ -276,6 +335,59 @@ export class StoreBackedServer {
         }[],
     ) {
         return this.store.applyChanges({ chats });
+    }
+
+    readonly chatHeld = (characterId: string, chatId: string) =>
+        (this.lock?.chatHolders(characterId, chatId).size ?? 0) > 0;
+
+    /**
+     * Deletes a chat for good as another tab does (`POST /api/chat-trash/trash`, then `delete` on
+     * the token the trash answered): the same tombstone, order change, and invalidation. The
+     * character needs another chat that is not in the trash. Throws on a refusal.
+     */
+    deleteChatForever(characterId: string, chatId: string): ChatTrashAnswer {
+        const change = (action: ChatTrashAction, revision: string) => {
+            const answer = this.store.changeChatTrash(
+                action,
+                { characterId, chatId, revision },
+                this.store.epoch(),
+                this.chatHeld,
+            );
+            if ("error" in answer) {
+                throw new Error(`chat ${action} of ${characterId}/${chatId} refused: ${answer.error}`);
+            }
+            return answer;
+        };
+        const current = this.chat(characterId, chatId);
+        if (!current) throw new Error(`chat ${characterId}/${chatId} does not exist`);
+        return change("delete", change("trash", current.revision).revision);
+    }
+
+    /** Write job metadata without delivering any feed frames to the tab. */
+    writeJobChatMeta(
+        characterId: string,
+        chatId: string,
+        set: NonNullable<Extract<ChatOp, { op: "meta" }>["set"]>,
+    ): void {
+        const jobToken = "metadata-job";
+        this.lock!.addToken(jobToken);
+        try {
+            this.store.applyChanges(
+                {
+                    chats: [
+                        {
+                            characterId,
+                            chatId,
+                            baseRevision: this.chat(characterId, chatId)!.revision,
+                            ops: [{ op: "meta", set }],
+                        },
+                    ],
+                },
+                { jobToken },
+            );
+        } finally {
+            this.lock!.endJob(jobToken);
+        }
     }
 
     batchBodies() {
@@ -497,11 +609,44 @@ export class StoreBackedServer {
         }
         const headers = new Headers(init.headers);
 
+        for (const action of ["trash", "restore", "delete"] as const) {
+            if (method === "POST" && url.pathname === `/api/chat-trash/${action}`) {
+                const epoch = headers.get(RESOURCE_EPOCH_HEADER);
+                if (epoch !== this.store.epoch()) {
+                    return Response.json({ error: "EpochMismatch", epoch: this.store.epoch() }, { status: 412 });
+                }
+                const result = this.store.changeChatTrash(action, body, epoch, this.chatHeld);
+                return Response.json(result, { status: "error" in result ? 409 : 200 });
+            }
+        }
+
+        if (this.structuredMemoryReads && url.pathname.startsWith(`${STRUCTURED_MEMORY_PATH}/`)) {
+            if (headers.get(RESOURCE_EPOCH_HEADER) !== this.store.epoch()) {
+                return Response.json({ error: "EpochMismatch", epoch: this.store.epoch() }, { status: 412 });
+            }
+            if (url.pathname === `${STRUCTURED_MEMORY_PATH}/revisions` && method === "POST") {
+                return Response.json({ revisions: this.store.memory.readProjectionRevisions(body.chats) });
+            }
+            const projection = url.pathname.match(/^\/api\/memory\/structured\/([^/]+)\/([^/]+)\/projection$/);
+            if (projection && method === "GET") {
+                const read = this.store.memory.readProjection(
+                    decodeURIComponent(projection[1]),
+                    decodeURIComponent(projection[2]),
+                );
+                return read
+                    ? Response.json({ revision: read.revision, hypaV3Data: read.data })
+                    : Response.json({ reason: "chatGone", error: "Chat not found" }, { status: 404 });
+            }
+        }
+
         if (url.pathname === MODULE_IMPORT_PATH && method === "POST") {
             return this.importModuleRoute(init.body);
         }
         if (url.pathname === CHARX_IMPORT_PATH && method === "POST") {
             return this.importCharxRoute(init.body);
+        }
+        if (url.pathname === "/api/assets/missing" && method === "POST") {
+            return Response.json({ missing: [] });
         }
         if (url.pathname === "/api/resources" && method === "GET") {
             const names = (url.searchParams.get("kinds") ?? "").split(",").filter((name) => name !== "");
@@ -511,6 +656,7 @@ export class StoreBackedServer {
                 {
                     chats: url.searchParams.get("chats") === "1",
                     chatSummaries: url.searchParams.get("chatSummaries") === "1",
+                    memoryProjection: true,
                 },
             );
             for (const name of names) {
@@ -519,24 +665,49 @@ export class StoreBackedServer {
                     data: this.project(this.kind(name), record.data),
                 }));
             }
-            return Response.json(read);
+            return Response.json({
+                ...read,
+                ...(read.chats && { chats: read.chats.map((chat) => this.withStreaming(chat)) }),
+            });
         }
         if (url.pathname === "/api/resources/revisions" && method === "GET") {
             return Response.json(this.store.listRevisions());
         }
         if (url.pathname === "/api/resources/read" && method === "POST") {
-            const refs = ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => ({
-                kind: this.kind(ref.kind),
-                id: ref.id,
-            }));
-            const read = this.store.readRefs(refs, {
-                chats: body.chats ?? [],
-                chatCollections: body.chatCollections ?? [],
-                chatSummaryCollections: body.chatSummaryCollections ?? [],
-            });
+            const refs = [
+                ...new Map(
+                    ((body.refs ?? []) as { kind: string; id: string }[]).map((ref) => [
+                        `${ref.kind}\u0000${ref.id}`,
+                        { kind: this.kind(ref.kind), id: ref.id },
+                    ]),
+                ).values(),
+            ];
+            const options = {
+                chats: [
+                    ...new Map(
+                        ((body.chats ?? []) as { characterId: string; id: string }[]).map((ref) => [
+                            `${ref.characterId}\u0000${ref.id}`,
+                            { characterId: ref.characterId, id: ref.id },
+                        ]),
+                    ).values(),
+                ],
+                chatRows: body.chatRows,
+                chatCollections: [...new Set<string>(body.chatCollections ?? [])],
+                chatSummaryCollections: [...new Set<string>(body.chatSummaryCollections ?? [])],
+                memoryProjection: true,
+            };
+            const read =
+                body.continue === true && this.readResponseBytes !== undefined
+                    ? this.store.readRefsWithinBudget(refs, options, this.readResponseBytes)
+                    : this.store.readRefs(refs, options);
             return Response.json({
                 ...read,
                 items: read.items.map((item) => ({ ...item, data: this.project(this.kind(item.kind), item.data) })),
+                chats: read.chats.map((chat) => this.withStreaming(chat)),
+                chatCollections: read.chatCollections.map((collection) => ({
+                    ...collection,
+                    chats: collection.chats.map((chat) => this.withStreaming(chat)),
+                })),
             });
         }
         if (url.pathname === "/api/resources/batch" && method === "POST") {

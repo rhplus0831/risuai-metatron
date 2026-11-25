@@ -4,6 +4,9 @@
 # chore: add Prettier and format the repo
 058da60e5d7e2e06da488e172f7a327c76a26e35
 
+# docs(structure): wrap STRUCTURE.md and the guides at 120 columns
+e0624f67198deb1fe508d9dbd300f22ce19e8534
+
 # refactor(comments): drop plan, phase, and slice labels (by area)
 133e30e09f49cf5ca71930345ea8ea2dfea7f0c1
 a85375bd35a24d356a351fb620209602b66c4d06

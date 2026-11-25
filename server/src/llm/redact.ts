@@ -1,4 +1,7 @@
 import type { RequestDb } from "./settings.ts";
+import { REDACTED, SECRET_HEADERS } from "../../../shared/logRedaction.ts";
+
+export { REDACTED, redactHeaderText } from "../../../shared/logRedaction.ts";
 
 /**
  * The secret-free projection of what a request sends back to the client: logs, notices, errors,
@@ -10,18 +13,22 @@ import type { RequestDb } from "./settings.ts";
  *   `OaiCompAPIKeys` value, every named credential's key and client email, the parts of a
  *   Bedrock `accessKeyId:secretAccessKey:region` credential, and each Vertex token handed out) is
  *   replaced by `[redacted]` wherever it occurs in a string, also in its JSON-escaped and
- *   URL-encoded forms; every non-empty value, however short. The readable siblings (`google.projectId`, `hordeConfig.model`, `hordeConfig.softPrompt`,
- *   `novelai.model`, `vertexClientEmail`) are not credentials.
- * - By name: the values of the `authorization`, `x-api-key`, `x-goog-api-key`, `api-key`, `apikey`,
- *   and `x-api-key` headers in a log entry's headers, and the `key`, `api_key`, and `token` query
- *   parameters of any URL-looking string.
+ *   URL-encoded forms; every non-empty value, however short. The readable siblings (`google.projectId`,
+ *   `hordeConfig.model`, `hordeConfig.softPrompt`, `novelai.model`, `vertexClientEmail`) are not credentials.
+ * - By name: the credential headers listed in `shared/logRedaction.ts`, and the `key`, `api_key`, and `token`
+ *   query parameters of any URL-looking string.
  *
  * A free-form `header::` value in `additionalParams` or a custom model's `params` that is not a
  * stored credential is user configuration, outside this guarantee.
+ *
+ * `server/src/llm/requests.ts` applies this projection to request data, leaving generated answers unchanged. Secret
+ * forms include twice-JSON-escaped values and match longest first, ignoring percent-escape hex case.
+ * Deep projection masks string-valued secret headers
+ * by name and retains object keys; `carries` checks stored secret forms in both keys and values so callers can refuse
+ * opaque callback/tool data rather than rewrite it. `trimPartial` removes a trailing secret prefix from bounded
+ * captures after full-value redaction.
  */
-export const REDACTED = "[redacted]";
 
-const SECRET_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "api-key", "apikey"]);
 const SECRET_QUERY = /([?&](?:key|api_key|token)=)[^&#\s"'\\]*/gi;
 
 const STRING_SECRET_FIELDS = [
@@ -39,6 +46,7 @@ const STRING_SECRET_FIELDS = [
     "vertexAccessToken",
 ] as const;
 
+/** Per-request secret matching and deep string-value projection; `add` extends all later matching immediately. */
 export type Redactor = {
     /** Adds a value to redact from now on (a refreshed token). */
     add(secret: string | null | undefined): void;
@@ -58,6 +66,10 @@ export type Redactor = {
     trimPartial(value: string): string;
 };
 
+/**
+ * Collects stored provider credentials, compatibility keys, and named keys/client emails, including colon-separated
+ * key components. Returns duplicates and empty strings unchanged; `createRedactor` deduplicates forms and ignores empties.
+ */
 export function collectSecrets(db: Partial<RequestDb>): string[] {
     const secrets: string[] = [];
     const record = db as Record<string, unknown>;
@@ -101,10 +113,23 @@ export function collectSecrets(db: Partial<RequestDb>): string[] {
     return secrets;
 }
 
-function escapeRegExp(text: string) {
-    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function secretPattern(text: string) {
+    return text
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/%[0-9a-f]{2}/gi, (escape) =>
+            escape.replace(/[a-f]/gi, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`),
+        );
 }
 
+function normalizePercentEscapes(text: string): string {
+    return text.replace(/%[0-9a-f]{2}|%[0-9a-f]$/gi, (escape) => escape.toUpperCase());
+}
+
+/**
+ * Builds a mutable secret matcher. `text` also masks named query values; `apply` copies JSON-like arrays/objects and
+ * masks string values and secret headers without rewriting keys. `carries` checks stored secret forms in values and
+ * keys, not the header/query-name rules. Cyclic inputs are not handled by either recursive traversal.
+ */
 export function createRedactor(initial: string[]): Redactor {
     const forms = new Set<string>();
     let pattern: RegExp | null = null;
@@ -121,7 +146,7 @@ export function createRedactor(initial: string[]): Redactor {
         if (forms.size !== before) {
             // Longest first, so a secret containing another is replaced whole.
             const sorted = [...forms].filter((form) => form !== "").sort((a, b) => b.length - a.length);
-            pattern = new RegExp(sorted.map(escapeRegExp).join("|"), "g");
+            pattern = new RegExp(sorted.map(secretPattern).join("|"), "g");
         }
     }
 
@@ -174,13 +199,19 @@ export function createRedactor(initial: string[]): Redactor {
 
     function trimPartial(value: string): string {
         let cut = value.length;
-        for (const form of forms) {
+        const normalized = normalizePercentEscapes(value);
+        for (const stored of forms) {
+            const form = normalizePercentEscapes(stored);
             if (form.length < 2) {
                 continue;
             }
             // A proper prefix of the form that ends the text (the whole form is already replaced).
             for (let i = Math.max(0, value.length - (form.length - 1)); i < cut; i++) {
-                if (value.charCodeAt(i) === form.charCodeAt(0) && form.startsWith(value.slice(i))) {
+                // A hex digit inside a percent escape is not a secret's first letter (`%a` is an unmatched escape).
+                if (normalized[i - 1] === "%" || (normalized[i - 2] === "%" && /[0-9A-F]/.test(normalized[i - 1]))) {
+                    continue;
+                }
+                if (normalized.charCodeAt(i) === form.charCodeAt(0) && form.startsWith(normalized.slice(i))) {
                     cut = i;
                     break;
                 }
@@ -200,27 +231,4 @@ export function createRedactor(initial: string[]): Redactor {
         carries,
         trimPartial,
     };
-}
-
-/**
- * A log entry's `header` is the JSON text of the request headers: the named headers are masked
- * inside it before the value redaction runs.
- */
-export function redactHeaderText(header: string): string {
-    try {
-        const parsed = JSON.parse(header);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            return header;
-        }
-        let changed = false;
-        for (const name of Object.keys(parsed)) {
-            if (SECRET_HEADERS.has(name.toLowerCase()) && typeof parsed[name] === "string" && parsed[name] !== "") {
-                parsed[name] = REDACTED;
-                changed = true;
-            }
-        }
-        return changed ? JSON.stringify(parsed, null, 2) : header;
-    } catch {
-        return header;
-    }
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import { getModelInfoForMode, LLMProvider } from "src/ts/model/modellist";
     import { credentialSlotOf } from "../../../../../shared/llm/credentialSlots.ts";
@@ -27,7 +27,7 @@
     const requestedGoogle = takeCredentialRequest("google");
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
-            getModelInfoForMode(mode),
+            getModelInfoForMode(mode, editedScope()),
         ),
     );
     const usesVertex = $derived(models.some((model) => model.provider === LLMProvider.VertexAI));

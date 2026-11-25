@@ -1,5 +1,32 @@
 // @ts-nocheck
 
+/**
+ * The app's service worker. Its paths and the Cache Storage name `risuCache` are a contract with
+ * `src/ts/bootstrap.ts` (`registerSw`, `probeSw`), `src/ts/globalApi.svelte.ts` (`getFileSrc`), and
+ * `src/ts/characterCards.ts` (`characterURLImport`, `importPendingShare`).
+ *
+ * Routes: `/sw/check/<hex>`, `/sw/img/<hex>`, `/sw/register/<hex>`, `/sw/init`, `/sw/share`, and `/tf`
+ * with any path under it (always 404); any other `/sw/<x>` answers the text `<x>`. Every other request,
+ * navigations included, falls through without `respondWith`, except the direct-asset loads.
+ *
+ * Direct assets: a same-origin `/api/asset/` request is signed (`fetchAsset`) only when it is `GET` or
+ * `HEAD`, carries a non-empty string `event.clientId`, and has a destination in `ASSET_DESTINATIONS`.
+ * Everything else passes through unsigned: cross-origin, no client id, other methods, and the
+ * destinations `""` (fetch/XHR and the plugin bridge), `document`, `iframe`, `worker`, `object`. Only
+ * these requests and the `/sw/img/` misses that pass the same gate (`getSource`) read the page's signing
+ * key. `/sw/init` answers `{"version":"v3","directAssets":true}` (`application/json`), the capability
+ * `probeSw` reads.
+ *
+ * A new worker takes over at once (`skipWaiting`, `clients.claim`), so an installed app gets new
+ * handlers without closing every tab. Activation deletes only the `/sw/img/` entries of `risuCache`
+ * (best effort: a cache failure does not stop `clients.claim()`) and keeps every other entry: a pending
+ * `/sw/share/<kind>` file must survive a worker update. `/sw/register` and `/sw/check` stay for a page
+ * that registers bytes: `getFileSrc` with direct assets off, or a tab still running an older client.
+ *
+ * `pushsubscriptionchange` is not handled: push has no credentials, and the page registers the new
+ * subscription again when it opens.
+ */
+
 let cachedAssetAuth = null
 let assetAuthPromise = null
 const ASSET_DESTINATIONS = ['image', 'audio', 'video', 'track', 'style', 'font']
@@ -51,6 +78,11 @@ self.addEventListener('fetch', (event) => {
                     }))
                     break
                 }
+                // A share target POST: its first file in character → preset → module order is cached at the
+                // absolute `/sw/share/<kind>` URL without a content type, then a 303 to `/#share_<kind>`. A
+                // POST without a file and every other method under `/sw/share` (GET included) get a 303 to `/`.
+                // `importPendingShare` reads the file from Cache Storage, also on an uncontrolled page, and
+                // deletes it only after a truthy import result.
                 case 'share':{
                     event.respondWith((async () => {
                         if(event.request.method === 'POST'){
@@ -85,7 +117,14 @@ self.addEventListener('fetch', (event) => {
     }}
 })
 
-/** Reads the page's key without leaving a new database behind before the page creates its store. */
+/**
+ * The page's key pair, or null; it never rejects. The location is the one `src/ts/util.ts`
+ * `saveKeypairStore("node", …)` writes and `getKeypairStore("node")` reads: IndexedDB `DPoPDB` version 1,
+ * store `node`, key `dpop`, holding `{ privateKey, publicKey }`. It only reads, so it leaves no new
+ * database behind before the page creates its store: it aborts any upgrade (an absent database stays
+ * absent), never creates the `node` store, and closes every connection it opened, including a late
+ * success after a blocked open.
+ */
 function readAssetKeyPair(){
     return new Promise((resolve) => {
         let db = null
@@ -141,7 +180,12 @@ function assetBase64url(bytes){
     return btoa(String.fromCharCode(...bytes)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
 }
 
-/** Keep the JWT format and UTF-8 encoding in parity with serverAuth.ts createAuth. */
+/**
+ * A hand copy of `src/ts/storage/serverAuth.ts` `createAuth`, since the bundler does not reach this file:
+ * ES256 over UTF-8 JSON in base64url, header `{ alg: "ES256", typ: "JWT" }`, payload
+ * `{ iat, exp: iat + 300, pub }`. Keep the two in parity: `server/src/tests/swAuth.test.ts` checks this
+ * signer's token against `server/src/routes/auth.ts` `createAuthStore().checkAuth`. Null without a key.
+ */
 async function signAssetAuth(){
     const keyPair = await readAssetKeyPair()
     if(!keyPair){
@@ -163,7 +207,11 @@ async function signAssetAuth(){
     return { token: unsigned + '.' + assetBase64url(new Uint8Array(signature)), exp: payload.exp }
 }
 
-/** Concurrent loads share a signer; missing keys and failures can be tried again on the next load. */
+/**
+ * A token is reused until 60 s before its expiry, and concurrent loads share one signing promise. A null
+ * (missing-key) result is kept as no token, and a thrown signing rejects every load waiting on it; either
+ * way nothing is reused, so the next load signs again.
+ */
 async function getAssetAuth(){
     if(cachedAssetAuth && Date.now() / 1000 < cachedAssetAuth.exp - 60){
         return cachedAssetAuth
@@ -179,7 +227,11 @@ async function getAssetAuth(){
     return assetAuthPromise
 }
 
-/** A fresh same-origin request permits the auth header even for no-cors media loads. */
+/**
+ * A fresh same-origin request permits the auth header even for no-cors media loads. Only `Range` and
+ * `If-Range` are copied from the page's request. The browser HTTP cache holds the bytes; the worker
+ * caches no asset.
+ */
 function fetchSignedAsset(request, token){
     const headers = new Headers({ 'risu-auth': token })
     for(const name of ['Range', 'If-Range']){
@@ -198,7 +250,11 @@ function fetchSignedAsset(request, token){
     })
 }
 
-/** Only a 401 retries auth; network failures and aborts from the signed fetch stay rejected. */
+/**
+ * Only a 401 retries auth, once: with the token another request already refreshed, or a new signing. It
+ * discards only the token it used. A missing key or a key-read or signing failure falls back to
+ * `fetch(request)` without auth. Network failures and aborts from the signed fetch stay rejected.
+ */
 async function fetchAsset(request){
     let auth
     try {
@@ -226,6 +282,10 @@ async function fetchAsset(request){
 }
 
 
+/**
+ * `/sw/check/<hex>` looks up `/sw/img/<hex>` and answers `{ able }`. It is the page's fallback when
+ * page-side Cache Storage lookup is unavailable or fails (`getFileSrc`).
+ */
 async function checkCache(url){
     const cache = await caches.open('risuCache')
 
@@ -241,6 +301,12 @@ async function checkCache(url){
     }))
 }
 
+/**
+ * The cached answer for `url`. A `/sw/img/<hex>` miss whose `request` passed the direct-asset gate is
+ * answered from the signed `/api/asset/<hex>` route (same hex, `Range`/`If-Range` copied), so a URL the
+ * fallback handed out before activation's cleanup still loads. Any other miss resolves with no response,
+ * which `respondWith` turns into a network error.
+ */
 async function getSource(url, request = null){
     const cache = await caches.open('risuCache')
     const response = await cache.match(url)
@@ -262,10 +328,12 @@ async function getSource(url, request = null){
     }))
 }
 
-async function check(){
-
-}
-
+/**
+ * Stores `buffer` in `risuCache`. A relative string resolves against the worker origin; a URL object is
+ * accepted too. Without `noContentType` the second path segment becomes `img` (`/sw/register/<hex>` is
+ * stored as `/sw/img/<hex>`) and the entry is labelled `image/png` whatever its bytes are. With it (the
+ * share receiver) the path is kept as given and no content type is stored.
+ */
 async function registerCache(urlr, buffer, noContentType = false){
     const cache = await caches.open('risuCache')
     const url = new URL(urlr, self.location.origin)
@@ -289,16 +357,19 @@ async function registerCache(urlr, buffer, noContentType = false){
         "done": true
     }))
 }
-// Web Push for chat completions. A new worker takes over at once, so an installed app gets these
-// handlers without closing every tab. Activation removes stored asset copies under `/sw/img/`
-// from `risuCache` and keeps share files. A `/sw/img/` miss from an allowed subresource is answered
-// from the signed `/api/asset/` route. A rotated subscription (`pushsubscriptionchange`) is not
-// handled here: push has no credentials, and the page registers it again when it opens. Only asset
-// requests read the page's signing key.
+// Web Push for chat completions.
 const NOTIFICATION_LOGO = '/logo_192.png'
 // The tag prefix (`shared/notifications.ts` `COMPLETION_NOTIFICATION_TAG`); a push names its chat's tag
 // (the prefix, `:`, a hash of the chat), so each chat keeps its own notice.
 const COMPLETION_TAG = 'risuai-chat-completion'
+// The worker's content-free push records (`shared/diagnostics.ts` `BROWSER_PUSH_PHASES`), which the
+// page's diagnostic report reads (`src/ts/diagnostics/workerRecords.ts`, same names): fixed phases and
+// booleans only, never a payload, title, body, route, endpoint, or error text. The newest 100 are kept.
+const PUSH_RECORDS_DB = 'risu-sw-diagnostics'
+const PUSH_RECORDS_STORE = 'records'
+const MAX_PUSH_RECORDS = 100
+/** A write that has not completed by then is given up (a blocked or slow database). */
+const PUSH_RECORDS_WAIT_MS = 2000
 
 self.addEventListener('install', (event) => {
     event.waitUntil(self.skipWaiting())
@@ -327,7 +398,10 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
     event.notification.close()
-    event.waitUntil(openFromNotification(safeRoute(event.notification.data && event.notification.data.url)))
+    const record = pushRecord('clicked')
+    const opened = openFromNotification(safeRoute(event.notification.data && event.notification.data.url))
+    // Recorded after the window work, whatever its outcome (which stays the event's).
+    event.waitUntil(opened.finally(() => appendPushRecords([record])))
 })
 
 /** A same-origin chat route or `/`: nothing from a payload is opened unchecked. */
@@ -374,20 +448,54 @@ let pushCount = 0
 let pushQueue = Promise.resolve()
 
 function showPush(event){
-    const shown = pushQueue.then(() => showPushNow(event))
+    // Stamped on arrival, so the time from the server's `accepted` does not include this queue.
+    const records = [pushRecord('received')]
+    const shown = pushQueue.then(() => showPushNow(event, records))
     pushQueue = shown.catch(() => {})
-    return shown
+    // Written once the display settled, outside the queue: a slow or failed write delays neither this
+    // notification nor the next push's. The display's rejection stays the event's.
+    return shown.then(
+        () => appendPushRecords(records),
+        (error) => appendPushRecords(records).then(() => { throw error }),
+    )
+}
+
+/**
+ * Tells the app's windows (`windowState`'s list) which chat a completion push is for
+ * (`risu-push-completion`), so a tab whose follow of that job was lost reads the chat again
+ * (`pushNotifications.ts`). Sent before the display, whatever it does; a push for no chat says
+ * nothing. Best effort: a window whose post fails is skipped, and nothing of the payload but the
+ * checked route is sent.
+ */
+function announceCompletion(windows, route){
+    if(route === '/'){
+        return
+    }
+    for(const client of windows){
+        try {
+            client.postMessage({ type: 'risu-push-completion', url: route })
+        } catch {}
+    }
 }
 
 /**
  * Every push shows a notification (Safari ends a subscription whose pushes show none). While a window of
- * the app has the focus, the notification is silent, so it does not sound after the page's message sound
- * (`playMessage`), and it is closed once shown if the focus stayed (best effort: a browser without
- * `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own default applies.
+ * the app is in front (`windowState`'s `inFront`), the notification is silent, so it does not sound
+ * after the page's message sound (`playMessage`), and it is closed once shown if the window is still in
+ * front (best effort: a browser without `getNotifications` keeps it). Otherwise `silent` is left out: the platform's own
+ * default applies.
+ *
+ * `records` (its `received` first) gets this push's records: the window state the display was decided
+ * by, then `shown` or `shownSilent`, `showFailed` when neither show worked, and `closedInFront` when the
+ * second check closed it.
  */
-async function showPushNow(event){
+async function showPushNow(event, records){
     const push = readPush(event)
-    const inFront = await windowInFront()
+    const state = await windowState()
+    announceCompletion(state.windows, push.url)
+    records[0].inFront = state.inFront
+    records[0].focusedHidden = state.focusedHidden
+    const inFront = state.inFront
     const quiet = inFront ? { silent: true } : {}
     const data = { url: push.url, push: ++pushCount }
     const options = {
@@ -402,30 +510,140 @@ async function showPushNow(event){
         await self.registration.showNotification(push.title, options)
     } catch {
         // A browser that rejects an option (a badge, an icon it cannot load): the text alone.
-        await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, ...quiet, data })
+        try {
+            await self.registration.showNotification(push.title, { body: push.body, tag: push.tag, ...quiet, data })
+        } catch (error) {
+            records.push(pushRecord('showFailed', state))
+            throw error
+        }
     }
+    records.push(pushRecord(inFront ? 'shownSilent' : 'shown', state))
     if(inFront){
         try {
             const listed = await self.registration.getNotifications({ tag: push.tag })
-            if(await windowInFront()){
+            const again = await windowState()
+            if(again.inFront){
+                let closed = false
                 for(const notification of listed){
                     if(notification.data && notification.data.push === data.push){
                         notification.close()
+                        closed = true
                     }
+                }
+                if(closed){
+                    records.push(pushRecord('closedInFront', again))
                 }
             }
         } catch {}
     }
 }
 
-/** Whether a window of the app has the focus; a failed lookup counts as none. */
-async function windowInFront(){
+/**
+ * The app's same-origin windows (`windows`) and whether one is in front (`inFront`): focused and visible
+ * on the same window. A focused window can be hidden (an Android PWA left for another app keeps the
+ * focus), and a push for it must still sound and stay; `focusedHidden` says such a window was there. A
+ * failed lookup counts as no window.
+ */
+async function windowState(){
     try {
-        const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-        return windows.some((client) => client.focused && new URL(client.url).origin === self.location.origin)
+        const windows = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+            .filter((client) => new URL(client.url).origin === self.location.origin)
+        return {
+            windows,
+            inFront: windows.some((client) => client.focused && client.visibilityState === 'visible'),
+            focusedHidden: windows.some((client) => client.focused && client.visibilityState !== 'visible'),
+        }
     } catch {
-        return false
+        return { windows: [], inFront: false, focusedHidden: false }
     }
+}
+
+/** A push record of `phase`, stamped now, with the window state when given. */
+function pushRecord(phase, state){
+    const record = { at: Date.now(), kind: 'push', phase }
+    if(state){
+        record.inFront = state.inFront === true
+        record.focusedHidden = state.focusedHidden === true
+    }
+    return record
+}
+
+/**
+ * Appends `records` to the record store and prunes it to the newest 100, in one transaction. Never
+ * rejects: no IndexedDB, a failed or blocked open, a failed transaction, or one not done within 2 s is
+ * skipped (a connection that opens after that is closed, and an abandoned transaction is aborted).
+ */
+function appendPushRecords(records){
+    return new Promise((resolve) => {
+        let db = null
+        let transaction = null
+        let settled = false
+        let timer = null
+        const finish = () => {
+            if(settled){
+                return
+            }
+            settled = true
+            clearTimeout(timer)
+            if(transaction){
+                try {
+                    transaction.abort()
+                } catch {}
+            }
+            if(db){
+                try {
+                    db.close()
+                } catch {}
+            }
+            resolve()
+        }
+        let request
+        try {
+            request = indexedDB.open(PUSH_RECORDS_DB, 1)
+        } catch {
+            finish()
+            return
+        }
+        timer = setTimeout(finish, PUSH_RECORDS_WAIT_MS)
+        request.onupgradeneeded = () => {
+            try {
+                request.result.createObjectStore(PUSH_RECORDS_STORE, { autoIncrement: true })
+            } catch {}
+        }
+        request.onerror = () => finish()
+        request.onblocked = () => finish()
+        request.onsuccess = () => {
+            if(settled){
+                request.result.close()
+                return
+            }
+            db = request.result
+            try {
+                transaction = db.transaction(PUSH_RECORDS_STORE, 'readwrite')
+                const store = transaction.objectStore(PUSH_RECORDS_STORE)
+                for(const record of records){
+                    store.add(record)
+                }
+                const keys = store.getAllKeys()
+                keys.onsuccess = () => {
+                    const all = keys.result
+                    if(all.length > MAX_PUSH_RECORDS){
+                        store.delete(IDBKeyRange.upperBound(all[all.length - MAX_PUSH_RECORDS - 1]))
+                    }
+                }
+                transaction.oncomplete = () => {
+                    transaction = null
+                    finish()
+                }
+                transaction.onabort = () => {
+                    transaction = null
+                    finish()
+                }
+            } catch {
+                finish()
+            }
+        }
+    })
 }
 
 /**
@@ -462,6 +680,7 @@ async function openFromNotification(route){
     }
 }
 
+/** The window's answer through a `MessageChannel` within 2 s, else false (also when the post throws). */
 function askToOpen(client, route){
     return new Promise((resolve) => {
         const channel = new MessageChannel()

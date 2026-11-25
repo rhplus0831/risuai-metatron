@@ -15,7 +15,12 @@
  * request ends (`captures`), with the first `STREAM_CAPTURE_BYTES` of its body; an adapter's
  * `addLog` as it is. The tab's log keeps the pre-fetch "Streamed Fetch" entry, which is not
  * recorded. A `record` failure never changes the provider's answer.
+ *
+ * On the server an unhandled promise rejection ends the process: a fire-and-forget promise here or in an adapter (a
+ * `pipeTo`, a `fetch`, a signature save) must catch.
  */
+
+import { providerFetch } from "./providerFetch.ts";
 
 export type FetchLogEntry = {
     body: string;
@@ -315,7 +320,7 @@ function utf8Bytes(value: unknown): number {
 }
 
 export function createTransport(options: TransportOptions): Transport {
-    const fetchImpl = options.fetchImpl ?? fetch;
+    const fetchImpl = options.fetchImpl ?? providerFetch;
     const redact = options.redact ?? ((text: string) => text);
     const logError = (error: unknown) =>
         console.error("[LLM]", redact(error instanceof Error ? error.message : String(error)));

@@ -33,6 +33,12 @@ export const LOG_EVENT_KINDS = [
     "generation.channelClose",
     /** Delivering the job's end (its locks, slot, hydration, terminal) threw. */
     "generation.endDelivery",
+    /** Publishing a job's handoff offer threw. */
+    "generation.handoffPublish",
+    /** Publishing a job's progress or end threw. */
+    "generation.progressPublish",
+    /** Counting or reporting a streamed reply's output tokens threw. */
+    "generation.outputCount",
     /** The runner's settlement could not end the job. */
     "generation.runnerSettle",
     /** A listener of the owner's socket messages threw. */

@@ -2,6 +2,14 @@
     import { language } from "src/lang";
     import { hypaV3ProgressStore, type MemoryProgressEntry } from "src/ts/stores.svelte";
 
+    /**
+     * The memory progress overlay. `App.svelte` passes the selected chat's `memoryProgress` entry (from
+     * `memoryProgressStore`); without one it shows the legacy `hypaV3ProgressStore` text. An initial
+     * run shows "Stop here and continue", which asks the job (`stopMemoryRun` in
+     * `src/ts/network/jobChannel.ts`) to stop the run the button was shown for; it is disabled once a
+     * stop was requested.
+     */
+
     interface Props {
         /** The selected chat's memory run; without one, the legacy overlay's text. */
         entry?: MemoryProgressEntry | null;

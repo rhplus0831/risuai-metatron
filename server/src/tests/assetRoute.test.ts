@@ -2,7 +2,9 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { matureSweep, seedSweepAsset, sweepClock } from "./assetSweepFixtures.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AssetLifecycleStatus } from "../../../shared/assetLifecycle.ts";
 import { assetVerification } from "../http/assetVerification.ts";
 import { resolveStorageKey } from "../routes/storage.ts";
 import { buildArchive, createResourceTestClient, hex, parseArchive, type ResourceTestClient } from "./testSupport.ts";
@@ -449,4 +451,150 @@ describe("authenticated asset URLs", () => {
         expect(recorded).not.toContain(key);
         expect(recorded).not.toContain(url);
     });
+});
+
+describe("missing asset checks", () => {
+    const missing = (names: string[]) => s.json("/api/assets/missing", { names });
+
+    it("omits verified content on repeated checks without rewriting it", async () => {
+        const names = [`assets/${sha256("portrait")}.png`, `assets/inlay_${sha256("audio")}.ogg`];
+        await write(names[0], "portrait");
+        // A cold file must be verified before the response, without a writer's cached answer.
+        await writeOnDisk(names[1], "audio");
+        const before = await Promise.all(names.map((key) => fs.stat(assetPath(key), { bigint: true })));
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const response = await missing(names);
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({ missing: [] });
+        }
+        const after = await Promise.all(names.map((key) => fs.stat(assetPath(key), { bigint: true })));
+        expect(after.map(({ ino, size, mtimeNs }) => ({ ino, size, mtimeNs }))).toEqual(
+            before.map(({ ino, size, mtimeNs }) => ({ ino, size, mtimeNs })),
+        );
+    });
+
+    it("reports absent, empty, corrupt and non-canonical files missing and recognizes a repaired file", async () => {
+        const absent = `assets/${sha256("absent")}.png`;
+        const empty = `assets/${sha256("")}.png`;
+        const corrupt = `assets/${sha256("repaired")}.png`;
+        const custom = "assets/custom.png";
+        await writeOnDisk(empty, "");
+        await writeOnDisk(corrupt, "corrupt!");
+        await writeOnDisk(custom, "custom");
+        const names = [absent, empty, corrupt, custom, `assets/${sha256("uppercase").toUpperCase()}.png`];
+        expect(await (await missing(names)).json()).toEqual({ missing: names });
+        await write(corrupt, "repaired");
+        expect(await (await missing(names)).json()).toEqual({ missing: names.filter((name) => name !== corrupt) });
+    });
+
+    it("reports a file larger than the 256 MiB read budget missing without reading it", async () => {
+        const key = `assets/${sha256("oversized")}.bin`;
+        await writeOnDisk(key, "");
+        await fs.truncate(assetPath(key), 257 * 1024 * 1024);
+        // The sparse payload must never be read, even partially.
+        const open = fs.open.bind(fs);
+        const reads = vi.fn(() => {
+            throw new Error("over-budget file was read");
+        });
+        vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+            const handle = await open(...args);
+            if (args[0] === assetPath(key)) vi.spyOn(handle, "read").mockImplementation(reads);
+            return handle;
+        });
+        const response = await missing([key]);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ missing: [key] });
+        expect(reads).not.toHaveBeenCalled();
+    });
+
+    it("rejects unauthenticated checks before pulling their bodies", async () => {
+        for (const token of [undefined, "invalid"]) {
+            const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => controller.close());
+            const request = new Request("http://localhost/api/assets/missing", {
+                method: "POST",
+                headers: { "content-type": "application/json", ...(token ? { "risu-auth": token } : {}) },
+                body: new ReadableStream({ pull }, { highWaterMark: 0 }),
+                duplex: "half",
+            } as RequestInit);
+            const response = await s.app.request(request);
+            expect(response.status).toBe(400);
+            expect(await response.json()).toEqual({ error: token ? "Invalid Signature" : "No auth header" });
+            expect(pull).not.toHaveBeenCalled();
+        }
+    });
+
+    it("accepts the body and name limits and rejects 64 KiB plus one byte or 513 names", async () => {
+        const name = `assets/${sha256("not stored")}.png`;
+        const json = JSON.stringify({ names: [name] });
+        for (const [size, status] of [
+            [64 * 1024, 200],
+            [64 * 1024 + 1, 413],
+        ]) {
+            const response = await s.request("/api/assets/missing", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: json.padEnd(size, " "),
+            });
+            expect(response.status).toBe(status);
+            await response.arrayBuffer();
+        }
+        expect((await missing(Array(512).fill(name))).status).toBe(200);
+        expect((await missing(Array(513).fill(name))).status).toBe(400);
+    });
+});
+
+it("requires auth for no-store asset status and returns only running and the report version, advanced after a scan", async () => {
+    for (const token of [undefined, "invalid"]) {
+        const denied = await s.app.request("/api/assets/status", {
+            headers: token === undefined ? {} : { "risu-auth": token },
+        });
+        expect(denied.ok).toBe(false);
+        expect(denied.headers.get("cache-control")).toBe("no-store");
+    }
+    const initial = await s.request("/api/assets/status");
+    expect(initial.status).toBe(200);
+    expect(initial.headers.get("cache-control")).toBe("no-store");
+    const before = (await initial.json()) as AssetLifecycleStatus;
+    expect(before).toEqual({ running: false, version: expect.any(Number) });
+
+    await s.context.assetLifecycle.scan();
+    const completed = await s.request("/api/assets/status");
+    expect(completed.status).toBe(200);
+    expect(completed.headers.get("cache-control")).toBe("no-store");
+    const after = (await completed.json()) as AssetLifecycleStatus;
+    expect(after).toEqual({ running: false, version: expect.any(Number) });
+    expect(after.version).toBeGreaterThan(before.version);
+    const report = await s.request("/api/assets/report");
+    expect(report.status).toBe(200);
+    expect(await report.json()).toMatchObject({ complete: true, running: false, version: after.version });
+});
+
+it("deletes candidate bytes, every thumbnail version, verification, and its ledger row", async () => {
+    await s.close();
+    const clock = sweepClock();
+    s = await createResourceTestClient({ assetLifecycle: clock.options });
+    const key = `assets/${sha256("verified bytes")}.png`;
+    const target = seedSweepAsset(s, key, "verified bytes");
+    const stat = await fs.stat(target, { bigint: true });
+    assetVerification.recordVerification(target, stat, true);
+    const directory = path.join(s.savePath, "cache", "thumbnails", sha256(key));
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, "old.webp"), "thumb");
+    await matureSweep(s, clock);
+    const response = await s.json("/api/assets/sweep", { dryRun: false });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+        deleted: [key],
+        freedBytes: 14,
+        removedInlays: [],
+        skipped: [],
+        skippedInlays: [],
+    });
+    await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(assetVerification.lookupVerification(target, stat)).toBe("unknown");
+    expect(s.context.assetLifecycle.report().unreferenced.count).toBe(0);
+    // Reappearance starts a new grace clock; a stale ledger row must not authorize immediate deletion.
+    seedSweepAsset(s, key, "verified bytes");
+    expect((await s.context.assetLifecycle.scan()).unreferenced.candidates).toEqual([]);
 });

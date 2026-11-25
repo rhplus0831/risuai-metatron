@@ -1,11 +1,30 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash, webcrypto } from "node:crypto";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    utimesSync,
+    writeFileSync,
+} from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { Hono } from "hono";
+import { createAuthStore } from "../routes/auth.ts";
+import type { DurableFs } from "../data/durableWrite.ts";
+import type { AppEnv } from "../types.ts";
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
+import { assetVerification } from "../http/assetVerification.ts";
 import { decodeFileName, decodeKeyHeader, encodeFileName, resolveStorageKey } from "../routes/storage.ts";
 import {
     buildArchive,
@@ -31,7 +50,7 @@ afterAll(() => {
 afterEach(async () => {
     await Promise.all(servers.splice(0).map((s) => s.close()));
 });
-function freshServer(options?: { password?: string }) {
+function freshServer(options?: { password?: string; rootDir?: string }) {
     server = createTestServer(options);
     servers.push(server);
     return server;
@@ -39,6 +58,31 @@ function freshServer(options?: { password?: string }) {
 
 describe("GET / and /index.html", () => {
     const modifiedAt = new Date("2025-01-01T00:00:00Z");
+
+    function writeStaticRepresentations(rootDir: string, filename: string, content: string | Buffer) {
+        const identity = Buffer.from(content);
+        const bodies = { identity, br: brotliCompressSync(identity), gzip: gzipSync(identity) };
+        const filePath = path.join(rootDir, "dist", filename);
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        for (const [suffix, body] of [
+            ["", bodies.identity],
+            [".br", bodies.br],
+            [".gz", bodies.gzip],
+        ] as const) {
+            writeFileSync(filePath + suffix, body);
+            utimesSync(filePath + suffix, modifiedAt, modifiedAt);
+        }
+        return bodies;
+    }
+
+    // The index tests outside "AI disclosure" expect the default (unset) disclosure flag.
+    const NODE_FLAGS_OFF = "<script>globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = false</script>";
+    beforeEach(() => {
+        vi.stubEnv("RISU_AI_DISCLOSURE", undefined);
+    });
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
 
     // Without the flag the client shows only the "self-host server required" notice, so both
     // entry URLs must inject it (with or without a query string, which deep links carry).
@@ -51,11 +95,91 @@ describe("GET / and /index.html", () => {
             expect(res.headers.get("content-type"), url).toMatch(/^text\/html/);
             expect(res.headers.get("cache-control"), url).toBe("no-cache");
             expect(res.headers.get("etag"), url).toMatch(/^W\//);
-            expect(res.headers.get("last-modified"), url).toBe(modifiedAt.toUTCString());
+            expect(res.headers.get("last-modified"), url).toBeNull();
             const html = await res.text();
-            expect(html, url).toContain('<head><script>globalThis.__NODE__ = true</script><meta charset="utf-8">');
+            expect(html, url).toContain(`<head>${NODE_FLAGS_OFF}<meta charset="utf-8">`);
             expect(html.match(/__NODE__/g), url).toHaveLength(1);
         }
+    });
+
+    describe("AI disclosure", () => {
+        const entryUrls = ["/", "/index.html", "/settings/model"];
+        const indexWithDisclosure = (enabled: boolean) =>
+            TEST_INDEX_HTML.replace(
+                "<head>",
+                `<head><script>globalThis.__NODE__ = true; globalThis.__RISU_AI_DISCLOSURE__ = ${enabled}</script>`,
+            );
+
+        it.each([
+            [undefined, false],
+            [" 1 ", true],
+            [" \tTrUe\n", true],
+            ["false", false],
+        ] as const)("injects one disclosure script for RISU_AI_DISCLOSURE=%j", async (env, enabled) => {
+            vi.stubEnv("RISU_AI_DISCLOSURE", env);
+            const { app } = freshServer();
+
+            for (const url of entryUrls) {
+                const res = await app.request(url);
+                expect(res.status, url).toBe(200);
+                expect(await res.text(), url).toBe(indexWithDisclosure(enabled));
+            }
+        });
+
+        it("revalidates the disclosure ETag across restarts only when the flag is unchanged", async () => {
+            vi.stubEnv("RISU_AI_DISCLOSURE", undefined);
+            const initial = freshServer();
+            utimesSync(path.join(initial.rootDir, "dist", "index.html"), modifiedAt, modifiedAt);
+            const first = await initial.app.request("/");
+            expect(first.status).toBe(200);
+            expect(await first.text()).toBe(indexWithDisclosure(false));
+            const oldEtag = first.headers.get("etag")!;
+            expect(oldEtag).toBeTruthy();
+            await initial.context.dispose();
+
+            // Reuse the same index file: only the operator's environment choice changes.
+            for (const [env, enabled, status] of [
+                ["false", false, 304],
+                ["1", true, 200],
+            ] as const) {
+                vi.stubEnv("RISU_AI_DISCLOSURE", env);
+                const restarted = freshServer({ rootDir: initial.rootDir });
+                for (const url of entryUrls) {
+                    const res = await restarted.app.request(url, { headers: { "If-None-Match": oldEtag } });
+                    expect(res.status, url).toBe(status);
+                    expect(await res.text(), url).toBe(enabled ? indexWithDisclosure(true) : "");
+                    const etag = res.headers.get("etag")!;
+                    expect(etag, url).toBeTruthy();
+                    if (enabled) expect(etag, url).not.toBe(oldEtag);
+                    else expect(etag, url).toBe(oldEtag);
+                    expect(res.headers.get("cache-control"), url).toBe("no-cache");
+                    expect(res.headers.get("last-modified"), url).toBeNull();
+
+                    const unchanged = await restarted.app.request(url, { headers: { "If-None-Match": etag } });
+                    expect(unchanged.status, url).toBe(304);
+                    expect(await unchanged.text(), url).toBe("");
+                    expect(unchanged.headers.get("etag"), url).toBe(etag);
+                    expect(unchanged.headers.get("last-modified"), url).toBeNull();
+                }
+                await restarted.context.dispose();
+            }
+        });
+
+        it.each([
+            [undefined, false],
+            ["true", true],
+        ] as const)("ignores index If-Modified-Since with RISU_AI_DISCLOSURE=%j", async (env, enabled) => {
+            vi.stubEnv("RISU_AI_DISCLOSURE", env);
+            const { app, rootDir } = freshServer();
+            utimesSync(path.join(rootDir, "dist", "index.html"), modifiedAt, modifiedAt);
+
+            for (const url of entryUrls) {
+                const res = await app.request(url, { headers: { "If-Modified-Since": modifiedAt.toUTCString() } });
+                expect(res.status, url).toBe(200);
+                expect(await res.text(), url).toBe(indexWithDisclosure(enabled));
+                expect(res.headers.get("last-modified"), url).toBeNull();
+            }
+        });
     });
 
     it("caches content-hashed assets immutably for one year", async () => {
@@ -68,6 +192,180 @@ describe("GET / and /index.html", () => {
         expect(res.status).toBe(200);
         expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
         expect(await res.text()).toBe(content);
+    });
+
+    it("negotiates encodings by quality, exclusions, and preference while varying every representation", async () => {
+        const { app, rootDir } = freshServer();
+        const bodies = writeStaticRepresentations(rootDir, "assets/app-hash.js", 'console.log("한글");');
+        for (const [acceptEncoding, encoding] of [
+            [undefined, "identity"],
+            ["gzip, br", "br"],
+            ["gzip", "gzip"],
+            ["br;q=0.3, gzip;q=0.9, identity;q=0.1", "gzip"],
+            ["gzip;q=0.3, br;q=0.9, identity;q=0.1", "br"],
+            ["br;q=0.5, gzip;q=0.8", "identity"],
+            ["br;q=0.5, gzip;q=0.5, identity;q=0.9", "identity"],
+            ["br;q=0, gzip", "gzip"],
+            ["gzip;q=0, br", "br"],
+            ["br;q=0, gzip;q=0", "identity"],
+            ["*;q=1, br;q=0", "gzip"],
+        ] as const) {
+            const res = await app.request("/assets/app-hash.js", {
+                headers: acceptEncoding === undefined ? {} : { "Accept-Encoding": acceptEncoding },
+            });
+            expect(res.status, acceptEncoding).toBe(200);
+            expect(res.headers.get("content-encoding"), acceptEncoding).toBe(encoding === "identity" ? null : encoding);
+            expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), acceptEncoding).toContain(
+                "accept-encoding",
+            );
+            expect(res.headers.get("cache-control"), acceptEncoding).toBe("public, max-age=31536000, immutable");
+            expect(Buffer.from(await res.arrayBuffer()), acceptEncoding).toEqual(bodies[encoding]);
+        }
+    });
+
+    it("serves compressed GET bytes and bodyless HEAD with the original MIME type for every supported file type", async () => {
+        const { app, rootDir } = freshServer();
+        for (const [filename, content, mime] of [
+            ["app.js", 'console.log("한글");', /^(?:text|application)\/javascript\b/],
+            ["module.mjs", 'export const name = "한글";', /^(?:text|application)\/javascript\b/],
+            ["style.css", 'body { font-family: "한글"; }', /^text\/css\b/],
+            ["manifest.json", '{"name":"한글"}', /^application\/json\b/],
+            ["icon.svg", '<svg xmlns="http://www.w3.org/2000/svg"><title>한글</title></svg>', /^image\/svg\+xml\b/],
+            ["module.wasm", Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]), /^application\/wasm\b/],
+        ] as const) {
+            const bodies = writeStaticRepresentations(rootDir, filename, content);
+            for (const [encoding, decompress] of [
+                ["br", brotliDecompressSync],
+                ["gzip", gunzipSync],
+            ] as const) {
+                for (const method of ["GET", "HEAD"]) {
+                    const label = `${method} ${filename} ${encoding}`;
+                    const res = await app.request(`/${filename}`, { method, headers: { "Accept-Encoding": encoding } });
+                    expect(res.status, label).toBe(200);
+                    expect(res.headers.get("content-encoding"), label).toBe(encoding);
+                    expect(res.headers.get("content-type"), label).toMatch(mime);
+                    expect(res.headers.get("content-length"), label).toBe(String(bodies[encoding].length));
+                    expect(res.headers.get("cache-control"), label).toBe("no-cache");
+                    expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), label).toContain(
+                        "accept-encoding",
+                    );
+                    const bytes = Buffer.from(await res.arrayBuffer());
+                    if (method === "HEAD") {
+                        expect(bytes.length, label).toBe(0);
+                    } else {
+                        expect(decompress(bytes), label).toEqual(bodies.identity);
+                    }
+                }
+            }
+        }
+    });
+
+    it("revalidates only the selected encoding even when all representations have identical sizes and mtimes", async () => {
+        const { app, rootDir } = freshServer();
+        // All three valid representations are 34 bytes, exposing ETags that omit the encoding.
+        const bodies = writeStaticRepresentations(
+            rootDir,
+            "assets/validators.js",
+            Buffer.from("ABQ2ZqTwSrIorD4AFDZmpPBKsiisPgAUNmak8EqyKKw+AA==", "base64"),
+        );
+        expect(new Set(Object.values(bodies).map((body) => body.length)).size).toBe(1);
+        const encodings = ["identity", "br", "gzip"] as const;
+        const etags = new Map<string, string>();
+        for (const encoding of encodings) {
+            const res = await app.request("/assets/validators.js", { headers: { "Accept-Encoding": encoding } });
+            expect(res.status, encoding).toBe(200);
+            expect(Buffer.from(await res.arrayBuffer()), encoding).toEqual(bodies[encoding]);
+            expect(res.headers.get("etag"), encoding).toBeTruthy();
+            etags.set(encoding, res.headers.get("etag")!);
+        }
+        for (const encoding of encodings) {
+            for (const validatorEncoding of encodings) {
+                const label = `${encoding} with ${validatorEncoding} validator`;
+                const res = await app.request("/assets/validators.js", {
+                    headers: { "Accept-Encoding": encoding, "If-None-Match": etags.get(validatorEncoding)! },
+                });
+                expect(res.status, label).toBe(encoding === validatorEncoding ? 304 : 200);
+                expect(res.headers.get("etag"), label).toBe(etags.get(encoding));
+                expect(res.headers.get("content-encoding"), label).toBe(encoding === "identity" ? null : encoding);
+                expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), label).toContain(
+                    "accept-encoding",
+                );
+                expect(res.headers.get("cache-control"), label).toBe("public, max-age=31536000, immutable");
+                expect(Buffer.from(await res.arrayBuffer()), label).toEqual(
+                    encoding === validatorEncoding ? Buffer.alloc(0) : bodies[encoding],
+                );
+            }
+        }
+    });
+
+    it("falls back to another acceptable encoding or identity when siblings are missing", async () => {
+        const { app, rootDir } = freshServer();
+        for (const [filename, missing, acceptEncoding, encoding] of [
+            ["only-gzip.js", [".br"], "br, gzip", "gzip"],
+            ["only-br.js", [".gz"], "gzip, br;q=0.5, identity;q=0.1", "br"],
+            ["identity.js", [".br", ".gz"], "br, gzip", "identity"],
+            ["refused-gzip.js", [".br"], "br, gzip;q=0", "identity"],
+        ] as const) {
+            const bodies = writeStaticRepresentations(rootDir, filename, "export const value = 1;");
+            for (const suffix of missing) rmSync(path.join(rootDir, "dist", filename + suffix));
+            const res = await app.request(`/${filename}`, { headers: { "Accept-Encoding": acceptEncoding } });
+            expect(res.status, filename).toBe(200);
+            expect(res.headers.get("content-encoding"), filename).toBe(encoding === "identity" ? null : encoding);
+            expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), filename).toContain(
+                "accept-encoding",
+            );
+            expect(Buffer.from(await res.arrayBuffer()), filename).toEqual(bodies[encoding]);
+        }
+    });
+
+    it("uses identity for Range and If-Range while preserving partial and full response behavior", async () => {
+        const { app, rootDir } = freshServer();
+        writeStaticRepresentations(rootDir, "range.js", "0123456789");
+        const first = await app.request("/range.js");
+        expect(first.status).toBe(200);
+        expect(await first.text()).toBe("0123456789");
+        const etag = first.headers.get("etag")!;
+        for (const [headers, status] of [
+            [{ Range: "bytes=2-5" }, 206],
+            [{ Range: "bytes=2-5", "If-Range": modifiedAt.toUTCString() }, 206],
+            [{ Range: "bytes=2-5", "If-Range": "Tue, 31 Dec 2024 00:00:00 GMT" }, 200],
+            [{ Range: "bytes=2-5", "If-Range": etag }, 200],
+            [{ "If-Range": modifiedAt.toUTCString() }, 200],
+        ] as const) {
+            const res = await app.request("/range.js", { headers: { "Accept-Encoding": "br, gzip", ...headers } });
+            const label = JSON.stringify(headers);
+            expect(res.status, label).toBe(status);
+            expect(res.headers.get("content-encoding"), label).toBeNull();
+            expect(res.headers.get("etag"), label).toBe(etag);
+            expect((res.headers.get("vary") ?? "").toLowerCase().split(/\s*,\s*/), label).toContain("accept-encoding");
+            expect(res.headers.get("content-range"), label).toBe(status === 206 ? "bytes 2-5/10" : null);
+            expect(res.headers.get("content-length"), label).toBe(status === 206 ? "4" : "10");
+            expect(await res.text(), label).toBe(status === 206 ? "2345" : "0123456789");
+        }
+    });
+
+    it("keeps HTML and source maps as identity even when compressed siblings exist", async () => {
+        const { app, rootDir } = freshServer();
+        writeStaticRepresentations(rootDir, "index.html", TEST_INDEX_HTML);
+        writeStaticRepresentations(rootDir, "other.html", TEST_INDEX_HTML);
+        const sourceMap = '{"version":3,"sources":[]}';
+        writeStaticRepresentations(rootDir, "app.js.map", sourceMap);
+        for (const url of ["/", "/index.html", "/chat/c1/chat-1", "/other.html", "/app.js.map"]) {
+            for (const method of ["GET", "HEAD"]) {
+                const label = `${method} ${url}`;
+                const res = await app.request(url, { method, headers: { "Accept-Encoding": "br, gzip" } });
+                expect(res.status, label).toBe(200);
+                expect(res.headers.get("content-encoding"), label).toBeNull();
+                expect(res.headers.get("cache-control"), label).toBe("no-cache");
+                const content =
+                    url === "/app.js.map"
+                        ? sourceMap
+                        : url === "/other.html"
+                          ? TEST_INDEX_HTML
+                          : TEST_INDEX_HTML.replace("<head>", `<head>${NODE_FLAGS_OFF}`);
+                expect(await res.text(), label).toBe(method === "HEAD" ? "" : content);
+            }
+        }
     });
 
     it("serves ranges only when If-Range matches the current date and never for a weak ETag", async () => {
@@ -126,11 +424,10 @@ describe("GET / and /index.html", () => {
         "returns an empty 304 for matching validators and the full body for a non-matching ETag on %s",
         async (url) => {
             const { app, rootDir } = freshServer();
-            const content = url === "/index.html" ? TEST_INDEX_HTML : "self.version = 1;";
-            const expectedBody =
-                url === "/index.html"
-                    ? content.replace("<head>", "<head><script>globalThis.__NODE__ = true</script>")
-                    : content;
+            // The index is revalidated by ETag only (its injected flag is not in the file's mtime).
+            const isIndex = url === "/index.html";
+            const content = isIndex ? TEST_INDEX_HTML : "self.version = 1;";
+            const expectedBody = isIndex ? content.replace("<head>", `<head>${NODE_FLAGS_OFF}`) : content;
             const filePath = path.join(rootDir, "dist", url.slice(1));
             writeFileSync(filePath, content);
             utimesSync(filePath, modifiedAt, modifiedAt);
@@ -139,13 +436,13 @@ describe("GET / and /index.html", () => {
             expect(first.status).toBe(200);
             expect(await first.text()).toBe(expectedBody);
             const etag = first.headers.get("etag") ?? "";
-            const lastModified = first.headers.get("last-modified") ?? "";
+            const lastModified = modifiedAt.toUTCString();
             expect(etag).toMatch(/^W\//);
-            expect(lastModified).toBe(modifiedAt.toUTCString());
+            expect(first.headers.get("last-modified")).toBe(isIndex ? null : lastModified);
 
             for (const [header, validator] of [
                 ["If-None-Match", etag],
-                ["If-Modified-Since", lastModified],
+                ...(isIndex ? [] : [["If-Modified-Since", lastModified]]),
             ]) {
                 const unchanged = await app.request(url, { headers: { [header]: validator } });
                 expect(unchanged.status, header).toBe(304);
@@ -226,37 +523,142 @@ describe("GET / and /index.html", () => {
     });
 });
 
-describe("global body limit", () => {
-    it("answers 400 for a failed upload without Content-Length", async () => {
-        const s = await createResourceTestClient();
-        try {
-            let sent = false;
-            const failed = await s.request("/api/resources/batch", {
+describe("request body limits", () => {
+    it.each(["/api/resources/batch", "/api/write"])(
+        "keeps the 100 MiB global cap for %s without reading a declared overflow",
+        async (route) => {
+            const s = await createResourceTestClient({
+                resourceKinds: [{ name: "docs", schemaVersion: 1, normalize: (input) => input }],
+                epochKind: "docs",
+            });
+            servers.push(s);
+            const cap = 100 * 1024 * 1024;
+            const bytes = Buffer.from(
+                route === "/api/write"
+                    ? "stored"
+                    : JSON.stringify({
+                          ops: [{ kind: "docs", id: "r", baseRevision: null, data: "stored" }],
+                      }),
+            );
+            let pulls = 0;
+            const headers = { "content-type": "application/json", "file-path": hex("assets/cap.bin") };
+            const refused = await s.request(route, {
                 method: "POST",
-                headers: { "content-type": "application/json" },
+                headers: { ...headers, "content-length": String(cap + 1) },
                 body: new ReadableStream<Uint8Array>(
                     {
                         pull(controller) {
-                            if (!sent) {
-                                sent = true;
-                                controller.enqueue(new TextEncoder().encode('{"ops":'));
-                            } else {
-                                controller.error(new DOMException("The client went away", "AbortError"));
-                            }
+                            pulls++;
+                            controller.enqueue(bytes);
+                            controller.close();
                         },
                     },
                     { highWaterMark: 0 },
                 ),
                 duplex: "half",
             } as RequestInit);
-            expect(failed.status).toBe(400);
-        } finally {
-            await s.close();
-        }
-    });
+            expect(refused.status).toBe(413);
+            expect(await refused.json()).toEqual({ error: "Request body too large" });
+            expect(pulls).toBe(0);
+
+            // The declaration exercises the production cap without allocating a 100 MiB body.
+            const accepted = await s.request(route, {
+                method: "POST",
+                headers: { ...headers, "content-length": String(cap) },
+                body: bytes,
+            });
+            expect(accepted.status).toBe(200);
+        },
+    );
+
+    const routes = [
+        { route: "/api/resources/read", limits: { readBodyBytes: 8 } },
+        { route: "/api/resources/batch", limits: { bodyBytes: 8 } },
+        { route: "/api/write", limits: { bodyBytes: 8 } },
+        { route: "/proxy2", limits: { bodyBytes: 8 } },
+    ];
+    it.each(
+        routes.flatMap((route) => [
+            { ...route, failure: "overflow", status: 413, error: "Request body too large" },
+            { ...route, failure: "source failure", status: 400, error: "Invalid JSON body" },
+        ]),
+    )(
+        "$route answers $status on $failure even when the handler answers or rethrows",
+        async ({ route, limits, failure, status, error }) => {
+            const s = await createResourceTestClient({ routeLimits: limits });
+            servers.push(s);
+            let pulls = 0;
+            let bytes = 0;
+            const chunk = Buffer.from("    ");
+            const response = await s.request(route, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    "file-path": hex("assets/refused.bin"),
+                    "risu-url": encodeURIComponent("http://127.0.0.1:1/never-reached"),
+                    "risu-header": encodeURIComponent("{}"),
+                },
+                body: new ReadableStream<Uint8Array>(
+                    {
+                        pull(controller) {
+                            pulls++;
+                            if (failure === "source failure" && pulls === 2) {
+                                controller.error(new Error("upload interrupted"));
+                            } else if (pulls <= 6) {
+                                bytes += chunk.length;
+                                controller.enqueue(chunk);
+                            } else controller.close();
+                        },
+                    },
+                    { highWaterMark: 0 },
+                ),
+                duplex: "half",
+            } as RequestInit);
+            expect(response.status).toBe(status);
+            expect(await response.json()).toEqual({ error });
+            expect(pulls).toBe(failure === "overflow" ? 3 : 2);
+            expect(bytes).toBeLessThanOrEqual(8 + chunk.length);
+            expect(existsSync(path.join(s.savePath, "assets", "refused.bin"))).toBe(false);
+        },
+    );
 });
 
 describe("auth routes", () => {
+    it.each([
+        { route: "/api/login", payload: { password: "pw", publicKey: {} }, password: "pw" },
+        { route: "/api/crypto", payload: { data: "pw" }, password: undefined },
+        { route: "/api/set_password", payload: { password: "pw" }, password: undefined },
+    ])(
+        "$route reads first, refuses 16 KiB plus one, and accepts exactly 16 KiB",
+        async ({ route, payload, password }) => {
+            const { app, savePath } = freshServer({ password });
+            const cap = 16 * 1024;
+            const body = JSON.stringify(payload).padEnd(cap, " ");
+            const refused = await app.request(route, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: body + " ",
+            });
+            expect(refused.status).toBe(413);
+            expect(await refused.json()).toEqual({ error: "Request body too large" });
+            expect(existsSync(path.join(savePath, "server", "known_public_key_hashes.json"))).toBe(false);
+            if (route === "/api/set_password")
+                expect(existsSync(path.join(savePath, "server", "password"))).toBe(false);
+
+            const accepted = await app.request(route, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body,
+            });
+            expect(accepted.status).toBe(200);
+            if (route === "/api/crypto") {
+                expect(await accepted.text()).toBe(createHash("sha256").update("pw").digest("hex"));
+            } else {
+                expect(await accepted.json()).toEqual({ status: "success" });
+            }
+        },
+    );
+
     it("runs the first-run flow: unset -> crypto -> set_password -> login -> JWT", async () => {
         const { app, savePath } = freshServer();
         expect(await (await app.request("/api/test_auth")).json()).toEqual({ status: "unset" });
@@ -408,6 +810,69 @@ describe("auth routes", () => {
         }
     });
 
+    describe("JWT expiry", () => {
+        beforeEach(() => {
+            vi.useFakeTimers({ toFake: ["Date"] });
+            vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+        });
+        afterEach(() => vi.useRealTimers());
+
+        it("rejects registered-key tokens with missing, non-numeric, or non-finite exp, including on assets", async () => {
+            const { app } = freshServer({ password: "pw" });
+            const keys = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+                "sign",
+                "verify",
+            ]);
+            const publicKey = await webcrypto.subtle.exportKey("jwk", keys.publicKey);
+            const login = await app.request("/api/login", json({ password: "pw", publicKey }));
+            expect(login.status).toBe(200);
+            const now = Math.floor(Date.now() / 1000);
+            const header = Buffer.from(JSON.stringify({ alg: "ES256", typ: "JWT" })).toString("base64url");
+
+            // Raw JSON preserves an omitted claim and a numeric overflow; JSON.stringify(Infinity) yields null.
+            for (const [name, expiry] of [
+                ["missing", ""],
+                ["non-numeric", `,"exp":"${now + 300}"`],
+                ["non-finite", ',"exp":1e309'],
+            ]) {
+                const payload = Buffer.from(`{"pub":${JSON.stringify(publicKey)},"iat":${now}${expiry}}`).toString(
+                    "base64url",
+                );
+                const signed = `${header}.${payload}`;
+                const signature = Buffer.from(
+                    await webcrypto.subtle.sign(
+                        { name: "ECDSA", hash: "SHA-256" },
+                        keys.privateKey,
+                        Buffer.from(signed),
+                    ),
+                ).toString("base64url");
+                for (const [url, status] of [
+                    ["/api/list", 400],
+                    [`/api/asset/${hex("assets/expiry.txt")}`, 401],
+                ] as const) {
+                    const response = await app.request(url, { headers: { "risu-auth": `${signed}.${signature}` } });
+                    expect.soft(response.status, `${name}: ${url}`).toBe(status);
+                }
+            }
+        });
+
+        it("rejects registered-key tokens expiring more than 24 hours ahead, including on assets", async () => {
+            const { app } = freshServer({ password: "pw" });
+            const signer = await createSigner();
+            const login = await app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+            expect(login.status).toBe(200);
+            const now = Math.floor(Date.now() / 1000);
+            const token = await signer.jwt({ exp: now + 24 * 60 * 60 + 1 });
+            for (const [url, status] of [
+                ["/api/list", 400],
+                [`/api/asset/${hex("assets/expiry.txt")}`, 401],
+            ] as const) {
+                const response = await app.request(url, { headers: { "risu-auth": token } });
+                expect.soft(response.status, url).toBe(status);
+            }
+        });
+    });
+
     it("keeps the exact JWT failure bodies of the former server", async () => {
         const { app } = freshServer({ password: "pw" });
         const signer = await createSigner();
@@ -432,6 +897,43 @@ describe("auth routes", () => {
         expect(ok.status).toBe(200);
     });
 
+    it("rejects non-string crypto data before buffer conversion and still hashes strings without authentication", async () => {
+        const { app } = freshServer({ password: "pw" });
+        const oversized = { length: 67_108_864 };
+        const originalFrom = Buffer.from;
+        const from = vi.spyOn(Buffer, "from").mockImplementation((value, ...args) => {
+            // Refuse the allocation if validation regresses, keeping the failing test cheap too.
+            if (value && typeof value === "object" && "length" in value && value.length === oversized.length) {
+                throw new Error("Unexpected array-like buffer conversion");
+            }
+            return Reflect.apply(originalFrom, Buffer, [value, ...args]);
+        });
+        try {
+            for (const body of [
+                { data: oversized },
+                {},
+                { data: null },
+                { data: 42 },
+                { data: true },
+                { data: [] },
+                { data: {} },
+            ]) {
+                const response = await app.request("/api/crypto", json(body));
+                expect(response.status, JSON.stringify(body)).toBe(400);
+                expect(await response.json()).toEqual({ error: "Data must be a string" });
+            }
+            expect(from).not.toHaveBeenCalledWith(expect.objectContaining(oversized), "utf-8");
+
+            for (const data of ["", "abc", "한글 😀"]) {
+                const response = await app.request("/api/crypto", json({ data }));
+                expect(response.status).toBe(200);
+                expect(await response.text()).toBe(createHash("sha256").update(data).digest("hex"));
+            }
+        } finally {
+            from.mockRestore();
+        }
+    });
+
     it("rejects malformed, whitespace-only, and primitive JSON with 400 and leaves the password unset", async () => {
         const { app } = freshServer();
         for (const body of ["{bad", "   ", '"str"', "42"]) {
@@ -454,8 +956,8 @@ describe("auth routes", () => {
         expect(plain.status).toBe(400);
         expect(await plain.json()).toEqual({ error: "Password not set" });
         const empty = await app.request("/api/crypto", { method: "POST" });
-        expect(empty.status).toBe(500);
-        expect(await empty.json()).toEqual({ error: "Crypto operation failed" });
+        expect(empty.status).toBe(400);
+        expect(await empty.json()).toEqual({ error: "Data must be a string" });
     });
 
     it("limits /api/login to 10 attempts per window with draft-6 RateLimit headers", async () => {
@@ -701,6 +1203,21 @@ describe("storage key codec", () => {
         expect(encodeFileName("")).toBeNull();
     });
 
+    it("rejects impossible file names before UTF-8 conversion and preserves boundary encodings", () => {
+        const from = vi.spyOn(Buffer, "from");
+        try {
+            expect(encodeFileName("a".repeat(256))).toBeNull();
+            expect(encodeFileName("😀".repeat(128))).toBeNull();
+            expect(from).not.toHaveBeenCalled();
+        } finally {
+            from.mockRestore();
+        }
+
+        expect(encodeFileName("a".repeat(255))).toBe("a".repeat(255));
+        expect(encodeFileName("A".repeat(127))).toBe("~" + "41".repeat(127));
+        expect(encodeFileName("가".repeat(42))).toBe("~" + "eab080".repeat(42));
+    });
+
     it("rejects every file name that encodeFileName would not produce", () => {
         const korean = "가".repeat(29) + ".png";
         for (const fileName of [
@@ -866,6 +1383,7 @@ describe("storage routes", () => {
             "assets/",
             "assets/" + "가".repeat(60),
         ];
+        await s.context.diagnostics.settled();
         const open = vi.spyOn(fsPromises, "open");
         for (const key of unsupported) {
             const res = await read(s, key);
@@ -942,7 +1460,7 @@ describe("storage routes", () => {
         }
     });
 
-    it("validates every $$-separated batch segment before deleting, deduplicates by resolved file, and stops at a missing file", async () => {
+    it("validates every $$-separated batch segment before deleting, deduplicates by resolved file, and reports a missing file", async () => {
         const s = await authedServer();
         for (const key of ["assets/a", "assets/b", "assets/c"]) {
             await write(s, key, key);
@@ -967,6 +1485,42 @@ describe("storage routes", () => {
         expect(partial.status).toBe(500);
         expect(exists("c")).toBe(false);
         expect((await remove(s, hex("assets/a"))).status).toBe(500);
+    });
+
+    it("attempts the whole removal batch after start and middle failures and releases cleanup admissions", async () => {
+        const s = await authedServer();
+        const keys = ["assets/missing-first", "assets/deleted-a", "assets/missing-middle", "assets/deleted-b"];
+        for (const key of keys) await write(s, key, key);
+        const paths = keys.map((key) => resolveStorageKey(s.savePath, key)!);
+        const stats = await Promise.all(paths.map((file) => fsPromises.stat(file, { bigint: true })));
+        paths.forEach((file, index) => assetVerification.recordVerification(file, stats[index], true));
+        rmSync(paths[0]);
+        rmSync(paths[2]);
+        const cleanup = vi.spyOn(s.context.thumbnails, "removeKey");
+        try {
+            // Invalid segments prevent even the first valid deletion and its cleanup.
+            await invalidPath(await remove(s, `${hex(keys[1])}$$zz`), "malformed batch");
+            expect(existsSync(paths[1])).toBe(true);
+            expect(cleanup).not.toHaveBeenCalled();
+
+            const response = await remove(s, keys.map(hex).join("$$"));
+            expect(response.status).toBe(500);
+            expect(await response.json()).toEqual({
+                error: "Failed to remove files",
+                failedPaths: [keys[0], keys[2]],
+            });
+            expect(paths.map((file) => existsSync(file))).toEqual([false, false, false, false]);
+            expect(cleanup.mock.calls.map(([key]) => key)).toEqual(keys);
+            paths.forEach((file, index) =>
+                expect(assetVerification.lookupVerification(file, stats[index])).toBe("unknown"),
+            );
+            // Maintenance must drain immediately; a leaked removal admission strands this await.
+            await s.context.snapshots.withMaintenance(async () => {});
+            expect((await write(s, "assets/after-failure", "ok")).status).toBe(200);
+        } finally {
+            cleanup.mockRestore();
+            paths.forEach((file) => assetVerification.forgetVerification(file));
+        }
     });
 
     it("replaces a file atomically: an open reader keeps the old bytes and a failed rename keeps the old file", async () => {
@@ -1009,4 +1563,329 @@ describe("storage routes", () => {
             await restarted.dispose();
         }
     });
+});
+
+function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((yes, no) => {
+        resolve = yes;
+        reject = no;
+    });
+    return { promise, resolve, reject };
+}
+
+describe("serialized auth persistence", () => {
+    function authApp(save: string, fs: DurableFs, passwordSeed?: string) {
+        const auth = createAuthStore(save, { fs, passwordSeed });
+        const app = new Hono<AppEnv>();
+        const pass = async (_c: unknown, next: () => Promise<void>) => {
+            await next();
+        };
+        auth.registerRoutes(app, { auth: pass, login: pass });
+        return { auth, app };
+    }
+
+    it("keeps both concurrent login keys, answers after durability, and rejects a failed login without installing its key", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const save = mkdtempSync(path.join(os.tmpdir(), "risu-auth-operations-"));
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        let held = false;
+        let fail = false;
+        const fs: DurableFs = {
+            ...fsPromises,
+            async open(file, flags, mode) {
+                const handle = await fsPromises.open(file, flags, mode);
+                const sync = handle.sync.bind(handle);
+                Object.assign(handle, {
+                    sync: async () => {
+                        if (flags === "r" && !held) {
+                            held = true;
+                            entered.resolve();
+                            await release.promise;
+                        }
+                        if (flags === "wx" && fail) throw Object.assign(new Error("disk failure"), { code: "EIO" });
+                        await sync();
+                    },
+                });
+                return handle;
+            },
+        };
+        const { auth, app } = authApp(save, fs, "pw");
+        const [a, b, refused] = await Promise.all([createSigner(), createSigner(), createSigner()]);
+        const login = (signer: typeof a) =>
+            app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+        let answered = false;
+        const first = Promise.resolve(login(a)).then((response) => {
+            answered = true;
+            return response;
+        });
+        await entered.promise;
+        const second = login(b);
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(answered).toBe(false);
+            expect(await auth.isAuthorizedToken(await a.jwt())).toBe(false);
+            release.resolve();
+            expect((await first).status).toBe(200);
+            expect((await second).status).toBe(200);
+            const file = path.join(save, "server", "known_public_key_hashes.json");
+            const expected = [a, b].map((signer) =>
+                createHash("sha256").update(JSON.stringify(signer.publicJwk)).digest("hex"),
+            );
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expected);
+            expect(await auth.isAuthorizedToken(await a.jwt())).toBe(true);
+            expect(await auth.isAuthorizedToken(await b.jwt())).toBe(true);
+            fail = true;
+            expect((await login(refused)).status).toBe(500);
+            expect(await auth.isAuthorizedToken(await refused.jwt())).toBe(false);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(expected);
+        } finally {
+            release.resolve();
+            await Promise.all([first, second]);
+            vi.useRealTimers();
+            rmSync(save, { recursive: true, force: true });
+        }
+    });
+
+    it("writes nothing when a tab logs in again with its registered key, and keeps one copy of a key the file repeats", async () => {
+        const save = mkdtempSync(path.join(os.tmpdir(), "risu-auth-repeat-"));
+        const [a, b] = await Promise.all([createSigner(), createSigner()]);
+        const hashOf = (signer: typeof a) =>
+            createHash("sha256").update(JSON.stringify(signer.publicJwk)).digest("hex");
+        const file = path.join(save, "server", "known_public_key_hashes.json");
+        mkdirSync(path.join(save, "server"));
+        writeFileSync(file, JSON.stringify([hashOf(a), hashOf(a)]));
+        let writes = 0;
+        const fs: DurableFs = {
+            ...fsPromises,
+            async open(target, flags, mode) {
+                if (flags === "wx") writes++;
+                return fsPromises.open(target, flags, mode);
+            },
+        };
+        try {
+            const { auth, app } = authApp(save, fs, "pw");
+            const login = (signer: typeof a) =>
+                app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+            expect((await login(a)).status).toBe(200);
+            expect((await login(a)).status).toBe(200);
+            expect(writes).toBe(0);
+            expect(await auth.isAuthorizedToken(await a.jwt())).toBe(true);
+            expect((await login(b)).status).toBe(200);
+            expect(writes).toBe(1);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual([hashOf(a), hashOf(b)]);
+        } finally {
+            rmSync(save, { recursive: true, force: true });
+        }
+    });
+
+    it("gives concurrent password setup one durable winner and answers already set to the loser", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const save = mkdtempSync(path.join(os.tmpdir(), "risu-password-operations-"));
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const fs: DurableFs = {
+            ...fsPromises,
+            async open(file, flags, mode) {
+                const handle = await fsPromises.open(file, flags, mode);
+                const sync = handle.sync.bind(handle);
+                if (flags === "wx")
+                    Object.assign(handle, {
+                        sync: async () => {
+                            entered.resolve();
+                            await release.promise;
+                            await sync();
+                        },
+                    });
+                return handle;
+            },
+        };
+        const { auth, app } = authApp(save, fs);
+        let answered = false;
+        const first = Promise.resolve(app.request("/api/set_password", json({ password: "first" }))).then(
+            (response) => {
+                answered = true;
+                return response;
+            },
+        );
+        await entered.promise;
+        const second = app.request("/api/set_password", json({ password: "second" }));
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(answered).toBe(false);
+            expect(await (await app.request("/api/test_auth")).json()).toEqual({ status: "unset" });
+            release.resolve();
+            expect((await first).status).toBe(200);
+            const loser = await second;
+            expect(loser.status).toBe(400);
+            expect(await loser.text()).toBe("already set");
+            expect(readFileSync(path.join(save, "server", "password"), "utf8")).toBe("first");
+            const signer = await createSigner();
+            const winner = await app.request("/api/login", json({ password: "first", publicKey: signer.publicJwk }));
+            expect(winner.status).toBe(200);
+            const other = await app.request("/api/login", json({ password: "second", publicKey: signer.publicJwk }));
+            expect(await other.json()).toEqual({ error: "Password incorrect" });
+            expect(await auth.isAuthorizedToken(await signer.jwt())).toBe(true);
+        } finally {
+            release.resolve();
+            await Promise.all([first, second]);
+            vi.useRealTimers();
+            rmSync(save, { recursive: true, force: true });
+        }
+    });
+});
+
+it("authenticates asset reports and scans, disables caching, and refuses overlapping scans", async () => {
+    const paused = deferred();
+    const resume = deferred();
+    const s = await createResourceTestClient({
+        assetLifecycle: {
+            wallClock: () => Date.UTC(2030, 0, 20),
+            monoClock: () => 0,
+            betweenChunks: async () => {
+                paused.resolve();
+                await resume.promise;
+            },
+        },
+    });
+    servers.push(s);
+    try {
+        for (const [url, method] of [
+            ["/api/assets/report", "GET"],
+            ["/api/assets/scan", "POST"],
+        ]) {
+            const denied = await s.app.request(url, { method });
+            expect(denied.status, url).toBe(400);
+            expect(await denied.json()).toEqual({ error: "No auth header" });
+            expect(denied.headers.get("cache-control"), url).toBe("no-store");
+        }
+        const initial = await s.request("/api/assets/report");
+        expect(initial.status).toBe(200);
+        expect(initial.headers.get("cache-control")).toBe("no-store");
+        expect(await initial.json()).toMatchObject({ running: false, generatedAt: null });
+        const start = await s.request("/api/assets/scan", { method: "POST" });
+        expect(start.status).toBe(202);
+        expect(start.headers.get("cache-control")).toBe("no-store");
+        expect(await start.json()).toMatchObject({ running: true });
+        await paused.promise;
+        const overlap = await s.request("/api/assets/scan", { method: "POST" });
+        expect(overlap.status).toBe(409);
+        expect(overlap.headers.get("cache-control")).toBe("no-store");
+        expect(await (await s.request("/api/assets/report")).json()).toMatchObject({ running: true });
+    } finally {
+        resume.resolve();
+    }
+    // Yield to the scan's filesystem work; there is no wall-clock polling deadline.
+    while (s.context.assetLifecycle.running) await nextTurn();
+    const complete = await s.request("/api/assets/report");
+    expect(complete.headers.get("cache-control")).toBe("no-store");
+    expect(await complete.json()).toMatchObject({ complete: true, running: false });
+});
+
+it("sweeps unclaimed checkpoint pages before the hourly first scan and daily scans, skipping maintenance", async () => {
+    const day = 86_400_000;
+    const hour = 3_600_000;
+    const now = Date.UTC(2030, 0, 20);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.setSystemTime(now);
+    const s = createTestServer({ snapshotIntervalMs: 7 * day, assetLifecycle: { monoClock: () => Date.now() } });
+    servers.push(s);
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    mkdirSync(path.join(s.savePath, "assets"), { recursive: true });
+    const asset = resolveStorageKey(s.savePath, "assets/abandoned")!;
+    writeFileSync(asset, "old");
+    utimesSync(asset, (now - 30 * day) / 1000, (now - 30 * day) / 1000);
+    const page = () =>
+        db
+            .prepare("INSERT INTO checkpointPages (hash, text) VALUES ('abandoned', ?)")
+            .run(JSON.stringify("assets/abandoned"));
+    const pages = () => db.prepare("SELECT hash FROM checkpointPages WHERE hash = 'abandoned'").all();
+    const settled = async () => {
+        while (s.context.assetLifecycle.running) await nextTurn();
+    };
+    const entered = deferred();
+    const release = deferred();
+    let maintenance: Promise<unknown> | undefined;
+    try {
+        page();
+        expect((await s.context.assetLifecycle.scan()).unreferenced.count).toBe(1);
+        expect(pages()).toHaveLength(1); // A read-only mark does not sweep or delete.
+        s.context.startBackgroundTasks();
+        vi.advanceTimersByTime(hour - 1);
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(1);
+        expect(pages()).toHaveLength(1);
+        vi.advanceTimersByTime(1);
+        await settled();
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(2);
+        expect(pages()).toEqual([]);
+        expect(s.context.assetLifecycle.report()).toMatchObject({ complete: true, generatedAt: now + hour });
+        page();
+        maintenance = s.context.snapshots.withMaintenance(async () => {
+            entered.resolve();
+            await release.promise;
+        });
+        await entered.promise;
+        vi.advanceTimersByTime(day);
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(2);
+        expect(pages()).toHaveLength(1);
+        release.resolve();
+        await maintenance;
+        vi.advanceTimersByTime(day - 1);
+        expect(pages()).toHaveLength(1);
+        vi.advanceTimersByTime(1);
+        await settled();
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(3);
+        expect(pages()).toEqual([]);
+        expect(readFileSync(asset, "utf8")).toBe("old");
+        await s.context.dispose();
+        vi.advanceTimersByTime(day);
+        expect(s.context.assetLifecycle.runIdentity!.runId).toBe(3);
+    } finally {
+        release.resolve();
+        await maintenance;
+        db.close();
+        await s.context.dispose();
+        vi.useRealTimers();
+    }
+});
+
+it("uses seven grace days by default, accepts three, and rejects a smaller environment grace", async () => {
+    const day = 86_400_000;
+    const now = Date.UTC(2030, 0, 20);
+    let rootDir = "";
+    try {
+        for (const [env, days] of [
+            [undefined, 7],
+            ["3", 3],
+        ] as const) {
+            vi.stubEnv("RISU_ASSET_GRACE_DAYS", env);
+            const s = createTestServer({ assetLifecycle: { wallClock: () => now, monoClock: () => 0 } });
+            servers.push(s);
+            rootDir = s.rootDir;
+            mkdirSync(path.join(s.savePath, "assets"), { recursive: true });
+            for (const [name, age] of [
+                ["young", days * day - 1],
+                ["old", days * day],
+            ] as const) {
+                const file = resolveStorageKey(s.savePath, `assets/${name}`)!;
+                writeFileSync(file, "x");
+                utimesSync(file, (now - age) / 1000, (now - age) / 1000);
+            }
+            const report = await s.context.assetLifecycle.scan();
+            expect(report.complete).toBe(true);
+            expect(report.referenced.count, String(env)).toBe(1);
+            expect(report.unreferenced.count, String(env)).toBe(1);
+            await s.context.dispose();
+        }
+        for (const invalid of ["0", "1", "2", "-1"]) {
+            vi.stubEnv("RISU_ASSET_GRACE_DAYS", invalid);
+            expect(() => {
+                servers.push(createTestServer({ rootDir }));
+            }, invalid).toThrow(/RISU_ASSET_GRACE_DAYS/);
+        }
+    } finally {
+        vi.unstubAllEnvs();
+    }
 });

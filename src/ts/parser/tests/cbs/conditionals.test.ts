@@ -14,10 +14,9 @@ vi.mock(
         }) as unknown as typeof import("../../../storage/database.svelte"),
 );
 
-vi.mock(import("../../../globalApi.svelte"), () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: () => Promise.resolve(""),
-}));
+vi.mock(import("../../../globalApi.svelte"), async () =>
+    (await import("../../../tests/globalApiMock")).createGlobalApiMock({ getFileSrc: () => Promise.resolve("") }),
+);
 
 /**
  * Returns accessed key as the value. It reports no prototype and answers no symbol key, so the chat

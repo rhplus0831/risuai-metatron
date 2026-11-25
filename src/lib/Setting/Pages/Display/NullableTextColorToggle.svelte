@@ -1,6 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
-    import { readSettingsRoot, writeSettingsRoot } from "src/ts/storage/settingsViews.svelte";
+    import { readEditedRoot, writeEditedRoot } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
 
     interface Props {
@@ -10,7 +10,7 @@
     }
 
     let { field, labelKey, defaultColor }: Props = $props();
-    let currentValue = $derived(readSettingsRoot(field) as string | null | undefined);
+    let currentValue = $derived(readEditedRoot(field) as string | null | undefined);
 </script>
 
 {#if currentValue}
@@ -18,7 +18,7 @@
         <Check
             check={true}
             onChange={() => {
-                writeSettingsRoot(field, null);
+                writeEditedRoot(field, null);
             }}
             name={language[labelKey]}
             hiddenName
@@ -28,7 +28,7 @@
             class="style2 text-sm mr-2"
             value={currentValue}
             oninput={(e) => {
-                writeSettingsRoot(field, e.currentTarget.value);
+                writeEditedRoot(field, e.currentTarget.value);
             }}
         />
         <span>{language[labelKey]}</span>
@@ -38,7 +38,7 @@
         <Check
             check={false}
             onChange={() => {
-                writeSettingsRoot(field, defaultColor);
+                writeEditedRoot(field, defaultColor);
             }}
             name={language[labelKey]}
         />

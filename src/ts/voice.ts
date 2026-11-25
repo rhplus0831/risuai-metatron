@@ -1,3 +1,8 @@
+/**
+ * Unused microphone recording/analysis prototype with no importers. `voiceDetector`
+ * samples an analyser while collecting MediaRecorder chunks for a ten-second capture.
+ */
+
 class voiceDetector {
     private userMedia: MediaStream;
     private audioContext: AudioContext;

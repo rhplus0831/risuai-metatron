@@ -5,6 +5,20 @@ import type { RequestDb } from "./settings.ts";
 import type { LLMParameter } from "../../../shared/llm.ts";
 import type { ModelModeExtended } from "../../../shared/llm/request.ts";
 
+/**
+ * Applies request-local preset parameters and provider-specific additional parameters to adapter bodies/headers.
+ * Capability markers guide reasoning effort without becoming body fields; `-1000` omits a numeric setting, and
+ * renamed parameter keys may address nested objects. The same preset values serve every `ModelModeExtended`
+ * mode (model, submodel, memory, ...); the provider paths differ in which parameters they apply.
+ *
+ * Additional parameters run in order and mutate their targets, so later entries override earlier ones; adapters
+ * may still force fields afterwards. Only body values are parsed, via server/src/llm/additionalParams.ts for `json::`.
+ * Dotted writes refuse `__proto__`, `constructor`, or `prototype` segments with a warning before any mutation.
+ * They traverse own properties only, creating objects for missing, inherited, or falsy intermediates; traversal
+ * through a truthy primitive can throw. Provider-specific response/error handling remains in the adapters, with
+ * shared user-facing strings in server/src/llm/messages.ts.
+ */
+
 export type { LLMParameter, ModelModeExtended };
 
 const reasoningCapabilityParameters: LLMParameter[] = [
@@ -13,26 +27,48 @@ const reasoningCapabilityParameters: LLMParameter[] = [
     "reasoning_effort_xhigh",
 ];
 
+/** Identifies the three reasoning-effort capability markers that are not emitted as request fields. */
 export function isReasoningCapabilityParameter(parameter: LLMParameter): boolean {
     return reasoningCapabilityParameters.includes(parameter);
 }
 
+/**
+ * Mutates and returns `obj` at a dot-separated path, traversing own properties only and replacing missing, inherited,
+ * or falsy intermediates with objects. A `__proto__`, `constructor`, or `prototype` segment refuses the entire key
+ * with a warning before any mutation. Traversal through a truthy primitive can throw.
+ */
 export function setObjectValue<T>(obj: T, key: string, value: any): T {
-    const target = obj as any;
     const splitKey = key.split(".");
-    if (splitKey.length > 1) {
-        const firstKey = splitKey.shift()!;
-        if (!target[firstKey]) {
-            target[firstKey] = {};
-        }
-        target[firstKey] = setObjectValue(target[firstKey], splitKey.join("."), value);
+    if (splitKey.some((segment) => segment === "__proto__" || segment === "constructor" || segment === "prototype")) {
+        console.warn(`Skipping parameter "${key}": forbidden path segment.`);
         return obj;
     }
 
-    target[key] = value;
+    let target = obj as any;
+    for (let i = 0; i < splitKey.length - 1; i++) {
+        const segment = splitKey[i];
+        if (!Object.hasOwn(target, segment)) {
+            Object.defineProperty(target, segment, {
+                value: {},
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+        } else if (!target[segment]) {
+            target[segment] = {};
+        }
+        target = target[segment];
+    }
+
+    target[splitKey[splitKey.length - 1]] = value;
     return obj;
 }
 
+/**
+ * Returns preset pairs for reverse proxies or other non-custom models with `applyAdditionalParamsToAll` enabled.
+ * Custom models use only their definition's newline-separated `key=value` pairs, splitting on the first `=` without
+ * trimming. A missing model id, custom definition, or custom parameter text returns an empty list.
+ */
 export function getAdditionalParameters(db: RequestDb, aiModel?: string): [string, string][] {
     if (!aiModel) {
         return [];
@@ -63,6 +99,10 @@ export function getAdditionalParameters(db: RequestDb, aiModel?: string): [strin
     return additionalParams;
 }
 
+/**
+ * The same rule as `src/ts/process/request/shared.ts` `applyAdditionalParameters`: it can override or delete body
+ * fields and headers, an adapter may still set fields after it, and value parsing applies to body fields only.
+ */
 export function applyAdditionalParameters<T extends Record<string, any>>(
     body: T,
     headers: Record<string, string>,
@@ -120,6 +160,10 @@ export function applyAdditionalParameters<T extends Record<string, any>>(
     return body;
 }
 
+/**
+ * The same rule as `src/ts/process/request/shared.ts` `applyParameters`, over the request's `db`: the caller's
+ * parameters from the preset for every mode, never its stored `seperateParameters` fields.
+ */
 export function applyParameters(
     data: Record<string, any>,
     parameters: LLMParameter[],

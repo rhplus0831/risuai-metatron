@@ -32,7 +32,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import type { character } from "../../../../shared/database.ts";
@@ -1195,7 +1195,7 @@ describe.each(CANDIDATES)("wrapper mode %s", (candidate) => {
             expect(queuedKeys()).toEqual([]);
         });
 
-        it("the root `proxyKey` reads blank and writes the selected preset's llmSecrets entry (`forwarding.svelte.ts:156`)", () => {
+        it("the root `proxyKey` reads blank and writes the selected preset's llmSecrets entry", () => {
             expect(db.proxyKey).toBe("");
             db.proxyKey = "pk-a-plaintext-0000000001";
             switchPreset("b");

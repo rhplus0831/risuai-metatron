@@ -59,6 +59,7 @@ function normalizeRelaxedJsonKeywords(value: string) {
     return normalized;
 }
 
+/** A `json::` additional parameter's value: must parse as `src/ts/process/request/additionalParams.ts` does. */
 export function parseAdditionalParamJsonValue(value: string): unknown | undefined {
     try {
         return JSON.parse(value);

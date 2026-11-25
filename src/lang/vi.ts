@@ -1,3 +1,4 @@
+/** Vietnamese `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageVietnamese = {
     formating: {
         main: "Lời nhắc chính",
@@ -117,7 +118,7 @@ export const languageVietnamese = {
             "Chế độ Mạnh hiển thị văn bản đang stream ở dạng thô, không kết xuất, rồi kết xuất tin nhắn bình thường sau khi stream hoàn tất. Chế độ này giảm tải nhiều nhất và có thể hữu ích trên thiết bị di động hoặc thiết bị cấu hình thấp.\n\n" +
             "Đây là tính năng thử nghiệm, nên một số tính năng có thể hoạt động ngoài ý muốn.",
         imageCompression:
-            "Nếu được bật, nó sẽ nén hình ảnh khi xuất nhân vật. Nếu hình ảnh động không hoạt động, hãy thử tắt tùy chọn này.",
+            "Nếu được bật, nó sẽ nén hình ảnh khi xuất nhân vật và mô-đun. Nếu hình ảnh động không hoạt động, hãy thử tắt tùy chọn này.",
         useExperimental: "Nếu được bật, nó sẽ hiển thị một số tính năng thử nghiệm.",
         forcePlainFetch:
             "Nếu được bật, nó sẽ sử dụng api fetch của trình duyệt thay vì yêu cầu http gốc. Điều này có thể gây ra lỗi CORS.",
@@ -189,10 +190,6 @@ export const languageVietnamese = {
             'Nếu không trống, nó sẽ trích xuất dữ liệu JSON cụ thể từ phản hồi. Ví dụ, nếu bạn muốn trích xuất `response.text[0]` trong phản hồi `{"response": {"text": ["hello"]}}`, bạn có thể đặt `response.text.0`.',
         translatorNote:
             "Tại đây, bạn có thể thêm lời nhắc dịch duy nhất cho mỗi nhân vật. Tùy chọn này chỉ áp dụng khi sử dụng mô hình Ax. để dịch. Để áp dụng, bao gồm `{{slot::tnote}}` trong cài đặt ngôn ngữ. Nó không hoạt động trong các cuộc trò chuyện nhóm.",
-        groupInnerFormat:
-            "Điều này xác định định dạng được sử dụng trong trò chuyện nhóm cho các nhân vật không phải là người nói. Nếu không trống, nó sẽ sử dụng định dạng này thay vì định dạng mặc định. Nếu `Vai trò Bot Khác trong Nhóm` là `assistant`, nó cũng sẽ được áp dụng cho người nói.",
-        groupOtherBotRole:
-            "Điều này xác định vai trò được sử dụng trong trò chuyện nhóm cho các nhân vật không phải là người nói.",
         chatHTML:
             "HTML sẽ được chèn vào mỗi cuộc trò chuyện.\n\nBạn có thể sử dụng CBS và các thẻ đặc biệt.\n- `<risutextbox>`: hộp văn bản sẽ được sử dụng để hiển thị văn bản\n- `<risuicon>`: biểu tượng cho người dùng hoặc trợ lý\n- `<risubuttons>`: các nút biểu tượng để chỉnh sửa trò chuyện, dịch thuật, v.v.\n- `<risugeninfo>`: nút thông tin tạo.",
         systemContentReplacement:
@@ -652,7 +649,6 @@ export const languageVietnamese = {
     autoTranslation: "Dịch tự động",
     playMessage: "Phát âm thanh tin nhắn",
     iconSize: "Kích cỡ biểu tượng",
-    createGroup: "Tạo trò chuyện nhóm",
     groupIcon: "Biểu tượng nhóm",
     single: "Đơn",
     multiple: "Nhiều",
@@ -727,7 +723,6 @@ export const languageVietnamese = {
     creator: "Người sáng tạo",
     CharVersion: "Phiên bản nhân vật",
     Speech: "Lời nói",
-    ToggleSuperMemory: "Chuyển đổi SupaBộ nhớ",
     SuperMemory: "SupaBộ Nhớ",
     useExperimental: "Có thể thực hiện các tính năng thử nghiệm",
     showMemoryLimit: "Hiển thị giới hạn bộ nhớ",
@@ -829,7 +824,6 @@ export const languageVietnamese = {
     customInnerFormat: "Định dạng bên trong tùy chỉnh",
     innerFormat: "Định dạng bên trong",
     HypaMemory: "HypaBộ nhớ",
-    ToggleHypaMemory: "Chuyển đổi HypaMemory",
     resetPromptTemplateConfirm: "Bạn có thực sự muốn đặt lại mẫu lời nhắc không?",
     emotionMethod: "Phương pháp cảm xúc",
     continueResponse: "Tiếp tục phản hồi",
@@ -844,8 +838,7 @@ export const languageVietnamese = {
     importPersona: "Nhập khẩu nhân vật",
     export: "Xuất khẩu",
     import: "Nhập khẩu",
-    supporterThanks: "Người ủng hộ Cảm ơn",
-    supporterThanksDesc: "Cảm ơn sự hỗ trợ của bạn!",
+    supporterThanks: "Người ủng hộ RisuAI",
     donatorPatreonDesc:
         "Theo mặc định, nó sẽ không được hiển thị trong danh sách bảo mật. nếu bạn muốn hiển thị biệt danh của mình, hãy truy cập trang patreon của Risuai và nhấn nút liên kết.",
     useNamePrefix: "Sử dụng tiền tố tên",
@@ -997,8 +990,10 @@ export const languageVietnamese = {
     select: "Chọn",
     options: "Tùy chọn",
     alertContent: "Nội dung cảnh báo",
-    lowLevelAccessConfirm:
-        "Nội dung này sử dụng Truy cập cấp thấp. Điều đó có nghĩa là nội dung này có thể truy cập trực tiếp vào mô hình AI và bộ nhớ của bạn. Bạn có thực sự muốn nhập nội dung này không?",
+    lowLevelAccessImportQuestion:
+        "Nội dung này sử dụng Truy cập cấp thấp, nghĩa là nó có thể truy cập trực tiếp vào mô hình AI và bộ nhớ của bạn. Nhập kèm Truy cập cấp thấp hay không? Nếu không, các phần cần quyền này sẽ không hoạt động; bạn có thể bật lại sau trong phần cài đặt.",
+    lowLevelAccessImportWith: "Nhập kèm Truy cập cấp thấp",
+    lowLevelAccessImportWithout: "Nhập không kèm Truy cập cấp thấp",
     extractRegex: "Trích xuất văn bản bằng Regex",
     runImgGen: "Chạy tạo hình ảnh",
     cutChat: "Cắt trò chuyện",
@@ -1028,7 +1023,6 @@ export const languageVietnamese = {
     blockMode: "Khối",
     helpBlock: "Trợ giúp",
     hideChatIcon: "Ẩn giao diện biểu tượng",
-    loadInternalBackup: "Tải sao lưu nội bộ",
     createCopy: "Tạo bản sao",
     chatOptions: "Tùy chọn trò chuyện",
     parameters: "Tham số",
@@ -1059,8 +1053,6 @@ export const languageVietnamese = {
     trailingDoubleQuote: "Dấu ngoặc kép kết thúc",
     translatorNote: "Ghi chú của người dịch",
     formatGroupInSingle: "Định dạng nhóm trong đơn",
-    groupInnerFormat: "Định dạng nội bộ không phải người nói",
-    groupOtherBotRole: "Vai trò không phải người nói trong nhóm",
     chatHTML: "HTML trò chuyện",
     logShare: "Hiển thị nút chia sẻ nhật ký",
     preview: "Xem trước",
@@ -1260,7 +1252,7 @@ export const languageVietnamese = {
     useTokenizerCaching: "Lưu trữ đệm Tokenizer",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
-    showMenuHypaMemoryModal: "Hiển thị Menu Hypa Modal",
+    showMenuHypaMemoryModal: "Hiển thị Menu HypaV2 Modal",
     promptInfoInsideChat: "Thêm thông tin lời nhắc vào trò chuyện",
     promptTextInfoInsideChat: "Thêm văn bản lời nhắc vào trò chuyện",
     promptInfoEmptyMessage: "Không có thông tin lời nhắc cho tin nhắn này.",
@@ -1308,8 +1300,6 @@ export const languageVietnamese = {
     translate: "Dịch địa chỉ mã",
     apply: "Áp dụng",
     add: "Thêm",
-    nightlyWarning:
-        "## Bản dựng Nightly\n\nBạn đang kết nối với bản dựng Nightly của phần mềm. Phiên bản này dùng để thử nghiệm và rất có thể có lỗi. **Trong phiên bản này, ngay cả khi bạn gặp sự cố, chúng tôi không hỗ trợ giải quyết trực tiếp.**",
     generatedByAIDisclaimer: "Nội dung này được tạo bởi AI và có thể chứa thông tin không chính xác hoặc thiên kiến.",
     aiGenerationWarning: "Nội dung sẽ được tạo bởi AI và có thể chứa thông tin không chính xác hoặc thiên kiến.",
     noRequestLogs: "Không có nhật ký yêu cầu nào.",

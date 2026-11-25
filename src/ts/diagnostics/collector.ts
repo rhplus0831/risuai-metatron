@@ -20,14 +20,20 @@ import {
  *   at most 10 minutes old, is folded into it (`repeat`, `lastAt`), so a retry loop (a 409 and its
  *   `sync conflict` every few seconds) does not flush the ring. A page's `boot` is never folded.
  * - `startDiagnosticsCollector` (first in `src/boot.ts`, before the app's modules load) restores the
- *   stored ring, then watches this window only (a plugin's iframe is another realm): same-origin API
+ *   stored ring, re-projecting every entry and refusing text over `MAX_STORED_CHARS` (512K characters),
+ *   then watches this window only (a plugin's iframe is another realm): same-origin API/worker/proxy
  *   fetches that fail (`window.fetch`, wrapped), uncaught errors and rejections, visibility, online
- *   state, and the service worker's controller. The other hooks call `recordClientEvent` where their
- *   event happens (job follows, the live-update socket, the save loop, the service worker setup).
+ *   state, the Page Lifecycle's `freeze` and `resume`, the service worker's controller, and this
+ *   browser's notification state (`push` `browserState`, at the start and on every `visible`). The
+ *   other hooks call `recordClientEvent` where their event happens (job follows, the live-update
+ *   socket, the save loop, the service worker setup).
  * - The mirror is written at most a second after an event (a pending write is not postponed), when
- *   the page is hidden or left, and before the app reloads the page (`flushClientDiagnostics`); the
- *   oldest events are left out until it fits the size the restore reads. Every storage access is
- *   guarded: without storage the ring still works in memory.
+ *   the page is hidden, left (`pagehide`), or frozen, and before the app reloads
+ *   (`flushClientDiagnostics`); the oldest events are left out until it fits the size the restore
+ *   reads. Every storage access is guarded: without storage the ring still works in memory.
+ * - The fetch wrapper dispatches the original exactly once before inspecting the target, preserving
+ *   its response, rejection reason, and unhandled-rejection behavior. Only same-origin paths that
+ *   `shared/diagnostics.ts`'s `isApiPath` admits can produce checked route-template failure events.
  * - Nothing here throws into the app: every listener and the fetch wrapper's observation are guarded.
  */
 
@@ -41,6 +47,8 @@ const MAX_STACK_CHARS = 64 * 1024;
 /** How far back, in events and in time, an identical event is folded into an earlier one. */
 const FOLD_EVENTS = 16;
 const FOLD_MS = 10 * 60_000;
+/** How long the push subscription lookup may take before `browserState` leaves `subscribed` unknown. */
+const SUBSCRIPTION_WAIT_MS = 2000;
 
 let ring: DiagnosticEvent[] = [];
 let started = false;
@@ -230,6 +238,62 @@ export function browserStack(error: unknown): string[] {
     }
 }
 
+/**
+ * Whether this browser holds a push subscription (not whether the server knows it): false without a
+ * service worker, a registration, or a push manager; null (unknown) when the lookup failed or took over
+ * 2 s. Settled at once when no lookup was needed. Never throws or rejects.
+ */
+function subscribedState(): boolean | null | Promise<boolean | null> {
+    let container: ServiceWorkerContainer | undefined;
+    try {
+        container = navigator.serviceWorker as ServiceWorkerContainer | undefined;
+    } catch {
+        return null;
+    }
+    if (!container || typeof container.getRegistration !== "function") {
+        return false;
+    }
+    const worker = container;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lookup = (async () => {
+        const registration = await worker.getRegistration();
+        const manager = registration?.pushManager;
+        return manager ? (await manager.getSubscription()) !== null : false;
+    })().catch(() => null);
+    const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), SUBSCRIPTION_WAIT_MS);
+    });
+    return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Records this browser's notification state (`push` `browserState`): the permission (`unsupported`
+ * without the Notification API), whether it holds a push subscription, and whether it runs as an
+ * installed app (`display-mode: standalone`). A value that could not be read is left out (unknown), so
+ * it is never mistaken for false. Recorded once the subscription lookup settles. Never throws.
+ */
+function recordBrowserState() {
+    try {
+        const state: DiagnosticEventInput = { kind: "push", phase: "browserState" };
+        try {
+            state.permission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+        } catch {}
+        try {
+            if (typeof window.matchMedia === "function") {
+                state.standalone = window.matchMedia("(display-mode: standalone)").matches;
+            }
+        } catch {}
+        const record = (subscribed: boolean | null) =>
+            recordClientEvent(subscribed === null ? state : { ...state, subscribed });
+        const subscribed = subscribedState();
+        if (subscribed instanceof Promise) {
+            void subscribed.then(record);
+        } else {
+            record(subscribed);
+        }
+    } catch {}
+}
+
 function recordError(origin: "error" | "unhandledrejection", error: unknown) {
     recordClientEvent({ kind: "runtime", origin, name: errorName(error), stack: browserStack(error) });
 }
@@ -302,9 +366,11 @@ function observeFetch(target: FetchTarget, durationMs: number, outcome: { respon
  * Wraps `window.fetch`: the original is called once, first, with the same receiver and arguments.
  * The promise returned resolves with the same response and rejects with the same reason (a promise
  * chained on the original's, so a rejection nobody handles is still unhandled); no body is read.
- * Beside it, a same-origin API fetch that answers 400 or more, or rejects without an answer, is an
- * `http` event (`observeFetch`). The duration ends when the fetch settles, not when a streamed body
- * ends; a `keepalive` fetch the page outlives is never observed.
+ * Beside it, a same-origin API/worker/proxy fetch admitted by `isApiPath` that answers 400 or more,
+ * or rejects (excluding an abort unless timed out), is an `http` event (`observeFetch`). The duration
+ * ends when the fetch settles, not when a streamed body ends. Observation requires this page's
+ * completion handler to run; a keepalive request that completes after the page is gone cannot be
+ * recorded here.
  */
 function wrapFetch() {
     const original = window.fetch;
@@ -354,6 +420,7 @@ export function startDiagnosticsCollector(): void {
         ring = [...restore(), ...ring].slice(-RING_SIZE);
     } catch {}
     recordClientEvent({ kind: "page", phase: "boot" });
+    recordBrowserState();
     try {
         wrapFetch();
     } catch {}
@@ -375,8 +442,16 @@ export function startDiagnosticsCollector(): void {
         recordClientEvent({ kind: "page", phase: hidden ? "hidden" : "visible" });
         if (hidden) {
             flushClientDiagnostics();
+        } else {
+            recordBrowserState();
         }
     });
+    // Page Lifecycle (Chromium): a frozen page runs nothing until it resumes, and may be discarded meanwhile.
+    listen(document, "freeze", () => {
+        recordClientEvent({ kind: "page", phase: "freeze" });
+        flushClientDiagnostics();
+    });
+    listen(document, "resume", () => recordClientEvent({ kind: "page", phase: "resume" }));
     listen(window, "pagehide", () => flushClientDiagnostics());
     listen(window, "online", () => recordClientEvent({ kind: "page", phase: "online" }));
     listen(window, "offline", () => recordClientEvent({ kind: "page", phase: "offline" }));

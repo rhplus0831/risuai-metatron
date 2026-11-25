@@ -10,6 +10,19 @@ import type { ResourceStore } from "../data/resourceStore.ts";
 import type { TokenCountScope } from "../prompt/tokens.ts";
 import { collectSecrets } from "./redact.ts";
 
+/**
+ * Projects captured server records into the legacy-shaped settings read by provider requests and jobs. Prompt and
+ * model preset ids and both persona ids must still exist; missing targets throw instead of redirecting to another
+ * selection. The selected persona supplies `db.username`/`personaPrompt`, while the effective persona supplies the
+ * request's user name. Missing character records contribute null names.
+ *
+ * Projection creates a fresh root object, forwarding preset/profile fields through shared/sections.ts and joining
+ * credential metadata to values in `llmSecrets`. Forwarded model roots are copied; provider/prompt containers and
+ * model/profile collections retain their captured references. For history redaction, `loadStoredSecrets` reads current
+ * records separately and includes orphaned secret-map entries that request binding does not expose. Job tokenizer
+ * scopes derive from the main model; tab scopes enter through server/src/prompt/tokens.ts instead.
+ */
+
 type ProvidersField = (typeof SECTION_FIELDS)["providers"][number];
 type LlmSecretsField = (typeof SECTION_FIELDS)["llmSecrets"][number];
 type RootOf<F> = F extends "NAISettings"
@@ -53,6 +66,7 @@ export type RequestDb = Pick<
     pluginModels?: LLMModel[];
 };
 
+/** Record ids captured for a request, distinguishing the effective/selected personas and selected/replying characters. */
 export type RequestScopeIds = {
     /** The prompt preset. */
     presetId: string;
@@ -68,6 +82,7 @@ export type RequestScopeIds = {
     speakerId: string | null;
 };
 
+/** Projected request settings plus captured character names and the effective persona's user name. */
 export type LoadedRequestDb = {
     db: RequestDb;
     /** The names of the two characters of `RequestScopeIds`, `null` for none. */
@@ -77,6 +92,10 @@ export type LoadedRequestDb = {
     userName: string;
 };
 
+/**
+ * Thrown by `loadRequestDb` when the request's preset, model preset, or persona (selected or effective) is gone: a
+ * request never falls back to another selection.
+ */
 export class RequestTargetGoneError extends Error {
     constructor(what: string) {
         super(`The request's ${what} no longer exists`);
@@ -127,6 +146,38 @@ export function loadRequestDb(
         personas,
         ...characters
     ] = read.items.map((item) => item.data as any);
+    const nameOf = (id: string | null): string | null => {
+        if (!id) {
+            return null;
+        }
+        const record = characters[characterIds.indexOf(id)];
+        return record ? `${record.name}` : null;
+    };
+    return buildRequestDb(
+        [providers, llmSecrets, ui, customModels, credentials, presets, modelPresets, modelProfiles, personas],
+        ids,
+        names ?? { selectedCharacterName: nameOf(ids.selectedCharacterId), speakerName: nameOf(ids.speakerId) },
+    );
+}
+
+/** Builds fresh request settings from captured records, without reading or changing them. */
+export function buildRequestDb(
+    records: readonly [
+        providers: unknown,
+        llmSecrets: unknown,
+        ui: unknown,
+        customModels: unknown,
+        credentials: unknown,
+        presets: unknown,
+        modelPresets: unknown,
+        modelProfiles: unknown,
+        personas: unknown,
+    ],
+    ids: RequestScopeIds,
+    names: Pick<LoadedRequestDb, "selectedCharacterName" | "speakerName">,
+): LoadedRequestDb {
+    const [providers, llmSecrets, ui, customModels, credentials, presets, modelPresets, modelProfiles, personas] =
+        records.map((record) => record as any);
     if (!providers || !llmSecrets || !ui || !customModels || !presets || !modelPresets || !modelProfiles || !personas) {
         throw new Error("The server has no settings records yet");
     }
@@ -170,17 +221,10 @@ export function loadRequestDb(
     db.customModels = customModels;
     db.credentials = mergeCredentials(credentials ?? [], llmSecrets);
 
-    const nameOf = (id: string | null): string | null => {
-        if (!id) {
-            return null;
-        }
-        const record = characters[characterIds.indexOf(id)];
-        return record ? `${record.name}` : null;
-    };
     return {
         db: db as unknown as RequestDb,
-        selectedCharacterName: names ? names.selectedCharacterName : nameOf(ids.selectedCharacterId),
-        speakerName: names ? names.speakerName : nameOf(ids.speakerId),
+        selectedCharacterName: names.selectedCharacterName,
+        speakerName: names.speakerName,
         userName: typeof effective.name === "string" ? effective.name : PERSONA_DEFAULTS.name,
     };
 }

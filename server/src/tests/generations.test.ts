@@ -5,9 +5,28 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { WebSocket as WsClient } from "ws";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
-import { type CallbackResult, type GenerationEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import {
+    type CallbackResult,
+    type GenerationCreateBody,
+    type GenerationEvent,
+    type GenerationStatus,
+    MAX_COMPLETION_HOLD_MS,
+    NO_GENERATION_HOOKS,
+} from "../../../shared/jobs.ts";
+import type { ResourceReadKindsResult, ResourceReadRefsResult } from "../../../shared/resources.ts";
 import type { MemoryControl, RunningJob } from "../jobs/generationJobs.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
+
+/** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
+function withResolvers<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
 
 // The generation job routes and the owner socket (`server/src/routes/generations.ts`,
 // `generationJobs.handleUpgrade`) on a real listening server, with a fake runner driven by the test,
@@ -102,7 +121,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
     afterAll(() => {
         vi.restoreAllMocks();
     });
-    afterEach(closeServer);
+    afterEach(async () => {
+        await closeServer();
+        vi.useRealTimers();
+    });
 
     async function listen() {
         server = createTestServer({ password: "pw", generationRunner: runner });
@@ -194,12 +216,13 @@ describe("generation jobs over HTTP and WebSocket", () => {
      */
     async function follow(
         jobId: string,
-        options: { clientId?: string; token?: string; attach?: number; keepOpen?: boolean } = {},
+        options: { clientId?: string; token?: string; attach?: number; keepOpen?: boolean; ticket?: string } = {},
     ): Promise<Followed> {
         const token = options.token ?? (await signer.jwt());
         const query =
             `?risu-auth=${encodeURIComponent(token)}&clientId=${encodeURIComponent(options.clientId ?? "tab")}` +
-            (options.attach === undefined ? "" : `&attach=${options.attach}`);
+            (options.attach === undefined ? "" : `&attach=${options.attach}`) +
+            (options.ticket ? `&ticket=${options.ticket}` : "");
         const ws = new WsClient(`${base.replace("http", "ws")}/api/generations/${jobId}/ws${query}`);
         const events: GenerationEvent[] = [];
         const opened = new Promise<void>((resolve) => ws.once("open", () => resolve()));
@@ -247,6 +270,522 @@ describe("generation jobs over HTTP and WebSocket", () => {
             []
         ).map((row) => [row.message.chatId, row.after, row.message.data]);
 
+    describe("handoff HTTP controls", () => {
+        const controlledClock = () =>
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const capture = () => {
+            const entered = withResolvers<RunningJob>();
+            step((job) => entered.resolve(job));
+            return entered.promise;
+        };
+        const post = (id: string, action: string, body: unknown, at?: string | null) =>
+            request(`/api/generations/${id}/${action}`, json(body), { epoch: at });
+        async function transfer(id: string) {
+            expect((await post(id, "handoff", { clientId: "tab", target: "worker" })).status).toBe(200);
+            const issued = await post(id, "takeover", { clientId: "worker" });
+            expect(issued.status).toBe(200);
+            const { ticket } = (await issued.json()) as { ticket: string };
+            const worker = await follow(id, { clientId: "worker", ticket, keepOpen: true });
+            await worker.fence();
+            expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+            return worker;
+        }
+
+        it("refuses handoff to the current owner without opening an offer or displacing its callback socket", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const created = await create({
+                kind: "send",
+                clientId: "tab",
+                context: await context(),
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const id = created.body.jobId as string;
+            const job = await entered;
+            const creator = await follow(id, { keepOpen: true });
+            await creator.fence();
+            for (const [ownerId, socket] of [
+                ["tab", creator],
+                ["worker", null],
+            ] as const) {
+                const owner = socket ?? (await transfer(id));
+                const pending = job.channel.callback("editoutput", { text: "still owned here" });
+                await owner.fence();
+                const callback = owner.events.findLast((event) => event.type === "callback")!;
+                expect(callback).toMatchObject({ type: "callback", name: "editoutput" });
+                expect((await post(id, "handoff", { clientId: "tab", target: ownerId })).status).toBe(409);
+                expect((await post(id, "takeover", { clientId: ownerId })).status).toBe(409);
+                owner.ws.send(
+                    JSON.stringify({
+                        type: "answer",
+                        id: callback.id,
+                        outcome: "answered",
+                        value: `answer:${ownerId}`,
+                    }),
+                );
+                expect(await pending).toMatchObject({ value: `answer:${ownerId}` });
+                await owner.fence();
+                expect(owner.ws.readyState).toBe(WsClient.OPEN);
+            }
+        });
+
+        it("authorizes participant controls while current stays readable by every authenticated client", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const id = await createOk();
+            const job = await entered;
+            const current = (clientId: string) =>
+                request(`/api/generations/current?characterId=c&chatId=k&clientId=${clientId}`);
+            expect(await (await current("tab")).json()).toEqual({ jobId: id, kind: "send", owned: true });
+            expect((await post(id, "takeover", { clientId: "worker" })).status).toBe(409);
+            expect((await post("unknown", "takeover", { clientId: "worker" })).status).toBe(404);
+            expect((await post(id, "handoff", { clientId: "third" })).status).toBe(404);
+            expect((await post(id, "handoff", { clientId: "tab" }, "stale")).status).toBe(412);
+            expect((await post(id, "handoff", { clientId: "tab", target: "worker" })).status).toBe(200);
+            expect((await post(id, "takeover", { clientId: "third" })).status).toBe(409);
+            const issued = await post(id, "takeover", { clientId: "worker" });
+            expect(issued.status).toBe(200);
+            const { ticket } = (await issued.json()) as { ticket: string };
+            expect((await post(id, "takeover", { clientId: "worker" })).status).toBe(409);
+            const worker = await follow(id, { clientId: "worker", ticket, keepOpen: true });
+            await worker.fence();
+            const creator = await follow(id, { keepOpen: true });
+            await creator.fence();
+            expect(creator.events[0]).toMatchObject({ type: "handoff", owner: "other" });
+            for (const clientId of ["tab", "worker", "third"]) {
+                expect(await (await current(clientId)).json()).toEqual({
+                    jobId: id,
+                    kind: "send",
+                    owned: clientId === "tab",
+                    handedOff: true,
+                });
+                const status = await request(`/api/generations/${id}?clientId=${clientId}`);
+                expect(status.status).toBe(clientId === "third" ? 404 : 200);
+                if (clientId !== "third") expect(await status.json()).toMatchObject({ handedOff: true });
+            }
+            expect((await request(`/api/generations/${id}?clientId=third`, { method: "DELETE" })).status).toBe(404);
+            const memory = job.registerMemoryControl!("memory-run");
+            expect((await post(id, "memory-stop?clientId=third", { runId: "memory-run" })).status).toBe(404);
+            for (const clientId of ["worker", "tab"]) {
+                expect((await post(id, `memory-stop?clientId=${clientId}`, { runId: "memory-run" })).status).toBe(200);
+                expect(memory.stopRequested()).toBe(true);
+            }
+            expect((await post(id, "handoff", { clientId: "worker" })).status).toBe(200);
+        });
+
+        it("allows status through valid tickets and pending takeovers while keeping stop controls participant-only", async () => {
+            controlledClock();
+            await listen();
+            const entered = capture();
+            const created = await create({
+                kind: "send",
+                clientId: "tab",
+                context: await context(),
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const id = created.body.jobId as string;
+            const job = await entered;
+            const creator = await follow(id, { keepOpen: true });
+            const pending = job.channel.callback("editoutput", { text: "creator is still answering" });
+            await creator.fence();
+            expect(creator.events[0]).toMatchObject({ type: "handoff", owner: "self" });
+            const callback = creator.events.find((event) => event.type === "callback")!;
+            const status = (clientId: string) => request(`/api/generations/${id}?clientId=${clientId}`);
+            expect((await post(id, "handoff", { clientId: "tab" })).status).toBe(200);
+            const unused = await post(id, "takeover", { clientId: "worker" });
+            expect(unused.status).toBe(200);
+            expect((await status("worker")).status).toBe(200);
+            expect((await status("third")).status).toBe(404);
+            await vi.advanceTimersByTimeAsync(9_999);
+            expect((await status("worker")).status).toBe(200);
+            await vi.advanceTimersByTimeAsync(1);
+            expect((await status("worker")).status).toBe(404);
+
+            // Expiry reopens the offer. A fresh ticket may attach while the creator's callback runs.
+            const issued = await post(id, "takeover", { clientId: "worker" });
+            expect(issued.status).toBe(200);
+            const { ticket } = (await issued.json()) as { ticket: string };
+            expect((await status("worker")).status).toBe(200);
+            const worker = await follow(id, { clientId: "worker", ticket, keepOpen: true });
+            await worker.fence();
+            expect(worker.events[0]).toMatchObject({ type: "handoff", owner: "other", pending: true });
+            expect((await status("worker")).status).toBe(200);
+            await vi.advanceTimersByTimeAsync(10_001);
+            expect((await status("worker")).status).toBe(200);
+            expect((await status("third")).status).toBe(404);
+            expect((await request(`/api/generations/${id}?clientId=worker`, { method: "DELETE" })).status).toBe(404);
+            job.registerMemoryControl!("memory-run");
+            expect((await post(id, "memory-stop?clientId=worker", { runId: "memory-run" })).status).toBe(404);
+            creator.ws.send(
+                JSON.stringify({ type: "answer", id: callback.id, outcome: "answered", value: "creator answer" }),
+            );
+            expect(await pending).toMatchObject({ value: "creator answer" });
+            await vi.advanceTimersByTimeAsync(1);
+            await worker.fence();
+            expect(worker.events.filter((event) => event.type === "handoff").at(-1)).toMatchObject({ owner: "self" });
+            expect((await status("worker")).status).toBe(200);
+        });
+
+        it.each(["tab", "worker"])(
+            "attributes a DELETE by %s only in the other participant's terminal",
+            async (stopper) => {
+                controlledClock();
+                await listen();
+                const id = await createOk();
+                const creator = await follow(id, { keepOpen: true });
+                const worker = await transfer(id);
+                const stopped = await request(`/api/generations/${id}?clientId=${stopper}`, { method: "DELETE" });
+                expect(stopped.status).toBe(200);
+                await Promise.all(runners);
+                await creator.fence();
+                await worker.fence();
+                for (const [clientId, socket] of [
+                    ["tab", creator],
+                    ["worker", worker],
+                ] as const) {
+                    const terminal = socket.events.find((event) => event.type === "error");
+                    expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+                    if (clientId === stopper) expect(terminal).not.toHaveProperty("abortedBy");
+                    else expect(terminal).toHaveProperty("abortedBy", "other");
+                    const status = (await (
+                        await request(`/api/generations/${id}?clientId=${clientId}`)
+                    ).json()) as GenerationStatus;
+                    expect(status.terminal).toEqual(terminal);
+                }
+                expect((await post(id, "takeover", { clientId: "third" })).status).toBe(409);
+            },
+        );
+    });
+
+    describe("named chat job stops", () => {
+        const lookup = (clientId = "other") =>
+            request(`/api/generations/current?characterId=c&chatId=k&clientId=${clientId}`, {}, { epoch: null });
+        const stop = (jobId: string, clientId = "other", options: { epoch?: string | null; jwt?: string } = {}) =>
+            request("/api/generations/stop", json({ ...ref, jobId, clientId }), options);
+        const running = () =>
+            new Promise<RunningJob>((resolve) => {
+                step((job) => resolve(job));
+            });
+        const controlledClock = () =>
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+
+        it("looks up a command without locks without granting another client attachment or callback answers", async () => {
+            controlledClock();
+            await listen();
+            const created = await create({
+                kind: "command",
+                context: await context(),
+                clientId: "tab",
+                command: { type: "button", data: "" },
+                hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            });
+            expect(created.status).toBe(200);
+            const jobId = created.body.jobId as string;
+            const job = await running();
+            job.emit({ type: "stage", stage: "preparing" });
+            expect(server.context.generationJobs.streamingSnapshot()).toEqual([]);
+            expect(job.ownerAttached()).toBe(false);
+            const found = await lookup();
+            expect(found.status).toBe(200);
+            expect(await found.json()).toEqual({ jobId, kind: "command", owned: false, stage: "preparing" });
+            expect(job.ownerAttached()).toBe(false);
+            expect(await (await lookup("tab")).json()).toMatchObject({ jobId, owned: true });
+
+            const owner = await follow(jobId);
+            let outcome: CallbackResult | undefined;
+            const callback = job.channel.callback("editoutput", { text: "original" }).then((result) => {
+                outcome = result;
+                return result;
+            });
+            await owner.fence();
+            const question = owner.events.find((event) => event.type === "callback");
+            expect(question).toBeDefined();
+            const foreign = await follow(jobId, { clientId: "other" });
+            try {
+                if (foreign.ws.readyState === WsClient.OPEN) {
+                    foreign.ws.send(
+                        JSON.stringify({ type: "answer", id: question!.id, outcome: "answered", value: "foreign" }),
+                    );
+                    await foreign.fence();
+                }
+                expect(foreign.ws.readyState).not.toBe(WsClient.OPEN);
+                expect(foreign.events).toEqual([]);
+                expect(outcome).toBeUndefined();
+            } finally {
+                foreign.ws.close();
+            }
+            owner.ws.send(JSON.stringify({ type: "answer", id: question!.id, outcome: "answered", value: "owner" }));
+            expect(await callback).toMatchObject({ outcome: "answered", value: "owner" });
+            await stop(jobId);
+            await owner.closed;
+        });
+
+        it("refuses a superseded job id and returns idle after the named job ends", async () => {
+            controlledClock();
+            await listen();
+            const first = await createOk();
+            const firstJob = await running();
+            const named = (await (await lookup()).json()) as { jobId: string };
+            firstJob.emit({ type: "done", revision: firstJob.context.chatRevision });
+            step(() => "end" as never);
+            await Promise.all(runners);
+            const replacement = await createOk();
+            const nextJob = await running();
+            expect(named.jobId).toBe(first);
+            const changed = await stop(named.jobId);
+            expect(changed.status).toBe(409);
+            expect(await changed.json()).toEqual({ error: "jobChanged" });
+            expect(nextJob.signal.aborted).toBe(false);
+            expect(await (await lookup()).json()).toMatchObject({ jobId: replacement });
+
+            // The confirmed job can finish while the dialog is open; the late stop aborts nothing.
+            nextJob.emit({ type: "done", revision: nextJob.context.chatRevision });
+            step(() => "end" as never);
+            await Promise.all(runners);
+            const idle = await stop(replacement);
+            expect(idle.status).toBe(404);
+            expect(await idle.json()).toEqual({ error: "idle" });
+            expect(nextJob.signal.aborted).toBe(false);
+            const empty = await lookup();
+            expect(empty.status).toBe(200);
+            expect(await empty.json()).toBeNull();
+        });
+
+        it("requires a JWT for lookup and stop and refuses a stale stop epoch without aborting", async () => {
+            controlledClock();
+            await listen();
+            const jobId = await createOk();
+            const job = await running();
+            const unsignedLookup = await fetch(`${base}/api/generations/current?characterId=c&chatId=k&clientId=other`);
+            expect(unsignedLookup.status).toBeGreaterThanOrEqual(400);
+            expect(unsignedLookup.status).toBeLessThan(500);
+            const unsigned = await fetch(`${base}/api/generations/stop`, {
+                ...json({ ...ref, jobId, clientId: "other" }),
+                headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+            });
+            expect(unsigned.status).toBeGreaterThanOrEqual(400);
+            expect(unsigned.status).toBeLessThan(500);
+            const stale = await stop(jobId, "other", { epoch: "stale-epoch" });
+            expect(stale.status).toBe(412);
+            expect(job.signal.aborted).toBe(false);
+        });
+
+        it("leaves an owner's stop unattributed even if another client stops it again during abort grace", async () => {
+            controlledClock();
+            await listen();
+            const recorded = vi.spyOn(server.context.diagnostics, "record");
+            const jobId = await createOk();
+            let release!: () => void;
+            const hold = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const entered = new Promise<RunningJob>((resolve) =>
+                step(async (job) => {
+                    resolve(job);
+                    await hold;
+                }),
+            );
+            const job = await entered;
+            try {
+                expect((await stop(jobId, "tab")).status).toBe(200);
+                expect(job.signal.aborted).toBe(true);
+                expect((await stop(jobId, "other")).status).toBe(200);
+            } finally {
+                release();
+            }
+            await server.context.generationJobs.drain();
+            const terminal = server.context.generationJobs.status(jobId, "tab")?.terminal;
+            expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+            expect(terminal).not.toHaveProperty("abortedBy");
+            const ends = recorded.mock.calls
+                .map(([event]) => event)
+                .filter((event) => event.kind === "job" && event.phase === "error");
+            expect(ends).toHaveLength(1);
+            expect(ends[0]).not.toHaveProperty("stoppedBy");
+        });
+    });
+
+    describe("archived group chats", () => {
+        async function archiveOwner() {
+            const url = "/api/resources/characters/c";
+            const { revision: baseRevision, data } = (await (await request(url)).json()) as {
+                revision: string;
+                data: Record<string, unknown>;
+            };
+            const response = await request(url, {
+                ...json({ baseRevision, data: { ...data, type: "group", characters: [] } }),
+                method: "PUT",
+            });
+            expect(response.status, await response.text()).toBe(200);
+        }
+
+        async function expectArchived(
+            attempts: (Pick<GenerationCreateBody, "kind" | "command"> & {
+                context?: Partial<GenerationCreateBody["context"]>;
+            })[],
+        ) {
+            const ctx = await context();
+            const before = await revision();
+            const refusal = { status: 409, body: { error: "groupArchived" } };
+            for (const [index, { kind, command, context: extraContext }] of attempts.entries()) {
+                const label = command?.type ?? (extraContext?.oocExchangeId ? "OOC preview" : kind);
+                const requestId = `archived-${index}`;
+                const body = { kind, command, context: { ...ctx, ...extraContext }, clientId: "tab", requestId };
+                expect(await create(body), label).toEqual(refusal);
+                const current = await request("/api/generations/current?characterId=c&chatId=k&clientId=tab");
+                expect(current.status, label).toBe(200);
+                expect(await current.json(), label).toBeNull();
+                expect(await create(body), `${label} retried with the same request id`).toEqual(refusal);
+                expect(server.context.generationReceipts.readByRequest(requestId), label).toBeNull();
+            }
+            expect(await revision()).toEqual(before);
+        }
+
+        it("refuses every generation kind on a group chat without lore overrides, leaving no job or receipt", async () => {
+            await listen();
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            await archiveOwner();
+            await expectArchived([
+                { kind: "send", context: { input: "A new message", userMessageId: "draft-user" } },
+                { kind: "continue" },
+                { kind: "reroll" },
+                { kind: "preview" },
+                { kind: "preview", context: { oocExchangeId: "exchange-one" } },
+                { kind: "previewPrompt" },
+                { kind: "command", command: { type: "button", data: "button" } },
+            ]);
+        });
+
+        it("refuses Structured Memory record, test, chapter and rebuild commands on a group chat", async () => {
+            await listen();
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            await archiveOwner();
+            await expectArchived([
+                { kind: "command", command: { type: "memoryRecord", messageId: "r" } },
+                { kind: "command", command: { type: "memoryTest" } },
+                { kind: "command", command: { type: "memoryChapters", limit: 1 } },
+                { kind: "command", command: { type: "memoryRebuild", mode: "rebuild", turns: 1 } },
+            ]);
+        });
+
+        it("rejects the retired group generation kind for both character and group owners", async () => {
+            await listen();
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            const before = await revision();
+            const body = { kind: "group", context: await context(), clientId: "tab" };
+            expect((await create(body)).status, "character owner").toBe(400);
+            await archiveOwner();
+            expect((await create(body)).status, "group owner").toBe(400);
+            expect(await revision()).toEqual(before);
+        });
+    });
+
+    it("preserves an original string for input jobs and leaves it absent when omitted", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        for (const kind of ["send", "continue", "reroll"]) {
+            for (const original of [{ inputOriginal: "  원문\n 그대로  " }, { inputOriginal: "" }, {}]) {
+                const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user", ...original };
+                const observed = withResolvers<RunningJob["context"]>();
+                step((job) => {
+                    job.emit({ type: "done", revision: ctx.chatRevision });
+                    observed.resolve(job.context);
+                    return "end" as never;
+                });
+                const accepted = await create({ kind, context: ctx, clientId: "tab" });
+                expect(accepted.status, `${kind}: ${JSON.stringify(original)}`).toBe(200);
+                const parsed = await observed.promise;
+                if ("inputOriginal" in original) expect(parsed.inputOriginal).toBe(original.inputOriginal);
+                else expect(parsed).not.toHaveProperty("inputOriginal");
+            }
+        }
+    });
+
+    it("rejects originals without a string, an input-stage kind, a user message id or nonempty input", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user", inputOriginal: "Original" };
+        for (const inputOriginal of [null, 7, true, {}, []]) {
+            expect((await create({ kind: "send", context: { ...ctx, inputOriginal }, clientId: "tab" })).status).toBe(
+                400,
+            );
+        }
+        for (const kind of ["preview", "previewPrompt", "command"]) {
+            expect(
+                (
+                    await create({
+                        kind,
+                        context: ctx,
+                        clientId: "tab",
+                        ...(kind === "command" ? { command: { type: "button", data: "" } } : {}),
+                    })
+                ).status,
+            ).toBe(400);
+        }
+        const { userMessageId: _id, ...withoutId } = ctx;
+        for (const context of [withoutId, { ...ctx, input: "" }]) {
+            expect((await create({ kind: "send", context, clientId: "tab" })).status).toBe(400);
+        }
+    });
+
+    it("replays the same request when the original changes or is omitted", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user" };
+        const body = {
+            kind: "send",
+            context: { ...ctx, inputOriginal: "First original" },
+            clientId: "tab",
+            requestId: "draft-request",
+        };
+        const observed = withResolvers<RunningJob>();
+        step((job) => observed.resolve(job));
+        const first = await create(body);
+        expect(first.status).toBe(200);
+        const running = await observed.promise;
+        for (const original of [{ inputOriginal: "Changed original" }, {}]) {
+            expect(await create({ ...body, context: { ...ctx, ...original } })).toMatchObject({
+                status: 200,
+                body: { jobId: first.body.jobId, replayed: true },
+            });
+        }
+        expect(running.context.inputOriginal).toBe("First original");
+        running.emit({ type: "done", revision: ctx.chatRevision });
+        expect(await create({ ...body, context: { ...ctx, inputOriginal: "After completion" } })).toMatchObject({
+            status: 200,
+            body: { jobId: first.body.jobId, replayed: true },
+        });
+    });
+
+    it("accepts an OOC exchange only on a preview and preserves it in the runner context", async () => {
+        await listen();
+        const ctx = { ...(await context()), oocExchangeId: "exchange-one" };
+        for (const kind of ["send", "continue", "reroll", "previewPrompt", "command"]) {
+            const refused = await create({
+                kind,
+                context: ctx,
+                clientId: "tab",
+                ...(kind === "command" ? { command: { type: "button", data: "" } } : {}),
+            });
+            expect(refused, kind).toMatchObject({
+                status: 400,
+                body: { error: expect.stringContaining("oocExchangeId") },
+            });
+        }
+        const observed = withResolvers<string | undefined>();
+        steps.push((job) => {
+            observed.resolve(job.context.oocExchangeId);
+            job.emit({ type: "done", revision: ctx.chatRevision });
+        });
+        const accepted = await create({ kind: "preview", context: ctx, clientId: "tab" });
+        expect(accepted.status).toBe(200);
+        expect(await observed.promise).toBe("exchange-one");
+    });
+
     it("validates the body and needs a JWT (never the password) on every route", async () => {
         await listen();
         const body = { kind: "send", context: await context(), clientId: "tab" };
@@ -271,13 +810,87 @@ describe("generation jobs over HTTP and WebSocket", () => {
             [{ ...body, context: { ...body.context, input: 1 } }, /mode and .*input/],
             [{ ...body, context: { ...body.context, chatRevision: null } }, /chatRevision/],
             [{ ...body, context: { ...body.context, triggerId: "" } }, /triggerId/],
+            [{ ...body, context: { ...body.context, stopOverLoreBudget: "true" } }, /stopOverLoreBudget/],
+            ...["1000", 0, -1].map((completionHoldMs) => [
+                { ...body, context: { ...body.context, completionHoldMs } },
+                /completionHoldMs/,
+            ]),
         ] as [Record<string, unknown>, RegExp][]) {
             const res = await create(bad);
             expect(res.status, JSON.stringify(bad)).toBe(400);
             expect(res.body.error).toMatch(message);
         }
+        // JSON.stringify would turn Infinity into null. A JSON numeric literal can overflow
+        // during parsing, so exercise the finite-number check through the actual HTTP body.
+        const nonFinite = await request("/api/generations", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...body, context: { ...body.context, completionHoldMs: "overflow" } }).replace(
+                '"completionHoldMs":"overflow"',
+                '"completionHoldMs":1e400',
+            ),
+        });
+        expect(nonFinite.status).toBe(400);
+        expect(await nonFinite.json()).toMatchObject({ error: expect.stringContaining("completionHoldMs") });
+
+        const observed = withResolvers<RunningJob["context"]>();
+        steps.push((job) => {
+            observed.resolve(job.context);
+            job.emit({ type: "done", revision: body.context.chatRevision });
+        });
+        expect(
+            (await create({ ...body, context: { ...body.context, completionHoldMs: MAX_COMPLETION_HOLD_MS + 1 } }))
+                .status,
+        ).toBe(200);
+        expect((await observed.promise).completionHoldMs).toBe(MAX_COMPLETION_HOLD_MS);
         expect((await request("/api/generations/x?clientId=tab")).status).toBe(404);
         expect((await request("/api/generations/x?clientId=tab", { method: "DELETE" })).status).toBe(404);
+    });
+
+    it("requires a JWT and current epoch to release a completion, and reports false when nothing is held", async () => {
+        await listen();
+        const url = "/api/generations/completion-release";
+        const unknown = { requestId: "unknown-request" };
+        expect(
+            (
+                await fetch(`${base}${url}`, {
+                    ...json(unknown),
+                    headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+                })
+            ).status,
+        ).toBe(400);
+        expect((await request(url, json(unknown), { jwt: "pw" })).status).toBe(400);
+        expect((await request(url, json(unknown), { epoch: "stale" })).status).toBe(412);
+        const missing = await request(url, json(unknown));
+        expect(missing.status).toBe(200);
+        expect(await missing.json()).toEqual({ released: false });
+
+        const requestId = "unheld-request";
+        expect((await create({ kind: "send", context: await context(), clientId: "tab", requestId })).status).toBe(200);
+        const unheld = await request(url, json({ requestId }));
+        expect(unheld.status).toBe(200);
+        expect(await unheld.json()).toEqual({ released: false });
+    });
+
+    it("refuses trash while an admitted job holds the chat slot before begin", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        expect(
+            (
+                await request(
+                    "/api/resources/batch",
+                    json({
+                        chats: [{ ...ref, chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
+                    }),
+                )
+            ).status,
+        ).toBe(200);
+        const before = await revision();
+        await createOk(); // The runner waits for its first step without taking any message lock.
+        const result = await request("/api/chat-trash/trash", json({ ...ref, revision: before.revision }));
+        expect(result.status).toBe(409);
+        expect(await result.json()).toMatchObject({ error: "generating", revision: before.revision });
+        expect(await revision()).toEqual(before);
     });
 
     it("admits one job per chat, streams the chat hydration, accepted, chunks, and done to the owner with the epoch, and answers the status DTO", async () => {
@@ -324,7 +937,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.emit({ type: "preset", presetId: "p1" });
             job.emit({ type: "progress", payload: { stage: "x" } });
         });
-        await until(owner, 7);
+        await until(owner, 8);
         const status = await (await request(`/api/generations/${jobId}?clientId=tab`)).json();
         expect(status).toEqual({
             jobId,
@@ -347,10 +960,11 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         const code = await owner.closed;
         expect(code).not.toBe(4001);
-        // The attach snapshot, then the hydration that precedes every `accepted`, then the stream,
-        // then the terminal hydration and the result. The job chat's events are `chatPatch`es: the
-        // change since the copy a socket last took.
+        // The owner's role, then the attach snapshot, then the hydration that precedes every
+        // `accepted`, then the stream, then the terminal hydration and the result. The job chat's
+        // events are `chatPatch`es: the change since the copy a socket last took.
         expect(types(owner.events)).toEqual([
+            "handoff",
             "chatPatch",
             "chatPatch",
             "accepted",
@@ -362,7 +976,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             "done",
         ]);
         expect(owner.events.every((event) => "epoch" in event && event.epoch === epoch)).toBe(true);
-        const [snapshot, hydration, accepted, first, second, , , finalChat, done] = owner.events as any[];
+        const [role, snapshot, hydration, accepted, first, second, , , finalChat, done] = owner.events as any[];
+        expect(role).toEqual({ type: "handoff", epoch, owner: "self" });
         // The attach snapshot: from the admission copy (the revision the owner named) to itself.
         expect(snapshot).toMatchObject({
             type: "chatPatch",
@@ -447,8 +1062,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.emit({ type: "stage", stage: "memory" });
             job.emit({ type: "progress", payload: 2 });
         });
-        await until(a, 4);
-        expect(types(a.events)).toEqual(["chatPatch", "stage", "stage", "progress"]);
+        await until(a, 5);
+        expect(types(a.events)).toEqual(["handoff", "chatPatch", "stage", "stage", "progress"]);
+        expect(a.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         // A newer stamp supersedes: `a` is closed with 4001 and `c` gets the fresh snapshot.
         const c = await follow(jobId, { attach: 6 });
         expect(await a.closed).toBe(4001);
@@ -457,9 +1073,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
         step((job) => {
             job.emit({ type: "progress", payload: 3 });
         });
-        await until(c, 3);
-        expect(types(c.events)).toEqual(["chatPatch", "stage", "progress"]);
-        expect(a.events).toHaveLength(4);
+        await until(c, 4);
+        expect(types(c.events)).toEqual(["handoff", "chatPatch", "stage", "progress"]);
+        expect(c.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(a.events).toHaveLength(5);
         c.ws.close();
         await c.closed;
         // The runner reaches the owner's messages through `onClientMessage`.
@@ -490,7 +1107,10 @@ describe("generation jobs over HTTP and WebSocket", () => {
             await f.fence();
             f.ws.close();
             await f.closed;
-            return f.events as any[];
+            // Every attach opens with the owner's role; the rest is the snapshot checked below.
+            const [role, ...rest] = f.events as any[];
+            expect(role).toEqual({ type: "handoff", epoch, owner: "self" });
+            return rest;
         };
         // A chunk ahead of the stored text, then a checkpoint claiming it.
         step((job) => {
@@ -580,7 +1200,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         // After the end: the job chat whole (no patch base is kept for an ended job), the fresh
         // records, and the terminal event.
         step((job) => {
-            job.emit({ type: "done", revision: null, messageId: "r", alternatives: ["alt"] });
+            job.emit({ type: "done", revision: null, messageId: "r" });
             return "end" as never;
         });
         await sleep(50);
@@ -588,7 +1208,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(types(events)).toEqual(["resource", "resource", "done"]);
         expect(events[0]).toMatchObject({ kind: "chats", characterId: "c", id: "k", streaming: [] });
         expect(events[0].data.message[1].data).toBe("final text");
-        expect(events[2]).toMatchObject({ messageId: "r", alternatives: ["alt"], epoch });
+        expect(events[2]).toMatchObject({ messageId: "r", epoch });
     });
 
     it("DELETE aborts the owner's job: the runner persists the text so far, the owner gets error 499, and the lock is released", async () => {
@@ -845,17 +1465,18 @@ describe("generation jobs over HTTP and WebSocket", () => {
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events)).toEqual(["chatPatch", "chatPatch", "accepted", "chatPatch", "done"]);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch", "chatPatch", "accepted", "chatPatch", "done"]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         // A job that writes nothing transfers no message: each patch is the count alone.
-        for (const index of [0, 1, 3]) {
+        for (const index of [1, 2, 4]) {
             expect(owner.events[index]).toMatchObject({ count: 2, streaming: [] });
             expect(owner.events[index]).not.toHaveProperty("messages");
             expect(owner.events[index]).not.toHaveProperty("meta");
             expect(owner.events[index]).not.toHaveProperty("removed");
         }
-        expect(owner.events[2]).not.toHaveProperty("messageId");
-        expect(owner.events[2]).toMatchObject({ seq: 0 });
-        expect(owner.events[4]).not.toHaveProperty("messageId");
+        expect(owner.events[3]).not.toHaveProperty("messageId");
+        expect(owner.events[3]).toMatchObject({ seq: 0 });
+        expect(owner.events[5]).not.toHaveProperty("messageId");
     });
 
     it("validates form commands and preserves an own __proto__ field as runner data", async () => {
@@ -920,15 +1541,16 @@ describe("generation jobs over HTTP and WebSocket", () => {
         const jobId = await createOk();
         const admitted = (await revision()).revision;
         let owner = await follow(jobId);
-        await until(owner, 1);
-        expect(owner.events[0]).toMatchObject({
+        await until(owner, 2);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(owner.events[1]).toMatchObject({
             type: "chatPatch",
             baseRevision: admitted,
             revision: admitted,
             count: 2,
             streaming: [],
         });
-        expect(owner.events[0]).not.toHaveProperty("messages");
+        expect(owner.events[1]).not.toHaveProperty("messages");
         // A write the runner publishes: the new message and the reply the job began, each after its
         // predecessor in stored order; the meta did not change. The receipt names the patch's revision.
         const receipts: unknown[] = [];
@@ -943,8 +1565,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             }));
             receipts.push(...job.emitRecords({ chats: [chatRef] }));
         });
-        await until(owner, 2);
-        const first = owner.events[1] as any;
+        await until(owner, 3);
+        const first = owner.events[2] as any;
         expect(first).toMatchObject({
             type: "chatPatch",
             characterId: "c",
@@ -965,8 +1587,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [{ op: "meta", set: { note: "noted" } }])] }));
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 3);
-        const second = owner.events[2] as any;
+        await until(owner, 4);
+        const second = owner.events[3] as any;
         expect(second).toMatchObject({
             type: "chatPatch",
             baseRevision: first.revision,
@@ -980,8 +1602,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [{ op: "remove", ids: ["u2"] }])] }));
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 4);
-        const third = owner.events[3] as any;
+        await until(owner, 5);
+        const third = owner.events[4] as any;
         expect(third).toMatchObject({ type: "chatPatch", baseRevision: second.revision, removed: ["u2"], count: 2 });
         expect(rows(third)).toEqual([["r", "u", ""]]);
         expect(third).not.toHaveProperty("meta");
@@ -997,8 +1619,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await sleep(50);
         owner = await follow(jobId);
-        await until(owner, 1);
-        const reattached = owner.events[0] as any;
+        await until(owner, 2);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        const reattached = owner.events[1] as any;
         expect(reattached).toMatchObject({
             type: "chatPatch",
             baseRevision: third.revision,
@@ -1008,8 +1631,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(rows(reattached)).toEqual([["r", "u", "one"]]);
         // `resync` from the current socket: the chat whole, and the next patch is based on that copy.
         owner.ws.send(JSON.stringify({ type: "resync" }));
-        await until(owner, 2);
-        const whole = owner.events[1] as any;
+        await until(owner, 3);
+        const whole = owner.events[2] as any;
         expect(whole).toMatchObject({
             type: "resource",
             kind: "chats",
@@ -1029,9 +1652,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
             });
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 3);
-        expect(owner.events[2]).toMatchObject({ type: "chatPatch", baseRevision: whole.revision, count: 2 });
-        expect(rows(owner.events[2])).toEqual([["r", "u", "one two"]]);
+        await until(owner, 4);
+        expect(owner.events[3]).toMatchObject({ type: "chatPatch", baseRevision: whole.revision, count: 2 });
+        expect(rows(owner.events[3])).toEqual([["r", "u", "one two"]]);
         // A reorder of the surviving messages (a trigger's `replace`): the chat goes whole.
         step(async (job) => {
             const current = await revision();
@@ -1039,8 +1662,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             job.write(() => ({ chats: [group(current.revision, [{ op: "replace", chat: reordered as never }])] }));
             job.emitRecords({ chats: [chatRef] });
         });
-        await until(owner, 4);
-        const reorder = owner.events[3] as any;
+        await until(owner, 5);
+        const reorder = owner.events[4] as any;
         expect(reorder).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
         expect(reorder.data.message.map((x: any) => x.chatId)).toEqual(["r", "u"]);
         // The end: the terminal patch from that whole copy, then the result. An attach after the end
@@ -1050,8 +1673,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events.slice(4))).toEqual(["chatPatch", "done"]);
-        expect(owner.events[4]).toMatchObject({
+        expect(types(owner.events.slice(5))).toEqual(["chatPatch", "done"]);
+        expect(owner.events[5]).toMatchObject({
             type: "chatPatch",
             baseRevision: reorder.revision,
             revision: reorder.revision,
@@ -1060,8 +1683,9 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         const after = await follow(jobId);
         await after.closed;
-        expect(types(after.events)).toEqual(["resource", "done"]);
-        expect(after.events[0]).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
+        expect(types(after.events)).toEqual(["handoff", "resource", "done"]);
+        expect(after.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(after.events[1]).toMatchObject({ type: "resource", kind: "chats", characterId: "c", id: "k" });
     });
 
     it("answers `resync` with the chat whole and then the current reply while its generation still owns the message (a command job's `accepted` too), and with the chat alone once the reply is final", async () => {
@@ -1082,35 +1706,36 @@ describe("generation jobs over HTTP and WebSocket", () => {
             });
             job.emit({ type: "chunk", messageId: "r", generationId: "g1", text: "so far", seq: 2 });
         });
-        await until(owner, 4);
-        expect(types(owner.events)).toEqual(["chatPatch", "chatPatch", "accepted", "chunk"]);
+        await until(owner, 5);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch", "chatPatch", "accepted", "chunk"]);
+        expect(owner.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
         owner.ws.send(JSON.stringify({ type: "resync" }));
-        await until(owner, 6);
-        expect(types(owner.events.slice(4))).toEqual(["resource", "accepted"]);
-        expect(owner.events[4]).toMatchObject({
+        await until(owner, 7);
+        expect(types(owner.events.slice(5))).toEqual(["resource", "accepted"]);
+        expect(owner.events[5]).toMatchObject({
             kind: "chats",
             streaming: [{ messageId: "r", generationId: "g1", seq: 0 }],
         });
         // The newest chunk's text and sequence, as an attach replays it.
-        expect(owner.events[5]).toMatchObject({ messageId: "r", generationId: "g1", text: "so far", seq: 2 });
+        expect(owner.events[6]).toMatchObject({ messageId: "r", generationId: "g1", text: "so far", seq: 2 });
         // The reply's final write releases it: a resync brings the chat alone.
         step((job) => {
             job.write(() => ({ chats: [group(job.context.chatRevision, [checkpoint(3, "final", true)])] }));
         });
         await sleep(50);
         owner.ws.send(JSON.stringify({ type: "resync" }));
-        await until(owner, 7);
+        await until(owner, 8);
         await owner.fence();
-        expect(types(owner.events.slice(6))).toEqual(["resource"]);
-        expect((owner.events[6] as any).streaming).toEqual([]);
-        expect((owner.events[6] as any).data.message[1].data).toBe("final");
+        expect(types(owner.events.slice(7))).toEqual(["resource"]);
+        expect((owner.events[7] as any).streaming).toEqual([]);
+        expect((owner.events[7] as any).data.message[1].data).toBe("final");
         // A resync of another client's socket, or after the end, is ignored.
         step((job) => {
             job.emit({ type: "done", revision: null, messageId: "r" });
             return "end" as never;
         });
         await owner.closed;
-        expect(types(owner.events.slice(7))).toEqual(["chatPatch", "done"]);
+        expect(types(owner.events.slice(8))).toEqual(["chatPatch", "done"]);
 
         // A command job: its `accepted` has no message, and comes back after the whole chat.
         const command = await createOk("command");
@@ -1118,11 +1743,19 @@ describe("generation jobs over HTTP and WebSocket", () => {
         step((job) => {
             job.emit({ type: "accepted", jobId: job.id, revision: job.context.chatRevision, text: "" });
         });
-        await until(commander, 3);
+        await until(commander, 4);
         commander.ws.send(JSON.stringify({ type: "resync" }));
-        await until(commander, 5);
-        expect(types(commander.events)).toEqual(["chatPatch", "chatPatch", "accepted", "resource", "accepted"]);
-        expect(commander.events[4]).not.toHaveProperty("messageId");
+        await until(commander, 6);
+        expect(types(commander.events)).toEqual([
+            "handoff",
+            "chatPatch",
+            "chatPatch",
+            "accepted",
+            "resource",
+            "accepted",
+        ]);
+        expect(commander.events[0]).toEqual({ type: "handoff", epoch, owner: "self" });
+        expect(commander.events[5]).not.toHaveProperty("messageId");
         step((job) => {
             job.emit({ type: "done", revision: null });
             return "end" as never;
@@ -1130,7 +1763,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
         await commander.closed;
     });
 
-    it("includes another tab's running job locks and the current stored revision in the feed hello, then omits them after the job ends", async () => {
+    it("lists another tab's running job locks with the stored revision in the feed hello and in every whole-chat read, then empty lists after the job ends", async () => {
         // Freeze the job's expiry clock and the socket heartbeat while the runner waits for work.
         vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
         try {
@@ -1175,7 +1808,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
                 }
             };
 
-            expect(await readHello()).toMatchObject({
+            const hello = await readHello();
+            expect(hello).toMatchObject({
                 type: "hello",
                 epoch,
                 streaming: [
@@ -1187,10 +1821,49 @@ describe("generation jobs over HTTP and WebSocket", () => {
                     },
                 ],
             });
+            if (hello.type !== "hello") throw new Error("expected hello");
+
+            const checkReads = async (streaming: (typeof hello.streaming)[number]["streaming"]) => {
+                const response = await request(
+                    "/api/resources/read",
+                    json({
+                        chats: [
+                            { characterId: "c", id: "k" },
+                            { characterId: "c", id: "missing" },
+                        ],
+                        chatCollections: ["c"],
+                        chatSummaryCollections: ["c"],
+                    }),
+                );
+                expect(response.status).toBe(200);
+                const read = (await response.json()) as ResourceReadRefsResult;
+                const allResponse = await request("/api/resources?kinds=characters&chats=1");
+                expect(allResponse.status).toBe(200);
+                const all = (await allResponse.json()) as ResourceReadKindsResult;
+                for (const chats of [read.chats, read.chatCollections![0].chats, all.chats]) {
+                    expect(chats?.find((chat) => chat.characterId === "c" && chat.id === "k")).toMatchObject({
+                        revision: stored.revision,
+                        streaming,
+                    });
+                }
+                expect(read.chats?.find((chat) => chat.id === "missing")).toEqual({
+                    characterId: "c",
+                    id: "missing",
+                    revision: null,
+                    data: null,
+                });
+                expect(read.chatSummaryCollections![0].chats[0]).not.toHaveProperty("streaming");
+                const summariesResponse = await request("/api/resources?kinds=characters&chatSummaries=1");
+                expect(summariesResponse.status).toBe(200);
+                const summaries = (await summariesResponse.json()) as ResourceReadKindsResult;
+                expect(summaries.chatSummaries![0]).not.toHaveProperty("streaming");
+            };
+            await checkReads(hello.streaming[0].streaming);
             // Ending without a final write releases ownership while the stored chat stays put.
             job.emit({ type: "done", revision: stored.revision });
             step(() => "end" as never);
             expect(await readHello()).toMatchObject({ type: "hello", epoch, streaming: [] });
+            await checkReads([]);
         } finally {
             await closeServer();
             vi.useRealTimers();
@@ -1221,10 +1894,22 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
         await waitFor(() => feedFrames.length > 0);
         expect(feedOpened).toBe(true);
-        expect(feedFrames[0]).toEqual({ type: "hello", epoch, streaming: [], memoryTasks: [] });
+        expect(feedFrames[0]).toEqual({
+            type: "hello",
+            rerollInPlace: true,
+            epoch,
+            streaming: [],
+            memoryTasks: [],
+            handoffs: [],
+            generations: [],
+            clients: [],
+            digest: expect.stringMatching(/^[0-9a-f]{32}$/),
+            cursor: expect.any(Number),
+        });
         const generation = await createOk();
         const owner = await follow(generation);
-        await until(owner, 1);
+        await until(owner, 2);
+        expect(types(owner.events)).toEqual(["handoff", "chatPatch"]);
         // A job's write (the runner's in-process `applyChanges` with its token) is a commit: the
         // feed socket sees the chat change with the revision the write returned.
         let written = "";

@@ -82,15 +82,8 @@ export function checkChatBinding(
     return null;
 }
 
-/**
- * The chat's binding fields (its summary; no message is read) and the lookup over the stored lists,
- * in one synchronous read. `chat` is null when the chat does not exist.
- */
-export function readChatBindingState(
-    store: ResourceStore,
-    kinds: ResourceKindRegistry,
-    ref: { characterId: string; chatId: string },
-): { chat: ChatBindingFields | null; lookup: ChatBindingLookup } {
+/** The binding lookup over stored settings lists, without reading a chat or its messages. */
+export function readChatBindingLookup(store: ResourceStore, kinds: ResourceKindRegistry): ChatBindingLookup {
     const kind = (name: string) => {
         const found = kinds.get(name);
         if (!found) {
@@ -104,9 +97,23 @@ export function readChatBindingState(
         { kind: kind(RESOURCE_KIND.personas), id: SINGLETON_RESOURCE_ID },
     ]);
     const [presets, modelPresets, personas] = read.items.map((item) => item.data);
+    return bindingLookup(presets, modelPresets, personas);
+}
+
+/**
+ * The chat's summary and binding lookup in consecutive synchronous reads; `chat` is null when absent.
+ * The summary may read the newest message for its time. Metadata-only callers use `chatMeta` with
+ * `readChatBindingLookup` instead.
+ */
+export function readChatBindingState(
+    store: ResourceStore,
+    kinds: ResourceKindRegistry,
+    ref: { characterId: string; chatId: string },
+): { chat: ChatBindingFields | null; lookup: ChatBindingLookup } {
+    const lookup = readChatBindingLookup(store, kinds);
     return {
         chat: store.chatSummary(ref.characterId, ref.chatId),
-        lookup: bindingLookup(presets, modelPresets, personas),
+        lookup,
     };
 }
 

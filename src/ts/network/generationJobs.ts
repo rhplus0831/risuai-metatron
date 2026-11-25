@@ -1,11 +1,20 @@
 import { v4 as uuidv4 } from "uuid";
+import { language } from "src/lang";
 import type { ChatBindingProblem } from "../../../shared/chatBinding.ts";
 import type { OrphanedOverrideEntry } from "../../../shared/lore/overrides.ts";
 import {
     type ChannelDrainedBody,
     type ChatResyncRequest,
     type ReplyResyncRequest,
+    type GenerationPong,
     type GenerationCreateBody,
+    type GenerationCreated,
+    type GenerationCancelled,
+    type GenerationCurrent,
+    type GenerationStopBody,
+    GENERATION_KINDS,
+    GENERATION_STAGES,
+    GENERATION_ID_PATTERN,
     type GenerationEvent,
     type GenerationStatus,
     type GenerationTerminalEvent,
@@ -16,6 +25,7 @@ import {
     applyServerGenerationChunk,
     type ChatRef,
     chatHydrationHold,
+    detachServerJob,
     endServerJob,
     isChatStale,
 } from "../storage/chatStore.svelte";
@@ -23,8 +33,25 @@ import { authFetch, getNodeServerProxyAuth } from "../storage/serverAuth";
 import { epochMismatch, getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 import { applyHydration, applyPatchHydration, flushResources } from "../storage/resourceSync.svelte";
 import type { ChannelTransport } from "./jobChannel";
+import { watchResume, watchSocket } from "./socketLiveness";
 import { recordClientEvent } from "../diagnostics/collector";
-import { dropJobStage, setJobStage } from "../process/jobStages";
+import { dropJobStage, setJobRetry, setJobStage } from "../process/jobStages";
+
+/**
+ * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
+ * owner/viewer socket. `applyGenerationEvent` mirrors events into `src/ts/storage/chatStore.svelte.ts` and
+ * `src/ts/storage/resourceSync.svelte.ts` without outgoing writes. Its command and send callers are
+ * in `src/ts/process/serverCommands.ts`.
+ *
+ * The tab's client id and saved jobs (one per chat) live in `sessionStorage`. The page claims the
+ * identity before reading either, marking `risu-generation-client-claim` held. A copied held claim
+ * (an opener's session or a duplicated tab) mints a new id and drops the copied jobs. `pagehide`
+ * releases the claim, so a reload or same-tab navigation recovers it; `document.wasDiscarded` also
+ * permits recovery. `pageshow` marks it held again. This is a synchronous storage claim, not a
+ * live-page handshake: a copied released marker cannot distinguish two pages, and a killed page
+ * without `pagehide` or `wasDiscarded` loses recovery. If storage fails, the page keeps an in-memory
+ * id without exposing copied saved jobs.
+ */
 
 /**
  * The channel dispatcher (UI, plugin registries) loads on first use, so this transport stays free of
@@ -48,7 +75,7 @@ function onChannel(work: (channel: typeof import("./jobChannel")) => void) {
 }
 
 /*
- * Plugin work of this tab's jobs (`plugins-mcp.md`): a job calls the hooks it listed at its
+ * Plugin work of this tab's jobs (`plugin-sandbox.md`): a job calls the hooks it listed at its
  * creation until it ends, so a plugin reload waits while any of these is held. A job is held from
  * before its hooks are listed (`createGenerationJob`) or from its follow (`followGenerationJob`),
  * and while it is saved for this tab (a reload resumes it), until `releaseGenerationJob`; a busy
@@ -60,6 +87,8 @@ const liveJobs = new Set<string>();
 const busyJobs = new Map<string, Set<{ reading: boolean }>>();
 let queuedChannelWork = 0;
 let channelCallbacks = 0;
+/** Holds spanning plugin startup/takeover and listeners replayed after a job ends. */
+let extraPluginHolds = 0;
 const pluginWorkListeners = new Set<() => void>();
 
 function notifyPluginWork() {
@@ -80,8 +109,27 @@ export function generationPluginWorkActive(): boolean {
         busyJobs.size > 0 ||
         queuedChannelWork > 0 ||
         channelCallbacks > 0 ||
+        extraPluginHolds > 0 ||
         savedGenerationJobIds().length > 0
     );
+}
+
+/**
+ * Holds plugin registries through takeover preparation or late listeners; returns an idempotent
+ * release. Acquire before awaiting plugin startup, and before applying a terminal with late work.
+ */
+export function holdGenerationPluginWork(): () => void {
+    extraPluginHolds += 1;
+    notifyPluginWork();
+    let released = false;
+    return () => {
+        if (released) {
+            return;
+        }
+        released = true;
+        extraPluginHolds -= 1;
+        notifyPluginWork();
+    };
 }
 
 /** Called after any of the above may have ended; returns the unsubscribe function. */
@@ -110,17 +158,9 @@ export function noteChannelCallbacks(count: number) {
     notifyPluginWork();
 }
 
-/**
- * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
- * owner socket, plus `applyGenerationEvent`, which mirrors a job's events into the chat module and
- * the save loop without any outgoing write. The tab's `clientId` and its jobs (one per chat) are
- * kept in `sessionStorage`, so a reloaded tab can attach again (`resumeSavedGenerations`). Its
- * callers are the server command and send jobs of `process/serverCommands.ts` (the only generation
- * path).
- */
-
 const CLIENT_ID_KEY = "risu-generation-client";
 const JOBS_KEY = "risu-generation-jobs";
+const CLIENT_CLAIM_KEY = "risu-generation-client-claim";
 
 /** 409 `chatBusy`: the chat has a running job; its owner can attach to `jobId`. */
 export class GenerationBusyError extends Error {
@@ -142,7 +182,7 @@ export class GenerationStaleError extends Error {
 
 /**
  * 409 `chatBindingIncomplete` (with the chat's binding `problems`) or `chatBindingMismatch`: the job's
- * ids are not its chat's complete binding. Nothing ran.
+ * ids are not its chat's complete binding. This attempt was refused.
  */
 export class ChatBindingRefusedError extends Error {
     readonly code: "chatBindingIncomplete" | "chatBindingMismatch";
@@ -155,7 +195,7 @@ export class ChatBindingRefusedError extends Error {
     }
 }
 
-/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries. Nothing ran. */
+/** 409 `chatLoreOverrideOrphaned`: overrides lost their original owner entries; this attempt was refused. */
 export class ChatLoreOverrideOrphanedError extends Error {
     readonly entries: readonly OrphanedOverrideEntry[];
     constructor(entries: readonly OrphanedOverrideEntry[]) {
@@ -174,26 +214,52 @@ function storage(): Storage | null {
 }
 
 let fallbackClientId: string | null = null;
+let claimedStorage: Storage | null = null;
+
+/** A copied live page's session belongs to a new owner; a released or discarded page can recover. */
+function claimGenerationIdentity() {
+    if (fallbackClientId) return;
+    const store = storage();
+    try {
+        const copied =
+            store?.getItem(CLIENT_CLAIM_KEY) === "held" &&
+            !(typeof document !== "undefined" && "wasDiscarded" in document && document.wasDiscarded === true);
+        fallbackClientId = (!copied && store?.getItem(CLIENT_ID_KEY)) || uuidv4();
+        if (copied) store?.removeItem(JOBS_KEY);
+        store?.setItem(CLIENT_ID_KEY, fallbackClientId);
+        store?.setItem(CLIENT_CLAIM_KEY, "held");
+        claimedStorage = store;
+    } catch {
+        // Failed storage must not expose copied jobs under the page's in-memory identity.
+        fallbackClientId ??= uuidv4();
+    }
+}
+
+function markGenerationIdentity(state: "held" | "released") {
+    try {
+        claimedStorage?.setItem(CLIENT_CLAIM_KEY, state);
+    } catch {}
+}
+
+if (typeof window !== "undefined") {
+    claimGenerationIdentity();
+    window.addEventListener("pagehide", () => markGenerationIdentity("released"));
+    window.addEventListener("pageshow", () => markGenerationIdentity("held"));
+}
 
 /** This tab's id, created once and kept across reloads of the tab. */
 export function generationClientId(): string {
-    const store = storage();
-    const saved = store?.getItem(CLIENT_ID_KEY);
-    if (saved) {
-        return saved;
-    }
-    const id = fallbackClientId ?? uuidv4();
-    fallbackClientId = id;
-    store?.setItem(CLIENT_ID_KEY, id);
-    return id;
+    claimGenerationIdentity();
+    return fallbackClientId!;
 }
 
 /** Ids may contain `/`, so the saved key is a JSON pair. */
 const chatKey = (ref: ChatRef) => JSON.stringify([ref.chaId, ref.chatId]);
 
 function readSavedJobs(): Record<string, string> {
+    claimGenerationIdentity();
     try {
-        const parsed = JSON.parse(storage()?.getItem(JOBS_KEY) ?? "{}") as unknown;
+        const parsed = JSON.parse(claimedStorage?.getItem(JOBS_KEY) ?? "{}") as unknown;
         return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
     } catch {
         return {};
@@ -201,8 +267,9 @@ function readSavedJobs(): Record<string, string> {
 }
 
 function writeSavedJobs(jobs: Record<string, string>) {
+    claimGenerationIdentity();
     try {
-        storage()?.setItem(JOBS_KEY, JSON.stringify(jobs));
+        claimedStorage?.setItem(JOBS_KEY, JSON.stringify(jobs));
     } catch {}
 }
 
@@ -216,10 +283,12 @@ export function savedGenerationJobIds(): string[] {
     return [...new Set(Object.values(readSavedJobs()))];
 }
 
+/** Keeps one resumable job per chat of this tab; a new job replaces that chat's saved id. */
 export function rememberGenerationJob(ref: ChatRef, jobId: string) {
     writeSavedJobs({ ...readSavedJobs(), [chatKey(ref)]: jobId });
 }
 
+/** Removes this job from every saved chat entry without removing a chat's replacement job. */
 export function forgetGenerationJob(jobId: string) {
     const jobs = readSavedJobs();
     for (const [key, id] of Object.entries(jobs)) {
@@ -230,6 +299,14 @@ export function forgetGenerationJob(jobId: string) {
     writeSavedJobs(jobs);
 }
 
+type FailureBody = {
+    error?: string;
+    jobId?: string;
+    epoch?: string;
+    problems?: ChatBindingProblem[];
+    entries?: unknown;
+};
+
 async function failure(response: Response): Promise<never> {
     let body: { error?: string; jobId?: string; epoch?: string; problems?: ChatBindingProblem[]; entries?: unknown } =
         {};
@@ -239,16 +316,20 @@ async function failure(response: Response): Promise<never> {
             body = parsed;
         }
     } catch {}
-    if (response.status === 409 && body.error === "chatBusy" && typeof body.jobId === "string") {
+    return failAnswer(response.status, body);
+}
+
+function failAnswer(status: number, body: FailureBody): never {
+    if (status === 409 && body.error === "chatBusy" && typeof body.jobId === "string") {
         throw new GenerationBusyError(body.jobId);
     }
-    if (response.status === 409 && body.error === "stale") {
+    if (status === 409 && body.error === "stale") {
         throw new GenerationStaleError();
     }
-    if (response.status === 409 && (body.error === "chatBindingIncomplete" || body.error === "chatBindingMismatch")) {
+    if (status === 409 && (body.error === "chatBindingIncomplete" || body.error === "chatBindingMismatch")) {
         throw new ChatBindingRefusedError(body.error, Array.isArray(body.problems) ? body.problems : []);
     }
-    if (response.status === 409 && body.error === "chatLoreOverrideOrphaned") {
+    if (status === 409 && body.error === "chatLoreOverrideOrphaned") {
         const entries = Array.isArray(body.entries)
             ? body.entries
                   .filter(
@@ -262,11 +343,11 @@ async function failure(response: Response): Promise<never> {
             : [];
         throw new ChatLoreOverrideOrphanedError(entries);
     }
-    if (response.status === 412 && body.error === "EpochMismatch") {
+    if (status === 412 && body.error === "EpochMismatch") {
         // The restore notice and reload, as for any other resource request.
         throw epochMismatch(body.epoch ?? "");
     }
-    throw new ResourceRequestError(response.status, body.error ?? `Request failed (${response.status})`);
+    throw new ResourceRequestError(status, body.error ?? `Request failed (${status})`);
 }
 
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -279,22 +360,334 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
     return response.ok ? response : failure(response);
 }
 
-/** Creates a job for `body.context`'s chat and remembers it for this tab (`hooks`: the registered ones by default). */
-type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
+/** The create exchange's refusal, retaining whether an earlier dispatched attempt is unresolved. */
+export class GenerationCreateError extends Error {
+    readonly uncertain: boolean;
+    override readonly cause: unknown;
+    constructor(cause: unknown, uncertain: boolean) {
+        super(cause instanceof Error ? cause.message : String(cause));
+        this.name = "GenerationCreateError";
+        this.cause = cause;
+        this.uncertain = uncertain;
+    }
+}
 
-export async function createGenerationJob(body: CreateInput): Promise<string> {
+type CreateInput = GenerationCreateBody extends infer T ? (T extends unknown ? Omit<T, "clientId"> : never) : never;
+/** One create exchange: a new job, a replay classified by ownership, or a confirmed cancellation. */
+export type GenerationCreateResult =
+    | { outcome: "created"; jobId: string }
+    | { outcome: "replayed"; jobId: string; owned: boolean; status: GenerationStatus | null; cancelled?: true }
+    | { outcome: "cancelled" };
+
+type CreateOptions = { signal?: AbortSignal; requestUncertain?: boolean };
+const CREATE_DELAYS_MS = [1000, 2000, 4000];
+const CREATE_DEADLINE_MS = 10_000;
+
+function noAnswer(error: unknown): ResourceRequestError {
+    return new ResourceRequestError(0, error instanceof Error ? error.message : String(error));
+}
+
+/** Bounds authentication and body consumption too; a late auth completion cannot dispatch. */
+async function boundedAttempt<T>(
+    work: (signal: AbortSignal) => Promise<T>,
+    signal?: AbortSignal,
+    timeoutMessage = "The generation request timed out",
+): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop!: () => void;
+    const interrupted = new Promise<never>((_, reject) => {
+        stop = () => {
+            controller.abort();
+            reject(noAnswer("The generation request was stopped"));
+        };
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(noAnswer(timeoutMessage));
+        }, CREATE_DEADLINE_MS);
+        signal?.addEventListener("abort", stop, { once: true });
+        if (signal?.aborted) stop();
+    });
+    try {
+        return await Promise.race([interrupted, work(controller.signal)]);
+    } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+        controller.abort();
+    }
+}
+
+async function retryWait(ms: number, signal?: AbortSignal): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const stop = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", stop);
+            reject(noAnswer("The generation request was stopped"));
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", stop);
+            resolve();
+        }, ms);
+        signal?.addEventListener("abort", stop, { once: true });
+        if (signal?.aborted) stop();
+    });
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validStatus(value: unknown, jobId: string): value is GenerationStatus | null {
+    if (value === null) return true;
+    if (!object(value) || value.jobId !== jobId) return false;
+    if (value.state === "running") return true;
+    return (
+        value.state === "ended" &&
+        object(value.terminal) &&
+        (value.terminal.type === "done" || value.terminal.type === "error")
+    );
+}
+
+function validCreated(value: unknown): value is GenerationCreated {
+    if (!object(value) || typeof value.jobId !== "string" || !GENERATION_ID_PATTERN.test(value.jobId)) return false;
+    return value.replayed === true
+        ? typeof value.owned === "boolean" && validStatus(value.status, value.jobId)
+        : value.replayed === undefined || value.replayed === false;
+}
+
+function validCancelled(value: unknown): value is GenerationCancelled {
+    return (
+        object(value) &&
+        (value.state === "cancelled" ||
+            ((value.state === "aborted" || value.state === "ended") &&
+                typeof value.jobId === "string" &&
+                GENERATION_ID_PATTERN.test(value.jobId) &&
+                typeof value.owned === "boolean" &&
+                validStatus(value.status, value.jobId)))
+    );
+}
+
+/**
+ * Registry identity evidence or a permanent chat refusal resolves earlier create uncertainty. A stale
+ * revision or binding fences only the copies of this frozen request, so it resolves nothing the caller
+ * brought in (`prior`): another creator of the id, a remote host, prepares again with newer values.
+ */
+function registryRefusal(status: number, body: FailureBody, prior: boolean): boolean {
+    if (status === 409) {
+        if (["requestIdReused", "requestCancelled"].includes(body.error ?? "")) return true;
+        return !prior && ["stale", "chatBindingMismatch"].includes(body.error ?? "");
+    }
+    return status === 404 && body.error === "Chat not found";
+}
+
+function validFailure(status: number, body: unknown): body is FailureBody {
+    if (!object(body) || typeof body.error !== "string") return false;
+    if (status === 412 && body.error === "EpochMismatch") return typeof body.epoch === "string";
+    if (status === 409 && body.error === "chatBusy") {
+        return typeof body.jobId === "string" && GENERATION_ID_PATTERN.test(body.jobId);
+    }
+    return true;
+}
+
+/** Retries an unanswered frozen request within bounded attempts, until an answer fences delayed creates. */
+async function exchange<T>(options: {
+    path: string;
+    body: string;
+    epoch: string;
+    valid: (body: unknown) => body is T;
+    signal?: AbortSignal;
+    dispatched?: () => void;
+    uncertain: boolean;
+    cancelling?: boolean;
+}): Promise<T> {
+    let uncertain = options.uncertain;
+    for (let attempt = 0; ; attempt++) {
+        let answer: { status: number; ok: boolean; body: unknown };
+        try {
+            if (attempt > 0) await retryWait(CREATE_DELAYS_MS[attempt - 1], options.signal);
+            answer = await boundedAttempt(async (signal) => {
+                const response = await authFetch(
+                    options.path,
+                    {
+                        method: "POST",
+                        cache: "no-store",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: options.epoch },
+                        body: options.body,
+                    },
+                    {
+                        beforeDispatch: () => {
+                            if (signal.aborted) throw noAnswer("The generation request was stopped");
+                            options.dispatched?.();
+                        },
+                    },
+                );
+                const body: unknown = await response.json();
+                if (response.ok ? !options.valid(body) : !validFailure(response.status, body)) {
+                    throw noAnswer("The server returned an incomplete generation answer");
+                }
+                return { status: response.status, ok: response.ok, body };
+            }, options.signal);
+        } catch (error) {
+            uncertain = true;
+            if (options.signal?.aborted || attempt === CREATE_DELAYS_MS.length) {
+                throw new GenerationCreateError(noAnswer(error), true);
+            }
+            continue;
+        }
+        if (answer.ok) return answer.body as T;
+        const body = answer.body as FailureBody;
+        try {
+            failAnswer(answer.status, body);
+        } catch (error) {
+            if (options.cancelling || (uncertain && !registryRefusal(answer.status, body, options.uncertain))) {
+                throw new GenerationCreateError(error, true);
+            }
+            throw error;
+        }
+    }
+}
+
+/** Saves, stages and holds fresh creations and owned replays with a usable status, after classification. */
+function rememberCreated(result: GenerationCreateResult, ref: ChatRef): GenerationCreateResult {
+    if (result.outcome === "cancelled" || (result.outcome === "replayed" && (!result.owned || result.status === null)))
+        return result;
+    setJobStage(result.jobId, ref, "preparing", { onlyIfMissing: true });
+    rememberGenerationJob(ref, result.jobId);
+    liveJobs.add(result.jobId);
+    return result;
+}
+
+/** Cancels this request with its frozen client and epoch, using an independent retry budget; an admitted job is a replay. */
+async function cancelRequest(requestId: string, clientId: string, epoch: string): Promise<GenerationCreateResult> {
+    const result = await exchange({
+        path: "/api/generations/cancel",
+        body: JSON.stringify({ requestId, clientId }),
+        epoch,
+        valid: validCancelled,
+        uncertain: true,
+        cancelling: true,
+    });
+    return result.state === "cancelled"
+        ? { outcome: "cancelled" }
+        : {
+              outcome: "replayed",
+              jobId: result.jobId,
+              owned: result.owned,
+              status: result.status,
+              cancelled: true,
+          };
+}
+
+/** Cancels a previously unanswered attempt, including when this invocation never dispatched a create. */
+export async function cancelGenerationRequest(requestId: string, ref: ChatRef): Promise<GenerationCreateResult> {
     creatingJobs++;
     try {
-        const jobId = await createJob(body);
-        liveJobs.add(jobId);
-        return jobId;
+        return rememberCreated(await cancelRequest(requestId, generationClientId(), getResourceEpoch()), ref);
+    } finally {
+        creatingJobs--;
+        notifyPluginWork();
+    }
+}
+
+/** Retries only an unanswered release; the server's deadline covers a release that never arrives. */
+export async function releaseCompletionHold(requestId: string, epoch: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let answered = false;
+        try {
+            if (attempt > 0) await retryWait(CREATE_DELAYS_MS[attempt - 1]);
+            return await boundedAttempt(async (signal) => {
+                const response = await authFetch("/api/generations/completion-release", {
+                    method: "POST",
+                    cache: "no-store",
+                    signal,
+                    headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: epoch },
+                    body: JSON.stringify({ requestId }),
+                });
+                answered = true;
+                if (!response.ok) return false;
+                const body: unknown = await response.json();
+                return object(body) && body.released === true;
+            });
+        } catch {
+            if (answered) return false;
+        }
+    }
+    return false;
+}
+
+/**
+ * Creates or replays one frozen request for `body.context`'s chat, remembering only an owned job;
+ * hooks default to `registeredHooks` in `src/ts/network/jobChannel.ts`.
+ * Refusals distinguish `GenerationBusyError`, `GenerationStaleError`, `ChatBindingRefusedError`
+ * (409 `chatBindingIncomplete` or `chatBindingMismatch`), and `ChatLoreOverrideOrphanedError`;
+ * an epoch mismatch uses `epochMismatch` in `src/ts/storage/resourceClient.ts`. An uncertain
+ * exchange wraps its cause in `GenerationCreateError` so the caller can resolve admission first.
+ */
+export async function createGenerationJob(
+    body: CreateInput,
+    options: CreateOptions = {},
+): Promise<GenerationCreateResult> {
+    creatingJobs++;
+    try {
+        const requestId = body.requestId ?? uuidv4();
+        const clientId = generationClientId();
+        const epoch = getResourceEpoch();
+        const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
+        let dispatched = options.requestUncertain === true;
+        let prepared = false;
+        let result: GenerationCreateResult;
+        try {
+            const frozen = await boundedAttempt(async () => {
+                let hooks = body.hooks;
+                let context = body.context;
+                if (!hooks) {
+                    // The tab's own job: its registered hooks, and the emotions it showed last (the server's
+                    // emotion modes penalize a recent choice as the tab's do).
+                    const channel = await import("./jobChannel");
+                    // The job's model preset (its chat's binding), not the settings views'.
+                    const { presetId, modelPresetId } = context;
+                    hooks = await channel.registeredHooks(
+                        presetId !== null && modelPresetId !== null ? { presetId, modelPresetId } : undefined,
+                    );
+                    if (context.client && !context.client.emotions) {
+                        context = {
+                            ...context,
+                            client: { ...context.client, emotions: channel.recentEmotions(context.characterId) },
+                        };
+                    }
+                }
+                return JSON.stringify({ ...body, context, hooks, requestId, clientId });
+            }, options.signal);
+            prepared = true;
+            const answer = await exchange({
+                path: "/api/generations",
+                body: frozen,
+                epoch,
+                valid: validCreated,
+                signal: options.signal,
+                dispatched: () => {
+                    dispatched = true;
+                },
+                uncertain: options.requestUncertain === true,
+            });
+            if (options.signal?.aborted) throw noAnswer("The generation request was stopped");
+            result = answer.replayed ? { ...answer, outcome: "replayed" } : { outcome: "created", jobId: answer.jobId };
+        } catch (error) {
+            if (!options.signal?.aborted) {
+                throw prepared ? error : new GenerationCreateError(error, dispatched);
+            }
+            result = dispatched ? await cancelRequest(requestId, clientId, epoch) : { outcome: "cancelled" };
+        }
+        return rememberCreated(result, ref);
     } catch (error) {
-        if (error instanceof GenerationBusyError) {
+        const cause = error instanceof GenerationCreateError ? error.cause : error;
+        if (cause instanceof GenerationBusyError && !(error instanceof GenerationCreateError && error.uncertain)) {
             // Maybe this tab's own job (the caller reads its status, then follows it).
-            let reservations = busyJobs.get(error.jobId);
+            let reservations = busyJobs.get(cause.jobId);
             if (!reservations) {
                 reservations = new Set();
-                busyJobs.set(error.jobId, reservations);
+                busyJobs.set(cause.jobId, reservations);
             }
             reservations.add({ reading: false });
         }
@@ -305,50 +698,162 @@ export async function createGenerationJob(body: CreateInput): Promise<string> {
     }
 }
 
-async function createJob(body: CreateInput): Promise<string> {
-    let hooks = body.hooks;
-    let context = body.context;
-    if (!hooks) {
-        // The tab's own job: its registered hooks, and the emotions it showed last (the server's
-        // emotion modes penalize a recent choice as the tab's do).
-        const channel = await import("./jobChannel");
-        // The job's model preset (its chat's binding), not the settings views'.
-        const { presetId, modelPresetId } = context;
-        hooks = await channel.registeredHooks(
-            presetId !== null && modelPresetId !== null ? { presetId, modelPresetId } : undefined,
-        );
-        if (context.client && !context.client.emotions) {
-            context = {
-                ...context,
-                client: { ...context.client, emotions: channel.recentEmotions(context.characterId) },
-            };
-        }
-    }
-    const response = await request("/api/generations", {
-        method: "POST",
-        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-        body: JSON.stringify({ ...body, context, hooks, clientId: generationClientId() }),
-    });
-    const { jobId } = (await response.json()) as { jobId: string };
-    const ref = { chaId: body.context.characterId, chatId: body.context.chatId };
-    setJobStage(jobId, ref, "preparing", { onlyIfMissing: true });
-    rememberGenerationJob(ref, jobId);
-    return jobId;
-}
-
 const jobPath = (jobId: string) =>
     `/api/generations/${encodeURIComponent(jobId)}?clientId=${encodeURIComponent(generationClientId())}`;
 
-/** This tab's job, or null when the server does not know it (ended long ago, or another tab's). */
-export async function readGenerationJob(jobId: string): Promise<GenerationStatus | null> {
+/** Reads the chat slot without following, saving, or holding the job live in this tab. */
+export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurrent | null> {
+    const query = new URLSearchParams({ characterId: ref.chaId, chatId: ref.chatId, clientId: generationClientId() });
+    try {
+        const body: unknown = await boundedAttempt(
+            async (signal) => (await request(`/api/generations/current?${query}`, { signal })).json(),
+            undefined,
+            language.serverJob.stopOther.lookupTimedOut,
+        );
+        if (body === null) return null;
+        if (
+            !object(body) ||
+            typeof body.jobId !== "string" ||
+            !GENERATION_ID_PATTERN.test(body.jobId) ||
+            !GENERATION_KINDS.some((kind) => kind === body.kind) ||
+            typeof body.owned !== "boolean" ||
+            (body.handedOff !== undefined && body.handedOff !== true) ||
+            (body.stage !== undefined && !GENERATION_STAGES.some((stage) => stage === body.stage))
+        ) {
+            throw new ResourceRequestError(0, language.serverJob.stopOther.invalidCurrent);
+        }
+        return body as GenerationCurrent;
+    } catch (error) {
+        // A server from before idle answered 200 null still answers 404.
+        if (error instanceof ResourceRequestError && error.status === 404) return null;
+        throw error;
+    }
+}
+
+/** Stops exactly the named current job; a changed slot requires a fresh confirmation. */
+export async function stopChatGeneration(ref: ChatRef, jobId: string): Promise<"stopped" | "idle" | "changed"> {
+    const body: GenerationStopBody = {
+        characterId: ref.chaId,
+        chatId: ref.chatId,
+        jobId,
+        clientId: generationClientId(),
+    };
+    try {
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request("/api/generations/stop", {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify(body),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.stopOther.stopTimedOut,
+        );
+        if (!object(answer) || typeof answer.aborted !== "boolean") {
+            throw new ResourceRequestError(0, language.serverJob.stopOther.invalidStop);
+        }
+        return "stopped";
+    } catch (error) {
+        if (error instanceof ResourceRequestError) {
+            if (error.status === 404 && error.message === "idle") return "idle";
+            if (error.status === 409 && error.message === "jobChanged") return "changed";
+        }
+        throw error;
+    }
+}
+
+/** Requests a targeted handoff; 404/409 mean the job or target is unavailable. */
+export async function requestGenerationHandoff(jobId: string, target: string): Promise<"offered" | "unavailable"> {
+    try {
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request(`/api/generations/${encodeURIComponent(jobId)}/handoff`, {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify({ clientId: generationClientId(), target }),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.handoff.requestTimedOut,
+        );
+        if (!object(answer) || answer.offered !== true) {
+            throw new ResourceRequestError(0, language.serverJob.handoff.invalidHandoff);
+        }
+        return "offered";
+    } catch (error) {
+        if (error instanceof ResourceRequestError && (error.status === 404 || error.status === 409))
+            return "unavailable";
+        throw error;
+    }
+}
+
+/** Claims an open offer with a bounded control request; 404/409 mean it is unavailable. */
+export async function takeoverGenerationJob(jobId: string): Promise<string | null> {
+    try {
+        const answer: unknown = await boundedAttempt(
+            async (signal) =>
+                (
+                    await request(`/api/generations/${encodeURIComponent(jobId)}/takeover`, {
+                        method: "POST",
+                        signal,
+                        headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
+                        body: JSON.stringify({ clientId: generationClientId() }),
+                    })
+                ).json(),
+            undefined,
+            language.serverJob.handoff.timedOut,
+        );
+        if (!object(answer) || typeof answer.ticket !== "string" || !answer.ticket) {
+            throw new ResourceRequestError(0, language.serverJob.handoff.invalidTakeover);
+        }
+        return answer.ticket;
+    } catch (error) {
+        if (error instanceof ResourceRequestError && (error.status === 404 || error.status === 409)) return null;
+        throw error;
+    }
+}
+
+/**
+ * A participant's job (or its kept outcome, `kept`, once the server collected it), or null when the server
+ * cannot give this tab access (unknown or no longer a participant/ticket holder). `deadlineMs` bounds the
+ * whole read (authentication, request, and body): past it the request is aborted and the read fails
+ * as a request without an answer (`ResourceRequestError` status 0).
+ */
+export async function readGenerationJob(
+    jobId: string,
+    options: { deadlineMs?: number } = {},
+): Promise<GenerationStatus | null> {
     const reservations = busyJobs.get(jobId);
     const reservation = reservations && [...reservations].find((entry) => !entry.reading);
     if (reservation) {
         reservation.reading = true;
     }
     let status: GenerationStatus | null = null;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-        status = (await (await request(jobPath(jobId))).json()) as GenerationStatus;
+        const read = (async () =>
+            (await (await request(jobPath(jobId), { signal: controller.signal })).json()) as GenerationStatus)();
+        if (options.deadlineMs === undefined) {
+            status = await read;
+        } else {
+            // A late answer after the deadline is dropped (the read already failed).
+            read.catch(() => {});
+            status = await Promise.race([
+                read,
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => {
+                        controller.abort();
+                        reject(new ResourceRequestError(0, "The job's status read timed out"));
+                    }, options.deadlineMs);
+                }),
+            ]);
+        }
         return status;
     } catch (error) {
         if (error instanceof ResourceRequestError && error.status === 404) {
@@ -366,13 +871,21 @@ export async function readGenerationJob(jobId: string): Promise<GenerationStatus
             }
             notifyPluginWork();
         }
+        clearTimeout(timer);
     }
 }
 
-/** Aborts this tab's job (the server persists the text so far). */
+/**
+ * Aborts this tab's job (the server persists the text so far). Bounded like the other control
+ * requests (`CREATE_DEADLINE_MS`): a Stop whose request hangs fails instead of staying pending.
+ */
 export async function abortGenerationJob(jobId: string): Promise<void> {
     try {
-        await request(jobPath(jobId), { method: "DELETE" });
+        await boundedAttempt(
+            (signal) => request(jobPath(jobId), { method: "DELETE", signal }),
+            undefined,
+            "The stop request timed out",
+        );
     } catch (error) {
         if (!(error instanceof ResourceRequestError && error.status === 404)) {
             throw error;
@@ -400,19 +913,26 @@ export async function reportCallbackDrained(jobId: string, callbackId: string): 
     }
 }
 
+/** One socket attachment; role events decide authority, and closing does not release the job. */
 export type GenerationFollow = {
-    /** Sends a JSON message to the job (the `job-channel` answers); false while the socket is not open. */
+    /** The latest role event, or null before the first one. */
+    readonly role: "owner" | "viewer" | "pending" | null;
+    /** Viewer/pending callbacks are protocol failures, including a known viewer before its first role. */
+    viewing(): boolean;
+    /** Sends a JSON message to the job (`src/ts/network/jobChannel.ts` answers); false while closed or not yet open. */
     send(message: unknown): boolean;
     close(): void;
-    /** Resolves when the socket closes, with the terminal event if one arrived. */
-    closed: Promise<{ terminal: GenerationTerminalEvent | null }>;
+    /**
+     * Resolves when the socket closes, with the terminal event if one arrived. `resumed`: the follow
+     * gave up a socket that had opened because the page came back (`watchResume`), not because the
+     * link failed. `received`: the socket delivered at least one frame (a ping included), so the
+     * server was reached through it.
+     */
+    closed: Promise<{ terminal: GenerationTerminalEvent | null; resumed?: boolean; received?: boolean }>;
+    /** True once the socket opened; false when the follow settled before it opened. */
+    opened: Promise<boolean>;
 };
 
-/**
- * Follows a job over its socket: on every attach the server sends the job chat and the records it
- * changed (fresh), the chosen preset, the current reply with its text, and the result if the job
- * ended. Events of another epoch than the loaded one are dropped, as are pings.
- */
 /** The newest follow of each job: a newer follow cancels the older one (its socket, events, and sends). */
 const currentFollows = new Map<string, { cancel(): void }>();
 
@@ -424,17 +944,52 @@ function attachStamp(): number {
     return lastStamp;
 }
 
-export function followGenerationJob(jobId: string, onEvent: (event: GenerationEvent) => void): GenerationFollow {
+/**
+ * Follows a job with a fresh JWT and optional one-use takeover ticket. Every attach starts with
+ * its role; later role events replace it. `initiallyViewing` guards a handed-off boot/reconnect
+ * until that event, without forcing a viewer query (the server may have handed it back).
+ * On every attach the server sends the job
+ * chat and the records it changed (fresh), the chosen preset, the current reply with its text,
+ * and the result if the job ended. Pings are answered with pongs before events of another epoch
+ * than the loaded one are dropped. The follow gives its socket up, as its own `close()` would
+ * (the job is not released), when it has not opened within
+ * 10 s of the follow's start (authentication included), when it has had no frame (pings included)
+ * for 45 s while the page is visible, and when the page comes back
+ * (`src/ts/network/socketLiveness.ts`); a terminal that arrived stands. The caller attaches again.
+ * A newer follow cancels the older socket (even while connecting), events, and sends immediately;
+ * its higher `attach` stamp also orders this client's attaches across reloads on the server. `send` carries the
+ * channel's answers; `closed` settles after a terminal is applied, without waiting for the socket's
+ * close handshake, and distinguishes a resumed page from a lost link.
+ */
+export function followGenerationJob(
+    jobId: string,
+    onEvent: (event: GenerationEvent) => void,
+    options: { ticket?: string; initiallyViewing?: boolean } = {},
+): GenerationFollow {
     liveJobs.add(jobId);
     let ws: WebSocket | null = null;
     let cancelled = false;
     let terminal: GenerationTerminalEvent | null = null;
+    let role: GenerationFollow["role"] = null;
+    type Closed = { terminal: GenerationTerminalEvent | null; resumed?: boolean; received?: boolean };
     // Settles on the socket's close or on cancellation, whichever comes first (even before auth).
-    let resolveClosed!: (value: { terminal: GenerationTerminalEvent | null }) => void;
-    const closed = new Promise<{ terminal: GenerationTerminalEvent | null }>((resolve) => {
+    let resolveClosed!: (value: Closed) => void;
+    const closed = new Promise<Closed>((resolve) => {
         resolveClosed = resolve;
     });
-    const finish = () => resolveClosed({ terminal });
+    let wasOpened = false;
+    let received = false;
+    let resumed = false;
+    let resolveOpened!: (value: boolean) => void;
+    const opened = new Promise<boolean>((resolve) => {
+        resolveOpened = resolve;
+    });
+    const finish = () => {
+        watch.stop();
+        stopResume();
+        resolveOpened(false);
+        resolveClosed({ terminal, ...(resumed ? { resumed } : {}), ...(received ? { received } : {}) });
+    };
     const handle = {
         cancel() {
             cancelled = true;
@@ -443,6 +998,20 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             finish();
         },
     };
+    /** Gives the socket up (as `close()`), unless the follow ended or its terminal already arrived. */
+    const abandon = (phase: "connectTimeout" | "stale" | "resumeReconnect") => {
+        if (cancelled || terminal) {
+            return;
+        }
+        recordClientEvent({ kind: "jobLink", phase, jobId });
+        resumed = phase === "resumeReconnect" && wasOpened;
+        follow.close();
+    };
+    const watch = watchSocket({
+        onConnectTimeout: () => abandon("connectTimeout"),
+        onStale: () => abandon("stale"),
+    });
+    const stopResume = watchResume(() => abandon("resumeReconnect"));
     // A newer follow of the job supersedes this one at once (its events, sends, and connection).
     currentFollows.get(jobId)?.cancel();
     currentFollows.set(jobId, handle);
@@ -453,16 +1022,24 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             return;
         }
         const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        // `liveness=1`: this tab answers pings. `hydration=patch`: its callback barrier reads the job
+        // chat itself for a receipt it does not hold, so the server may send that chat only as it
+        // changed (`jobChannel.ts` `barrier`). `rows=streamed`: it rebuilds raw checkpoint rows from
+        // the stream buffer. `proto=1` is recorded and logged by the server, never enforced.
         const url =
             `${protocol}//${location.host}/api/generations/${encodeURIComponent(jobId)}/ws` +
             `?risu-auth=${encodeURIComponent(auth)}&clientId=${encodeURIComponent(generationClientId())}` +
-            `&attach=${stamp}`;
+            `&attach=${stamp}&liveness=1&hydration=patch&rows=streamed&proto=1` +
+            (options.ticket ? `&ticket=${encodeURIComponent(options.ticket)}` : "");
         const socket = new WebSocket(url);
         ws = socket;
-        let opened = false;
         socket.onopen = () => {
-            opened = true;
             if (!cancelled) {
+                // Open precedes this socket's messages; its snapshot restores only a non-null retry count.
+                setJobRetry(jobId, null);
+                wasOpened = true;
+                watch.opened();
+                resolveOpened(true);
                 recordClientEvent({ kind: "jobLink", phase: "attach", jobId });
             }
         };
@@ -470,17 +1047,27 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             if (cancelled) {
                 return;
             }
+            received = true;
+            watch.frame();
             let event: GenerationEvent;
             try {
                 event = JSON.parse(String(message.data)) as GenerationEvent;
             } catch {
                 return;
             }
-            if (!event || typeof event !== "object" || event.type === "ping") {
+            if (!event || typeof event !== "object") {
+                return;
+            }
+            if (event.type === "ping") {
+                const pong: GenerationPong = { type: "pong", ts: event.ts };
+                if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(pong));
                 return;
             }
             if (event.epoch !== getResourceEpoch()) {
                 return;
+            }
+            if (event.type === "handoff") {
+                role = event.pending ? "pending" : event.owner === "self" ? "owner" : "viewer";
             }
             if (event.type === "done" || event.type === "error") {
                 terminal = event;
@@ -488,6 +1075,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             onEvent(event);
             if (terminal) {
                 socket.close();
+                finish();
             }
         };
         socket.onerror = () => {};
@@ -497,7 +1085,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             if (!cancelled && !terminal) {
                 recordClientEvent({
                     kind: "jobLink",
-                    phase: opened ? "detach" : "attachFailed",
+                    phase: wasOpened ? "detach" : "attachFailed",
                     jobId,
                     code: event.code,
                 });
@@ -519,6 +1107,13 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
         finish();
     });
     const follow: GenerationFollow = {
+        get role() {
+            return role;
+        },
+        viewing: () =>
+            role === "viewer" ||
+            role === "pending" ||
+            (role === null && (!!options.ticket || options.initiallyViewing === true)),
         send(message) {
             const socket = ws as WebSocket | null;
             if (cancelled || !socket || socket.readyState !== WebSocket.OPEN) {
@@ -534,6 +1129,7 @@ export function followGenerationJob(jobId: string, onEvent: (event: GenerationEv
             handle.cancel();
         },
         closed,
+        opened,
     };
     // A closed or superseded follow asks nothing more of its job.
     void closed.then(() => endFollowRecovery(follow));
@@ -659,6 +1255,9 @@ function runRecovery(transport: ChannelTransport, recovery: Recovery) {
  * `error`: every lock of the job is released and the saved job is forgotten). A patch the mirror
  * cannot take asks the job for its chat whole through `transport` (`resync`); a missing chunk base
  * asks only for the reply (`resyncReply`).
+ * Creation and the first `accepted` seed `preparing` only without a known stage; `stage` replaces
+ * it in `src/ts/process/jobStages.ts` until release. A `preset` event is a job-local `presetChain`
+ * pick: neither the tab's selection nor the chat's binding changes.
  */
 export function applyGenerationEvent(
     jobId: string,
@@ -688,18 +1287,32 @@ export function applyGenerationEvent(
             }
             return;
         case "resource": {
+            const jobChat = event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId;
             const record = {
                 kind: event.kind,
                 id: event.id,
                 characterId: event.characterId,
                 revision: event.revision,
                 data: event.data,
-                ...("streaming" in event && event.streaming ? { job: { jobId, streaming: event.streaming } } : {}),
+                ...("streaming" in event && event.streaming
+                    ? { job: { jobId, streaming: event.streaming, ...(jobChat ? {} : { otherChat: true }) } }
+                    : {}),
             };
             const applied = applyHydration(record);
-            // Kept for a later callback's barrier, which applies it again after local work settles.
-            onChannel((channel) => channel.rememberHydration(jobId, record));
-            if (transport && event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId) {
+            // Kept for a later callback's barrier, which applies it again after local work settles; the
+            // job chat's streaming list also goes with a read of that chat the barrier installs.
+            onChannel((channel) => {
+                channel.rememberHydration(jobId, record);
+                if (jobChat && record.job) {
+                    channel.rememberJobStreaming(jobId, {
+                        characterId: ref.chaId,
+                        id: ref.chatId,
+                        revision: record.revision,
+                        streaming: record.job.streaming,
+                    });
+                }
+            });
+            if (transport && jobChat) {
                 resyncing.delete(transport);
                 if (!applied && isChatStale(ref)) {
                     // A whole copy refused for local work: asked for again once that work is saved.
@@ -709,7 +1322,6 @@ export function applyGenerationEvent(
             return;
         }
         case "chatPatch": {
-            // Not kept for the barrier: a patch fits only the copy it was made against.
             const outcome = applyPatchHydration(
                 {
                     characterId: event.characterId,
@@ -723,6 +1335,17 @@ export function applyGenerationEvent(
                 },
                 { jobId, streaming: event.streaming },
             );
+            // The patch is not kept for the barrier (it fits only the copy it was made against); its
+            // streaming list is, for a read of the job chat the barrier installs.
+            if (event.characterId === ref.chaId && event.id === ref.chatId) {
+                const held = {
+                    characterId: ref.chaId,
+                    id: ref.chatId,
+                    revision: event.revision,
+                    streaming: event.streaming,
+                };
+                onChannel((channel) => channel.rememberJobStreaming(jobId, held));
+            }
             if (transport && outcome === "mismatch") {
                 requestResync(transport, ref);
             } else if (transport && outcome === "busy") {
@@ -730,10 +1353,28 @@ export function applyGenerationEvent(
             }
             return;
         }
+        case "callback":
+            if (transport) {
+                // Lazy channel loading must not let a later promotion authorize an earlier viewer callback.
+                const viewing = transport.viewing?.() === true;
+                onChannel((channel) =>
+                    channel.handleChannelEvent(
+                        jobId,
+                        event,
+                        viewing
+                            ? {
+                                  send: (message) => transport.send(message),
+                                  viewing: () => true,
+                              }
+                            : transport,
+                    ),
+                );
+            }
+            return;
         case "notice":
         case "question":
-        case "callback":
         case "cancel":
+        case "chunkResync":
             if (transport) {
                 onChannel((channel) => channel.handleChannelEvent(jobId, event, transport));
             }
@@ -741,6 +1382,9 @@ export function applyGenerationEvent(
         case "stage":
             // The job's latest presentation stage, kept per job for the selected chat's spinner.
             setJobStage(jobId, ref, event.stage);
+            return;
+        case "retry":
+            setJobRetry(jobId, event.retry);
             return;
         case "preset":
             // A `presetChain` pick is the job's own: neither the tab's selection nor the chat's binding
@@ -757,43 +1401,30 @@ export function applyGenerationEvent(
 }
 
 /**
- * Everything this tab holds for a job, released as its end releases it: the channel's outstanding
- * questions and callbacks (cancelled), the job's message locks, and the saved job. Also for a job
- * the tab stopped following without its end (lost).
+ * Releases a terminal or gone job: cancels channel questions and callbacks, retires its held
+ * generations, and drops its saved job, presentation stage and plugin work. A tab that only lost
+ * participation in a running job uses `detachGenerationJob` instead.
  */
 export function releaseGenerationJob(jobId: string) {
+    clearGenerationJob(jobId, endServerJob);
+}
+
+/**
+ * Drops this tab's channel, saved job, stage and plugin work after lost participation, including a
+ * lost follow. Its chat drops stream overlays without retiring generations, allowing a later follow.
+ */
+export function detachGenerationJob(jobId: string) {
+    clearGenerationJob(jobId, detachServerJob);
+}
+
+function clearGenerationJob(jobId: string, releaseMessages: (jobId: string) => void) {
     dropJobStage(jobId);
     if (dispatcher) {
         onChannel((channel) => channel.endJobChannel(jobId));
     }
-    endServerJob(jobId);
+    releaseMessages(jobId);
     forgetGenerationJob(jobId);
     liveJobs.delete(jobId);
     busyJobs.delete(jobId);
     notifyPluginWork();
-}
-
-/**
- * Attaches again to this tab's saved jobs (after a reload): each one the server still knows is
- * followed and its events applied; an unknown one is forgotten. Returns the follows started.
- */
-export async function resumeSavedGenerations(
-    onEvent?: (jobId: string, ref: ChatRef, event: GenerationEvent) => void,
-): Promise<GenerationFollow[]> {
-    const follows: GenerationFollow[] = [];
-    for (const jobId of Object.values(readSavedJobs())) {
-        const status = await readGenerationJob(jobId);
-        if (!status || status.epoch !== getResourceEpoch()) {
-            forgetGenerationJob(jobId);
-            continue;
-        }
-        const ref = { chaId: status.characterId, chatId: status.chatId };
-        // The follow is the channel's transport: its answers go out on the job's current socket.
-        const follow: GenerationFollow = followGenerationJob(jobId, (event) => {
-            applyGenerationEvent(jobId, ref, event, follow);
-            onEvent?.(jobId, ref, event);
-        });
-        follows.push(follow);
-    }
-    return follows;
 }

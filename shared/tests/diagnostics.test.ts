@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     apiRouteTemplate,
     APP_FRAME,
+    BROWSER_PUSH_PHASES,
     CLIENT_FRAME,
     CUSTOM_MODEL,
     DIAGNOSTIC_EVENT_KINDS,
@@ -17,10 +18,20 @@ import {
     isStackFrame,
     LIFECYCLE_PHASES,
     MAX_STACK_FRAMES,
+    NOTICES,
+    PAGE_PHASES,
+    projectBrowserEvent,
     projectDiagnosticEvent,
+    projectServerEvent,
+    PUSH_DROP_REASONS,
+    PUSH_PERMISSIONS,
+    PUSH_SERVICES,
     ROUTE_TEMPLATES,
     RUNTIME_ORIGINS,
     sanitizeStack,
+    SERVER_PUSH_PHASES,
+    SYNC_PHASES,
+    SYNC_REASONS,
     UNKNOWN_ERROR_NAME,
 } from "../diagnostics.ts";
 import { BASE_LLM_MODELS } from "../llm/models.ts";
@@ -47,6 +58,22 @@ const appPath = (file: string) =>
     /\/((?:server\/src|shared)\/[A-Za-z0-9_/-]{1,200}\.[cm]?[jt]s)$/.exec(file)?.[1] ?? null;
 
 describe("projectDiagnosticEvent", () => {
+    it("preserves saveWait reasons, category counts, and elapsed time in browser diagnostics", () => {
+        for (const reason of ["inFlight", "backoff", "refresh", "generating", "conflict"]) {
+            const event = {
+                at: AT,
+                kind: "sync",
+                phase: "saveWait",
+                reason,
+                records: 2,
+                chats: 3,
+                orders: 1,
+                durationMs: 2_501,
+            };
+            expect(projectDiagnosticEvent(event)).toEqual(event);
+        }
+    });
+
     it("refuses anything that is not an event: a non-object, an unknown kind, a time that is not a non-negative integer", () => {
         expect(projectDiagnosticEvent(null)).toBeNull();
         expect(projectDiagnosticEvent("http")).toBeNull();
@@ -70,6 +97,9 @@ describe("projectDiagnosticEvent", () => {
             "serviceWorker",
             "page",
             "bootCache",
+            "push",
+            "notice",
+            "remoteCommand",
         ]);
     });
 
@@ -398,6 +428,15 @@ describe("projectDiagnosticEvent", () => {
         expect(projectDiagnosticEvent({ at: AT, kind: "jobLink", code: 1000 })).toHaveProperty("code", 1000);
     });
 
+    it("jobLink and feed: the socket liveness phases (a silent socket, one not open in time, one replaced on the page's return) are kept on both kinds", () => {
+        for (const phase of ["stale", "connectTimeout", "resumeReconnect"]) {
+            const link = { at: AT, kind: "jobLink", phase, jobId: ID };
+            expect(projectDiagnosticEvent(link), phase).toEqual(link);
+            const feed = { at: AT, kind: "feed", phase, attempt: 2 };
+            expect(projectDiagnosticEvent(feed), phase).toEqual(feed);
+        }
+    });
+
     it("feed, sync, serviceWorker, page: the phases by their lists, counts, a close code; `repeat` and `lastAt` on every kind", () => {
         const feed = { at: AT, kind: "feed", phase: "disconnected", attempt: 0, code: 1006 };
         expect(projectDiagnosticEvent(feed)).toEqual(feed);
@@ -428,6 +467,38 @@ describe("projectDiagnosticEvent", () => {
             at: AT,
             kind: "serviceWorker",
             phase: "initFailed",
+        });
+    });
+
+    it("sync, the draft journal's phases: `journalSkipped`, `journalFailed`, and `journalRecovered` keep their reason and `entries` through the browser projection; an unlisted reason and a non-count `entries` are dropped", () => {
+        expect(SYNC_PHASES).toEqual([
+            "conflict",
+            "reload",
+            "journalSkipped",
+            "journalFailed",
+            "journalRecovered",
+            "saveWait",
+        ]);
+        for (const reason of ["tooLarge", "budget", "format"]) {
+            const skipped = { at: AT, kind: "sync", phase: "journalSkipped", reason, entries: 3 };
+            expect(projectBrowserEvent(skipped), reason).toEqual(skipped);
+        }
+        for (const reason of ["unavailable", "timeout", "blocked", "quota", "write", "readFailed"]) {
+            const failed = { at: AT, kind: "sync", phase: "journalFailed", reason };
+            expect(projectBrowserEvent(failed), reason).toEqual(failed);
+        }
+        const recovered = { at: AT, kind: "sync", phase: "journalRecovered", reason: "orphan", entries: 2 };
+        expect(projectBrowserEvent(recovered)).toEqual(recovered);
+        for (const reason of SYNC_REASONS) {
+            expect(SYNC_REASONS.indexOf(reason), reason).toBe(SYNC_REASONS.lastIndexOf(reason));
+        }
+        expect(
+            projectBrowserEvent({ at: AT, kind: "sync", phase: "journalSkipped", reason: "Alice", entries: -1 }),
+        ).toEqual({ at: AT, kind: "sync", phase: "journalSkipped" });
+        expect(projectBrowserEvent({ at: AT, kind: "sync", phase: "journalRecovered", entries: 1.5 })).toEqual({
+            at: AT,
+            kind: "sync",
+            phase: "journalRecovered",
         });
         expect(projectDiagnosticEvent({ at: AT, kind: "serviceWorker", phase: "updated", scope: "/" })).toEqual({
             at: AT,
@@ -496,6 +567,185 @@ describe("projectDiagnosticEvent", () => {
         expect(
             projectDiagnosticEvent({ at: AT, kind: "lifecycle", phase: "restored", replaced: "yes", epoch: "e1" }),
         ).toEqual({ at: AT, kind: "lifecycle" });
+    });
+
+    it("push: a phase of either side, the service, drop reason, and permission by their lists, the job id as a UUID only, a status 100–599, the window and notification states as booleans, a count; never an endpoint, a URL, a title, a body, or an error", () => {
+        const server = { at: AT, kind: "push", phase: "failed", service: "fcm", jobId: ID, status: 503 };
+        expect(projectDiagnosticEvent(server)).toEqual(server);
+        const dropped = { at: AT, kind: "push", phase: "dropped", reason: "queueFull", jobId: ID };
+        expect(projectDiagnosticEvent(dropped)).toEqual(dropped);
+        const worker = { at: AT, kind: "push", phase: "closedInFront", inFront: true, focusedHidden: false };
+        expect(projectDiagnosticEvent(worker)).toEqual(worker);
+        const page = {
+            at: AT,
+            kind: "push",
+            phase: "browserState",
+            permission: "granted",
+            subscribed: true,
+            standalone: false,
+        };
+        expect(projectDiagnosticEvent(page)).toEqual(page);
+        const dismissed = { at: AT, kind: "push", phase: "dismissedByPage", count: 2 };
+        expect(projectDiagnosticEvent(dismissed)).toEqual(dismissed);
+        for (const phase of [...SERVER_PUSH_PHASES, ...BROWSER_PUSH_PHASES]) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", phase }), phase).toEqual({
+                at: AT,
+                kind: "push",
+                phase,
+            });
+        }
+        for (const service of PUSH_SERVICES) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", service })).toHaveProperty("service", service);
+        }
+        for (const reason of PUSH_DROP_REASONS) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", reason })).toHaveProperty("reason", reason);
+        }
+        for (const permission of PUSH_PERMISSIONS) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "push", permission })).toHaveProperty(
+                "permission",
+                permission,
+            );
+        }
+        expect(SERVER_PUSH_PHASES).toEqual(["accepted", "failed", "removed", "dropped"]);
+        expect(BROWSER_PUSH_PHASES).toEqual([
+            "received",
+            "shown",
+            "shownSilent",
+            "closedInFront",
+            "showFailed",
+            "clicked",
+            "browserState",
+            "dismissedByPage",
+            "chatRefresh",
+        ]);
+        expect(PUSH_DROP_REASONS).toEqual(["closed", "noKeys", "queueFull", "noSubscriptions", "unreadable"]);
+        expect(PUSH_SERVICES).toEqual(["fcm", "apple", "mozilla", "windows", "other"]);
+        expect(PUSH_PERMISSIONS).toEqual(["granted", "denied", "default", "unsupported"]);
+        // What a bug or a hostile store would put beside the fixed values: none of it is kept.
+        const endpoint = "https://fcm.googleapis.com/fcm/send/alice-secret-token";
+        expect(
+            projectDiagnosticEvent({
+                at: AT,
+                kind: "push",
+                phase: "sent",
+                service: endpoint,
+                jobId: "alice-private-chat",
+                status: 99,
+                reason: "ECONNRESET https://secret.example/token",
+                inFront: "yes",
+                focusedHidden: 1,
+                permission: "prompt",
+                subscribed: "true",
+                standalone: null,
+                count: -1,
+                endpoint,
+                url: "/chat/alice/k",
+                title: "Alice",
+                body: "Private Character said hello",
+                tag: "risuai-chat-completion:abc",
+                error: "TypeError: bad icon",
+                message: "secret",
+            }),
+        ).toEqual({ at: AT, kind: "push" });
+        // The relaxed generation id of a `job` event is not a push's job id: the journal keeps the push event as given.
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", jobId: "j1" })).toEqual({ at: AT, kind: "push" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", jobId: ID.toUpperCase() })).toEqual({
+            at: AT,
+            kind: "push",
+        });
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", status: 100 })).toHaveProperty("status", 100);
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", status: 599 })).toHaveProperty("status", 599);
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", status: 600 })).toEqual({ at: AT, kind: "push" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", count: 0 })).toHaveProperty("count", 0);
+        expect(projectDiagnosticEvent({ at: AT, kind: "push", count: 1.5 })).toEqual({ at: AT, kind: "push" });
+    });
+
+    it("notice: the notice by its list only; page: the Page Lifecycle's `freeze` and `resume` beside the visibility and network phases", () => {
+        expect(NOTICES).toEqual(["serverJobLost", "serverJobEndedAway", "resourceReloaded", "transformFailed"]);
+        for (const notice of NOTICES) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "notice", notice })).toEqual({
+                at: AT,
+                kind: "notice",
+                notice,
+            });
+        }
+        expect(
+            projectDiagnosticEvent({ at: AT, kind: "notice", notice: "Alice's chat was reloaded", message: "secret" }),
+        ).toEqual({ at: AT, kind: "notice" });
+        expect(projectDiagnosticEvent({ at: AT, kind: "notice", notice: 1 })).toEqual({ at: AT, kind: "notice" });
+        expect(PAGE_PHASES).toEqual(["boot", "visible", "hidden", "online", "offline", "freeze", "resume"]);
+        for (const phase of PAGE_PHASES) {
+            expect(projectDiagnosticEvent({ at: AT, kind: "page", phase }), phase).toEqual({
+                at: AT,
+                kind: "page",
+                phase,
+            });
+        }
+    });
+
+    it("projects a push for one side only: the browser keeps the browser's phases and fields and drops the server's, the server the reverse, neither a push without a phase; `notice` is the browser's alone; nothing of a payload or a subscription survives either", () => {
+        const both = {
+            at: AT,
+            kind: "push",
+            service: "apple",
+            jobId: ID,
+            status: 410,
+            reason: "closed",
+            inFront: true,
+            focusedHidden: true,
+            permission: "denied",
+            subscribed: false,
+            standalone: true,
+            count: 3,
+        };
+        for (const phase of SERVER_PUSH_PHASES) {
+            expect(projectServerEvent({ ...both, phase }), phase).toEqual({
+                at: AT,
+                kind: "push",
+                phase,
+                service: "apple",
+                jobId: ID,
+                status: 410,
+                reason: "closed",
+            });
+            expect(projectBrowserEvent({ ...both, phase }), phase).toBeNull();
+        }
+        for (const phase of BROWSER_PUSH_PHASES) {
+            expect(projectBrowserEvent({ ...both, phase }), phase).toEqual({
+                at: AT,
+                kind: "push",
+                phase,
+                inFront: true,
+                focusedHidden: true,
+                permission: "denied",
+                subscribed: false,
+                standalone: true,
+                count: 3,
+            });
+            expect(projectServerEvent({ ...both, phase }), phase).toBeNull();
+        }
+        expect(projectBrowserEvent({ at: AT, kind: "push", count: 1 })).toBeNull();
+        expect(projectServerEvent({ at: AT, kind: "push", service: "fcm" })).toBeNull();
+        expect(projectBrowserEvent({ at: AT, kind: "push", phase: "sent" })).toBeNull();
+        expect(projectServerEvent({ at: AT, kind: "push", phase: "sent" })).toBeNull();
+        expect(projectBrowserEvent({ at: AT, kind: "notice", notice: "resourceReloaded" })).toEqual({
+            at: AT,
+            kind: "notice",
+            notice: "resourceReloaded",
+        });
+        expect(projectServerEvent({ at: AT, kind: "notice", notice: "resourceReloaded" })).toBeNull();
+        const hostile = {
+            ...both,
+            endpoint: "https://web.push.apple.com/alice-secret-token",
+            url: "/chat/alice/k",
+            title: "Alice",
+            body: "Private Character said hello",
+            tag: "risuai-chat-completion:abc",
+            error: "TypeError: bad icon",
+        };
+        const forbidden = /alice|apple\.com|Private|completion|TypeError|chat\//;
+        expect(JSON.stringify(projectBrowserEvent({ ...hostile, phase: "received" }))).not.toMatch(forbidden);
+        expect(JSON.stringify(projectServerEvent({ ...hostile, phase: "accepted" }))).not.toMatch(forbidden);
     });
 });
 
@@ -643,7 +893,8 @@ describe("errorName, diagnosticModel, and the error-event predicates", () => {
             ["/api/llm-secrets/credentials/alice", "/api/llm-secrets/*"],
             ["/api/llm-secrets", "?"],
             ["/api/backups/b1/restore", "/api/backups/:id/restore"],
-            ["/api/backups/b1", "?"],
+            ["/api/backups/b1", "/api/backups/:id"],
+            ["/api/backups/snapshot", "/api/backups/snapshot"],
             ["/api/request-history/r1", "/api/request-history/:id"],
             ["/api/diagnostics", "/api/diagnostics"],
             ["/api/diagnostics/", "?"],

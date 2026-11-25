@@ -9,9 +9,11 @@ import type {
     GenerationQuestionEvent,
 } from "../../../shared/jobs.ts";
 import { MAX_PROVIDER_TEXT_CHARS } from "../../../shared/jobs.ts";
+import { createChannelHub } from "../../../server/src/jobs/channel.ts";
 import { createAlertQueue, type AlertQueue } from "../alertQueue";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 import type { MemoryProgressState } from "../stores.svelte";
+import type { ChannelTransport } from "./jobChannel";
 
 // The client dispatcher of the job channel (`jobChannel.ts`) with controlled persistence and plugin
 // dependencies and the real alert module over the real alert queue (a fresh queue per test, with no
@@ -28,15 +30,25 @@ type FixtureChat = { id: string; message?: { chatId: string }[] };
 const deps = vi.hoisted(() => ({
     /** The alert queue of the test running (`stores.alertStore` reaches it through a proxy). */
     alertQueue: null as unknown as AlertQueue,
-    flush: vi.fn<(options?: { scope?: unknown }) => Promise<{ discarded: string[] }>>(),
-    applyHydration: vi.fn<(record: unknown) => boolean>(),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
+    applyHydration: vi.fn<typeof import("../storage/resourceSync.svelte").applyHydration>(),
     heldChat: vi.fn<(ref: { chaId: string; chatId: string }) => string | null>(),
-    heldRecord: vi.fn<(kind: string, id: string) => string | null>(),
+    heldRecord: vi.fn<typeof import("../storage/resourceSync.svelte").heldRecordRevision>(),
     contexts: [] as unknown[],
+    /** `capturePluginContext`: the call context of a chat (the skipped-listener replay's). */
+    captured: vi.fn<(ref: { chaId: string; chatId: string }) => unknown>(),
+    /** `pluginsStarted`: the plugins' startup the replay waits for before reading the registry. */
+    pluginsStarted: vi.fn<() => Promise<void>>(),
     selection: null as { characterId: string | null } | null,
     /** The chats the mocked chat module holds, by character (the selected one at `chatPage`). */
     chats: {} as Record<string, { chatPage?: number; chats: { id: string; message?: { chatId: string }[] }[] }>,
-    mcps: new Map<string, { callTool: (tool: string, args: unknown) => Promise<unknown> }>(),
+    mcps: new Map<
+        string,
+        {
+            callTool: (tool: string, args: unknown, context?: unknown, signal?: AbortSignal) => Promise<unknown>;
+            getToolList?: (context?: unknown, signal?: AbortSignal) => Promise<unknown>;
+        }
+    >(),
     sayTTS: vi.fn(),
     showCompletion: vi.fn(async (_payload: unknown) => {}),
     followTranslations: vi.fn<(ref: unknown, ids: unknown, follow: { report: (message: string) => void }) => void>(),
@@ -48,7 +60,7 @@ const deps = vi.hoisted(() => ({
     writeInlayImage: vi.fn<typeof import("../process/files/inlays").writeInlayImage>(),
     /** The server behind `authFetch` (the memory-stop route here). */
     authFetch: vi.fn<(input: string, init?: RequestInit) => Promise<Response>>(),
-    epochMismatch: vi.fn<(epoch: string) => unknown>(),
+    epochMismatch: vi.fn<typeof import("../storage/resourceClient").epochMismatch>(),
     getModelInfo: vi.fn((id: string) => ({
         id,
         name: id,
@@ -61,23 +73,25 @@ const deps = vi.hoisted(() => ({
     })),
 }));
 
-vi.mock("../storage/resourceSync.svelte", () => ({
-    flushResources: (options?: { scope?: unknown }) => deps.flush(options),
-    beginMutationScope: () => ({ resource: 7, chat: 3 }),
-    applyHydration: (record: unknown) => deps.applyHydration(record),
-    heldRecordRevision: (kind: string, id: string) => deps.heldRecord(kind, id),
-}));
+vi.mock("../storage/resourceSync.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("resourceSync", {
+        flushResources: (options) => deps.flush(options),
+        beginMutationScope: () => ({ resource: 7, chat: 3 }),
+        applyHydration: (record) => deps.applyHydration(record),
+        heldRecordRevision: (kind, id) => deps.heldRecord(kind, id),
+    }),
+);
 // The chat module's readers the dispatcher calls, over the fixture's chats (`deps.chats`, by
 // character, the selected chat at `chatPage`); the characters themselves are in the real records
 // (`characterList()`, installed in `beforeEach`). The selected character is the real selection's
 // (`deps.selection`, set in `beforeEach`).
-vi.mock("../storage/chatStore.svelte", () => {
+vi.mock("../storage/chatStore.svelte", async () => {
     const owner = (chaId: string) => deps.chats[chaId];
     const selectedChatId = (chaId: string) => {
         const found = owner(chaId);
         return found?.chats?.[found.chatPage ?? 0]?.id ?? null;
     };
-    return {
+    return (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
         heldChatRevision: (ref: { chaId: string; chatId: string }) => deps.heldChat(ref),
         selectedChatId,
         currentChatRef: () => {
@@ -87,18 +101,18 @@ vi.mock("../storage/chatStore.svelte", () => {
         },
         findChat: (ref: { chaId: string; chatId: string }) =>
             owner(ref.chaId)?.chats?.find((chat) => chat.id === ref.chatId),
-        // The speaker's pin and load before each output listener: the fixture's chats are all held
-        // here, so a load answers them at once.
-        pinChats: () => () => {},
         loadChats: async (chaId: string) => owner(chaId)?.chats ?? [],
         chatList: (chaId: string) =>
+            (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
+        // These fixtures hold no trashed chat, so the active view is the whole list.
+        activeChatList: (chaId: string) =>
             (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
         withChatsCopy: (copy: { chaId: string }) => ({
             ...copy,
             chats: JSON.parse(JSON.stringify(owner(copy.chaId)?.chats ?? [])),
             chatPage: owner(copy.chaId)?.chatPage ?? 0,
         }),
-    };
+    });
 });
 vi.mock("../stores.svelte", async () => {
     const { writable } = await import("svelte/store");
@@ -119,21 +133,29 @@ vi.mock("../storage/serverAuth", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../storage/serverAuth")>()),
     authFetch: (input: string, init?: RequestInit) => deps.authFetch(input, init),
 }));
-vi.mock("../storage/resourceClient", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("../storage/resourceClient")>()),
-    epochMismatch: (epoch: string) => deps.epochMismatch(epoch),
-    getResourceEpoch: () => "epoch-1",
-}));
+vi.mock("../storage/resourceClient", async () =>
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        epochMismatch: (epoch: string) => deps.epochMismatch(epoch),
+        getResourceEpoch: () => "epoch-1",
+    }),
+);
 vi.mock("../plugins/apiV3/pluginContext", () => ({
     invokeHook: (hook: (...args: unknown[]) => unknown, context: unknown, ...args: unknown[]) => {
         deps.contexts.push(context);
         return hook(...args);
     },
+    capturePluginContext: (ref: { chaId: string; chatId: string }) => deps.captured(ref),
     PluginTargetGoneError: class PluginTargetGoneError extends Error {},
 }));
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: deps.mcps }));
-vi.mock("../util", () => ({ sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)) }));
-vi.mock("../../lang", () => ({ language: {} }));
+vi.mock("../plugins/plugins.svelte", async () =>
+    (await import("../tests/bootMocks")).createBootMock("plugins", { pluginsStarted: () => deps.pluginsStarted() }),
+);
+vi.mock("../util", () => ({
+    sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    checkPersonaBinded: () => null,
+}));
+
 vi.mock("../storage/database.svelte", () => ({}));
 vi.mock("../process/tts", () => ({ sayTTS: deps.sayTTS }));
 vi.mock("./pushNotifications", () => ({ showCompletionNotification: deps.showCompletion }));
@@ -209,6 +231,7 @@ let stores: Stores;
 let hooks: Hooks["pluginHooks"];
 let characterStore: CharacterStore;
 let records: Records;
+let remoteHost: typeof import("./remoteHost");
 /** The fixture's chats: character `c` with chat `k` (messages m1, m2). */
 const fixtureChats = (): typeof deps.chats => ({
     c: { chatPage: 0, chats: [{ id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] }] },
@@ -239,6 +262,7 @@ function transport() {
     const answers: ChannelAnswer[] = [];
     return {
         answers,
+        viewing: () => false,
         send: vi.fn((message: ChannelAnswer) => {
             answers.push(message);
             return true;
@@ -284,14 +308,17 @@ beforeAll(
 
 beforeEach(async () => {
     vi.resetModules();
+    localStorage.removeItem("risu-remote-host");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "debug").mockImplementation(() => {});
-    deps.flush.mockReset().mockResolvedValue({ discarded: [] });
+    deps.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
     deps.applyHydration.mockReset().mockReturnValue(true);
     deps.heldChat.mockReset().mockReturnValue(rev(1, 1));
     deps.heldRecord.mockReset().mockReturnValue(rev(1, 1));
     deps.contexts.length = 0;
+    deps.captured.mockReset().mockImplementation((ref) => ({ ...targets, chatRef: { ...ref } }));
+    deps.pluginsStarted.mockReset().mockResolvedValue(undefined);
     deps.mcps.clear();
     deps.sayTTS.mockReset();
     deps.showCompletion.mockReset();
@@ -313,6 +340,7 @@ beforeEach(async () => {
     stores.memoryProgressStore.set({ runs: {}, chats: {}, legacy: null });
     hooks = (await import("../plugins/pluginHooks")).pluginHooks;
     channel = await import("./jobChannel");
+    remoteHost = await import("./remoteHost");
     // The fixture: character `c` in the real records (its chats in the chat module's mock), shown
     // by the tab (the readers resolve it by `selection.characterId`).
     characterStore = await import("../storage/characterStore.svelte");
@@ -330,12 +358,57 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    remoteHost.hostMode.set(false);
+    localStorage.removeItem("risu-remote-host");
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
 });
 
 describe("notices and questions", () => {
+    it("applies display notices for viewers and refuses their callbacks without running a hook", async () => {
+        const viewer = { ...tx, viewing: () => true };
+        const listener = vi.fn();
+        hooks.chatOutput.add(listener);
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        send(notice("reloadDisplay"), "J", viewer);
+        await pump();
+        expect(get(stores.ReloadGUIPointer)).toBe(1);
+        send(notice("updateGUI"), "J", viewer);
+        await pump();
+        expect(get(stores.ReloadGUIPointer)).toBe(2);
+        send(callback("viewer-output", "chatOutput", { messageId: "m2", speakerId: "c" }), "J", viewer);
+        await pump();
+        expect(tx.answers).toEqual([
+            expect.objectContaining({ type: "answer", id: "viewer-output", outcome: "failed", failure: "protocol" }),
+        ]);
+        expect(listener).not.toHaveBeenCalled();
+        expect(deps.contexts).toEqual([]);
+    });
+
+    it("localizes candidate notices in Korean and keeps the server message for unknown codes", async () => {
+        const locale = await import("../../lang");
+        locale.changeLanguage("ko");
+        try {
+            for (const [code, expected] of [
+                ["rerollCandidateDropped", "메시지의 저장 한도를 지키기 위해 오래된 응답 후보를 삭제했습니다."],
+                ["rerollCandidateTooLarge", "이 응답은 너무 커서 후보로 저장할 수 없습니다."],
+                [
+                    "scriptstateCheckpointSkipped",
+                    "채팅 변수가 너무 커서 체크포인트를 저장할 수 없습니다. 이번 리롤에서는 변수를 복원하지 않습니다.",
+                ],
+            ]) {
+                send(notice("alertToast", { code, message: "English fallback" }));
+                expect(alert()).toMatchObject({ type: "toast", msg: expected });
+                send(notice("alertClear"));
+            }
+            send(notice("alertToast", { code: "futureCode", message: "Future server message" }));
+            expect(alert()).toMatchObject({ type: "toast", msg: "Future server message" });
+        } finally {
+            locale.changeLanguage("en");
+        }
+    });
+
     it("drops an ended job's queued statuses, keeps its modal notices, and clears only the status it still owns", async () => {
         // Watch every published value: a stale toast that was immediately cleared must still fail.
         const seen: string[] = [];
@@ -559,6 +632,36 @@ describe("notices and questions", () => {
         await pump();
         expect(deps.sayTTS).toHaveBeenCalledTimes(1);
         expect(deps.sayTTS.mock.calls[0][1]).toBe("hello");
+    });
+
+    it("host mode skips speech and completion notifications while still applying display notices", async () => {
+        const { settings } = await import("../storage/settingsViews.svelte");
+        settings.ui.notification = true;
+        const completion = {
+            chaId: "c",
+            chatId: "k",
+            title: "Risuai",
+            body: "Ann's message has been processed.",
+            url: "/chat/c/k",
+            tag: "risuai-chat-completion",
+        };
+        remoteHost.hostMode.set(true);
+        send(notice("tts", { chaId: "c", text: "hello" }));
+        send(notice("notification", completion));
+        send(notice("reloadDisplay"));
+        await vi.dynamicImportSettled();
+        await pump();
+        expect(deps.sayTTS).not.toHaveBeenCalled();
+        expect(deps.showCompletion).not.toHaveBeenCalled();
+        expect(get(stores.ReloadGUIPointer)).toBe(1);
+
+        remoteHost.hostMode.set(false);
+        send(notice("tts", { chaId: "c", text: "hello" }));
+        send(notice("notification", completion));
+        await vi.dynamicImportSettled();
+        await pump();
+        expect(deps.sayTTS).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chaId: "c" }), "hello");
+        expect(deps.showCompletion).toHaveBeenCalledExactlyOnceWith(completion);
     });
 
     it("a notification notice shows the server's completion text through pushNotifications while the setting is on, and nothing asks for the permission here", async () => {
@@ -800,7 +903,7 @@ describe("callbacks", () => {
         send(callback("f1"));
         await pump();
         expect(tx.answers[0]).toEqual(failed("barrier", /Local changes could not be saved: quarantined/));
-        deps.flush.mockResolvedValueOnce({ discarded: ["characters/c"] });
+        deps.flush.mockResolvedValueOnce({ discarded: ["characters/c"], refused: [] });
         send(callback("f2"));
         await pump();
         expect(tx.answers[1]).toEqual(
@@ -904,14 +1007,16 @@ describe("callbacks", () => {
         await pump();
         expect(tx.answers[2]).toEqual(failed("hook", "undefined"));
         behavior = () => "fine";
-        deps.flush.mockResolvedValueOnce({ discarded: [] }).mockResolvedValueOnce({ discarded: ["chats/c/k"] });
+        deps.flush
+            .mockResolvedValueOnce({ discarded: [], refused: [] })
+            .mockResolvedValueOnce({ discarded: ["chats/c/k"], refused: [] });
         send(callback("h4"));
         await pump();
         expect(tx.answers[3]).toEqual(failed("barrier", /discarded changes the callback made/, ["chats/c/k"]));
         behavior = () => {
             throw new Error("thrown, but the barrier wins");
         };
-        deps.flush.mockResolvedValueOnce({ discarded: [] }).mockRejectedValueOnce(new Error("halted"));
+        deps.flush.mockResolvedValueOnce({ discarded: [], refused: [] }).mockRejectedValueOnce(new Error("halted"));
         send(callback("h5"));
         await pump();
         expect(tx.answers[4]).toEqual(failed("barrier", /could not be saved: halted/));
@@ -1001,14 +1106,80 @@ describe("callbacks", () => {
         expect(deps.contexts).toEqual([]);
     });
 
+    it("passes a callback signal and captured plugin context to listings and aborts a pending call before draining its lane", async () => {
+        const listed = vi.fn<typeof import("../process/mcp/internalmcp").MCPClientLike.prototype.getToolList>(
+            async () => [{ name: "sum", description: "Sum", inputSchema: { type: "object" } }],
+        );
+        const pending = deferred<import("../process/mcp/mcplib").RPCToolCallContent[]>();
+        let signal: AbortSignal | undefined;
+        const called = vi.fn<typeof import("../process/mcp/internalmcp").MCPClientLike.prototype.callTool>(
+            async (_tool, _args, _context, caller) => {
+                signal = caller;
+                return pending.promise;
+            },
+        );
+        deps.mcps.set("plugin:cancel", { getToolList: listed, callTool: called });
+        send(callback("listing", "mcpList", { identifier: "plugin:cancel" }));
+        await pump();
+        expect(listed).toHaveBeenCalledWith(hookContext("listing"), expect.any(AbortSignal));
+        expect(listed.mock.calls[0][1]?.aborted).toBe(false);
+        expect(tx.answers[0]).toMatchObject({
+            id: "listing",
+            outcome: "answered",
+            value: [{ name: "sum", description: "Sum", inputSchema: { type: "object" } }],
+        });
+        send(callback("tool", "mcpTool", { identifier: "plugin:cancel", tool: "sum", args: { n: 2 } }));
+        await pump();
+        expect(called).toHaveBeenCalledWith("sum", { n: 2 }, hookContext("tool"), expect.any(AbortSignal));
+        expect(signal?.aborted).toBe(false);
+        send(cancel("tool"));
+        await pump();
+        expect(signal?.aborted).toBe(true);
+        expect(drainReports()).toEqual([]);
+        pending.resolve([{ type: "text", text: "late" }]);
+        await pump();
+        expect(tx.answers.map((answer) => answer.id)).toEqual(["listing"]);
+        expect(drainReports()).toEqual([["J", "tool"]]);
+        send(callback("after", "mcpList", { identifier: "plugin:cancel" }));
+        await pump();
+        expect(tx.answers[1]).toMatchObject({ id: "after", outcome: "answered" });
+    });
+
+    it("passes the same callback signal to tab-client readiness, listing, and calls and aborts it when the job ends", async () => {
+        const registry = await import("../process/mcp/mcp");
+        const { MCPClientLike } = await import("../process/mcp/internalmcp");
+        const client = new MCPClientLike("internal:fs");
+        const ready = vi.spyOn(registry, "readyTabClient").mockResolvedValue(client);
+        const listed = vi
+            .spyOn(client, "getToolList")
+            .mockResolvedValue([{ name: "read", description: "Read", inputSchema: { type: "object" } }]);
+        const pending = deferred<import("../process/mcp/mcplib").RPCToolCallContent[]>();
+        const called = vi.spyOn(client, "callTool").mockReturnValue(pending.promise);
+        send(callback("tab-list", "mcpList", { identifier: "internal:fs" }));
+        await pump();
+        const listSignal = ready.mock.calls[0][1];
+        expect(listSignal).toBeInstanceOf(AbortSignal);
+        expect(listed).toHaveBeenCalledWith(undefined, listSignal);
+        send(callback("tab-call", "mcpTool", { identifier: "internal:fs", tool: "read", args: {} }));
+        await pump();
+        const callSignal = ready.mock.calls[1][1];
+        expect(callSignal).toBeInstanceOf(AbortSignal);
+        expect(called).toHaveBeenCalledWith("read", {}, undefined, callSignal);
+        channel.endJobChannel("J");
+        expect(callSignal?.aborted).toBe(true);
+        pending.resolve([{ type: "text", text: "late" }]);
+        await pump();
+        expect(tx.answers.map((answer) => answer.id)).toEqual(["tab-list"]);
+        expect(drainReports()).toEqual([["J", "tab-call"]]);
+    });
+
     it("starts nothing after a cancel: not a tool behind a pending pre-flush, not the next hook of a set; the result is kept but not sent", async () => {
-        const flushing = deferred<{ discarded: string[] }>();
+        const flushing = deferred<{ discarded: string[]; refused: string[] }>();
         deps.flush.mockReturnValueOnce(flushing.promise);
         const tool = vi.fn(async () => []);
         deps.mcps.set("plugin:x", { callTool: tool });
         send(callback("m", "mcpTool", { identifier: "plugin:x", tool: "t", args: {} }));
         send(cancel("m"));
-        flushing.resolve({ discarded: [] });
         await pump();
         expect(tool).not.toHaveBeenCalled();
         expect(tx.answers).toEqual([]);
@@ -1024,8 +1195,9 @@ describe("callbacks", () => {
         await pump();
         expect(second).not.toHaveBeenCalled();
         expect(tx.answers).toEqual([]);
-        // The mutations of what did run were still settled (the scoped flush ran).
-        expect(deps.flush).toHaveBeenCalledTimes(4);
+        // Both pre-flushes ran, but only the hook that started flushed its mutation scope.
+        expect(deps.flush.mock.calls).toEqual([[undefined], [undefined], [{ scope: { resource: 7, chat: 3 } }]]);
+        flushing.resolve({ discarded: [], refused: [] });
         // The lane is free again: both hooks run for the next callback (the first resolves at once now).
         send(callback("next"));
         await pump();
@@ -1350,6 +1522,75 @@ describe("callbacks", () => {
 });
 
 describe("the reply tail's callbacks", () => {
+    it("chatOutput reports the visible owner's index and treats an archived owner or speaker as gone", async () => {
+        records.insertCharacterRecords([
+            { chaId: "g", type: "group" },
+            { chaId: "b", type: "character" },
+        ]);
+        for (const chaId of ["g", "b"]) {
+            deps.chats[chaId] = { chats: [{ id: `chat-${chaId}`, message: [{ chatId: "reply" }] }] };
+        }
+        const listener = vi.fn();
+        hooks.chatOutput.add(listener);
+        for (const [id, chaId, speakerId] of [
+            ["visible", "b", "c"],
+            ["archived-owner", "g", "c"],
+            ["archived-speaker", "b", "g"],
+        ]) {
+            send(
+                callback(
+                    id,
+                    "chatOutput",
+                    { messageId: "reply", speakerId },
+                    {
+                        targets: { ...targets, chatRef: { chaId, chatId: `chat-${chaId}` } },
+                    },
+                ),
+            );
+            await pump();
+        }
+        const gone = failed("hook", "The chat the output listeners run for is gone");
+        expect
+            .soft(tx.answers)
+            .toEqual([{ type: "answer", id: "visible", outcome: "answered", value: true }, gone, gone]);
+        expect(listener).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                char: expect.objectContaining({ chaId: "c" }),
+                chat: expect.objectContaining({ id: "chat-b" }),
+                characterIndex: 1,
+            }),
+        );
+    });
+
+    it("runs an owner's chatOutput under the job targets while another chat is selected", async () => {
+        const selection = await import("../storage/selection.svelte");
+        await withCharacter(
+            { chaId: "elsewhere", type: "character" },
+            { chats: [{ id: "other-chat", message: [] }] },
+            async () => {
+                selection.selectCharacter("elsewhere");
+                const listener = vi.fn();
+                hooks.chatOutput.add(listener);
+                send(callback("worker-output", "chatOutput", { messageId: "m2", speakerId: "c" }), "J", {
+                    ...tx,
+                    viewing: () => false,
+                });
+                await pump();
+                expect(listener).toHaveBeenCalledExactlyOnceWith(
+                    expect.objectContaining({
+                        char: expect.objectContaining({ chaId: "c" }),
+                        chat: { id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] },
+                        chatIndex: 0,
+                        messageIndex: 1,
+                    }),
+                );
+                expect(deps.contexts).toEqual([hookContext("worker-output")]);
+                expect(tx.answers).toEqual([{ type: "answer", id: "worker-output", outcome: "answered", value: true }]);
+                expect(selection.selection.characterId).toBe("elsewhere");
+            },
+        );
+    });
+
     // `chatOutput` walks the live listener set as the tab's own send does (a listener an earlier one
     // removed does not run, one it added does), gives each listener a plain copy of the speaker and
     // the chat as they are then with indices looked up again, logs a throw, and answers `true`.
@@ -1403,6 +1644,70 @@ describe("the reply tail's callbacks", () => {
         } finally {
             chat.message.splice(0, chat.message.length, ...original);
         }
+    });
+
+    // The listeners a server job skipped while the tab was away (`done.skipped`) run late for each
+    // reply, under the chat's captured context (no callback), each entry's failure logged.
+    it("replaySkippedListeners waits for the plugins' startup, then runs the listeners of every skipped chatOutput entry in order with the chat's captured context, logs a gone speaker, and runs nothing with no listener or no context", async () => {
+        const calls: { messageIndex: number; chatIndex: number }[] = [];
+        // A boot resume reaches the replay before the guests registered: the listener is registered
+        // only once the startup wait resolves.
+        deps.pluginsStarted.mockImplementationOnce(async () => {
+            hooks.chatOutput.add((arg: unknown) => {
+                const { messageIndex, chatIndex } = arg as { messageIndex: number; chatIndex: number };
+                calls.push({ messageIndex, chatIndex });
+            });
+        });
+        const ref = { chaId: "c", chatId: "k" };
+        const done = (skipped: unknown[]) =>
+            ({ type: "done", epoch: EPOCH, revision: null, skipped }) as Parameters<
+                Channel["replaySkippedListeners"]
+            >[1];
+        await channel.replaySkippedListeners(
+            ref,
+            done([
+                { name: "editoutput" },
+                { name: "chatOutput", payload: { messageId: "m2", speakerId: "c" } },
+                { name: "chatOutput", payload: { messageId: "m1", speakerId: "nobody" } },
+                { name: "chatOutput", payload: { messageId: "m1", speakerId: "c" } },
+            ]),
+        );
+        expect(calls).toEqual([
+            { messageIndex: 1, chatIndex: 0 },
+            { messageIndex: 0, chatIndex: 0 },
+        ]);
+        // The chat's own context, with no callback to attribute an aux request to.
+        expect(deps.contexts).toEqual([
+            { ...targets, chatRef: ref },
+            { ...targets, chatRef: ref },
+        ]);
+        expect(deps.captured).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(deps.pluginsStarted).toHaveBeenCalledTimes(1);
+        expect(console.error).toHaveBeenCalledWith("[Channel]", expect.objectContaining({ failure: "hook" }));
+        expect(tx.answers).toEqual([]);
+
+        // No context for the chat (it is not listed): nothing runs.
+        calls.length = 0;
+        deps.captured.mockReturnValue(undefined);
+        await channel.replaySkippedListeners(
+            ref,
+            done([{ name: "chatOutput", payload: { messageId: "m2", speakerId: "c" } }]),
+        );
+        expect(calls).toEqual([]);
+
+        // No listener registered, or nothing skipped: the context is not even captured, and with
+        // nothing skipped the startup is not even waited for (one wait: the no-listener case).
+        deps.captured.mockClear();
+        deps.pluginsStarted.mockClear();
+        hooks.chatOutput.clear();
+        await channel.replaySkippedListeners(
+            ref,
+            done([{ name: "chatOutput", payload: { messageId: "m2", speakerId: "c" } }]),
+        );
+        await channel.replaySkippedListeners(ref, done([{ name: "editoutput" }]));
+        await channel.replaySkippedListeners(ref, { type: "done", epoch: EPOCH, revision: null });
+        expect(deps.captured).not.toHaveBeenCalled();
+        expect(deps.pluginsStarted).toHaveBeenCalledTimes(1);
     });
 
     it("imggen runs stableDiff for the job's chat with a check that throws once the callback is cancelled, and answers whether an image was shown", async () => {
@@ -1490,6 +1795,32 @@ describe("the reply tail's callbacks", () => {
         }
         expect(deps.writeInlayImage).not.toHaveBeenCalled();
         expect(tx.answers).toEqual([]);
+    });
+
+    it("names generated inlays only when the callback supplies a valid name", async () => {
+        // 200 UTF-16 code units (each emoji is two), the longest name the tab keeps.
+        const name = "🌳".repeat(100);
+        deps.generateAIImage.mockResolvedValue("data:image/png;base64,bGF0ZQ==");
+        deps.writeInlayImage.mockResolvedValue("inlay");
+
+        for (const [id, nameFields] of Object.entries({
+            valid: { name },
+            missing: {},
+            empty: { name: "" },
+            nonString: { name: { text: "My picture" } },
+            overlong: { name: name + "!" },
+        })) {
+            send(callback(id, "generateImage", { characterId: "c", prompt: "a tree", negative: "fog", ...nameFields }));
+            await pump();
+        }
+
+        expect(deps.writeInlayImage.mock.calls.map(([, options]) => options?.name)).toStrictEqual([
+            name,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+        ]);
     });
 
     it("recentEmotions lists the last five emotions shown for the chat's character, or for each member of its group", async () => {
@@ -1876,6 +2207,166 @@ describe("the provider callback", () => {
     /** A provider's byte stream (the tab's own path decodes it as `Response.text()` does). */
     const bytes = (stream: ReadableStream<Uint8Array>) => stream as unknown as ReadableStream<string>;
 
+    /** Both channel endpoints over JSON frames; delivery can drop chunks without notifying the tab. */
+    async function providerRoundTrip() {
+        const events: GenerationChannelEvent[] = [];
+        const frames: string[] = [];
+        const chunks: string[] = [];
+        const delivery = { dropChunks: false };
+        const hub = createChannelHub({ now: () => 1_000 });
+        const link = hub.open({
+            jobId: "J",
+            clientId: "tab",
+            epoch: EPOCH,
+            targets,
+            hooks: await channel.registeredHooks(),
+            hydrate: () => [],
+            ownerAttached: () => true,
+            send: (event) => {
+                events.push(JSON.parse(JSON.stringify(event)));
+                return true;
+            },
+        });
+        const connect = () => ({
+            send(message: Parameters<ChannelTransport["send"]>[0]) {
+                const frame = JSON.stringify(message);
+                frames.push(frame);
+                if (!delivery.dropChunks || message.type !== "chunk") link.handleMessage(JSON.parse(frame));
+                return true;
+            },
+        });
+        const pending = link.channel.callback(
+            "provider",
+            { name: "p", argument },
+            { onChunk: (text) => chunks.push(text) },
+        );
+        const event = events[0];
+        if (event.type !== "callback") throw new Error("Expected the provider callback");
+        return { link, events, frames, chunks, delivery, connect, pending, event };
+    }
+
+    it("sends 1,200 updates in linear JSON bytes and reconstructs cumulative text on the server", async () => {
+        const text = source<string>();
+        hooks.providers.set("p", async () => ({ success: true, content: text.stream }));
+        const h = await providerRoundTrip();
+        expect(h.event.chunks).toBe("append");
+        channel.handleChannelEvent("J", h.event, h.connect());
+        await pump(0);
+        const updates = Array.from({ length: 1_200 }, (_, index) => String(index).padStart(64, "x"));
+        for (const update of updates) {
+            text.push(update);
+            await pump(50);
+        }
+        text.close();
+        await pump(0);
+
+        const frames = h.frames.map((frame) => JSON.parse(frame));
+        const chunks = frames.filter((frame) => frame.type === "chunk");
+        const payloadBytes = 1_200 * 64;
+        const wireBytes = h.frames.reduce((sum, frame) => sum + new TextEncoder().encode(frame).byteLength, 0);
+        // A UUID, sequence and JSON keys fit in 128 bytes per frame, including the empty announcement and answer.
+        expect(wireBytes).toBeLessThanOrEqual(payloadBytes + (1_200 + 2) * 128);
+        expect(chunks).toHaveLength(1_201);
+        expect(chunks.map((frame) => frame.append).join("")).toBe(updates.join(""));
+        expect(chunks.every((frame) => !Object.hasOwn(frame, "text"))).toBe(true);
+        expect(chunks.map((frame) => frame.seq)).toEqual(Array.from({ length: 1_201 }, (_, index) => index + 1));
+        expect(frames.at(-1)).toEqual({
+            type: "answer",
+            id: h.event.id,
+            outcome: "answered",
+            value: { success: true, streamed: true, seq: 1_201 },
+        });
+        let cumulative = "";
+        expect(h.chunks).toEqual(["", ...updates.map((update) => (cumulative += update))]);
+        expect(await h.pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 1_201 } });
+        expect(h.events.filter((event) => event.type === "chunkResync")).toEqual([]);
+        channel.endJobChannel("J");
+    });
+
+    it("sends snapshots after a failed send, a replaced transport, a callback replay, and an owner resync", async () => {
+        const text = source<string>();
+        const run = vi.fn(async () => ({ success: true, content: text.stream }));
+        hooks.providers.set("p", run);
+        const event = { ...provider("recover"), chunks: "append" as const };
+        send(event);
+        await pump(0);
+        expect(sent()).toEqual([{ type: "chunk", id: event.id, seq: 1, append: "" }]);
+
+        tx.send.mockImplementationOnce((message) => {
+            tx.answers.push(message);
+            return false;
+        });
+        text.push("Hello");
+        await pump(50);
+        expect(sent().at(-1)).toEqual({ type: "chunk", id: event.id, seq: 2, append: "Hello" });
+        text.push(" world");
+        await pump(50);
+        expect(sent().at(-1)).toEqual({ type: "chunk", id: event.id, seq: 3, text: "Hello world" });
+
+        const replacement = transport();
+        send(notice("reloadDisplay"), "J", replacement);
+        text.push("!");
+        await pump(50);
+        expect(replacement.answers).toEqual([{ type: "chunk", id: event.id, seq: 4, text: "Hello world!" }]);
+        send({ ...event, replay: true }, "J", replacement);
+        expect(replacement.answers.at(-1)).toEqual({ type: "chunk", id: event.id, seq: 5, text: "Hello world!" });
+        send({ type: "chunkResync", epoch: EPOCH, id: event.id }, "J", replacement);
+        expect(replacement.answers.at(-1)).toEqual({ type: "chunk", id: event.id, seq: 6, text: "Hello world!" });
+        text.push(" Again.");
+        await pump(50);
+        expect(replacement.answers.at(-1)).toEqual({ type: "chunk", id: event.id, seq: 7, append: " Again." });
+        text.close();
+        await pump(0);
+        expect(replacement.answers.at(-1)).toEqual({
+            type: "answer",
+            id: event.id,
+            outcome: "answered",
+            value: { success: true, streamed: true, seq: 7 },
+        });
+        expect(run).toHaveBeenCalledTimes(1);
+        channel.endJobChannel("J");
+    });
+
+    it("replays a finished stream's retained snapshot before its cached answer so the server can complete", async () => {
+        const text = source<string>();
+        const run = vi.fn(async () => ({ success: true, content: text.stream }));
+        hooks.providers.set("p", run);
+        const h = await providerRoundTrip();
+        channel.handleChannelEvent("J", h.event, h.connect());
+        await pump(0);
+        text.push("Hello");
+        await pump(50);
+        h.delivery.dropChunks = true;
+        text.push(" world");
+        text.close();
+        await pump(0);
+        let settled = false;
+        void h.pending.then(() => {
+            settled = true;
+        });
+        await pump(0);
+        expect(settled).toBe(false);
+        expect(h.chunks).toEqual(["", "Hello"]);
+        expect(text.stream.locked).toBe(false);
+        expect(h.events.at(-1)).toEqual({ type: "chunkResync", epoch: EPOCH, id: h.event.id });
+
+        // The resync request was lost too. Reattachment must repair the finished stream before replaying success.
+        h.delivery.dropChunks = false;
+        h.link.handleAttach();
+        const replay = h.events.at(-1)!;
+        expect(replay).toMatchObject({ type: "callback", id: h.event.id, replay: true, chunks: "append" });
+        h.frames.length = 0;
+        channel.handleChannelEvent("J", replay, h.connect());
+        expect(h.frames.map((frame) => JSON.parse(frame))).toEqual([
+            { type: "chunk", id: h.event.id, seq: 3, text: "Hello world" },
+            { type: "answer", id: h.event.id, outcome: "answered", value: { success: true, streamed: true, seq: 3 } },
+        ]);
+        expect(await h.pending).toEqual({ outcome: "answered", value: { success: true, streamed: true, seq: 3 } });
+        expect(h.chunks).toEqual(["", "Hello", "Hello world"]);
+        expect(run).toHaveBeenCalledTimes(1);
+        channel.endJobChannel("J");
+    });
+
     it("calls the provider with the server's argument, the job's targets, and an abort signal; a text answers `{ success, content }`, no answer `{ none: true }`; a throw, a text over the cap, and an unloaded provider are hook failures", async () => {
         const seen: { arg: unknown; signal: AbortSignal | undefined }[] = [];
         let impl: Provider = async () => ({ success: true, content: "hello" });
@@ -1926,7 +2417,7 @@ describe("the provider callback", () => {
         expect(deps.flush).toHaveBeenCalledTimes(14);
     });
 
-    it("streams a provider's text as cumulative chunks (the first at once, then the newest at most every 50 ms and at the end) before answering `{ success: true, streamed: true }`, and releases the stream", async () => {
+    it("sends cumulative snapshots and an unsequenced success without an append offer, then releases the stream", async () => {
         const text = source<string>();
         hooks.providers.set("p", async () => ({ success: true, content: text.stream }));
         send(provider("s"));

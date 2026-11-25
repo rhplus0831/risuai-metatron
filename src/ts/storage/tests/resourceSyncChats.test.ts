@@ -1,8 +1,14 @@
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
+import { plain, recoverOldDelete, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
+import { advanceUntil, settleFlush } from "./flushRetry";
+import { createFakeLockManager } from "./fakeLockManager";
+import { translationSourceHash } from "../../../../shared/translation/hash.ts";
+import type { ChatOp } from "../../../../shared/chats.ts";
+import { MAX_OOC_EXCHANGES, oocPrune, type OocExchange } from "../../../../shared/ooc.ts";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
 // against the real server store: mixed batches, the request caps, quarantine, conflicts, deferral,
@@ -14,10 +20,14 @@ const { server, alerts } = vi.hoisted(() => ({
     alerts: { error: vi.fn(), normal: vi.fn(), normalWait: vi.fn(async () => undefined) },
 }));
 
-vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
-    getNodeServerProxyAuth: async () => "signed-token",
-}));
+vi.mock("../serverAuth", async () =>
+    (await import("./serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init, options) => {
+            options?.beforeDispatch?.();
+            return server.current.fetch(path, init);
+        },
+    }),
+);
 vi.mock("../../alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertError: alerts.error,
@@ -27,7 +37,12 @@ vi.mock("../../alert", async () =>
     }),
 );
 vi.mock("src/lang", () => ({
-    language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    language: {
+        resourceReloaded: "reloaded",
+        resourceRestored: "restored",
+        memoryEditRefused: "Memory edit refused",
+        ooc: { alreadyAnswered: "Answer already stored", oocExchangeGone: "Question removed" },
+    },
     changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
@@ -37,7 +52,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -51,6 +66,12 @@ const KINDS = Object.values(RESOURCE_KIND);
 const m = (id: string | undefined, data: string, role: "user" | "char" = "user") => ({ role, data, chatId: id }) as any;
 const refK = { chaId: "c", chatId: "k" };
 const refJ = { chaId: "c", chatId: "j" };
+const originalGlobals = new Map(
+    ["location", "indexedDB", "IDBKeyRange", "fetch"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 
 /**
  * Boots the adapter and the chat module the way `loadData` does: the server holds the collections
@@ -60,7 +81,7 @@ const refJ = { chaId: "c", chatId: "j" };
  */
 async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
-    const fake = await StoreBackedServer.create();
+    const fake = await StoreBackedServer.create({ lock: true });
     // The store materialized the sections and collections when it opened; there is no `root` record,
     // and the sample singleton edit of these tests is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
@@ -144,7 +165,7 @@ beforeEach(() => {
         addEventListener(type, listener, options);
     });
     localStorage.clear();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -158,8 +179,80 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
     server.current?.close();
+});
+
+describe("refused metadata writes", () => {
+    it("rereads an unseen winning OOC answer and saves the note from the same batch", async () => {
+        const question: OocExchange = { id: "q", segment: "s", anchorMessageId: "a", question: "Why?", time: 1 };
+        const { fake, sync, chat } = await boot((server) => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "meta", merge: { oocLog: { q: question } } }],
+                },
+            ]);
+        });
+        const winner = { ...question, answer: "First answer" };
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "meta", ifOocUnanswered: "q", merge: { oocLog: { q: winner } } }],
+            },
+        ]);
+        expect(chat.findChat(refK)!.oocLog?.q).toEqual(question);
+        chat.mergeChatMeta(refK, "oocLog", { q: { ...question, answer: "Later answer" } }, [], "q");
+        chat.setChatMeta(refK, { note: "Independent note" });
+
+        await sync.flushResources();
+        expect(fake.chat("c", "k")!.data).toMatchObject({ note: "Independent note", oocLog: { q: winner } });
+        await vi.advanceTimersByTimeAsync(1200);
+        expect(chat.findChat(refK)).toMatchObject({ note: "Independent note", oocLog: { q: winner } });
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith("Answer already stored");
+    });
+
+    it.each(["hypaV2Data", "supaMemoryData"] as const)(
+        "reports a %s refusal once when its first reply is lost",
+        async (field) => {
+            const { fake, sync, chat } = await boot();
+            const value = (text: string) =>
+                field === "supaMemoryData"
+                    ? text
+                    : { chunks: [{ mainChunkID: 1, text }], mainChunks: [], lastMainChunkID: 1 };
+            const baseline = chat.captureChatBaseline(refK);
+            fake.writeJobChatMeta("c", "k", { [field]: value("New job memory") });
+            chat.applyChatResult(baseline, {
+                ...baseline.chat,
+                [field]: value("Older edit"),
+                note: "Plugin note",
+            });
+            fake.dropNextBatchResponse = true;
+            const flushing = sync.flushResources();
+            // The first reply is lost: nothing is reported while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fake.batchCount()).toBe(1);
+            expect(alerts.normal).not.toHaveBeenCalled();
+            await settleFlush(flushing);
+
+            const [lost, replay] = fake.batchBodies().flatMap((body) => body.chats ?? []);
+            expect(replay).toMatchObject({ groupId: lost.groupId, retry: true });
+            const expected = { note: "Plugin note", [field]: value("New job memory") };
+            expect(fake.chat("c", "k")!.data).toMatchObject(expected);
+            expect(chat.findChat(refK)).toMatchObject(expected);
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith("Memory edit refused");
+            chat.setChatMeta(refK, { [field]: value("Fresh edit") });
+            await sync.flushResources();
+            expect(fake.chat("c", "k")!.data[field]).toEqual(value("Fresh edit"));
+        },
+    );
 });
 
 describe("boot and mixed batches", () => {
@@ -179,6 +272,38 @@ describe("boot and mixed batches", () => {
         expect(saved.name).toBe("renamed");
         expect(saved).not.toHaveProperty("chats");
         expect(saved).not.toHaveProperty("chatPage");
+    });
+
+    it("stops the dev chat drift interval before another page starts in the same realm", async () => {
+        const polls: ReturnType<typeof vi.fn>[] = [];
+        const interval = globalThis.setInterval;
+        vi.spyOn(globalThis, "setInterval").mockImplementation((handler, delay, ...args) => {
+            if (delay === 2000 && typeof handler === "function") {
+                const poll = vi.fn(() => handler(...args));
+                polls.push(poll);
+                return interval(poll, delay);
+            }
+            return interval(handler, delay, ...args);
+        });
+        const first = await boot();
+        expect(polls).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(polls[0]).toHaveBeenCalledTimes(1);
+        first.sync.stopResourceSync();
+        first.fake.close();
+        // Boot resets the module graph, without clearing the realm's timers as test teardown does.
+        const second = await boot();
+        try {
+            expect(polls).toHaveLength(2);
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(polls[0]).toHaveBeenCalledTimes(1);
+            expect(polls[1]).toHaveBeenCalledTimes(1);
+            second.sync.stopResourceSync();
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(polls[1]).toHaveBeenCalledTimes(1);
+        } finally {
+            second.sync.stopResourceSync();
+        }
     });
 
     it("sends resource ops, chat groups, and reorders in one request, without touching the character revision", async () => {
@@ -238,6 +363,77 @@ describe("boot and mixed batches", () => {
         expect(fake.store.readKinds([fake.kind("characters")], { chats: true }).chats).toHaveLength(4);
     });
 
+    it("does not merge a create: a local new character whose id another tab created conflicts as before", async () => {
+        const { fake, sync, characters } = await boot();
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter({ chaId: "n", name: "Local new", type: "character", lastInteraction: 1 });
+        await tick();
+        fake.set("characters", "n", { chaId: "n", name: "Local new", type: "character", lastInteraction: 2 });
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual(["characters/n"]);
+        expect(characters().find((entry: any) => entry.chaId === "n").lastInteraction).toBe(2);
+    });
+
+    it("keeps imported history as a recovery draft and settles chat work when another tab wins the character create", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, sync, chat, characters } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            const characterStore = await import("../characterStore.svelte");
+            const importedMessages = [
+                m("imported-user", "Imported question"),
+                m("imported-char", "Imported reply", "char"),
+            ];
+            characterStore.addCharacter({
+                chaId: "n",
+                name: "Local new",
+                type: "character",
+                chats: [{ id: "imported", name: "Imported history", message: importedMessages }],
+            });
+            await tick();
+            expect(chat.hasUnsavedChatWork()).toBe(true);
+            fake.set("characters", "n", { chaId: "n", name: "Other tab's character", type: "character" });
+            fake.chatBatch([
+                {
+                    characterId: "n",
+                    chatId: "remote-chat",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: "remote-chat", name: "Other tab's chat", message: [] } as any }],
+                },
+            ]);
+
+            await expect(sync.flushResources()).resolves.toEqual({ discarded: ["characters/n"], refused: [] });
+            expect(characters().find((entry: any) => entry.chaId === "n").name).toBe("Other tab's character");
+            expect(fake.order("n")!.ids).toEqual(["remote-chat"]);
+            expect(fake.chat("n", "imported")).toBeNull();
+            expect(chat.chatDiscardsSince(0)).toEqual([]);
+            expect(chat.hasUnsavedChatWork()).toBe(false);
+            expect(warnsOnUnload()).toBe(false);
+
+            const batches = fake.batchCount();
+            // The chat list refresh and draft journal are scheduled separately from the flush.
+            await vi.advanceTimersByTimeAsync(500);
+            expect(chat.chatList("n").map(({ id, name }) => ({ id, name }))).toEqual([
+                { id: "remote-chat", name: "Other tab's chat" },
+            ]);
+            const drafts = (await journal.listDrafts()).filter((draft) => draft.scope === "chat");
+            expect(drafts).toHaveLength(1);
+            const draft = drafts[0];
+            expect(draft).toMatchObject({ scope: "chat", target: "n\0imported" });
+            if (draft.scope !== "chat") throw new Error("Missing chat recovery draft");
+            expect(draft.layers.pending?.value.createSnapshot?.message).toEqual(importedMessages);
+
+            await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
+            expect(fake.batchCount()).toBe(batches);
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
+    });
+
     it("renames a message id the server refuses and redirects the edit queued meanwhile", async () => {
         const { fake, sync, chat } = await boot();
         const ref = { chaId: "c", chatId: "n" };
@@ -258,6 +454,67 @@ describe("boot and mixed batches", () => {
 });
 
 describe("the flush barrier", () => {
+    it("saves a 201-entry OOC merge from concurrent pruned writers and the note queued behind it", async () => {
+        const segment = { id: "current", anchorMessageId: "c" };
+        const exchange = (id: string, time: number): OocExchange => ({
+            id,
+            segment: "earlier",
+            anchorMessageId: "c",
+            question: id,
+            time,
+        });
+        const initial = Object.fromEntries(
+            Array.from({ length: MAX_OOC_EXCHANGES }, (_, i) => [`old-${i}`, exchange(`old-${i}`, i)]),
+        );
+        const { fake, sync, chat } = await boot((fake) =>
+            fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: fake.chat("c", "k")!.revision,
+                    ops: [{ op: "meta", set: { oocLog: initial, oocSegment: segment } }],
+                },
+            ]),
+        );
+        try {
+            const baseRevision = fake.chat("c", "k")!.revision;
+            const removalsA = oocPrune(initial, segment, [])!;
+            const removalsB = oocPrune(plain(chat.findChat(refK)!.oocLog), segment, [])!;
+            expect(removalsA).toEqual(["old-0"]);
+            expect(removalsB).toEqual(removalsA);
+            const a = { ...exchange("A", 1000), segment: "current" };
+            const b = { ...exchange("B", 1001), segment: "current" };
+            // The first writer lands while the tab still holds the same full-log revision.
+            fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision,
+                    ops: [{ op: "meta", merge: { oocLog: { A: a } }, mergeUnset: { oocLog: removalsA } }],
+                },
+            ]);
+            chat.mergeChatMeta(refK, "oocLog", { B: b }, removalsB);
+            fake.holdNextBatch = true;
+            const saving = sync.flushResources();
+            await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
+            chat.setChatMeta(refK, { note: "queued behind the OOC merge" });
+            fake.releaseBatch!();
+            expect(await saving).toEqual({ discarded: [], refused: [] });
+            expect(Object.keys(fake.chat("c", "k")!.data.oocLog)).toHaveLength(201);
+            expect(fake.chat("c", "k")!.data.oocLog).toEqual({
+                ...Object.fromEntries(Object.entries(initial).filter(([id]) => id !== "old-0")),
+                A: a,
+                B: b,
+            });
+            expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            expect(fake.chat("c", "k")!.data.note).toBe("queued behind the OOC merge");
+            expect(sync.refusedItems()).toEqual([]);
+            expect(alerts.error).not.toHaveBeenCalled();
+        } finally {
+            sync.stopResourceSync();
+        }
+    });
+
     it("waits for chat work already in flight", async () => {
         const { fake, sync, chat } = await boot();
         fake.holdNextBatch = true;
@@ -299,9 +556,13 @@ describe("the flush barrier", () => {
         const { fake, sync, chat } = await boot();
         fake.dropNextBatchResponse = true;
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "old")] } as any);
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The create's answer is lost; the edit lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.chat("c", "n")).not.toBeNull();
         chat.setMessageText({ chaId: "c", chatId: "n" }, "x", "newer");
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
         expect(fake.texts("c", "n")).toEqual(["newer"]);
@@ -322,7 +583,9 @@ describe("a new character whose create answer was lost", () => {
             chats: [{ id: "d1", name: "First", message: [m("x", "Original")] }],
         });
         h.fake.dropNextBatchResponse = true;
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        // The flush that lost the answer waits out its backoff while the test acts.
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
         expect(h.fake.batchBodies()).toHaveLength(1);
         const [batch] = h.fake.batchBodies();
         const create = batch.ops.find((op: any) => op.kind === "characters" && op.id === "d");
@@ -337,15 +600,16 @@ describe("a new character whose create answer was lost", () => {
         expect(h.fake.record("characters", "d")!.data).toEqual(create.data);
         expect(h.fake.texts("d", "d1")).toEqual(["Original"]);
         h.fake.requests.length = 0;
-        return { ...h, characterStore, create };
+        return { ...h, characterStore, create, flushing };
     }
 
     it("saves later chat edits after adopting a lost character create without a reload", async () => {
-        const { fake, sync, chat, create } = await loseCharacterCreate();
+        const { fake, sync, chat, create, flushing } = await loseCharacterCreate();
         chat.setMessageText(ref, "x", "Edited after the lost answer");
         chat.setChatMeta(ref, { note: "Keep this note too" });
 
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         // Recreating the landed character on a null base conflicts; the summary read must keep
         // both the lost chat create's resend and the newer edits until this flush saves them.
         expect(fake.batchBodies()[0].ops).toContainEqual(create);
@@ -355,8 +619,8 @@ describe("a new character whose create answer was lost", () => {
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
-    it("saves replacement chats after a removed character's lost create is adopted and its deletion fails", async () => {
-        const { fake, sync, chat, characterStore, create } = await loseCharacterCreate();
+    it("saves replacement chats after a removed character's lost create is adopted and its deletion fails, and keeps the dropped chat after them without a delete", async () => {
+        const { fake, sync, chat, characterStore, create, flushing } = await loseCharacterCreate();
         expect(characterStore.removeCharacter("d")).toBe(true);
         // Let the lost create's retry conflict first; fail only the delete that follows adoption.
         fake.failNext = {
@@ -369,7 +633,9 @@ describe("a new character whose create answer was lost", () => {
                     .at(-1)
                     .ops.some((op: any) => op.kind === "characters" && op.id === "d" && op.delete),
         };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        // The flush's retry conflicts and adopts the create; the deletion then fails and the flush
+        // waits out its backoff again.
+        await advanceUntil(() => fake.failNext === null);
         expect(fake.batchBodies()[0].ops).toContainEqual(create);
         expect(fake.record("characters", "d")!.data.name).toBe("D");
         expect(fake.texts("d", "d1")).toEqual(["Original"]);
@@ -379,24 +645,97 @@ describe("a new character whose create answer was lost", () => {
             name: "Replacement",
             chats: [{ id: "replacement", name: "Replacement chat", message: [m("r", "Replacement transcript")] }],
         });
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        const sentBefore = fake.batchCount();
+        // The replacement drops `d1`: the server still holds it, so it stays after the replacement's chats.
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         const collection = fake.store.readRefs([], { chatCollections: ["d"] }).chatCollections[0];
-        expect(collection.order?.ids).toEqual(["replacement"]);
+        expect(collection.order?.ids).toEqual(["replacement", "d1"]);
         expect(
             collection.chats.map((entry) => ({
                 id: entry.id,
                 texts: entry.data.message.map((message) => message.data),
             })),
-        ).toEqual([{ id: "replacement", texts: ["Replacement transcript"] }]);
+        ).toEqual([
+            { id: "d1", texts: ["Original"] },
+            { id: "replacement", texts: ["Replacement transcript"] },
+        ]);
+        const sent = fake.batchBodies().slice(sentBefore);
+        expect(sent.flatMap((body) => body.chats ?? []).flatMap((group: any) => group.ops)).not.toContainEqual({
+            op: "delete",
+        });
+        for (const order of sent.flatMap((body) => body.chatOrders ?? [])) {
+            expect([...order.ids].sort()).toEqual(["d1", "replacement"]);
+        }
+        expect(chat.chatList("d").map((entry) => entry.id)).toEqual(["replacement", "d1"]);
         expect(fake.record("characters", "d")!.data.name).toBe("Replacement");
         expect(chat.hasUnsavedChatWork()).toBe(false);
-        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 });
 
 // Each case needs more than the 5,000 operations one batch may carry (the server's cap), queued one
 // call at a time and applied by the store: about a quarter second of CPU.
 describe("request caps", () => {
+    it("repeats pre-dispatch oversized notices after an edit and Retry without automatic attempts or blocking unrelated saves", async () => {
+        const { fake, sync, chat, settings } = await boot();
+        const collect = chat.takeChatWork;
+        const padding: ChatOp = { op: "meta", set: {} };
+        // Simulate an indivisible oversized group at the collection boundary. The real planner
+        // checks its existing operation cap, avoiding a 100 MiB byte-cap fixture; quarantine,
+        // serialization, explicit release and all unrelated work stay real.
+        const oversized = vi.spyOn(chat, "takeChatWork").mockImplementation((...args) => {
+            const work = collect(...args);
+            return {
+                ...work,
+                groups: work.groups.map((group) =>
+                    group.chatId === "k"
+                        ? {
+                              ...group,
+                              ops: [
+                                  ...group.ops,
+                                  ...Array<ChatOp>(sync.MAX_BATCH_OPERATIONS + 1 - group.ops.length).fill(padding),
+                              ],
+                          }
+                        : group,
+                ),
+            };
+        });
+        chat.setMessageText(refK, "a", "kept draft");
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
+        const [item] = sync.refusedItems();
+        expect(item).toMatchObject({ kind: "chat", chatId: "k", reason: "The chat k is too large to save" });
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith("The chat k is too large to save");
+        expect(fake.batchCount()).toBe(0);
+
+        chat.setMessageText(refK, "a", "edited but still oversized");
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        expect(sync.refusedItems()[0].key).toBe(item.key);
+        sync.retryRefused(item.key);
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
+        expect(alerts.error.mock.calls.map(([text]) => text)).toEqual(Array(3).fill("The chat k is too large to save"));
+        expect(fake.batchCount()).toBe(0);
+        expect(chat.findChat(refK)!.message[0].data).toBe("edited but still oversized");
+        expect(fake.texts("c", "k")[0]).toBe("A");
+
+        const attempts = oversized.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(oversized).toHaveBeenCalledTimes(attempts);
+        expect(fake.batchCount()).toBe(0);
+        chat.setChatMeta(refJ, { note: "unrelated save" });
+        settings.ui.theme = "unrelated theme";
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: ["chats/c/k"] });
+        expect(fake.chat("c", "j")!.data.note).toBe("unrelated save");
+        expect(fake.record("ui", "main")!.data.theme).toBe("unrelated theme");
+        expect(
+            fake
+                .batchBodies()
+                .flatMap((body) => body.chats ?? [])
+                .map((group: { chatId: string }) => group.chatId),
+        ).toEqual(["j"]);
+        expect(alerts.error).toHaveBeenCalledTimes(3);
+    });
+
     it("sends more than 5,000 unsent ops of one chat over several requests without losing any or blocking other chats", async () => {
         const { fake, sync, chat } = await boot();
         for (let index = 0; index <= 5000; index += 1) {
@@ -450,6 +789,98 @@ describe("request caps", () => {
 });
 
 describe("one chat's trouble does not block the rest", () => {
+    it("reports every still-refused chat on a later flush without repeating its discard", async () => {
+        const { fake, sync, chat, settings } = await boot();
+        chat.setMessageText(refK, "a", "draft kept in this tab");
+        chat.setChatMeta(refK, { fmIndex: "invalid" as any });
+        chat.setChatMeta(refJ, { fmIndex: "also invalid" as any });
+        await sync.flushResources();
+        expect(alerts.error).toHaveBeenCalledTimes(2);
+        // The alert boundary settles immediately in this harness. Start a new discard window.
+        await tick();
+        alerts.error.mockClear();
+
+        settings.ui.theme = "healthy edit after the refusal";
+        const result = await sync.flushResources();
+        expect(result.discarded).toEqual([]);
+        expect(result.refused.sort()).toEqual(["chats/c/j", "chats/c/k"]);
+        expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "healthy edit after the refusal" });
+        expect(chat.findChat(refK)!.message[0].data).toBe("draft kept in this tab");
+        expect(fake.chat("c", "k")!.data.message[0].data).toBe("A");
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("packs a settings edit and a chat edit together again once an isolated HTML 413 quarantined the refused unit", async () => {
+        const { fake, sync, chat, settings } = await boot();
+        // A proxy in front of the server refuses large bodies with HTML: the refusal names no unit.
+        const pass = fake.fetch.bind(fake);
+        const sent: { ops: unknown[]; chats: unknown[] }[] = [];
+        vi.spyOn(fake, "fetch").mockImplementation(async (path: string, init?: RequestInit) => {
+            if (path === "/api/resources/batch") {
+                const body = String(init!.body);
+                sent.push(JSON.parse(body));
+                if (new TextEncoder().encode(body).byteLength > 1024) {
+                    return new Response("<html>Request too large</html>", { status: 413 });
+                }
+            }
+            return pass(path, init);
+        });
+        settings.ui.theme = "z".repeat(4096);
+        chat.setChatMeta(refJ, { note: "fits" });
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ resourceKind: "ui" })]);
+        expect(fake.chat("c", "j")!.data.note).toBe("fits");
+
+        settings.ui.theme = "small again";
+        chat.setChatMeta(refJ, { note: "small again" });
+        const before = sent.length;
+        await vi.advanceTimersByTimeAsync(3000);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(sent.slice(before)).toMatchObject([{ ops: [{ kind: "ui" }], chats: [{ chatId: "j" }] }]);
+        expect(fake.record("ui", "main")!.data).toMatchObject({ theme: "small again" });
+        expect(fake.chat("c", "j")!.data.note).toBe("small again");
+    });
+
+    it("resolves later flushes with a refused order and keeps its intent for retry or changed ids", async () => {
+        const { fake, sync, chat, mirrorIds } = await boot();
+        chat.createChat("c", { id: "n", name: "N", message: [] } as any);
+        await sync.flushResources();
+        const refuseOrder = async (ids: string[]) => {
+            fake.failNext = {
+                status: 413,
+                body: { error: "order too large" },
+                times: 1,
+                match: (path) => path === "/api/resources/batch",
+            };
+            chat.reorderChats("c", ids);
+            await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+            expect(sync.refusedItems()).toEqual([
+                expect.objectContaining({ kind: "order", chaId: "c", reason: "order too large" }),
+            ]);
+        };
+
+        await refuseOrder(["j", "k", "n"]);
+        const batches = fake.batchCount();
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: ["chats/c"] });
+        expect(fake.batchCount()).toBe(batches);
+        expect(mirrorIds()).toEqual(["j", "k", "n"]);
+        expect(fake.order("c")!.ids).toEqual(["k", "j", "n"]);
+        expect(warnsOnUnload()).toBe(true);
+
+        sync.retryRefused(sync.refusedItems()[0].key);
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
+        expect(fake.order("c")!.ids).toEqual(["j", "k", "n"]);
+        expect(sync.refusedItems()).toEqual([]);
+
+        await refuseOrder(["k", "j", "n"]);
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: ["chats/c"] });
+        chat.reorderChats("c", ["n", "k", "j"]);
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: [], refused: [] });
+        expect(fake.order("c")!.ids).toEqual(["n", "k", "j"]);
+        expect(sync.refusedItems()).toEqual([]);
+        expect(warnsOnUnload()).toBe(false);
+    });
+
     it("quarantines a chat whose data the server refuses and keeps saving the others and the ui section", async () => {
         // The per-chat quarantine relies on the server naming the group (`chats[i]...`) in every
         // validation error of a chat group, including one found while applying the group (a `meta`
@@ -523,7 +954,7 @@ describe("one chat's trouble does not block the rest", () => {
         };
         chat.setChatMeta(refK, { note: "unsaved note" });
         chat.setMessageText(refK, "a", "unsaved text");
-        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
         expect(warnsOnUnload()).toBe(true);
         expect(sync.refusedItems()).toHaveLength(1);
         await vi.advanceTimersByTimeAsync(30_000);
@@ -554,7 +985,7 @@ describe("one chat's trouble does not block the rest", () => {
         ]);
         expect(warnsOnUnload()).toBe(true);
         fake.releaseBatchResponse!();
-        expect(await flush).toEqual({ discarded: [] });
+        expect(await flush).toEqual({ discarded: [], refused: [] });
         expect(fake.chat("c", "k")!.data).toEqual(expectedChat);
         expect(sync.refusedItems()).toEqual([]);
         expect(warnsOnUnload()).toBe(false);
@@ -563,10 +994,10 @@ describe("one chat's trouble does not block the rest", () => {
     it("quarantines a refused chat again after an edit or explicit retry, alerts only once, and sends nothing automatically", async () => {
         const { fake, sync, chat } = await boot();
         chat.setChatMeta(refK, { fmIndex: "not a number" as any });
-        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
         const key = sync.refusedItems()[0].key;
         chat.setMessageText(refK, "a", "still refused");
-        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
         expect(fake.batchCount()).toBe(2);
         expect(sync.refusedItems()).toEqual([
             expect.objectContaining({ kind: "chat", key, reason: expect.any(String) }),
@@ -578,7 +1009,7 @@ describe("one chat's trouble does not block the rest", () => {
         expect(fake.batchCount()).toBe(2);
 
         sync.retryRefused(key);
-        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"] });
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: ["chats/c/k"] });
         expect(fake.batchCount()).toBe(3);
         expect(alerts.error).toHaveBeenCalledTimes(1);
         expect(sync.refusedItems()).toEqual([
@@ -742,7 +1173,12 @@ describe("one chat's trouble does not block the rest", () => {
         selection.selectCharacterAt(0);
         await tick();
         chat.setChatMeta(refK, { note: "edit on a deleted character's chat" });
-        const result = await sync.flushResources();
+        const scope = sync.beginMutationScope();
+        // The flush settles the captured edit (discarded by its conflict); the character itself goes
+        // with the background list read that follows.
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1000);
+        const result = await sync.flushResources({ scope });
         expect(result.discarded.sort()).toEqual(["characters/c", "chats/c/k"]);
         expect(characters()).toEqual([]);
         expect(selection.selectedIndex()).toBe(-1);
@@ -792,14 +1228,7 @@ describe("one chat's trouble does not block the rest", () => {
         chat.createChat("c", { id: "local", name: "L", message: [] } as any);
         await sync.flushResources();
         // Before the list is read again: another tab deletes `j`, this tab edits it and reorders.
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         chat.reorderChats("c", ["local", "k", "j"]);
         const result = await sync.flushResources();
@@ -815,13 +1244,96 @@ describe("one chat's trouble does not block the rest", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
+    async function loseReorderAnswer(
+        { fake, sync, chat }: Awaited<ReturnType<typeof boot>>,
+        stage: "before commit" | "after commit",
+    ) {
+        if (stage === "before commit") fake.holdNextBatch = true;
+        else fake.holdNextBatchResponse = true;
+
+        // The client loses the answer even though the original request still runs on the server.
+        let rejectAnswer!: (error: Error) => void;
+        const lostAnswer = new Promise<never>((_, reject) => {
+            rejectAnswer = reject;
+        });
+        const fetch = fake.fetch.bind(fake);
+        let original: Promise<Response> | undefined;
+        const transport = vi.spyOn(fake, "fetch").mockImplementation((path, init) => {
+            const response = fetch(path, init);
+            if (path !== "/api/resources/batch" || original) return response;
+            original = response;
+            return Promise.race([response, lostAnswer]);
+        });
+        chat.reorderChats("c", ["j", "k"]);
+        const flushing = sync.flushResources();
+        const settled = vi.fn();
+        flushing.then(settled, settled);
+        await vi.advanceTimersByTimeAsync(0);
+        const release = stage === "before commit" ? fake.releaseBatch : fake.releaseBatchResponse;
+        expect(release).toBeTypeOf("function");
+        rejectAnswer(new TypeError("reorder answer lost"));
+        // The flush does not settle at the lost answer: it waits out its backoff before the resend.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled).not.toHaveBeenCalled();
+        expect(fake.batchCount()).toBe(1);
+        transport.mockRestore();
+        return {
+            flushing,
+            deliver: async () => {
+                release!();
+                await original;
+            },
+        };
+    }
+
+    it.each([
+        { stage: "after commit", membership: "unchanged membership" },
+        { stage: "before commit", membership: "unchanged membership" },
+        { stage: "after commit", membership: "sibling create" },
+        { stage: "before commit", membership: "sibling create" },
+    ] as const)("keeps the newer reorder after a lost answer ($stage, $membership)", async ({ stage, membership }) => {
+        const h = await boot();
+        const { fake, sync, chat } = h;
+        const { flushing, deliver } = await loseReorderAnswer(h, stage);
+        expect(fake.order("c")!.ids).toEqual(stage === "after commit" ? ["j", "k"] : ["k", "j"]);
+
+        // The newer reorder comes while the flush waits out its backoff, before the resend.
+        chat.reorderChats("c", ["k", "j"]);
+        if (membership === "sibling create") {
+            chat.createChat("c", { id: "n", name: "New", message: [], note: "", localLore: [] });
+        }
+        const { discarded, refused } = await (async () => {
+            try {
+                const retried = await settleFlush(flushing);
+                const later = await sync.flushResources();
+                return { discarded: [...retried.discarded, ...later.discarded], refused: later.refused };
+            } finally {
+                await deliver();
+            }
+        })();
+        const result = { discarded, refused };
+        const stored = fake.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0];
+        const order = stored.order!.ids;
+        expect({ ...result, relativeOrder: order.filter((id) => id !== "n") }).toEqual({
+            discarded: [],
+            refused: [],
+            relativeOrder: ["k", "j"],
+        });
+        const members = stored.chats.map((entry) => entry.id).sort();
+        expect(members).toEqual(membership === "sibling create" ? ["j", "k", "n"] : ["j", "k"]);
+        expect([...order].sort()).toEqual(members);
+    });
+
     it.each(["different", "equal"])(
-        "reports a refused reorder only when the server order differs from the sent order (%s)",
+        "reports a lost reorder with no newer reorder only when the server order differs (%s)",
         async (serverOrder) => {
             const { fake, sync, chat, mirrorIds } = await boot();
             chat.reorderChats("c", ["j", "k"]);
             fake.dropNextBatchResponse = true;
-            await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+            const flushing = sync.flushResources();
+            // The answer is lost; another tab may reorder while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fake.batchCount()).toBe(1);
             expect(fake.order("c")!.ids).toEqual(["j", "k"]);
             if (serverOrder === "different") {
                 fake.store.applyChanges({
@@ -836,18 +1348,21 @@ describe("one chat's trouble does not block the rest", () => {
             }
             // The resend conflicts in both cases. The authoritative read decides whether
             // the sent order survived, rather than treating every refusal as an acknowledgement.
-            expect(await sync.flushResources()).toEqual({ discarded: serverOrder === "different" ? ["chats/c"] : [] });
+            expect(await settleFlush(flushing)).toEqual({
+                discarded: serverOrder === "different" ? ["chats/c"] : [],
+                refused: [],
+            });
             const expectedOrder = serverOrder === "different" ? ["k", "j"] : ["j", "k"];
             expect(fake.order("c")!.ids).toEqual(expectedOrder);
             expect(mirrorIds()).toEqual(expectedOrder);
             if (serverOrder === "different") expect(alerts.normal).toHaveBeenCalledWith("reloaded");
             else expect(alerts.normal).not.toHaveBeenCalled();
-            expect(await sync.flushResources()).toEqual({ discarded: [] });
+            expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         },
     );
 
     it.each(["create", "delete"])(
-        "refreshes the order after a lost %s replay before sending a queued reorder",
+        "replays a lost %s first: a create's replay refreshes the order before the queued reorder is sent; a delete's (journaled by an earlier build) is refused and the reorder discarded",
         async (membership) => {
             const { fake, sync, chat, mirrorIds } = await boot((server) => {
                 if (membership === "delete")
@@ -861,16 +1376,45 @@ describe("one chat's trouble does not block the rest", () => {
                     ]);
             });
             if (membership === "create") chat.createChat("c", { id: "n", name: "N", message: [] } as any);
-            else chat.deleteChat({ chaId: "c", chatId: "n" });
-            fake.dropNextBatchResponse = true;
-            await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+            else recoverOldDelete(chat, { chaId: "c", chatId: "n" });
+            // A delete op is never applied (the server answers it `useTrash`): its lost answer is a
+            // request that failed in transit.
+            if (membership === "create") fake.dropNextBatchResponse = true;
+            else fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
+            const flushing = sync.flushResources();
+            // The reorder is queued while the flush waits out its backoff.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fake.batchCount()).toBe(1);
             const lost = fake.batchBodies()[0].chats[0];
             const freshOrderRevision = fake.order("c")!.revision;
             const desired = membership === "create" ? ["n", "j", "k"] : ["j", "k"];
+            // The reorder comes after the flush began: its discard is reported within this scope.
+            const scope = sync.beginMutationScope();
             chat.reorderChats("c", desired);
             fake.requests.length = 0;
 
-            expect(await sync.flushResources()).toEqual({ discarded: [] });
+            if (membership === "delete") {
+                // The replay keeps its id and retry flag; the server refuses it (`useTrash`) and keeps
+                // `n`, which comes back, and the reorder queued without it is discarded.
+                expect((await settleFlush(flushing)).discarded).toContain("chats/c/n");
+                expect(await sync.flushResources({ scope })).toEqual({
+                    discarded: ["chats/c/n", "chats/c"],
+                    refused: [],
+                });
+                expect(fake.batchBodies()).toEqual([
+                    expect.objectContaining({ chats: [{ ...lost, retry: true }], chatOrders: [] }),
+                ]);
+                expect(fake.order("c")!.revision).toBe(freshOrderRevision);
+                expect(fake.order("c")!.ids).toEqual(["k", "j", "n"]);
+                expect(mirrorIds()).toEqual(["k", "j", "n"]);
+                expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+                expect(alerts.error).not.toHaveBeenCalled();
+                expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+                expect(fake.batchCount()).toBe(1);
+                return;
+            }
+            expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+            expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
             const [replay, reordered] = fake.batchBodies();
             expect(replay.chats).toEqual([{ ...lost, retry: true }]);
             expect(replay.chatOrders ?? []).toEqual([]);
@@ -907,10 +1451,10 @@ describe("one chat's trouble does not block the rest", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("settles a queued chat delete that another tab's deletion of the character fulfils, without a report or notice", async () => {
+    it("settles a queued chat delete (journaled by an earlier build) that another tab's deletion of the character fulfils, without a report or notice", async () => {
         const { fake, sync, chat, characters } = await boot();
         const scope = sync.beginMutationScope();
-        chat.deleteChat(refJ);
+        recoverOldDelete(chat, refJ);
         fake.store.delete(fake.kind("characters"), "c", fake.record("characters", "c")!.revision);
         sync.noteRemoteChanges({
             resources: [{ kind: "characters", id: "c", revision: null }],
@@ -930,22 +1474,19 @@ describe("one chat's trouble does not block the rest", () => {
         const scope = sync.beginMutationScope();
         settings.ui.theme = "mine";
         fake.set("ui", "main", { ...(fake.record("ui", "main")!.data as object), theme: "theirs" });
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         // The conflict read succeeds; the chat-list read after the discards fails.
         let reads = 0;
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" && ++reads === 2 };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        // Both captured edits were discarded by the conflict, so the flush resolves; the failed list
+        // read is the background queue's, retried after its backoff.
+        await expect(sync.flushResources()).resolves.toEqual({ discarded: ["ui/main", "chats/c/j"], refused: [] });
+        await vi.advanceTimersByTimeAsync(0);
         expect(reads).toBe(2);
         expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
         expect(settings.ui.theme).toBe("theirs");
+        await vi.advanceTimersByTimeAsync(2500);
         const result = await sync.flushResources({ scope });
         expect(result.discarded.sort()).toEqual(["chats/c/j", "ui/main"]);
         expect(alerts.normal).toHaveBeenCalledTimes(1);
@@ -1096,10 +1637,14 @@ describe("a chat's first save (chatSaveVersion)", () => {
         const { fake, sync, chat } = await boot();
         fake.dropNextBatchResponse = true;
         chat.createChat("c", { id: "n", name: "N", message: [m("x", "X")] } as any);
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost: the create is in doubt while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.chat("c", "n")).not.toBeNull();
         expect(chat.chatSaveVersion(refN)).toBe(0);
         chat.setMessageText(refN, "x", "after the lost answer");
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         expect((await sync.flushResources()).discarded).toEqual([]);
         expect(fake.texts("c", "n")).toEqual(["after the lost answer"]);
         expect(chat.chatSaveVersion(refN)).toBe(1);
@@ -1156,6 +1701,59 @@ describe("missing targets and gone anchors", () => {
         expect(chat.idleChatRefreshes()).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
         expect(chat.chatDiscardsSince(0)).toEqual([]);
+    });
+
+    it("keeps only missing by-id edits as a recovery draft when the rest of the group saves", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const { fake, sync, chat } = await boot();
+        const journal = (await import("../draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            removeElsewhere(fake, ["b"]);
+            const translation = {
+                text: "Lost translation",
+                sourceHash: translationSourceHash("Lost replacement"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+            };
+            chat.setMessageText(refK, "a", "Saved A");
+            chat.setMessageText(refK, "b", "Lost text");
+            chat.appendMessage(refK, m("d", "Saved append"));
+            chat.replaceMessage(refK, m("b", "Lost replacement"));
+            chat.patchMessage(refK, "a", { name: "Saved speaker" });
+            chat.patchMessage(refK, "b", { name: "Lost speaker" });
+            chat.setChatMeta(refK, { note: "Saved note" });
+            expect(chat.setMessageTranslation(refK, "b", translation)).toBe(true);
+
+            const result = await sync.flushResources();
+            expect(result.discarded).toEqual([]);
+            expect(result.refused).toEqual([]);
+            expect(fake.texts("c", "k")).toEqual(["Saved A", "C", "Saved append"]);
+            expect(fake.chat("c", "k")!.data.note).toBe("Saved note");
+            expect(fake.chat("c", "k")!.data.message[0].name).toBe("Saved speaker");
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(500);
+            const drafts = await journal.listDrafts();
+            expect(drafts).toHaveLength(1);
+            const draft = drafts[0];
+            expect(draft).toMatchObject({ scope: "chat", target: "c\0k" });
+            if (draft.scope !== "chat") throw new Error("Missing chat recovery draft");
+            expect(Object.keys(draft.layers)).toEqual(["pending"]);
+            expect(draft.layers.pending!.value.ops.map((item) => item.op)).toEqual([
+                { op: "setText", id: "b", text: "Lost text" },
+                { op: "setMessage", message: m("b", "Lost replacement") },
+                { op: "patchMessage", id: "b", set: { name: "Lost speaker" } },
+                { op: "setTranslation", id: "b", translation },
+            ]);
+            expect(chat.chatDiscardsSince(0)).toEqual([]);
+            expect(alerts.normal).not.toHaveBeenCalled();
+        } finally {
+            sync.stopResourceSync();
+            await journal.close();
+        }
     });
 
     it("re-anchors an append after a message another tab removed to the end, keeps a later append anchored on it, and retries with no discard or notice", async () => {
@@ -1302,7 +1900,7 @@ describe("missing targets and gone anchors", () => {
     it("takes the ordinary recovery when the chat was replaced by another of the same id meanwhile", async () => {
         const { fake, sync, chat } = await boot();
         const revision = fake.chat("c", "k")!.revision;
-        fake.chatBatch([{ characterId: "c", chatId: "k", baseRevision: revision, ops: [{ op: "delete" }] }]);
+        fake.deleteChatForever("c", "k");
         fake.chatBatch([
             {
                 characterId: "c",
@@ -1390,13 +1988,17 @@ describe("group idempotency ids", () => {
         chat.appendMessage(refK, m("d", "D"));
         chat.setMessageText(refK, "d", "edited");
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the note is typed while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "C", "edited"]);
         const [lost] = groupsOf(fake);
         expect(lost.groupId).toEqual(expect.any(String));
         expect(lost.retry).toBeUndefined();
         const landed = fake.chat("c", "k")!.revision;
         chat.setChatMeta(refK, { note: "typed during the flight" });
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         const result = await sync.flushResources();
         expect(result.discarded).toEqual([]);
         const sent = groupsOf(fake);
@@ -1424,9 +2026,12 @@ describe("group idempotency ids", () => {
         const { fake, sync, chat } = await boot();
         chat.setMessageText(refK, "a", "mine");
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; another tab edits while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         elsewhere(fake, [{ op: "setText", id: "a", text: "theirs" }], "other");
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual([]);
         expect(fake.texts("c", "k")[0]).toBe("theirs");
         expect(groupsOf(fake).map((group: any) => [group.ops[0].text, group.retry])).toEqual([
@@ -1440,11 +2045,15 @@ describe("group idempotency ids", () => {
     it("keeps the same id, base, and ops over repeated losses", async () => {
         const { fake, sync, chat } = await boot();
         chat.setMessageText(refK, "a", "mine");
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            fake.dropNextBatchResponse = true;
-            await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
-        }
-        expect((await sync.flushResources()).discarded).toEqual([]);
+        fake.dropNextBatchResponse = true;
+        const flushing = sync.flushResources();
+        // The resend after the first loss loses its answer too; the flush retries again.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        fake.dropNextBatchResponse = true;
+        await advanceUntil(() => fake.batchCount() === 2);
+        expect(fake.dropNextBatchResponse).toBe(false);
+        expect((await settleFlush(flushing)).discarded).toEqual([]);
         const sent = groupsOf(fake);
         expect(sent.map((group: any) => group.retry)).toEqual([undefined, true, true]);
         expect(
@@ -1462,17 +2071,20 @@ describe("group idempotency ids", () => {
         const { fake, sync, chat, mirrorIds } = await boot();
         chat.setMessageText(refK, "a", "mine");
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
-        // Another tab deletes `j`; this tab edits it: its group conflicts, and the batch (k's resend
-        // with it) rolls back. The conflict's read fails the first time.
-        fake.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        const flushing = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        // While the flush waits out its backoff, another tab deletes `j`; this tab edits it: its group
+        // conflicts, and the batch (k's resend with it) rolls back. The conflict's read fails the
+        // first time; the flush retries after it.
+        fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
+        expect(fake.failNext).toBeNull();
         expect(result.discarded).toEqual(["chats/c/j"]);
+        // The list read that removes `j` runs in the background queue.
+        await vi.advanceTimersByTimeAsync(1000);
         expect(mirrorIds()).toEqual(["k"]);
         const sent = groupsOf(fake);
         // The first attempt, the one rolled back with the failed read, the one rolled back with j's
@@ -1549,7 +2161,10 @@ describe("group idempotency ids", () => {
         chat.appendMessage(refK, m("d", "D"), { anchor: { after: "b" } });
         chat.setChatMeta(refK, { note: "old" });
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The answer is lost; the other tab writes while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.texts("c", "k")).toEqual(["A", "B", "D", "C"]);
         // Another tab removes the anchor and changes the note, then writes enough identified groups
         // for the chat to forget this tab's id.
@@ -1557,7 +2172,7 @@ describe("group idempotency ids", () => {
         for (let index = 1; index <= 100; index += 1) {
             elsewhere(fake, [{ op: "setText", id: "a", text: `a${index}` }], `other-${index}`);
         }
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual(["chats/c/k"]);
         expect(alerts.normal).toHaveBeenCalledWith("reloaded");
         const sent = groupsOf(fake);
@@ -1573,7 +2188,7 @@ describe("group idempotency ids", () => {
     });
 });
 
-// A kept chat (quarantined, deleted here with a delete that cannot run) that an authoritative chat
+// A kept chat (quarantined, or behind a delete an earlier build journaled) that an authoritative chat
 // list shows gone on the server keeps its draft and held revision but leaves the reorders and
 // create indices (`absentChats`), so the server accepts them as permutations.
 describe("kept absent chats leave the order", () => {
@@ -1590,10 +2205,7 @@ describe("kept absent chats leave the order", () => {
             ]),
         );
     /** The other tab deletes `j` on its current revision. */
-    const deleteElsewhere = (fake: StoreBackedServer) =>
-        fake.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+    const deleteElsewhere = (fake: StoreBackedServer) => fake.deleteChatForever("c", "j");
     /** The live update of a change the other tab made to `j` and the order (the socket's frames). */
     const announce = (sync: Sync, fake: StoreBackedServer) =>
         sync.noteRemoteChanges({
@@ -1722,19 +2334,21 @@ describe("kept absent chats leave the order", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("releases a quarantined chat deleted here: its delete is sent, settles against another tab's deletion, and the reorder lands without it", async () => {
+    it("releases a quarantined chat another tab deleted when its draft is discarded here: the chat leaves, and the reorder lands without it", async () => {
         const { fake, sync, chat, mirrorIds } = await bootWithR();
         await quarantineJ(sync, chat);
-        // Deleted here too: the delete is an explicit local edit, so it leaves the quarantine.
-        chat.deleteChat(refJ);
-        expect(mirrorIds()).toEqual(["k", "r"]);
-        expect(sync.refusedItems()).toEqual([]);
         deleteElsewhere(fake);
         const afterDelete = fake.order("c")!.revision;
         announce(sync, fake);
         await vi.advanceTimersByTimeAsync(700);
+        expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        // The explicit discard of the draft leaves the quarantine.
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        expect(sync.refusedItems()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(700);
+        expect(mirrorIds()).toEqual(["k", "r"]);
         chat.reorderChats("c", ["r", "k"]);
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(chat.heldChatRevision(refJ)).toBeNull();
         expect(sentOrders(fake)).toEqual([{ characterId: "c", baseRevision: afterDelete, ids: ["r", "k"] }]);
         expect(fake.order("c")!.ids).toEqual(["r", "k"]);
@@ -1746,8 +2360,9 @@ describe("kept absent chats leave the order", () => {
 
     it("keeps the absence mark when a replayed create's answer (no order result) arrives after an overlapping list read saw the chat deleted, reads the list again, and reorders without it", async () => {
         const { fake, sync, chat, mirrorIds } = await bootWithR();
-        // Deleted here, then created again under its id while the old revision is still held.
-        chat.deleteChat(refJ);
+        // An earlier build's journaled delete, recovered, then created again under its id while the
+        // old revision is still held.
+        recoverOldDelete(chat, refJ);
         chat.createChat("c", { id: "j", name: "J again", message: [] } as any);
         expect(mirrorIds()).toEqual(["k", "r", "j"]);
         const oldRevision = chat.heldChatRevision(refJ);
@@ -1756,17 +2371,18 @@ describe("kept absent chats leave the order", () => {
         // (dropping the old revision), then its create lands; the create's answer is lost.
         deleteElsewhere(fake);
         fake.dropNextBatchResponse = true;
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flight = sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.dropNextBatchResponse).toBe(false);
         expect(fake.chat("c", "j")!.data.name).toBe("J again");
         expect(fake.order("c")!.ids).toEqual(["k", "r", "j"]);
         expect(chat.heldChatRevision(refJ)).toBeNull();
         const beforeReplay = fake.order("c")!.revision;
 
-        // The resend is answered as a duplicate while `j` exists (no order result); its answer is
-        // held in transit ...
+        // The flush's resend after its backoff is answered as a duplicate while `j` exists (no order
+        // result); its answer is held in transit ...
         fake.holdNextBatchResponse = true;
-        const flight = sync.flushResources();
-        await vi.waitFor(() => expect(fake.releaseBatchResponse).not.toBeNull());
+        await advanceUntil(() => fake.releaseBatchResponse !== null);
         expect(fake.batchBodies().at(-1).chats).toEqual([expect.objectContaining({ chatId: "j", retry: true })]);
         expect(fake.order("c")!.revision).toBe(beforeReplay);
         // ... while the other tab deletes the recreated `j`, and an on-demand summary read (a load
@@ -1777,6 +2393,7 @@ describe("kept absent chats leave the order", () => {
         expect(await chat.loadChat({ chaId: "c", chatId: "not-a-chat" })).toBeUndefined();
         expect(chat.heldOrderRevision("c")).toBe(afterDelete);
         expect(mirrorIds()).toEqual(["k", "r", "j"]);
+        // The answered resend settles the flush before any background timer runs.
         fake.releaseBatchResponse!();
         expect((await flight).discarded).toEqual([]);
         // The replay's answer holds the create's revision but carries no order listing `j`: the
@@ -1804,9 +2421,10 @@ describe("kept absent chats leave the order", () => {
 // This tab's deletion of a character settles its chats' work when the deletion is collected
 // (`settleCharacterDelete`), but keeps the resends whose group may have landed (`parkedResends`)
 // until the server confirms the character gone. A deletion that fails and a re-add of the id then
-// reconcile those chats like any the client knows: a landed create is deleted or replaced behind
-// its replay instead of being forgotten (before the fix it survived on the server, or a reused id
-// conflicted), and a lost edit's replay keeps the replacement's replace off a stale base.
+// reconcile those chats like any the client knows: a landed create is replaced behind its replay
+// instead of being forgotten (before the fix a reused id conflicted), and a lost edit's replay keeps
+// the replacement's replace off a stale base. The re-add deletes no chat: the chats the server holds
+// and the replacement omits stay after the replacement's chats, in an order the server accepts.
 describe("a deletion that fails after a lost chat group keeps the group for a same-id re-add", () => {
     type CharacterStoreModule = typeof import("../characterStore.svelte");
     const refX = { chaId: "c", chatId: "x" };
@@ -1836,88 +2454,117 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         const characterStore: CharacterStoreModule = await import("../characterStore.svelte");
         return { ...h, characterStore };
     }
-    /** Creates `x` and loses the answer of its create (the server applied it); returns the group as sent. */
+    /**
+     * Creates `x` and loses the answer of its create (the server applied it); returns the group as
+     * sent and the flush, which waits out its backoff before the resend.
+     */
     async function loseCreateOfX(h: { fake: StoreBackedServer; sync: Sync; chat: ChatModule }) {
         h.chat.createChat("c", chatOf("x", "Lost create"));
         h.fake.dropNextBatchResponse = true;
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.fake.batchCount()).toBe(1);
         expect(h.fake.texts("c", "x")).toEqual(["Lost create"]);
         const lost = groups(h.fake).find((group: any) => group.chatId === "x");
         expect(lost.ops.map((op: any) => op.op)).toEqual(["create"]);
         h.fake.requests.length = 0;
-        return lost;
+        return { lost, flushing };
     }
-    /** Removes `c`; the server fails its deletion (a 500), so the record and its chats stay. */
-    async function failDeletion(h: { fake: StoreBackedServer; sync: Sync; characterStore: CharacterStoreModule }) {
+    /**
+     * Removes `c`; the server fails its deletion (a 500), so the record and its chats stay. The
+     * deletion goes out with the retry of `flushing` when given (a flush waiting out its backoff),
+     * else with a new flush; returns that flush (`retrying`), unsettled while it waits out its
+     * backoff after the failure.
+     */
+    async function failDeletion(
+        h: { fake: StoreBackedServer; sync: Sync; characterStore: CharacterStoreModule },
+        flushing?: Promise<unknown>,
+    ) {
         h.fake.failNext = { status: 500, times: 1, match: batchPath };
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flush = flushing ?? h.sync.flushResources();
+        await advanceUntil(() => h.fake.failNext === null);
         expect(h.fake.record("characters", "c")).not.toBeNull();
         h.fake.requests.length = 0;
+        return { retrying: flush };
     }
 
-    it("replays a lost chat create and then deletes the chat when the id is re-added without it: the server ends with exactly the replacement's chats", async () => {
+    it("replays a lost chat create when the id is re-added without it; the omitted chats the server holds, the landed one too, stay after the replacement's, and nothing is deleted", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
-        await failDeletion(h);
+        const { lost, flushing } = await loseCreateOfX(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["r"], texts: { r: "Replacement transcript" } });
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(stored(h.fake)).toEqual({
+            ids: ["r", "k", "j", "x"],
+            texts: { r: "Replacement transcript", k: "A", x: "Lost create" },
+        });
         expect(h.fake.record("characters", "c")!.data.name).toBe("Replacement");
         // The lost create first, exactly as sent with its id and `retry` (answered as the duplicate it
-        // is), then the delete on the revision that answer reports; the chats held before as usual.
+        // is); no chat is deleted, and the replacement's chat is created once.
         expect(groups(h.fake).find((group: any) => group.chatId === "x")).toEqual({ ...lost, retry: true });
-        expect(opsOf(h.fake, "x")).toEqual([["create"], ["delete"]]);
-        expect(opsOf(h.fake, "k")).toEqual([["delete"]]);
-        expect(opsOf(h.fake, "j")).toEqual([["delete"]]);
+        expect(opsOf(h.fake, "x")).toEqual([["create"]]);
+        expect(opsOf(h.fake, "k")).toEqual([]);
+        expect(opsOf(h.fake, "j")).toEqual([]);
         expect(opsOf(h.fake, "r")).toEqual([["create"]]);
-        expect(h.chat.heldChatRevision(refX)).toBeNull();
+        expect(h.mirrorIds()).toEqual(["r", "k", "j", "x"]);
+        expect(h.chat.heldChatRevision(refX)).toBe(h.fake.chat("c", "x")!.revision);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
-    it("replays a lost chat create and then replaces the chat when the id is re-added with it, on the revision the duplicate answer reports, without a conflict or a reload notice", async () => {
+    it("replays a lost chat create and then replaces the chat when the id is re-added with it, on the revision the duplicate answer reports; the dropped chats stay after it", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
+        const { lost, flushing } = await loseCreateOfX(h);
         const landed = h.fake.chat("c", "x")!.revision;
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["x"], texts: { x: "Rewritten transcript" } });
-        const [replay, replace] = groups(h.fake).filter((group: any) => group.chatId === "x");
-        expect(replay).toEqual({ ...lost, retry: true });
-        expect(replace).toEqual({
-            characterId: "c",
-            chatId: "x",
-            baseRevision: landed,
-            groupId: expect.any(String),
-            ops: [{ op: "replace", chat: expect.objectContaining({ id: "x" }) }],
-        });
-        expect(opsOf(h.fake, "x")).toEqual([["create"], ["replace"]]);
+        // The dropped `k` and `j` are not deleted: they stay after the replacement's `x`.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(stored(h.fake)).toEqual({ ids: ["x", "k", "j"], texts: { k: "A", x: "Rewritten transcript" } });
+        const sentX = groups(h.fake).filter((group: any) => group.chatId === "x");
+        expect(sentX).toEqual([
+            { ...lost, retry: true },
+            {
+                characterId: "c",
+                chatId: "x",
+                baseRevision: landed,
+                groupId: expect.any(String),
+                ops: [{ op: "replace", chat: expect.objectContaining({ id: "x" }) }],
+            },
+        ]);
+        expect(opsOf(h.fake, "k")).toEqual([]);
+        expect(opsOf(h.fake, "j")).toEqual([]);
+        expect(h.mirrorIds()).toEqual(["x", "k", "j"]);
         expect(h.chat.heldChatRevision(refX)).toBe(h.fake.chat("c", "x")!.revision);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
-        // The re-add's reorder (`[x]`) waits behind the in-doubt create replay, then goes out on the
-        // order revision the list read reports: no conflict and no reload notice.
-        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual([]);
+        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
-    it("keeps the lost groups of chats the server holds too: the re-add replays them, then replaces the reused chat and deletes the other on the revisions they report, without a conflict", async () => {
+    it("keeps the lost groups of chats the server holds too: the re-add replays them, then replaces the reused chat on the revision its replay reports and keeps the other", async () => {
         const h = await bootWithCharacters();
         h.chat.setMessageText(refK, "a", "lost edit");
         h.chat.setChatMeta(refJ, { note: "lost note" });
         h.fake.dropNextBatchResponse = true;
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.fake.batchCount()).toBe(1);
         expect(h.fake.texts("c", "k")[0]).toBe("lost edit");
         const lostK = groups(h.fake).find((group: any) => group.chatId === "k");
         const lostJ = groups(h.fake).find((group: any) => group.chatId === "j");
         const landedK = h.fake.chat("c", "k")!.revision;
         h.fake.requests.length = 0;
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("k", "Rewritten transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["k"], texts: { k: "Rewritten transcript" } });
+        // The dropped `j` is kept with its replayed note; `k` is replaced.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(stored(h.fake)).toEqual({ ids: ["k", "j"], texts: { k: "Rewritten transcript" } });
+        expect(h.fake.chat("c", "j")!.data.note).toBe("lost note");
         // Before the fix the settled resends were forgotten and the replace went out on the base the
         // lost edit had moved: a conflict, the notice, and the server's copy over the replacement.
         const [replayK, replaceK] = groups(h.fake).filter((group: any) => group.chatId === "k");
@@ -1925,34 +2572,38 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         expect(replaceK.baseRevision).toBe(landedK);
         expect(opsOf(h.fake, "k")).toEqual([["setText"], ["replace"]]);
         expect(groups(h.fake).find((group: any) => group.chatId === "j")).toEqual({ ...lostJ, retry: true });
-        expect(opsOf(h.fake, "j")).toEqual([["meta"], ["delete"]]);
+        expect(opsOf(h.fake, "j")).toEqual([["meta"]]);
+        expect(h.mirrorIds()).toEqual(["k", "j"]);
         expect(h.chat.heldChatRevision(refK)).toBe(h.fake.chat("c", "k")!.revision);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
-    it("does not keep a create the server rolled back unanswered (never in doubt, no revision held): the re-add creates the reused id afresh", async () => {
+    it("does not keep a create the server rolled back unanswered (never in doubt, no revision held): the re-add creates the reused id afresh, and the dropped chat the server holds stays after it", async () => {
         const h = await bootWithCharacters();
         // Another tab deletes `j`; this tab's edit of it conflicts and rolls the batch back with x's
         // create, and the conflict's read fails: the create is kept apart, never in doubt.
-        h.fake.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: h.fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        h.fake.deleteChatForever("c", "j");
         h.chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         h.chat.createChat("c", chatOf("x", "Rolled back"));
         h.fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(h.sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flushing = h.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.fake.failNext).toBeNull();
         expect(h.fake.chat("c", "x")).toBeNull();
         const rolledBack = groups(h.fake).find((group: any) => group.chatId === "x");
         h.fake.requests.length = 0;
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h, flushing);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
-        // The create was never in doubt, so the re-add's reorder goes beside it on the stale order
-        // base and conflicts; the server's order (`[k]`) differs from the sent `[x]`, so that reorder
-        // is reported. Membership reconciliation then sends the order that lands.
-        expect(await h.sync.flushResources()).toEqual({ discarded: ["chats/c"] });
-        expect(stored(h.fake)).toEqual({ ids: ["x"], texts: { x: "Rewritten transcript" } });
+        // The create was never in doubt. Nothing is deleted: the dropped `k` stays after `x`, and
+        // `j`, gone on the server, leaves with the list.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(stored(h.fake)).toEqual({ ids: ["x", "k"], texts: { x: "Rewritten transcript", k: "A" } });
+        expect(opsOf(h.fake, "k")).toEqual([]);
+        expect(opsOf(h.fake, "j")).toEqual([]);
+        expect(h.mirrorIds()).toEqual(["x", "k"]);
         // A fresh create of the replacement's chat, never the rolled-back payload or its id.
         const creates = groups(h.fake).filter((group: any) => group.chatId === "x");
         expect(creates.length).toBeGreaterThan(0);
@@ -1974,13 +2625,13 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
 
     it("drops the kept group when the deletion is acknowledged: a re-add afterwards sends nothing for the deleted chat", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
+        const { lost, flushing } = await loseCreateOfX(h);
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
         expect(h.fake.record("characters", "c")).toBeNull();
         expect(h.fake.chat("c", "x")).toBeNull();
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(stored(h.fake)).toEqual({ ids: ["r"], texts: { r: "Replacement transcript" } });
         expect(opsOf(h.fake, "x")).toEqual([]);
         expect(groups(h.fake).some((group: any) => group.groupId === lost.groupId)).toBe(false);
@@ -1988,14 +2639,16 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("drops the kept group when a conflicting deletion restores the character from the server (its list is authoritative): a later re-add deletes the landed chat without replaying its create", async () => {
+    it("drops the kept group when a conflicting deletion restores the character from the server (its list is authoritative): a later re-add keeps the landed chat without replaying its create", async () => {
         const h = await bootWithCharacters();
-        const lost = await loseCreateOfX(h);
+        const { lost, flushing } = await loseCreateOfX(h);
         // Another tab edits the character; this tab's deletion conflicts, and the recovery puts the
         // server's character back with its chats, the landed `x` among them.
         h.fake.set("characters", "c", { chaId: "c", name: "Edited elsewhere" });
         expect(h.characterStore.removeCharacter("c")).toBe(true);
-        await h.sync.flushResources().catch(() => undefined);
+        await settleFlush(flushing).catch(() => undefined);
+        // The restored character's chats come with the background list read.
+        await vi.advanceTimersByTimeAsync(1000);
         expect(h.characters().map((character) => character.name)).toEqual(["Edited elsewhere"]);
         expect(h.mirrorIds().sort()).toEqual(["j", "k", "x"]);
         expect(h.chat.heldChatRevision(refX)).toBe(h.fake.chat("c", "x")!.revision);
@@ -2003,12 +2656,21 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         alerts.normal.mockClear();
         h.fake.requests.length = 0;
 
-        await failDeletion(h);
+        const { retrying } = await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["r"], texts: { r: "Replacement transcript" } });
-        expect(opsOf(h.fake, "x")).toEqual([["delete"]]);
+        // Nothing is deleted: the server's chats stay after the replacement's.
+        expect(await settleFlush(retrying)).toEqual({ discarded: [], refused: [] });
+        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(stored(h.fake)).toEqual({
+            ids: ["r", "k", "j", "x"],
+            texts: { r: "Replacement transcript", k: "A", x: "Lost create" },
+        });
+        expect(opsOf(h.fake, "x")).toEqual([]);
+        expect(opsOf(h.fake, "k")).toEqual([]);
+        expect(opsOf(h.fake, "j")).toEqual([]);
+        expect(opsOf(h.fake, "r")).toEqual([["create"]]);
         expect(groups(h.fake).some((group: any) => group.groupId === lost.groupId)).toBe(false);
+        expect(h.mirrorIds()).toEqual(["r", "k", "j", "x"]);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });

@@ -2,7 +2,7 @@
 
 import { flushSync, mount, unmount } from "svelte";
 import { fromStore, writable } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The two new-chat buttons (`SideChatList.svelte`'s and the chat list modal's,
 // `src/lib/Others/ChatList.svelte`) start the chat from `initialChatBinding`: with `newChatBinding`
@@ -67,30 +67,45 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-    changeChatTo: vi.fn(),
-    createChatCopyName: (name: string, type: string) => `${name} (${type})`,
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        createChatCopyName: (name: string, type: string) => `${name} (${type})`,
+    }),
+);
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
-import { alertConfirm, alertSelect } from "src/ts/alert";
+import { alertChatOptions, alertConfirm, alertError, alertSelect } from "src/ts/alert";
+import * as chatTrash from "src/ts/checkpoints/chatTrash";
+import { changeChatTo } from "src/ts/globalApi.svelte";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { applyRawCharacter } from "src/ts/storage/records.svelte";
+import * as resourceSync from "src/ts/storage/resourceSync.svelte";
+import * as serverAuth from "src/ts/storage/serverAuth";
+import * as chatStore from "src/ts/storage/chatStore.svelte";
 import {
+    assembleChats,
     chatEntry,
     chatList,
     findChat,
+    installChatTrashState,
+    seedChats,
     selectChat,
     selectedChatId,
     setChatMeta,
 } from "src/ts/storage/chatStore.svelte";
-import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import {
+    selectCharacter,
+    selectModelPreset,
+    selection,
+    selectPersona,
+    selectPreset,
+} from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { getResourceEpoch, setResourceEpoch } from "src/ts/storage/resourceClient";
+import { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 import ChatList from "../Others/ChatList.svelte";
 import SideChatList from "./SideChatList.svelte";
 
@@ -177,14 +192,16 @@ function renderSide(chaId: string) {
     flushSync();
     const newChat = () =>
         [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === language.newChat)!;
-    /** The options button of the row showing `name`. */
-    const options = (name: string) => {
+    /** The buttons of the row showing `name`, in order: options, rename, export, delete. */
+    const rowButtons = (name: string) => {
         const row = [...target.querySelectorAll<HTMLButtonElement>("[data-risu-chat-idx]")].find((entry) =>
             entry.textContent?.includes(name),
         )!;
-        return row.querySelector<HTMLElement>('[role="button"]')!;
+        return [...row.querySelectorAll<HTMLElement>('[role="button"]')];
     };
-    return { target, newChat, options };
+    /** The options button of the row showing `name`. */
+    const options = (name: string) => rowButtons(name)[0];
+    return { target, newChat, options, rowButtons };
 }
 
 function renderModal() {
@@ -239,6 +256,48 @@ describe("chat pins in the sidebar", () => {
         expect(findChat({ chaId: "c", chatId: copy.id })).not.toHaveProperty("pinned");
         expect(findChat(source)).toHaveProperty("pinned", true);
         expect(chatEntry(source)).toHaveProperty("pinned", true);
+    });
+});
+
+describe("a chat row's own buttons", () => {
+    /** Renders `c` with its rows at the root or all in one folder: the two placements have their own markup. */
+    function renderRows(placement: string) {
+        if (placement === "folder") {
+            byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+            for (const chatId of ["k", "j", "n"]) {
+                setChatMeta({ chaId: "c", chatId }, { folderId: "f" });
+            }
+        }
+        return renderSide("c");
+    }
+
+    beforeEach(() => {
+        vi.mocked(changeChatTo).mockClear();
+        vi.mocked(alertChatOptions).mockClear();
+    });
+
+    it.each(["root", "folder"])("the options button of a %s row does not open the row's chat", async (placement) => {
+        alerts.chatOption = NaN;
+        const side = renderRows(placement);
+        side.options("Chat J").click();
+        await vi.waitFor(() => expect(alertChatOptions).toHaveBeenCalledOnce());
+        expect(changeChatTo).not.toHaveBeenCalled();
+    });
+
+    it.each(["root", "folder"])("leaving the rename mode from a %s row does not open the row's chat", (placement) => {
+        const side = renderRows(placement);
+        const rename = () => side.rowButtons("Chat J")[1];
+        rename().click();
+        flushSync();
+        expect(side.target.querySelector("[data-risu-chat-idx] input")).not.toBeNull();
+        // The rows show inputs now, so the row is found by its place: `j` is the second chat.
+        side.target
+            .querySelectorAll("[data-risu-chat-idx]")[1]
+            .querySelectorAll<HTMLElement>('[role="button"]')[1]
+            .click();
+        flushSync();
+        expect(side.target.querySelector("[data-risu-chat-idx] input")).toBeNull();
+        expect(changeChatTo).not.toHaveBeenCalled();
     });
 });
 
@@ -338,13 +397,14 @@ describe("a chat whose folder does not exist", () => {
         expect(inFolder(rowOf(target, "Chat K"))).toBe(false);
     });
 
-    it("a drop missing a chat's row still passes a permutation, appending that chat", async () => {
+    it("a drop missing a chat's row still passes a permutation, keeping that chat in its slot", async () => {
         const { target } = renderSide("c");
+        expect(ids("c")).toEqual(["k", "j", "n"]);
         const root = rowOf(target, "Chat K").parentElement!;
         root.appendChild(rowOf(target, "Chat K"));
         rowOf(target, "Chat J").remove();
         await drop();
-        expect(ids("c")).toEqual(["n", "k", "j"]);
+        expect(ids("c")).toEqual(["n", "j", "k"]);
     });
 
     it("a folder delete confirmed after another folder was put first deletes the confirmed folder", async () => {
@@ -541,7 +601,7 @@ describe("the sidebar's new chat button", () => {
         expect(ids("c")).toHaveLength(4);
         expect(ids("c").slice(1)).toEqual(["k", "j", "n"]);
         expect(first("c")).toMatchObject({ name: "New Chat 4", promptPresetId: "p1" });
-        expect(strip(first("c"))).toEqual({ promptPresetId: "p1" });
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false, promptPresetId: "p1" });
         expect(selectedChatId("c")).toBe(ids("c")[0]);
         // The source keeps its review; the new chat has none.
         expect(chatEntry({ chaId: "c", chatId: "j" })).toMatchObject({ bindingReview: true });
@@ -557,7 +617,12 @@ describe("the sidebar's new chat button", () => {
         selectChat("c", "k");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
         expect(chatBinding({ chaId: "c", chatId: ids("c")[0] })).toEqual({
             ok: true,
             ids: { modelPresetId: "m1", promptPresetId: "p1", personaId: "u1" },
@@ -566,7 +631,12 @@ describe("the sidebar's new chat button", () => {
         // The chat just created is now the selected one: the next new chat inherits from it.
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
     });
 
     it("an unbound selected chat gives nothing, never the tab's selection; empty gives nothing even from a bound chat", () => {
@@ -574,14 +644,14 @@ describe("the sidebar's new chat button", () => {
         const side = renderSide("c");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({});
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false });
         expect(first("c")).not.toMatchObject(TAB);
 
         settings.ui.newChatBinding = "empty";
         selectChat("c", "k");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({});
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false });
         expect(chatBinding({ chaId: "c", chatId: ids("c")[0] })).toMatchObject({ ok: false });
 
         // Anything but `empty` is inherit.
@@ -589,7 +659,12 @@ describe("the sidebar's new chat button", () => {
         selectChat("c", "k");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
     });
 
     it("a group chat inherits its selected chat's binding and starts with the members' first messages", () => {
@@ -597,7 +672,12 @@ describe("the sidebar's new chat button", () => {
         side.newChat().click();
         flushSync();
         expect(ids("g")).toHaveLength(2);
-        expect(strip(first("g"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("g"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
         expect(selectedChatId("g")).toBe(ids("g")[0]);
         expect(findChat({ chaId: "g", chatId: ids("g")[0] })?.message).toEqual([
             { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
@@ -619,6 +699,173 @@ describe("the sidebar's new chat button", () => {
         });
         expect(copy.id).not.toBe("j");
     });
+
+    it("choosing Copy creates the chat and POSTs memory inheritance from its source", async () => {
+        vi.useFakeTimers();
+        const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        const signIn = vi.spyOn(serverAuth, "ensureAuth").mockResolvedValue();
+        const request = vi
+            .spyOn(serverAuth, "authFetch")
+            .mockResolvedValue(Response.json({ revision: "memory-r1", inherited: true }));
+        try {
+            alerts.chatOption = 0;
+            selectChat("c", "k");
+            const side = renderSide("c");
+            side.options("Chat J").click();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(ids("c")).toHaveLength(4);
+            const copy = chatList("c").find((entry) => entry.name === "Chat J (Copy)")!;
+            expect(copy.id).not.toBe("j");
+            expect(findChat({ chaId: "c", chatId: copy.id })?.message).toEqual([
+                { role: "char", data: "hi from j", chatId: "m-j" },
+            ]);
+            expect(
+                request.mock.calls.map(([path, init]) => ({
+                    path,
+                    method: init?.method,
+                    body: JSON.parse(init!.body as string),
+                })),
+            ).toEqual([
+                {
+                    path: `/api/memory/structured/c/${encodeURIComponent(copy.id)}/inherit`,
+                    method: "POST",
+                    body: { sourceChatId: "j" },
+                },
+            ]);
+        } finally {
+            request.mockRestore();
+            signIn.mockRestore();
+            save.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it.each(["as the dialog is answered", "while its source loads"])(
+        "blocks a chat copy when generation starts %s and copies the finished reply after release",
+        async (when) => {
+            vi.useFakeTimers();
+            const source = { chaId: "c", chatId: "j" };
+            const update = { jobId: "job-j", messageId: "m-j", generationId: `reply-${when}` };
+            const final = "The door opened and the courier stepped in.";
+            const load = vi.spyOn(chatStore, "ensureChatLoaded");
+            let resumeLoad!: () => void;
+            const pendingLoad = new Promise<void>((resolve) => {
+                resumeLoad = resolve;
+            });
+            if (when === "while its source loads") {
+                load.mockImplementationOnce(async () => {
+                    await pendingLoad;
+                    return findChat(source);
+                });
+            }
+            const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+            const request = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({}));
+            try {
+                alerts.chatOption = 0;
+                const side = renderSide("c");
+                const original = ids("c");
+                side.options("Chat J").click();
+                if (when === "while its source loads") {
+                    await vi.advanceTimersByTimeAsync(0);
+                    expect(load).toHaveBeenCalledExactlyOnceWith(source);
+                }
+                chatStore.applyServerGeneration(source, { ...update, text: "The door opened and", seq: 1 });
+                resumeLoad();
+                await vi.advanceTimersByTimeAsync(0);
+
+                expect(ids("c")).toEqual(original);
+                if (when === "as the dialog is answered") expect(load).not.toHaveBeenCalled();
+
+                chatStore.applyServerGeneration(source, { ...update, text: final, seq: 2 });
+                chatStore.endServerJob(update.jobId);
+                side.options("Chat J").click();
+                await vi.advanceTimersByTimeAsync(0);
+
+                expect(ids("c")).toHaveLength(original.length + 1);
+                const copy = chatList("c").find(({ name }) => name === "Chat J (Copy)")!;
+                expect(findChat({ chaId: "c", chatId: copy.id })?.message.map(({ data }) => data)).toEqual([final]);
+            } finally {
+                resumeLoad();
+                chatStore.endServerJob(update.jobId);
+                load.mockRestore();
+                request.mockRestore();
+                save.mockRestore();
+                vi.useRealTimers();
+            }
+        },
+    );
+});
+
+describe("copying only a chat's settings from the row's options", () => {
+    const lore = { key: "castle", comment: "Castle", content: "A castle.", mode: "normal", insertorder: 100 };
+
+    it("creates a selected chat at the top with the source's setup and no conversation, and asks for no memory", async () => {
+        vi.useFakeTimers();
+        const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        const request = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({}));
+        try {
+            alerts.chatOption = 1;
+            const source = { chaId: "c", chatId: "j" };
+            setChatMeta(source, {
+                note: "Stay in character.",
+                localLore: [lore],
+                GLGlobalVariables: { toggle_mood: "1", score: "7" },
+                togglePresetId: "tp-1",
+                scriptstate: { $hp: 10 },
+                pinned: true,
+            } as any);
+            selectChat("c", "k");
+            const side = renderSide("c");
+            side.options("Chat J").click();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(ids("c")).toHaveLength(4);
+            const copy = first("c");
+            expect(copy.name).toBe("Chat J (Settings)");
+            expect(selectedChatId("c")).toBe(copy.id);
+            expect(changeChatTo).not.toHaveBeenCalled();
+            const created = findChat({ chaId: "c", chatId: copy.id })!;
+            expect(created.message).toEqual([]);
+            expect(created).toMatchObject({
+                note: "Stay in character.",
+                localLore: [lore],
+                GLGlobalVariables: { toggle_mood: "1" },
+                togglePresetId: "tp-1",
+                modelPresetId: "m-gone",
+                promptPresetId: "p1",
+                bindedPersona: " u1 ",
+                bindingReview: true,
+            });
+            expect(created.GLGlobalVariables).not.toHaveProperty("score");
+            expect(created).not.toHaveProperty("scriptstate");
+            expect(created).not.toHaveProperty("pinned");
+            // The source keeps its conversation and its variables.
+            expect(findChat(source)!.message).toHaveLength(1);
+            expect(findChat(source)!.GLGlobalVariables).toEqual({ toggle_mood: "1", score: "7" });
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(request).not.toHaveBeenCalled();
+        } finally {
+            request.mockRestore();
+            save.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it("a group's settings copy starts with the members' first messages", async () => {
+        alerts.chatOption = 1;
+        const side = renderSide("g");
+        side.options("Chat GK").click();
+        await vi.waitFor(() => expect(ids("g")).toHaveLength(2));
+        const copy = first("g");
+        expect(copy.name).toBe("Chat GK (Settings)");
+        expect(copy).toMatchObject({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(findChat({ chaId: "g", chatId: copy.id })!.message).toEqual([
+            { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
+        ]);
+    });
 });
 
 describe("the chat list modal's new chat button", () => {
@@ -629,31 +876,24 @@ describe("the chat list modal's new chat button", () => {
         modal.newChat().click();
         flushSync();
         expect(ids("c")).toHaveLength(4);
-        expect(strip(first("c"))).toEqual({ promptPresetId: "p1" });
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false, promptPresetId: "p1" });
         expect(first("c").name).toBe("New Chat 4");
         expect(selectedChatId("c")).toBe(ids("c")[0]);
 
         selectChat("c", "k");
         modal.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
 
         settings.ui.newChatBinding = "empty";
         modal.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({});
-    });
-
-    it("a group inherits too, with the members' first messages", () => {
-        selectCharacter("g");
-        const modal = renderModal();
-        modal.newChat().click();
-        flushSync();
-        expect(ids("g")).toHaveLength(2);
-        expect(strip(first("g"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
-        expect(findChat({ chaId: "g", chatId: ids("g")[0] })?.message).toEqual([
-            { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
-        ]);
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false });
     });
 });
 
@@ -760,5 +1000,389 @@ describe("the chat list filter", () => {
         expect(field(target).value).toBe("");
         expect(shown(target)).toEqual(["Chat GK"]);
         expect(dragDisabled().every((disabled) => !disabled)).toBe(true);
+    });
+});
+
+describe("new-chat memory inheritance", () => {
+    it.each(["sidebar", "modal"])(
+        "%s stores the resolved source switch and bindings, never its trim acknowledgement",
+        async (surface) => {
+            byChaId("c").supaMemory = true;
+            settings.ui.newChatBinding = "empty";
+            selectCharacter("c");
+            const source = { chaId: "c", chatId: "j" };
+            const memory = {
+                memoryMode: "structuredMemory",
+                memoryPresetId: "memory-preset",
+                memoryProfileId: "memory-connection",
+            };
+            setChatMeta(source, { ...memory, memoryTrimAck: 8 });
+            const panel = surface === "sidebar" ? renderSide("c") : renderModal();
+            for (const stored of [undefined, false, true]) {
+                selectChat("c", "j");
+                setChatMeta(
+                    source,
+                    { ...memory, memoryTrimAck: 8, ...(stored === undefined ? {} : { memoryEnabled: stored }) },
+                    stored === undefined ? ["memoryEnabled"] : [],
+                );
+                flushSync();
+                panel.newChat().click();
+                // Both button handlers create before their first await.
+                flushSync();
+                const created = findChat({ chaId: "c", chatId: selectedChatId("c")! })!;
+                expect(created.id).not.toBe("j");
+                expect(created).toMatchObject({ ...memory, memoryEnabled: stored ?? true });
+                expect(created).not.toHaveProperty("memoryTrimAck");
+                expect(chatEntry({ chaId: "c", chatId: created.id! })).toMatchObject({
+                    ...memory,
+                    memoryEnabled: stored ?? true,
+                });
+            }
+            expect(findChat(source)).toHaveProperty("memoryTrimAck", 8);
+            assembleChats(characterList(), [], [{ characterId: "c", revision: "empty", ids: [] }]);
+            flushSync();
+            expect(selectedChatId("c")).toBeNull();
+            panel.newChat().click();
+            flushSync();
+            const withoutSource = findChat({ chaId: "c", chatId: selectedChatId("c")! });
+            expect(withoutSource).toBeDefined();
+            for (const key of ["memoryEnabled", "memoryMode", "memoryPresetId", "memoryProfileId", "memoryTrimAck"]) {
+                expect(withoutSource).not.toHaveProperty(key);
+            }
+        },
+    );
+});
+
+describe("trash actions in the chat lists", () => {
+    let server: StoreBackedServer;
+    let previousEpoch: string;
+    const ref = { chaId: "c", chatId: "target" };
+
+    function loadServerChats(...characterIds: string[]) {
+        const read = server.store.readKinds([], { chats: true });
+        seedChats(read.chats!, read.chatOrders!);
+        assembleChats(characterIds.map(byChaId), read.chats!, read.chatOrders!);
+    }
+
+    beforeAll(() => StoreBackedServer.preload());
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        server = await StoreBackedServer.create();
+        previousEpoch = getResourceEpoch();
+        setResourceEpoch(server.store.epoch());
+        server.set("characters", "c", { chaId: "c", name: "C" });
+        server.store.applyChanges({
+            chats: ["before", "target", "after"].map((id) => ({
+                characterId: "c",
+                chatId: id,
+                baseRevision: null,
+                ops: [{ op: "create", chat: chat(id) }],
+            })),
+        });
+        loadServerChats("c");
+        vi.spyOn(serverAuth, "authFetch").mockImplementation((path, init, options) => {
+            options?.beforeDispatch?.();
+            return server.fetch(path, init);
+        });
+        vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        vi.mocked(alertConfirm).mockClear();
+    });
+    afterEach(() => {
+        vi.restoreAllMocks();
+        setResourceEpoch(previousEpoch);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        server.close();
+    });
+
+    it.each(["sidebar root", "sidebar folder", "dialog"])(
+        "asks once per deletion and posts only on Yes in the %s",
+        async (surface) => {
+            if (surface === "sidebar folder") {
+                byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+                setChatMeta(ref, { folderId: "f" });
+            }
+            selectCharacter("c");
+            const { target } = surface === "dialog" ? renderModal() : renderSide("c");
+            const row = [
+                ...target.querySelectorAll<HTMLElement>(surface === "dialog" ? "button" : "[data-risu-chat-id]"),
+            ].find((r) => r.textContent?.trim() === "Chat TARGET")!;
+            const remove = row.querySelector<HTMLElement>('[role="button"]:has(svg.lucide-trash)')!;
+            const captured = server.chat("c", "target")!.revision;
+            for (const confirmed of [false, true]) {
+                vi.mocked(alertConfirm).mockClear().mockResolvedValue(confirmed);
+                remove.click();
+                await vi.advanceTimersByTimeAsync(0);
+                flushSync();
+                expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(language.chatTrash.confirm("Chat TARGET"));
+                expect(server.requests).toEqual(
+                    confirmed
+                        ? [
+                              {
+                                  method: "POST",
+                                  path: "/api/chat-trash/trash",
+                                  body: { characterId: "c", chatId: "target", revision: captured },
+                              },
+                          ]
+                        : [],
+                );
+                expect(target.textContent?.includes("Chat TARGET")).toBe(!confirmed);
+            }
+        },
+    );
+
+    it("keeps the hidden row in its slot on drop and preserves its folder when deleting the folder", async () => {
+        byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+        setChatMeta(ref, { folderId: "f" });
+        installChatTrashState(ref, server.chat("c", "target")!.revision, 5);
+        const { target } = renderSide("c");
+        const rows = [...target.querySelectorAll<HTMLElement>("[data-risu-chat-id]")];
+        expect(rows.map((row) => row.dataset.risuChatId)).toEqual(["before", "after"]);
+        rows[0].parentElement!.appendChild(rows[0]);
+        const sortable = sortables.find((s) => s.el === rows[0].parentElement && !s.destroyed)!;
+        const dropped = sortable.options.onEnd.call(sortable, {});
+        await vi.advanceTimersByTimeAsync(1);
+        await dropped;
+        expect(ids("c")).toEqual(["after", "target", "before"]);
+        vi.mocked(alertConfirm).mockResolvedValue(true);
+        target.querySelector<HTMLElement>('[data-risu-chat-folder-idx] [role="button"]:has(svg.lucide-trash)')!.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(byChaId("c").chatFolders).toEqual([]);
+        expect(chatEntry(ref)?.folderId).toBe("f");
+    });
+
+    describe("the sidebar trash view", () => {
+        const now = Date.UTC(2026, 0, 10, 12);
+        const button = (scope: ParentNode, name: string) =>
+            [...scope.querySelectorAll("button")].find(
+                (entry) => (entry.getAttribute("aria-label") ?? entry.textContent?.trim()) === name,
+            );
+        const rows = (target: HTMLElement) => [...target.querySelectorAll("li")];
+        const rowNamed = (target: HTMLElement, name: string) =>
+            rows(target).find((row) => row.textContent?.includes(name))!;
+        const search = (target: HTMLElement) => target.querySelector<HTMLInputElement>('input[placeholder="Search"]')!;
+        const filter = (target: HTMLElement, text: string) => {
+            const input = search(target);
+            input.value = text;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+        };
+
+        function changeTrashRemotely(action: "trash" | "restore", chatId: string, chaId = "c") {
+            const revision = server.chat(chaId, chatId)!.revision;
+            const answer = server.store.changeChatTrash(
+                action,
+                { characterId: chaId, chatId, revision },
+                server.store.epoch(),
+                server.chatHeld,
+            );
+            if ("error" in answer) throw new Error(`Remote ${action} of ${chatId} failed: ${answer.error}`);
+            installChatTrashState({ chaId, chatId }, answer.revision, answer.trashedAt);
+            return answer.revision;
+        }
+
+        function openTrash(target: HTMLElement) {
+            button(target, "Trash")!.click();
+            flushSync();
+        }
+
+        const trashCount = (target: HTMLElement) => button(target, "Trash")!.textContent?.match(/\d+/)?.[0];
+
+        function pressWithDeferredConfirmation(control: HTMLButtonElement) {
+            let answer!: (confirmed: boolean) => void;
+            const pending = new Promise<boolean>((resolve) => (answer = resolve));
+            vi.mocked(alertConfirm).mockClear().mockReturnValueOnce(pending);
+            control.click();
+            return answer;
+        }
+
+        const deleteRequests = () =>
+            server.requests
+                .filter((request) => request.path === "/api/chat-trash/delete")
+                .map((request) => request.body);
+        const deleteBody = (chatId: string, revision: string) => ({ characterId: "c", chatId, revision });
+
+        beforeEach(() => {
+            vi.setSystemTime(now);
+        });
+
+        it("shows the character's trash count and swaps between the chat list and filterable trash rows", () => {
+            server.set("characters", "g", { chaId: "g", name: "G" });
+            server.store.applyChanges({
+                chats: ["gk", "g-trash"].map((chatId) => ({
+                    characterId: "g",
+                    chatId,
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: chat(chatId) }],
+                })),
+            });
+            loadServerChats("c", "g");
+            changeTrashRemotely("trash", "g-trash", "g");
+            selectCharacter("c");
+            selectChat("c", "after");
+            settings.ui.chatTrashDays = 21;
+            byChaId("c").chatFolders = [{ id: "harbor", name: "Harbor", folded: false }];
+            setChatMeta(ref, { folderId: "harbor" });
+            setChatMeta({ chaId: "c", chatId: "before" }, { folderId: "Deleted folder" });
+
+            const { target } = renderSide("c");
+            const visibleActiveChat = () =>
+                [...target.querySelectorAll<HTMLElement>('[data-risu-chat-id="after"]')].some(
+                    (row) => !row.closest(".hidden, [hidden]"),
+                );
+            expect(trashCount(target)).toBeUndefined();
+            expect(button(target, "New Chat")).toBeDefined();
+            expect(visibleActiveChat()).toBe(true);
+            openTrash(target);
+            expect(target.querySelector("h2")?.textContent).toBe("Trash (0)");
+            expect(button(target, "Empty trash")?.disabled).toBe(true);
+            expect(button(target, "New Chat")).toBeUndefined();
+            expect(visibleActiveChat()).toBe(false);
+            expect(search(target)).not.toBeNull();
+
+            vi.setSystemTime(new Date("2026-01-07T12:00:00.000Z"));
+            changeTrashRemotely("trash", "before");
+            vi.setSystemTime(new Date("2026-01-09T12:00:00.000Z"));
+            changeTrashRemotely("trash", "target");
+            vi.setSystemTime(now);
+            flushSync();
+
+            expect(trashCount(target)).toBe("2");
+            expect(target.querySelector("h2")?.textContent).toBe("Trash (2)");
+            expect(target.textContent).toContain("Chats in the trash are deleted forever after 21 days");
+            expect(button(target, "Empty trash")?.disabled).toBe(false);
+            expect(rows(target).map((row) => row.querySelector("time")?.dateTime)).toEqual([
+                "2026-01-09T12:00:00.000Z",
+                "2026-01-07T12:00:00.000Z",
+            ]);
+            expect(rows(target).every((row) => row.querySelector("time")?.textContent?.trim())).toBe(true);
+            const [newest, oldest] = rows(target);
+            expect(newest.textContent).toContain("Chat TARGET");
+            expect(newest.textContent).toContain("Harbor");
+            expect(newest.textContent).toContain("20 days left");
+            expect(oldest.textContent).toContain("Chat BEFORE");
+            expect(oldest.textContent).not.toContain("Deleted folder");
+            expect(oldest.textContent).toContain("18 days left");
+
+            filter(target, "harbor");
+            expect(rows(target)).toHaveLength(0);
+            filter(target, "target");
+            expect(rows(target)).toHaveLength(1);
+            const matching = rowNamed(target, "Chat TARGET");
+            vi.mocked(changeChatTo).mockClear();
+            matching.click();
+            flushSync();
+            expect(changeChatTo).not.toHaveBeenCalled();
+            expect(selectedChatId("c")).toBe("after");
+            expect(selection.chatOpen).toBe(false);
+
+            filter(target, "");
+            button(target, "Go Back")!.click();
+            flushSync();
+            expect(target.querySelector("h2")).toBeNull();
+            expect(rows(target)).toHaveLength(0);
+            expect(button(target, "New Chat")).toBeDefined();
+            expect(visibleActiveChat()).toBe(true);
+        });
+
+        it("calls Restore immediately with the chat's revision and asks for no confirmation", async () => {
+            const revision = changeTrashRemotely("trash", "target");
+            const restore = vi.spyOn(chatTrash, "restoreChat");
+            const { target } = renderSide("c");
+            openTrash(target);
+
+            button(rowNamed(target, "Chat TARGET"), "Restore")!.click();
+            expect(restore).toHaveBeenCalledExactlyOnceWith(ref, revision);
+            expect(alertConfirm).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(trashCount(target)).toBeUndefined();
+            expect(rows(target)).toHaveLength(0);
+            expect(alertConfirm).not.toHaveBeenCalled();
+        });
+
+        it("sends Delete forever only after Yes with the revision from before the confirmation", async () => {
+            const revision = changeTrashRemotely("trash", "target");
+            const { target } = renderSide("c");
+            openTrash(target);
+            const remove = () => button(rowNamed(target, "Chat TARGET"), "Delete forever")!;
+            const question = 'Delete "Chat TARGET" forever? This cannot be undone.';
+
+            pressWithDeferredConfirmation(remove())(false);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+
+            const answer = pressWithDeferredConfirmation(remove());
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+            changeTrashRemotely("restore", "target");
+            const newerRevision = changeTrashRemotely("trash", "target");
+            flushSync();
+
+            answer(true);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([deleteBody("target", revision)]);
+            expect(server.chat("c", "target")).toMatchObject({ revision: newerRevision, trashedAt: now });
+        });
+
+        it("empties the trash captured at press time after one Yes and reports failed chats together", async () => {
+            server.store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "late",
+                        baseRevision: null,
+                        ops: [{ op: "create", chat: chat("late") }],
+                    },
+                ],
+            });
+            loadServerChats("c");
+            const initialIds = ["before", "target", "after"];
+            const captured = initialIds.map((id) => deleteBody(id, changeTrashRemotely("trash", id)));
+            const { target } = renderSide("c");
+            openTrash(target);
+            filter(target, "target");
+            const emptyTrash = button(target, "Empty trash")!;
+            const question = "Delete the 3 chats in the trash forever? This cannot be undone.";
+            vi.mocked(alertError).mockClear();
+
+            pressWithDeferredConfirmation(emptyTrash)(false);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+
+            const answer = pressWithDeferredConfirmation(emptyTrash);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+            changeTrashRemotely("restore", "target");
+            const newerRevision = changeTrashRemotely("trash", "target");
+            changeTrashRemotely("restore", "before");
+            const lateRevision = changeTrashRemotely("trash", "late");
+            flushSync();
+
+            answer(true);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toHaveLength(3);
+            expect(deleteRequests()).toEqual(expect.arrayContaining(captured));
+            expect(server.chat("c", "after")).toBeNull();
+            expect(server.chat("c", "before")).not.toBeNull();
+            expect(server.chat("c", "target")).toMatchObject({ revision: newerRevision, trashedAt: now });
+            expect(server.chat("c", "late")).toMatchObject({ revision: lateRevision, trashedAt: now });
+            // The client reports conflicts. The sidebar names the failed chats in one notice.
+            const namedNotices = vi
+                .mocked(alertError)
+                .mock.calls.map(([message]) => message)
+                .filter((message) => typeof message === "string" && /Chat (BEFORE|TARGET|AFTER|LATE)/.test(message));
+            expect(namedNotices).toHaveLength(1);
+            expect(namedNotices[0]).toContain("Chat BEFORE");
+            expect(namedNotices[0]).toContain("Chat TARGET");
+            expect(namedNotices[0]).not.toMatch(/Chat (AFTER|LATE)/);
+        });
     });
 });

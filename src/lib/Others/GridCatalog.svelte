@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { changeChar, removeChar, restoreChar } from "../../ts/characters";
     import BarIcon from "../SideBars/BarIcon.svelte";
@@ -11,6 +12,13 @@
     import MobileCharacters from "../Mobile/MobileCharacters.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
     import { openMessageSearch } from "src/ts/messageSearch.svelte";
+
+    /**
+     * The character catalog: the simple (mobile) list, the grid, the list, and the trash, searched by name. Trashed
+     * characters show only in the trash view, which restores them (`restoreChar`) or deletes them for good; the list
+     * view's delete is the soft one (`removeChar`, `trashTime`).
+     */
+
     interface Props {
         endGrid?: any;
     }
@@ -33,7 +41,7 @@
         const characters = characterList();
         for (let i = 0; i < characters.length; i++) {
             const c = characters[i];
-            if (c.trashTime && !trash) {
+            if (!trash && (c.trashTime || isArchivedGroup(c))) {
                 continue;
             }
             if (!c.trashTime && trash) {

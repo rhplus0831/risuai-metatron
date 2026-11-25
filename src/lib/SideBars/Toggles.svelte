@@ -13,7 +13,6 @@
     import TextInput from "../UI/GUI/TextInput.svelte";
     import { getGlobalChatVar } from "src/ts/parser/chatVar.svelte";
     import { chatToggleDefinitions, setChatToggle } from "src/ts/toggles/chatToggles.svelte";
-    import { supaMemoryOnCount } from "../../../shared/characters.ts";
     import { resolveGlobalChatVar, valueToggles } from "../../../shared/prompt/toggles.ts";
     import { compareTogglePreset, toggleValuesForChat } from "../../../shared/togglePresets.ts";
     import {
@@ -26,6 +25,14 @@
     } from "src/ts/toggles/togglePresets.svelte";
     import { alertConfirm, alertInput } from "src/ts/alert";
     import { CircleAlertIcon, CopyPlusIcon, PencilIcon, SaveIcon, TrashIcon } from "@lucide/svelte";
+
+    /**
+     * The prompt toggles of `chatRef`'s chat, and its toggle preset link. A value resolves as the chat's value, then
+     * the legacy global, then the toggle's kind default (`resolveGlobalChatVar`, `shared/prompt/toggles.ts`); a write
+     * sets one key (`setChatToggle`, `src/ts/toggles/chatToggles.svelte.ts`). The chat-value and preset actions
+     * capture `chatRef` at their start and check again after each await and at write time that the chat is still
+     * loaded, so a dialog cannot land on another chat or a removed one.
+     */
 
     interface Props {
         chara?: AnyClientCharacter;
@@ -131,19 +138,6 @@
         }
     }
 
-    // Turning memory on counts (`supaMemoryOnCount`): it voids every chat's "don't ask again" answer to
-    // the no-memory trim question.
-    const getMemoryToggle = () => chara?.supaMemory ?? false;
-    const setMemoryToggle = (on: boolean) => {
-        if (!chara) {
-            return;
-        }
-        if (on && !chara.supaMemory) {
-            chara.supaMemoryOnCount = supaMemoryOnCount(chara) + 1;
-        }
-        chara.supaMemory = on;
-    };
-
     const jailbreakToggleToken = "{{jbtoggled}}";
     const usesJailbreakToggle = (value?: string) => typeof value === "string" && value.includes(jailbreakToggleToken);
     const templateUsesJailbreakToggle = (template: PromptItem[]) =>
@@ -247,6 +241,7 @@
                     className="w-32"
                     height="20"
                     value={valueOf(`toggle_${toggle.key}`)}
+                    popupEditorContext={chatRef ? `${chatRef.chaId}\u0000${chatRef.chatId}\u0000${toggle.key}` : null}
                     onchange={(e) => {
                         //check is div
                         if (e.currentTarget instanceof HTMLDivElement) {
@@ -350,17 +345,3 @@
     {/if}
     {@render toggles(groupedToggles)}
 </fieldset>
-{#if chara && (settings.memoryTranslateMedia.supaModelType !== "none" || settings.memoryTranslateMedia.hanuraiEnable || settings.memoryTranslateMedia.hypav2 || settings.memoryTranslateMedia.hypaV3)}
-    <div class="flex mt-2 items-center">
-        <CheckInput
-            bind:check={getMemoryToggle, setMemoryToggle}
-            name={settings.memoryTranslateMedia.hypaV3
-                ? language.ToggleHypaMemory
-                : settings.memoryTranslateMedia.hanuraiEnable
-                  ? language.hanuraiMemory
-                  : settings.memoryTranslateMedia.hypaMemory || settings.memoryTranslateMedia.hypav2
-                    ? language.ToggleHypaMemory
-                    : language.ToggleSuperMemory}
-        />
-    </div>
-{/if}

@@ -1,4 +1,27 @@
-// Long-term memory shapes persisted on chats (`hypaV2Data`, `hypaV3Data`) and in settings.
+import type { StructuredMemorySettings } from "./structuredMemory.ts";
+
+/**
+ * Long-term memory shapes persisted on chats (`hypaV2Data`, `hypaV3Data`) and in settings, shared by
+ * the server's algorithms (`server/src/prompt/memory/`), the tab's HypaV3 copy and modal
+ * (`src/ts/process/memory/hypav3.ts`, `src/lib/Others/HypaV3Modal.svelte`), and the settings pages.
+ *
+ * - Two shapes per value: the runtime one (`HypaV2Data`, `HypaV3Data`, `Summary`) holds each
+ *   summary's message ids as a `Set`; the stored one (`SerializableHypaV2Data`,
+ *   `SerializableHypaV3Data`, `SerializableSummary`) holds them as a list. A `Set` is never persisted
+ *   (JSON makes it `{}`): the algorithm modules convert at their edges (`toHypaV3Data` and
+ *   `toSerializableHypaV3Data` in both HypaV3 copies; `toHypaV2Data`, `toSerializableHypaV2Data`, and
+ *   the old `targetId` shape's `convertOldToNewHypaV2Data` in `server/src/prompt/memory/hypav2.ts`).
+ * - Message ids are `Message.chatId` values (`null` for the greeting); rewriting them orphans the
+ *   summaries that name them.
+ * - The Voyage model tables (`VOYAGE_CONTEXT_MODELS`, `VOYAGE_EMBEDDING_MODELS`, by `hypaModel`
+ *   value) with `isVoyageContextModel`, `isVoyageEmbeddingModel`, and `voyageKeyMissing` are read by
+ *   both embedding copies (`src/ts/process/memory/`, `server/src/prompt/embeddings.ts`) and the
+ *   settings options: a Voyage model is one table entry plus its `HypaModel` value.
+ * - The merge helpers (`mergeHypaV3Write`, `mergeHypaV3SelectionWrite`, `mergeHypaV2Write`) place a
+ *   job's or a task's changes onto the latest stored value and return null (skip the write) when
+ *   they cannot be placed soundly. A summary's identity is `summaryKey` (its message ids); a V2 main
+ *   chunk's is its `id` with its message ids.
+ */
 
 export const DISPLAY_MODE = {
     All: "All",
@@ -8,6 +31,10 @@ export const DISPLAY_MODE = {
 
 export type DisplayMode = (typeof DISPLAY_MODE)[keyof typeof DISPLAY_MODE];
 
+/**
+ * The `hypaModel` values: the Transformers.js models (`localModels` in both embedding copies; a `GPU`
+ * name runs on WebGPU in the tab), OpenAI, Voyage, and `custom` (`hypaCustomSettings`).
+ */
 export type HypaModel =
     | "custom"
     | "ada"
@@ -42,16 +69,19 @@ export const VOYAGE_CONTEXT_MODELS: Record<string, { id: string; name: string }>
     voyageContext4: { id: "voyage-context-4", name: "Voyage Context 4" },
 };
 
+/** The Voyage `/v1/embeddings` models (see `VOYAGE_CONTEXT_MODELS`). */
 export const VOYAGE_EMBEDDING_MODELS: Record<string, { id: string; name: string }> = {
     voyage4Large: { id: "voyage-4-large", name: "Voyage 4 Large" },
     voyage4: { id: "voyage-4", name: "Voyage 4" },
     voyage4Lite: { id: "voyage-4-lite", name: "Voyage 4 Lite" },
 };
 
+/** Whether `model` (a `hypaModel` value) is a contextual Voyage model, the only contextual providers. */
 export function isVoyageContextModel(model: string): boolean {
     return Object.hasOwn(VOYAGE_CONTEXT_MODELS, model);
 }
 
+/** Whether `model` (a `hypaModel` value) is a Voyage `/v1/embeddings` model. */
 export function isVoyageEmbeddingModel(model: string): boolean {
     return Object.hasOwn(VOYAGE_EMBEDDING_MODELS, model);
 }
@@ -62,6 +92,7 @@ export function voyageKeyMissing(model: string): Error {
     return new Error(`${name} requires a Voyage API Key`);
 }
 
+/** HypaV2's runtime value: summaries (`mainChunks`) and their retrieval pieces (`chunks`). */
 export interface HypaV2Data {
     lastMainChunkID: number; // can be removed, but exists to more readability of the code.
     mainChunks: {
@@ -78,7 +109,7 @@ export interface HypaV2Data {
     }[];
 }
 
-// Reuse HypaV2Data and override only chatMemos in mainChunks
+/** The stored `hypaV2Data`: `HypaV2Data` with each main chunk's message ids as a list. */
 export interface SerializableHypaV2Data extends Omit<HypaV2Data, "mainChunks"> {
     mainChunks: {
         id: number;
@@ -99,8 +130,26 @@ export interface HypaV3Settings {
     summarizationModel: string;
     summarizationPrompt: string;
     reSummarizationPrompt: string;
+    /** Ratio mode: the memory budget's share of the context: `floor(C × r)`. */
     memoryTokensRatio: number;
+    /** Ratio mode: the share of the context a summarization frees beyond the trigger: the target is `C × (1 − e)`. */
     extraSummarizationRatio: number;
+    /** Ratio mode: the share of the context a background summary keeps free: summaries are made above `C × (1 − h)`; in [0, 1). */
+    lookaheadHeadroomRatio: number;
+    /**
+     * How the memory budget, the background summary headroom, and the extra summarization are given:
+     * `"ratio"`, as shares of the max context `C` (the three `*Ratio` fields), or `"tokens"`, as token
+     * amounts (the three `*Tokens` fields below), reduced to fit the context. `resolveHypaV3Budget`
+     * (`shared/hypaV3Presets.ts`) turns either into the step's thresholds. Each mode keeps the other's
+     * fields, so switching back restores them.
+     */
+    budgetMode: "ratio" | "tokens";
+    /** Token mode: the memory budget, the tokens the summaries may take in the prompt; an integer ≥ 0. */
+    memoryBudgetTokens: number;
+    /** Token mode: the tokens a background summary keeps free: summaries are made above `C − headroom`; an integer ≥ 0. */
+    lookaheadHeadroomTokens: number;
+    /** Token mode: the tokens a summarization frees beyond the trigger: the target is `C − extra`; an integer ≥ 0. */
+    extraSummarizationTokens: number;
     maxChatsPerSummary: number;
     recentMemoryRatio: number;
     similarMemoryRatio: number;
@@ -119,8 +168,14 @@ export interface HypaV3Settings {
     queryChatCount: number;
     /** Uncovered history tokens a send may leave without summaries before it asks first; 0 asks on any gap. */
     gapConfirmTokens: number;
+    /** The Structured Memory writer's settings (`normalizeStructuredMemorySettings`). */
+    structured: StructuredMemorySettings;
 }
 
+/**
+ * HypaV3's runtime value. `metrics` holds the last selection as indices into `summaries`, so a
+ * change of the list moves them (`remapHypaV3Metrics`, `remapHypaV3MetricsByIdentity`).
+ */
 export interface HypaV3Data {
     summaries: Summary[];
     categories?: { id: string; name: string }[];
@@ -130,6 +185,8 @@ export interface HypaV3Data {
         lastRecentSummaries: number[];
         lastSimilarSummaries: number[];
         lastRandomSummaries: number[];
+        /** The summaries the last selection deferred (stored, not yet needed); absent when none was. */
+        lastDeferredSummaries?: number[];
     };
     modalSettings?: {
         displayMode: DisplayMode;
@@ -141,10 +198,18 @@ export interface HypaV3Data {
     };
 }
 
+/** The stored `hypaV3Data`: `HypaV3Data` with serializable summaries. */
 export interface SerializableHypaV3Data extends Omit<HypaV3Data, "summaries"> {
     summaries: SerializableSummary[];
+    /**
+     * Only on Structured Memory's projection as a tab's read answers it (`sealHypaV3Data`): the value
+     * is projected from the chat's records and never stored. It says what the value is, and
+     * authorizes nothing.
+     */
+    structuredMemoryProjection?: string;
 }
 
+/** One HypaV3 summary. `chatMemos` are the message ids it covers, in order: the next summary starts after the last. */
 export interface Summary {
     text: string;
     chatMemos: Set<string>;
@@ -153,8 +218,9 @@ export interface Summary {
     tags?: string[];
 }
 
+/** A stored summary: `chatMemos` as a list. */
 export interface SerializableSummary extends Omit<Summary, "chatMemos"> {
-    chatMemos: string[];
+    chatMemos: (string | null)[];
 }
 
 // A job's memory write (`server/src/prompt/assemble.ts`) is built from the chat as stored at the
@@ -196,7 +262,7 @@ function summaryTail(summaries: readonly SerializableSummary[]): string {
 type HypaV3Metrics = NonNullable<HypaV3Data["metrics"]>;
 
 /** Each valid index of `metrics` through `map`; invalid or unresolved indices are dropped. */
-function remapMetrics(
+export function remapHypaV3Metrics(
     metrics: HypaV3Metrics,
     summaryCount: number,
     map: (index: number) => number | undefined,
@@ -208,11 +274,13 @@ function remapMetrics(
                   return mapped === undefined ? [] : [mapped];
               })
             : [];
+    const deferred = each(metrics.lastDeferredSummaries);
     return {
         lastImportantSummaries: each(metrics.lastImportantSummaries),
         lastRecentSummaries: each(metrics.lastRecentSummaries),
         lastSimilarSummaries: each(metrics.lastSimilarSummaries),
         lastRandomSummaries: each(metrics.lastRandomSummaries),
+        ...(deferred.length > 0 ? { lastDeferredSummaries: deferred } : {}),
     };
 }
 
@@ -238,7 +306,7 @@ export function remapHypaV3MetricsByIdentity(
     const uniqueInFrom = unique(fromKeys);
     const uniqueInTo = unique(toKeys);
     const toIndex = new Map(toKeys.map((key, index) => [key, index]));
-    return remapMetrics(metrics, from.length, (index) => {
+    return remapHypaV3Metrics(metrics, from.length, (index) => {
         const key = fromKeys[index];
         return uniqueInFrom(key) && uniqueInTo(key) ? toIndex.get(key) : undefined;
     });
@@ -340,11 +408,11 @@ export function mergeHypaV3Write(
 
     let metrics: HypaV3Metrics | undefined;
     if (metricsRecomputed && result.metrics) {
-        metrics = remapMetrics(result.metrics, result.summaries.length, (index) =>
+        metrics = remapHypaV3Metrics(result.metrics, result.summaries.length, (index) =>
             index < keptCount ? mergedIndexOf.get(summaryKey(result.summaries[index])) : addedStart + index - keptCount,
         );
     } else if (stored?.metrics) {
-        metrics = remapMetrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
+        metrics = remapHypaV3Metrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
     }
 
     const merged: SerializableHypaV3Data = { ...stored, summaries };
@@ -412,9 +480,11 @@ export function mergeHypaV3SelectionWrite(
 
     let metrics: HypaV3Metrics | undefined;
     if (options.selectionMade && data.metrics) {
-        metrics = remapMetrics(data.metrics, data.summaries.length, (index) => mergedIndexOf.get(dataKeys[index]));
+        metrics = remapHypaV3Metrics(data.metrics, data.summaries.length, (index) =>
+            mergedIndexOf.get(dataKeys[index]),
+        );
     } else if (stored?.metrics) {
-        metrics = remapMetrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
+        metrics = remapHypaV3Metrics(stored.metrics, storedSummaries.length, (index) => storedToMerged.get(index));
     }
 
     const merged: SerializableHypaV3Data = { ...stored, summaries };

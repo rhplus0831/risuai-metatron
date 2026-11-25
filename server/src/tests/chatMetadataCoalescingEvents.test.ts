@@ -24,7 +24,8 @@ afterEach(async () => {
 });
 
 async function setup() {
-    // Include single-message SELECTs too: a metadata patch must read no transcript rows.
+    // Include single-message SELECTs too: a metadata write that leaves the chat's summary unchanged
+    // must read no transcript rows.
     let messageReads = 0;
     const prepare = DatabaseSync.prototype.prepare;
     vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
@@ -244,7 +245,8 @@ describe("coalesced metadata at job output boundaries", () => {
                     });
                     break;
                 case "write":
-                    h.write([{ op: "meta", set: { name: "after batch" } }]);
+                    // A field outside the summary: a listed one (a rename) reads the last row for its time.
+                    h.write([{ op: "meta", set: { customLabel: "after batch" } }]);
                     break;
             }
             const stored = h.store.chatMeta("c", "k")!;

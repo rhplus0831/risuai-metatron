@@ -1,3 +1,4 @@
+/** Traditional Chinese `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageChineseTraditional = {
     formating: {
         main: "主要提示詞",
@@ -129,7 +130,7 @@ export const languageChineseTraditional = {
             "平衡模式的渲染方式與關閉相同，並在串流結束前隱藏該訊息的編輯與翻譯按鈕。\n\n" +
             "強力模式直接顯示未經渲染的原始串流文字，等串流結束後再正常渲染該訊息。它最能降低負載，對行動裝置或低階裝置尤其有幫助。\n\n" +
             "此為實驗性功能，部分功能可能因此出現非預期行為",
-        imageCompression: "啟用後，匯出角色時會壓縮圖片。若動態圖片無法正常運作，請嘗試停用",
+        imageCompression: "啟用後，匯出角色和模組時會壓縮圖片。若動態圖片無法正常運作，請嘗試停用",
         useExperimental: "啟用後會顯示部分實驗性功能",
         forcePlainFetch: "啟用後會使用瀏覽器 Fetch API，而非原生 HTTP 請求；這可能造成 CORS 錯誤",
         autoFillRequestURL: "啟用後會依目前模型自動填入對應的請求 URL",
@@ -215,9 +216,6 @@ export const languageChineseTraditional = {
             '若此欄位不為空，會從回應中擷取指定 JSON 資料。例如，要從 `{"response": {"text": ["hello"]}}` 擷取 `response.text[0]`，可填入 `response.text.0`',
         translatorNote:
             "可在此為每個角色加入專屬翻譯提示詞。僅在使用 Ax. 模型翻譯時生效。若要套用，請在語言設定中加入 `{{slot::tnote}}`。群組對話不支援此功能",
-        groupInnerFormat:
-            "設定群組對話中非發言角色使用的格式。若不為空，會使用此格式取代預設格式；若「群組中非發言角色的身分」為 `assistant`，也會套用至正在發言的角色",
-        groupOtherBotRole: "設定群組對話中非發言角色使用的身分",
         chatHTML:
             "插入每則對話的 HTML。\n\n可使用 CBS 與特殊標籤：\n- `<risutextbox>`：用來顯示文字的文字框\n- `<risuicon>`：user 或 assistant 的圖示\n- `<risubuttons>`：編輯、翻譯等對話操作按鈕\n- `<risugeninfo>`：生成資訊按鈕",
         systemContentReplacement:
@@ -701,7 +699,6 @@ export const languageChineseTraditional = {
     autoTranslation: "自動翻譯",
     playMessage: "播放訊息音訊",
     iconSize: "圖示大小",
-    createGroup: "建立群組對話",
     groupIcon: "群組圖示",
     single: "單一",
     multiple: "多個",
@@ -775,7 +772,6 @@ export const languageChineseTraditional = {
     creator: "創作者",
     CharVersion: "角色版本",
     Speech: "語音",
-    ToggleSuperMemory: "切換 SupaMemory",
     SuperMemory: "SupaMemory",
     useExperimental: "啟用實驗性功能",
     showMemoryLimit: "顯示記憶上限",
@@ -878,7 +874,6 @@ export const languageChineseTraditional = {
     customInnerFormat: "自訂內部格式",
     innerFormat: "內部格式",
     HypaMemory: "HypaMemory",
-    ToggleHypaMemory: "切換 HypaMemory",
     resetPromptTemplateConfirm: "確定要重設提示詞模板嗎？",
     emotionMethod: "情緒處理方式",
     continueResponse: "繼續回應",
@@ -893,8 +888,7 @@ export const languageChineseTraditional = {
     importPersona: "匯入使用者人設",
     export: "匯出",
     import: "匯入",
-    supporterThanks: "感謝贊助者",
-    supporterThanksDesc: "感謝您的支持！",
+    supporterThanks: "RisuAI 贊助者",
     supporterListLoadFailed: "無法載入贊助者列表。請檢查網路連線後重新開啟此頁面。",
     donatorPatreonDesc:
         "基於隱私考量，預設不會顯示於清單中。若希望顯示您的暱稱，請前往 Risuai 的 Patreon 頁面並按下連結按鈕",
@@ -1041,7 +1035,10 @@ export const languageChineseTraditional = {
     select: "選擇",
     options: "選項",
     alertContent: "提示內容",
-    lowLevelAccessConfirm: "此內容使用低階存取，代表它能直接存取 AI 模型與您的儲存空間。確定要匯入此內容嗎？",
+    lowLevelAccessImportQuestion:
+        "此內容使用低階存取，代表它能直接存取 AI 模型與您的儲存空間。要允許低階存取並匯入嗎？若不允許而匯入，需要此權限的功能將無法運作，之後可在設定中開啟。",
+    lowLevelAccessImportWith: "允許低階存取並匯入",
+    lowLevelAccessImportWithout: "不使用低階存取匯入",
     extractRegex: "使用 Regex 擷取文字",
     runImgGen: "執行圖片生成",
     cutChat: "截斷對話",
@@ -1070,7 +1067,6 @@ export const languageChineseTraditional = {
     blockMode: "區塊",
     helpBlock: "說明",
     hideChatIcon: "隱藏圖示 UI",
-    loadInternalBackup: "載入內部備份",
     createCopy: "建立副本",
     chatOptions: "對話選項",
     parameters: "參數",
@@ -1102,8 +1098,6 @@ export const languageChineseTraditional = {
     trailingDoubleQuote: "結尾雙引號",
     translatorNote: "翻譯備註",
     formatGroupInSingle: "非群組對話也顯示角色名稱",
-    groupInnerFormat: "非發言角色的內部格式",
-    groupOtherBotRole: "群組中非發言角色的身分",
     chatHTML: "對話 HTML",
     logShare: "顯示分享記錄按鈕",
     preview: "預覽",
@@ -1303,7 +1297,7 @@ export const languageChineseTraditional = {
     useTokenizerCaching: "使用 Tokenizer 快取",
     hypaMemoryV2Modal: "Hypa V2 視窗",
     hypaMemoryV3Modal: "Hypa V3 視窗",
-    showMenuHypaMemoryModal: "在選單顯示 Hypa 視窗",
+    showMenuHypaMemoryModal: "在選單顯示 HypaV2 視窗",
     promptInfoInsideChat: "將提示詞資訊儲存至對話",
     promptTextInfoInsideChat: "將提示詞文字儲存至對話",
     promptInfoEmptyMessage: "此訊息沒有可用的提示詞資訊",
@@ -1350,8 +1344,6 @@ export const languageChineseTraditional = {
     stackTraceTranslationFailed: "無法翻譯堆疊追蹤。以下顯示原始的混淆版堆疊追蹤",
     apply: "套用",
     add: "加入",
-    nightlyWarning:
-        "## 測試版\n\n您目前使用的是測試版。此版本僅供測試，可能包含尚未修正的問題。**測試版不提供個別問題排除支援**",
     generatedByAIDisclaimer: "此內容由 AI 生成，可能包含不準確資訊或偏見",
     aiGenerationWarning: "內容將由 AI 生成，可能包含不準確資訊或偏見",
     duplicatePluginFoundUpdateIt: "已安裝相同外掛。要更新現有外掛嗎？",
@@ -1423,7 +1415,9 @@ export const languageChineseTraditional = {
     blockquoteStyling: "引用區塊樣式",
     dynamicModelRegistry: "動態模型註冊",
     confirmInstallPluginViaPlugin:
-        "您正嘗試透過另一個外掛安裝此外掛。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
+        "您正嘗試透過另一個外掛安裝外掛「{plugin}」。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
+    confirmReplacePluginViaPlugin:
+        "另一個外掛正嘗試以不同的程式碼取代已安裝的外掛「{plugin}」。若來源外掛不可信，可能會帶來安全風險。確定要繼續嗎？",
     disableSeperateParameterChangeOnPresetChange: "切換預設集時不要變更獨立參數設定",
     keepSessionAlive: "維持工作階段",
     keepSessionAlivePip: "透過子母畫面（PiP）",

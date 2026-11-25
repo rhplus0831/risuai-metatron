@@ -4,7 +4,18 @@ import { defaultCredentialKey } from "../credentials.ts";
 import type { RequestDataArgumentExtended } from "../request.ts";
 import type { RequestDb } from "../settings.ts";
 
-/** A provider-specific key never falls through to another provider's default, even on direct calls. */
+/**
+ * Credential selection and local-network transport options shared by server/src/llm/openAI/requests.ts and
+ * server/src/llm/openAI/responses.ts. Key selection stays within the model's credential slot; local routing requires
+ * both the resolved profile's opt-in and a local-network URL. Only streaming local requests receive this module's
+ * timeout override, leaving buffered requests to the transport's default deadline.
+ */
+
+/**
+ * A provider-specific key never falls through to another provider's default, even on direct calls. The key is
+ * `arg.key` (a bound named key), else a `keyIdentifier` model's own `OaiCompAPIKeys` entry or `""`, else the provider
+ * default (`""` for a custom model or the reverse proxy: `server/src/llm/credentials.ts` `defaultCredentialKey`).
+ */
 export function getOpenAIRequestKey(arg: RequestDataArgumentExtended, defaultKey: string): string {
     if (arg.key != null) {
         return arg.key;
@@ -17,11 +28,17 @@ export function getOpenAIRequestKey(arg: RequestDataArgumentExtended, defaultKey
     return defaultCredentialKey(arg.aiModel, defaultKey);
 }
 
+/** Optional transport overrides for local routing and a streaming request's deadline. */
 export interface LocalNetworkRequestOptions {
     networkRoute?: "auto" | "local_network";
     requestTimeoutMs?: number;
 }
 
+/**
+ * When the resolved profile's `localNetworkMode` is on and `url` is a local-network address, the request takes the
+ * `local_network` route; a streaming call also gets the profile's positive `localNetworkTimeoutSec` (default 600
+ * seconds) as its timeout. The OpenAI Chat and Responses adapters call it for their request and replacement URLs.
+ */
 export function getLocalNetworkRequestOptions(
     url: string,
     db: RequestDb,

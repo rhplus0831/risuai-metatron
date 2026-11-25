@@ -12,7 +12,7 @@
     let { item, ctx }: Props = $props();
 </script>
 
-<div class="flex items-center {item.classes ?? 'mt-2'}">
+<div class="flex items-center {item.classes ?? ''}">
     <Check bind:check={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)} name={getLabel(item)}>
         {#if item.showExperimental}<Help key="experimental" />{/if}
         {#if item.helpKey}<Help key={item.helpKey as any} unrecommended={item.helpUnrecommended ?? false} />{/if}

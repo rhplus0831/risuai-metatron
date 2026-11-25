@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CheckpointSummary } from "../../../shared/chatCheckpoints.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
@@ -9,6 +9,7 @@ import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ChatInvalidation } from "../data/resourceStore.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
+import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { createResourceTestClient, json, type ResourceTestClient, type TestServerOptions } from "./testSupport.ts";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -97,6 +98,35 @@ function storeFixture() {
 }
 
 describe("chat checkpoint routes", () => {
+    it.each([
+        { method: "POST", operation: "save", body: { ...ref, name: "Fork" } },
+        { method: "PUT", operation: "policy", body: { ...ref, autoEvery: 2, autoKeep: 3 } },
+    ])(
+        "refuses a streamed body over 16 KiB on $method $operation without writing",
+        async ({ method, operation, body }) => {
+            const s = await server();
+            const encoded = Buffer.from(JSON.stringify(body));
+            const response = await s.request(`${path}/${operation}`, {
+                method,
+                headers: { "content-type": "application/json" },
+                body: new ReadableStream<Uint8Array>({
+                    start(controller) {
+                        controller.enqueue(encoded);
+                        controller.enqueue(Buffer.alloc(16 * 1024 + 1 - encoded.byteLength, " "));
+                        controller.close();
+                    },
+                }),
+                duplex: "half",
+            } as RequestInit);
+            expect(await answer(response, 413)).toEqual({ error: "Request body too large" });
+            expect(await list(s)).toEqual([]);
+            expect(await answer(await s.request(`${path}/policy?${new URLSearchParams(ref)}`), 200)).toEqual({
+                epoch: s.epoch,
+                policy: null,
+            });
+        },
+    );
+
     it("authenticates every route and fences mutations by epoch and maintenance, with uncached answers", async () => {
         const s = await server();
         const checkpoint = await save(s);
@@ -140,6 +170,44 @@ describe("chat checkpoint routes", () => {
         expect(await read(s)).toEqual(before);
         expect(await list(s)).toEqual([checkpoint]);
         await save(s, "Gate reopened");
+    });
+
+    it("lists a trashed chat's saved checkpoints while refusing all checkpoint mutations", async () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
+        onTestFinished(() => {
+            vi.useRealTimers();
+        });
+        const s = await server();
+        await answer(
+            await s.json("/api/resources/batch", {
+                chats: [{ ...ref, chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
+            }),
+            200,
+        );
+        const checkpoint = await save(s);
+        await answer(await edit(s, [{ op: "setText", id: "a", text: "After the checkpoint" }]), 200);
+        const marked = await answer(await s.chatTrash("trash", { ...ref, revision: (await read(s)).revision }), 200);
+        const saved = { id: checkpoint.id, baseRevision: checkpoint.revision };
+        const before = await read(s);
+        for (const [action, fields] of Object.entries({
+            save: { name: "Extra" },
+            load: { id: checkpoint.id, chatBaseRevision: marked.revision },
+            rename: { ...saved, name: "Renamed" },
+            delete: saved,
+            policy: { autoEvery: 4, autoKeep: 2 },
+        })) {
+            const response = await s.json(
+                `${path}/${action}`,
+                { ...ref, ...fields },
+                { method: action === "policy" ? "PUT" : "POST" },
+            );
+            expect(await answer(response, 409), action).toEqual({ reason: "chatTrashed", revision: marked.revision });
+        }
+        expect(await list(s)).toEqual([checkpoint]);
+        expect(await answer(await s.request(`${path}/policy?${new URLSearchParams(ref)}`), 200)).toMatchObject({
+            policy: null,
+        });
+        expect(await read(s)).toEqual(before);
     });
 
     it("lists, renames and deletes checkpoints with revision checks, missing-resource checks and validation limits", async () => {
@@ -396,7 +464,6 @@ describe("chat checkpoint routes", () => {
             "send",
             "continue",
             "reroll",
-            "group",
             "preview",
             "previewPrompt",
             "command",
@@ -507,9 +574,10 @@ describe("checkpoint load transactions", () => {
                 epoch: t.store.epoch(),
                 changes: {
                     resources: [],
-                    chats: [{ characterId: ref.characterId, id: ref.chatId, revision }],
+                    chats: [{ characterId: ref.characterId, id: ref.chatId, revision, trashedAt: null }],
                     chatOrders: [],
                 },
+                cursor: t.store.cursor(),
             },
         ]);
         expect(t.store.chatSourceGeneration(ref.characterId, ref.chatId)).toBe(before.sourceGeneration + 1);
@@ -525,6 +593,8 @@ describe("checkpoint load transactions", () => {
 
     it("rolls back stale loads and post-replace failures without changing safety history, the floor, policy, writes or notices", () => {
         const t = storeFixture();
+        const records = memoryRecords(["z", "a"]);
+        writeMemory(t.store, ref.characterId, ref.chatId, records);
         const saved = t.checkpoint();
         expect(t.service().load(t.request(saved.id)).status).toBe(200);
         t.checkpoint("second safety", "safety");
@@ -532,8 +602,27 @@ describe("checkpoint load transactions", () => {
         t.store.checkpoints.writePolicy(ref.characterId, ref.chatId, { autoEvery: 4, autoKeep: 2, lastAutoTurns: 99 });
         const stale = t.request(saved.id);
         t.write([{ op: "setText", id: "a", text: "Keep this" }]);
+        writeMemory(t.store, ref.characterId, ref.chatId, {
+            ...memoryRecords(["z", "later"], "Keep this memory"),
+            remove: { pages: ["a"], events: ["a"], threads: ["a"], runs: ["a"] },
+        });
+        const memory = () => {
+            const contents = t.store.memory.readContents(ref.characterId, ref.chatId)!;
+            return {
+                revision: contents.revision,
+                records: Object.fromEntries(
+                    memoryKinds.map((kind) => [
+                        kind,
+                        contents[kind].map(
+                            ({ id }) => t.store.memory.readRecord(ref.characterId, ref.chatId, kind, id)!.data,
+                        ),
+                    ]),
+                ),
+            };
+        };
         const state = () => ({
             chat: t.chat(),
+            memory: memory(),
             floor: t.store.checkpoints.readFloor(ref.characterId, ref.chatId),
             checkpoints: t.store.checkpoints.list(ref.characterId, ref.chatId),
             policy: t.store.checkpoints.readPolicy(ref.characterId, ref.chatId),
@@ -547,6 +636,11 @@ describe("checkpoint load transactions", () => {
         expect(() =>
             t
                 .service(() => {
+                    expect(memory().records).toEqual({
+                        ...records,
+                        events: records.events.map((event) => ({ ...event, createdRevision: 1 })),
+                    });
+                    expect(memory().revision).not.toBe(before.memory.revision);
                     throw new Error("after load failed");
                 })
                 .load(t.request(saved.id)),

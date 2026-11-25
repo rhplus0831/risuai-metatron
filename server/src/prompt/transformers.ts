@@ -1,17 +1,6 @@
 import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export type TransformersTask =
-    | { kind: "embed"; texts: string[]; model: string }
-    | { kind: "summarize"; text: string }
-    | { kind: "caption"; dataUrl: string }
-    | { kind: "generate"; text: string; model: string; config: Record<string, unknown> };
-
-export type TransformersRequest = { id: number; task: TransformersTask };
-
-export type TransformersResponse =
-    { id: number; ok: true; vectors?: Float32Array[]; text?: string } | { id: number; ok: false; error: string };
-
 /**
  * The server's Transformers.js models (the client's `src/ts/process/transformers.ts`):
  * embeddings, the summarizer, the image captioner, and text generation, run in one child process
@@ -38,6 +27,20 @@ export type TransformersResponse =
  * It is not a memory bound: nothing limits what a model allocates in the child process, and under
  * memory pressure the system may end the server instead of it.
  */
+
+/** One task of the worker process (`transformersWorker.ts`). */
+export type TransformersTask =
+    | { kind: "embed"; texts: string[]; model: string }
+    | { kind: "summarize"; text: string }
+    | { kind: "caption"; dataUrl: string }
+    | { kind: "generate"; text: string; model: string; config: Record<string, unknown> };
+
+export type TransformersRequest = { id: number; task: TransformersTask };
+
+export type TransformersResponse =
+    { id: number; ok: true; vectors?: Float32Array[]; text?: string } | { id: number; ok: false; error: string };
+
+/** The local models as the server's embeddings, memory, captions, and generation use them. */
 export type TransformersService = {
     /** `runEmbedding`: one normalized, mean-pooled vector per text. */
     runEmbedding(texts: string[], model: string, signal?: AbortSignal): Promise<Float32Array[]>;
@@ -172,6 +175,7 @@ export class TransformersQueueWaitError extends Error {
     }
 }
 
+/** The answer status of a queue refusal (429 full, 503 waited too long), or null for any other error. */
 export function localModelRefusal(error: unknown): {
     status: 429 | 503;
     message: string;
@@ -229,6 +233,7 @@ type Pending = {
 
 const abortReason = (signal: AbortSignal) => signal.reason ?? new Error("request aborted");
 
+/** The service over one worker process at a time; `spawn` replaces the forked process (tests). */
 export function createTransformers(options: {
     cacheDir: string;
     idleMs?: number;

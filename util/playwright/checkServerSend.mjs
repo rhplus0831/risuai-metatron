@@ -19,7 +19,14 @@ import { chatBindingFixture, modelFixtureOps, promptFixture } from "./modelProfi
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { chromium } from "playwright-core";
-import { chromePath, isolateContext, openCharacterChat, startStack, unexpectedEgress } from "./stack.mjs";
+import {
+    chromePath,
+    clearSafeBootAttempts,
+    isolateContext,
+    openCharacterChat,
+    startStack,
+    unexpectedEgress,
+} from "./stack.mjs";
 
 const args = process.argv.slice(2);
 const option = (name) => {
@@ -118,6 +125,14 @@ try {
             return { status: r.status, body: await r.json().catch(() => null) };
         };
         const label = "server";
+        const logVisibleAlerts = async (step) => {
+            // evaluateAll returns immediately when absent; diagnostics must never block a step.
+            const texts = await page
+                .locator("[data-alert-dialog]:visible")
+                .evaluateAll((dialogs) => dialogs.map((dialog) => dialog.innerText))
+                .catch(() => []);
+            for (const text of texts) console.log(`ALERT ${label} (${step}): ${text}`);
+        };
         await open();
         const ui = (await api("/api/resources/ui/main")).body;
         epoch = ui.epoch ?? epoch;
@@ -224,6 +239,7 @@ try {
         });
         check(`${label}: seeded`, seeded.status === 200, seeded);
         await open();
+        await logVisibleAlerts("initial chat");
         await openCharacterChat(page, chaId);
         await page.getByText("Greetings.").first().waitFor({ timeout: 15000 });
         await page.waitForTimeout(1500);
@@ -333,12 +349,15 @@ try {
             last,
         );
         // A reload in the middle of a slow stream: the checkpointed text, then the whole reply.
+        // The rapid loads in these two cases must not trigger safe boot's notice dialog.
+        await clearSafeBootAttempts(context);
         mode = { chunks: ["Part A. ", "Part B. ", "Part C. ", "Part D. ", "Part E. ", "Part F."], delayMs: 900 };
         await input.fill("Tell me slowly");
         await input.press("Enter");
         await page.getByText("Part A.").first().waitFor({ timeout: 20000 });
         await page.waitForTimeout(3500);
         await open();
+        await logVisibleAlerts("reload mid-stream");
         await openCharacterChat(page, chaId);
         await page.getByText("Tell me slowly").first().waitFor({ timeout: 15000 });
         const midText = (await page.evaluate(() => document.body.innerText)).includes("Part A.");
@@ -378,6 +397,7 @@ try {
         await page.getByText("Half A.").first().waitFor({ timeout: 20000 });
         await page.waitForTimeout(1000);
         await open();
+        await logVisibleAlerts("Stop after reload mid-stream");
         await openCharacterChat(page, chaId);
         await page.getByText("Tell me slowly again").first().waitFor({ timeout: 15000 });
         const stopAfterReload = page.locator('button[aria-labelledby="cancel"]');

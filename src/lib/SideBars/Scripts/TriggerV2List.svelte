@@ -20,10 +20,25 @@
     } from "../../../../shared/triggers.ts";
     import { onDestroy, onMount } from "svelte";
     import { RISU_EFFECT_DRAG_TYPE, RISU_TRIGGER_DRAG_TYPE } from "src/ts/dragTypes";
+    import { effectDisplayText, formatEffectDisplay as formatDisplay } from "./triggerEffectDisplay";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
+
+    /**
+     * The v2 trigger editor's palette is `effectCategories`; `makeDefaultEditType` supplies the
+     * initial fields. `checkSupported` filters display/request triggers by `displayAllowList` /
+     * `requestAllowList` in `shared/triggers.ts`; other modes hide Special effects and offer
+     * Low Level effects only with `lowLevelAble`.
+     *
+     * `deleteEffect`, `copyEffect`, `getInsertIndent`, and `getBlockRange` must keep paired
+     * `v2EndIndent` entries and indentation intact through block edits, copies, and moves.
+     * Saving a new `v2If`, `v2IfAdvanced`, `v2Loop`, `v2Else`, or `v2LoopNTimes` generates its
+     * closing `v2EndIndent` at indent + 1, with `endOfLoop` for either loop type.
+     */
 
     interface Props {
         value?: triggerscript[];
         lowLevelAble?: boolean;
+        popupEditorContext?: unknown;
     }
 
     const effectCategories = {
@@ -62,7 +77,7 @@
             "v2GetFirstMessage",
             "v2QuickSearchChat",
         ],
-        "Low Level": ["v2SendAIprompt", "v2ImgGen", "v2CheckSimilarity", "v2RunLLM"],
+        "Low Level": ["v2SendAIprompt", "v2ImgGen", "v2CheckSimilarity", "v2RunLLM", "v2SetPersonaDesc"],
         Alert: ["v2ShowAlert", "v2GetAlertInput", "v2GetAlertSelect"],
         "Lorebook V2": [
             "v2GetAllLorebooks",
@@ -90,7 +105,6 @@
             "v2GetCharacterDesc",
             "v2SetCharacterDesc",
             "v2GetPersonaDesc",
-            "v2SetPersonaDesc",
             "v2GetReplaceGlobalNote",
             "v2SetReplaceGlobalNote",
             "v2GetAuthorNote",
@@ -143,7 +157,9 @@
     };
 
     let lastClickTime = 0;
-    let { value = $bindable([]), lowLevelAble = false }: Props = $props();
+    let { value = $bindable([]), lowLevelAble = false, popupEditorContext = undefined }: Props = $props();
+    let destroyed = false;
+    onDestroy(() => (destroyed = true));
     let selectedIndex = $state(0);
     let selectedEffectIndex = $state(-1);
     let selectedTriggerIndices = $state<number[]>([]);
@@ -520,6 +536,8 @@
     };
 
     const importTriggers = () => {
+        const owner = popupEditorContext;
+        const list = recordValueIdentity(value);
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".json";
@@ -529,6 +547,7 @@
 
             try {
                 const text = await file.text();
+                if (destroyed || !Object.is(owner, popupEditorContext) || list !== recordValueIdentity(value)) return;
                 const importedTriggers = JSON.parse(text);
 
                 if (!Array.isArray(importedTriggers)) {
@@ -2263,54 +2282,7 @@
         e.stopPropagation();
     };
 
-    const formatEffectDisplay = (effect: triggerEffect) => {
-        const type = effect.type;
-
-        if (!checkSupported(type)) {
-            return `<span class="text-red-500">${language.triggerDesc.v2UnsupportedTriggerDesc}</span>`;
-        }
-
-        const txt = ((language.triggerDesc[type + "Desc"] as string) || type).replace(/{{(.+?)}}/g, (match, p1) => {
-            const d = effect[p1];
-
-            if (type === "v2Comment" && p1 === "value") {
-                return `<span class="text-gray-400">${d || ""}</span>`;
-            }
-
-            if (typeof d === "boolean") {
-                return `<span class="text-blue-500">${d ? "true" : "false"}</span>`;
-            }
-
-            if (p1.endsWith("Type")) {
-                return `<span class="text-blue-500">${d || "null"}</span>`;
-            }
-            if (p1 === "condition" || p1 === "operator") {
-                return `<span class="text-green-500">${d || "null"}</span>`;
-            }
-            if (effect[p1 + "Type"] === "var") {
-                return `<span class="text-yellow-500">${d || "null"}</span>`;
-            }
-            if (effect[p1 + "Type"] === "value") {
-                return `<span class="text-green-500">"${d}"</span>`;
-            }
-            if (effect.type === "v2If" && p1 === "source") {
-                return `<span class="text-yellow-500">${d || "null"}</span>`;
-            }
-            if (effect.type === "v2SetVar" && p1 === "var") {
-                return `<span class="text-yellow-500">${d || "null"}</span>`;
-            }
-            if (effect.type === "v2DeclareLocalVar" && p1 === "var") {
-                return `<span class="text-cyan-500">${d || "null"}</span>`;
-            }
-            return `<span class="text-blue-500">${d || "null"}</span>`;
-        });
-
-        if (type === "v2Comment") {
-            return `<div class="text-gray-500 italic line-clamp-4" style="margin-left:${(effect as triggerEffectV2).indent}rem; word-break: break-all; overflow-wrap: break-word;">// ${txt}</div>`;
-        }
-
-        return `<div class="text-purple-500 line-clamp-4" style="margin-left:${(effect as triggerEffectV2).indent}rem; word-break: break-all; overflow-wrap: break-word;">${txt}</div>`;
-    };
+    const formatEffectDisplay = (effect: triggerEffect) => formatDisplay(effect, checkSupported(effect.type));
 
     const updateGuideLines = () => {
         guideLineKey += 1;
@@ -2992,7 +2964,7 @@
 
                                                 const dragElement = document.createElement("div");
                                                 dragElement.textContent =
-                                                    formatEffectDisplay(effect).replace(/<[^>]*>/g, "") || "Effect";
+                                                    effectDisplayText(formatEffectDisplay(effect)) || "Effect";
                                                 dragElement.className =
                                                     "absolute -top-96 -left-96 px-4 py-2 bg-darkbg text-textcolor2 rounded-sm text-sm whitespace-nowrap shadow-lg pointer-events-none z-50";
                                                 document.body.appendChild(dragElement);

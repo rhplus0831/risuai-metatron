@@ -1,9 +1,10 @@
 /**
  * Interaction Settings Data
  *
- * Data-driven definition for the InteractionSettings page: how the chat input sends, how messages are
- * edited and removed, how the menus and chat list behave, and the chat's context usage meter. Moved
- * from Accessibility (the `acc.` items) and Advanced (the `adv.` items), keeping their ids.
+ * Data-driven definition for the InteractionSettings page: how the chat input sends (and whether a send
+ * stops over the lore budget), how messages are edited and removed, how the menus and chat list behave,
+ * and the chat's context usage meter. Moved from Accessibility (the `acc.` items) and Advanced (the
+ * `adv.` items), keeping their ids.
  */
 
 import type { SettingItem, SettingSection } from "./types";
@@ -24,6 +25,22 @@ export const interactionSettingsItems: SettingItem[] = [
         labelKey: "sendWithEnter",
         bindKey: "sendWithEnter",
         keywords: ["send", "enter", "keyboard", "submit"],
+    },
+    {
+        id: "interaction.loreBudgetStop",
+        type: "check",
+        labelKey: "loreBudgetStop",
+        helpKey: "loreBudgetStop",
+        bindKey: "loreBudgetStop",
+        keywords: ["lorebook", "lore", "budget", "token", "limit", "stop", "send", "warn"],
+    },
+    {
+        id: "interaction.generationProgressWindow",
+        type: "check",
+        labelKey: "generationProgressWindow",
+        helpKey: "generationProgressWindow",
+        bindKey: "generationProgressWindow",
+        keywords: ["generation", "progress", "window", "server", "tokens", "speed"],
     },
     {
         id: "acc.clickToEdit",
@@ -52,6 +69,13 @@ export const interactionSettingsItems: SettingItem[] = [
         labelKey: "longPressToPopupEditor",
         bindKey: "longPressToPopupEditor",
         keywords: ["long", "press", "popup", "editor"],
+    },
+    {
+        id: "acc.disableAutoPopupMessageEditor",
+        type: "check",
+        labelKey: "disableAutoPopupMessageEditor",
+        bindKey: "disableAutoPopupMessageEditor",
+        keywords: ["disable", "auto", "popup", "editor", "edit", "message", "translation"],
     },
     {
         id: "acc.askRemoval",
@@ -132,7 +156,7 @@ export const interactionSettingsItems: SettingItem[] = [
         },
         keywords: ["new", "chat", "preset", "persona", "binding", "inherit"],
     },
-    // From Advanced; their `mt-4` (Advanced's spacing) went with the move.
+    // From Advanced.
     {
         id: "adv.scrollToActive",
         type: "check",
@@ -179,6 +203,15 @@ export const interactionSettingsItems: SettingItem[] = [
         },
         keywords: ["context", "fixed", "share", "warning", "prompt"],
     },
+    {
+        id: "interaction.contextMeterLookahead",
+        type: "check",
+        labelKey: "contextMeterLookahead",
+        helpKey: "contextMeterLookahead",
+        bindKey: "contextMeterLookahead",
+        condition: (ctx) => ctx.settings.ui.contextMeter,
+        keywords: ["context", "memory", "hypa", "summary", "background", "lookahead"],
+    },
 ];
 
 /** The page heading, above the sections. */
@@ -188,7 +221,11 @@ export const interactionSettingsSections: SettingSection[] = [
     {
         id: "interaction.input",
         labelKey: "settingsSectionInput",
-        items: itemsById(interactionSettingsItems, ["acc.sendWithEnter"]),
+        items: itemsById(interactionSettingsItems, [
+            "acc.sendWithEnter",
+            "interaction.loreBudgetStop",
+            "interaction.generationProgressWindow",
+        ]),
     },
     {
         id: "interaction.messageEditing",
@@ -198,6 +235,7 @@ export const interactionSettingsSections: SettingSection[] = [
             "acc.enableBlockPartialEdit",
             "acc.enableDragPartialEdit",
             "acc.longPressToPopupEditor",
+            "acc.disableAutoPopupMessageEditor",
             "acc.askRemoval",
             "acc.instantRemove",
             "acc.swipe",
@@ -226,6 +264,7 @@ export const interactionSettingsSections: SettingSection[] = [
             "interaction.contextMeterEnabled",
             "interaction.contextMeterTurnUnit",
             "interaction.contextMeterFixedWarn",
+            "interaction.contextMeterLookahead",
         ]),
     },
 ];

@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { type DiagnosticsState, projectBrowserEvent, projectServerEvent } from "../diagnostics.ts";
+import {
+    BROWSER_PUSH_PHASES,
+    type DiagnosticsState,
+    NOTICES,
+    projectBrowserEvent,
+    projectServerEvent,
+    SERVER_PUSH_PHASES,
+} from "../diagnostics.ts";
 import {
     buildDiagnosticReport,
     canonicalDiagnosticReport,
@@ -26,6 +33,7 @@ const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const REQUEST = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 const OTHER_JOB = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
 const TRANSLATION_RUN = `translate-${JOB}`;
+const MEMORY_TASK = `memory-${JOB}`;
 const CATALOG_MODEL = BASE_LLM_MODELS[0].id;
 /** 2026-10-13T10:15:00.000Z. */
 const EXPORTED = Date.UTC(2026, 9, 13, 10, 15);
@@ -293,7 +301,7 @@ describe("buildDiagnosticReport: the v1 text", () => {
         ]);
     });
 
-    it("admits a job id only as a UUID, or a translation run's `translate-<UUID>` on a `request` event; a request id only as a UUID", () => {
+    it("admits UUID job and request ids, and translation or memory job ids only on request events", () => {
         const line = (event: Record<string, unknown>) =>
             eventLines(buildDiagnosticReport(input({ server: { state: state(), events: [event] }, browser: [] })))[0];
         expect(line({ at: AT, kind: "request", requestId: REQUEST, jobId: JOB })).toBe(
@@ -306,6 +314,15 @@ describe("buildDiagnosticReport: the v1 text", () => {
             `${ISO(AT)} server job {"phase":"done"}`,
         );
         expect(line({ at: AT, kind: "runtime", origin: "dispose", jobId: TRANSLATION_RUN })).toBe(
+            `${ISO(AT)} server runtime {"origin":"dispose"}`,
+        );
+        expect(line({ at: AT, kind: "request", requestId: MEMORY_TASK, jobId: MEMORY_TASK })).toBe(
+            `${ISO(AT)} server request {"jobId":"${MEMORY_TASK}"}`,
+        );
+        expect(line({ at: AT, kind: "job", phase: "done", jobId: MEMORY_TASK })).toBe(
+            `${ISO(AT)} server job {"phase":"done"}`,
+        );
+        expect(line({ at: AT, kind: "runtime", origin: "dispose", jobId: MEMORY_TASK })).toBe(
             `${ISO(AT)} server runtime {"origin":"dispose"}`,
         );
         expect(line({ at: AT, kind: "job", phase: "done", jobId: JOB.toUpperCase() })).toBe(
@@ -416,6 +433,119 @@ describe("buildDiagnosticReport: the v1 text", () => {
         const longest = Math.max(...events.map((line) => bytes(line) + 1));
         expect(bytes(text) + longest).toBeGreaterThan(MAX_DIAGNOSTIC_REPORT_BYTES);
         expect(canonicalDiagnosticReport(text)).toBe(text);
+    });
+    it("round-trips the push and notice kinds byte for byte: each server push phase as a server line with its service, job, status, or reason, each browser push phase and notice as a browser line without the server's fields, a phase of the other side dropped, and at an equal time the server's line first", () => {
+        const serverPush = SERVER_PUSH_PHASES.map((phase, i) => ({
+            at: AT + i,
+            kind: "push",
+            phase,
+            service: "fcm",
+            jobId: JOB,
+            ...(phase === "failed" ? { status: 500 } : {}),
+            ...(phase === "dropped" ? { reason: "noSubscriptions" } : {}),
+            // Never the server's: the browser's fields and the endpoint.
+            inFront: true,
+            endpoint: "https://fcm.googleapis.com/fcm/send/alice-secret-token",
+        }));
+        const workerPush = BROWSER_PUSH_PHASES.slice(0, 6).map((phase, i) => ({
+            at: AT + i,
+            kind: "push",
+            phase,
+            inFront: i % 2 === 0,
+            focusedHidden: i === 1,
+            // Never the browser's: the server's fields and a payload.
+            service: "fcm",
+            jobId: JOB,
+            status: 201,
+            title: PRIVATE,
+            url: "/chat/alice/k",
+        }));
+        const text = buildDiagnosticReport(
+            input({
+                server: {
+                    state: state(),
+                    events: [...serverPush, { at: AT + 10, kind: "push", phase: "received", inFront: false }],
+                },
+                browser: [
+                    ...workerPush,
+                    {
+                        at: AT + 20,
+                        kind: "push",
+                        phase: "browserState",
+                        permission: "granted",
+                        subscribed: true,
+                        standalone: false,
+                    },
+                    { at: AT + 21, kind: "push", phase: "dismissedByPage", count: 2 },
+                    { at: AT + 22, kind: "push", phase: "accepted", service: "fcm", jobId: JOB },
+                    { at: AT + 23, kind: "push", count: 1 },
+                    ...NOTICES.map((notice, i) => ({ at: AT + 30 + i, kind: "notice", notice, message: PRIVATE })),
+                    { at: AT + 40, kind: "notice", notice: "Alice's chat was reloaded" },
+                    { at: AT + 41, kind: "page", phase: "freeze" },
+                    { at: AT + 42, kind: "page", phase: "resume" },
+                ],
+            }),
+        );
+        expect(eventLines(text)).toEqual([
+            `${ISO(AT)} server push {"phase":"accepted","service":"fcm","jobId":"${JOB}"}`,
+            `${ISO(AT)} browser push {"phase":"received","inFront":true,"focusedHidden":false}`,
+            `${ISO(AT + 1)} server push {"phase":"failed","service":"fcm","jobId":"${JOB}","status":500}`,
+            `${ISO(AT + 1)} browser push {"phase":"shown","inFront":false,"focusedHidden":true}`,
+            `${ISO(AT + 2)} server push {"phase":"removed","service":"fcm","jobId":"${JOB}"}`,
+            `${ISO(AT + 2)} browser push {"phase":"shownSilent","inFront":true,"focusedHidden":false}`,
+            `${ISO(AT + 3)} server push {"phase":"dropped","service":"fcm","jobId":"${JOB}","reason":"noSubscriptions"}`,
+            `${ISO(AT + 3)} browser push {"phase":"closedInFront","inFront":false,"focusedHidden":false}`,
+            `${ISO(AT + 4)} browser push {"phase":"showFailed","inFront":true,"focusedHidden":false}`,
+            `${ISO(AT + 5)} browser push {"phase":"clicked","inFront":false,"focusedHidden":false}`,
+            `${ISO(AT + 20)} browser push {"phase":"browserState","permission":"granted","subscribed":true,"standalone":false}`,
+            `${ISO(AT + 21)} browser push {"phase":"dismissedByPage","count":2}`,
+            `${ISO(AT + 30)} browser notice {"notice":"serverJobLost"}`,
+            `${ISO(AT + 31)} browser notice {"notice":"serverJobEndedAway"}`,
+            `${ISO(AT + 32)} browser notice {"notice":"resourceReloaded"}`,
+            `${ISO(AT + 33)} browser notice {"notice":"transformFailed"}`,
+            `${ISO(AT + 40)} browser notice {}`,
+            `${ISO(AT + 41)} browser page {"phase":"freeze"}`,
+            `${ISO(AT + 42)} browser page {"phase":"resume"}`,
+        ]);
+        expect(text).not.toMatch(/alice|googleapis|Private|chat\//);
+        expect(canonicalDiagnosticReport(text)).toBe(text);
+        // A line of a push on the wrong side is not canonical.
+        const swapped = text.replace(` server push {"phase":"accepted"`, ` browser push {"phase":"accepted"`);
+        expect(swapped).not.toBe(text);
+        expect(canonicalDiagnosticReport(swapped)).toBeNull();
+    });
+
+    it("round-trips the draft journal's sync phases byte for byte, each line keeping its reason and `entries`; a line without them is not that line", () => {
+        const text = buildDiagnosticReport(
+            input({
+                server: { state: state(), events: [] },
+                browser: [
+                    { at: AT, kind: "sync", phase: "journalSkipped", reason: "format", entries: 2 },
+                    { at: AT + 1, kind: "sync", phase: "journalSkipped", reason: "tooLarge", entries: 1 },
+                    { at: AT + 2, kind: "sync", phase: "journalFailed", reason: "timeout" },
+                    { at: AT + 3, kind: "sync", phase: "journalFailed", reason: "quota", message: PRIVATE },
+                    { at: AT + 4, kind: "sync", phase: "journalRecovered", reason: "orphan", entries: 5 },
+                    { at: AT + 5, kind: "sync", phase: "conflict", records: 1, chats: 0, orders: 0, generating: 0 },
+                ],
+            }),
+        );
+        expect(eventLines(text)).toEqual([
+            `${ISO(AT)} browser sync {"phase":"journalSkipped","reason":"format","entries":2}`,
+            `${ISO(AT + 1)} browser sync {"phase":"journalSkipped","reason":"tooLarge","entries":1}`,
+            `${ISO(AT + 2)} browser sync {"phase":"journalFailed","reason":"timeout"}`,
+            `${ISO(AT + 3)} browser sync {"phase":"journalFailed","reason":"quota"}`,
+            `${ISO(AT + 4)} browser sync {"phase":"journalRecovered","reason":"orphan","entries":5}`,
+            `${ISO(AT + 5)} browser sync {"phase":"conflict","records":1,"chats":0,"orders":0,"generating":0}`,
+        ]);
+        expect(text).not.toContain(PRIVATE);
+        expect(canonicalDiagnosticReport(text)).toBe(text);
+        // Dropping `entries` or the reason gives another report, itself canonical, so a field that
+        // went missing would not pass as the same text.
+        const withoutEntries = text.replace(`,"entries":5}`, "}");
+        expect(withoutEntries).not.toBe(text);
+        expect(canonicalDiagnosticReport(withoutEntries)).toBe(withoutEntries);
+        const unknownReason = text.replace(`"reason":"orphan"`, `"reason":"Alice"`);
+        expect(canonicalDiagnosticReport(unknownReason)).toBeNull();
     });
 });
 
@@ -944,5 +1074,82 @@ describe("the side projections and the file name pattern", () => {
         expect(REPORT_FILE_PATTERN.test(".20261013T101500123Z-0123abcd.txt")).toBe(false);
         expect(REPORT_FILE_PATTERN.test("20261013T101500123Z-0123abcd.tmp")).toBe(false);
         expect(REPORT_FILE_PATTERN.test("../20261013T101500123Z-0123abcd.txt")).toBe(false);
+    });
+});
+
+describe("the build id", () => {
+    const BUILD = "2026.10.26 · a9fa6f8c5-dirty";
+
+    it("is a `Build:` line after `Version:` only when the tab gave one, checked by its shape, else `unknown`", () => {
+        const lines = linesOf(buildDiagnosticReport(input({ meta: meta({ build: BUILD }) })));
+        expect(lines.slice(1, 4)).toEqual(["Version: 2026.8.250", `Build: ${BUILD}`, "Browser: Chrome"]);
+        for (const build of [null, `${BUILD} ${PRIVATE}`, "a9fa6f8", 42]) {
+            expect(linesOf(buildDiagnosticReport(input({ meta: meta({ build }) })))[2]).toBe("Build: unknown");
+        }
+        expect(buildDiagnosticReport(input())).not.toContain("Build: ");
+    });
+
+    it("passes the server's check with and without the line, and a changed or moved line is refused", () => {
+        const withBuild = buildDiagnosticReport(input({ meta: meta({ build: BUILD }) }));
+        expect(canonicalDiagnosticReport(withBuild)).toBe(withBuild);
+        const unknown = buildDiagnosticReport(input({ meta: meta({ build: "x" }) }));
+        expect(canonicalDiagnosticReport(unknown)).toBe(unknown);
+        const older = buildDiagnosticReport(input());
+        expect(canonicalDiagnosticReport(older)).toBe(older);
+
+        expect(canonicalDiagnosticReport(withBuild.replace(`Build: ${BUILD}`, `Build: ${PRIVATE}`))).toBeNull();
+        expect(canonicalDiagnosticReport(withBuild.replace(`Build: ${BUILD}`, "Build: "))).toBeNull();
+        const lines = linesOf(withBuild);
+        [lines[2], lines[3]] = [lines[3], lines[2]];
+        expect(canonicalDiagnosticReport(`${lines.join("\n")}\n`)).toBeNull();
+    });
+
+    it("is the server state's `app.build` only when the state owns the key, checked by its shape or null", () => {
+        expect(projectDiagnosticsState(state())!.app).toEqual({ version: "2026.8.250" });
+        expect(projectDiagnosticsState(state({ app: { version: "2026.8.250", build: BUILD } }))!.app).toEqual({
+            version: "2026.8.250",
+            build: BUILD,
+        });
+        for (const build of [null, PRIVATE, `${BUILD}\n`]) {
+            expect(projectDiagnosticsState(state({ app: { version: "2026.8.250", build } }))!.app).toEqual({
+                version: "2026.8.250",
+                build: null,
+            });
+        }
+        const report = buildDiagnosticReport(
+            input({ server: { state: state({ app: { version: "2026.8.250", build: BUILD } }), events: [] } }),
+        );
+        expect(report).toContain(`"app":{"version":"2026.8.250","build":"${BUILD}"}`);
+        expect(canonicalDiagnosticReport(report)).toBe(report);
+        expect(canonicalDiagnosticReport(report.replace(`"build":"${BUILD}"`, `"build":"${PRIVATE}"`))).toBeNull();
+    });
+});
+
+describe("journal drop counts in reports", () => {
+    it("round-trips counted drops and preserves a report without the field byte for byte", () => {
+        const legacy = buildDiagnosticReport(input());
+        expect(legacy).not.toContain('"dropped"');
+        expect(projectDiagnosticsState(state())!.journal).toEqual({ eventBytes: 128, writeFailures: 0 });
+        expect(canonicalDiagnosticReport(legacy)).toBe(legacy);
+        for (const dropped of [0, 2]) {
+            const current = state({ journal: { eventBytes: 128, writeFailures: 0, dropped } });
+            expect(projectDiagnosticsState(current)!.journal).toEqual({ eventBytes: 128, writeFailures: 0, dropped });
+            const text = buildDiagnosticReport(input({ server: { state: current, events: [serverJob] } }));
+            expect(text).toContain(`"journal":{"eventBytes":128,"writeFailures":0,"dropped":${dropped}}`);
+            expect(canonicalDiagnosticReport(text)).toBe(text);
+        }
+        for (const dropped of [null, undefined, -1, 1.5, "2", true, Number.MAX_SAFE_INTEGER + 1]) {
+            expect(
+                projectDiagnosticsState(state({ journal: { eventBytes: 128, writeFailures: 0, dropped } })),
+                String(dropped),
+            ).toBeNull();
+            if (dropped !== undefined) {
+                const invalid = legacy.replace(
+                    '"writeFailures":0}',
+                    `"writeFailures":0,"dropped":${JSON.stringify(dropped)}}`,
+                );
+                expect(canonicalDiagnosticReport(invalid), String(dropped)).toBeNull();
+            }
+        }
     });
 });

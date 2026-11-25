@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations } from "../storage/tests/mutationStoresHarness";
 
@@ -9,8 +7,8 @@ import { bootMutations } from "../storage/tests/mutationStoresHarness";
 // plain-key search never yields; the first yield is the first active's token count, after its CBS
 // and chat-variable reads), the regex keys through the wrapper, the scanned user name (the bound
 // persona's), the module sources (global, chat, character, integration, and the persona's embedded
-// module as it resolves today), a group chat's speaker names, and the keep flag written through the
-// chat module.
+// module as it resolves today), a group chat's speaker names, and the keep flag isolated to the
+// current preview.
 
 const { server, alerts, hooks } = vi.hoisted(() => ({
     server: { current: null as any },
@@ -52,17 +50,6 @@ vi.mock("../tokenizer", () => ({
         return text.length;
     }),
 }));
-vi.mock("../rpack/rpack_js", () => {
-    const map = new Uint8Array(readFileSync(path.resolve(__dirname, "../rpack/rpack_map.bin")));
-    const apply = (table: Uint8Array) => async (data: Uint8Array) => {
-        const result = new Uint8Array(data.length);
-        for (let i = 0; i < data.length; i++) {
-            result[i] = table[data[i]];
-        }
-        return result;
-    };
-    return { encodeRPack: apply(map.slice(0, 256)), decodeRPack: apply(map.slice(256, 512)) };
-});
 
 const lore = (comment: string, key: string, content: string, extra: Record<string, unknown> = {}) => ({
     key,
@@ -230,7 +217,7 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await sources()).toEqual(["lore-i", "lore-h", "lore-c"]);
     });
 
-    it("resolves a bound persona's embedded module through the module list, as before the move (inherited)", async () => {
+    it("resolves a bound persona's embedded module itself, and a stored module of its id takes precedence", async () => {
         const { collectionStore, chat, ref, sources } = await boot([message("m1", "user", "mina")]);
         const embedded = { ...module("$embedded", "mina"), name: "Mina's module" };
         const personaId = collectionStore.addPersona({
@@ -240,9 +227,8 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
             embeddedModule: embedded,
         });
         chat.setChatMeta(ref, { bindedPersona: personaId });
-        // `getModules` concatenates the embedded module's id but resolves ids over `db.modules`
-        // only, so the embedded lore joins once a module with that id is in the list.
-        expect(await sources()).toEqual([]);
+        // `getModules` appends the persona's embedded object when no stored module has its id.
+        expect(await sources()).toEqual(["lore-$embedded"]);
         collectionStore.addModule(module("other", "zzz"));
         collectionStore.addModule(embedded);
         // `getModules` caches by the joined id list: enabling another module changes the list.
@@ -250,15 +236,96 @@ describe("loadLoreBookV3Prompt (the client wrapper)", () => {
         expect(await sources()).toEqual(["lore-$embedded"]);
     });
 
-    it("writes the keep-after-match flag to the chat through the chat module, and reads it back next time", async () => {
+    it("keeps the keep-after-match flag in the preview without activating unmatched lore next time", async () => {
         const { characterStore, chat, chaId, ref, sources } = await boot([message("m1", "user", "a dragon")]);
         characterStore.updateCharacter(chaId, {
             globalLore: [lore("keep", "dragon", "@@keep_activate_after_match\nk", { id: "keep-id" })],
         });
         expect(await sources()).toEqual(["keep"]);
-        expect(chat.findChat(ref)?.scriptstate).toEqual({ "$__internal_ka_keep-id": "true" });
+        expect(chat.findChat(ref)?.scriptstate).toBeUndefined();
         chat.setMessageText(ref, "m1", "nothing");
-        expect(await sources()).toEqual(["keep"]);
+        expect(await sources()).toEqual([]);
+    });
+
+    it.each(["DevTool", "/test_lorebook"])("%s preserves stored flags for the next real send", async (entryPoint) => {
+        const h = await boot([message("m1", "user", "dragon")], {
+            globalLore: [
+                lore("once", "dragon", "@@dont_activate_after_match\nOnce", { id: "once" }),
+                lore("keep", "dragon", "@@keep_activate_after_match\nKeep", { id: "keep" }),
+            ],
+        });
+        const { fake, chat, chatVar, sync, ref, chaId, lorebook } = h;
+        const binding = {
+            promptPresetId: fake.record("presets", "main")!.data[0].id,
+            modelPresetId: fake.record("modelPresets", "main")!.data[0].id,
+            bindedPersona: fake.record("personas", "main")!.data[0].id,
+        };
+        chat.setChatMeta(ref, binding);
+        const before = { $unrelated: "preserve", $__internal_ka_existing: "true", $__internal_da_spent: "true" };
+        for (const [key, value] of Object.entries(before)) chatVar.setChatVarOf(ref, key.slice(1), value);
+        await sync.flushResources();
+        expect(fake.chat(chaId, ref.chatId)!.data.scriptstate).toEqual(before);
+
+        const preview = async () => {
+            // Both DevTool buttons use the selected-chat wrapper; the command passes its captured ref.
+            if (entryPoint === "DevTool") return lorebook.loadLoreBookV3Prompt();
+            const { processMultiCommand } = await import("./command");
+            return JSON.parse((await processMultiCommand("/test_lorebook", ref)) as string);
+        };
+        for (let i = 0; i < 2; i++) {
+            expect((await preview()).actives.map(({ source }) => source).sort()).toEqual(["keep", "once"]);
+            await sync.flushResources();
+            expect(fake.chat(chaId, ref.chatId)!.data.scriptstate).toEqual(before);
+        }
+
+        // The next send reads fresh SQLite state through the real server scope and bindings.
+        // Computed imports keep the strict server sources out of the client's type-check project.
+        const serverPath = "../../../server/src/";
+        const { loadJobScope, flushChatMetadata } = await import(serverPath + "jobs/jobScope.ts");
+        const { createLuaBindings } = await import(serverPath + "lua/bindings.ts");
+        const signal = new AbortController().signal;
+        const context = {
+            characterId: chaId,
+            chatId: ref.chatId,
+            chatRevision: fake.chat(chaId, ref.chatId)!.revision,
+            presetId: binding.promptPresetId,
+            modelPresetId: binding.modelPresetId,
+            personaId: binding.bindedPersona,
+            mode: "normal",
+        };
+        const job = {
+            kind: "send",
+            context,
+            signal,
+            write: (build: () => any) => fake.store.applyChanges(build()),
+            emitRecords() {},
+            channel: { notice() {} },
+        };
+        const bindings = createLuaBindings({
+            job,
+            scope: loadJobScope(fake.store, fake.kinds, context),
+            store: fake.store,
+            kinds: fake.kinds,
+            rootDir: process.cwd(),
+            savePath: process.cwd(),
+            llm: {},
+            tokens: { count: async (text: string) => text.length },
+            runCharacterId: chaId,
+            engineCharacterId: chaId,
+        });
+        const result = await bindings.services.activateLore({
+            signal,
+            access: "safe",
+            identity: context,
+            regex: async () => ({ value: false }),
+        });
+        flushChatMetadata(job);
+        expect(result.actives.map(({ source }) => source).sort()).toEqual(["keep", "once"]);
+        expect(fake.chat(chaId, ref.chatId)!.data.scriptstate).toEqual({
+            ...before,
+            $__internal_da_once: "true",
+            $__internal_ka_keep: "true",
+        });
     });
 
     it("a group chat scans the group's own lore and names a member message by its speaker", async () => {

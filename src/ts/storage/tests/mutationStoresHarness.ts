@@ -27,6 +27,26 @@ export const SAVE_DEBOUNCE_MS = 500;
 export const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 
 /**
+ * Queues a chat delete as boot recovery installs one an earlier build journaled
+ * (`installRecoveredChat`): the chat leaves the list, and the group is resent in doubt (its answer
+ * was never seen), on the revision the chat module holds. This build queues no delete of its own
+ * (chats are deleted through the trash route), so this is the one way a delete op still reaches the
+ * save queue. `chat` is the test's module graph's chat module. Returns the group's id.
+ */
+export function recoverOldDelete(
+    chat: typeof import("../chatStore.svelte"),
+    ref: { chaId: string; chatId: string },
+): { groupId: string } {
+    const groupId = crypto.randomUUID();
+    chat.installRecoveredChat(
+        ref,
+        { groupId, ops: [{ op: "delete" }], baseRevision: chat.heldChatRevision(ref)! },
+        Date.now(),
+    );
+    return { groupId };
+}
+
+/**
  * Loads a test file's module graph once: `load` performs the imports (the caller passes them, so
  * their paths are relative to it). A test file calls it in a `beforeAll` with a 60 s hook timeout
  * (under its own mocks), so the cold transform is paid outside every timed test. Each test still

@@ -13,8 +13,7 @@ import { createNodeCbsEvaluator } from "./cbsHost.ts";
 /**
  * The shared regex engine under plain Node: the script loop as `processScriptFull`
  * ran it on the client (flags, `<order n>` and the other `<...>` actions, the `@@` directives, the
- * skipped scripts), the effects applied where their script matched, and the cache helpers. The
- * client wrapper around it is covered by `src/ts/process/scripts.test.ts`.
+ * skipped scripts), the effects applied where their script matched, and the cache helpers.
  */
 const script = (fields: Partial<customscript>): customscript => ({
     comment: "",
@@ -133,6 +132,76 @@ describe("the script loop", () => {
                 { parse },
             ).data,
         ).toBe(" body\nUma: hi");
+    });
+});
+
+describe("CBS after ordinary replacements", () => {
+    function countingParser(deferred = "") {
+        const db = {
+            username: "Uma",
+            personas: [],
+            globalChatVariables: {},
+            templateDefaultVariables: "",
+            characters: [
+                {
+                    type: "character",
+                    chaId: "c",
+                    name: "Risu",
+                    chatPage: 0,
+                    chats: [{ id: "chat", message: [], scriptstate: { $deferred: deferred } }],
+                },
+            ],
+        } as unknown as Database;
+        const evaluator = createNodeCbsEvaluator(db, { selectedCharID: 0 });
+        return vi.fn((text: string) => evaluator.risuChatParser(text));
+    }
+
+    it("leaves plain text unchanged without parsing when ordinary replacements miss", () => {
+        const parse = countingParser();
+        const text = "Plain prose <b>with HTML</b> and {one brace}.";
+        const result = run(text, [script({ in: "absent", out: "replacement" })], { parse });
+        expect(result).toEqual({ data: text, effects: [] });
+        expect(parse).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        ["{{user}}", "Uma"],
+        ["{#if 1\nkept#}", "kept"],
+        ["<USER>", "Uma"],
+        ["<Char>", "Risu"],
+        ["<bot>", "Risu"],
+    ])("parses CBS text %j even when an ordinary replacement misses", (text, expected) => {
+        const parse = countingParser();
+        expect(run(text, [script({ in: "absent", out: "replacement" })], { parse })).toEqual({
+            data: expected,
+            effects: [],
+        });
+        expect(parse).toHaveBeenCalledExactlyOnceWith(text);
+    });
+
+    it("parses a changed ordinary replacement even when its result is plain text", () => {
+        const parse = countingParser();
+        expect(run("before", [script({ in: "before", out: "after" })], { parse })).toEqual({
+            data: "after",
+            effects: [],
+        });
+        expect(parse).toHaveBeenCalledExactlyOnceWith("after");
+    });
+
+    it.each([
+        ["{#if 1\nkept#}", "kept"],
+        ["{{user}}", "Uma"],
+    ])("parses CBS %j introduced by an earlier replacement when a later script misses", (deferred, expected) => {
+        const parse = countingParser(deferred);
+        const scripts = [
+            script({ in: "seed", out: "{{getvar::deferred}}" }),
+            script({ in: "absent", out: "replacement" }),
+        ];
+        // getvar returns the variable's literal CBS text for the next script to evaluate.
+        expect(run("seed", scripts, { parse })).toEqual({ data: expected, effects: [] });
+        expect(parse).toHaveBeenCalledTimes(2);
+        expect(parse).toHaveBeenNthCalledWith(1, "{{getvar::deferred}}");
+        expect(parse).toHaveBeenNthCalledWith(2, deferred);
     });
 });
 
@@ -291,6 +360,16 @@ describe("the cache helpers", () => {
         expect(regexScriptCacheKey(scripts, "text", "editinput", 0, "c/chat", parse)).toBe(
             "text|||editinput|||c/chat|||{{char}}|||y0||||||0",
         );
+    });
+
+    it("keeps a disabled <cbs> pattern raw in the key without calling parse", () => {
+        const scripts = [script({ in: "{{setvar::x::1}}", out: "x", ableFlag: false, flag: "g<cbs>" })];
+        const parse = vi.fn((text: string) => text.replaceAll("{{setvar::x::1}}", ""));
+
+        const key = regexScriptCacheKey(scripts, "text", "editoutput", 0, "c/chat", parse);
+
+        expect(parse).not.toHaveBeenCalled();
+        expect(key).toBe("text|||editoutput|||c/chat|||{{setvar::x::1}}|||x0|||g<cbs>|||0");
     });
 
     it("keeps the most recent entries up to its limit and resets", () => {

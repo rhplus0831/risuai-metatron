@@ -37,6 +37,7 @@ import * as media from "src/ts/media";
 import * as assetQueue from "src/ts/storage/assetQueue";
 import { pngWithText } from "src/ts/storage/tests/importFixtures";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { alertStore } from "src/ts/stores.svelte";
 import ModuleSettings from "./ModuleSettings.svelte";
 
@@ -90,6 +91,7 @@ it.each([
 ] as const)(
     "%s cleanup clears its own status and preserves a newer owner's status after success or failure",
     async (_format, choice) => {
+        if (_format === "RisuM") settings.modules[0].icon = "";
         vi.mocked(alertSelect).mockResolvedValue(choice);
         const close = vi.spyOn(LocalWriter.prototype, "close");
         const share = () => target.querySelector<HTMLButtonElement>(`button[data-tip="${language.download}"]`)!.click();

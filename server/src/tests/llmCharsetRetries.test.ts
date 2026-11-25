@@ -5,14 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { MinResponseLengthField } from "../../../shared/llm/responseChecks.ts";
 import type { requestDataResponse } from "../llm/request.ts";
-import { requestChatDataOuter } from "../llm/outer.ts";
+import { requestChatDataOuter, type OuterRequestDeps } from "../llm/outer.ts";
 
 // A `banCharacterset` rejection in the outer request loop counts against `requestRetrys` and ends
 // with a failure, and the loop yields a turn of the event loop before every attempt, so a model that
 // answers at once (Echo with no delay) cannot hold the server's main thread. The first part drives
 // `requestChatDataOuter` with finite attempt scripts (an unexpected extra attempt throws, so a lost
-// budget fails instead of spinning). The second part reproduces the hang: a real group send over the
+// budget fails instead of spinning). The second part reproduces the hang: a real send over the
 // default runner with the Echo model and the `Latn` ban, in a child process the test kills after a
 // timeout, since before the fix the job never yielded and no timer, stop, or test timeout could end
 // it.
@@ -20,30 +21,252 @@ import { requestChatDataOuter } from "../llm/outer.ts";
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const BANNED = "The model answered in a banned script (Latn)";
 
-describe("requestChatDataOuter and banCharacterset", () => {
+describe("requestChatDataOuter", () => {
     const latin: requestDataResponse = { type: "success", result: "blocked Latin text" };
     const clean: requestDataResponse = { type: "success", result: "한국어 답변" };
 
     /** Runs the loop over a fixed list of answers; a call past the list is a failure of the loop. */
     async function run(
         answers: requestDataResponse[],
-        options: { requestRetrys?: number; signal?: AbortSignal; onAttempt?: (index: number) => void } = {},
+        options: {
+            mode?: Parameters<typeof requestChatDataOuter>[1];
+            minimums?: Partial<Record<MinResponseLengthField, number>>;
+            requestRetrys?: number;
+            signal?: AbortSignal;
+            onAttempt?: (index: number, arg: Parameters<OuterRequestDeps["attempt"]>[0]) => void;
+            input?: Partial<Parameters<typeof requestChatDataOuter>[0]>;
+            banCharacterset?: string[];
+            afterRequest?: OuterRequestDeps["afterRequest"];
+            beforeRequest?: OuterRequestDeps["beforeRequest"];
+            reportRetry?: OuterRequestDeps["reportRetry"];
+            resent?: OuterRequestDeps["resent"];
+        } = {},
     ) {
         let attempts = 0;
-        const result = await requestChatDataOuter({ formated: [], bias: {} }, "model", {
-            db: { requestRetrys: options.requestRetrys ?? 2, antiServerOverloads: false, banCharacterset: ["Latn"] },
+        const mode = options.mode ?? "model";
+        const result = await requestChatDataOuter({ formated: [], bias: {}, ...options.input }, mode, {
+            db: {
+                requestRetrys: options.requestRetrys ?? 2,
+                antiServerOverloads: false,
+                banCharacterset: options.banCharacterset ?? ["Latn"],
+                minResponseLengthModel: 0,
+                minResponseLengthSubmodel: 0,
+                minResponseLengthMemory: 0,
+                minResponseLengthEmotion: 0,
+                minResponseLengthOtherAx: 0,
+                minResponseLengthTranslate: 0,
+                ...options.minimums,
+            },
             signal: options.signal ?? new AbortController().signal,
-            attempt: async () => {
+            afterRequest: options.afterRequest,
+            beforeRequest: options.beforeRequest,
+            reportRetry: options.reportRetry,
+            resent: options.resent,
+            attempt: async (arg) => {
                 const index = attempts++;
                 if (index >= answers.length) {
                     throw new Error(`attempt ${index + 1} past the ${answers.length} scripted answers`);
                 }
-                options.onAttempt?.(index);
+                options.onAttempt?.(index, arg);
                 return answers[index];
             },
         });
         return { result, attempts };
     }
+
+    it("reports a retry at the first dispatch only when the caller marks the request as re-sent", async () => {
+        const events: string[] = [];
+        for (const resent of [undefined, true] as const) {
+            await run([clean], {
+                resent,
+                beforeRequest: async (messages) => {
+                    events.push("prepare");
+                    return messages;
+                },
+                reportRetry: () => events.push("retry"),
+                onAttempt: () => events.push("dispatch"),
+            });
+        }
+        expect(events).toEqual(["prepare", "dispatch", "prepare", "retry", "dispatch"]);
+    });
+
+    it("reports immediately before each resend after a failure or banned answer, but not on give-up", async () => {
+        const events: string[] = [];
+        const failed: requestDataResponse = { type: "fail", result: "upstream failed" };
+        expect(
+            await run([failed, latin, failed], {
+                requestRetrys: 2,
+                beforeRequest: async (messages) => {
+                    events.push("prepare");
+                    return messages;
+                },
+                onAttempt: (index) => events.push(`attempt ${index + 1}`),
+                reportRetry: () => events.push("retry"),
+            }),
+        ).toEqual({ result: failed, attempts: 3 });
+        expect(events).toEqual([
+            "prepare",
+            "attempt 1",
+            "prepare",
+            "retry",
+            "attempt 2",
+            "prepare",
+            "retry",
+            "attempt 3",
+        ]);
+    });
+
+    it("reports nothing for a first success, noRetry failure, exhausted budget, or abort before a resend", async () => {
+        const reports: string[] = [];
+        const reportRetry = () => reports.push("retry");
+        const failed: requestDataResponse = { type: "fail", result: "upstream failed" };
+        const noRetry: requestDataResponse = { ...failed, noRetry: true };
+        expect(await run([clean], { reportRetry })).toEqual({ result: clean, attempts: 1 });
+        expect(await run([noRetry], { reportRetry })).toEqual({ result: noRetry, attempts: 1 });
+        expect(await run([failed], { requestRetrys: 0, reportRetry })).toEqual({ result: failed, attempts: 1 });
+
+        const stopped = new AbortController();
+        stopped.abort();
+        expect(await run([], { signal: stopped.signal, reportRetry })).toEqual({
+            result: { type: "fail", result: "Aborted" },
+            attempts: 0,
+        });
+        const betweenAttempts = new AbortController();
+        expect(
+            await run([failed], {
+                signal: betweenAttempts.signal,
+                onAttempt: () => {
+                    setImmediate(() => betweenAttempts.abort());
+                },
+                reportRetry,
+            }),
+        ).toEqual({ result: { type: "fail", result: "Aborted" }, attempts: 1 });
+        expect(reports).toEqual([]);
+    });
+
+    it("disables both streaming flags for an escape request even with forceStreaming and escapes its success", async () => {
+        expect(
+            await run([{ type: "success", result: "{{user}} (hello)" }], {
+                input: { escape: true, forceStreaming: true, useStreaming: true },
+                banCharacterset: [],
+                onAttempt: (_index, arg) => {
+                    expect(arg).toMatchObject({ forceStreaming: false, useStreaming: false });
+                },
+            }),
+        ).toEqual({
+            result: { type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 \uE9BAhello\uE9BB" },
+            attempts: 1,
+        });
+    });
+
+    it("buffers an escape stream to its last snapshot and escapes before applying after-request replacers", async () => {
+        const answer: requestDataResponse = {
+            type: "streaming",
+            result: new ReadableStream({
+                start(controller) {
+                    controller.enqueue({ "0": "{{user}} " });
+                    controller.enqueue({ "0": "{{user}} (hello)" });
+                    controller.close();
+                },
+            }),
+        };
+        const afterRequest = async (text: string) => text.replace("\uE9BAhello\uE9BB", "replaced");
+
+        // Without escape the same stream passes straight through, ready for the caller to read.
+        const passthrough = await run([answer], { banCharacterset: [], afterRequest });
+        expect(passthrough.result).toBe(answer);
+        expect(passthrough.attempts).toBe(1);
+
+        expect(await run([answer], { input: { escape: true }, banCharacterset: [], afterRequest })).toEqual({
+            result: { type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 replaced" },
+            attempts: 1,
+        });
+    });
+
+    it("retries a short answer after escaping and replacement and returns the second answer intact", async () => {
+        const answers: requestDataResponse[] = [
+            { type: "success", result: "{{inlay::image}} (omit)" },
+            { type: "success", result: " done " },
+        ];
+        expect(
+            await run(answers, {
+                mode: "memory",
+                minimums: { minResponseLengthMemory: 4 },
+                banCharacterset: [],
+                requestRetrys: 1,
+                input: { escape: true },
+                afterRequest: async (text) => text.replace("\uE9BAomit\uE9BB", ""),
+            }),
+        ).toEqual({ result: { type: "success", result: " done " }, attempts: 2 });
+    });
+
+    it("returns the last length rejection with that attempt's metadata when short answers spend the retry budget", async () => {
+        expect(
+            await run(
+                [
+                    {
+                        type: "success",
+                        result: "",
+                        request: { id: "first-request", providerCode: null },
+                        model: "first-model",
+                        special: { emotion: "neutral" },
+                    },
+                    {
+                        type: "success",
+                        result: "No.",
+                        request: { id: "last-request", providerCode: null },
+                        model: "last-model",
+                        special: { emotion: "surprised" },
+                    },
+                ],
+                {
+                    minimums: { minResponseLengthModel: 6 },
+                    requestRetrys: 1,
+                    banCharacterset: [],
+                },
+            ),
+        ).toEqual({
+            result: {
+                type: "fail",
+                result: "The model's answer was shorter than the minimum (3 < 6)",
+                request: { id: "last-request", providerCode: null },
+                model: "last-model",
+                special: { emotion: "surprised" },
+            },
+            attempts: 2,
+        });
+    });
+
+    it("accepts an empty answer for a kind whose minimum is off", async () => {
+        expect(
+            await run([{ type: "success", result: "" }], {
+                mode: "submodel",
+                minimums: { minResponseLengthModel: 4 },
+                requestRetrys: 0,
+            }),
+        ).toEqual({ result: { type: "success", result: "" }, attempts: 1 });
+    });
+
+    it("accepts a continuation shorter than its kind's minimum", async () => {
+        expect(
+            await run([{ type: "success", result: "!" }], {
+                input: { continue: true },
+                minimums: { minResponseLengthModel: 4 },
+                requestRetrys: 0,
+            }),
+        ).toEqual({ result: { type: "success", result: "!" }, attempts: 1 });
+    });
+
+    it("returns a preview body even when its text is short and contains a banned script", async () => {
+        expect(
+            await run([{ type: "success", result: '{"body":"hi"}' }], {
+                input: { previewBody: true },
+                minimums: { minResponseLengthModel: 40 },
+                banCharacterset: ["Latn"],
+                requestRetrys: 0,
+            }),
+        ).toEqual({ result: { type: "success", result: '{"body":"hi"}' }, attempts: 1 });
+    });
 
     it("a rejected answer with no retries left fails at once (requestRetrys 0)", async () => {
         expect(await run([latin], { requestRetrys: 0 })).toEqual({
@@ -98,7 +321,7 @@ describe("requestChatDataOuter and banCharacterset", () => {
     });
 });
 
-describe("a group send with the Echo model and a banned script", () => {
+describe("a send with the Echo model and a banned script", () => {
     // Made in a hook, not at collection, so a run that skips these cases leaves nothing behind.
     let dir = "";
     beforeAll(() => {
@@ -114,14 +337,14 @@ describe("a group send with the Echo model and a banned script", () => {
     };
 
     /**
-     * The hang reproduced over the real server, the default runner, the real group and
-     * character records, and `POST /api/generations` with `kind: "group"`: the Echo model answers
+     * The hang reproduced over the real server, the default runner, the real character record,
+     * and `POST /api/generations` with `kind: "send"`: the Echo model answers
      * "blocked Latin text" at once, and the providers ban `Latn`. The child counts the runner's
      * request attempts; in `stop` mode it issues the owner's DELETE from a timer 50 ms after the
      * first attempt. The test kills a child that never ends.
      */
-    function runGroupSend(mode: "budget" | "stop"): Report {
-        const script = path.join(dir, `group-${mode}.mjs`);
+    function runSend(mode: "budget" | "stop"): Report {
+        const script = path.join(dir, `send-${mode}.mjs`);
         const support = pathToFileURL(path.join(REPO_ROOT, "server/src/tests/testSupport.ts")).href;
         writeFileSync(
             script,
@@ -160,11 +383,10 @@ describe("a group send with the Echo model and a banned script", () => {
                 `await required(await client.json("/api/resources/batch", {`,
                 `    ops: [`,
                 `        { kind: "characters", id: "speaker", baseRevision: null, data: { ...blank, chaId: "speaker", type: "character", name: "Speaker" } },`,
-                `        { kind: "characters", id: "group", baseRevision: null, data: { ...blank, chaId: "group", type: "group", name: "Group", characters: ["speaker"], characterTalks: [1], characterActive: [true], orderByOrder: true } },`,
                 `    ],`,
-                `    chats: [{ characterId: "group", chatId: "k", baseRevision: null, ops: [{ op: "create", chat: { id: "k", name: "K", fmIndex: -1, promptPresetId: presetId, modelPresetId, bindedPersona: personaId, message: [{ chatId: "u0", role: "user", data: "Hello group" }], scriptstate: {} } }] }],`,
+                `    chats: [{ characterId: "speaker", chatId: "k", baseRevision: null, ops: [{ op: "create", chat: { id: "k", name: "K", fmIndex: -1, promptPresetId: presetId, modelPresetId, bindedPersona: personaId, message: [{ chatId: "u0", role: "user", data: "Hello" }], scriptstate: {} } }] }],`,
                 `}));`,
-                `const before = (await (await required(await client.json("/api/resources/read", { chats: [{ characterId: "group", id: "k" }] }))).json()).chats[0];`,
+                `const before = (await (await required(await client.json("/api/resources/read", { chats: [{ characterId: "speaker", id: "k" }] }))).json()).chats[0];`,
                 `let attempts = 0;`,
                 `let immediateRanAfter = -1;`,
                 `let attemptsAtStop = null;`,
@@ -183,7 +405,7 @@ describe("a group send with the Echo model and a banned script", () => {
                 `    }`,
                 `    return realRun(spec);`,
                 `};`,
-                `const created = await required(await client.json("/api/generations", { kind: "group", clientId: "charset-test", context: { characterId: "group", chatId: "k", presetId, modelPresetId, personaId, mode: "group", input: "", chatRevision: before.revision } }));`,
+                `const created = await required(await client.json("/api/generations", { kind: "send", clientId: "charset-test", context: { characterId: "speaker", chatId: "k", presetId, modelPresetId, personaId, mode: "send", input: "", chatRevision: before.revision } }));`,
                 `jobId = (await created.json()).jobId;`,
                 `let terminal = null;`,
                 `for (let i = 0; i < 2000 && !terminal; i++) {`,
@@ -208,11 +430,18 @@ describe("a group send with the Echo model and a banned script", () => {
         "ends with the request's failure once the retries are spent, yielding between attempts",
         { tags: ["slow"], timeout: 90_000 },
         () => {
-            expect(runGroupSend("budget")).toEqual({
+            expect(runSend("budget")).toEqual({
                 attempts: 3,
                 immediateRanAfter: 1,
                 attemptsAtStop: null,
-                terminal: { type: "error", reason: "failed", status: 500, message: BANNED, stage: "request" },
+                terminal: {
+                    type: "error",
+                    reason: "failed",
+                    status: 500,
+                    message: BANNED,
+                    stage: "request",
+                    requestId: expect.any(String),
+                },
             });
         },
     );
@@ -221,7 +450,7 @@ describe("a group send with the Echo model and a banned script", () => {
         "observes a stop scheduled from a timer while the rejections continue",
         { tags: ["slow"], timeout: 90_000 },
         () => {
-            const report = runGroupSend("stop");
+            const report = runSend("stop");
             expect(report.terminal).toEqual({
                 type: "error",
                 reason: "aborted",

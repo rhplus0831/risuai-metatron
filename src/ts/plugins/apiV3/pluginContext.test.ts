@@ -36,7 +36,8 @@ import type { loreBook } from "../../../../shared/database";
 //   admission: the target chat's own local send, followed job, or lock refuses it without appending
 //   (checked again after the chat load), another chat's does not, every send is refused while a job
 //   channel callback runs in this tab (so no hook run as a callback can start, let alone await, a
-//   send in any chat), and the call answers the send's own result;
+//   send in any chat), orphaned lore overrides refuse it without appending (false, with the alert),
+//   and the call answers the send's own result;
 // - unload: a reload removes the old instance's script handlers, replacers, and listeners, the old
 //   instance's stack is not the reloaded instance's, and `SandboxHost.terminate` rejects a pending
 //   callback so the hook's entry pops.
@@ -68,16 +69,7 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
@@ -106,11 +98,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 // The permissions are granted unless a test lowers `grants.value` (then `alertConfirm` is asked).
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => grants.value,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(async () => undefined),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => grants.value,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(async () => undefined),
+    }),
+);
 
 // The send pipeline is a stand-in: `sendChat` records what the plugin's `sendChat` passes it; the
 // busy check reads the real registry (`localSends.ts`), as the product wires it.
@@ -195,6 +189,7 @@ vi.mock("src/ts/storage/serverAuth", () => {
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
 import {
+    selectCharacter,
     selectCharacterAt,
     selectedIndex,
     selection,
@@ -208,6 +203,7 @@ import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDa
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { beginLocalSend, isLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
+import { alertError } from "src/ts/alert";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { requestChatData, requestChatDataMain } from "src/ts/process/request/request";
 import { captureTransform, serverProcessScript } from "src/ts/parser/transformClient";
@@ -254,7 +250,7 @@ const chat = (id: string, fields: Record<string, unknown> = {}) => ({
  * record fields into the records, the characters' chats into the chat module, the selection
  * resolved.
  */
-function liveDatabase() {
+function liveDatabase(includeGroup = false) {
     selectPreset("a");
     selectModelPreset("a");
     selectPersona("p");
@@ -287,6 +283,7 @@ function liveDatabase() {
                 triggerscript: [],
                 globalLore: [],
             },
+            ...(includeGroup ? [{ chaId: "g", type: "group", name: "Group", chats: [chat("g0")] }] : []),
             {
                 chaId: "b",
                 type: "character",
@@ -299,7 +296,7 @@ function liveDatabase() {
                 globalLore: [],
             },
         ],
-        characterOrder: ["a", "b"],
+        characterOrder: includeGroup ? ["a", "g", "b"] : ["a", "b"],
         plugins: [],
         modules: [],
         enabledModules: [],
@@ -472,6 +469,50 @@ describe("capturePluginContext", () => {
         const context = capturePluginContext(ref)!;
         ref.chatId = "changed";
         expect(context.chatRef).toEqual(refB1);
+    });
+});
+
+describe("plugin access to a library with an archived group", () => {
+    beforeEach(() => liveDatabase(true));
+
+    it("uses the same visible character index for chat edits, the selection and a hook on another chat", async () => {
+        const api = await makeApi();
+        selectCharacter("b");
+        expect.soft(api.getCurrentCharacterIndex()).toBe(1);
+        expect.soft((await api.getCharacterFromIndex(1)).chaId).toBe("b");
+        const copy = await api.getChatFromIndex(1, 0);
+        expect.soft(copy.id).toBe("b0");
+        await api.setChatToIndex(1, 0, { ...copy, note: "B's note" });
+        expect.soft(chatStore.findChat({ chaId: "b", chatId: "b0" })?.note).toBe("B's note");
+        expect.soft(chatStore.findChat({ chaId: "g", chatId: "g0" })?.note).toBe("");
+
+        selectCharacter("a");
+        const seen: number[] = [];
+        const listener = await listenerOf(api, () => seen.push(api.getCurrentCharacterIndex()));
+        await invokeHook(listener, capturePluginContext(refB1), listenerArg);
+        expect(seen).toEqual([1]);
+    });
+
+    it("replaces the indexed character while preserving the archived record, chat and order entry", async () => {
+        const api = await makeApi();
+        const group = plain(characterOf("g"));
+        const ref = { chaId: "g", chatId: "g0" };
+        const groupChat = plain(chatStore.findChat(ref));
+        await api.setCharacterToIndex(1, { chaId: "replacement", name: "Replacement", chats: [chat("new")] });
+        expect(characterList().map(({ chaId }) => chaId)).toEqual(["a", "g", "replacement"]);
+        expect(plain(characterOf("g"))).toEqual(group);
+        expect(chatStore.chatList("g").map(({ id }) => id)).toEqual(["g0"]);
+        expect(plain(chatStore.findChat(ref))).toEqual(groupChat);
+        expect(plain(settings.characterOrder)).toEqual(["a", "g", "replacement"]);
+    });
+
+    it("filters group ids from stored and incoming character orders, including folder members", async () => {
+        const api = await makeApi();
+        const folder = (data: string[]) => ({ id: "f", name: "F", color: "red", data });
+        settings.characterOrder = ["a", "g", folder(["g", "b"])];
+        expect.soft(await api.getDatabase(["characterOrder"])).toEqual({ characterOrder: ["a", folder(["b"])] });
+        await api.setDatabase({ characterOrder: [folder(["a", "g"]), "g", "b"] });
+        expect(plain(settings.characterOrder)).toEqual([folder(["a"]), "b"]);
     });
 });
 
@@ -671,7 +712,7 @@ describe("settings inside a hook", () => {
         expect(preset("a").temperature).toBe(33);
     });
 
-    it("a read and a write keep the hook's preset across the database consent and the install prompt", async () => {
+    it("a read and a write keep the hook's preset across the database consents and the install prompt", async () => {
         const api = await makeApi();
         let read: unknown;
         const listener = await listenerOf(api, async () => {
@@ -683,7 +724,7 @@ describe("settings inside a hook", () => {
         });
         // From here on the permissions are asked for (the listener was registered under a grant).
         grants.value = false;
-        const prompts = heldPrompts(2);
+        const prompts = heldPrompts(3);
         const running = invokeHook(listener, capturePluginContext(refB1), listenerArg);
 
         // The consent for the read is pending; the user switches presets meanwhile.
@@ -691,14 +732,17 @@ describe("settings inside a hook", () => {
         selectPreset("b");
         consent(true);
 
-        // The install prompt is pending (the read is done); the write still goes to the hook's
-        // preset when answered.
-        const install = await prompts.shown(1, running);
+        // The write's own consent is pending (the read is done).
+        const writeConsent = await prompts.shown(1, running);
         expect(read).toEqual({ temperature: 10 });
+        writeConsent(true);
+
+        // The install prompt is pending; the write still goes to the hook's preset when answered.
+        const install = await prompts.shown(2, running);
         preset("b").temperature = 21;
         install(true);
         await running;
-        expect(prompts.asked()).toBe(2);
+        expect(prompts.asked()).toBe(3);
         expect(preset("a").temperature).toBe(55);
         expect(preset("b").temperature).toBe(21);
         expect(settings.plugins.map((plugin: any) => plugin.name)).toEqual(["installed-by-hook"]);
@@ -745,7 +789,9 @@ describe("gone targets", () => {
             }
         };
         const listener = await listenerOf(api, async () => {
-            chatStore.deleteChat(refB1);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            chatStore.acceptRemoteChat({ characterId: refB1.chaId, id: refB1.chatId, revision: null, data: null });
+            expect(chatStore.findChat(refB1)).toBeUndefined();
             await attempt("getCharacter", () => api.getCharacter());
             await attempt("getChar", () => api.getChar());
             await attempt("setCharacter", () => api.setCharacter({ chaId: "b", name: "x" }));
@@ -838,17 +884,18 @@ describe("the runners", () => {
         const context = capturePluginContext(refB1);
         selectPreset("b");
 
+        // The continuation reads its context's preset; its write is refused (read-only transform).
         const withContext = captureTransform(-1, { chatRef: refB1, pluginContext: context })!;
         const passed = await serverProcessScript(beta, "t", "editprocess", -1, {}, withContext, "text");
         expect(passed.data).toBe("t:10:1/1");
-        expect(preset("a").temperature).toBe(11);
+        expect(preset("a").temperature).toBe(10);
         expect(preset("b").temperature).toBe(20);
 
         const atEntry = captureTransform(-1, { chatRef: refB1 })!;
         const captured = await serverProcessScript(beta, "t", "editprocess", -1, {}, atEntry, "text");
         expect(captured.data).toBe("t:20:1/1");
-        expect(preset("b").temperature).toBe(21);
-        expect(preset("a").temperature).toBe(11);
+        expect(preset("b").temperature).toBe(20);
+        expect(preset("a").temperature).toBe(10);
         expect(where(api)).toEqual([0, 0]);
     });
 
@@ -870,7 +917,7 @@ describe("the runners", () => {
         });
         // From here on the permissions are asked for: the provider's, then the read's.
         grants.value = false;
-        const prompts = heldPrompts(2);
+        const prompts = heldPrompts(3);
         // `aiModel` is the model id of the model preset's main profile: the request reads it from
         // the model preset of its captured context, else the selected one.
         mainProfile("a").modelId = "pluginmodel:::ctx";
@@ -1168,6 +1215,87 @@ describe("sendChat inside a hook", () => {
     });
 });
 
+describe("sendChat across consent", () => {
+    function allowGone(error: unknown) {
+        if (!(error instanceof PluginTargetGoneError)) throw error;
+    }
+
+    it("appends nothing when a hook starts a send on a group that becomes visible during consent", async () => {
+        const api = await makeApi();
+        const context = capturePluginContext(refB1);
+        const listener = await listenerOf(api, () => api.sendChat("plugin message").catch(allowGone));
+        const owner = characterOf("b");
+        owner.type = "group";
+        grants.value = false;
+        alerts.confirm.mockImplementationOnce(async () => {
+            owner.type = "character";
+            return true;
+        });
+        await invokeHook(listener, context, listenerArg);
+        expect(texts(refB1)).toEqual(["hello from b1"]);
+        expect(sends).toEqual([]);
+    });
+
+    it("appends nothing when the selected chat's owner becomes a group during send consent", async () => {
+        const api = await makeApi();
+        grants.value = false;
+        alerts.confirm.mockImplementationOnce(async () => {
+            characterOf("a").type = "group";
+            return true;
+        });
+        await api.sendChat("plugin message").catch(allowGone);
+        expect(texts({ chaId: "a", chatId: "a0" })).toEqual(["hello from a0"]);
+        expect(sends).toEqual([]);
+    });
+
+    it.each(["switch", "delete", "replace"] as const)(
+        "uses only its captured destination when consent waits (%s)",
+        async (change) => {
+            const ref = { chaId: "a", chatId: "a0" };
+            const api = await makeApi();
+            const originalPin = chatStore.pinChat;
+            const releases: ReturnType<typeof vi.fn>[] = [];
+            vi.spyOn(chatStore, "pinChat").mockImplementation((target) => {
+                const release = vi.fn(originalPin(target));
+                releases.push(release);
+                return release;
+            });
+            grants.value = false;
+            const prompts = heldPrompts(1);
+            const running = api.sendChat("sent before navigation");
+            // Attach the rejection handler before consent can resume the send.
+            const result = running.then(
+                (value: boolean) => ({ value }),
+                (error: unknown) => ({ error }),
+            );
+            const consent = await prompts.shown(0, running);
+            selectCharacterAt(1);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            if (change === "delete")
+                chatStore.acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
+            if (change === "replace") {
+                chatStore.installCharacterChats("a", [chat("a0")] as any, {});
+            }
+            consent(true);
+
+            if (change === "switch") {
+                expect(await result).toEqual({ value: true });
+                expect(texts(ref)).toEqual(["hello from a0", "sent before navigation"]);
+                expect(sends).toEqual([{ index: -1, arg: { target: ref } }]);
+            } else {
+                expect(await result).toEqual({ error: expect.any(PluginTargetGoneError) });
+                expect(sends).toEqual([]);
+                if (change === "delete") expect(chatStore.findChat(ref)).toBeUndefined();
+                else expect(texts(ref)).toEqual(["hello from a0"]);
+            }
+            expect(texts({ chaId: "b", chatId: "b0" })).toEqual(["hello from b0"]);
+            expect(prompts.asked()).toBe(1);
+            expect(releases).toHaveLength(1);
+            expect(releases[0]).toHaveBeenCalledExactlyOnceWith();
+        },
+    );
+});
+
 describe("sendChat admission", () => {
     const refA0 = { chaId: "a", chatId: "a0" };
     const busy = "A chat is already in progress";
@@ -1251,6 +1379,32 @@ describe("sendChat admission", () => {
         expect(sends).toHaveLength(2);
     });
 
+    it("refuses a chat with orphaned lore overrides without appending, inside and outside a hook: the alert names them and the answer is false", async () => {
+        const api = await makeApi();
+        vi.mocked(alertError).mockClear();
+        // Overrides whose owner entries are gone (both characters have no lore).
+        const orphan = (comment: string) => ({
+            loreOverrides: [{ entry: { id: comment, key: "", comment, content: "" }, off: false }],
+        });
+        chatStore.setChatMeta(refA0, orphan("Gone in a0"));
+        chatStore.setChatMeta(refB1, orphan("Gone in b1"));
+        expect(await api.sendChat("outside")).toBe(false);
+        await invokeHook(
+            await listenerOf(api, async () => {
+                expect(await api.sendChat("in the hook")).toBe(false);
+            }),
+            capturePluginContext(refB1),
+            listenerArg,
+        );
+        expect(texts(refA0)).toEqual(["hello from a0"]);
+        expect(texts(refB1)).toEqual(["hello from b1"]);
+        expect(sends).toEqual([]);
+        expect(vi.mocked(alertError).mock.calls).toEqual([
+            [expect.stringContaining("Gone in a0")],
+            [expect.stringContaining("Gone in b1")],
+        ]);
+    });
+
     it("answers the send's result: false for a send that did not run", async () => {
         const api = await makeApi();
         sendResults.push(false);
@@ -1262,11 +1416,8 @@ describe("sendChat admission", () => {
 });
 
 describe("unload and reload", () => {
-    /** `loadV3Plugins` can skip every other running instance (recorded in `plugins-mcp.md`); repeat until ours is gone. */
     async function reload(plugin: any) {
-        for (let attempt = 0; attempt < 10 && getV3PluginInstance(plugin.name); attempt += 1) {
-            await loadV3Plugins([]);
-        }
+        await loadV3Plugins([]);
         expect(getV3PluginInstance(plugin.name)).toBeUndefined();
         const before = captured.apis.length;
         await executePluginV3(plugin);

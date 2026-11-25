@@ -27,7 +27,13 @@ function legacyDistance(a: string, b: string): number {
     return prev[b.length];
 }
 
-/** Exact UTF-16 distance when <= cutoff, otherwise Infinity (including legacy overflow values). */
+/**
+ * Exact UTF-16 distance when <= cutoff, otherwise Infinity (including legacy overflow values).
+ * Two reused rows (module scratch shared by every synchronous caller, grown only for a longer name) and three
+ * prunings: a length difference over the cutoff, a band of `cutoff` cells around the diagonal, and a row whose
+ * minimum passes the cutoff. A string over 32767 units takes the unpruned Int16 recurrence instead, so the result
+ * matches `parser.svelte.ts` `getDistance`, wrap included.
+ */
 export function boundedDistance(a: string, b: string, cutoff: number): number {
     if (a.length > 32767 || b.length > 32767) {
         const distance = legacyDistance(a, b);

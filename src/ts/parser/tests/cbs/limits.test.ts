@@ -15,10 +15,9 @@ vi.mock(
         }) as unknown as typeof import("../../../storage/database.svelte"),
 );
 
-vi.mock(import("../../../globalApi.svelte"), () => ({
-    aiWatermarkingLawApplies: () => false,
-    getFileSrc: () => Promise.resolve(""),
-}));
+vi.mock(import("../../../globalApi.svelte"), async () =>
+    (await import("../../../tests/globalApiMock")).createGlobalApiMock({ getFileSrc: () => Promise.resolve("") }),
+);
 
 // `stores.svelte` runs module effects over the selection and the chat; nothing under test reads it.
 vi.mock(import("../../../stores.svelte"), async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));

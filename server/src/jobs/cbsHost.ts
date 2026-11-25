@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { Chat, character, groupChat, loreBook } from "../../../shared/database.ts";
+import type { Chat, Database, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { RisuModule } from "../../../shared/modules.ts";
 import { calcString } from "../../../shared/cbs/calc.ts";
 import type { CbsHost } from "../../../shared/cbs/evaluator.ts";
@@ -49,20 +49,22 @@ export function serverAppVersion(rootDir: string): string {
 
 /**
  * The server's CBS limits (`shared/cbs/limits.ts`): card text is evaluated on the
- * main thread, so one template is held to a work count and a wall time, and a job's templates
+ * main thread, so one template is held to a work count and a wall time, and a send's or command run's templates
  * together to an allowance of evaluation time. The numbers are policy, chosen with room for large
  * inline data in card text (a multi-megabyte data URL scans at about 80 ns per character).
  */
 export const SERVER_CBS_MAX_WORK = DEFAULT_CBS_MAX_WORK;
+/** One template's cooperative wall-time bound; serverCbsLimits allows tests to lengthen it. */
 export const SERVER_CBS_MAX_MS = 5_000;
+/** Cumulative evaluation allowance shared by one send's or command run's evaluators and speakers. */
 export const SERVER_CBS_JOB_MS = 60_000;
 
-/** The wall times `serverCbsLimits` allows: one template's and a job's in all (tests lengthen them). */
+/** The wall times serverCbsLimits allows: one template's and one run's cumulative allowance (tests lengthen them). */
 export type ServerCbsTimeLimits = { templateMs: number; jobMs: number };
 
 /**
- * The limits of one job's evaluators: `usage` is the job's, shared by every run of it. `time`
- * replaces `SERVER_CBS_MAX_MS` and `SERVER_CBS_JOB_MS`; the work limit and the clock stay.
+ * Limits over the caller's usage, shared across one send's or command run's evaluators and speakers.
+ * `time` overrides SERVER_CBS_MAX_MS and SERVER_CBS_JOB_MS.
  */
 export function serverCbsLimits(usage: CbsUsage, time?: ServerCbsTimeLimits): CbsLimits {
     return {
@@ -75,6 +77,7 @@ export function serverCbsLimits(usage: CbsUsage, time?: ServerCbsTimeLimits): Cb
 /** How a job's chat variables are written: through the job (`job.write`), the change itself or false. */
 export type JobChatVarWriter = (key: string, value: string) => boolean;
 
+/** The caller supplies job-owned limits and variable writes; the CBS host never writes through a tab. */
 export type JobCbsOptions = {
     rootDir: string;
     /** Writes a chat variable of the job's chat (the client's `setChatVarOf`). */
@@ -93,13 +96,97 @@ export type JobCbsOptions = {
  * fallback and write through the job; globals read the chat's `GLGlobalVariables` override; the
  * persona is the job's frozen effective one for its chat; modules resolve as the client's
  * `getModules`; the viewport and language are the tab's (`context.client`); `isMobile` is false and
- * the internal function empty, as the client host has them.
+ * the internal function empty, as the client host has them. Message objects omit candidate and
+ * checkpoint payloads; an assembling reroll also omits its carrier. Views are cached by stored
+ * chat identity and hidden carrier, so repeated macros do not traverse message lists again.
  *
  * The host carries `options.limits`, so its evaluator is bounded (`shared/cbs/limits.ts`). The
  * default variables are parsed once per source text, not per missing variable.
  */
 export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHost {
     const db = scope.db;
+    // History macros serialize whole messages: candidate payloads never enter the CBS database.
+    type ScopeCharacter = character | groupChat;
+    type StoredChat = ScopeCharacter["chats"][number];
+    const chatViews = new WeakMap<StoredChat, Map<string | undefined, StoredChat>>();
+    const characterViews = new WeakMap<
+        ScopeCharacter,
+        { chats: ScopeCharacter["chats"]; views: Map<string | undefined, ScopeCharacter> }
+    >();
+    const databaseViews = new WeakMap<Database["characters"], Map<string | undefined, Database>>();
+    const chatView = (stored: StoredChat, hidden: string | undefined): StoredChat => {
+        let views = chatViews.get(stored);
+        const cached = views?.get(hidden);
+        if (cached) return cached;
+        const view = {
+            ...stored,
+            // Synchronous setters replace these fields before the next stored-chat refresh.
+            get scriptstate() {
+                return stored.scriptstate;
+            },
+            get note() {
+                return stored.note;
+            },
+            message: stored.message
+                .filter((message) => !hidden || message.chatId !== hidden)
+                .map((message) => {
+                    if (
+                        !["candidates", "selected", "candidatesRevision", "scriptstateCheckpoint"].some((key) =>
+                            Object.hasOwn(message, key),
+                        )
+                    )
+                        return message;
+                    const {
+                        candidates: _candidates,
+                        selected: _selected,
+                        candidatesRevision: _revision,
+                        scriptstateCheckpoint: _checkpoint,
+                        ...visible
+                    } = message;
+                    return visible;
+                }),
+        };
+        if (!views) chatViews.set(stored, (views = new Map()));
+        views.set(hidden, view);
+        return view;
+    };
+    const characterView = <T extends ScopeCharacter>(char: T): T => {
+        const hidden = char.chaId === scope.characterId ? scope.rerollHistoryMessageId || undefined : undefined;
+        let cached = characterViews.get(char);
+        // Scope refreshes replace chat lists and chat objects, while keeping the owner when possible.
+        if (!cached || cached.chats !== char.chats) {
+            cached = { chats: char.chats, views: new Map() };
+            characterViews.set(char, cached);
+        }
+        const previous = cached.views.get(hidden);
+        if (previous) return previous as T;
+        const view = {
+            ...char,
+            chats: char.chats.map((chat) => chatView(chat, chat.id === scope.chatId ? hidden : undefined)),
+        };
+        cached.views.set(hidden, view);
+        return view;
+    };
+    const getDatabase = (): Database => {
+        const characters = db.characters;
+        const hidden = scope.rerollHistoryMessageId || undefined;
+        let views = databaseViews.get(characters);
+        let cached = views?.get(hidden);
+        let changed: Database["characters"] | undefined =
+            !cached || cached.characters.length !== characters.length ? [] : undefined;
+        // Character refreshes may mutate this array in place. Check identities without reading messages.
+        for (const [index, char] of characters.entries()) {
+            const view = characterView(char);
+            if (!changed && cached!.characters[index] !== view) changed = cached!.characters.slice(0, index);
+            changed?.push(view);
+        }
+        if (changed) {
+            cached = { ...db, characters: changed };
+            if (!views) databaseViews.set(characters, (views = new Map()));
+            views.set(hidden, cached);
+        }
+        return cached!;
+    };
     const isJobChat = (ref?: ChatRef) => !ref || (ref.chaId === scope.characterId && ref.chatId === scope.chatId);
     const characterOf = (ref?: ChatRef): character | groupChat | undefined =>
         ref ? db.characters.find((entry) => entry?.chaId === ref.chaId) : selectedCharacter();
@@ -166,13 +253,13 @@ export function createJobCbsHost(scope: JobScope, options: JobCbsOptions): CbsHo
     const findCharacterById = (id: string): character => {
         for (const char of db.characters) {
             if (char.type !== "group" && char.chaId === id) {
-                return char;
+                return characterView(char);
             }
         }
         return { name: "Unknown Character", chats: [], chatPage: 0 } as unknown as character;
     };
     return {
-        getDatabase: () => db,
+        getDatabase,
         getUserName: (ref) => {
             const persona = personaFor(ref);
             return persona ? persona.name : (db.username ?? "User");
@@ -260,8 +347,8 @@ function modulesByIds(modules: RisuModule[], ids: string[], personaIds: Readonly
  * `getModules` of `src/ts/process/modules.ts` over the scope: the global enabled list, the chat's and
  * the character's modules, the bound persona's embedded module id, and `moduleIntergration` (by id
  * or namespace), plus the bound persona's linked modules, matched apart (by id only, MCP modules
- * excepted: `personaLinksModule`); each id resolves only to a stored module (so an embedded module
- * resolves only when one with its id is in `modules`, as on the client).
+ * excepted: `personaLinksModule`). The embedded object is appended when no stored module has its
+ * id; a stored module of that id takes precedence, as on the client.
  */
 export function jobModules(scope: JobScope, ref?: ChatRef): RisuModule[] {
     const db = scope.db;
@@ -282,7 +369,12 @@ export function jobModules(scope: JobScope, ref?: ChatRef): RisuModule[] {
     if (db.moduleIntergration) {
         ids = ids.concat(db.moduleIntergration.split(",").map((s) => s.trim()));
     }
-    return modulesByIds(db.modules ?? [], ids, personaModuleIdSet(bound));
+    const modules = modulesByIds(db.modules ?? [], ids, personaModuleIdSet(bound));
+    const embeddedModule = bound?.embeddedModule;
+    if (embeddedModule && !modules.some((module) => module.id === embeddedModule.id)) {
+        modules.push(embeddedModule);
+    }
+    return modules;
 }
 
 /** `getModuleLorebooks`: the lore of `jobModules`, in module order. */

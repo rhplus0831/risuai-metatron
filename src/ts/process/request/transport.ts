@@ -36,11 +36,22 @@ import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/api
 import { tabTokenScope } from "src/ts/tokenizer";
 import { authFetch } from "src/ts/storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
+import { waitForResourceFlush } from "src/ts/storage/resourceFlushWait";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
 import { saveInlayedSignature, setInlayAsset, writeInlayImage } from "../files/inlays";
 import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp";
 import type { MCPTool } from "../mcp/mcplib";
 import type { ModelModeExtended } from "./shared";
+
+/**
+ * Browser transport for `POST /api/llm/request`, called by `src/ts/process/request/request.ts` for server adapters.
+ * Request ids, tokenizer scope, and serializable arguments are captured before saves flush; captured chats remain
+ * pinned and must retain their owners through loading and reply handling. SSE inlay/tool-record writes precede
+ * later events, while callbacks run independently and duplicate callback ids reuse one computed answer. Stream
+ * chunks become cumulative snapshots, except legacy `chunkText` values pass through as strings; missing terminal
+ * events fail the response or error an exposed stream.
+ * Cancelling the returned stream aborts the fetch and releases pins.
+ */
 
 type ClientResponse =
     | BufferedResponse
@@ -121,6 +132,12 @@ function dataUrlImage(mimeType: string, data: string): HTMLImageElement {
  * records are written before any later event is handled, callbacks (`mcpTool`, `cbs`) are answered
  * without holding up the stream, and the result or the stream becomes the `requestDataResponse` the
  * caller expects.
+ *
+ * The tokenizer scope (`src/ts/tokenizer.ts` `tabTokenScope`, the captured main model's) is taken with the ids, and
+ * the body carries JSON-serializable copies of the arguments and the tool descriptors (name, description, input
+ * schema). Cancelling the returned stream aborts the request; a stream that ends without a terminal event is an
+ * error (a failure before the answer, a stream error after it). Only a request from a plugin callback's hook carries
+ * its `channelCall` parentage.
  */
 export async function requestServer(
     arg: TransportArgument,
@@ -189,6 +206,7 @@ export async function requestServer(
         args.chatRef = { chaId: chatRef.chaId, chatId: chatRef.chatId };
     }
     const requestArgs = JSON.parse(JSON.stringify(args)) as RequestArgs;
+    if (arg.tools === undefined) requestArgs.allowConfiguredTools ??= true;
     const body: Omit<LlmRequestBody, "toolRecords"> = {
         clientId: generationClientId(),
         mode: model,
@@ -254,7 +272,7 @@ export async function requestServer(
         }
     };
     try {
-        await flushResources();
+        await waitForResourceFlush(flushResources(), controller.signal);
         for (const ref of targets) {
             if (!(await ensureChatLoaded(ref)) || !targetsHeld()) {
                 // A captured chat that is gone (deleted or replaced meanwhile): nothing is requested for it.
@@ -264,7 +282,7 @@ export async function requestServer(
         }
     } catch (error) {
         detach();
-        return fail(`${error instanceof Error ? error.message : error}`);
+        return fail(controller.signal.aborted ? "Aborted" : `${error instanceof Error ? error.message : error}`);
     }
     if (controller.signal.aborted) {
         detach();
@@ -452,12 +470,13 @@ async function readEvents(body: ReadableStream<Uint8Array>, options: ReadOptions
             }
             let value: unknown;
             if (event.name === "mcpTool") {
-                // The request's chat chooses the module MCP servers, not the selection now.
+                // The request's chat chooses the module MCP servers. Its controller also stops MCP network work.
                 value = await callTool(
                     event.payload.name,
                     event.payload.args,
                     options.toolChatRef ?? options.parseChatRef,
                     options.pluginContext,
+                    options.controller.signal,
                 );
             } else {
                 const target = event.payload.chatRef ?? options.parseChatRef;

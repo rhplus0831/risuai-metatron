@@ -10,6 +10,7 @@ import { loadJobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 
 // The server command executor (`server/src/prompt/commands.ts`), the port of the
 // client's `processMultiCommand`, over the production bindings' services on a real in-memory store
@@ -20,7 +21,7 @@ import type { HostContext } from "../scripts/workerPool.ts";
 // consumes the rest of the line), the append-only `/send` and `/sendas`, `/comment` on the last
 // message, the `/cut` and `/del` index rules, the alerts and questions as notices and questions
 // (`/speak` a `tts` notice, `/?` an `alertMd`), `/trigger` handed to the job's manual run (refused
-// for a group), `/multisend` handed to the host with the tab's `clear` mode and parts,
+// for a group), the retired `/multisend` consuming the rest of its line without effect,
 // an unknown command `false`, and a question not answered ending the line with its error.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -149,7 +150,6 @@ function setup(options: { type?: "character" | "group" } = {}) {
         regex: async () => ({ value: false }),
     };
     const manualRuns: string[] = [];
-    const multisends: { clear: boolean; parts: string[] }[] = [];
     const storedCharacter = () =>
         store.get(kind(RESOURCE_KIND.characters), "c")?.data as character | groupChat | undefined;
     const executor = createCommandExecutor({
@@ -158,9 +158,6 @@ function setup(options: { type?: "character" | "group" } = {}) {
         character: storedCharacter,
         runManualTrigger: async (name) => {
             manualRuns.push(name);
-        },
-        multisend: (clear, parts) => {
-            multisends.push({ clear, parts });
         },
     });
     const read = () => store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0];
@@ -171,14 +168,28 @@ function setup(options: { type?: "character" | "group" } = {}) {
             chats: [{ characterId: "c", chatId: "k", baseRevision: store.chatRevision("c", "k"), ops }],
         });
     const run = (line: string) => executor.processMultiCommand(line);
-    return { store, run, notices, questions, state, manualRuns, multisends, read, chat, texts, external };
+    return { store, run, notices, questions, state, manualRuns, read, chat, texts, external };
 }
 
 describe("the command executor", () => {
+    it("keeps inner quotes and unmatched surrounding quotes in arguments", async () => {
+        const s = setup();
+        expect(await s.run('/pass say "hi" now')).toBe('say "hi" now');
+        expect(await s.run('/pass "starts here')).toBe('"starts here');
+        expect(await s.run('/pass ends here"')).toBe('ends here"');
+    });
+
+    it("preserves surrounding quotes in piped values substituted into {{pipe}} and {{slot}}", async () => {
+        const s = setup();
+        s.state.answer = async () => '"quoted value"';
+        expect(await s.run("/input Value? | /pass {{pipe}}")).toBe('"quoted value"');
+        expect(await s.run("/input Value? | /pass {{slot}}")).toBe('"quoted value"');
+    });
+
     it("splits pipes outside quotes, feeds the pipe to an empty argument and to `{{pipe}}`/`{{slot}}`, and runs CBS on the arguments", async () => {
         const s = setup();
-        // The quotes guard the split and stay in the argument, as in the tab.
-        expect(await s.run('/pass "a|b" | /pass [{{slot}}] | /pass')).toBe('["a|b"]');
+        // The quotes guard the split, and their surrounding pair leaves the argument, as in the tab.
+        expect(await s.run('/pass "a|b" | /pass [{{slot}}] | /pass')).toBe("[a|b]");
         expect(await s.run("/pass {{char}} | /pass {{pipe}}!")).toBe("Cora!");
         expect(await s.run('/len ["x","y","z"]')).toBe("3");
         expect(await s.run("/pass seed | /len not-json")).toBe("seed");
@@ -238,8 +249,11 @@ describe("the command executor", () => {
     it.each([
         ["/cut 1", ["char:greeting", "char:third"]],
         ["/cut 0-2", ["char:greeting", "user:hi there"]],
-        // A negative index takes the range branch: `slice(parseInt("") → NaN, 1)` keeps the first message.
-        ["/cut -1", ["char:greeting"]],
+        // A negative index removes from the end of the history view.
+        ["/cut -1", ["char:greeting", "user:hi there"]],
+        ["/cut abc-def", ["char:greeting", "user:hi there", "char:third"]],
+        ["/cut 3f1c2b6e-1234-4abc-9def-0123456789ab", ["char:greeting", "user:hi there", "char:third"]],
+        ["/cut 1-", ["char:greeting", "user:hi there", "char:third"]],
         ["/cut m2", ["char:greeting", "char:third"]],
         ["/del 2", ["user:hi there", "char:third"]],
         ["/del nope", ["char:greeting", "user:hi there", "char:third"]],
@@ -269,8 +283,14 @@ describe("the command executor", () => {
 
     it("consumes the rest of the line when the chat is deleted during a question, running nothing more", async () => {
         const s = setup();
+        // A spare active chat lets `k` go to the trash and be deleted.
+        s.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
         s.state.answer = async () => {
-            s.external([{ op: "delete" }]);
+            deleteChatThroughTrash(s.store, "c", "k");
             return "ok";
         };
         expect(await s.run("/input wait | /echo should-not-run | /send nor this")).toBe("");
@@ -297,21 +317,26 @@ describe("the command executor", () => {
         expect(group.manualRuns).toEqual([]);
     });
 
-    it("hands `/multisend` to the host split on `|||` with a leading `clear` as the mode, and refuses `setinput`/unknown commands with false", async () => {
+    it("consumes a retired `/multisend` and the rest of its line without effect, and refuses `setinput`/unknown commands with false", async () => {
         const s = setup();
-        // The parts go to the host as the tab splits them (the quotes stay, as in the tab); the
-        // executor itself sends nothing and shows nothing. An unquoted `|` splits the command line,
-        // so the second line's separators come out of CBS (`{{u::7c}}` is `|`), as the argument
-        // is parsed before the split.
-        const sep = "{{u::7c}}".repeat(3);
-        expect(await s.run('/multisend "one|||two"')).toBe("");
-        expect(await s.run(`/multisend clear ${sep} first ${sep} second`)).toBe("");
-        expect(s.multisends).toEqual([
-            { clear: false, parts: ['"one', 'two"'] },
-            { clear: true, parts: [" first ", " second"] },
-        ]);
+        const revision = s.store.chatRevision("c", "k");
+        // The retired segment takes everything after it, pipes and CBS included: nothing later runs,
+        // nothing reaches the host or the channel, and the chat is not written.
+        for (const line of [
+            '/multisend "one|||two"',
+            "/multisend clear ||| first ||| second",
+            "multisend one | /send leaked",
+            "  /multisend",
+            "/pass ok | /multisend {{setvar::leaked::1}} | /trigger later | /nosuchcommand",
+        ]) {
+            expect(await s.run(line), line).toBe("");
+        }
+        expect(s.manualRuns).toEqual([]);
         expect(s.notices).toEqual([]);
+        expect(s.questions).toEqual([]);
         expect(s.texts()).toHaveLength(3);
+        expect(s.store.chatRevision("c", "k")).toBe(revision);
+        expect(s.chat()?.scriptstate).toEqual({ $old: "old" });
         expect(await s.run("/setinput x")).toBe(false);
         expect(await s.run("/nosuchcommand x")).toBe(false);
         expect(await s.run("/pass ok | /nosuchcommand")).toBe(false);

@@ -2,8 +2,9 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMORY_TASKS_PATH, type MemoryTaskEntry } from "../../../shared/events.ts";
 import type { MemoryTaskStatus } from "../../../shared/jobs.ts";
-import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { revisionDigest, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import { KINDS, SAVE_DEBOUNCE_MS, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
+import { FakeSocket } from "../network/tests/eventSocket";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // The tab's memory task module (`memoryTasks.svelte.ts`) over the real chat module and save loop
@@ -19,12 +20,14 @@ import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 //   `hello` restores a running task's badge and replaces the status map;
 // - a read refused for pending local work does not clear the fence; a late read for an earlier task
 //   does not clear a newer task's fence; a terminal of another task leaves a live task alone;
-// - "Summarize now": the fence from before the flush, the request, the answers (a refusal, queued,
+// - "Summarize now": the fence from before the flush, a still-refused draft of the chat or its order
+//   (no request), the request, the answers (a refusal, queued,
 //   `pendingManual`, one superseded by a frame, a late one for a task already known terminal), a
 //   transport failure's uncertain fence and what resolves it, one request per chat, and "Cancel".
 
-const { server, routes } = vi.hoisted(() => ({
+const { server, routes, ensureAuth } = vi.hoisted(() => ({
     server: { current: null as any },
+    ensureAuth: vi.fn<typeof import("../storage/serverAuth").ensureAuth>(),
     /** The memory task routes: every request as sent, answered by the test's `answer`. */
     routes: {
         requests: [] as { path: string; init: RequestInit }[],
@@ -34,6 +37,7 @@ const { server, routes } = vi.hoisted(() => ({
 
 vi.mock("../storage/serverAuth", async () =>
     (await import("../storage/tests/serverAuthMock")).createServerAuthMock({
+        ensureAuth,
         authFetch: async (path: string, init: RequestInit = {}) => {
             if (path.startsWith(MEMORY_TASKS_PATH)) {
                 routes.requests.push({ path, init });
@@ -51,7 +55,7 @@ vi.mock("./modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 
 type Tasks = typeof import("./memoryTasks.svelte");
 type ChatModule = typeof import("../storage/chatStore.svelte");
@@ -107,9 +111,9 @@ function deferred<T>() {
  * character `c` with chat `k` (messages a, b; summaries "one", "two") and chat `j` (empty): read,
  * seed, install, start, let the boot compare pass run.
  */
-async function boot() {
+async function boot(feed = false) {
     vi.resetModules();
-    const fake = await StoreBackedServer.create();
+    const fake = await StoreBackedServer.create({ feed });
     fake.set("presets", "main", [{ name: "p1" }]);
     fake.set("modules", "main", []);
     fake.set("plugins", "main", []);
@@ -227,6 +231,7 @@ beforeAll(() => warmMutationGraph(() => import("./memoryTasks.svelte")), 60_000)
 
 beforeEach(() => {
     localStorage.clear();
+    ensureAuth.mockReset().mockResolvedValue();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.stubGlobal("location", { reload: vi.fn() });
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -373,11 +378,7 @@ describe("the fence over frames and the save loop", () => {
         const refJ = { chaId: "c", chatId: "j" };
         tasks.noteMemoryTaskFrame(entry(live("B", "queued"), refJ));
         expect(tasks.memoryTaskFenced(refJ)).toBe(true);
-        fake.store.applyChanges({
-            chats: [
-                { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-            ],
-        });
+        fake.deleteChatForever("c", "j");
         reconnect([]);
         await settle();
         expect(tasks.memoryTaskFenced(refJ)).toBe(false);
@@ -435,6 +436,24 @@ describe("the fence over frames and the save loop", () => {
 });
 
 describe("Summarize now and Cancel", () => {
+    it("releases only the manual start's fence after a groupArchived refusal", async () => {
+        const { tasks, fenced, awaiting, serverRevision } = await boot();
+        routes.answer = async () => json(409, { error: "groupArchived" });
+        const refusal = { outcome: "refused", reason: "groupArchived" };
+
+        const start = tasks.startMemoryTask(refK);
+        expect(fenced()).toBe(true);
+        expect(await start).toEqual(refusal);
+        expect(fenced()).toBe(false);
+
+        tasks.noteMemoryTaskFrame(entry(live("earlier-task", "running")));
+        expect(await tasks.startMemoryTask(refK)).toEqual(refusal);
+        expect(fenced()).toBe(true);
+        expect(awaiting()).toBe(false);
+        tasks.noteMemoryTaskFrame(entry(terminal("earlier-task", "done", serverRevision())));
+        expect(fenced()).toBe(false);
+    });
+
     it("fences the chat before the flush, sends the start with the epoch header, and releases on a definite refusal", async () => {
         const { tasks, client, fenced, awaiting } = await boot();
         routes.answer = async () => json(503, { error: "Memory tasks are not enabled", reason: "notEnabled" });
@@ -463,6 +482,47 @@ describe("Summarize now and Cancel", () => {
             expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason });
             expect(fenced()).toBe(false);
         }
+    });
+
+    it("refuses the start of a chat whose draft an earlier save left refused, or whose character's chat order did, without a request; another chat still starts", async () => {
+        const { tasks, chat, sync, fake, fenced } = await boot();
+        const refJ = { chaId: "c", chatId: "j" };
+        routes.answer = async () => json(503, { error: "Memory tasks are not enabled", reason: "notEnabled" });
+        // The server refuses `k`'s edit for its content: the draft stays held in this tab only, and a
+        // later flush reports it as refused, not discarded.
+        chat.setMessageText(refK, "a", "draft kept in this tab");
+        chat.setChatMeta(refK, { fmIndex: "invalid" as any });
+        await sync.flushResources();
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "chat", chaId: "c", chatId: "k" })]);
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason: "refused" });
+        expect(fenced()).toBe(false);
+        expect(routes.requests).toHaveLength(0);
+        // The other chat of the character is not held back by `k`'s refusal: its request is sent.
+        expect(await tasks.startMemoryTask(refJ)).toEqual({ outcome: "refused", reason: "notEnabled" });
+        expect(routes.requests).toHaveLength(1);
+        expect(JSON.parse(routes.requests[0].init.body as string)).toEqual({ characterId: "c", chatId: "j" });
+
+        // Discarding the draft takes the server's copy back: the start goes through.
+        await sync.discardRefused(sync.refusedItems()[0].key);
+        await sync.flushResources();
+        expect(sync.refusedItems()).toEqual([]);
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason: "notEnabled" });
+        expect(routes.requests).toHaveLength(2);
+
+        // A refused chat order of the character holds back every chat of it.
+        fake.failNext = {
+            status: 413,
+            body: { error: "order too large" },
+            times: 1,
+            match: (path: string) => path === "/api/resources/batch",
+        };
+        chat.reorderChats("c", ["j", "k"]);
+        await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS);
+        expect(sync.refusedItems()).toEqual([expect.objectContaining({ kind: "order", chaId: "c" })]);
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "refused", reason: "refused" });
+        expect(await tasks.startMemoryTask(refJ)).toEqual({ outcome: "refused", reason: "refused" });
+        expect(fenced()).toBe(false);
+        expect(routes.requests).toHaveLength(2);
     });
 
     it("takes a queued answer as the live status, keeps one request per chat, shows pendingManual once, and cancels", async () => {
@@ -495,6 +555,76 @@ describe("Summarize now and Cancel", () => {
         tasks.noteMemoryTaskFrame(entry(terminal("A", "cancelled", server.current.chat("c", "k")!.revision)));
         expect(state()).toBe("cancelled");
         expect(fenced()).toBe(false);
+    });
+
+    it("leaves an uncertain fence and lets Cancel run after a silent Start times out", async () => {
+        const { tasks, awaiting, state } = await boot();
+        const answer = deferred<Response>();
+        routes.answer = async (_path, init) =>
+            init.method === "POST" ? answer.promise : json(200, { cancelled: true });
+        const settled = vi.fn();
+        const starting = tasks.startMemoryTask(refK).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(routes.requests).toHaveLength(1);
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ outcome: "failed", stage: "request" }),
+            );
+            expect(awaiting()).toBe(true);
+            expect(state()).toBeNull();
+            expect(await tasks.cancelMemoryTask(refK)).toEqual({ outcome: "cancelled" });
+        } finally {
+            answer.resolve(json(200, { outcome: "queued", status: live("A", "queued") }));
+            await starting;
+        }
+    });
+
+    it("lets Start run after a Cancel whose response body times out", async () => {
+        const { tasks } = await boot();
+        const body = deferred<unknown>();
+        const cancelAnswer = json(200, { cancelled: true });
+        const readBody = vi.spyOn(cancelAnswer, "json").mockReturnValue(body.promise);
+        routes.answer = async (_path, init) =>
+            init.method === "DELETE" ? cancelAnswer : json(200, { outcome: "queued", status: live("A", "queued") });
+        expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "queued" });
+
+        const settled = vi.fn();
+        const cancelling = tasks.cancelMemoryTask(refK).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(readBody).toHaveBeenCalledOnce();
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({ outcome: "failed", stage: "request" }),
+            );
+            expect(await tasks.startMemoryTask(refK)).toEqual({ outcome: "queued" });
+        } finally {
+            body.resolve({ cancelled: true });
+            await cancelling;
+        }
+    });
+
+    it("waits for sign-in before starting the memory task deadline", async () => {
+        const { tasks } = await boot();
+        const signIn = deferred<void>();
+        ensureAuth.mockReturnValueOnce(signIn.promise);
+        routes.answer = async () => json(200, { outcome: "queued", status: live("A", "queued") });
+        const settled = vi.fn();
+        const starting = tasks.startMemoryTask(refK).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(settled).not.toHaveBeenCalled();
+            expect(routes.requests).toHaveLength(0);
+        } finally {
+            signIn.resolve();
+            await starting;
+        }
+        expect(settled).toHaveBeenCalledExactlyOnceWith({ outcome: "queued" });
     });
 
     it("does not revive a task's fence from a late queued answer once its terminal was adopted, and lets a frame's status win over the answer's", async () => {
@@ -601,5 +731,131 @@ describe("Summarize now and Cancel", () => {
         late.resolve(json(200, { cancelled: true }));
         expect(await cancel).toEqual({ outcome: "superseded" });
         expect(fenced()).toBe(false);
+    });
+});
+
+describe("memory fences on digest-matched reconnects", () => {
+    let feed: typeof import("../network/eventFeed") | undefined;
+    afterEach(() => {
+        feed?.stopEventFeed();
+        feed = undefined;
+    });
+
+    it.each(["updated", "deleted"])(
+        "settles the %s chat from advertised server revisions while hydration is pending",
+        async (operation) => {
+            const { fake, chat, taskWrite, stored, fenced, awaiting, settle } = await boot(true);
+            FakeSocket.instances = [];
+            vi.stubGlobal("WebSocket", FakeSocket);
+            vi.stubGlobal("location", { protocol: "https:", host: "risu.test", reload: vi.fn() });
+            vi.spyOn(Math, "random").mockReturnValue(1 - Number.EPSILON);
+            feed = await import("../network/eventFeed");
+            feed.startEventFeed();
+            await vi.advanceTimersByTimeAsync(0);
+            const first = FakeSocket.instances.at(-1)!;
+            const hello = (socket: FakeSocket, memoryTasks: MemoryTaskEntry[]) =>
+                socket.frame({
+                    type: "hello",
+                    epoch: fake.store.epoch(),
+                    digest: revisionDigest(fake.store.listRevisions()),
+                    streaming: [],
+                    memoryTasks,
+                });
+            hello(first, [entry(live("A", "running", 1, 3))]);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fenced()).toBe(true);
+            const held = chat.heldChatRevision(refK);
+            const reads = () => fake.requests.filter((request) => request.path === "/api/resources/revisions").length;
+            expect(reads()).toBe(1);
+
+            // Hold the HTTP read's answer; the frame advertises a revision before the chat can adopt it.
+            const issued = deferred<void>();
+            const release = deferred<void>();
+            const fetch = fake.fetch.bind(fake);
+            vi.spyOn(fake, "fetch").mockImplementation(async (path, init) => {
+                const response = await fetch(path, init);
+                if (path.startsWith("/api/resources/read")) {
+                    issued.resolve();
+                    await release.promise;
+                }
+                return response;
+            });
+            fake.onFeed = (frame) => {
+                if (frame.type !== "change") return;
+                // Revision-only frames are valid; a whole chat read is necessary for this commit.
+                first.frame({
+                    ...frame,
+                    changes: {
+                        ...frame.changes,
+                        chats: frame.changes.chats.map(({ characterId, id, revision }) => ({
+                            characterId,
+                            id,
+                            revision,
+                        })),
+                    },
+                });
+            };
+            let committed: string | null = null;
+            if (operation === "updated") committed = taskWrite(["one", "two", "three"]);
+            else {
+                expect(fake.chat("c", "k")!.revision).toBe(held);
+                fake.deleteChatForever("c", "k");
+            }
+            await vi.advanceTimersByTimeAsync(50);
+            await issued.promise;
+            expect(chat.heldChatRevision(refK)).toBe(held);
+            first.close();
+            await vi.advanceTimersByTimeAsync(1000);
+            hello(FakeSocket.instances.at(-1)!, []); // The task's terminal was missed; its status has expired.
+            await vi.advanceTimersByTimeAsync(0);
+            expect(reads()).toBe(1);
+            expect(chat.heldChatRevision(refK)).toBe(held);
+            if (operation === "updated") {
+                expect(fenced()).toBe(true);
+                expect(awaiting()).toBe(true);
+                expect(stored()).toEqual(["one", "two"]);
+            } else {
+                expect(chat.chatEntry(refK)).toBeDefined();
+                expect(fenced()).toBe(false); // Absence in the advertised map settles it before hydration.
+            }
+            release.resolve();
+            await settle();
+            expect(fenced()).toBe(false);
+            if (operation === "updated") {
+                expect(chat.heldChatRevision(refK)).toBe(committed);
+                expect(stored()).toEqual(["one", "two", "three"]);
+            } else expect(chat.chatEntry(refK)).toBeUndefined();
+        },
+    );
+});
+
+describe("structured memory status frames", () => {
+    it("counts a queued or running writer task with its done/total and removes it when finished", async () => {
+        const { tasks } = await boot();
+        tasks.noteMemoryTaskFrame(entry({ ...live("writer", "queued"), kind: "structuredMemory" }));
+        expect(tasks.summarizingChats()).toEqual(new Map([[keyK, null]]));
+
+        tasks.noteMemoryTaskFrame(entry({ ...live("writer", "running", 2, 5), kind: "structuredMemory" }));
+        expect(tasks.summarizingChats()).toEqual(new Map([[keyK, { done: 2, total: 5 }]]));
+
+        tasks.noteMemoryTaskFrame(entry({ ...terminal("writer", "done", null), kind: "structuredMemory" }));
+        expect(tasks.summarizingChats().size).toBe(0);
+    });
+
+    it("preserves the structured kind in queued, running and terminal frames while HypaV3 has no kind", async () => {
+        const { tasks, serverRevision } = await boot();
+        for (const kind of ["structuredMemory", undefined] as const) {
+            const taskId = kind ?? "hypa";
+            for (const status of [
+                live(taskId, "queued"),
+                live(taskId, "running", 1, 2),
+                terminal(taskId, "done", serverRevision(), { done: 2, total: 2 }),
+            ]) {
+                const frameStatus = { ...status, ...(kind ? { kind } : {}) };
+                tasks.noteMemoryTaskFrame(entry(frameStatus));
+                expect(tasks.memoryTaskStatus(refK)).toEqual(frameStatus);
+                if (!kind) expect(tasks.memoryTaskStatus(refK)).not.toHaveProperty("kind");
+            }
+        }
     });
 });

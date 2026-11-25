@@ -23,9 +23,13 @@
 //    every character, chat, and message.
 // `--bin <file>` runs the decoder comparison, current's migration and the boot pass on an existing
 // `.bin` (meant for this server's exports; for an upstream backup the counts include cold-storage stubs).
-// It prints counts and fixed failure categories only, never a name, text, or a caught error, so it is
-// safe on private files.
+// It names each input by its ordinal (`--bin #<n>`) and prints counts and fixed failure categories only,
+// never a name, text, or a caught error, so it is safe on private files.
 // Use trusted local files only: this manual check runs upstream's decoder in this process.
+// It ends with `OK` (exit 0) or `<n> check(s) failed` (exit 1); a supplied file that cannot be read,
+// migrated or boot-checked counts as a failed check. An exception that escapes the checks, setup errors
+// included (an unknown target or argument, a package directory of another name or version, a checkout
+// without the pinned commit), prints `ERROR` (without its message under `--bin`) and exits 2.
 // The synthetic scenario uses one flat openAIKey; named-key placement, auxiliary-secret clearing and
 // native-field stripping are covered by upstreamExport.test.ts / upstreamExportRoute.test.ts instead.
 // The exporter branch for a character with no stored chats is covered by upstreamExport.test.ts;
@@ -227,6 +231,9 @@ async function readBin(upstream, file, { keepAssets = false, detailed = false } 
  * Separate from the boot report so failures identify plugin migration. setDatabase precedes migration,
  * then bootPass continues with checkNewFormat/assignIds. Await the background pluginStorage.load from
  * makeColdData here as well, including when no plugins are installed, before checking its cold writes.
+ * Cold storage starts empty on each pass and a `.bin`'s own cold records are not read into it, so a
+ * database that already holds a `_coldpluginIndex` pointer (an upstream backup under `--bin`) fails
+ * this pass: upstream's load finds no index behind the pointer.
  */
 async function migrationPass(upstream, decoded, { detailed = false } = {}) {
     const db = structuredClone(decoded);

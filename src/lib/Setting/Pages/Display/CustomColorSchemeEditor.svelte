@@ -24,7 +24,8 @@
 </script>
 
 {#if settings.ui.colorSchemeName === "custom"}
-    <div class="border border-darkborderc p-2 m-2 rounded-md">
+    <!-- No top margin: the color scheme grid above it ends with its own 0.5rem. -->
+    <div class="border border-darkborderc p-2 mx-2 mb-2 rounded-md">
         <SelectInput
             className="mt-2"
             value={settings.ui.customColorScheme.type}

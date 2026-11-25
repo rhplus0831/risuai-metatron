@@ -8,19 +8,24 @@ import { loadSelection } from "./storage/selection.svelte";
 import { startRouter } from "./router/router.svelte";
 import { botMakerMode, loadedStore, LoadingStatusState } from "./stores.svelte";
 import { loadPluginsForBoot } from "./plugins/plugins.svelte";
-import { alertError, alertMd, waitAlert, alertConfirm, alertInput } from "./alert";
+import { alertError, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
+import { applyDisplaySettings } from "./gui/displayApply";
 import { changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
 import { moduleUpdate } from "./process/modules";
-import { setDirectAssets, setUsingSw } from "./globalApi.svelte";
+import { invalidateWorkerFileSources, setDirectAssets, setUsingSw } from "./globalApi.svelte";
+import { invalidateFileSrcCache } from "./parser/parser.svelte";
 import { RESOURCE_KIND, type ResourceReadKindsResult, SINGLETON_RESOURCE_ID } from "../../shared/resources.ts";
+import { isCharacterTrashExpired } from "../../shared/characters.ts";
+import { readWithDeadline } from "./storage/readDeadline";
 import { readBoot, readKinds } from "./storage/resourceClient";
 import { indexedDbBootCacheStore, loadBootSnapshot, scheduleBootCacheCommit } from "./storage/bootCache";
 import { appVer } from "./storage/database.svelte";
+import { recoverJournal } from "./storage/journalRecovery";
 import {
     heldRecordRevision,
     onRemoteRecordApplied,
@@ -33,7 +38,7 @@ import { checkCharOrderAtBoot, queueRemoteCharOrderRepair } from "./storage/char
 import { importBrowserLocalData } from "./storage/browserLocalImport";
 import { assembleChats, initializeChats, seedChats, setRemoteChatListener } from "./storage/chatStore.svelte";
 import { invalidateInlayCaches, noteRemoteInlay, reconcileInlays, seedInlays } from "./process/files/inlays";
-import { loadPluginPermissions, refreshPluginPermissions } from "./plugins/apiV3/permissionStore";
+import { refreshPluginPermissions, seedPluginPermissions } from "./plugins/apiV3/permissionStore";
 import { startEventFeed } from "./network/eventFeed";
 import { registerModelDynamic } from "./model/modellist";
 import { initializeRecords, type RecordFields, type RecordKind } from "./storage/records.svelte";
@@ -47,7 +52,21 @@ import {
 } from "./safeBoot";
 
 /**
- * Loads the application data.
+ * Bootstraps the server-backed tab: installs server baselines and records, recovers local intent,
+ * then starts persistence, live updates, plugins, routing, and job recovery. Saving starts before
+ * browser-local imports or plugin work. `src/ts/storage/bootCache.ts` only caches captured server
+ * texts, while `src/ts/storage/journalRecovery.ts` restores local edits after first-boot defaults.
+ * Boot failures latch safe boot and surface an alert; service-worker unavailability continues
+ * with object URLs, while its one permitted initialization reload returns before loading content.
+ */
+
+/**
+ * Load through `src/ts/storage/bootCache.ts`, seeding server baselines before any local installation.
+ * `loadSelection` precedes `installBootRecords`; `applyFirstBootDefaults` precedes `recoverJournal`, so
+ * recovered intent wins that overlay. Recovery precedes service-worker reload, `maintainCharacters`
+ * (order repair over the complete recovered inventory) and `initializeChats`. Saving must start
+ * before browser-local imports, remote-owner/feed registration and plugin startup. Only captured
+ * server boot texts reach the idle cache commit; recovered/local changes never seed it.
  */
 export async function loadData() {
     const loaded = get(loadedStore);
@@ -60,11 +79,20 @@ export async function loadData() {
             // Chat summaries, not chats: no message row is read here; a chat is loaded when it is selected
             // or a consumer needs it. The read skips what the boot cache holds (`bootCache.ts`), falling
             // back to the plain read; the cache is written after the boot.
+            // Each boot read is bounded (`BOOT_READ_DEADLINE_MS`): a stalled one fails the boot with its
+            // error instead of a loading screen that never ends. The bound is generous, since the plain
+            // read carries every record and summary and a slow link needs the time.
             const { snapshot, commit: commitBootCache } = await loadBootSnapshot({
                 store: indexedDbBootCacheStore(appVer),
                 appVer,
-                readBoot,
-                readKinds: () => readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true }),
+                readBoot: (request) =>
+                    readWithDeadline(BOOT_READ_DEADLINE_MS, "The boot read timed out", (signal) =>
+                        readBoot(request, { signal }),
+                    ),
+                readKinds: () =>
+                    readWithDeadline(BOOT_READ_DEADLINE_MS, "The boot read timed out", (signal) =>
+                        readKinds(Object.values(RESOURCE_KIND), { chatSummaries: true, signal }),
+                    ),
                 report: recordClientEvent,
             });
             // What the server holds, recorded before normalization changes anything, so the first save
@@ -72,10 +100,15 @@ export async function loadData() {
             seedResources(snapshot);
             seedChats(snapshot.chatSummaries ?? snapshot.chats ?? [], snapshot.chatOrders ?? []);
             seedInlays(snapshot.kinds[RESOURCE_KIND.inlays] ?? []);
+            // Permissions use the boot record and revision before browser-local grants are imported.
+            seedPluginPermissions(
+                snapshot.kinds[RESOURCE_KIND.pluginPermissions]?.find((record) => record.id === SINGLETON_RESOURCE_ID),
+            );
             // This client's preset and lorebook page; the installation checks the ids.
             loadSelection();
             installBootRecords(snapshot);
             applyFirstBootDefaults();
+            await recoverJournal();
 
             LoadingStatusState.text = "Checking Service Worker...";
             if (navigator.serviceWorker) {
@@ -116,13 +149,6 @@ export async function loadData() {
             updateHeightMode();
             updateErrorHandling();
             updateGuisize();
-            if (import.meta.env.VITE_RISU_NIGHTLY_BUILD === "TRUE" && !readLocalFlag("nightlyWarned")) {
-                alertMd(language.nightlyWarning);
-                await waitAlert();
-                try {
-                    localStorage.setItem("nightlyWarned", "true");
-                } catch {}
-            }
 
             // Saving starts before plugins load, so the browser-local import below can save.
             startResourceSync();
@@ -132,7 +158,6 @@ export async function loadData() {
             characterURLImport();
             LoadingStatusState.text = "Moving Browser Data To The Server...";
             await importBrowserLocalData();
-            await loadPluginPermissions();
             // Live updates: other tabs' and devices' changes reach this tab from here on.
             setRemoteResourceOwner(RESOURCE_KIND.inlays, { apply: noteRemoteInlay, reconcile: reconcileInlays });
             setRemoteResourceOwner(RESOURCE_KIND.pluginPermissions, {
@@ -164,8 +189,10 @@ export async function loadData() {
             void scheduleBootCacheCommit(commitBootCache);
             // Web Push: this browser's subscription kept in line, and the one-time banner offered.
             // Nothing here asks for the permission.
-            void import("./network/pushNotifications")
-                .then(({ startPushNotifications }) => startPushNotifications())
+            void Promise.all([import("./network/pushNotifications"), import("./process/serverCommands")])
+                .then(([{ startPushNotifications }, { refreshChatAfterPush }]) =>
+                    startPushNotifications({ onCompletionPush: refreshChatAfterPush }),
+                )
                 .catch((error) => console.error("[Push]", error));
             // Clear this tab's unseen and recovery marks when its open chat changes.
             void import("./process/chatStatus.svelte")
@@ -184,15 +211,6 @@ export async function loadData() {
             latchSafeBootFailure("the boot failed");
             alertError(bootErrorWithSafeBootHint(error));
         }
-    }
-}
-
-/** A `localStorage` flag, false when the storage is unavailable (a blocked store must not stop the boot). */
-function readLocalFlag(key: string): boolean {
-    try {
-        return localStorage.getItem(key) !== null;
-    } catch {
-        return false;
     }
 }
 
@@ -259,21 +277,36 @@ export function installBootRecords(snapshot: ResourceReadKindsResult) {
     changeLanguage(settings.ui.language);
 }
 
-const BROWSER_UI_LANGUAGES = ["de", "en", "ko", "cn", "vi", "zh-Hant"];
+// Only browser base segments belong here; other UI codes need entries in the map below.
+const BROWSER_UI_LANGUAGES = ["de", "en", "ko", "vi"];
+const BROWSER_UI_LANGUAGE_MAP: Record<string, string> = {
+    zh: "cn",
+    "zh-cn": "cn",
+    "zh-sg": "cn",
+    "zh-hans": "cn",
+    "zh-tw": "zh-Hant",
+    "zh-hk": "zh-Hant",
+    "zh-hant": "zh-Hant",
+};
 
 /**
- * The first boot of a store (`didFirstSetup` unset): the UI language follows the browser's when it is
- * one the UI has, as the removed first-run wizard's language step did. Every other setting keeps the
- * server's default; the settings pages change them.
+ * The first boot of a store (`didFirstSetup` unset): match Chinese browser tags case-insensitively
+ * by their first two segments (bare zh, CN, SG, or Hans -> cn; TW, HK, or Hant -> zh-Hant), then fall
+ * back to a supported browser base segment. Every other setting keeps the server's default; the
+ * settings pages change them.
  */
 function applyFirstBootDefaults() {
     if (settings.ui.didFirstSetup) {
         return;
     }
-    const browserLang = navigator.language?.split("-")[0];
-    if (browserLang && BROWSER_UI_LANGUAGES.includes(browserLang)) {
-        settings.ui.language = browserLang;
-        changeLanguage(browserLang);
+    const browserSegments = navigator.language?.toLowerCase().split("-") ?? [];
+    const browserBase = browserSegments[0];
+    const uiLanguage =
+        BROWSER_UI_LANGUAGE_MAP[browserSegments.slice(0, 2).join("-")] ??
+        (BROWSER_UI_LANGUAGES.includes(browserBase) ? browserBase : undefined);
+    if (uiLanguage) {
+        settings.ui.language = uiLanguage;
+        changeLanguage(uiLanguage);
     }
     settings.ui.didFirstSetup = true;
 }
@@ -291,7 +324,8 @@ function refreshPermissionsWithRetry(revision: string | null, attempt = 0) {
 /**
  * Records another tab wrote may reference inlays this tab has not seen: a remote reload drops the
  * inlay caches. A remote `characterOrder` may lack a character this tab created: it is appended
- * (`queueRemoteCharOrderRepair`). Exported for tests.
+ * (`queueRemoteCharOrderRepair`). A remote `ui` record re-applies the language and display settings to the page.
+ * Exported for tests.
  */
 export function watchRemoteRecords() {
     onRemoteRecordApplied((kind) => {
@@ -299,11 +333,17 @@ export function watchRemoteRecords() {
         if (kind === RESOURCE_KIND.characterOrder) {
             queueRemoteCharOrderRepair((chaId) => heldRecordRevision(RESOURCE_KIND.characters, chaId));
         }
+        if (kind === SECTION_KIND.ui) {
+            changeLanguage(settings.ui.language);
+            applyDisplaySettings();
+        }
     });
     setRemoteChatListener(() => invalidateInlayCaches());
 }
 
 const SW_INIT_RELOAD_KEY = "risu.serviceWorker.initReload";
+/** The bound of each boot read (the boot route, then the plain fallback read): `readWithDeadline`. */
+const BOOT_READ_DEADLINE_MS = 120_000;
 let swCapabilityProbe = 0;
 let swControllerListenerInstalled = false;
 
@@ -329,6 +369,7 @@ async function probeSw(): Promise<Response> {
     return response;
 }
 
+/** Re-probes replacement controllers; controller loss also clears cached worker and parser source URLs. */
 function watchSwController() {
     const worker = navigator.serviceWorker;
     if (swControllerListenerInstalled || typeof worker?.addEventListener !== "function") return;
@@ -336,12 +377,24 @@ function watchSwController() {
         invalidateDirectAssets();
         if (worker.controller) {
             void probeSw().catch(() => {});
+        } else {
+            invalidateWorkerFileSources();
+            invalidateFileSrcCache();
         }
     });
     swControllerListenerInstalled = true;
 }
 
-/** Registers the worker, allowing at most one reload until initialization succeeds. */
+/**
+ * Registers the worker, allowing at most one reload until initialization succeeds. `ready` turns the service worker
+ * on (`setUsingSw(true)`); `unavailable` (a failed register or `/sw/init` probe, or a reload already spent) continues
+ * the boot with object URLs. A non-2xx `/sw/init` reloads the page at most once per tab: the `sessionStorage` marker
+ * `SW_INIT_RELOAD_KEY` records the reload and a successful init clears it. A failure to read or write the marker
+ * suppresses the reload; a failed removal is ignored. `reloading` makes `loadData` return before the safe-boot content
+ * stage, so the interrupted boot is not counted (the reloaded one can be). A register rejection, a probe rejection,
+ * and a non-2xx init each record a `serviceWorker` diagnostics event, and the diagnostics are flushed before the
+ * reload.
+ */
 async function registerSw(): Promise<"ready" | "unavailable" | "reloading"> {
     invalidateDirectAssets();
     watchSwController();
@@ -438,18 +491,19 @@ function maintainCharacters() {
     const now = Date.now();
     removeCharacters(
         characterList()
-            .filter((v) => v.trashTime && v.trashTime + 1000 * 60 * 60 * 24 * 3 < now)
+            .filter((v) => isCharacterTrashExpired(v, now))
             .map((v) => v.chaId),
     );
     checkCharOrderAtBoot();
 }
 
 /**
- * Removes localStorage flags left behind by the removed Risu Account sync, ToS popup and nightly hub switch.
+ * Removes localStorage flags left behind by the removed Risu Account sync, ToS popup, nightly hub switch and
+ * nightly build warning.
  * The `risuaiAccountCached` IndexedDB is kept on purpose: it may hold a former sync user's latest database copy.
  */
 function cleanLegacyAccountData() {
-    for (const key of ["accountst", "dosync", "fallbackRisuToken", "tos2", "tos4", "hub"]) {
+    for (const key of ["accountst", "dosync", "fallbackRisuToken", "tos2", "tos4", "hub", "nightlyWarned"]) {
         try {
             localStorage.removeItem(key);
         } catch (error) {}

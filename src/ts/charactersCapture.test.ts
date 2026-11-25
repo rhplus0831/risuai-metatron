@@ -16,7 +16,6 @@ const { server, alerts } = vi.hoisted(() => ({
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         select: vi.fn(),
-        selectChar: vi.fn(),
         confirm: vi.fn(),
         moduleSelect: vi.fn(),
         addCharacter: vi.fn(),
@@ -34,7 +33,6 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertSelect: alerts.select,
-        alertSelectChar: alerts.selectChar,
         alertConfirm: alerts.confirm,
         alertModuleSelect: alerts.moduleSelect,
         alertAddCharacter: alerts.addCharacter,
@@ -65,6 +63,15 @@ const settleMicrotasks = async () => {
     }
 };
 
+/** Deletes a chat for good from this tab, as the trash view does: the trash route, then its delete. */
+async function deleteForever(ref: { chaId: string; chatId: string }) {
+    const chat = await import("./storage/chatStore.svelte");
+    const trash = await import("./checkpoints/chatTrash");
+    expect(await trash.trashChat(ref, chat.chatTrashRevision(ref))).toBe(true);
+    expect(await trash.deleteChatForever(ref, chat.chatTrashRevision(ref))).toBe(true);
+    expect(chat.findChat(ref)).toBeUndefined();
+}
+
 async function boot() {
     vi.resetModules();
     const booted = await bootMutations((fake) => {
@@ -82,12 +89,11 @@ async function boot() {
         downloads.push({ name, data: typeof data === "string" ? data : Buffer.from(data).toString("utf-8") });
     }) as any);
     const characters = await import("./characters");
-    const group = await import("./process/group");
     const modules = await import("./process/modules");
     const cards = await import("./characterCards");
     const d = booted.characterStore.addCharacter({ chaId: "d", name: "D" });
     await booted.sync.flushResources();
-    return { ...booted, util, database, assetQueue, characters, group, modules, cards, downloads, d };
+    return { ...booted, util, database, assetQueue, characters, modules, cards, downloads, d };
 }
 
 beforeAll(async () => {
@@ -156,10 +162,6 @@ describe("selection by id", () => {
         const created = selection.characterId!;
         expect(characterStore.characterList().map((entry) => entry.chaId)).toEqual(["c", "d", created]);
 
-        alerts.addCharacter.mockResolvedValueOnce("createGroup");
-        await characters.addCharacter();
-        expect(characterStore.selectedCharacter()!.type).toBe("group");
-
         // A failed import: the selection stays where it was (it used to select the last in the list).
         characterStore.selectCharacter(null);
         vi.spyOn(cards, "importCharacter").mockResolvedValueOnce(null);
@@ -175,55 +177,6 @@ describe("selection by id", () => {
 });
 
 describe("handlers that await keep their target", () => {
-    it("skips a failed member image, saves the loaded members as the group image, and clears the wait", async () => {
-        const { characters, characterStore, character, database } = await boot();
-        const globalApi = await import("./globalApi.svelte");
-        const { alertStore } = await import("./alert");
-        characterStore.addCharacter({ chaId: "e", name: "E", image: "e.png" });
-        character("c").image = "c.png";
-        character("d").image = "d.png";
-        const groupId = characters.createNewGroup();
-        character(groupId).characters = ["c", "d", "e"];
-        characterStore.selectCharacter(groupId);
-        vi.spyOn(globalApi, "getFileSrc").mockImplementation(async (loc) => `data:image/png;base64,${loc}`);
-        const save = vi.spyOn(database, "saveImage").mockResolvedValue("group.png");
-        const drawImage = vi.fn();
-        vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage } as any);
-        vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,AQID");
-        const images: ControlledImage[] = [];
-        const loading = gate<void>();
-        class ControlledImage {
-            onload: (() => void) | null = null;
-            onerror: (() => void) | null = null;
-            src = "";
-            crossOrigin = "";
-            constructor() {
-                images.push(this);
-                if (images.length === 3) loading.resolve();
-            }
-        }
-        vi.stubGlobal("Image", ControlledImage);
-        let finished = false;
-        const work = characters.makeGroupImage().then(() => {
-            finished = true;
-        });
-        await loading.promise;
-        expect(alertStore.set).toHaveBeenCalledWith(expect.objectContaining({ type: "wait" }));
-        images[0].onload?.();
-        images[1].onerror?.();
-        images[2].onload?.();
-        await vi.advanceTimersByTimeAsync(0);
-
-        expect(finished).toBe(true);
-        await work;
-        expect(drawImage).toHaveBeenCalledTimes(2);
-        expect(drawImage.mock.calls.map(([image]) => image)).toEqual(expect.arrayContaining([images[0], images[2]]));
-        expect(save).toHaveBeenCalledWith(Buffer.from([1, 2, 3]));
-        expect(character(groupId).image).toBe("group.png");
-        expect(alerts.clear).toHaveBeenCalledOnce();
-        expect(alerts.error).not.toHaveBeenCalled();
-    });
-
     it("addCharEmotion writes the character it was opened for, though another is selected after the dialog", async () => {
         const { characters, characterStore, util, assetQueue, character, sync, record } = await boot();
         characterStore.selectCharacter("c");
@@ -261,6 +214,12 @@ describe("handlers that await keep their target", () => {
 
     it("exportChat exports the chat it was opened for, though the chats are reordered and another character selected meanwhile", async () => {
         const { characters, characterStore, chat, downloads } = await boot();
+        // The fake server has no memory routes: this chat holds no records.
+        const { fetch } = server.current;
+        server.current.fetch = async (path: string, init?: RequestInit) =>
+            path.startsWith("/api/memory/structured/")
+                ? Response.json({ revision: "memory", pages: [], events: [], threads: [], runs: [] })
+                : fetch(path, init);
         characterStore.selectCharacter("c");
         chat.selectChat("c", "k");
         const dialog = gate<string>();
@@ -288,54 +247,120 @@ describe("handlers that await keep their target", () => {
         alerts.select.mockReturnValueOnce(dialog.promise);
         const running = characters.exportChat("k");
         await settleMicrotasks();
-        chat.deleteChat({ chaId: "c", chatId: "k" });
+        await deleteForever({ chaId: "c", chatId: "k" });
         dialog.resolve("0");
         await running;
         expect(downloads).toEqual([]);
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("addGroupChar adds the member to the group it was opened for, and stops when the group is deleted meanwhile", async () => {
-        const { characters, characterStore, group, character, sync, record } = await boot();
-        const g = characters.createNewGroup();
-        characterStore.selectCharacter(g);
-        const pick = gate<string>();
-        alerts.selectChar.mockReturnValueOnce(pick.promise);
-        alerts.confirm.mockResolvedValueOnce(false);
-        const running = group.addGroupChar();
-        await settleMicrotasks();
-        characterStore.selectCharacter("c");
-        pick.resolve("d");
-        await running;
-        expect(plain(character(g).characters)).toEqual(["d"]);
-        expect(character(g).characterActive).toHaveLength(1);
-        await sync.flushResources();
-        expect(record("characters", g).characters).toEqual(["d"]);
-
-        // Deleted during the member dialog, then during the first-message confirmation.
-        for (const during of ["pick", "confirm"] as const) {
-            const h = characters.createNewGroup();
-            characterStore.selectCharacter(h);
-            const pickH = gate<string>();
-            const confirmH = gate<boolean>();
-            alerts.selectChar.mockReturnValueOnce(pickH.promise);
-            alerts.confirm.mockReturnValueOnce(confirmH.promise);
-            const runningH = group.addGroupChar();
-            await settleMicrotasks();
-            if (during === "pick") {
-                characterStore.removeCharacter(h);
-            }
-            pickH.resolve("c");
-            await settleMicrotasks();
-            if (during === "confirm") {
-                characterStore.removeCharacter(h);
-            }
-            confirmH.resolve(true);
-            await expect(runningH).resolves.toBeUndefined();
-            expect(character(h)).toBeUndefined();
+    it("exportChat survives cache trimming during its memory read and releases the chat after copying", async () => {
+        const { characters, characterStore, chat, downloads, sync } = await boot();
+        const ref = { chaId: "c", chatId: "k" };
+        characterStore.selectCharacter(ref.chaId);
+        chat.selectChat(ref.chaId, ref.chatId);
+        const ids = Array.from({ length: chat.MAX_LOADED_CHATS + 1 }, (_, i) => `extra-${i}`);
+        for (const id of ids) {
+            chat.createChat(ref.chaId, { id, name: id, note: "", localLore: [], message: [] });
         }
-        expect(plain(character(g).characters)).toEqual(["d"]);
+        await sync.flushResources();
+        const reading = gate<void>();
+        const memory = gate<Response>();
+        const { fetch } = server.current;
+        server.current.fetch = (path: string, init?: RequestInit) => {
+            if (path.startsWith("/api/memory/structured/")) {
+                reading.resolve();
+                return memory.promise;
+            }
+            return fetch(path, init);
+        };
+        alerts.select.mockResolvedValueOnce("0");
+        const exporting = characters.exportChat(ref.chatId);
+        await reading.promise;
+        expect(chat.findChat({ chaId: "c", chatId: "j" })).toBeDefined();
+        // Visit saved chats and run the scheduled idle trims while the memory request waits.
+        for (const id of ids) {
+            chat.selectChat(ref.chaId, id);
+            await chat.ensureChatLoaded({ chaId: ref.chaId, chatId: id });
+            await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(chat.findChat({ chaId: "c", chatId: "j" })).toBeUndefined();
+        memory.resolve(Response.json({ revision: "memory", pages: [], events: [], threads: [], runs: [] }));
+        await exporting;
+
         expect(alerts.error).not.toHaveBeenCalled();
+        expect(downloads).toHaveLength(1);
+        const exported = JSON.parse(downloads[0].data);
+        expect(exported.data.id).toBe(ref.chatId);
+        expect(exported.data.message.map((message: { data: string }) => message.data)).toEqual(["A", "B", "C"]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(chat.findChat(ref)).toBeUndefined();
+        expect(chat.chatEntry(ref)?.id).toBe(ref.chatId);
+    });
+
+    it.each(["2", "3"])("HTML export mode %s keeps names literal and sanitizes translated formatting", async (mode) => {
+        const { characters, characterStore, chat, character, settings, downloads } = await boot();
+        const parser = await import("./parser/parser.svelte");
+        const actualParser = await vi.importActual<typeof parser>("./parser/parser.svelte");
+        vi.mocked(parser.parseMarkdownSafe).mockImplementation(actualParser.parseMarkdownSafe);
+        const { translateHTML } = await import("./translator/translator");
+        vi.mocked(translateHTML).mockResolvedValue(
+            '<p class="sample" style="color:red"><strong>translated</strong> **literal**</p>',
+        );
+        const { fetch } = server.current;
+        server.current.fetch = async (path: string, init?: RequestInit) =>
+            path.startsWith("/api/memory/structured/")
+                ? Response.json({ revision: "memory", pages: [], events: [], threads: [], runs: [] })
+                : fetch(path, init);
+        const write = vi.spyOn(navigator.clipboard, "write").mockResolvedValue();
+        characterStore.selectCharacter("c");
+        chat.selectChat("c", "k");
+        character("c").firstMessage = "**original**";
+        chat.setChatMeta({ chaId: "c", chatId: "k" }, { fmIndex: -1 });
+        chat.replaceChat(
+            { chaId: "c", chatId: "k" },
+            {
+                ...plain(chat.findChat({ chaId: "c", chatId: "k" })),
+                message: [
+                    { role: "char", data: "**original**", chatId: "reply" },
+                    { role: "user", data: "**original**", chatId: "user" },
+                    { role: "char", saying: "d", data: "**original**", chatId: "speaker" },
+                ],
+            },
+        );
+
+        for (const literalNames of [false, true]) {
+            const names = literalNames
+                ? ["A <b>B</b> & C", "P <em>Q</em> & R", "S <i>T</i> & U"]
+                : ["Alice", "Pat", "Sam"];
+            character("c").name = names[0];
+            character("d").name = names[2];
+            settings.personas = [{ id: "export-persona", name: names[1], personaPrompt: "", icon: "" }];
+            chat.setChatMeta({ chaId: "c", chatId: "k" }, { personaId: "export-persona" });
+            alerts.select
+                .mockResolvedValueOnce(mode)
+                .mockResolvedValueOnce(literalNames ? "0" : "1")
+                .mockResolvedValueOnce("0");
+            await characters.exportChat("k");
+            expect(alerts.error).not.toHaveBeenCalled();
+            const html =
+                mode === "2"
+                    ? downloads.at(-1)!.data
+                    : await (await write.mock.calls.at(-1)![0][0].getType("text/html")).text();
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            const headings = [...doc.querySelectorAll(mode === "2" ? "h2" : "td:first-child")];
+            expect.soft(headings.map((heading) => heading.textContent)).toEqual([names[0], ...names]);
+            expect.soft(headings.every((heading) => heading.children.length === 0)).toBe(true);
+            if (mode === "2") expect(doc.title).toBe(`${names[0]} Chat`);
+            const paragraphs = [...doc.querySelectorAll("p")].filter((p) => p.querySelector("strong"));
+            expect(paragraphs.map((p) => p.outerHTML)).toEqual(
+                Array(4).fill(
+                    literalNames
+                        ? "<p><strong>translated</strong> **literal**</p>"
+                        : "<p><strong>original</strong></p>",
+                ),
+            );
+        }
     });
 
     it("applyModule applies to the character selected when its dialog opened, and to none once that one is deleted", async () => {

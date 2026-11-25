@@ -37,6 +37,8 @@ export type RequestHistorySummary = {
     profileId: string | null;
     profileName: string | null;
     provider: string | null;
+    /** The request interception prompts inserted into the request; null when none was recorded. */
+    interceptions: number | null;
     startedAt: number;
     firstByteAt: number | null;
     completedAt: number | null;
@@ -91,6 +93,11 @@ export type RequestHistoryPage = {
  */
 export const REQUEST_HISTORY_SHARE_PATH = "/api/request-history/share";
 
+/** The share route's 500 body carries this `code` beside `error` when an older copy remains. */
+export const REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN = "share-older-copies-remain";
+
+export type RequestHistoryErrorCode = typeof REQUEST_HISTORY_SHARE_OLDER_COPIES_REMAIN;
+
 /** `GET`: the shares the folder holds (`RequestHistoryShareList`), kept even when their rows are gone. */
 export const REQUEST_HISTORY_SHARES_PATH = "/api/request-history/shares";
 
@@ -99,8 +106,8 @@ const UUID_TEXT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 /** A request id the server issues (`randomUUID`). */
 export const SHARE_REQUEST_ID = new RegExp(`^${UUID_TEXT}$`);
 
-/** A job id the server issues: a generation job's `randomUUID`, or a translation run's `translate-<UUID>`. */
-export const SHARE_JOB_ID = new RegExp(`^(?:translate-)?${UUID_TEXT}$`);
+/** A history job id: a generation UUID, a translation run's `translate-<UUID>`, or a memory task's `memory-<UUID>`. */
+export const SHARE_JOB_ID = new RegExp(`^(?:(?:translate|memory)-)?${UUID_TEXT}$`);
 
 /**
  * What a share is of: a job (every request of it), or a request that ran without a job (a tab's own

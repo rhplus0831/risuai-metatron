@@ -6,30 +6,39 @@ import { FakeResourceServer } from "./fakeResourceServer";
 // epoch-mismatch listener that every consumer (adapter, inlays, permissions) shares.
 
 const { server, calls } = vi.hoisted(() => ({
-    server: { current: null as any },
+    server: { current: null as any, waitForAuth: undefined as ((init: RequestInit) => Promise<void>) | undefined },
     calls: [] as { path: string; init: RequestInit }[],
 }));
 
-vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init: RequestInit = {}) => {
-        calls.push({ path, init });
-        return server.current.fetch(path, init);
-    },
-}));
+vi.mock("../serverAuth", async () =>
+    (await import("./serverAuthMock")).createServerAuthMock({
+        authFetch: async (path, init = {}, options) => {
+            if (server.waitForAuth) {
+                await server.waitForAuth(init);
+            }
+            options?.beforeDispatch?.();
+            calls.push({ path, init });
+            return server.current.fetch(path, init);
+        },
+    }),
+);
 
 import * as client from "../resourceClient";
+import * as serverAuth from "../serverAuth";
 
 let fake: FakeResourceServer;
 
 beforeEach(() => {
     fake = new FakeResourceServer();
     server.current = fake;
+    server.waitForAuth = undefined;
     calls.length = 0;
     client.setResourceEpoch("");
     client.setEpochMismatchListener(null);
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
 });
 
@@ -49,6 +58,36 @@ describe("requests", () => {
         await client.deleteResource("inlays", "x", put.revision);
         expect(calls.map(header)).toEqual(["epoch-1", "epoch-1", "epoch-1"]);
         expect(calls.map((call) => call.init.cache)).toEqual(["no-store", "no-store", "no-store"]);
+    });
+
+    it("passes cancellation to every read transport without putting the signal in the JSON body", async () => {
+        fake.set("root", "main", { a: 1 });
+        const { signal } = new AbortController();
+        // The resource-only fake has no revision-list route; keep the other requests on it.
+        const transport = vi.fn((path: string, init?: RequestInit) =>
+            path === "/api/resources/revisions"
+                ? Promise.resolve(Response.json({ epoch: fake.epoch, resources: [], chats: [], chatOrders: [] }))
+                : fake.fetch(path, init),
+        );
+        server.current = { fetch: transport };
+        await client.readKinds(["root"], { signal });
+        await client.readRefs([{ kind: "root", id: "main" }], {
+            chats: [{ characterId: "c", id: "k" }],
+            chatCollections: ["c"],
+            chatSummaryCollections: ["d"],
+            signal,
+        });
+        await client.listRevisions({ signal });
+        await client.getResource("root", "main", { signal });
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal, signal, signal]);
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({
+            refs: [{ kind: "root", id: "main" }],
+            chats: [{ characterId: "c", id: "k" }],
+            chatCollections: ["c"],
+            chatSummaryCollections: ["d"],
+            continue: true,
+        });
+        expect(calls.filter(({ init }) => init.body !== undefined)).toHaveLength(1);
     });
 
     it("encodes kind and id once, so path-shaped and non-ASCII ids reach the server intact", async () => {
@@ -72,6 +111,58 @@ describe("requests", () => {
         });
         fake.failNext = { status: 0, times: 1 };
         await expect(client.getResource("inlays", "nope")).rejects.toMatchObject({ status: 0 });
+    });
+});
+
+describe("snapshot controls", () => {
+    it("sends snapshot methods, encoded ids, and only the supplied fields", async () => {
+        server.current = {
+            fetch: vi.fn().mockImplementation(async () => Response.json({ snapshot: { id: "saved" } })),
+        };
+        const id = "copy/한 글%";
+        await client.takeSnapshot();
+        await client.takeSnapshot("Before import");
+        await client.updateSnapshot(id, { pinned: true });
+        await client.updateSnapshot(id, { label: "Renamed" });
+        await client.updateSnapshot(id, { pinned: false, label: null });
+        await client.deleteSnapshot(id);
+        expect(
+            calls.map(({ path, init }) => ({
+                path,
+                method: init.method,
+                body: init.body === undefined ? undefined : JSON.parse(init.body as string),
+            })),
+        ).toEqual([
+            { path: "/api/backups/snapshot", method: "POST", body: {} },
+            { path: "/api/backups/snapshot", method: "POST", body: { label: "Before import" } },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "PATCH", body: { pinned: true } },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "PATCH", body: { label: "Renamed" } },
+            {
+                path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25",
+                method: "PATCH",
+                body: { pinned: false, label: null },
+            },
+            { path: "/api/backups/copy%2F%ED%95%9C%20%EA%B8%80%25", method: "DELETE", body: undefined },
+        ]);
+        for (const { init } of calls.slice(0, -1))
+            expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+    });
+
+    it("preserves snapshot conflict messages as request errors with status 409", async () => {
+        const message = "Snapshot is pinned; unpin it first";
+        server.current = {
+            fetch: vi.fn().mockImplementation(async () => Response.json({ error: message }, { status: 409 })),
+        };
+        for (const request of [
+            () => client.takeSnapshot("Before import"),
+            () => client.updateSnapshot("saved", { pinned: true }),
+            () => client.deleteSnapshot("saved"),
+        ]) {
+            const error = await request().catch((error: unknown) => error);
+            expect(error).toBeInstanceOf(client.ResourceRequestError);
+            expect(error).not.toBeInstanceOf(client.ResourceConflictError);
+            expect(error).toMatchObject({ status: 409, message });
+        }
     });
 });
 
@@ -107,6 +198,179 @@ describe("conflicts", () => {
         await expect(client.putResource("inlays", "x", { name: "y" }, null)).rejects.toMatchObject({
             conflicts: [{ kind: "inlays", id: "x", revision }],
         });
+    });
+});
+
+function unanswered(signal?: AbortSignal | null): Promise<never> {
+    return new Promise((_, reject) => {
+        signal?.throwIfAborted();
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+}
+
+describe("write dispatch", () => {
+    afterEach(() => client.setMutationAdmission(null));
+
+    it.each(["batch", "credential"] as const)(
+        "notifies just before sending the signed and admitted %s",
+        async (kind) => {
+            vi.useFakeTimers();
+            const events: string[] = [];
+            let admit = false;
+            server.waitForAuth = async () => {
+                await Promise.resolve();
+                events.push("signed");
+            };
+            client.setMutationAdmission(() => {
+                events.push("checked");
+                return admit;
+            });
+            server.current = {
+                fetch: async () => {
+                    events.push("sent");
+                    return Response.json({ results: [], revision: "saved", data: {} });
+                },
+            };
+            const onDispatch = () => {
+                events.push("notified");
+                throw new Error("observer failed");
+            };
+            const write = () =>
+                kind === "batch"
+                    ? client.applyBatchText('{"ops":[]}', { onDispatch })
+                    : client.sendSecretRequest({ kind: "put", path: "openAIKey", value: "test-key" }, "base", {
+                          onDispatch,
+                      });
+            await expect(write()).rejects.toMatchObject({ notSent: true });
+            expect(events).toEqual(["signed", "checked"]);
+            events.length = 0;
+            admit = true;
+            await write();
+            expect(events).toEqual(["signed", "checked", "notified", "sent"]);
+        },
+    );
+});
+
+describe("batch deadlines", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    // Pad valid JSON to exactly 32 KiB on the wire. Its UTF-16 length is shorter.
+    const json = JSON.stringify({ ops: [{ kind: "ui", id: "main", data: { theme: "é".repeat(8192) } }] });
+    const body = json + " ".repeat(32 * 1024 - new TextEncoder().encode(json).byteLength);
+
+    it("expires an unsigned batch on its encoded retry allowance", async () => {
+        vi.useFakeTimers();
+        server.waitForAuth = (init) => unanswered(init.signal);
+        const settled = vi.fn();
+        const onDispatch = vi.fn();
+        void client.applyBatchText(body, { consecutiveAborts: 1, onDispatch }).then(settled, settled);
+
+        await vi.advanceTimersByTimeAsync(91_999);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        const error = settled.mock.lastCall?.[0];
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect(error).toMatchObject({ status: 0, notSent: true });
+        expect(onDispatch).not.toHaveBeenCalled();
+        expect(calls).toEqual([]);
+    });
+
+    it.each([
+        { status: 200, dispatched: true },
+        { status: 503, dispatched: true },
+        { status: 200, dispatched: false },
+        { status: 503, dispatched: false },
+    ])("classifies expiry reading an HTTP $status body with dispatched=$dispatched", async ({ status, dispatched }) => {
+        vi.useFakeTimers();
+        let response: Response;
+        // A response supplied by the auth transport itself has no dispatch notification.
+        vi.spyOn(serverAuth, "authFetch").mockImplementationOnce(async (_path, init, options) => {
+            await new Promise((resolve) => setTimeout(resolve, 20_000));
+            if (dispatched) options?.beforeDispatch?.();
+            await new Promise((resolve) => setTimeout(resolve, 24_000));
+            const stream = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    init.signal?.addEventListener("abort", () => controller.error(init.signal.reason), { once: true });
+                },
+            });
+            response = new Response(stream, { status });
+            return response;
+        });
+        const settled = vi.fn();
+        void client.applyBatchText(body).then(settled, settled);
+        await vi.advanceTimersByTimeAsync(45_999);
+        expect(response.bodyUsed).toBe(true);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        const error = settled.mock.lastCall?.[0];
+        expect(error).toBeInstanceOf(client.ResourceRequestError);
+        expect(error).toMatchObject({ status: 0, notSent: !dispatched });
+    });
+});
+
+describe("credential PUT deadlines", () => {
+    const request = { kind: "put", path: "openAIKey", value: "test-key" } as const;
+
+    function expectDeadline(error: unknown, notSent: boolean) {
+        expect(error).toBeInstanceOf(client.ResourceRequestDeadlineError);
+        expect(error).toMatchObject({ status: 0, notSent });
+    }
+
+    it("allows 45 seconds plus upload time at 32 KiB/s and doubles up to eight times", () => {
+        expect(client.requestAllowanceMs(0, 0)).toBe(45_000);
+        expect(client.requestAllowanceMs(32 * 1024, 0)).toBe(46_000);
+        expect(client.requestAllowanceMs(64 * 1024, 0)).toBe(47_000);
+        expect([0, 1, 2, 3, 4, 10].map((aborts) => client.requestAllowanceMs(32 * 1024, aborts))).toEqual([
+            46_000, 92_000, 184_000, 368_000, 368_000, 368_000,
+        ]);
+    });
+
+    it("counts the UTF-8 JSON bytes while authenticating and reports expiry before dispatch", async () => {
+        vi.useFakeTimers();
+        const baseRevision = "base";
+        const overhead = JSON.stringify({ value: "", baseRevision }).length;
+        const value = "é".repeat((32 * 1024 - overhead) / 2);
+        server.waitForAuth = (init) => unanswered(init.signal);
+        const settled = vi.fn();
+        void client.sendSecretRequest({ ...request, value }, baseRevision).then(settled, settled);
+
+        // The two-byte characters plus the ASCII JSON fields make exactly 32 KiB.
+        await vi.advanceTimersByTimeAsync(45_999);
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expectDeadline(settled.mock.lastCall?.[0], true);
+        expect(calls).toEqual([]);
+    });
+
+    it("reports expiry during the body read as a dispatched PUT", async () => {
+        vi.useFakeTimers();
+        const response = Response.json({ revision: "next", data: {} });
+        const readBody = vi.spyOn(response, "json");
+        server.current = {
+            fetch: async (_path: string, init: RequestInit) => {
+                await new Promise<void>((resolve) => setTimeout(resolve, 44_000));
+                readBody.mockImplementation(() => unanswered(init.signal));
+                return response;
+            },
+        };
+        const settled = vi.fn();
+        void client.sendSecretRequest(request, "base").then(settled, settled);
+
+        await vi.advanceTimersByTimeAsync(44_000);
+        expect(readBody).toHaveBeenCalled();
+        expect(settled).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_020);
+        expectDeadline(settled.mock.lastCall?.[0], false);
+    });
+
+    it("preserves a credential PUT conflict answered before the deadline", async () => {
+        vi.useFakeTimers();
+        server.current = {
+            fetch: async () => Response.json({ error: "Revision conflict", revision: "fresh" }, { status: 409 }),
+        };
+        const error: unknown = await client.sendSecretRequest(request, "stale").catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(client.ResourceConflictError);
+        expect(error).toMatchObject({ conflicts: [{ kind: "llmSecrets", id: "main", revision: "fresh" }] });
     });
 });
 
@@ -159,5 +423,256 @@ describe("epoch replacement", () => {
             path === "/api/backups/snap/restore" ? Response.json({ epoch: "epoch-2" }) : original(path, init);
         expect(await client.restoreBackup("snap")).toBe("epoch-2");
         expect(listener).not.toHaveBeenCalled();
+    });
+});
+
+describe("continued reads", () => {
+    it("accepts a moved row answer on its own without another request", async () => {
+        const request = { characterId: "c", id: "k", revision: "epoch-1:1:2", messageIds: ["b"], meta: [] };
+        const moved = { characterId: "c", id: "k", revision: null, moved: true };
+        server.current = {
+            fetch: vi.fn().mockResolvedValue(Response.json({ epoch: "epoch-1", items: [], chatRows: [moved] })),
+        };
+        expect(await client.readRefs([], { chatRows: [request] })).toEqual({
+            epoch: "epoch-1",
+            items: [],
+            chatRows: [moved],
+        });
+        expect(calls).toHaveLength(1);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({ refs: [], chatRows: [request], continue: true });
+    });
+
+    it("counts moved row answers as progress and merges row reads across mixed continuations", async () => {
+        const requests = ["k", "j"].map((id) => ({
+            characterId: "c",
+            id,
+            revision: "epoch-1:1:2",
+            messageIds: ["b"],
+            meta: ["scriptstate"],
+        }));
+        const moved = { characterId: "c", id: "k", revision: "epoch-1:1:3", moved: true };
+        const rows = {
+            characterId: "c",
+            id: "j",
+            revision: requests[1].revision,
+            rows: [{ id: "b", after: "a", message: { chatId: "b", role: "char", data: "B" } }],
+            metaFields: { set: { scriptstate: { keep: "same", active: "reroll" } }, remove: [] },
+        };
+        const pending = {
+            refs: [],
+            chats: [],
+            chatRows: [requests[1]],
+            chatCollections: [],
+            chatSummaryCollections: ["c"],
+        };
+        const last = { ...pending, chatRows: [] };
+        const summary = { characterId: "c", order: null, chats: [] };
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatRows: [moved], unanswered: pending }),
+                )
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatRows: [rows], unanswered: last }),
+                )
+                .mockResolvedValueOnce(
+                    Response.json({ epoch: "epoch-1", items: [], chatSummaryCollections: [summary] }),
+                ),
+        };
+        const { signal } = new AbortController();
+        expect(await client.readRefs([], { chatRows: requests, chatSummaryCollections: ["c"], signal })).toEqual({
+            epoch: "epoch-1",
+            items: [],
+            chatRows: [moved, rows],
+            chatSummaryCollections: [summary],
+        });
+        expect(calls).toHaveLength(3);
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal, signal]);
+        expect(JSON.parse(calls[0].init.body as string)).toEqual({
+            refs: [],
+            chatRows: requests,
+            chatSummaryCollections: ["c"],
+            continue: true,
+        });
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...pending, continue: true });
+        expect(JSON.parse(calls[2].init.body as string)).toEqual({ ...last, continue: true });
+    });
+
+    const a = { kind: "characters", id: "a" };
+    const b = { kind: "characters", id: "b" };
+    const pending = (refs = [b]) => ({ refs, chats: [], chatCollections: [], chatSummaryCollections: [] });
+    const item = (ref: { kind: string; id: string }) => ({ ...ref, revision: "r1", data: { name: ref.id } });
+    const collection = (characterId: string) => ({ characterId, order: null, chats: [] });
+
+    it("merges two rounds once in request order when a character pulls a later collection forward", async () => {
+        const { signal } = new AbortController();
+        const unanswered = {
+            refs: [b],
+            chats: [{ characterId: "b", id: "k" }],
+            chatCollections: ["b", "c"],
+            chatSummaryCollections: ["c", "b"],
+        };
+        const chat = { characterId: "b", id: "k", revision: null, data: null };
+        let release!: (response: Response) => void;
+        let reached!: () => void;
+        const secondRequest = new Promise<void>((resolve) => {
+            reached = resolve;
+        });
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(
+                    Response.json({
+                        epoch: "epoch-1",
+                        items: [item(a)],
+                        chats: [],
+                        chatCollections: [collection("a")],
+                        chatSummaryCollections: [collection("a")],
+                        unanswered,
+                    }),
+                )
+                .mockImplementationOnce(() => {
+                    reached();
+                    return new Promise<Response>((resolve) => {
+                        release = resolve;
+                    });
+                }),
+        };
+        const returned = vi.fn();
+        const reading = client
+            .readRefs([a, b], {
+                chats: [{ characterId: "b", id: "k" }],
+                chatCollections: ["b", "a", "c"],
+                chatSummaryCollections: ["c", "a", "b"],
+                signal,
+            })
+            .then((result) => {
+                returned(result);
+                return result;
+            });
+        await secondRequest;
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(2);
+        expect(calls.map(({ init }) => init.signal)).toEqual([signal, signal]);
+        expect(JSON.parse(calls[0].init.body as string)).toMatchObject({ continue: true });
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...unanswered, continue: true });
+        release(
+            Response.json({
+                epoch: "epoch-1",
+                items: [item(b)],
+                chats: [chat],
+                chatCollections: [collection("b"), collection("c")],
+                chatSummaryCollections: [collection("c"), collection("b")],
+            }),
+        );
+        expect(await reading).toEqual({
+            epoch: "epoch-1",
+            items: [item(a), item(b)],
+            chats: [chat],
+            chatCollections: [collection("b"), collection("a"), collection("c")],
+            chatSummaryCollections: [collection("c"), collection("a"), collection("b")],
+        });
+        expect(returned).toHaveBeenCalledTimes(1);
+        expect(returned.mock.calls[0][0]).not.toHaveProperty("unanswered");
+    });
+
+    it("continues the fake server's deduplicated plain-ref answers", async () => {
+        fake.readResponseBytes = 1;
+        fake.set(a.kind, a.id, { name: "a" });
+        fake.set(b.kind, b.id, { name: "b" });
+        const result = await client.readRefs([a, a, b, b]);
+        expect(result.items.map(({ id, data }) => ({ id, data }))).toEqual([
+            { id: "a", data: { name: "a" } },
+            { id: "b", data: { name: "b" } },
+        ]);
+        expect(calls).toHaveLength(2);
+        expect(result).not.toHaveProperty("unanswered");
+        expect(JSON.parse(calls[1].init.body as string)).toEqual({ ...pending(), continue: true });
+    });
+
+    it.each([false, true])("rejects a round with no progress even with duplicate input (%s)", async (duplicates) => {
+        const requested = duplicates ? [a, a] : [a];
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ epoch: "epoch-1", items: [], unanswered: pending([a]) }))
+                // A finite fallback makes a missing progress guard fail without hanging the test.
+                .mockResolvedValue(Response.json({ epoch: "epoch-1", items: [item(a)] })),
+        };
+        const returned = vi.fn();
+        await expect(client.readRefs(requested).then(returned)).rejects.toBeInstanceOf(client.ResourceRequestError);
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(1);
+    });
+
+    it.each(["no progress", "HTTP failure"])("discards an earlier round after %s", async (failure) => {
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockResolvedValueOnce(Response.json({ epoch: "epoch-1", items: [item(a)], unanswered: pending() }))
+                .mockResolvedValueOnce(
+                    failure === "no progress"
+                        ? Response.json({ epoch: "epoch-1", items: [], unanswered: pending() })
+                        : Response.json({ error: "failed" }, { status: 500 }),
+                )
+                .mockResolvedValue(Response.json({ epoch: "epoch-1", items: [item(b)] })),
+        };
+        const returned = vi.fn();
+        await expect(client.readRefs([a, b]).then(returned)).rejects.toBeInstanceOf(client.ResourceRequestError);
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(2);
+    });
+
+    it.each([
+        ["epoch-1", 412],
+        ["", 412],
+        ["epoch-1", 200],
+        ["", 200],
+    ] as const)(
+        "discards rounds and calls the epoch listener with loaded epoch '%s' and status %s",
+        async (loaded, status) => {
+            client.setResourceEpoch(loaded);
+            const listener = vi.fn();
+            client.setEpochMismatchListener(listener);
+            server.current = {
+                fetch: vi
+                    .fn()
+                    .mockResolvedValueOnce(Response.json({ epoch: "epoch-1", items: [item(a)], unanswered: pending() }))
+                    .mockResolvedValueOnce(
+                        Response.json(
+                            status === 412
+                                ? { error: "EpochMismatch", epoch: "epoch-2" }
+                                : { epoch: "epoch-2", items: [item(b)] },
+                            { status },
+                        ),
+                    ),
+            };
+            const returned = vi.fn();
+            await expect(client.readRefs([a, b]).then(returned)).rejects.toBeInstanceOf(
+                client.ResourceEpochMismatchError,
+            );
+            expect(returned).not.toHaveBeenCalled();
+            expect(listener).toHaveBeenCalledExactlyOnceWith("epoch-2");
+            expect(calls).toHaveLength(2);
+        },
+    );
+
+    it("stops before the next round when the caller aborts", async () => {
+        const controller = new AbortController();
+        const reason = new Error("caller stopped the read");
+        server.current = {
+            fetch: vi
+                .fn()
+                .mockImplementationOnce(async () => {
+                    controller.abort(reason);
+                    return Response.json({ epoch: "epoch-1", items: [item(a)], unanswered: pending() });
+                })
+                .mockResolvedValue(Response.json({ epoch: "epoch-1", items: [item(b)] })),
+        };
+        const returned = vi.fn();
+        await expect(client.readRefs([a, b], { signal: controller.signal }).then(returned)).rejects.toBe(reason);
+        expect(returned).not.toHaveBeenCalled();
+        expect(calls).toHaveLength(1);
     });
 });

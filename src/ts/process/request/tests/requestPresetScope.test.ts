@@ -21,11 +21,12 @@ const stubs = vi.hoisted(() => ({
 }));
 
 vi.mock("src/ts/storage/serverAuth", () => ({ authFetch: vi.fn(), getNodeServerProxyAuth: async () => "" }));
-vi.mock("src/ts/storage/resourceClient", () => ({
-    readRefs: (...args: unknown[]) => stubs.readRefs(...args),
-    getResourceEpoch: () => "epoch-1",
-    epochMismatch: (epoch: string) => new Error(`replaced ${epoch}`),
-}));
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        readRefs: (...args: unknown[]) => stubs.readRefs(...args),
+        getResourceEpoch: () => "epoch-1",
+    }),
+);
 vi.mock("src/ts/process/request/transport", () => ({ requestServer: stubs.requestServer }));
 vi.mock("src/ts/process/mcp/mcp", () => ({ getTools: (...args: unknown[]) => stubs.getTools(...args) }));
 vi.mock("src/ts/plugins/pluginHooks", () => ({ pluginHooks: stubs.hooks }));
@@ -33,11 +34,11 @@ vi.mock("src/ts/plugins/apiV3/pluginContext", () => ({
     capturePluginContext: () => undefined,
     invokeHook: async (fn: (...args: unknown[]) => unknown, _context: unknown, ...args: unknown[]) => fn(...args),
 }));
-vi.mock("src/ts/parser/parser.svelte", () => ({
-    risuEscape: (text: string) => text,
-    risuUnescape: (text: string) => text,
-    risuChatParser: (text: string) => text,
-}));
+vi.mock("src/ts/parser/parser.svelte", async () => {
+    // The parser re-exports these functions; keep escaping real while stubbing chat parsing.
+    const { risuEscape, risuUnescape } = await import("../../../../../shared/cbs/evaluator.ts");
+    return { risuEscape, risuUnescape, risuChatParser: (text: string) => text };
+});
 vi.mock("src/ts/process/transformers", () => ({ runTransformers: vi.fn() }));
 vi.mock("src/ts/process/templates/chatTemplate", () => ({ applyChatTemplate: vi.fn() }));
 vi.mock("src/ts/process/stringlize", () => ({ unstringlizeChat: vi.fn() }));
@@ -67,7 +68,7 @@ import { trackedRecord } from "src/ts/storage/records.svelte";
 import { selectModelPreset, selectPreset, selection } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
-import { requestChatData, requestChatDataMain } from "../request";
+import { reformater, requestChatData, requestChatDataMain } from "../request";
 import { applyChatTemplate } from "src/ts/process/templates/chatTemplate";
 import { applyAdditionalParameters } from "../shared";
 import { runTransformers } from "src/ts/process/transformers";
@@ -116,12 +117,13 @@ function deleteRecord(kind: "presets" | "modelPresets", id: string) {
 }
 
 const captured = () => ({ chatRef: null, presetId: "pp-1", modelPresetId: "mp-1", personaId: "p1" });
-const argOf = () =>
+const argOf = (extra: Record<string, unknown> = {}) =>
     ({
         formated: [{ role: "user", content: "hi" }],
         bias: {},
         useStreaming: false,
         pluginContext: captured(),
+        ...extra,
     }) as never;
 
 const provider1 = vi.fn(async () => ({ success: true, content: "from prov-1" }));
@@ -152,7 +154,126 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+describe("the tab reformater", () => {
+    it("returns empty and joined all-system prompts with first-system support and still applies start-with-user handling", () => {
+        const profile = { systemContentReplacement: "system: {{slot}}", systemRoleReplacement: "assistant" as const };
+        for (const mustStartWithUser of [false, true]) {
+            const flags: LLMFlags[] = [LLMFlags.hasFirstSystemPrompt];
+            if (mustStartWithUser) flags.push(LLMFlags.mustStartWithUserInput);
+            const user = mustStartWithUser ? [{ role: "user", content: " " }] : [];
+
+            expect(reformater([], flags, profile)).toEqual(user);
+            expect(
+                reformater(
+                    [
+                        { role: "system", content: "Be brief." },
+                        { role: "system", content: "Stay in character." },
+                    ],
+                    flags,
+                    profile,
+                ),
+            ).toEqual([{ role: "system", content: "Be brief.\n\nStay in character." }, ...user]);
+        }
+    });
+});
+
+describe("an escape request in the tab", () => {
+    it("disables both streaming flags at the transport even with forceStreaming and escapes its success", async () => {
+        stubs.getModelInfo.mockReturnValue({
+            id: "custom",
+            format: LLMFormat.OpenAICompatible,
+            flags: [LLMFlags.hasFullSystemPrompt],
+            tokenizer: 0,
+        });
+        stubs.requestServer.mockResolvedValueOnce({ type: "success", result: "{{user}} (hello)" });
+
+        expect(
+            await requestChatData(argOf({ escape: true, forceStreaming: true, useStreaming: true }), "model"),
+        ).toEqual({ type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 \uE9BAhello\uE9BB" });
+        expect(stubs.requestServer).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ forceStreaming: false, useStreaming: false }),
+            "model",
+            null,
+            expect.anything(),
+        );
+    });
+
+    it("buffers a plugin stream to its last snapshot and escapes before applying after-request replacers", async () => {
+        stubs.hooks.providers.set("prov-1", async () => ({
+            success: true,
+            content: new ReadableStream<string>({
+                start(controller) {
+                    controller.enqueue("{{user}} ");
+                    controller.enqueue("(hello)");
+                    controller.close();
+                },
+            }),
+        }));
+        stubs.hooks.replacerafterRequest.add(async (text) => text.replace("\uE9BAhello\uE9BB", "replaced"));
+
+        const passthrough = await requestChatData(argOf(), "model");
+        expect(passthrough.type).toBe("streaming");
+        if (passthrough.type === "streaming") {
+            await passthrough.result.cancel();
+        }
+
+        expect(await requestChatData(argOf({ escape: true }), "model")).toEqual({
+            type: "success",
+            result: "\uE9B8\uE9B8user\uE9B9\uE9B9 replaced",
+            model: "custom",
+        });
+    });
+});
+
 describe("a tab-run request's captured presets", () => {
+    it("passes global interception messages to the plugin provider with a trailing assistant kept last", async () => {
+        trackedRecord<Record<string, unknown>>("providers")!.requestInterceptions = [
+            {
+                id: "instruction",
+                enabled: true,
+                modes: ["model"],
+                position: "start",
+                prompt: {
+                    type: "plain",
+                    type2: "normal",
+                    role: "system",
+                    text: "Global instruction.",
+                    name: "Private label",
+                },
+            },
+            {
+                id: "reminder",
+                enabled: true,
+                modes: ["model"],
+                position: "end",
+                prompt: { type: "plain", type2: "normal", role: "bot", text: "Remember this." },
+            },
+        ];
+
+        await requestChatDataMain(
+            argOf({
+                formated: [
+                    { role: "user", content: "hi" },
+                    { role: "assistant", content: "Prefill" },
+                ],
+            }),
+            "model",
+        );
+
+        expect(provider1).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                prompt_chat: [
+                    { role: "system", content: "Global instruction." },
+                    { role: "user", content: "hi" },
+                    { role: "assistant", content: "Remember this." },
+                    { role: "assistant", content: "Prefill" },
+                ],
+            }),
+            null,
+        );
+        expect(stubs.requestServer).not.toHaveBeenCalled();
+    });
+
     it("runs the provider and the model flags of the captured model preset's main profile, whatever is selected", async () => {
         expect(await requestChatData(argOf(), "model")).toEqual({
             type: "success",
@@ -169,6 +290,37 @@ describe("a tab-run request's captured presets", () => {
         );
         expect(selection.presetId).toBe("pp-2");
         expect(selection.modelPresetId).toBe("mp-2");
+    });
+
+    it("names a throwing V3 provider instead of the captured profile's legacy provider", async () => {
+        const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
+        profile.modelId = "pluginmodel:::prov-v3";
+        stubs.hooks.providers.set("prov-v3", async () => {
+            throw new Error("boom");
+        });
+
+        expect(await requestChatData(argOf(), "model")).toEqual({
+            type: "fail",
+            result: expect.stringMatching(/^Plugin Error from prov-v3: /),
+            model: "pluginmodel:::prov-v3",
+        });
+    });
+
+    it("blocks the legacy custom plugin model when blockPlugins is true and permits it otherwise", async () => {
+        expect(await requestChatDataMain(argOf({ blockPlugins: true }), "model")).toEqual({
+            type: "fail",
+            result: "Plugin calls are blocked by the caller.",
+        });
+        expect(provider1).not.toHaveBeenCalled();
+        expect(provider2).not.toHaveBeenCalled();
+        expect(stubs.requestServer).not.toHaveBeenCalled();
+
+        expect(await requestChatDataMain(argOf(), "model")).toEqual({
+            type: "success",
+            result: "from prov-1",
+            model: "custom",
+        });
+        expect(provider1).toHaveBeenCalledTimes(1);
     });
 
     it("is refused up front, before the tools and the provider, once its captured model preset or preset is gone", async () => {
@@ -300,6 +452,30 @@ describe("a chatless request's captured ids and named profile", () => {
 });
 
 describe("reverse proxy routing", () => {
+    it("blocks a Plugin-format reverse proxy profile when blockPlugins is true and permits it otherwise", async () => {
+        const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
+        profile.modelId = "reverse_proxy";
+        profile.customAPIFormat = LLMFormat.Plugin;
+        profile.customProxyRequestModel = "plugin-proxy-model";
+        stubs.getModelInfo.mockImplementation((id) => ({
+            id,
+            format: LLMFormat.OpenAICompatible,
+            flags: [LLMFlags.hasFullSystemPrompt],
+            tokenizer: 0,
+        }));
+
+        expect(await requestChatData(argOf({ blockPlugins: true }), "model")).toEqual({
+            type: "fail",
+            result: "Plugin calls are blocked by the caller.",
+        });
+        expect(provider1).not.toHaveBeenCalled();
+        expect(provider2).not.toHaveBeenCalled();
+        expect(stubs.requestServer).not.toHaveBeenCalled();
+
+        expect(await requestChatData(argOf(), "model")).toMatchObject({ type: "success", result: "from prov-1" });
+        expect(provider1).toHaveBeenCalledTimes(1);
+    });
+
     it("runs WebLLM and Plugin profiles in the tab and sends every other custom format to the server with the overridden model", async () => {
         const profile = trackedRecord<ModelProfile[]>("modelProfiles")!.find((entry) => entry.id === "prof-1")!;
         profile.modelId = "reverse_proxy";

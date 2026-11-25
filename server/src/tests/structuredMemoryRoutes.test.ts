@@ -1,0 +1,4989 @@
+// @vitest-environment node
+import path from "node:path";
+import type http from "node:http";
+import { serve } from "@hono/node-server";
+import { WebSocket } from "ws";
+import { LLMFormat } from "../../../shared/llm.ts";
+import type { EventFeedFrame } from "../../../shared/events.ts";
+import { Worker } from "node:worker_threads";
+import { DatabaseSync, StatementSync } from "node:sqlite";
+import { ROUTE_TEMPLATES } from "../../../shared/diagnostics.ts";
+import {
+    ADOPTED_WRITER_RUN,
+    isSealedHypaV3Data,
+    memoryAnchorState,
+    memoryChapterMark,
+    reconcileMemoryEvents,
+    writerPaused,
+    sealedHypaV3DataIntact,
+    MEMORY_RUNS_ROUND_ROWS,
+    MEMORY_HEALTH_CHATS_MAX,
+    MEMORY_SECTION_BUDGETS,
+    MEMORY_REVISION_CHATS_MAX,
+    STRUCTURED_MEMORY_LIMITS,
+    normalizeStructuredMemorySettings,
+    type StructuredMemoryFindHit,
+} from "../../../shared/structuredMemory.ts";
+import { defaultPrompts, analysisSlots, patchSlots } from "../prompt/memory/structured/prompts.ts";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { RunningJob } from "../jobs/generationJobs.ts";
+import { loadJobScope, memorySettingsFingerprint, memoryTokenPolicy } from "../jobs/jobScope.ts";
+import type { StructuredMemoryTaskInput } from "../../../shared/jobs.ts";
+import type { Chat, Message } from "../../../shared/database.ts";
+import type { ChatOp } from "../../../shared/chats.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { greetingSourceHash, messageSourceHash } from "../data/memoryStore.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import { createVectorCache } from "../data/vectorCache.ts";
+import { createEmbeddings } from "../prompt/embeddings.ts";
+import type { MemoryHost } from "../prompt/memory/host.ts";
+import { readRecordSet, rebuildChanges, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
+import { reconcileEvents } from "../prompt/memory/structured/reconcile.ts";
+import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
+import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
+import { memoryKinds, projectionHistory, writeMemory } from "./memoryFixtures.ts";
+import { allowListenerOrigin, createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
+
+const { pageLookupFetch } = vi.hoisted(() => ({
+    pageLookupFetch: vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(),
+}));
+vi.mock("../../../src/ts/storage/serverAuth.ts", async () => {
+    // Computed imports keep the browser module graph out of the server's NodeNext type check.
+    const factoryPath = "../../../src/ts/storage/tests/serverAuthMock.ts";
+    return (await import(/* @vite-ignore */ factoryPath)).createServerAuthMock({
+        authFetch: pageLookupFetch,
+    });
+});
+
+const cleanups: (() => void | Promise<void>)[] = [];
+beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+});
+afterEach(async () => {
+    try {
+        for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+const characterId = "character/문";
+const chatId = "chat/one";
+const base = `/api/memory/structured/${encodeURIComponent(characterId)}/${encodeURIComponent(chatId)}`;
+const missingChatBase = `/api/memory/structured/${encodeURIComponent(characterId)}/missing`;
+const chat: Chat = { name: "Story", note: "", localLore: [], message: [] };
+const bytes = (record: unknown) => Buffer.byteLength(JSON.stringify(record), "utf8");
+const page = (id: string, body = "문 😀"): MemoryPage => ({
+    id,
+    type: "location",
+    title: `Place ${id}`,
+    aliases: [],
+    contextMode: "auto",
+    sections: [{ heading: "Facts", body, provenance: [], sources: [], locked: false, updatedAt: 1 }],
+    links: [],
+    retrieval: { keywords: [] },
+    history: [],
+});
+const event = (id: string, summary = "Event body"): MemoryEvent => ({
+    id,
+    title: `Event ${id}`,
+    summary,
+    status: "active",
+    participants: [],
+    storyTime: { text: "Morning" },
+    keyLines: [],
+    stateChanges: [],
+    knowledge: [],
+    relationshipShifts: [],
+    openThreads: { add: [], close: [], transitions: [] },
+    sources: [],
+    writerRun: "run",
+    createdRevision: 1,
+});
+
+function chapter(first: MemoryEvent, ...rest: MemoryEvent[]) {
+    return {
+        id: `chapter-${first.id}`,
+        title: first.title,
+        synopsis: "부두에 도착했다.",
+        events: [first, ...rest].map((e) => ({
+            id: e.id,
+            mark: memoryChapterMark(e.title, e.summary, e.storyTime.date),
+        })),
+    };
+}
+
+async function answer(response: Response, status = 200): Promise<any> {
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(status);
+    return body;
+}
+
+async function server(options: TestServerOptions = {}) {
+    const s = await createResourceTestClient(options);
+    cleanups.push(() => s.close());
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    // The app does not export its store. A real writer on the same file seeds its read routes.
+    const store = createResourceStore({ file: path.join(s.savePath, "data", "resources.sqlite"), kinds });
+    cleanups.push(() => store.close());
+    store.applyChanges({
+        ops: [{ kind: kinds.get("characters")!, id: characterId, baseRevision: null, data: { chaId: characterId } }],
+        chats: [chatId, "other"].map((id) => ({
+            characterId,
+            chatId: id,
+            baseRevision: null,
+            ops: [{ op: "create" as const, chat }],
+        })),
+    });
+    const write = (changes: Parameters<typeof store.memory.write>[3]) =>
+        store.memory.write(
+            characterId,
+            chatId,
+            { epoch: s.epoch, baseRevision: store.memory.readContents(characterId, chatId)!.revision },
+            changes,
+        );
+    return { ...s, store, write };
+}
+
+async function inheritanceServer(branch: boolean) {
+    const s = await server();
+    const messages: Message[] = [
+        { chatId: "early", role: "char", data: "The gate is closed." },
+        { chatId: "late", role: "char", data: "The gate opens." },
+    ];
+    s.store.applyChanges({
+        chats: [
+            { id: "other", message: messages },
+            { id: chatId, message: branch ? messages.slice(0, 1) : messages },
+        ].map(({ id, message }) => ({
+            characterId,
+            chatId: id,
+            baseRevision: s.store.chatRevision(characterId, id),
+            ops: [{ op: "append" as const, anchor: { end: true as const }, messages: message }],
+        })),
+    });
+    const events = messages.map((m, index) => ({
+        ...event(m.chatId!),
+        sources: [{ messageId: m.chatId!, index, hash: messageSourceHash(m) }],
+    }));
+    const changes: PageChanges = new Map();
+    let p: MemoryPage = { ...page("gate"), sections: [] };
+    events.forEach((e, index) => {
+        changeSection(
+            changes,
+            p,
+            { heading: "Facts", body: messages[index].data, kind: "change" },
+            {
+                eventId: e.id,
+                sources: e.sources,
+                at: index + 1,
+                newId: () => `history-${index}`,
+            },
+        );
+        p = changes.get(p.id)!.page;
+    });
+    // The source's event insert revision differs from the destination's first write.
+    writeMemory(s.store, characterId, "other", { pages: [p] });
+    writeMemory(s.store, characterId, "other", {
+        pages: [p],
+        events,
+        threads: [{ id: "promise", title: "Return", who: ["gate"], state: "open", openedBy: "early" }],
+        runs: [run("source-log", "recorded")],
+    });
+    return { ...s, events, p };
+}
+
+function memorySnapshot(s: Awaited<ReturnType<typeof server>>, id: string) {
+    const contents = s.store.memory.readContents(characterId, id)!;
+    return {
+        contents,
+        records: Object.fromEntries(
+            memoryKinds.map((kind) => [
+                kind,
+                contents[kind].map(
+                    ({ id: recordId }) => s.store.memory.readRecord(characterId, id, kind, recordId)!.data,
+                ),
+            ]),
+        ),
+    };
+}
+
+function storeAdoptionChat(s: Awaited<ReturnType<typeof server>>, hypaV3Data: unknown) {
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "replace",
+                        chat: {
+                            ...chat,
+                            hypaV3Data: hypaV3Data as Chat["hypaV3Data"],
+                            message: [
+                                { chatId: "m0", role: "user", data: "Stored question" },
+                                { chatId: "m1", role: "char", data: "Stored answer" },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+}
+
+it("adopts stored summaries without a body or a new run, preserves the chat and its unsealed reads, and repeats without writing", async () => {
+    const s = await server();
+    const hypaV3Data = {
+        summaries: [
+            {
+                text: `At 3.5 miles, we stopped. ${"Detail. ".repeat(150)}`,
+                chatMemos: [null, "m1", "m0", "m1"],
+                isImportant: true,
+            },
+            { text: "Lost evidence.", chatMemos: ["gone", "m1"], isImportant: false },
+        ],
+    };
+    storeAdoptionChat(s, hypaV3Data);
+    const failed = run("failed-before-adoption");
+    const initial = s.write({ runs: [failed] });
+    const stored = s.store.readChatSource(characterId, chatId);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const ui = kinds.get("ui")!;
+    const row = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(row.data as object), memoryAlgorithmType: "structuredMemory" }, row.revision);
+
+    const result = await answer(await s.request(`${base}/adopt`, { method: "POST" }));
+    expect(result).toEqual({ revision: expect.any(String), adopted: 2, stale: 1 });
+    expect(result.revision).not.toBe(initial);
+    const packed = await answer(await s.request(`${base}/package`));
+    const [whole, stale] = packed.events as MemoryEvent[];
+    const sources = stored.data!.message.map((m: Message, index: number) => ({
+        messageId: m.chatId!,
+        hash: messageSourceHash(m),
+        index,
+    }));
+    expect(packed).toEqual({
+        revision: result.revision,
+        pages: [],
+        events: [
+            {
+                ...event(whole.id, hypaV3Data.summaries[0].text),
+                title: "At 3.5 miles, we stopped.",
+                storyTime: { text: "" },
+                sources,
+                writerRun: ADOPTED_WRITER_RUN,
+                createdRevision: 2,
+                pinned: true,
+            },
+            {
+                ...event(stale.id, "Lost evidence."),
+                title: "Lost evidence.",
+                storyTime: { text: "" },
+                sources: [sources[1], { messageId: "gone", hash: null, index: null }],
+                status: "stale",
+                staleReason: "missing",
+                writerRun: ADOPTED_WRITER_RUN,
+                createdRevision: 2,
+            },
+        ],
+        next: null,
+    });
+    expect(whole.id).not.toBe(stale.id);
+    expect(reconcileMemoryEvents(packed.events, stored.data!.message, messageSourceHash)).toEqual(packed.events);
+    expect(memorySnapshot(s, chatId).records.runs).toEqual([failed]);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    const read = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+    const overlay = s.store.readRefs([], { chats: [{ characterId, id: chatId }], memoryProjection: true });
+    for (const data of [read.chats[0].data, overlay.chats[0].data]) {
+        expect(data?.hypaV3Data).toEqual(hypaV3Data);
+        expect(isSealedHypaV3Data(data?.hypaV3Data)).toBe(false);
+    }
+    const adopted = memorySnapshot(s, chatId);
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+        revision: result.revision,
+        adopted: 0,
+        stale: 0,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(adopted);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+});
+
+it("writes nothing when adoption finds an existing page, event, or thread", async () => {
+    for (const existing of [
+        { pages: [page("existing")] },
+        { events: [event("existing")] },
+        { threads: [{ id: "existing", title: "Return", who: [], state: "open" as const }] },
+    ]) {
+        const s = await server();
+        storeAdoptionChat(s, { summaries: [{ text: "Adoptable.", chatMemos: ["m0", "m1"], isImportant: false }] });
+        s.write(existing);
+        const before = memorySnapshot(s, chatId);
+        const stored = s.store.readChatSource(characterId, chatId);
+        expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+            revision: before.contents.revision,
+            adopted: 0,
+            stale: 0,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    }
+});
+
+it("moves no memory revision when the stored chat has no adoptable summary text", async () => {
+    const s = await server();
+    for (const data of [
+        undefined,
+        { summaries: [] },
+        { summaries: [{ text: " \n\t", chatMemos: ["m0"], isImportant: false }] },
+    ]) {
+        storeAdoptionChat(s, data);
+        const before = memorySnapshot(s, chatId);
+        const stored = s.store.readChatSource(characterId, chatId);
+        expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+            revision: before.contents.revision,
+            adopted: 0,
+            stale: 0,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    }
+});
+
+it("refuses adoption for another epoch, a missing chat, or an invalid resource id without writing", async () => {
+    const s = await server();
+    storeAdoptionChat(s, { summaries: [{ text: "Adoptable.", chatMemos: ["m0"], isImportant: false }] });
+    const before = memorySnapshot(s, chatId);
+    const stored = s.store.readChatSource(characterId, chatId);
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }, "another-epoch"), 412)).toEqual({
+        error: "EpochMismatch",
+        epoch: s.epoch,
+    });
+    expect(
+        await answer(
+            await s.request(`${base.replace(encodeURIComponent(chatId), "absent")}/adopt`, { method: "POST" }),
+            404,
+        ),
+    ).toMatchObject({ reason: "chatGone" });
+    for (const id of [characterId, chatId]) {
+        await answer(await s.request(`${base.replace(encodeURIComponent(id), "%00")}/adopt`, { method: "POST" }), 400);
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+});
+
+it("fences adoption behind an admitted job and adopts after the fence falls", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve();
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    storeAdoptionChat(s, { summaries: [{ text: "Adoptable.", chatMemos: ["m0", "m1"], isImportant: false }] });
+    const context = bindChat(s);
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    await entered.promise;
+    const before = memorySnapshot(s, chatId);
+    const stored = s.store.readChatSource(characterId, chatId);
+    try {
+        expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+        revision: expect.any(String),
+        adopted: 1,
+        stale: 0,
+    });
+});
+
+it.each([false, true])(
+    "inherits server records for branch=%s once, with no source runs or later branch body",
+    async (branch) => {
+        const s = await inheritanceServer(branch);
+        const sourceBefore = memorySnapshot(s, "other");
+        const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+        const inherited = await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+        expect(inherited).toEqual({ revision: expect.any(String), inherited: true });
+        expect(inherited.revision).not.toBe(initial);
+        const expectedPage = branch
+            ? {
+                  ...s.p,
+                  sections: [
+                      {
+                          heading: "Facts",
+                          body: "The gate is closed.",
+                          provenance: ["early"],
+                          sources: s.events[0].sources,
+                          locked: false,
+                          updatedAt: 2,
+                      },
+                  ],
+                  history: [s.p.history[0]],
+              }
+            : s.p;
+        expect(await answer(await s.request(`${base}/package`))).toEqual({
+            revision: inherited.revision,
+            pages: [expectedPage],
+            events: (branch ? s.events.slice(0, 1) : s.events).map((e) => ({ ...e, createdRevision: 1 })),
+            next: null,
+        });
+        expect(await answer(await s.request(`${base}/records/threads/promise`))).toEqual({
+            revision: inherited.revision,
+            data: { id: "promise", title: "Return", who: ["gate"], state: "open", openedBy: "early" },
+        });
+        expect(await answer(await s.request(`${base}/runs`))).toEqual({
+            revision: inherited.revision,
+            total: 0,
+            runs: [],
+            next: null,
+        });
+        expect(memorySnapshot(s, "other")).toEqual(sourceBefore);
+        const copied = memorySnapshot(s, chatId);
+        writeMemory(s.store, characterId, "other", { pages: [page("new-source-page")] });
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+            revision: inherited.revision,
+            inherited: false,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(copied);
+    },
+);
+
+it("a branch copies whole chapters with their original marks after event edits and retractions", async () => {
+    const s = await inheritanceServer(true);
+    const [early, late] = s.events;
+    const edited = { ...event("edited"), sources: early.sources };
+    const crossing = { ...event("crossing"), sources: early.sources };
+    writeMemory(s.store, characterId, "other", { events: [edited, crossing] });
+    const whole = chapter(early, edited);
+    const cut = chapter(crossing, late);
+    for (const row of [cut, whole]) s.store.memory.chapters.add(characterId, "other", s.epoch, row);
+    writeMemory(s.store, characterId, "other", {
+        events: [
+            { ...early, status: "retracted" },
+            { ...edited, summary: "A correction written after the chapter." },
+        ],
+    });
+
+    const inherited = await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+    expect(inherited.inherited).toBe(true);
+    const listed = await answer(await s.request(`${base}/chapters`));
+    expect(listed).toEqual({ revision: inherited.revision, chapters: [{ ...whole, id: expect.any(String) }] });
+    expect([whole.id, cut.id]).not.toContain(listed.chapters[0].id);
+});
+
+it("skips populated chats and copies only unclaimed chapters after an empty checkpoint is loaded", async () => {
+    const s = await inheritanceServer(false);
+    const [early, late] = s.events;
+    const original = chapter(early);
+    const later = chapter(late);
+    const chapters = s.store.memory.chapters;
+    const checkpoint = s.store.checkpoints.save(characterId, chatId, "Empty memory", "manual")!;
+    const inherit = async () => answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+    const list = async () => answer(await s.request(`${base}/chapters`));
+
+    chapters.add(characterId, "other", s.epoch, original);
+    const first = await inherit();
+    const listed = await list();
+    expect(listed).toEqual({ revision: first.revision, chapters: [{ ...original, id: expect.any(String) }] });
+    const [kept] = listed.chapters;
+
+    chapters.add(characterId, "other", s.epoch, later);
+    expect(await inherit()).toEqual({ revision: first.revision, inherited: false });
+    expect(await list()).toEqual(listed);
+
+    await answer(
+        await s.json("/api/chat-checkpoints/load", {
+            characterId,
+            chatId,
+            id: checkpoint.id,
+            chatBaseRevision: s.store.chatRevision(characterId, chatId),
+        }),
+    );
+    const extra = { ...event("extra"), sources: early.sources };
+    writeMemory(s.store, characterId, "other", { events: [extra] });
+    chapters.replace(characterId, "other", s.epoch, original.id, chapter(extra, early));
+    const restored = await inherit();
+    expect(restored.inherited).toBe(true);
+    const afterLoad = await list();
+    expect(afterLoad.chapters).toHaveLength(2);
+    expect(afterLoad).toEqual({
+        revision: restored.revision,
+        chapters: expect.arrayContaining([kept, { ...later, id: expect.any(String) }]),
+    });
+});
+
+it("returns the committed inheritance answer when inserting a copied chapter fails", async () => {
+    const s = await inheritanceServer(true);
+    const [early] = s.events;
+    s.store.memory.chapters.add(characterId, "other", s.epoch, chapter(early));
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    cleanups.push(() => db.close());
+    db.exec(
+        "CREATE TRIGGER refuse_copy BEFORE INSERT ON memory_chapters BEGIN SELECT RAISE(ABORT, 'copy refused'); END;",
+    );
+
+    const response = await s.json(`${base}/inherit`, { sourceChatId: "other" });
+    expect(response.status).toBe(200);
+    const copied = s.store.memory.readRecord(characterId, chatId, "events", early.id)!;
+    expect(copied.data).toEqual({ ...early, createdRevision: 1 });
+    expect(await response.json()).toEqual({ revision: copied.revision, inherited: true });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision: copied.revision, chapters: [] });
+});
+
+it.each(memoryKinds)("writes nothing when the destination already holds only a %s row", async (kind) => {
+    const s = await inheritanceServer(true);
+    const records = {
+        pages: [page("existing")],
+        events: [event("existing")],
+        threads: [{ id: "existing", title: "Existing", who: [], state: "paused" as const }],
+        runs: [run("existing")],
+    };
+    s.write({ [kind]: records[kind] });
+    const before = memorySnapshot(s, chatId);
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+        revision: before.contents.revision,
+        inherited: false,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("leaves an empty destination unchanged on an epoch refusal or missing source", async () => {
+    const s = await inheritanceServer(true);
+    const before = memorySnapshot(s, chatId);
+    expect(
+        await answer(
+            await s.request(
+                `${base}/inherit`,
+                {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ sourceChatId: "other" }),
+                },
+                "old-epoch",
+            ),
+            412,
+        ),
+    ).toEqual({ error: "EpochMismatch", epoch: s.epoch });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "missing" }), 404)).toMatchObject({
+        reason: "chatGone",
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("lists only this chat's metadata and reads every record kind exactly as stored", async () => {
+    const s = await server();
+    const p = page("page/one");
+    const e = event("event/one");
+    const thread: MemoryThread = { id: "thread/one", title: "Question", who: [p.id], state: "open" };
+    const run: MemoryRun = {
+        id: "run/one",
+        window: [],
+        model: "writer",
+        inputTokens: 1,
+        outputTokens: 2,
+        durationMs: 3,
+        result: "recorded",
+        input: "Private writer input",
+    };
+    const revision = s.write({ pages: [p], events: [e], threads: [thread], runs: [run] });
+    s.store.memory.write(
+        characterId,
+        "other",
+        { epoch: s.epoch, baseRevision: s.store.memory.readContents(characterId, "other")!.revision },
+        { pages: [page("foreign", "Other chat's body")] },
+    );
+    expect(await answer(await s.request(base))).toEqual({
+        revision,
+        pages: [{ id: p.id, type: p.type, title: p.title, bytes: bytes(p) }],
+        trash: [],
+        events: [{ id: e.id, title: e.title, status: e.status, bytes: bytes(e) }],
+        threads: [{ id: thread.id, title: thread.title, state: thread.state, bytes: bytes(thread) }],
+        runs: [{ id: run.id, result: run.result, bytes: bytes(run) }],
+        adoption: { adoptable: 0, declined: false, resettable: false },
+        rebuild: null,
+        recordedLanguage: null,
+        health: {
+            paused: false,
+            lastRunFailed: false,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        },
+        unsupportedPages: [],
+    });
+    for (const [kind, record] of [
+        ["pages", p],
+        ["events", e],
+        ["threads", thread],
+        ["runs", run],
+    ] as const) {
+        expect(await answer(await s.request(`${base}/records/${kind}/${encodeURIComponent(record.id)}`))).toEqual({
+            revision,
+            data: record,
+        });
+    }
+    expect(await answer(await s.request(`${base}/records/pages/foreign`), 404)).toMatchObject({ reason: "recordGone" });
+});
+
+it("budgets rounds by stored UTF-8 bytes, includes the first oversized record and sends pages before events", async () => {
+    const pages = [page("a", "문😀".repeat(80)), page("b", "문😀".repeat(80)), page("large", "x".repeat(5000))];
+    const budget = bytes(pages[0]) + bytes(pages[1]);
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+    const events = [event("a"), event("b", "stale summary")];
+    events[1].status = "stale";
+    const revision = s.write({
+        pages,
+        events,
+        threads: [{ id: "not-packaged", title: "Thread", who: [], state: "open" }],
+        runs: [
+            {
+                id: "not-packaged",
+                window: [],
+                model: "writer",
+                inputTokens: 0,
+                outputTokens: 0,
+                durationMs: 0,
+                result: "failed",
+            },
+        ],
+    });
+    const round = (cursor?: number) =>
+        s.request(
+            `${base}/package${cursor === undefined ? "" : `?${new URLSearchParams({ cursor: String(cursor), revision })}`}`,
+        );
+    expect(await answer(await round())).toEqual({ revision, pages: pages.slice(0, 2), events: [], next: 2 });
+    expect(await answer(await round(2))).toEqual({ revision, pages: [pages[2]], events: [], next: 3 });
+    expect(await answer(await round(3))).toEqual({ revision, pages: [], events, next: null });
+    expect(await answer(await round(100))).toEqual({ revision, pages: [], events: [], next: null });
+    // One byte below the two-record boundary must leave the second page for the next round.
+    const below = await server({ routeLimits: { memoryPackageRoundBytes: budget - 1 } });
+    const belowRevision = below.write({ pages: pages.slice(0, 2) });
+    expect(await answer(await below.request(`${base}/package`))).toEqual({
+        revision: belowRevision,
+        pages: [pages[0]],
+        events: [],
+        next: 1,
+    });
+});
+
+it("rejects stale revisions, missing chats and records, invalid inputs and another or missing epoch without caching", async () => {
+    const s = await server();
+    const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+    expect(await answer(await s.request(`${base}/package`))).toEqual({
+        revision: initial,
+        pages: [],
+        events: [],
+        next: null,
+    });
+    const revision = s.write({ pages: [page("p")] });
+    expect(
+        await answer(
+            await s.request(`${base}/package?${new URLSearchParams({ cursor: "0", revision: initial })}`),
+            409,
+        ),
+    ).toMatchObject({ revision });
+    const paths = [base, `${base}/records/pages/p`, `${base}/package`];
+    for (const url of paths) {
+        for (const epoch of ["another-epoch", null]) {
+            expect(await answer(await s.request(url, {}, epoch), 412)).toEqual({
+                error: "EpochMismatch",
+                epoch: s.epoch,
+            });
+        }
+        expect(await answer(await s.request(url.replace(encodeURIComponent(chatId), "absent")), 404)).toMatchObject({
+            reason: "chatGone",
+        });
+        for (const id of [characterId, chatId]) {
+            await answer(await s.request(url.replace(encodeURIComponent(id), "%00")), 400);
+        }
+    }
+    expect(await answer(await s.request(`${base}/records/pages/absent`), 404)).toMatchObject({ reason: "recordGone" });
+    await answer(await s.request(`${base}/records/pages/%00`), 400);
+    await answer(await s.request(`${base}/records/unknown/p`), 400);
+    for (const cursor of ["", "-1", "1.5", "NaN", "9007199254740992"]) {
+        await answer(await s.request(`${base}/package?${new URLSearchParams({ cursor })}`), 400);
+    }
+});
+
+it("authenticates and rate-limits all three read routes with no-store on refusals", async () => {
+    // Reading the epoch uses the first of four requests in this frozen window.
+    const s = await server({ routeLimits: { requestsPerMinute: 4 } });
+    s.write({ pages: [page("p")] });
+    const paths = [base, `${base}/records/pages/p`, `${base}/package`];
+    for (const url of paths) {
+        const response = await s.app.request(url, { headers: { "x-resource-epoch": s.epoch } });
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(response.status).toBeLessThan(500);
+        expect(response.status).not.toBe(429);
+    }
+    for (const url of paths) {
+        await answer(await s.request(url), 429);
+    }
+});
+
+it("refuses all structured memory reads with no-store and 503 during shutdown", async () => {
+    const s = await server();
+    s.write({ pages: [page("p")] });
+    s.context.beginShutdown();
+    for (const url of [base, `${base}/records/pages/p`, `${base}/package`]) {
+        await answer(await s.request(url), 503);
+    }
+});
+
+/** What a budget test reads of a `/coverage` or `/runs` round. */
+type RoundIds = { events: { id: string }[]; runs: { id: string }[]; next: number | null };
+
+const run = (id: string, result: MemoryRun["result"] = "failed"): MemoryRun => ({
+    id,
+    result,
+    window: [{ messageId: `message-${id}`, hash: "hash", index: 2 }],
+    model: "writer",
+    inputTokens: 11,
+    outputTokens: 7,
+    durationMs: 123,
+    input: "Private message text",
+    settingsFingerprint: "Private settings",
+    error: "Private error text",
+});
+
+function observeMemoryRows(kinds = ["pages", "events", "threads", "runs"]) {
+    const metadata = Object.fromEntries(kinds.map((kind) => [kind, 0]));
+    const bodies = { ...metadata };
+    const statements = new Map<string, unknown[]>();
+    // Count results at the SQLite I/O boundary, including rows a caller materializes then discards.
+    // Wrapping iteration lazily preserves its early exit and closes the underlying iterator.
+    const spies = (["all", "get", "iterate"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            const value = Reflect.apply(original, this, args);
+            const kind = /\bFROM\s+memory_(\w+)\b/i.exec(this.sourceSQL)?.[1];
+            if (!kind || !Object.hasOwn(metadata, kind)) return value;
+            const sql = this.sourceSQL;
+            const count = (row: Record<string, unknown> | undefined) => {
+                if (!row) return;
+                if (typeof row.id === "string") {
+                    metadata[kind] += 1;
+                    statements.set(sql, args);
+                }
+                if (typeof row.data === "string") bodies[kind] += 1;
+            };
+            if (method === "iterate") {
+                return (function* () {
+                    for (const row of value) {
+                        count(row);
+                        yield row;
+                    }
+                })();
+            }
+            if (method === "all") value.forEach(count);
+            else count(value);
+            return value;
+        });
+    });
+    return { metadata, bodies, statements, restore: () => spies.forEach((spy) => spy.mockRestore()) };
+}
+
+it("admits both chapter command shapes and rejects malformed commands before dispatch", async () => {
+    const admitted: RunningJob["command"][] = [];
+    const s = await server({
+        generationRunner: async (job) => {
+            admitted.push(job.command);
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const post = (fields: Record<string, unknown>) =>
+        s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "memoryChapters", ...fields },
+        });
+
+    for (const fields of [
+        { limit: 0 },
+        { limit: 21 },
+        { limit: 1.5 },
+        { limit: 1, remake: "old" },
+        { remake: "" },
+        { remake: ".." },
+    ]) {
+        expect((await post(fields)).status, JSON.stringify(fields)).toBe(400);
+    }
+    const accepted = [{ limit: 1 }, { limit: 20 }, { remake: "chapter-문" }];
+    for (const fields of accepted) {
+        expect((await post(fields)).status, JSON.stringify(fields)).toBe(200);
+        await s.context.generationJobs.drain();
+    }
+    expect(admitted).toEqual(accepted.map((fields) => ({ type: "memoryChapters", ...fields })));
+});
+
+it("counts eligible chapter units without writing or cleaning up orphans", async () => {
+    const s = await server();
+    bindChat(s);
+    const events = Array.from({ length: 30 }, (_, i) => ({
+        ...event(`e${i}`),
+        sources: [{ messageId: "u", index: 0, hash: messageSourceHash({ role: "user", data: "A gate." }) }],
+    }));
+    const gone = event("gone");
+    const orphan = chapter(gone);
+    s.write({ events: [...events, gone] });
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, orphan);
+    const revision = s.write({ events: [{ ...gone, status: "retracted" }] });
+    const reader = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+    cleanups.push(() => reader.close());
+    const version = reader.prepare("PRAGMA data_version");
+    const cost = async () => {
+        const before = version.get();
+        const result = await answer(await s.request(`${base}/chapters/cost`));
+        expect(version.get()).toEqual(before);
+        return result;
+    };
+    const model = vi.spyOn(s.context.llmRequests, "runInJob");
+    try {
+        expect(await cost()).toEqual({ units: 2 });
+        const existing = chapter(events[0]);
+        s.store.memory.chapters.add(characterId, chatId, s.epoch, existing);
+        expect(await cost()).toEqual({ units: 1 });
+        expect(s.store.memory.chapters.list(characterId, chatId)).toEqual({ revision, chapters: [orphan, existing] });
+        expect(model).not.toHaveBeenCalled();
+    } finally {
+        model.mockRestore();
+    }
+});
+
+it("excludes a unit claimed by a malformed chapter from the chapter cost", async () => {
+    const s = await server();
+    bindChat(s);
+    const events = Array.from({ length: 20 }, (_, i) => ({
+        ...event(`e${i}`),
+        sources: [{ messageId: "u", index: 0, hash: messageSourceHash({ role: "user", data: "A gate." }) }],
+    }));
+    s.write({ events });
+    const existing = chapter(events[0]);
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, existing);
+    const data = JSON.stringify({ ...existing, synopsis: null }, null, 2);
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    cleanups.push(() => db.close());
+    db.prepare("UPDATE memory_chapters SET data = ? WHERE id = ?").run(data, existing.id);
+
+    expect(await answer(await s.request(`${base}/chapters/cost`))).toEqual({ units: 0 });
+    expect(db.prepare("SELECT data FROM memory_chapters WHERE id = ?").get(existing.id)).toEqual({ data });
+});
+
+it("lists chapters with the memory revision and refuses an oversized list before reading any chapter body", async () => {
+    const events = [event("first"), event("second")];
+    const [first, second] = events.map((e) => chapter(e));
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(first) + bytes(second) - 1 } });
+    const revision = s.write({ events });
+    const chapters = s.store.memory.chapters;
+    chapters.add(characterId, chatId, s.epoch, first);
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters: [first] });
+    expect(
+        await answer(await s.request(`${base.replace(encodeURIComponent(chatId), "gone")}/chapters`), 404),
+    ).toMatchObject({
+        reason: "chatGone",
+    });
+    chapters.add(characterId, chatId, s.epoch, second);
+    const observed = observeMemoryRows(["chapters"]);
+    try {
+        expect(await answer(await s.request(`${base}/chapters`), 413)).toMatchObject({ reason: "tooLarge" });
+        expect(observed.bodies.chapters).toBe(0);
+    } finally {
+        observed.restore();
+    }
+});
+
+it("removes only the requested chapters with a current epoch and an open write fence", async () => {
+    const s = await server();
+    const events = [event("first"), event("kept"), event("last")];
+    const revision = s.write({ events });
+    const chapters = events.map((e) => chapter(e));
+    for (const row of chapters) s.store.memory.chapters.add(characterId, chatId, s.epoch, row);
+    const remove = { ids: [chapters[0].id, chapters[2].id] };
+    const route = `${base}/chapters/remove`;
+    expect(await answer(await s.json(route, remove, {}, "old-epoch"), 412)).toMatchObject({ error: "EpochMismatch" });
+    stageRun(s);
+    expect(await answer(await s.json(route, remove), 409)).toMatchObject({ reason: "fenced" });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters });
+    s.store.memory.rebuild.abandon(characterId, chatId, s.epoch);
+    expect(await answer(await s.json(route, remove))).toEqual({ removed: 2 });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters: [chapters[1]] });
+});
+
+it("reads at most one Log page of metadata per round and serves every run newest first exactly once", async () => {
+    const s = await server();
+    const runs = Array.from({ length: MEMORY_RUNS_ROUND_ROWS * 4 + 3 }, (_, i) => run(`run-${i}`, "recorded"));
+    // Another chat consumes seq values, so a positional continuation cannot accidentally work.
+    writeMemory(s.store, characterId, "other", { runs: [run("foreign-a"), run("foreign-b")] });
+    const revision = s.write({ runs, events: runs.map(({ id }) => event(id)) });
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+    cleanups.push(() => db.close());
+    const seqs = new Map(
+        (db.prepare("SELECT id, seq FROM memory_runs").all() as { id: string; seq: number }[]).map(({ id, seq }) => [
+            id,
+            seq,
+        ]),
+    );
+    const newest = [...runs].reverse().map(({ input, settingsFingerprint, ...logged }) => logged);
+    const served: string[] = [];
+    let cursor = 0;
+    let materialized = 0;
+    for (let offset = 0; offset < newest.length; offset += MEMORY_RUNS_ROUND_ROWS) {
+        const observed = observeMemoryRows();
+        try {
+            const round = await answer(
+                await s.request(`${base}/runs?${new URLSearchParams({ cursor: String(cursor), revision })}`),
+            );
+            const expected = newest.slice(offset, offset + MEMORY_RUNS_ROUND_ROWS);
+            const older = newest[offset + expected.length];
+            const next = older ? seqs.get(older.id)! : null;
+            expect(round).toEqual({ revision, total: runs.length, runs: expected, next });
+            expect(observed.metadata).toEqual({ pages: 0, events: 0, threads: 0, runs: expect.any(Number) });
+            expect(observed.metadata.runs).toBeGreaterThanOrEqual(expected.length);
+            expect(observed.metadata.runs).toBeLessThanOrEqual(expected.length + (older ? 1 : 0));
+            expect(observed.bodies).toEqual({ pages: 0, events: 0, threads: 0, runs: expected.length });
+            materialized += observed.metadata.runs;
+            served.push(...round.runs.map(({ id }: { id: string }) => id));
+            cursor = next ?? 0;
+        } finally {
+            observed.restore();
+        }
+    }
+    expect(served).toEqual(newest.map(({ id }) => id));
+    expect(materialized).toBeLessThanOrEqual(runs.length + Math.ceil(runs.length / MEMORY_RUNS_ROUND_ROWS) - 1);
+});
+
+it.each(["runs", "threads"] as const)(
+    "reads %s in inclusive seq byte rounds using the open-time chat index without sorting",
+    async (kind) => {
+        const ordered = ["a", "b", "c", "d", "e"].map((id) =>
+            kind === "runs"
+                ? { ...run(id), input: "문😀".repeat(id === "c" ? 1000 : 20) }
+                : ({ id, title: "문😀".repeat(id === "c" ? 1000 : 20), who: [], state: "open" } as MemoryThread),
+        );
+        const budget = bytes(ordered[0]) + bytes(ordered[1]);
+        const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+        writeMemory(s.store, characterId, "other", {
+            runs: [run("foreign")],
+            threads: [{ id: "foreign", title: "Other chat", who: [], state: "open" }],
+        });
+        const stored = kind === "runs" ? [...ordered].reverse() : ordered;
+        const revision = s.write(
+            kind === "runs" ? { runs: stored as MemoryRun[] } : { threads: stored as MemoryThread[] },
+        );
+        const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+        cleanups.push(() => db.close());
+        const seqs = new Map(
+            (db.prepare(`SELECT id, seq FROM memory_${kind}`).all() as { id: string; seq: number }[]).map(
+                ({ id, seq }) => [id, seq],
+            ),
+        );
+        const expectedRounds = [ordered.slice(0, 2), ordered.slice(2, 3), ordered.slice(3)];
+        const pageStatements = new Map<string, unknown[]>();
+        const served: string[] = [];
+        let offset = 0;
+        let cursor = 0;
+        for (const records of expectedRounds) {
+            const observed = observeMemoryRows();
+            try {
+                const round = await answer(
+                    await s.request(`${base}/${kind}?${new URLSearchParams({ cursor: String(cursor), revision })}`),
+                );
+                offset += records.length;
+                const next = offset < ordered.length ? seqs.get(ordered[offset].id)! : null;
+                const expected =
+                    kind === "runs"
+                        ? (records as MemoryRun[]).map(({ input, settingsFingerprint, ...logged }) => logged)
+                        : records;
+                expect(round).toEqual({
+                    revision,
+                    [kind]: expected,
+                    ...(kind === "runs" ? { total: ordered.length } : {}),
+                    next,
+                });
+                expect(observed.metadata).toEqual({
+                    pages: 0,
+                    events: 0,
+                    threads: 0,
+                    runs: 0,
+                    [kind]: expect.any(Number),
+                });
+                expect(observed.metadata[kind]).toBeGreaterThanOrEqual(records.length);
+                expect(observed.metadata[kind]).toBeLessThanOrEqual(records.length + (next === null ? 0 : 1));
+                expect(observed.bodies).toEqual({ pages: 0, events: 0, threads: 0, runs: 0, [kind]: records.length });
+                for (const [sql, args] of observed.statements) pageStatements.set(sql, args);
+                served.push(...round[kind].map(({ id }: { id: string }) => id));
+                cursor = next ?? 0;
+            } finally {
+                observed.restore();
+            }
+        }
+        expect(served).toEqual(["a", "b", "c", "d", "e"]);
+        expect(pageStatements.size).toBeGreaterThan(0);
+        // Explain the SQL and bindings actually used by the route, on the file opened by the app.
+        for (const [sql, args] of pageStatements) {
+            const statement = db.prepare(`EXPLAIN QUERY PLAN ${sql}`);
+            const details = (Reflect.apply(statement.all, statement, args) as { detail: string }[])
+                .map(({ detail }) => detail)
+                .join("\n");
+            expect(details).not.toContain("USE TEMP B-TREE");
+            expect(details).toMatch(new RegExp(`USING (?:COVERING )?INDEX memory_${kind}_chat_seq\\b`));
+        }
+    },
+);
+
+it("serves coverage facts in storage order without reading recorded runs or disclosing bodies", async () => {
+    const s = await server();
+    const active = { ...event("z"), sources: [{ messageId: "m1", hash: "h", index: 0 }] };
+    const stale = {
+        ...event("a"),
+        status: "stale" as const,
+        staleReason: "changed" as const,
+        suppressed: true,
+        sources: active.sources,
+    };
+    const failed = {
+        ...run("z"),
+        receipt: {
+            state: "failed" as const,
+            reason: "requestFailed",
+            pages: [],
+            refused: [],
+            unverified: [],
+            warnings: [],
+        },
+    };
+    const skipped = {
+        ...run("a", "skipped"),
+        reason: "writerPaused",
+        receipt: { ...failed.receipt, reason: "receiptFallback" },
+    };
+    const revision = s.write({
+        events: [active, stale],
+        runs: [run("recorded", "recorded"), failed, skipped, run("pending", "pending")],
+    });
+    // Poison a body the route must never read. The contents remain readable on the real database.
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    try {
+        db.prepare("UPDATE memory_runs SET data = ? WHERE id = ?").run("invalid JSON", "recorded");
+        expect(await answer(await s.request(`${base}/coverage`))).toEqual({
+            revision,
+            events: [
+                {
+                    id: "z",
+                    title: "Event z",
+                    status: "active",
+                    messageIds: ["m1"],
+                    sourceIndex: 0,
+                    sources: active.sources,
+                },
+                {
+                    id: "a",
+                    title: "Event a",
+                    status: "stale",
+                    staleReason: "changed",
+                    suppressed: true,
+                    messageIds: ["m1"],
+                    sourceIndex: 0,
+                    sources: active.sources,
+                },
+            ],
+            runs: [
+                { id: "z", result: "failed", reason: "requestFailed", messageIds: ["message-z"] },
+                { id: "a", result: "skipped", reason: "writerPaused", messageIds: ["message-a"] },
+                { id: "pending", result: "pending", messageIds: ["message-pending"] },
+            ],
+            next: null,
+        });
+    } finally {
+        db.close();
+    }
+});
+
+it("serves stored-byte story rounds including retracted events and grades when stored", async () => {
+    const oversized = {
+        ...event("z", "Mira reached the gate."),
+        storyTime: { text: "Dawn", ordinal: 2 },
+        participants: ["mira", "captain"],
+        grade: 0,
+        keyLines: [{ speaker: "Mira", text: "문😀".repeat(500) }],
+    };
+    const retracted = { ...event("a", "The rumor was withdrawn."), status: "retracted" as const };
+    const last = event("m", "The gate opened.");
+    // The first stored record exceeds the budget, but all three story projections fit in it.
+    const budget = bytes(retracted) + bytes(last);
+    expect(bytes(oversized)).toBeGreaterThan(budget);
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+    const revision = s.write({ events: [oversized, retracted, last] });
+    const expected = [
+        {
+            id: "z",
+            summary: "Mira reached the gate.",
+            storyTime: { text: "Dawn", ordinal: 2 },
+            participants: ["mira", "captain"],
+            grade: 0,
+        },
+        { id: "a", summary: "The rumor was withdrawn.", storyTime: { text: "Morning" }, participants: [] },
+        { id: "m", summary: "The gate opened.", storyTime: { text: "Morning" }, participants: [] },
+    ];
+    expect(bytes(expected)).toBeLessThan(budget);
+
+    const first = await answer(await s.request(`${base}/story`));
+    expect(first).toEqual({ revision, events: [expected[0]], next: 1 });
+    const second = await answer(
+        await s.request(`${base}/story?${new URLSearchParams({ cursor: String(first.next), revision })}`),
+    );
+    expect(second).toEqual({ revision, events: expected.slice(1), next: null });
+    const joined = [...first.events, ...second.events];
+    expect(joined).toEqual(expected);
+    const [graded, ...ungraded] = joined;
+    expect(Object.keys(graded).sort()).toEqual(["grade", "id", "participants", "storyTime", "summary"]);
+    for (const record of ungraded) {
+        expect(Object.keys(record).sort()).toEqual(["id", "participants", "storyTime", "summary"]);
+    }
+});
+
+it("finds case-insensitive literal text in live pages and unretracted events", async () => {
+    const s = await server();
+    const titled = { ...page("title"), title: "North GATE.* entrance", aliases: ["North GATE.* entrance"] };
+    const aliased = { ...page("alias"), aliases: ["Old gate.* road", "Another GATE.* name"] };
+    const firstMatch = "First GaTe.* crossing";
+    const longBody = `${"x".repeat(180)}${firstMatch}${"y".repeat(180)}Last GaTe.* crossing`;
+    const sectioned = page("sections", longBody);
+    sectioned.sections.push({ ...sectioned.sections[0], heading: "Access", body: "Use the gAtE.* at dawn." });
+    const revision = s.write({
+        pages: [titled, aliased, sectioned, { ...titled, id: "trash", trashedAt: 1 }, page("miss", "gatehouse")],
+        events: [
+            {
+                ...event("summary", "The GATE.* opened."),
+                keyLines: [{ speaker: "Mira", text: "The GATE.* opened." }],
+                sources: [{ messageId: "m3", hash: "h", index: 3 }],
+            },
+            { ...event("key-line"), keyLines: [{ speaker: "Mira", text: "Meet at the gaTE.*." }] },
+            { ...event("event-title"), title: "Beyond the GaTe.*" },
+            { ...event("retracted", "GATE.*"), status: "retracted" },
+            event("miss", "gatehouse"),
+        ],
+    });
+
+    const result = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "gAtE.*" })}`));
+    expect(result).toEqual({
+        revision,
+        hits: [
+            {
+                kind: "page",
+                id: "title",
+                title: "North GATE.* entrance",
+                heading: null,
+                excerpt: "North GATE.* entrance",
+            },
+            { kind: "page", id: "alias", title: "Place alias", heading: null, excerpt: "Old gate.* road" },
+            { kind: "page", id: "sections", title: "Place sections", heading: "Facts", excerpt: expect.any(String) },
+            {
+                kind: "page",
+                id: "sections",
+                title: "Place sections",
+                heading: "Access",
+                excerpt: "Use the gAtE.* at dawn.",
+            },
+            { kind: "event", id: "summary", title: "Event summary", sourceIndex: 3, excerpt: "The GATE.* opened." },
+            {
+                kind: "event",
+                id: "key-line",
+                title: "Event key-line",
+                sourceIndex: null,
+                excerpt: "Meet at the gaTE.*.",
+            },
+            {
+                kind: "event",
+                id: "event-title",
+                title: "Beyond the GaTe.*",
+                sourceIndex: null,
+                excerpt: "Beyond the GaTe.*",
+            },
+        ],
+        next: null,
+    });
+    const excerpt: string = result.hits[2].excerpt;
+    expect(excerpt.length).toBeLessThanOrEqual(160);
+    expect(longBody).toContain(excerpt);
+    expect(excerpt).toContain("GaTe.*");
+    expect(longBody.indexOf(excerpt)).toBeLessThanOrEqual(longBody.indexOf(firstMatch) + "First ".length);
+    expect(excerpt).not.toContain("Last");
+});
+
+it("finds each event and thread naming a page, with what the event says of that page", async () => {
+    const s = await server();
+    const pageId = "gate/문";
+    const stateChange = { pageId, section: "Facts", before: "closed", after: "open", quote: "Open" };
+    const knowledge = { pageId, fact: "Open", stance: "knows" as const, quote: "Open" };
+    const relationship = { from: pageId, to: "other", direction: "closer", note: "Trust" };
+    const thread = (id: string, who: string[]): MemoryThread => ({ id, title: `Thread ${id}`, who, state: "progress" });
+    const { factChars, labelChars } = STRUCTURED_MEMORY_LIMITS;
+    const revision = s.write({
+        pages: [page(pageId)],
+        events: [
+            {
+                ...event("participant"),
+                participants: [pageId],
+                grade: 7,
+                sources: [
+                    { messageId: "m9", hash: "h", index: 9 },
+                    { messageId: "lost", hash: null, index: null },
+                    { messageId: "m2", hash: "h", index: 2 },
+                ],
+            },
+            { ...event("state"), stateChanges: [stateChange] },
+            {
+                ...event("knowledge"),
+                storyTime: { text: "t".repeat(labelChars + 5) },
+                knowledge: [
+                    { ...knowledge, fact: "f".repeat(factChars + 5), stance: "believes" },
+                    { ...knowledge, pageId: "other", fact: "Someone else's" },
+                ],
+            },
+            { ...event("knower"), knowledge: [{ ...knowledge, pageId: "other", knowers: [pageId] }] },
+            { ...event("from"), relationshipShifts: [relationship, { ...relationship, from: "other", to: "third" }] },
+            { ...event("to"), relationshipShifts: [{ ...relationship, from: "other", to: pageId }] },
+            { ...event("multiple"), participants: [pageId], stateChanges: [stateChange], knowledge: [knowledge] },
+            { ...event("retracted"), status: "retracted", participants: [pageId] },
+            { ...event("text-only", pageId), title: pageId, participants: [`${pageId}-other`] },
+        ],
+        threads: [thread("named", ["other", pageId]), thread("elsewhere", ["other"])],
+    });
+    const mention = { grade: null, storyTime: "Morning", knowledge: [], shifts: [] };
+    const known = { fact: "Open", stance: "knows", secret: false };
+    const mentions: Record<string, object> = {
+        participant: { ...mention, grade: 7 },
+        state: mention,
+        knowledge: {
+            ...mention,
+            storyTime: "t".repeat(labelChars),
+            knowledge: [{ fact: "f".repeat(factChars), stance: "believes", secret: false }],
+        },
+        knower: { ...mention, knowledge: [{ ...known, secret: true }] },
+        from: { ...mention, shifts: [relationship] },
+        to: { ...mention, shifts: [{ ...relationship, from: "other", to: pageId }] },
+        multiple: { ...mention, knowledge: [known] },
+    };
+    expect(await answer(await s.request(`${base}/find?${new URLSearchParams({ page: pageId })}`))).toEqual({
+        revision,
+        hits: [
+            ...Object.entries(mentions).map(([id, said]) => ({
+                kind: "event",
+                id,
+                title: `Event ${id}`,
+                sourceIndex: null,
+                excerpt: "",
+                mention: said,
+            })),
+            { kind: "thread", id: "named", title: "Thread named", state: "progress" },
+        ],
+        next: null,
+    });
+    // A text search walks no thread and carries no mention.
+    const text = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "Thread named" })}`));
+    expect(text.hits).toEqual([]);
+    const body = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "Event body" })}`));
+    expect(body.hits).toHaveLength(7);
+    expect(body.hits.every((hit: object) => !("mention" in hit))).toBe(true);
+});
+
+it("keeps the newest page relationships after prefix deletion before applying the five and 200 event limits", async () => {
+    const tabPath = "../../../src/ts/process/structuredMemory.svelte.ts";
+    const epochPath = "../../../src/ts/storage/resourceClient.ts";
+    const { findStructuredMemory } = (await import(/* @vite-ignore */ tabPath)) as {
+        findStructuredMemory: (
+            ref: { chaId: string; chatId: string },
+            query: { page: string },
+        ) => Promise<{ outcome: string; value: { hits: StructuredMemoryFindHit[]; more: boolean } }>;
+    };
+    const { setResourceEpoch } = (await import(/* @vite-ignore */ epochPath)) as {
+        setResourceEpoch: (epoch: string) => void;
+    };
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: 40_000 } });
+    const prefix: Message[] = Array.from({ length: 201 }, (_, index) => ({
+        chatId: `prefix-${index}`,
+        role: "user",
+        data: "Earlier history",
+    }));
+    const old: Message = { chatId: "old", role: "char", data: "They are enemies." };
+    const change = (ops: ChatOp[]) =>
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId,
+                    baseRevision: s.store.chatRevision(characterId, chatId),
+                    ops,
+                },
+            ],
+        });
+    change([{ op: "append", anchor: { end: true }, messages: [...prefix, old] }]);
+    s.write({
+        pages: [page("p")],
+        events: [
+            {
+                ...event("old"),
+                participants: ["p"],
+                sources: [{ messageId: "old", hash: messageSourceHash(old), index: prefix.length }],
+                relationshipShifts: [{ from: "p", to: "other", direction: "hostile", note: "Old hostility" }],
+            },
+            {
+                ...event("missing"),
+                participants: ["p"],
+                sources: [{ messageId: "deleted", hash: "old-hash", index: 10_000 }],
+            },
+        ],
+    });
+    change([{ op: "remove", ids: prefix.map(({ chatId }) => chatId!), retract: true }]);
+    const newer: Message[] = Array.from({ length: 200 }, (_, index) => ({
+        chatId: `new-${index}`,
+        role: "char",
+        data: `Friendship ${index}`,
+    }));
+    change([{ op: "append", anchor: { end: true }, messages: newer }]);
+    s.write({
+        events: newer.map((message, index) => ({
+            ...event(message.chatId!),
+            participants: ["p"],
+            sources: [{ messageId: message.chatId!, hash: messageSourceHash(message), index: index + 1 }],
+            relationshipShifts: [{ from: "p", to: "other", direction: "friendly", note: "New friendship" }],
+        })),
+    });
+    const before = memorySnapshot(s, chatId);
+    const roundHits: { id: string; sourceIndex: number | null }[] = [];
+    pageLookupFetch.mockImplementation(async (url) => {
+        const response = await s.request(url);
+        roundHits.push(...(await answer(response.clone())).hits);
+        return response;
+    });
+    setResourceEpoch(s.epoch);
+    try {
+        const result = await findStructuredMemory({ chaId: characterId, chatId }, { page: "p" });
+        if (result.outcome !== "ok") throw new Error(JSON.stringify(result));
+        expect(roundHits.find(({ id }) => id === "old")!.sourceIndex).toBe(0);
+        expect(roundHits.find(({ id }) => id === "missing")!.sourceIndex).toBeNull();
+        expect(pageLookupFetch.mock.calls.length).toBeGreaterThan(1);
+        expect(result.value.more).toBe(true);
+        expect(result.value.hits.map(({ id }) => id)).toEqual(newer.map(({ chatId }) => chatId).reverse());
+        expect(result.value.hits.slice(0, 5).map(({ id }) => id)).toEqual([
+            "new-199",
+            "new-198",
+            "new-197",
+            "new-196",
+            "new-195",
+        ]);
+        const newest = result.value.hits[0];
+        expect(newest.kind === "event" && newest.mention?.shifts[0].direction).toBe("friendly");
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    } finally {
+        setResourceEpoch("");
+        pageLookupFetch.mockReset();
+    }
+});
+
+it.each([
+    ["q with page", { q: "gate", page: "p" }],
+    ["neither q nor page", {}],
+    ["blank q", { q: " \t\n " }],
+    ["q over 100 characters", { q: "x".repeat(101) }],
+] satisfies [string, Record<string, string>][])("rejects find with %s", async (_name, query) => {
+    const s = await server();
+    await answer(await s.request(`${base}/find?${new URLSearchParams(query)}`), 400);
+});
+
+it("joins find rounds at one revision, charging stored bytes even for nonmatching records", async () => {
+    const oversized = page("nonmatching", "문😀".repeat(500));
+    const matchingPage = page("matching", "A beacon shines.");
+    const matchingEvent = event("matching", "The beacon faded.");
+    const budget = bytes(matchingPage) + bytes(matchingEvent);
+    expect(bytes(oversized)).toBeGreaterThan(budget);
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+    const revision = s.write({ pages: [oversized, matchingPage], events: [matchingEvent] });
+    const expected = [
+        { kind: "page", id: "matching", title: "Place matching", heading: "Facts", excerpt: "A beacon shines." },
+        { kind: "event", id: "matching", title: "Event matching", sourceIndex: null, excerpt: "The beacon faded." },
+    ];
+    expect(bytes(expected)).toBeLessThan(budget);
+    const first = await answer(await s.request(`${base}/find?q=beacon`));
+    expect(first).toEqual({ revision, hits: [], next: 1 });
+    const continuation = `${base}/find?${new URLSearchParams({ q: "beacon", cursor: String(first.next), revision })}`;
+    const second = await answer(await s.request(continuation));
+    expect(second).toEqual({ revision, hits: expected, next: null });
+    expect([...first.hits, ...second.hits]).toEqual(expected);
+
+    const changed = s.write({ events: [event("new", "A new beacon.")] });
+    expect(await answer(await s.request(continuation), 409)).toEqual({ error: expect.any(String), revision: changed });
+});
+
+it("returns an empty story round for a cursor past the end", async () => {
+    const s = await server();
+    const revision = s.write({ events: [event("only")] });
+    expect(await answer(await s.request(`${base}/story?${new URLSearchParams({ cursor: "99", revision })}`))).toEqual({
+        revision,
+        events: [],
+        next: null,
+    });
+});
+
+it("refuses a story read for a missing chat or a stale revision", async () => {
+    const s = await server();
+    const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+    const revision = s.write({ events: [event("new")] });
+    expect(
+        await answer(await s.request(`${base.replace(encodeURIComponent(chatId), "gone")}/story`), 404),
+    ).toMatchObject({ reason: "chatGone" });
+    expect(
+        await answer(await s.request(`${base}/story?${new URLSearchParams({ cursor: "0", revision: initial })}`), 409),
+    ).toEqual({ error: expect.any(String), revision });
+});
+
+it.each(["coverage", "runs"])(
+    "budgets %s before reading bodies and serves the first oversized record",
+    async (route) => {
+        const s = await server({ routeLimits: { memoryPackageRoundBytes: 1 } });
+        const revision = s.write({ events: [event("first")], runs: [run("older"), run("newer")] });
+        const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+        try {
+            // This is the next round's body for both routes. Reading ahead would fail the current request.
+            db.prepare("UPDATE memory_runs SET data = ? WHERE id = ?").run("invalid JSON", "older");
+            const first = (await answer(await s.request(`${base}/${route}`))) as RoundIds;
+            expect(first).toMatchObject({ revision, next: 1 });
+            expect(route === "coverage" ? first.events.map(({ id }) => id) : first.runs.map(({ id }) => id)).toEqual([
+                route === "coverage" ? "first" : "newer",
+            ]);
+            db.prepare("UPDATE memory_runs SET data = ? WHERE id = ?").run(JSON.stringify(run("older")), "older");
+            const second = (await answer(
+                await s.request(`${base}/${route}?${new URLSearchParams({ cursor: "1", revision })}`),
+            )) as RoundIds;
+            expect(second.runs.map(({ id }) => id)).toEqual(["older"]);
+            expect(second.next).toBe(route === "coverage" ? 2 : null);
+            if (route === "coverage") {
+                expect(
+                    await answer(await s.request(`${base}/coverage?${new URLSearchParams({ cursor: "2", revision })}`)),
+                ).toMatchObject({ runs: [{ id: "newer" }], next: null });
+            }
+        } finally {
+            db.close();
+        }
+
+        // A projected fact can fit even though its stored UTF-8 body cannot. Charge the latter.
+        const largeEvent = event("first", "문😀".repeat(80));
+        const largeRun = (id: string) => ({ ...run(id), input: "문😀".repeat(80) });
+        const limit = bytes(route === "coverage" ? largeEvent : largeRun("newer")) + bytes(largeRun("older")) - 1;
+        const bounded = await server({ routeLimits: { memoryPackageRoundBytes: limit } });
+        const boundedRevision = bounded.write({ events: [largeEvent], runs: [largeRun("older"), largeRun("newer")] });
+        const boundaryDb = new DatabaseSync(path.join(bounded.savePath, "data", "resources.sqlite"));
+        try {
+            // Same stored byte size, unreadable body: a read before budgeting is observable.
+            boundaryDb
+                .prepare("UPDATE memory_runs SET data = ? WHERE id = ?")
+                .run("x".repeat(bytes(largeRun("older"))), "older");
+            const first = (await answer(await bounded.request(`${base}/${route}`))) as RoundIds;
+            expect(first).toMatchObject({ revision: boundedRevision, next: 1 });
+            expect(route === "coverage" ? first.events.map(({ id }) => id) : first.runs.map(({ id }) => id)).toEqual([
+                route === "coverage" ? "first" : "newer",
+            ]);
+        } finally {
+            boundaryDb.close();
+        }
+    },
+);
+
+it("pages runs newest first with a row cap, total, and no input or settings fingerprint", async () => {
+    const s = await server();
+    const runs = Array.from({ length: MEMORY_RUNS_ROUND_ROWS + 2 }, (_, i) => run(`run-${i}`, "recorded"));
+    const revision = s.write({ runs });
+    const publicRuns = runs.map(({ input, settingsFingerprint, ...logged }) => logged).reverse();
+    const first = await answer(await s.request(`${base}/runs`));
+    expect(first).toEqual({
+        revision,
+        total: runs.length,
+        runs: publicRuns.slice(0, MEMORY_RUNS_ROUND_ROWS),
+        next: expect.any(Number),
+    });
+    expect(
+        await answer(await s.request(`${base}/runs?${new URLSearchParams({ cursor: String(first.next), revision })}`)),
+    ).toEqual({ revision, total: runs.length, runs: publicRuns.slice(MEMORY_RUNS_ROUND_ROWS), next: null });
+});
+
+it.each(["coverage", "runs"])(
+    "refuses invalid cursors, missing chats, stale revisions and epochs on %s",
+    async (route) => {
+        const s = await server();
+        const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+        const revision = s.write({ runs: [run("r")] });
+        for (const cursor of ["", "-1", "1.5", "NaN", "9007199254740992"]) {
+            await answer(await s.request(`${base}/${route}?${new URLSearchParams({ cursor })}`), 400);
+        }
+        expect(
+            await answer(
+                await s.request(`${base}/${route}?${new URLSearchParams({ cursor: "1", revision: initial })}`),
+                409,
+            ),
+        ).toEqual({ error: expect.any(String), revision });
+        expect(
+            await answer(await s.request(`${base.replace(encodeURIComponent(chatId), "gone")}/${route}`), 404),
+        ).toMatchObject({ reason: "chatGone" });
+        expect(await answer(await s.request(`${base}/${route}`, {}, "old-epoch"), 412)).toEqual({
+            error: "EpochMismatch",
+            epoch: s.epoch,
+        });
+    },
+);
+
+it("applies only a closed edit to stored evidence and records the replaced locked body", async () => {
+    const s = await server();
+    const original = page("p", "The gate was closed.");
+    Object.assign(original.sections[0], {
+        provenance: ["opening"],
+        sources: [{ messageId: "m", hash: "kept-hash", index: 3 }],
+        locked: true,
+        unsupported: true,
+        disputed: true,
+    });
+    original.history = [{ id: "prior", heading: "Facts", before: null, kind: "edit", highlighted: false, at: 1 }];
+    let revision = s.write({ pages: [original] });
+    const edited = await answer(
+        await s.json(`${base}/edits`, {
+            revision,
+            edit: {
+                kind: "section",
+                pageId: "p",
+                heading: "Facts",
+                body: "The gate is open.",
+                id: "forged",
+                type: "scene",
+                history: [],
+                provenance: [],
+                sources: [],
+                locked: false,
+                unsupported: false,
+                eventId: "forged",
+                sections: [],
+            },
+            data: { ...original, id: "forged" },
+        }),
+    );
+    expect(edited.kind).toBe("pages");
+    expect(edited.revision).not.toBe(revision);
+    const { disputed: _disputed, ...kept } = original.sections[0];
+    const expected = {
+        ...original,
+        sections: [{ ...kept, body: "The gate is open.", userCorrected: true, updatedAt: Date.now() }],
+        history: [
+            ...original.history,
+            {
+                id: expect.any(String),
+                heading: "Facts",
+                before: {
+                    body: "The gate was closed.",
+                    provenance: ["opening"],
+                    sources: original.sections[0].sources,
+                },
+                kind: "edit",
+                highlighted: false,
+                at: Date.now(),
+            },
+        ],
+    };
+    expect(edited.data).toEqual(expected);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: edited.revision,
+        data: expected,
+    });
+    expect((await answer(await s.request(base))).pages.map((row: MemoryPage) => row.id)).toEqual(["p"]);
+    revision = edited.revision;
+    for (const body of [" \n\t", "x".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars + 1)]) {
+        await answer(
+            await s.json(`${base}/edits`, { revision, edit: { kind: "section", pageId: "p", heading: "Facts", body } }),
+            400,
+        );
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: expected });
+    }
+});
+
+it("persists event corrections and releases without reading poisoned chat data and refuses retracted text edits", async () => {
+    const s = await server();
+    const original: MemoryEvent = {
+        ...event("e"),
+        sources: [{ messageId: "gone", index: 2, hash: "recorded" }],
+        status: "stale",
+        keptState: "accepted sources",
+        rerecord: true,
+        grade: 3,
+    };
+    const retracted: MemoryEvent = { ...event("retired"), status: "retracted" };
+    let revision = s.write({ events: [original, retracted] });
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    try {
+        // A chat-source read must fail, but event text writes need only the stored event.
+        db.prepare("UPDATE chats SET meta = ? WHERE characterId = ? AND id = ?").run(
+            "invalid JSON",
+            characterId,
+            chatId,
+        );
+        expect(() => s.store.readChatSource(characterId, chatId)).toThrow(SyntaxError);
+        const edit = { kind: "eventText", eventId: "e", title: "  Gate closed  ", summary: "\nIt stayed shut.\n" };
+        const corrected = { ...original, title: "Gate closed", summary: "\nIt stayed shut.\n", userCorrected: true };
+        const saved = await answer(await s.json(`${base}/edits`, { revision, edit }));
+        expect(saved).toEqual({ revision: expect.any(String), kind: "events", data: corrected });
+        expect(saved.revision).not.toBe(revision);
+        revision = saved.revision;
+        expect(await answer(await s.request(`${base}/records/events/e`))).toEqual({ revision, data: corrected });
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }))).toEqual(saved);
+
+        const release = { kind: "eventRelease", eventId: "e" };
+        const released = { ...original, title: "Gate closed", summary: "\nIt stayed shut.\n" };
+        const unmarked = await answer(await s.json(`${base}/edits`, { revision, edit: release }));
+        expect(unmarked).toEqual({ revision: expect.any(String), kind: "events", data: released });
+        expect(unmarked.revision).not.toBe(revision);
+        revision = unmarked.revision;
+        expect(await answer(await s.request(`${base}/records/events/e`))).toEqual({ revision, data: released });
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit: release }))).toEqual(unmarked);
+        await answer(await s.json(`${base}/edits`, { revision, edit: { ...edit, eventId: "retired" } }), 400);
+        expect(await answer(await s.request(`${base}/records/events/retired`))).toEqual({ revision, data: retracted });
+    } finally {
+        db.close();
+    }
+});
+
+it("refuses stale event text and release edits including no-ops without moving the revision", async () => {
+    const s = await server();
+    const marked = { ...event("marked"), userCorrected: true as const };
+    const unmarked = event("unmarked");
+    const stale = s.write({ events: [marked, unmarked] });
+    const revision = s.write({ pages: [page("new")] });
+    for (const edit of [
+        { kind: "eventText", eventId: "marked", title: "Changed title", summary: "Changed summary" },
+        { kind: "eventText", eventId: "marked", title: marked.title, summary: marked.summary },
+        { kind: "eventRelease", eventId: "marked" },
+        { kind: "eventRelease", eventId: "unmarked" },
+    ]) {
+        expect(await answer(await s.json(`${base}/edits`, { revision: stale, edit }), 409)).toMatchObject({ revision });
+        for (const data of [marked, unmarked]) {
+            expect(await answer(await s.request(`${base}/records/events/${data.id}`))).toEqual({ revision, data });
+        }
+    }
+});
+
+it("fences event corrections and releases during a rebuild without changing the event", async () => {
+    const s = await server();
+    const marked = { ...event("e"), userCorrected: true as const };
+    const revision = s.write({ events: [marked] });
+    stageRun(s);
+    for (const edit of [
+        { kind: "eventText", eventId: "e", title: "Changed title", summary: "Changed summary" },
+        { kind: "eventRelease", eventId: "e" },
+    ]) {
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: marked });
+    }
+});
+
+it("refuses stale edits including no-ops without writing any record or revision", async () => {
+    const s = await server();
+    const p = page("p");
+    const thread: MemoryThread = { id: "t", title: "Promise", who: [], state: "open" };
+    const stale = s.write({ pages: [p], threads: [thread] });
+    const current = s.write({ events: [event("new")] });
+    const before = await answer(await s.request(base));
+    for (const edit of [
+        { kind: "section", pageId: "p", heading: "Facts", body: "A rejected correction" },
+        { kind: "section", pageId: "p", heading: "Facts", body: p.sections[0].body },
+        { kind: "sectionLock", pageId: "p", heading: "Facts", locked: false },
+        { kind: "page", pageId: "p", contextMode: "auto" },
+        { kind: "thread", threadId: "t", state: "open" },
+    ]) {
+        expect(await answer(await s.json(`${base}/edits`, { revision: stale, edit }), 409)).toMatchObject({
+            revision: current,
+        });
+        expect(await answer(await s.request(base))).toEqual(before);
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision: current, data: p });
+        expect(await answer(await s.request(`${base}/records/threads/t`))).toEqual({ revision: current, data: thread });
+    }
+    const accepted = await answer(
+        await s.json(`${base}/edits`, { revision: current, edit: { kind: "thread", threadId: "t", state: "paused" } }),
+    );
+    expect(accepted).toEqual({ revision: expect.any(String), kind: "threads", data: { ...thread, state: "paused" } });
+    expect(accepted.revision).not.toBe(current);
+    expect(await answer(await s.request(`${base}/records/threads/t`))).toEqual({
+        revision: accepted.revision,
+        data: accepted.data,
+    });
+});
+
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+function bindChat(s: Awaited<ReturnType<typeof server>>, id = chatId) {
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const first = (name: string) => (s.store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+    const binding = { presetId: first("presets"), modelPresetId: first("modelPresets"), personaId: first("personas") };
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId: id,
+                baseRevision: s.store.chatRevision(characterId, id),
+                ops: [
+                    {
+                        op: "meta",
+                        set: {
+                            promptPresetId: binding.presetId,
+                            modelPresetId: binding.modelPresetId,
+                            bindedPersona: binding.personaId,
+                        },
+                    },
+                    {
+                        op: "append",
+                        anchor: { end: true },
+                        messages: [
+                            { chatId: "u", role: "user", data: "A gate." },
+                            { chatId: "a", role: "char", data: "The gate opens." },
+                            { chatId: "next", role: "user", data: "Continue." },
+                        ],
+                    },
+                ],
+            },
+        ],
+    });
+    return {
+        characterId,
+        chatId: id,
+        ...binding,
+        chatRevision: s.store.chatRevision(characterId, id)!,
+        mode: "normal" as const,
+        input: "",
+    };
+}
+
+it("returns the saved scene without a token budget when another listed page disappears", async () => {
+    const s = await server();
+    bindChat(s);
+    const profiles = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("modelProfiles")!;
+    const current = s.store.get(profiles, "main")!;
+    s.store.put(
+        profiles,
+        "main",
+        (current.data as object[]).map((profile) => ({ ...profile, modelId: "reverse_proxy", customTokenizer: "tik" })),
+        current.revision,
+    );
+    const scene = {
+        ...page("scene", "돌다리"),
+        type: "scene" as const,
+        title: "Scene",
+        contextMode: "always" as const,
+    };
+    s.write({ pages: [scene, page("charter")] });
+    const route = `${base}/records/pages/scene`;
+    const saved = await answer(await s.request(route));
+    expect(saved).toEqual({ revision: expect.any(String), data: scene });
+    expect(await answer(await s.request(`${route}?sceneBudget=1`))).toMatchObject({
+        sceneBudget: { tokens: expect.any(Number), requiredTokens: expect.any(Number), limit: 1500 },
+    });
+
+    const get = StatementSync.prototype.get;
+    const missing = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+        this: StatementSync,
+        ...args
+    ) {
+        if (this.sourceSQL === "SELECT data FROM memory_pages WHERE chatSeq = ? AND id = ?" && args[1] === "charter")
+            return undefined;
+        return get.apply(this, args);
+    });
+    try {
+        const response = await s.request(`${route}?sceneBudget=1`);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(saved);
+    } finally {
+        missing.mockRestore();
+    }
+});
+
+it("refuses edits and inheritance while the real memory task is queued or running and accepts them after cancellation", async () => {
+    // Hold the tokenizer worker's message, not a task implementation; fake deadlines cannot race the test.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const s = await server({ memoryTaskOptions: { now: () => 0 } });
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    function replace<T>(name: string, update: (data: T) => T) {
+        const kind = kinds.get(name)!;
+        const record = s.store.get(kind, "main")!;
+        s.store.put(kind, "main", update(record.data as T), record.revision);
+    }
+    replace<Record<string, unknown>>("ui", (data) => ({ ...data, memoryAlgorithmType: "structuredMemory" }));
+    replace<Record<string, unknown>[]>("modelProfiles", (data) => [
+        { ...data[0], modelId: "reverse_proxy", customTokenizer: "claude" },
+    ]);
+    replace<{ items: { settings: Record<string, unknown> }[] }>("hypaV3Presets", (data) => ({
+        ...data,
+        items: [{ ...data.items[0], settings: { ...data.items[0].settings, structured: { cadence: "tokens" } } }],
+    }));
+    const characterKind = kinds.get("characters")!;
+    const owner = s.store.get(characterKind, characterId)!;
+    s.store.put(characterKind, characterId, { ...(owner.data as object), supaMemory: true }, owner.revision);
+    const context = bindChat(s);
+    const scope = loadJobScope(s.store, kinds, context);
+    const { presetId, modelPresetId, personaId } = context;
+    const input: StructuredMemoryTaskInput = {
+        kind: "structuredMemory",
+        chatRef: { chaId: characterId, chatId },
+        epoch: s.epoch,
+        admittedRevision: scope.chatRevision,
+        sourceGeneration: scope.chatSourceGeneration!,
+        speakerId: null,
+        binding: { presetId, modelPresetId, personaId },
+        effective: { presetId, modelPresetId, fromChain: false },
+        maxContext: 10000,
+        maxResponse: 100,
+        tokenPolicy: memoryTokenPolicy(scope, 3),
+        settingsFingerprint: memorySettingsFingerprint(scope),
+        confirmedBefore: "next",
+    };
+    const revision = s.write({ pages: [page("p")] });
+    const before = await answer(await s.request(`${base}/records/pages/p`));
+    const entered = deferred();
+    const release = deferred();
+    // The task's first count of its prompt goes to the tokenizer worker: hold that call until the test releases it.
+    const post = Worker.prototype.postMessage;
+    const spy = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (this: Worker, ...args) {
+        const [message] = args as [{ family?: string } | undefined];
+        if (message?.family === "claude") {
+            entered.resolve();
+            void release.promise.then(() => post.apply(this, args));
+            return;
+        }
+        return post.apply(this, args);
+    });
+    const tasks = s.context.memoryTasks!;
+    const lease = await tasks.acquireSummaryWriter(input.chatRef, "hold-queue");
+    const edit = { kind: "section", pageId: "p", heading: "Facts", body: "Correction after writer" };
+    const refused = async () => {
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual(before);
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual(before);
+    };
+    try {
+        tasks.handOff(input);
+        expect(tasks.status(input.chatRef)?.state).toBe("queued");
+        await refused();
+        lease.release();
+        await entered.promise;
+        expect(tasks.status(input.chatRef)?.state).toBe("running");
+        await refused();
+    } finally {
+        tasks.cancel(input.chatRef);
+        lease.release();
+        release.resolve();
+        await tasks.drain();
+        spy.mockRestore();
+    }
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+        revision,
+        inherited: false,
+    });
+    expect((await answer(await s.json(`${base}/edits`, { revision, edit }))).data.sections[0].body).toBe(
+        "Correction after writer",
+    );
+});
+
+it("refuses edits and inheritance for an admitted job and for its message lock on a different chat", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred<RunningJob>();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve(job);
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    bindChat(s, "other");
+    const revision = s.write({ pages: [page("p")] });
+    const otherPath = base.replace(encodeURIComponent(chatId), "other");
+    const otherRevision = s.store.memory.write(
+        characterId,
+        "other",
+        {
+            epoch: s.epoch,
+            baseRevision: s.store.memory.readContents(characterId, "other")!.revision,
+        },
+        { pages: [page("p")] },
+    );
+    const edit = { kind: "sectionLock", pageId: "p", heading: "Facts", locked: true };
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    const job = await entered.promise;
+    try {
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: page("p") });
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        // A chat slot alone must not fence a sibling chat.
+        await answer(await s.json(`${otherPath}/edits`, { revision: otherRevision, edit: { ...edit, locked: false } }));
+        expect(await answer(await s.json(`${otherPath}/inherit`, { sourceChatId: chatId }))).toEqual({
+            revision: otherRevision,
+            inherited: false,
+        });
+        job.write(() => ({
+            chats: [
+                {
+                    characterId,
+                    chatId: "other",
+                    baseRevision: s.store.chatRevision(characterId, "other"),
+                    ops: [{ op: "begin", id: "a", generationId: "held" }],
+                },
+            ],
+        }));
+        expect(s.context.generationJobs.chatBusy(characterId, "other")).toBe(false);
+        expect(await answer(await s.json(`${otherPath}/edits`, { revision: otherRevision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(await answer(await s.request(`${otherPath}/records/pages/p`))).toEqual({
+            revision: otherRevision,
+            data: page("p"),
+        });
+        expect(await answer(await s.json(`${otherPath}/inherit`, { sourceChatId: chatId }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+        revision,
+        inherited: false,
+    });
+    for (const [url, token] of [
+        [base, revision],
+        [otherPath, otherRevision],
+    ])
+        expect((await answer(await s.json(`${url}/edits`, { revision: token, edit }))).data.sections[0].locked).toBe(
+            true,
+        );
+});
+
+it("repairs events through revisioned edits and refuses abandoned keep states and ineligible rerecords", async () => {
+    const s = await server();
+    bindChat(s);
+    const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+    const e = {
+        ...event("e"),
+        sources: messages.slice(0, 2).map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+    };
+    const staleRevision = s.write({ events: [e] });
+    let revision = s.write({ pages: [page("other")] });
+    const writeMessages = (message: Message[]) =>
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId,
+                    baseRevision: s.store.chatRevision(characterId, chatId),
+                    ops: [{ op: "replace", chat: { ...chat, message } }],
+                },
+            ],
+        });
+    const changed = messages.map((m) => (m.chatId === "a" ? { ...m, data: "The gate is closed" } : m));
+    writeMessages(changed);
+    const state = memoryAnchorState(e.sources, changed, messageSourceHash);
+    const edit = (repair: "keep" | "retract" | "rerecord") => ({
+        kind: "event",
+        eventId: "e",
+        repair,
+        ...(repair === "keep" ? { state } : {}),
+    });
+    for (const repair of ["keep", "retract", "rerecord"] as const) {
+        expect(
+            await answer(await s.json(`${base}/edits`, { revision: staleRevision, edit: edit(repair) }), 409),
+        ).toMatchObject({ revision });
+        expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: e });
+    }
+    writeMessages(messages.map((m) => (m.chatId === "a" ? { ...m, data: "Changed once more" } : m)));
+    expect(await answer(await s.json(`${base}/edits`, { revision, edit: edit("keep") }), 409)).toMatchObject({
+        reason: "changed",
+    });
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: e });
+    writeMessages(changed);
+    const kept = await answer(await s.json(`${base}/edits`, { revision, edit: edit("keep") }));
+    expect(kept).toEqual({ revision: expect.any(String), kind: "events", data: { ...e, keptState: state } });
+    revision = kept.revision;
+    expect(reconcileEvents([kept.data], changed)[0].status).toBe("active");
+    expect(
+        reconcileEvents(
+            [kept.data],
+            changed.map((m) => ({ ...m, data: `${m.data}!` })),
+        )[0].status,
+    ).toBe("stale");
+    writeMessages([changed[1], changed[0], changed[2]]);
+    await answer(await s.json(`${base}/edits`, { revision, edit: edit("rerecord") }), 400);
+    writeMessages(changed);
+    const marked = await answer(await s.json(`${base}/edits`, { revision, edit: edit("rerecord") }));
+    expect(marked.data).toEqual({ ...kept.data, rerecord: true });
+    const retired = await answer(await s.json(`${base}/edits`, { revision: marked.revision, edit: edit("retract") }));
+    expect(retired.data).toEqual({ ...kept.data, status: "retracted" });
+    for (const repair of ["keep", "rerecord"] as const)
+        await answer(await s.json(`${base}/edits`, { revision: retired.revision, edit: edit(repair) }), 400);
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({
+        revision: retired.revision,
+        data: retired.data,
+    });
+});
+
+it("retracts cited events on a confirmed delete or panel repair and only flags sections with exclusively retracted provenance", async () => {
+    for (const action of ["delete", "repair"] as const) {
+        const s = await server();
+        bindChat(s);
+        const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+        const cited = {
+            ...event("cited"),
+            rerecord: true,
+            sources: messages
+                .slice(0, 2)
+                .map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) })),
+        };
+        const p = page("facts", "The user's current body");
+        p.history = [
+            {
+                id: "earlier",
+                heading: "Fact 0",
+                kind: "change",
+                highlighted: false,
+                at: 0,
+                eventId: "cited",
+                before: { body: "The previous body must not return", provenance: [], sources: [] },
+            },
+        ];
+        p.sections = [["cited"], ["cited", "active"], [], ["cited", "unknown"]].map((provenance, index) => ({
+            ...p.sections[0],
+            heading: `Fact ${index}`,
+            provenance,
+            sources: cited.sources,
+            locked: true,
+            userCorrected: true,
+        }));
+        const revision = s.write({ events: [cited, event("active")], pages: [p] });
+        if (action === "delete") {
+            await answer(
+                await s.json("/api/resources/batch", {
+                    chats: [
+                        {
+                            characterId,
+                            chatId,
+                            baseRevision: s.store.chatRevision(characterId, chatId),
+                            ops: [{ op: "remove", ids: ["a"], retract: true }],
+                        },
+                    ],
+                }),
+            );
+            expect(
+                (s.store.readChatSource(characterId, chatId).data as Chat).message.map(({ chatId }) => chatId),
+            ).toEqual(["u", "next"]);
+        } else {
+            await answer(
+                await s.json(`${base}/edits`, {
+                    revision,
+                    edit: { kind: "event", eventId: "cited", repair: "retract" },
+                }),
+            );
+        }
+        const { rerecord, ...retired } = cited;
+        expect((await answer(await s.request(`${base}/records/events/cited`))).data, action).toEqual({
+            ...retired,
+            status: "retracted",
+        });
+        expect((await answer(await s.request(`${base}/records/pages/facts`))).data, action).toEqual({
+            ...p,
+            sections: [{ ...p.sections[0], unsupported: true }, ...p.sections.slice(1)],
+        });
+    }
+});
+
+type RetractionAction = "confirmed message deletion" | "Timeline retraction";
+
+async function threadRetractionServer() {
+    const s = await server();
+    bindChat(s);
+    const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+    const opened: MemoryThread = {
+        id: "return",
+        title: "Return to the gate",
+        who: [],
+        state: "open",
+        openedBy: "opening",
+    };
+    const closed: MemoryThread = { ...opened, state: "done", closedBy: "closing" };
+    const unsupported: MemoryThread = {
+        id: "key",
+        title: "Find the key",
+        who: [],
+        state: "open",
+        openedBy: "key-opening",
+    };
+    const events = [
+        { ...event("opening"), openThreads: { add: [{ title: opened.title, who: [] }], close: [], transitions: [] } },
+        { ...event("closing"), openThreads: { add: [], close: [closed.id], transitions: [] } },
+        {
+            ...event("key-opening"),
+            openThreads: { add: [{ title: unsupported.title, who: [] }], close: [], transitions: [] },
+        },
+    ].map((e, index) => ({
+        ...e,
+        sources: [{ messageId: messages[index].chatId!, index, hash: messageSourceHash(messages[index]) }],
+    }));
+    s.write({ events, threads: [closed, unsupported] });
+
+    const cache = createVectorCache({ file: ":memory:", now: () => 1000 });
+    cleanups.push(() => cache.close());
+    const db = { hypaModel: "custom", hypaCustomSettings: { key: "" }, voyageApiKey: "" } as MemoryHost["db"];
+    const unexpectedWorker = async (): Promise<never> => {
+        throw new Error("Unexpected local model call");
+    };
+    const embeddings = createEmbeddings({
+        cache,
+        transformers: {
+            runEmbedding: unexpectedWorker,
+            runSummarizer: unexpectedWorker,
+            runImageCaption: unexpectedWorker,
+            runTextGeneration: unexpectedWorker,
+            dispose: async () => {},
+        },
+    }).forJob({ db, signal: new AbortController().signal, supaMemoryKey: "" });
+    const threadIds = async () => {
+        const records = readRecordSet(s.store.memory, characterId, chatId)!;
+        const current = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+        const settings = normalizeStructuredMemorySettings({
+            flowEvents: 0,
+            laneSplit: "manual",
+            laneTargets: { pages: 0, events: 0, evidence: 0, threads: 1000 },
+        });
+        const result = await retrieveLanes(
+            { db, embeddings, fence() {} },
+            {
+                ...records,
+                events: reconcileEvents(records.events, current),
+                entries: current.map((m) => ({ messageId: m.chatId, role: m.role, text: m.data })),
+                window: { start: 0, dropped: new Set() },
+                stage: [],
+                settings,
+                targets: settings.laneTargets,
+            },
+        );
+        return result.lanes
+            .find(({ lane }) => lane === "threads")!
+            .items.map(({ id }) => id)
+            .sort();
+    };
+    const retract = async (action: RetractionAction, eventId: string, messageId: string) => {
+        await answer(
+            action === "confirmed message deletion"
+                ? await s.json("/api/resources/batch", {
+                      chats: [
+                          {
+                              characterId,
+                              chatId,
+                              baseRevision: s.store.chatRevision(characterId, chatId),
+                              ops: [{ op: "remove", ids: [messageId], retract: true }],
+                          },
+                      ],
+                  })
+                : await s.json(`${base}/edits`, {
+                      revision: s.store.memory.readContents(characterId, chatId)!.revision,
+                      edit: { kind: "event", eventId, repair: "retract" },
+                  }),
+        );
+        expect(s.store.memory.readRecord(characterId, chatId, "events", eventId)!.data.status).toBe("retracted");
+    };
+    const readThread = (id: string) => s.store.memory.readRecord(characterId, chatId, "threads", id)?.data;
+    return { ...s, opened, closed, unsupported, threadIds, retract, readThread };
+}
+
+it.each<RetractionAction>(["confirmed message deletion", "Timeline retraction"])(
+    "reopens closed threads and removes unsupported openings from retrieval after %s",
+    async (action) => {
+        const s = await threadRetractionServer();
+        expect(await s.threadIds()).toEqual(["key"]);
+
+        await s.retract(action, "closing", "a");
+        expect(s.readThread("return")).toStrictEqual(s.opened);
+        expect(await s.threadIds()).toEqual(["key", "return"]);
+
+        await s.retract(action, "key-opening", "next");
+        expect(s.readThread("key")).toBeUndefined();
+        expect(s.store.memory.readContents(characterId, chatId)!.threads.map(({ id }) => id)).toEqual(["return"]);
+        expect(s.readThread("return")).toStrictEqual(s.opened);
+        expect(await s.threadIds()).toEqual(["return"]);
+    },
+);
+
+it("preserves user-edited cancelled and paused thread states when their supporting events are retracted", async () => {
+    for (const action of ["confirmed message deletion", "Timeline retraction"] as const) {
+        const s = await threadRetractionServer();
+        const cancelled = { ...s.closed, state: "cancelled" as const };
+        const paused = { ...s.unsupported, state: "paused" as const };
+        for (const thread of [cancelled, paused]) {
+            const edited = await answer(
+                await s.json(`${base}/edits`, {
+                    revision: s.store.memory.readContents(characterId, chatId)!.revision,
+                    edit: { kind: "thread", threadId: thread.id, state: thread.state },
+                }),
+            );
+            expect(edited.data).toStrictEqual(thread);
+        }
+
+        await s.retract(action, "closing", "a");
+        await s.retract(action, "key-opening", "next");
+        expect(s.readThread("return"), action).toStrictEqual(cancelled);
+        expect(s.readThread("key"), action).toStrictEqual(paused);
+        expect(await s.threadIds(), action).toEqual(["key"]);
+    }
+});
+
+it("marks text and role edits for re-recording, ignores generation info and translations, and leaves unasked deletes missing", async () => {
+    const s = await server();
+    bindChat(s);
+    const messages = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+    const original = {
+        ...event("cited"),
+        sources: [{ messageId: "a", index: 1, hash: messageSourceHash(messages[1]) }],
+    };
+    const batch = async (ops: ChatOp[]) =>
+        answer(
+            await s.json("/api/resources/batch", {
+                chats: [{ characterId, chatId, baseRevision: s.store.chatRevision(characterId, chatId), ops }],
+            }),
+        );
+    for (const op of [
+        { op: "setText", id: "a", text: "Edited text" },
+        { op: "setMessage", message: { ...messages[1], data: "Replaced text" } },
+        { op: "patchMessage", id: "a", set: { role: "user" } },
+    ] satisfies ChatOp[]) {
+        await batch([{ op: "setMessage", message: messages[1] }]);
+        const revision = s.write({ events: [original] });
+        await batch([
+            { op: "patchMessage", id: "a", set: { generationInfo: { model: "writer" } } },
+            {
+                op: "setTranslation",
+                id: "a",
+                translation: {
+                    text: "문이 열린다",
+                    sourceHash: translationSourceHash(messages[1].data),
+                    targetLanguage: "ko",
+                    translatedAt: 1,
+                },
+            },
+        ]);
+        expect((s.store.readChatSource(characterId, chatId).data as Chat).message[1]).toMatchObject({
+            generationInfo: { model: "writer" },
+            translation: { text: "문이 열린다" },
+        });
+        expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)).toEqual({
+            revision,
+            data: original,
+        });
+        await batch([op]);
+        expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)!.data).toEqual({
+            ...original,
+            rerecord: true,
+        });
+    }
+    s.write({ events: [original] });
+    const before = s.store.memory.readContents(characterId, chatId);
+    await batch([{ op: "remove", ids: ["a"] }]);
+    expect(s.store.memory.readContents(characterId, chatId)).toEqual(before);
+    const stored = s.store.memory.readRecord(characterId, chatId, "events", original.id)!.data;
+    expect(stored).toEqual(original);
+    expect(
+        reconcileEvents([stored], (s.store.readChatSource(characterId, chatId).data as Chat).message)[0],
+    ).toMatchObject({ status: "stale", staleReason: "missing" });
+});
+
+it("fences every event repair behind an admitted job without changing memory", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred<RunningJob>();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve(job);
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const e = event("e");
+    const revision = s.write({ events: [e] });
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    await entered.promise;
+    try {
+        for (const repair of ["keep", "rerecord", "retract"]) {
+            expect(
+                await answer(
+                    await s.json(`${base}/edits`, {
+                        revision,
+                        edit: { kind: "event", eventId: "e", repair, state: "seen" },
+                    }),
+                    409,
+                ),
+            ).toMatchObject({ reason: "fenced" });
+            expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: e });
+        }
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect(
+        (
+            await answer(
+                await s.json(`${base}/edits`, { revision, edit: { kind: "event", eventId: "e", repair: "retract" } }),
+            )
+        ).data.status,
+    ).toBe("retracted");
+});
+
+it("restores chat file records on another store with active whole events, an empty Log and no pause", async () => {
+    const source = await server();
+    const destination = await server();
+    bindChat(source);
+    const original = source.store.readChatSource(characterId, chatId).data as Chat;
+    const sources = original.message.map((m, index) => ({ messageId: m.chatId!, index, hash: messageSourceHash(m) }));
+    const p = page("place", "The gate opens. Nothing in this page may be lost.");
+    p.sections[0].sources = sources;
+    p.sections[0].provenance = ["arrival"];
+    const e = { ...event("arrival"), sources, rerecord: true, keptState: "source-kept-state" };
+    const threads: MemoryThread[] = [
+        { id: "return", title: "Return to the gate", who: [p.id], state: "open", openedBy: e.id },
+    ];
+    source.write({ pages: [p] });
+    source.write({ pages: [p], events: [e], threads, runs: Array.from({ length: 5 }, (_, i) => run(`private-${i}`)) });
+    const sourceBefore = memorySnapshot(source, chatId);
+    const packed = await answer(await source.request(`${base}/package`));
+    const threaded = await answer(
+        await source.request(`${base}/threads?revision=${encodeURIComponent(packed.revision)}&cursor=0`),
+    );
+    const file = JSON.parse(
+        JSON.stringify({
+            type: "risuChat",
+            ver: 2,
+            data: original,
+            structuredMemory: [{ chatId, pages: packed.pages, events: packed.events, threads: threaded.threads }],
+        }),
+    );
+    // Script the import's new chat id and preserve its message ids on a separate destination store.
+    const importedId = "imported-on-another-server";
+    await answer(
+        await destination.json("/api/resources/batch", {
+            chats: [
+                {
+                    characterId,
+                    chatId: importedId,
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { ...file.data, id: importedId } }],
+                },
+            ],
+        }),
+    );
+    const importedBase = `/api/memory/structured/${encodeURIComponent(characterId)}/${importedId}`;
+    const restored = await answer(await destination.json(`${importedBase}/restore`, file.structuredMemory[0]));
+    expect(restored.restored).toBe(true);
+    const restoredPackage = await answer(await destination.request(`${importedBase}/package`));
+    const expectedEvent = { ...event("arrival"), sources, keptState: "source-kept-state", createdRevision: 1 };
+    expect(restoredPackage).toEqual({ revision: restored.revision, pages: [p], events: [expectedEvent], next: null });
+    expect((await answer(await destination.request(`${importedBase}/threads`))).threads).toEqual(threads);
+    const imported = destination.store.readChatSource(characterId, importedId).data as Chat;
+    expect(imported.message).toEqual(original.message);
+    expect(reconcileMemoryEvents(restoredPackage.events, imported.message, messageSourceHash)).toEqual([expectedEvent]);
+    const log = await answer(await destination.request(`${importedBase}/runs`));
+    expect(log).toEqual({ revision: restored.revision, runs: [], total: 0, next: null });
+    expect(writerPaused(log.runs)).toBe(false);
+    expect(memorySnapshot(source, chatId)).toEqual(sourceBefore);
+});
+
+it("restores only empty chats, never writes supplied runs, and refuses malformed records atomically", async () => {
+    const s = await server();
+    const records = {
+        pages: [page("p")],
+        events: [{ ...event("e"), createdRevision: 99, rerecord: true, keptState: "kept" }],
+        threads: [{ id: "t", title: "Return", who: [], state: "open" as const }],
+    };
+    const empty = memorySnapshot(s, chatId);
+    const malformed = {
+        ...records,
+        pages: [{ ...records.pages[0], sections: [{ ...records.pages[0].sections[0], provenance: [null] }] }],
+    };
+    await answer(await s.json(`${base}/restore`, malformed), 400);
+    expect(memorySnapshot(s, chatId)).toEqual(empty);
+    const accepted = await answer(await s.json(`${base}/restore`, { ...records, runs: [run("private")] }));
+    expect(accepted.restored).toBe(true);
+    expect(memorySnapshot(s, chatId).records).toEqual({
+        ...records,
+        events: [{ ...event("e"), createdRevision: 1, keptState: "kept" }],
+        runs: [],
+    });
+    for (const existing of [
+        { pages: [page("existing")] },
+        { events: [event("existing")] },
+        { threads: [records.threads[0]] },
+        { runs: [run("existing")] },
+    ]) {
+        const occupied = await server();
+        occupied.write(existing);
+        const before = memorySnapshot(occupied, chatId);
+        expect(await answer(await occupied.json(`${base}/restore`, records))).toEqual({
+            revision: before.contents.revision,
+            restored: false,
+        });
+        expect(memorySnapshot(occupied, chatId)).toEqual(before);
+    }
+});
+
+it("caps restore bodies using the app's memory restore limit without writing a partial record", async () => {
+    const s = await server({ routeLimits: { memoryRestoreBodyBytes: 512 } });
+    const before = memorySnapshot(s, chatId);
+    await answer(
+        await s.json(`${base}/restore`, { pages: [page("large", "x".repeat(1024))], events: [], threads: [] }),
+        413,
+    );
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(
+        (
+            await answer(
+                await s.json(`${base}/restore`, {
+                    pages: [],
+                    events: [],
+                    threads: [{ id: "small", title: "Return", who: [], state: "open" }],
+                }),
+            )
+        ).restored,
+    ).toBe(true);
+});
+
+it("fences restore behind an admitted job and accepts the same records after it ends", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const entered = deferred();
+    const release = deferred();
+    const s = await server({
+        generationRunner: async (job) => {
+            entered.resolve();
+            await release.promise;
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const records = { pages: [page("p")], events: [], threads: [] };
+    const before = memorySnapshot(s, chatId);
+    await answer(
+        await s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "button", data: "" },
+        }),
+    );
+    await entered.promise;
+    try {
+        expect(await answer(await s.json(`${base}/restore`, records), 409)).toMatchObject({ reason: "fenced" });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    } finally {
+        release.resolve();
+        await s.context.generationJobs.drain();
+    }
+    expect((await answer(await s.json(`${base}/restore`, records))).restored).toBe(true);
+});
+
+it("reads whole threads in revision-bound byte rounds and refuses a stale continuation", async () => {
+    const threads: MemoryThread[] = [
+        { id: "a", title: "문😀".repeat(80), who: [], state: "open" },
+        { id: "b", title: "문😀".repeat(80), who: [], state: "paused" },
+        { id: "c", title: "x".repeat(5000), who: [], state: "done", openedBy: "event" },
+    ];
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(threads[0]) + bytes(threads[1]) } });
+    const revision = s.write({ threads });
+    const first = await answer(await s.request(`${base}/threads`));
+    expect(first).toEqual({ revision, threads: threads.slice(0, 2), next: expect.any(Number) });
+    const continuation = `${base}/threads?cursor=${first.next}&revision=${encodeURIComponent(revision)}`;
+    expect(await answer(await s.request(continuation))).toEqual({ revision, threads: [threads[2]], next: null });
+    s.write({ threads: [{ ...threads[2], state: "cancelled" }] });
+    await answer(await s.request(continuation), 409);
+});
+
+it("projects reconciled memory on every full resource route while jobs and checkpoints read stored fields", async () => {
+    const s = await server();
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const ui = kinds.get("ui")!;
+    const row = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(row.data as object), memoryAlgorithmType: "structuredMemory" }, row.revision);
+    const history = projectionHistory();
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "replace", chat: { ...chat, message: history.messages } }],
+            },
+        ],
+    });
+    s.write({ events: history.events });
+    const context = bindChat(s);
+    const readChats = await answer(
+        await s.request("/api/resources/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chats: [{ characterId, id: chatId }] }),
+        }),
+    );
+    const collections = await answer(
+        await s.request("/api/resources/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ chatCollections: [characterId] }),
+        }),
+    );
+    const all = await answer(await s.request("/api/resources?kinds=characters&chats=1"));
+    for (const read of [readChats.chats, collections.chatCollections[0].chats, all.chats]) {
+        const value = read.find((entry: { id: string }) => entry.id === chatId).data.hypaV3Data;
+        expect(sealedHypaV3DataIntact(value)).toBe(true);
+        const { structuredMemoryProjection: _seal, structuredMemoryRevision: _revision, ...data } = value;
+        expect(data).toEqual(history.expected);
+    }
+    expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
+    expect(s.store.readRefs([], { chats: [{ characterId, id: chatId }] }).chats[0].data).not.toHaveProperty(
+        "hypaV3Data",
+    );
+    expect(loadJobScope(s.store, kinds, context).db.characters[0].chats[0]).not.toHaveProperty("hypaV3Data");
+    const saved = s.store.checkpoints.save(characterId, chatId, "Stored fields", "manual")!;
+    expect(s.store.checkpoints.compose(characterId, chatId, saved.id)).not.toHaveProperty("hypaV3Data");
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "changed")!.data).toMatchObject({
+        status: "active",
+    });
+});
+
+it("projects only when the selected algorithm, events, and stored summary ownership permit it", async () => {
+    const s = await server();
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const history = projectionHistory();
+    const real = { summaries: [{ text: "Owned by HypaV3", chatMemos: [], isImportant: false }] };
+    for (const [id, hypaV3Data, events] of [
+        [chatId, undefined, true],
+        ["empty", { summaries: [] }, true],
+        ["owned", real, true],
+        ["no-events", { summaries: [] }, false],
+    ] as const) {
+        const revision = s.store.chatRevision(characterId, id);
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId: id,
+                    baseRevision: revision,
+                    ops: [
+                        {
+                            op: revision ? "replace" : "create",
+                            chat: { ...chat, message: history.messages, ...(hypaV3Data ? { hypaV3Data } : {}) },
+                        },
+                    ],
+                },
+            ],
+        });
+        if (events) writeMemory(s.store, characterId, id, { events: history.events });
+    }
+    for (const algorithm of ["hypaV3", "structuredMemory"]) {
+        const ui = kinds.get("ui")!;
+        const row = s.store.get(ui, "main")!;
+        s.store.put(ui, "main", { ...(row.data as object), memoryAlgorithmType: algorithm }, row.revision);
+        const body = await answer(
+            await s.request("/api/resources/read", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ chatCollections: [characterId] }),
+            }),
+        );
+        const data = (id: string) => body.chatCollections[0].chats.find((c: { id: string }) => c.id === id).data;
+        expect(data("owned").hypaV3Data).toEqual(real);
+        expect(data("no-events").hypaV3Data).toEqual({ summaries: [] });
+        if (algorithm === "hypaV3") {
+            expect(data(chatId)).not.toHaveProperty("hypaV3Data");
+            expect(data("empty").hypaV3Data).toEqual({ summaries: [] });
+        } else {
+            for (const id of [chatId, "empty"])
+                expect(data(id).hypaV3Data).toMatchObject({ summaries: history.expected.summaries });
+        }
+    }
+});
+
+it("answers the same revision-sealed reconciled projection as a whole read, including all-retracted and no-projection states", async () => {
+    const s = await server();
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    s.store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, s.store.get(ui, "main")!.revision);
+    const history = projectionHistory();
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "replace", chat: { ...chat, message: history.messages } }],
+            },
+        ],
+    });
+    const revisions = () => s.json("/api/memory/structured/revisions", { chats: [{ characterId, chatId }] });
+    const whole = async () => {
+        const body = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+        return body.chats[0].data.hypaV3Data;
+    };
+    const first = s.write({ events: history.events });
+    expect(await answer(await revisions())).toEqual({ revisions: [first] });
+    const projected = await answer(await s.request(`${base}/projection`));
+    expect(projected.revision).toBe(first);
+    expect(projected.hypaV3Data).toEqual(await whole());
+    expect(projected.hypaV3Data).toEqual({
+        ...history.expected,
+        structuredMemoryRevision: first,
+        structuredMemoryProjection: expect.any(String),
+    });
+    expect(sealedHypaV3DataIntact(projected.hypaV3Data)).toBe(true);
+    const second = s.write({ events: history.events.map((entry) => ({ ...entry, status: "retracted" as const })) });
+    expect(await answer(await revisions())).toEqual({ revisions: [second] });
+    const empty = await answer(await s.request(`${base}/projection`));
+    expect(empty.hypaV3Data).toMatchObject({ summaries: [], structuredMemoryRevision: second });
+    expect(sealedHypaV3DataIntact(empty.hypaV3Data)).toBe(true);
+    expect(empty.hypaV3Data).toEqual(await whole());
+    s.write({ remove: { events: history.events.map(({ id }) => id) } });
+    expect(await answer(await revisions())).toEqual({ revisions: [null] });
+    expect(await answer(await s.request(`${base}/projection`))).toMatchObject({ hypaV3Data: null });
+    expect(await whole()).toBeUndefined();
+});
+
+it("authenticates, limits, epoch-checks and validates both projection refresh routes", async () => {
+    const s = await server();
+    const revisions = "/api/memory/structured/revisions";
+    const init = {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chats: [{ characterId, chatId }] }),
+    };
+    for (const [url, options] of [
+        [revisions, init],
+        [`${base}/projection`, { headers: {} }],
+    ] as const) {
+        const denied = await s.app.request(url, {
+            ...options,
+            headers: { ...options.headers, "x-resource-epoch": s.epoch },
+        });
+        expect(denied.status).toBeGreaterThanOrEqual(400);
+        expect(denied.status).toBeLessThan(500);
+        expect(denied.status).not.toBe(429);
+        for (const epoch of [null, "wrong-epoch"]) await answer(await s.request(url, options, epoch), 412);
+    }
+    for (const bad of ["", "\u0000", 12]) {
+        for (const field of ["characterId", "chatId"]) {
+            await answer(await s.json(revisions, { chats: [{ characterId, chatId, [field]: bad }] }), 400);
+        }
+    }
+    for (const id of [characterId, chatId])
+        await answer(await s.request(`${base}/projection`.replace(encodeURIComponent(id), "%00")), 400);
+    await answer(
+        await s.json(revisions, {
+            chats: Array.from({ length: MEMORY_REVISION_CHATS_MAX + 1 }, () => ({ characterId: "c", chatId: "k" })),
+        }),
+        400,
+    );
+    expect(ROUTE_TEMPLATES).toContain(revisions);
+    expect(ROUTE_TEMPLATES).toContain("/api/memory/structured/:characterId/:chatId/projection");
+    // Epoch read consumes one request; these two consume the remainder of the frozen window.
+    const limited = await server({ routeLimits: { requestsPerMinute: 3 } });
+    await answer(await limited.request(revisions, init));
+    await answer(await limited.request(`${base}/projection`));
+    await answer(await limited.request(revisions, init), 429);
+    await answer(await limited.request(`${base}/projection`), 429);
+});
+
+it("refuses projection event bytes over the round cap before reading any message", async () => {
+    const input = event("large", "x".repeat(1000));
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(input) - 1 } });
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    s.store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, s.store.get(ui, "main")!.revision);
+    s.write({ events: [input] });
+    const messages: string[] = [];
+    const spies = (["get", "all", "iterate"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            if (/\bmessages\b/.test(this.sourceSQL)) messages.push(this.sourceSQL);
+            return Reflect.apply(original, this, args);
+        });
+    });
+    try {
+        expect(await answer(await s.request(`${base}/projection`), 413)).toMatchObject({ reason: "tooLarge" });
+        expect(messages).toEqual([]);
+    } finally {
+        spies.forEach((spy) => spy.mockRestore());
+    }
+});
+
+it("declines once, stops offering adoption, refuses later adoption and preserves real summaries and projection reads", async () => {
+    const s = await server();
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    const current = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(current.data as object), memoryAlgorithmType: "structuredMemory" }, current.revision);
+    const summaries = { summaries: [{ text: "Keep this old memory.", chatMemos: ["m0", "m1"], isImportant: false }] };
+    storeAdoptionChat(s, summaries);
+    const before = memorySnapshot(s, chatId);
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    expect((await answer(await s.request(base))).adoption).toEqual({
+        adoptable: 1,
+        declined: false,
+        resettable: false,
+    });
+    const declined = await answer(await s.request(`${base}/decline`, { method: "POST" }));
+    const revision = before.contents.revision.replace(/:0$/, ":1");
+    expect(declined).toEqual({ revision, declined: true });
+    expect((await answer(await s.request(base))).adoption).toEqual({ adoptable: 0, declined: true, resettable: false });
+    const after = memorySnapshot(s, chatId);
+    expect(after.records).toEqual(before.records);
+    expect(await answer(await s.request(`${base}/decline`, { method: "POST" }))).toEqual({ revision, declined: false });
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toEqual({
+        revision,
+        adopted: 0,
+        stale: 0,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(after);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+    expect(
+        await answer(await s.json("/api/memory/structured/revisions", { chats: [{ characterId, chatId }] })),
+    ).toEqual({ revisions: [null] });
+    expect(await answer(await s.request(`${base}/projection`))).toEqual({ revision, hypaV3Data: null });
+    const read = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+    expect(read.chats[0].data.hypaV3Data).toEqual(summaries);
+});
+
+it("removes only retracted events for good, clears their provenance, and passes the adoption lineage on", async () => {
+    const s = await server();
+    const retracted = (id: string): MemoryEvent => ({ ...event(id), status: "retracted" });
+    const cited = page("p");
+    cited.sections[0].provenance = ["gone", "kept"];
+    cited.sections[0].unsupported = true;
+    s.write({
+        pages: [cited, page("untouched")],
+        events: [event("kept"), retracted("gone"), { ...retracted("adopted"), writerRun: ADOPTED_WRITER_RUN }],
+        runs: [run("r1")],
+    });
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, chapter(event("kept")));
+    const before = memorySnapshot(s, chatId);
+    const { revision } = before.contents;
+
+    // A standing event refuses the whole request, a stale revision too, and a malformed list never reaches the store.
+    await answer(await s.json(`${base}/events/remove`, { revision, ids: ["gone", "kept"] }), 400);
+    await answer(await s.json(`${base}/events/remove`, { revision: "stale", ids: ["gone"] }), 409);
+    for (const ids of [[], ["bad\u0000id"], "gone", Array.from({ length: 201 }, (_, index) => `e${index}`)]) {
+        await answer(await s.json(`${base}/events/remove`, { revision, ids }), 400);
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+
+    const removed = await answer(
+        await s.json(`${base}/events/remove`, { revision, ids: ["gone", "adopted", "never-stored"] }),
+    );
+    expect(removed).toEqual({ revision: revision.replace(/:\d+$/, (n) => `:${Number(n.slice(1)) + 1}`), removed: 2 });
+    const after = memorySnapshot(s, chatId);
+    expect(after.contents.events.map(({ id }) => id)).toEqual(["kept"]);
+    // The only adopted event left, so the event that stays keeps the stored summaries resettable.
+    expect(after.records.events).toEqual([{ ...event("kept"), adoptedSummaries: true }]);
+    // The section keeps its text and flag and no longer names an event that is gone; nothing else moves.
+    expect(after.records.pages).toEqual([
+        { ...cited, sections: [{ ...cited.sections[0], provenance: ["kept"] }] },
+        page("untouched"),
+    ]);
+    expect(after.contents.runs).toEqual(before.contents.runs);
+    expect(s.store.memory.chapters.list(characterId, chatId)).toMatchObject({ chapters: [chapter(event("kept"))] });
+
+    // A repeat finds none of them and writes nothing, still naming the revision.
+    expect(await answer(await s.json(`${base}/events/remove`, { revision: removed.revision, ids: ["gone"] }))).toEqual({
+        revision: removed.revision,
+        removed: 0,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(after);
+});
+
+it("declines adoptable summaries when removing the last retracted event would bring the adoption choice back", async () => {
+    const s = await server();
+    storeAdoptionChat(s, {
+        summaries: [{ text: "Keep this old memory.", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    s.write({ events: [{ ...event("adopted"), status: "retracted", writerRun: ADOPTED_WRITER_RUN }] });
+    const { revision } = memorySnapshot(s, chatId).contents;
+    expect((await answer(await s.request(base))).adoption.adoptable).toBe(0);
+    const removed = await answer(await s.json(`${base}/events/remove`, { revision, ids: ["adopted"] }));
+    expect(removed.removed).toBe(1);
+    const listed = await answer(await s.request(base));
+    expect(listed.events).toEqual([]);
+    // Without the decline the emptied chat would wait for the choice again and hold every recording.
+    expect(listed.adoption).toEqual({ adoptable: 0, declined: true, resettable: false });
+});
+
+it("clears every record of a chat with no turn to record and refuses one a start over would record", async () => {
+    const s = await server();
+    const trashed = { ...page("trashed"), trashedAt: 1 };
+    const thread: MemoryThread = { id: "t", title: "A promise", state: "open", who: [], openedBy: "e" };
+    s.write({ pages: [page("p"), trashed], events: [event("e")], threads: [thread], runs: [run("r1")] });
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, chapter(event("e")));
+    const before = memorySnapshot(s, chatId);
+    const { revision } = before.contents;
+    await answer(await s.json(`${base}/clear`, {}), 400);
+    await answer(await s.json(`${base}/clear`, { revision: "stale" }), 409);
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+
+    const cleared = await answer(await s.json(`${base}/clear`, { revision }));
+    expect(cleared.cleared).toBe(true);
+    const after = memorySnapshot(s, chatId);
+    expect(after.contents).toMatchObject({ revision: cleared.revision, pages: [], trash: [], events: [], threads: [] });
+    // The runs are the Log and stay; the chapters listed events that are gone.
+    expect(after.contents.runs).toEqual(before.contents.runs);
+    expect(s.store.memory.chapters.list(characterId, chatId)).toMatchObject({ chapters: [] });
+    expect(await answer(await s.json(`${base}/clear`, { revision: cleared.revision }))).toEqual({
+        revision: cleared.revision,
+        cleared: false,
+    });
+
+    // With a reply to record, starting over is the rebuild command's: this route would only discard.
+    s.write({ events: [event("later")] });
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "replace",
+                        chat: {
+                            ...chat,
+                            message: [
+                                { chatId: "m0", role: "user", data: "Question" },
+                                { chatId: "m1", role: "char", data: "Answer" },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    const held = memorySnapshot(s, chatId);
+    expect(await answer(await s.json(`${base}/clear`, { revision: held.contents.revision }), 409)).toMatchObject({
+        reason: "changed",
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(held);
+});
+
+it("fences chapter removal and clearing from a panel opened before the chat was trashed", async () => {
+    const s = await server();
+    const entry = event("e");
+    s.write({ events: [entry], pages: [page("p")] });
+    const savedChapter = chapter(entry);
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, savedChapter);
+    const before = memorySnapshot(s, chatId);
+    const { revision } = await answer(await s.request(base));
+    await answer(
+        await s.chatTrash("trash", { characterId, chatId, revision: s.store.chatRevision(characterId, chatId) }),
+    );
+
+    const remove = await s.json(`${base}/chapters/remove`, { ids: [savedChapter.id] });
+    const clear = await s.json(`${base}/clear`, { revision });
+    expect([remove.status, clear.status]).toEqual([409, 409]);
+    expect(await remove.json()).toMatchObject({ reason: "fenced" });
+    expect(await clear.json()).toMatchObject({ reason: "fenced" });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters: [savedChapter] });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    await answer(await s.json(`${missingChatBase}/chapters/remove`, { ids: [savedChapter.id] }), 404);
+    await answer(await s.json(`${missingChatBase}/clear`, { revision }), 404);
+});
+
+it("declines adoptable summaries when clearing, so the emptied chat does not wait for the adoption choice", async () => {
+    const s = await server();
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "meta",
+                        set: {
+                            hypaV3Data: {
+                                summaries: [{ text: "Keep this old memory.", chatMemos: [], isImportant: false }],
+                            },
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    s.write({ events: [{ ...event("adopted"), writerRun: ADOPTED_WRITER_RUN }] });
+    const { revision } = memorySnapshot(s, chatId).contents;
+    expect((await answer(await s.json(`${base}/clear`, { revision }))).cleared).toBe(true);
+    expect((await answer(await s.request(base))).adoption).toEqual({
+        adoptable: 0,
+        declined: true,
+        resettable: false,
+    });
+});
+
+it("carries a decline through copies and branches even without crossing records, once only", async () => {
+    for (const mode of ["copy", "branch", "no source records", "no supported records"] as const) {
+        const s = mode === "no source records" ? await server() : await inheritanceServer(mode !== "copy");
+        writeMemory(s.store, characterId, "other", { adoptionDeclined: true });
+        if (mode === "no supported records")
+            writeMemory(s.store, characterId, "other", { remove: { pages: ["gate"], threads: ["promise"] } });
+        storeAdoptionChat(s, { summaries: [{ text: "Old memory", chatMemos: [], isImportant: false }] });
+        if (mode === "copy" || mode === "branch") {
+            const source = s.store.readChatSource(characterId, "other").data as Chat;
+            s.store.applyChanges({
+                chats: [
+                    {
+                        characterId,
+                        chatId,
+                        baseRevision: s.store.chatRevision(characterId, chatId),
+                        ops: [
+                            {
+                                op: "replace",
+                                chat: {
+                                    ...source,
+                                    id: chatId,
+                                    message: mode === "copy" ? source.message : source.message.slice(0, 1),
+                                },
+                            },
+                        ],
+                    },
+                ],
+            });
+        }
+        const before = memorySnapshot(s, "other");
+        const start = s.store.memory.readContents(characterId, chatId)!.revision;
+        const result = await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+        expect(result).toEqual({
+            revision: start.replace(/:0$/, ":1"),
+            inherited: mode === "copy" || mode === "branch",
+        });
+        expect((await answer(await s.request(base))).adoption).toMatchObject({ adoptable: 0, declined: true });
+        const inherited = memorySnapshot(s, chatId);
+        expect(inherited.contents.events.map(({ id }) => id)).toEqual(
+            mode === "copy" ? ["early", "late"] : mode === "branch" ? ["early"] : [],
+        );
+        expect(await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }))).toEqual({
+            revision: result.revision,
+            inherited: false,
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(inherited);
+        expect(memorySnapshot(s, "other")).toEqual(before);
+    }
+});
+
+it("leaves decline out of chat files while restoring records leaves an existing decline in place", async () => {
+    const source = await server();
+    storeAdoptionChat(source, { summaries: [{ text: "Old memory", chatMemos: ["m0"], isImportant: false }] });
+    await answer(await source.request(`${base}/decline`, { method: "POST" }));
+    const packed = await answer(await source.request(`${base}/package`));
+    const threaded = await answer(await source.request(`${base}/threads`));
+    const file = JSON.parse(
+        JSON.stringify({
+            type: "risuChat",
+            ver: 2,
+            data: source.store.readChatSource(characterId, chatId).data,
+            structuredMemory: { pages: packed.pages, events: packed.events, threads: threaded.threads },
+        }),
+    );
+    expect(file.data).not.toHaveProperty("adoptionDeclined");
+    expect(file.structuredMemory).toEqual({ pages: [], events: [], threads: [] });
+    const imported = await server();
+    storeAdoptionChat(imported, file.data.hypaV3Data);
+    await answer(await imported.json(`${base}/restore`, file.structuredMemory));
+    expect((await answer(await imported.request(base))).adoption).toEqual({
+        adoptable: 1,
+        declined: false,
+        resettable: false,
+    });
+    const restored = await answer(
+        await source.json(`${base}/restore`, { pages: [page("imported")], events: [], threads: [] }),
+    );
+    expect(restored.restored).toBe(true);
+    expect(source.store.memory.readContents(characterId, chatId)?.adoptionDeclined).toBe(true);
+    expect((await answer(await source.request(base))).adoption).toMatchObject({ adoptable: 0, declined: true });
+});
+
+it("resets only adopted real summaries, publishes the chat revision and refuses a later summary the projection owns", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const s = await server();
+    const ui = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("ui")!;
+    const current = s.store.get(ui, "main")!;
+    s.store.put(ui, "main", { ...(current.data as object), memoryAlgorithmType: "structuredMemory" }, current.revision);
+    const node = serve({ fetch: s.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
+    await new Promise<void>((resolve) => node.once("listening", resolve));
+    allowListenerOrigin(node);
+    s.context.attachWebSocket(node);
+    const ws = new WebSocket(
+        `ws://127.0.0.1:${(node.address() as { port: number }).port}/api/events/ws?risu-auth=${await s.signer.jwt()}`,
+    );
+    const frames: EventFeedFrame[] = [];
+    ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+    cleanups.push(async () => {
+        ws.terminate();
+        node.closeAllConnections();
+        await new Promise<void>((resolve) => node.close(() => resolve()));
+    });
+    await new Promise<void>((resolve) => ws.once("message", () => resolve()));
+    const summaries = { summaries: [{ text: "Adopted memory.", chatMemos: ["m0", "m1"], isImportant: false }] };
+    storeAdoptionChat(s, summaries);
+    const refuse = async () => {
+        const before = s.store.readChatSource(characterId, chatId);
+        const memory = memorySnapshot(s, chatId);
+        expect((await answer(await s.request(base))).adoption.resettable).toBe(false);
+        expect(await answer(await s.request(`${base}/reset-summaries`, { method: "POST" }))).toEqual({
+            chatRevision: before.revision,
+            reset: false,
+        });
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(before);
+        expect(memorySnapshot(s, chatId)).toEqual(memory);
+    };
+    await refuse();
+    s.write({ events: [event("ordinary")] });
+    await refuse();
+    s.write({ remove: { events: ["ordinary"] } });
+    await answer(await s.request(`${base}/adopt`, { method: "POST" }));
+    expect((await answer(await s.request(base))).adoption.resettable).toBe(true);
+    const memory = memorySnapshot(s, chatId);
+    const beforeRevision = s.store.chatRevision(characterId, chatId)!;
+    const result = await answer(await s.request(`${base}/reset-summaries`, { method: "POST" }));
+    expect(result.reset).toBe(true);
+    expect(result.chatRevision).not.toBe(beforeRevision);
+    expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
+    expect(memorySnapshot(s, chatId)).toEqual(memory);
+    await new Promise<void>((resolve) => {
+        ws.once("pong", () => resolve());
+        ws.ping();
+    });
+    expect(frames.filter((frame) => frame.type === "change")).toEqual([
+        expect.objectContaining({
+            changes: expect.objectContaining({
+                chats: [expect.objectContaining({ characterId, id: chatId, revision: result.chatRevision })],
+            }),
+        }),
+    ]);
+    const read = await answer(await s.json("/api/resources/read", { chats: [{ characterId, id: chatId }] }));
+    expect(isSealedHypaV3Data(read.chats[0].data.hypaV3Data)).toBe(true);
+    expect(read.chats[0].data.hypaV3Data.summaries.map((summary: { text: string }) => summary.text)).toEqual([
+        "Adopted memory.",
+    ]);
+    await refuse();
+    // After the reset the projection answers for the chat, so a real value a write brings (a tab from
+    // before the switch, a replay) is dropped with the rest of the write kept, and no hold follows.
+    const newer = { summaries: [{ text: "New summary after reset", chatMemos: ["m1"], isImportant: true }] };
+    storeAdoptionChat(s, newer);
+    expect(isSealedHypaV3Data((await answer(await s.request(`${base}/projection`))).hypaV3Data)).toBe(true);
+    expect(s.store.readChatSource(characterId, chatId).data).not.toHaveProperty("hypaV3Data");
+    expect(s.store.readChatSource(characterId, chatId).data?.message.map(({ chatId }) => chatId)).toEqual(["m0", "m1"]);
+    s.write({ adoptionDeclined: true });
+    await refuse();
+});
+
+function stageRun(s: Awaited<ReturnType<typeof server>>, id = chatId) {
+    s.store.memory.rebuild.begin(characterId, id, { epoch: s.epoch, mode: "rebuild", plan: [["u", "a"]] }, {});
+    const staged = s.store.memory.rebuild.staged;
+    staged.write(
+        characterId,
+        id,
+        { epoch: s.epoch, baseRevision: staged.readContents(characterId, id)!.revision, advance: true },
+        {
+            pages: [page("staged")],
+            events: [event("staged")],
+            threads: [{ id: "staged", title: "Staged thread", who: [], state: "open" }],
+        },
+    );
+}
+
+it("fences abandoning a paused rebuild while its chat is trashed and allows resuming after restore", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const s = await server({ memoryTaskOptions: { now: () => 1 } });
+    const context = bindChat(s);
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: context.chatRevision,
+                ops: [{ op: "meta", set: { memoryMode: "structuredMemory", memoryEnabled: true } }],
+            },
+        ],
+    });
+    stageRun(s);
+    const paused = { mode: "rebuild", done: 1, total: 1, resumable: true };
+    expect((await answer(await s.request(base))).rebuild).toMatchObject(paused);
+
+    const trashed = await answer(
+        await s.chatTrash("trash", { characterId, chatId, revision: s.store.chatRevision(characterId, chatId) }),
+    );
+    expect(await answer(await s.request(`${base}/rebuild/abandon`, { method: "POST" }), 409)).toMatchObject({
+        reason: "fenced",
+    });
+    await answer(await s.request(`${missingChatBase}/rebuild/abandon`, { method: "POST" }), 404);
+    const restored = await answer(await s.chatTrash("restore", { characterId, chatId, revision: trashed.revision }));
+    expect((await answer(await s.request(base))).rebuild).toMatchObject(paused);
+
+    const tasks = s.context.memoryTasks!;
+    const ref = { chaId: characterId, chatId };
+    // Keep the resumed task queued so the test observes admission without calling a model.
+    const lease = await tasks.acquireSummaryWriter(ref, "test");
+    try {
+        const accepted = await answer(
+            await s.json("/api/generations", {
+                kind: "command",
+                clientId: "tab",
+                context: { ...context, chatRevision: restored.revision },
+                command: { type: "memoryRebuild", resume: true },
+            }),
+        );
+        await s.context.generationJobs.drain();
+        expect(s.context.generationJobs.status(accepted.jobId, "tab")?.terminal).toMatchObject({ type: "done" });
+        expect(tasks.status(ref)).toMatchObject({ kind: "structuredMemory", state: "queued" });
+    } finally {
+        tasks.cancel(ref);
+        lease.release();
+    }
+});
+
+it("previews folds by stored status only for backfill with user omission enabled", async () => {
+    const s = await server();
+    bindChat(s);
+    // The reply has changed since anchoring: the preview is an upper bound, not a reconciliation.
+    s.write({
+        events: [
+            {
+                ...event("adopted"),
+                writerRun: ADOPTED_WRITER_RUN,
+                sources: [{ messageId: "a", index: 1, hash: "old-reply-hash" }],
+            },
+        ],
+    });
+    const kind = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("hypaV3Presets")!;
+    for (const omitUserMessages of [true, false]) {
+        const record = s.store.get(kind, "main")!;
+        const data = record.data as { selectedId: string; items: { id: string; settings: Record<string, unknown> }[] };
+        s.store.put(
+            kind,
+            "main",
+            {
+                ...data,
+                items: data.items.map((item) => ({
+                    ...item,
+                    settings: { ...item.settings, structured: { omitUserMessages } },
+                })),
+            },
+            record.revision,
+        );
+        for (const mode of ["backfill", "rebuild", "fresh", "record"] as const) {
+            const cost = await answer(
+                await s.request(`${base}/cost?mode=${mode}&turns=1${mode === "record" ? "&through=a" : ""}`),
+            );
+            if (mode === "backfill" && omitUserMessages) {
+                expect(cost).toEqual({ calls: 0, messages: 0, estimatedTokens: 0, folds: 1 });
+            } else {
+                expect(cost).not.toHaveProperty("folds");
+            }
+        }
+    }
+});
+
+it("previews rebuild, backfill and record costs from stored messages without writing, even during a run", async () => {
+    const s = await server();
+    bindChat(s);
+    const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "u4"].map((id) => ({
+        chatId: id,
+        role: id.startsWith("u") ? "user" : "char",
+        data: "한",
+    }));
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "replace",
+                        chat: { ...(s.store.readChatSource(characterId, chatId).data as Chat), message: messages },
+                    },
+                ],
+            },
+        ],
+    });
+    s.write({
+        events: [
+            {
+                ...event("adopted"),
+                writerRun: ADOPTED_WRITER_RUN,
+                sources: [{ messageId: "a1", index: 1, hash: messageSourceHash(messages[1]) }],
+            },
+        ],
+    });
+    stageRun(s);
+    const before = memorySnapshot(s, chatId);
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    const writes = s.store.writeCount();
+    for (const [query, expected] of [
+        ["mode=rebuild&turns=2", { calls: 2, messages: 6 }],
+        ["mode=backfill&turns=1", { calls: 3, messages: 5 }],
+        ["mode=record&turns=1&through=a3", { calls: 2, messages: 4 }],
+    ] as const) {
+        const cost = await answer(await s.request(`${base}/cost?${query}`));
+        expect(cost).toMatchObject(expected);
+        expect(Number.isSafeInteger(cost.estimatedTokens)).toBe(true);
+        expect(cost.estimatedTokens).toBeGreaterThan(0);
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+    expect(s.store.writeCount()).toBe(writes);
+});
+
+it("fences generation and memory mutations during a stopped run while allowing previews, checkpoint saves and live-only exports and copies", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const admitted: string[] = [];
+    const s = await server({
+        generationRunner: async (job) => {
+            admitted.push(job.kind);
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const ui = kinds.get("ui")!;
+    s.store.put(
+        ui,
+        "main",
+        { ...(s.store.get(ui, "main")!.data as object), memoryAlgorithmType: "structuredMemory" },
+        s.store.get(ui, "main")!.revision,
+    );
+    s.write({ pages: [page("live")], events: [event("live")] });
+    stageRun(s);
+    s.store.memory.rebuild.noteStop(characterId, chatId, { epoch: s.epoch, reason: "cancelled" });
+    const before = memorySnapshot(s, chatId);
+    for (const action of [
+        { kind: "send" },
+        { kind: "continue" },
+        { kind: "command", command: { type: "manual", name: "trigger" } },
+        { kind: "command", command: { type: "button", data: "button" } },
+        { kind: "command", command: { type: "memoryRecord", messageId: "a" } },
+    ]) {
+        const response = await s.json("/api/generations", { ...action, context, clientId: "tab" });
+        expect(response.status, await response.text()).toBe(409);
+    }
+    expect(admitted).toEqual([]);
+    await answer(await s.json("/api/generations", { kind: "preview", context, clientId: "tab" }));
+    await s.context.generationJobs.drain();
+    expect(admitted).toEqual(["preview"]);
+    const mutations = [
+        [
+            "edits",
+            { revision: before.contents.revision, edit: { kind: "page", pageId: "live", contextMode: "always" } },
+        ],
+        ["adopt", {}],
+        ["decline", {}],
+        ["reset-summaries", {}],
+        ["events/remove", { revision: before.contents.revision, ids: ["live"] }],
+        ["clear", { revision: before.contents.revision }],
+        ["restore", { pages: [], events: [], threads: [] }],
+        ["inherit", { sourceChatId: "other" }],
+    ] as const;
+    for (const [route, body] of mutations)
+        expect(await answer(await s.json(`${base}/${route}`, body), 409)).toMatchObject({ reason: "fenced" });
+    const saved = await answer(
+        await s.json("/api/chat-checkpoints/save", { characterId, chatId, name: "During rebuild" }),
+    );
+    await answer(
+        await s.json("/api/chat-checkpoints/load", {
+            characterId,
+            chatId,
+            id: saved.checkpoint.id,
+            chatBaseRevision: context.chatRevision,
+        }),
+        409,
+    );
+    const checkpoint = s.store.checkpoints.readMemory(characterId, chatId, saved.checkpoint.id)!;
+    expect(checkpoint.captured).toBe(true);
+    if (!checkpoint.captured) throw new Error("Checkpoint missed live memory");
+    expect(checkpoint.texts.pages.map((text) => JSON.parse(text))).toEqual([page("live")]);
+    expect(checkpoint.texts.events.map((text) => JSON.parse(text).id)).toEqual(["live"]);
+    expect(checkpoint.texts.threads).toEqual([]);
+    expect(await answer(await s.request(`${base}/package`))).toMatchObject({
+        pages: [page("live")],
+        events: [expect.objectContaining({ id: "live" })],
+        next: null,
+    });
+    expect(await answer(await s.request(`${base}/threads`))).toMatchObject({ threads: [] });
+    const other = `/api/memory/structured/${encodeURIComponent(characterId)}/other`;
+    expect(await answer(await s.json(`${other}/inherit`, { sourceChatId: chatId }))).toMatchObject({ inherited: true });
+    expect(memorySnapshot(s, "other").records.pages).toEqual([page("live")]);
+    expect(s.store.memory.rebuild.status(characterId, "other")).toBeNull();
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    s.store.put(
+        ui,
+        "main",
+        { ...(s.store.get(ui, "main")!.data as object), memoryAlgorithmType: "hypaV3" },
+        s.store.get(ui, "main")!.revision,
+    );
+    await answer(await s.json("/api/generations", { kind: "send", context, clientId: "tab" }));
+    await s.context.generationJobs.drain();
+    expect(admitted).toEqual(["preview", "send"]);
+    expect(await answer(await s.request(`${base}/rebuild/abandon`, { method: "POST" }))).toMatchObject({
+        abandoned: true,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("reconciles message edits and confirmed deletions into both live and staged events during a rebuild", async () => {
+    const s = await server();
+    bindChat(s);
+    const stored = s.store.readChatSource(characterId, chatId).data as Chat;
+    const sources = stored.message
+        .slice(0, 2)
+        .map((message, index) => ({ messageId: message.chatId!, index, hash: messageSourceHash(message) }));
+    s.write({ events: [{ ...event("live"), sources }] });
+    stageRun(s);
+    const staged = s.store.memory.rebuild.staged;
+    staged.write(
+        characterId,
+        chatId,
+        { epoch: s.epoch, baseRevision: staged.readContents(characterId, chatId)!.revision },
+        { events: [{ ...event("staged"), sources }] },
+    );
+    const edit = (ops: ChatOp[]) =>
+        s.json("/api/resources/batch", {
+            chats: [{ characterId, chatId, baseRevision: s.store.chatRevision(characterId, chatId), ops }],
+        });
+    await answer(await edit([{ op: "patchMessage", id: "a", set: { data: "The gate shuts." } }]));
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "live")?.data).toMatchObject({ rerecord: true });
+    expect(staged.readRecord(characterId, chatId, "events", "staged")?.data).toMatchObject({ rerecord: true });
+    await answer(await edit([{ op: "remove", ids: ["a"], retract: true }]));
+    expect(s.store.memory.readRecord(characterId, chatId, "events", "live")?.data.status).toBe("retracted");
+    expect(staged.readRecord(characterId, chatId, "events", "staged")?.data.status).toBe("retracted");
+});
+
+it("keeps adopted summaries and their reset offer through repeated swaps, replacing only fully reproduced events", async () => {
+    const s = await server();
+    storeAdoptionChat(s, {
+        summaries: [{ text: "Reproducible summary", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    await answer(await s.request(`${base}/adopt`, { method: "POST" }));
+    s.write({ events: [event("carried")] });
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    const initial = readRecordSet(s.store.memory, characterId, chatId)!;
+    const reproduced = initial.events.find(({ sources }) => sources.length === 2)!;
+    const carried = initial.events.find(({ sources }) => sources.length === 0)!;
+    for (let i = 0; i < 2; i++) {
+        const live = readRecordSet(s.store.memory, characterId, chatId)!;
+        const rebuild = s.store.memory.rebuild;
+        rebuild.begin(
+            characterId,
+            chatId,
+            { epoch: s.epoch, mode: "rebuild", plan: [["m0", "m1"]] },
+            rebuildSeed("rebuild", live),
+        );
+        rebuild.staged.write(
+            characterId,
+            chatId,
+            { epoch: s.epoch, baseRevision: rebuild.staged.readContents(characterId, chatId)!.revision, advance: true },
+            {
+                events: [{ ...event(`new-${i}`), sources: reproduced.sources }],
+                runs: [{ ...run(`new-${i}`), result: "recorded", language: i === 0 ? "English" : "Korean" }],
+            },
+        );
+        const staged = readRecordSet(rebuild.staged, characterId, chatId)!;
+        rebuild.swap(
+            characterId,
+            chatId,
+            { epoch: s.epoch, baseRevision: live.contents.revision },
+            rebuildChanges("rebuild", live, staged)!,
+        );
+        expect(s.store.memory.readRecord(characterId, chatId, "events", carried.id)?.data).toEqual(carried);
+        expect(s.store.memory.readContents(characterId, chatId)!.events.map(({ id }) => id)).toEqual([
+            carried.id,
+            `new-${i}`,
+        ]);
+        expect(s.store.memory.readRecord(characterId, chatId, "events", `new-${i}`)?.data.createdRevision).toBe(
+            Number(live.contents.revision.split(":").at(-1)) + 1,
+        );
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+        // The latest failure does not replace the language of the latest recorded run.
+        s.write({ runs: [{ ...run(`failed-${i}`), result: "failed", language: "French" }] });
+        expect(await answer(await s.request(base))).toMatchObject({
+            adoption: { resettable: true },
+            recordedLanguage: i === 0 ? "English" : "Korean",
+        });
+    }
+});
+
+it.each(["memoryRecord", "memoryRebuild"] as const)(
+    "admits %s by the chat's mode and refuses HypaV3-mode chats under global Structured Memory",
+    async (type) => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        for (const mode of ["structuredMemory", "hypaV3"] as const) {
+            const s = await server({ memoryTaskOptions: { now: () => 1 } });
+            const context = bindChat(s);
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const memory = kinds.get("memoryTranslateMedia")!;
+            const settings = s.store.get(memory, "main")!;
+            s.store.put(memory, "main", { ...(settings.data as object), hypaV3: true }, settings.revision);
+            const ui = kinds.get("ui")!;
+            s.store.put(
+                ui,
+                "main",
+                {
+                    ...(s.store.get(ui, "main")!.data as object),
+                    memoryAlgorithmType: mode === "structuredMemory" ? "hypaV3" : "structuredMemory",
+                },
+                s.store.get(ui, "main")!.revision,
+            );
+            s.store.applyChanges({
+                chats: [
+                    {
+                        characterId,
+                        chatId,
+                        baseRevision: s.store.chatRevision(characterId, chatId),
+                        ops: [{ op: "meta", set: { memoryMode: mode, memoryEnabled: true } }],
+                    },
+                ],
+            });
+            context.chatRevision = s.store.chatRevision(characterId, chatId)!;
+            const tasks = s.context.memoryTasks!;
+            const ref = { chaId: characterId, chatId };
+            const lease = await tasks.acquireSummaryWriter(ref, "admission-test");
+            try {
+                const accepted = await answer(
+                    await s.json("/api/generations", {
+                        kind: "command",
+                        clientId: "tab",
+                        context,
+                        command:
+                            type === "memoryRecord" ? { type, messageId: "a" } : { type, mode: "rebuild", turns: 1 },
+                    }),
+                );
+                await s.context.generationJobs.drain();
+                const terminal = s.context.generationJobs.status(accepted.jobId, "tab")?.terminal;
+                if (mode === "structuredMemory") {
+                    expect(terminal).toMatchObject({ type: "done" });
+                    expect(tasks.status(ref)).toMatchObject({ kind: "structuredMemory", state: "queued" });
+                    if (type === "memoryRebuild")
+                        expect(s.store.memory.rebuild.status(characterId, chatId)).toMatchObject({
+                            mode: "rebuild",
+                            done: 0,
+                            total: 1,
+                        });
+                } else {
+                    expect(terminal).toMatchObject({
+                        type: "error",
+                        status: 400,
+                        message: "Structured memory is not this chat's memory",
+                    });
+                    expect(tasks.status(ref)).toBeNull();
+                    expect(s.store.memory.rebuild.status(characterId, chatId)).toBeNull();
+                }
+                expect(s.store.memory.readContents(characterId, chatId)!.events).toEqual([]);
+            } finally {
+                tasks.cancel(ref);
+                lease.release();
+            }
+        }
+    },
+);
+
+it("refuses held rebuild starts and resumes through the same job admission as record now and still abandons", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const s = await server({ memoryTaskOptions: { now: () => 1 } });
+    storeAdoptionChat(s, {
+        summaries: [{ text: "Adopt or decline first", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    const context = bindChat(s);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    for (const [name, id, fields] of [
+        ["ui", "main", { memoryAlgorithmType: "structuredMemory" }],
+        ["characters", characterId, { supaMemory: true }],
+    ] as const) {
+        const kind = kinds.get(name)!;
+        const row = s.store.get(kind, id)!;
+        s.store.put(kind, id, { ...(row.data as object), ...fields }, row.revision);
+    }
+    const before = memorySnapshot(s, chatId);
+    for (const resume of [false, true]) {
+        if (resume) stageRun(s);
+        const accepted = await answer(
+            await s.json("/api/generations", {
+                kind: "command",
+                clientId: "tab",
+                context,
+                command: resume
+                    ? { type: "memoryRebuild", resume: true }
+                    : { type: "memoryRebuild", mode: "rebuild", turns: 1 },
+            }),
+        );
+        await s.context.generationJobs.drain();
+        expect(s.context.generationJobs.status(accepted.jobId, "tab")?.terminal).toMatchObject({
+            type: "error",
+            status: 409,
+            message: expect.stringContaining("Adopt or decline"),
+        });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        if (!resume) expect(s.store.memory.rebuild.status(characterId, chatId)).toBeNull();
+    }
+    expect(await answer(await s.request(`${base}/rebuild/abandon`, { method: "POST" }))).toMatchObject({
+        abandoned: true,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("restores a writer change's text, evidence and marks once and counts only later unretracted events", async () => {
+    const s = await server();
+    const earlier = {
+        body: "The gate was closed.",
+        provenance: ["old"],
+        sources: [{ messageId: "old-message", hash: "old-hash", index: 0 }],
+        userCorrected: true,
+        disputed: true,
+        unsupported: true,
+        pinned: true,
+        suppressed: true,
+    };
+    const p = page("p", "The gate is open.");
+    p.sections[0] = {
+        ...p.sections[0],
+        provenance: ["opening"],
+        sources: [],
+        locked: true,
+        pinned: true,
+        suppressed: true,
+    };
+    p.history = [
+        {
+            id: "change",
+            heading: "Facts",
+            before: earlier,
+            kind: "change",
+            eventId: "opening",
+            highlighted: true,
+            at: 2,
+        },
+    ];
+    const stale = s.write({
+        pages: [p],
+        events: [
+            event("old"),
+            event("opening"),
+            { ...event("removed"), status: "retracted" },
+            event("later"),
+            { ...event("stale"), status: "stale" },
+        ],
+    });
+    const reverted = await answer(
+        await s.json(`${base}/revert`, { revision: stale, pageId: "p", historyId: "change" }),
+    );
+    expect(reverted).toMatchObject({
+        reverted: true,
+        laterEvents: 2,
+        data: {
+            sections: [{ ...earlier, heading: "Facts", locked: true, updatedAt: Date.now() }],
+            history: [
+                { ...p.history[0], revertedBy: "user" },
+                {
+                    id: expect.any(String),
+                    heading: "Facts",
+                    kind: "revert",
+                    highlighted: false,
+                    at: Date.now(),
+                    before: {
+                        body: "The gate is open.",
+                        provenance: ["opening"],
+                        sources: [],
+                        pinned: true,
+                        suppressed: true,
+                    },
+                },
+            ],
+        },
+    });
+    expect(reverted.data.history).toHaveLength(2);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: reverted.revision,
+        data: reverted.data,
+    });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision: reverted.revision, pageId: "p", historyId: "change" })),
+    ).toEqual({ ...reverted, reverted: false, laterEvents: 0 });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision: stale, pageId: "p", historyId: "change" }), 409),
+    ).toMatchObject({ revision: reverted.revision });
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: reverted.revision,
+        data: reverted.data,
+    });
+
+    const orphan = { ...p, id: "orphan", history: [{ ...p.history[0], eventId: "not-listed" }] };
+    const revision = s.write({ pages: [orphan] });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: "orphan", historyId: "change" })),
+    ).toMatchObject({ reverted: true, laterEvents: 0 });
+});
+
+it("reverts compactions with their patch by either id and undoes repeated-event changes newest first", async () => {
+    const s = await server();
+    const snapshot = (body: string) => ({ body, provenance: [], sources: [] });
+    for (const historyId of ["patch", "compact"]) {
+        const p = page(historyId, "Shortened");
+        p.history = [
+            {
+                id: "patch",
+                heading: "Facts",
+                before: snapshot("Original"),
+                kind: "change",
+                eventId: "same-event",
+                highlighted: true,
+                at: 1,
+            },
+            {
+                id: "compact",
+                heading: "Facts",
+                before: snapshot("Long replacement"),
+                kind: "compact",
+                eventId: "same-event",
+                highlighted: true,
+                at: 1,
+            },
+        ];
+        const revision = s.write({ pages: [p] });
+        const result = await answer(await s.json(`${base}/revert`, { revision, pageId: p.id, historyId }));
+        expect(result.data.sections[0].body).toBe("Original");
+        expect(result.data.history).toEqual([
+            ...p.history.map((entry) => ({ ...entry, revertedBy: "user" })),
+            expect.objectContaining({ kind: "revert", before: snapshot("Shortened"), highlighted: false }),
+        ]);
+    }
+    const p = page("scene", "Third scene");
+    p.type = "scene";
+    p.history = [
+        {
+            id: "first",
+            heading: "Facts",
+            before: snapshot("First scene"),
+            kind: "change",
+            eventId: "repeat",
+            highlighted: true,
+            at: 1,
+        },
+        {
+            id: "second",
+            heading: "Facts",
+            before: snapshot("Second scene"),
+            kind: "change",
+            eventId: "repeat",
+            highlighted: true,
+            at: 1,
+        },
+    ];
+    let revision = s.write({ pages: [p] });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: p.id, historyId: "first" }), 409),
+    ).toMatchObject({ reason: "superseded" });
+    const latest = await answer(await s.json(`${base}/revert`, { revision, pageId: p.id, historyId: "second" }));
+    expect(latest.data.sections[0].body).toBe("Second scene");
+    expect(latest.data.history[0].revertedBy).toBeUndefined();
+    const oldest = await answer(
+        await s.json(`${base}/revert`, { revision: latest.revision, pageId: p.id, historyId: "first" }),
+    );
+    expect(oldest.data.sections[0].body).toBe("First scene");
+
+    const edited = page("edited", "Writer text");
+    edited.history = [{ ...p.history[0], id: "writer" }];
+    revision = s.write({ pages: [edited] });
+    const personal = await answer(
+        await s.json(`${base}/edits`, {
+            revision,
+            edit: { kind: "section", pageId: edited.id, heading: "Facts", body: "My correction" },
+        }),
+    );
+    expect(personal.data.history.at(-1)).toMatchObject({ kind: "edit", highlighted: false });
+    expect(
+        await answer(
+            await s.json(`${base}/revert`, { revision: personal.revision, pageId: edited.id, historyId: "writer" }),
+            409,
+        ),
+    ).toMatchObject({ reason: "superseded" });
+    expect(await answer(await s.request(`${base}/records/pages/edited`))).toEqual({
+        revision: personal.revision,
+        data: personal.data,
+    });
+
+    const compact = page("trimmed", "Shortened");
+    compact.history = [
+        {
+            id: "compact",
+            heading: "Facts",
+            before: snapshot("Long replacement"),
+            kind: "compact",
+            eventId: "old",
+            highlighted: true,
+            at: 1,
+        },
+    ];
+    revision = s.write({ pages: [compact] });
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: compact.id, historyId: "compact" }), 409),
+    ).toMatchObject({ reason: "superseded" });
+});
+
+it("refuses non-writer and lost history entries and fences reverts throughout a rebuild", async () => {
+    const s = await server();
+    const p = page("p");
+    p.history = [
+        { id: "create", heading: null, before: null, kind: "create", eventId: "e", highlighted: true, at: 1 },
+        { id: "edit", heading: "Facts", before: null, kind: "edit", highlighted: false, at: 2 },
+        { id: "revert", heading: "Facts", before: null, kind: "revert", highlighted: false, at: 3 },
+        { id: "writer", heading: "Facts", before: null, kind: "create", eventId: "e", highlighted: true, at: 4 },
+    ];
+    const revision = s.write({ pages: [p] });
+    for (const historyId of ["create", "edit", "revert"])
+        await answer(await s.json(`${base}/revert`, { revision, pageId: "p", historyId }), 400);
+    expect(
+        await answer(await s.json(`${base}/revert`, { revision, pageId: "p", historyId: "evicted" }), 404),
+    ).toMatchObject({ reason: "recordGone" });
+    stageRun(s);
+    for (const stopped of [false, true]) {
+        if (stopped) s.store.memory.rebuild.noteStop(characterId, chatId, { epoch: s.epoch, reason: "cancelled" });
+        expect(
+            await answer(await s.json(`${base}/revert`, { revision, pageId: "p", historyId: "writer" }), 409),
+        ).toMatchObject({ reason: "fenced" });
+    }
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({ revision, data: p });
+});
+
+it("serves default frames and format and rules only to authenticated requests in the current epoch", async () => {
+    const s = await server();
+    const route = "/api/memory/structured/default-prompts";
+    const anonymous = await s.app.request(route, { headers: { "x-resource-epoch": s.epoch } });
+    expect(anonymous.status).toBe(400);
+    for (const epoch of [null, "stale"]) {
+        expect((await s.request(route, {}, epoch)).status).toBe(412);
+    }
+    const body = await answer(await s.request(route));
+    const slots = {
+        analysis: analysisSlots({
+            language: "English",
+            cast: [],
+            scene: null,
+            threads: [],
+            messages: [],
+            window: { messages: [], sources: [] },
+            speaker: () => "C",
+            previousTitle: undefined,
+        }),
+        patch: patchSlots({ language: "English", rows: [], event: event("e") }),
+    };
+    for (const call of ["analysis", "patch"] as const) {
+        expect(body[call].frame).toBe(defaultPrompts()[call].frame);
+        expect(body[call].frame).toContain("<|im_start|>system");
+        for (const name of Object.keys(slots[call])) expect(body[call].frame).toContain(`{{slot::${name}}}`);
+        expect(body[call].format).toBe(slots[call].format);
+        expect(body[call].rules).toBe(slots[call].rules);
+        expect(body[call].format).toContain("JSON");
+        expect(body[call].rules).toContain("Rules:");
+    }
+});
+
+it("persists renamed titles and replacement aliases through page tools and record reads", async () => {
+    const s = await server();
+    const original = { ...page("p"), aliases: ["Quay"] };
+    const revision = s.write({ pages: [original] });
+    const renamed = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "rename", pageId: "p", title: "  Harbor  " },
+        }),
+    );
+    const expectedRename = { ...original, title: "Harbor", aliases: ["Quay", "Place p"], namedByUser: true };
+    expect(renamed).toEqual({ revision: expect.any(String), data: expectedRename });
+    expect(renamed.revision).not.toBe(revision);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: renamed.revision,
+        data: expectedRename,
+    });
+    expect((await answer(await s.request(base))).pages).toEqual([
+        expect.objectContaining({ id: "p", title: "Harbor" }),
+    ]);
+
+    const aliased = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision: renamed.revision,
+            tool: { kind: "aliases", pageId: "p", aliases: [" Port ", "Landing"] },
+        }),
+    );
+    const expectedAliases = { ...expectedRename, aliases: ["Port", "Landing"] };
+    expect(aliased).toEqual({ revision: expect.any(String), data: expectedAliases });
+    expect(aliased.revision).not.toBe(renamed.revision);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: aliased.revision,
+        data: expectedAliases,
+    });
+});
+
+it("merges aliases, evidence, marks and every page reference in one revision", async () => {
+    const s = await server();
+    const source = page("source", "Source facts");
+    source.aliases = ["Quay", "Harbor"];
+    source.sections[0] = {
+        ...source.sections[0],
+        provenance: ["source-event"],
+        sources: [{ messageId: "s", index: 1, hash: "s" }],
+        unsupported: true,
+        pinned: true,
+        locked: true,
+    };
+    source.sections.push({ ...source.sections[0], heading: "Access", body: "By boat" });
+    const target = page("target", "Target facts");
+    target.aliases = ["Harbor"];
+    target.links = ["source", "other-page"];
+    target.sections[0] = {
+        ...target.sections[0],
+        provenance: ["target-event"],
+        sources: [{ messageId: "t", index: 0, hash: "t" }],
+        updatedAt: 0,
+        disputed: true,
+        suppressed: true,
+        userCorrected: true,
+    };
+    const e: MemoryEvent = {
+        ...event("source-event"),
+        participants: ["source", "target"],
+        speakerId: "source",
+        stateChanges: [{ pageId: "source", section: "Facts", before: "closed", after: "open", quote: "Open" }],
+        knowledge: [{ pageId: "source", fact: "Open", stance: "knows", quote: "Open", knowers: ["source", "target"] }],
+        relationshipShifts: [{ from: "source", to: "source", direction: "closer", note: "Trust" }],
+        openThreads: { add: [{ title: "Return", who: ["source", "target"] }], close: [], transitions: [] },
+    };
+    const scene = { ...page("scene"), type: "scene" as const, participants: ["source", "target"] };
+    const other = { ...page("other-page"), links: ["source", "target"] };
+    const revision = s.write({
+        pages: [source, target, scene, other],
+        events: [e, event("target-event")],
+        threads: [{ id: "thread", title: "Return", who: ["source", "target"], state: "open" }],
+    });
+    const merged = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "merge", sourceId: "source", targetId: "target" },
+        }),
+    );
+    expect(merged.revision).toBe(revision.replace(/:1$/, ":2"));
+    expect(merged.data).toMatchObject({
+        id: "target",
+        reshaped: true,
+        aliases: ["Harbor", "Place source", "Quay"],
+        links: ["other-page"],
+    });
+    expect(merged.data.sections).toEqual([
+        {
+            ...target.sections[0],
+            body: "Target facts\n\nSource facts",
+            provenance: ["target-event", "source-event"],
+            sources: [...target.sections[0].sources, ...source.sections[0].sources],
+            updatedAt: Date.now(),
+            unsupported: true,
+            pinned: true,
+            locked: true,
+        },
+        source.sections[1],
+    ]);
+    const read = async (kind: string, id: string) =>
+        (await answer(await s.request(`${base}/records/${kind}/${id}`))).data;
+    expect(await read("pages", "source")).toEqual({ ...source, trashedAt: Date.now() });
+    expect(await read("pages", "scene")).toEqual({ ...scene, participants: ["target"] });
+    expect(await read("pages", "other-page")).toEqual({ ...other, links: ["target"] });
+    expect(await read("events", "source-event")).toEqual({
+        ...e,
+        participants: ["target"],
+        speakerId: "target",
+        stateChanges: [{ ...e.stateChanges[0], pageId: "target" }],
+        knowledge: [{ ...e.knowledge[0], pageId: "target", knowers: ["target"] }],
+        relationshipShifts: [{ ...e.relationshipShifts[0], from: "target", to: "target" }],
+        openThreads: { ...e.openThreads, add: [{ title: "Return", who: ["target"] }] },
+    });
+    expect(await read("threads", "thread")).toEqual({ id: "thread", title: "Return", who: ["target"], state: "open" });
+});
+
+it("refuses oversized merges, different types and scene tools without partial writes", async () => {
+    const s = await server();
+    const source = page("source");
+    const target = page("target");
+    const scene = { ...page("scene"), type: "scene" as const };
+    for (const variant of ["body", "sections", "type"] as const) {
+        const a = structuredClone(source);
+        const b = structuredClone(target);
+        if (variant === "body") a.sections[0].body = "x".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars);
+        if (variant === "sections")
+            a.sections = Array.from({ length: STRUCTURED_MEMORY_LIMITS.sectionsPerPage }, (_, i) => ({
+                ...a.sections[0],
+                heading: `Section ${i}`,
+            }));
+        if (variant === "type") b.type = "item";
+        const revision = s.write({ pages: [a, b, scene], events: [{ ...event("e"), participants: ["source"] }] });
+        const before = memorySnapshot(s, chatId);
+        await answer(
+            await s.json(`${base}/page-tools`, {
+                revision,
+                tool: { kind: "merge", sourceId: "source", targetId: "target" },
+            }),
+            400,
+        );
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    }
+    const revision = s.write({ pages: [source, target] });
+    const before = memorySnapshot(s, chatId);
+    for (const tool of [
+        { kind: "trash", pageId: "scene" },
+        { kind: "untrash", pageId: "scene" },
+        { kind: "purge", pageId: "scene" },
+        { kind: "purge", pageId: "source" },
+        { kind: "merge", sourceId: "scene", targetId: "target" },
+        { kind: "merge", sourceId: "source", targetId: "scene" },
+        { kind: "split", pageId: "scene", headings: ["Facts"], title: "Copy", aliases: [] },
+        { kind: "split", pageId: "source", headings: ["Facts"], title: "Copy", aliases: [] },
+    ])
+        await answer(await s.json(`${base}/page-tools`, { revision, tool }), 400);
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+});
+
+it("blocks older reverts across moved and joined headings while allowing a later writer change to be undone", async () => {
+    const s = await server();
+    const source = page("source", "Source facts");
+    source.aliases = ["Move me", "Keep me"];
+    source.sections[0].provenance = ["e"];
+    source.sections[0].sources = [{ messageId: "evidence", index: 0, hash: "evidence" }];
+    source.sections.push({ ...source.sections[0], heading: "Access", body: "Boat" });
+    const target = page("target", "Target facts");
+    const entry = (id: string, heading: string): MemoryPage["history"][number] => ({
+        id,
+        heading,
+        eventId: "e",
+        kind: "change",
+        before: { body: "Old text", provenance: [], sources: [] },
+        highlighted: true,
+        at: 1,
+    });
+    source.history = [entry("source-facts", "Facts"), entry("source-access", "Access")];
+    // A removed target section also has old history: moving that heading must block its resurrection.
+    target.history = [entry("target-facts", "Facts"), entry("target-access", "Access")];
+    const originalEvent = { ...event("e"), participants: ["source"] };
+    let revision = s.write({ pages: [source, target], events: [originalEvent] });
+    const merged = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "merge", sourceId: "source", targetId: "target" },
+        }),
+    );
+    for (const historyId of ["target-facts", "target-access"]) {
+        expect(
+            await answer(
+                await s.json(`${base}/revert`, { revision: merged.revision, pageId: "target", historyId }),
+                409,
+            ),
+        ).toMatchObject({ reason: "superseded" });
+    }
+    for (const h of (merged.data as MemoryPage).history.filter(({ kind }) => kind === "merge"))
+        await answer(
+            await s.json(`${base}/revert`, { revision: merged.revision, pageId: "target", historyId: h.id }),
+            400,
+        );
+    const changes: PageChanges = new Map();
+    changeSection(
+        changes,
+        merged.data,
+        { heading: "Facts", body: "Later writer text", kind: "change" },
+        { eventId: "e", sources: [], at: 2, newId: () => "later" },
+    );
+    revision = s.write({ pages: [changes.get("target")!.page] });
+    const undone = await answer(await s.json(`${base}/revert`, { revision, pageId: "target", historyId: "later" }));
+    expect(undone.data.sections[0].body).toBe("Target facts\n\nSource facts");
+    // Restore the original source as a separate live page to exercise the split's history barrier.
+    revision = s.write({ pages: [source], events: [originalEvent] });
+    const split = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "split", pageId: "source", headings: ["Facts"], title: "New place", aliases: ["Move me"] },
+        }),
+    );
+    expect(split.data).toMatchObject({
+        type: "location",
+        title: "New place",
+        aliases: ["Move me"],
+        sections: [source.sections[0]],
+        reshaped: true,
+    });
+    const remaining = (await answer(await s.request(`${base}/records/pages/source`))).data as MemoryPage;
+    expect(remaining).toMatchObject({ aliases: ["Keep me"], sections: [source.sections[1]], reshaped: true });
+    expect(
+        await answer(
+            await s.json(`${base}/revert`, { revision: split.revision, pageId: "source", historyId: "source-facts" }),
+            409,
+        ),
+    ).toMatchObject({ reason: "superseded" });
+    for (const p of [remaining, split.data as MemoryPage])
+        for (const h of p.history.filter(({ kind }) => kind === "split"))
+            await answer(
+                await s.json(`${base}/revert`, { revision: split.revision, pageId: p.id, historyId: h.id }),
+                400,
+            );
+    expect((await answer(await s.request(`${base}/records/events/e`))).data).toEqual(originalEvent);
+});
+
+it("keeps trash out of packages and copies, refuses edits, restores current evidence flags and purges only trash", async () => {
+    const s = await server();
+    const p = page("p", "Remember me");
+    p.sections[0].provenance = ["e"];
+    p.history = [
+        { id: "writer", heading: "Facts", before: null, kind: "change", eventId: "e", highlighted: true, at: 1 },
+    ];
+    const revision = s.write({ pages: [p], events: [event("e")] });
+    const tool = async (kind: string) =>
+        answer(
+            await s.json(`${base}/page-tools`, {
+                revision: s.store.memory.readContents(characterId, chatId)!.revision,
+                tool: { kind, pageId: "p" },
+            }),
+        );
+    const trashed = await tool("trash");
+    expect(trashed.revision).not.toBe(revision);
+    expect(await answer(await s.request(base))).toMatchObject({ pages: [], trash: [{ id: "p", title: "Place p" }] });
+    expect((await answer(await s.request(`${base}/package`))).pages).toEqual([]);
+    expect((await answer(await s.request(`${base}/records/pages/p`))).data).toEqual({ ...p, trashedAt: Date.now() });
+    await answer(
+        await s.json(`${base}/edits`, {
+            revision: trashed.revision,
+            edit: { kind: "section", pageId: "p", heading: "Facts", body: "Wrong" },
+        }),
+        400,
+    );
+    await answer(await s.json(`${base}/revert`, { revision: trashed.revision, pageId: "p", historyId: "writer" }), 400);
+    const other = base.replace(encodeURIComponent(chatId), "other");
+    await answer(await s.json(`${other}/inherit`, { sourceChatId: chatId }));
+    expect(await answer(await s.request(other))).toMatchObject({ pages: [], trash: [] });
+    s.write({ remove: { events: ["e"] } });
+    // A trash-only destination still has rows, so a chat-file restore must not fill it.
+    expect(
+        await answer(await s.json(`${base}/restore`, { pages: [page("injected")], events: [], threads: [] })),
+    ).toMatchObject({ restored: false });
+    s.write({ events: [{ ...event("e"), status: "retracted" }] });
+    const restored = await tool("untrash");
+    expect(restored.data).toEqual({ ...p, sections: [{ ...p.sections[0], unsupported: true }] });
+    expect(await answer(await s.request(base))).toMatchObject({ pages: [{ id: "p" }], trash: [] });
+    await answer(
+        await s.json(`${base}/page-tools`, { revision: restored.revision, tool: { kind: "purge", pageId: "p" } }),
+        400,
+    );
+    await tool("trash");
+    expect((await tool("purge")).data).toBeNull();
+    await answer(await s.request(`${base}/records/pages/p`), 404);
+    expect((await answer(await s.request(`${base}/records/events/e`))).data.status).toBe("retracted");
+});
+
+// Literal page wire format: import tests must not bring the Svelte renderer into the server project.
+const importPageFile = {
+    path: "pages/location/Imported [imported].md",
+    text: '---\nid: "imported"\ntype: "location"\ntitle: "Imported"\naliases: []\ncontextMode: "auto"\nlinks: []\nretrieval: {"keywords":[]}\nsections: [{"heading":"Facts","provenance":[],"sources":[],"locked":false,"updatedAt":1,"bodyLines":1}]\n---\n\n## Facts\n\nImported text\n\n',
+};
+
+it("imports readable files with individual refusals and leaves every occupied or held chat untouched", async () => {
+    const s = await server();
+    const revision = s.store.memory.readContents(characterId, chatId)!.revision;
+    const result = await answer(
+        await s.json(`${base}/import`, {
+            revision,
+            files: [importPageFile, { path: "pages/location/broken.md", text: "not a page" }],
+        }),
+    );
+    expect(result).toMatchObject({
+        imported: { pages: 1, events: 0, threads: 0 },
+        refusals: [{ file: "pages/location/broken.md", reason: "unreadable" }],
+    });
+    expect((await answer(await s.request(`${base}/records/pages/imported`))).data).toEqual({
+        ...page("imported", "Imported text"),
+        title: "Imported",
+    });
+    for (const existing of [
+        { pages: [page("occupied")] },
+        { pages: [{ ...page("trash"), trashedAt: 1 }] },
+        { events: [event("occupied")] },
+        { threads: [{ id: "occupied", title: "Return", state: "open" as const, who: [] }] },
+        { runs: [run("occupied", "recorded")] },
+        null,
+    ]) {
+        const occupied = await server();
+        if (existing) occupied.write(existing);
+        else
+            storeAdoptionChat(occupied, {
+                summaries: [{ text: "Still waiting for adoption", chatMemos: ["m0"], isImportant: false }],
+            });
+        const before = memorySnapshot(occupied, chatId);
+        const trash = occupied.store.memory.readRecord(characterId, chatId, "pages", "trash");
+        expect(
+            await answer(
+                await occupied.json(`${base}/import`, { revision: before.contents.revision, files: [importPageFile] }),
+            ),
+        ).toEqual({ revision: before.contents.revision, imported: false, refusals: [] });
+        expect(memorySnapshot(occupied, chatId)).toEqual(before);
+        expect(occupied.store.memory.readRecord(characterId, chatId, "pages", "trash")).toEqual(trash);
+    }
+});
+
+it("stores a new note and added section without evidence, keeps them supported after retraction and refuses additions in trash", async () => {
+    const s = await server();
+    const witnessed = page("witnessed");
+    witnessed.sections[0].provenance = ["e"];
+    const revision = s.write({ pages: [witnessed], events: [event("e")] });
+    const tool = { kind: "create", title: "  Travel notes  ", heading: "  Route  ", body: "Bring a map." };
+    const created = await answer(await s.json(`${base}/page-tools`, { revision, tool }));
+    expect(created.revision).not.toBe(revision);
+    const firstSection = {
+        heading: "Route",
+        body: "Bring a map.",
+        provenance: [],
+        sources: [],
+        locked: false,
+        userCorrected: true,
+        updatedAt: Date.now(),
+    };
+    expect(created.data).toEqual({
+        id: expect.any(String),
+        type: "note",
+        title: "Travel notes",
+        aliases: [],
+        contextMode: "auto",
+        namedByUser: true,
+        sections: [firstSection],
+        links: [],
+        retrieval: { keywords: [] },
+        history: [
+            { id: expect.any(String), heading: null, before: null, kind: "create", highlighted: false, at: Date.now() },
+        ],
+    });
+    const pageId = created.data.id;
+    const readNote = async () => answer(await s.request(`${base}/records/pages/${pageId}`));
+    expect(await readNote()).toMatchObject({ revision: created.revision, data: created.data });
+    await answer(await s.json(`${base}/page-tools`, { revision: created.revision, tool }), 400);
+    expect((await readNote()).revision).toBe(created.revision);
+
+    const added = await answer(
+        await s.json(`${base}/edits`, {
+            revision: created.revision,
+            edit: { kind: "sectionAdd", pageId, heading: "  Supplies  ", body: "Pack water." },
+        }),
+    );
+    expect(added.kind).toBe("pages");
+    expect(added.revision).not.toBe(created.revision);
+    expect(added.data).toEqual({
+        ...created.data,
+        sections: [firstSection, { ...firstSection, heading: "Supplies", body: "Pack water." }],
+        history: [
+            ...created.data.history,
+            {
+                id: expect.any(String),
+                heading: "Supplies",
+                before: null,
+                kind: "edit",
+                highlighted: false,
+                at: Date.now(),
+            },
+        ],
+    });
+    expect(await readNote()).toMatchObject({ revision: added.revision, data: added.data });
+    const retracted = await answer(
+        await s.json(`${base}/edits`, {
+            revision: added.revision,
+            edit: { kind: "event", eventId: "e", repair: "retract" },
+        }),
+    );
+    expect(retracted.data.status).toBe("retracted");
+    expect((await readNote()).data.sections).toEqual([
+        firstSection,
+        { ...firstSection, heading: "Supplies", body: "Pack water." },
+    ]);
+    // This section has evidence to lose, proving the retraction did run the unsupported check.
+    expect((await answer(await s.request(`${base}/records/pages/witnessed`))).data.sections[0].unsupported).toBe(true);
+    expect((await answer(await s.request(base))).unsupportedPages).toEqual(["witnessed"]);
+
+    const trashed = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision: retracted.revision,
+            tool: { kind: "trash", pageId },
+        }),
+    );
+    await answer(
+        await s.json(`${base}/edits`, {
+            revision: trashed.revision,
+            edit: { kind: "sectionAdd", pageId, heading: "Weather", body: "Expect rain." },
+        }),
+        400,
+    );
+    expect(await readNote()).toMatchObject({ revision: trashed.revision, data: trashed.data });
+});
+
+it("requires the current revision and an open fence for note creation and section addition", async () => {
+    const s = await server();
+    const staleRevision = s.store.memory.readContents(characterId, chatId)!.revision;
+    let revision = s.write({ pages: [page("p")] });
+    const writes = [
+        {
+            route: "page-tools",
+            value: { tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." } },
+        },
+        {
+            route: "edits",
+            value: { edit: { kind: "sectionAdd", pageId: "p", heading: "Route", body: "Bring a map." } },
+        },
+    ];
+    const before = memorySnapshot(s, chatId);
+    for (const { route, value } of writes) {
+        expect(
+            await answer(await s.json(`${base}/${route}`, { revision: staleRevision, ...value }), 409),
+        ).toMatchObject({ revision });
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    stageRun(s);
+    for (const { route, value } of writes) {
+        expect(await answer(await s.json(`${base}/${route}`, { revision, ...value }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    s.store.memory.rebuild.abandon(characterId, chatId, s.epoch);
+    for (const { route, value } of writes) {
+        const accepted = await answer(await s.json(`${base}/${route}`, { revision, ...value }));
+        expect(accepted.revision).not.toBe(revision);
+        revision = accepted.revision;
+    }
+});
+
+it("refuses note creation while HypaV3 summaries await a choice and leaves them available to adopt", async () => {
+    const s = await server();
+    storeAdoptionChat(s, {
+        summaries: [{ text: "The travelers reached the harbor.", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    const before = memorySnapshot(s, chatId);
+    const stored = s.store.readChatSource(characterId, chatId);
+    expect((await answer(await s.request(base))).adoption.adoptable).toBe(1);
+    await answer(
+        await s.json(`${base}/page-tools`, {
+            revision: before.contents.revision,
+            tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+        }),
+        400,
+    );
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    expect((await answer(await s.request(base))).adoption.adoptable).toBe(1);
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toMatchObject({ adopted: 1, stale: 0 });
+});
+
+it("checks epochs, fences, revisions and body limits before page tools or imports can write", async () => {
+    for (const kind of ["trash", "rename", "aliases", "import"] as const) {
+        const route = kind === "import" ? "import" : "page-tools";
+        const s = await server({ routeLimits: { memoryRestoreBodyBytes: 1024 } });
+        const revision =
+            route === "page-tools"
+                ? s.write({ pages: [page("p")] })
+                : s.store.memory.readContents(characterId, chatId)!.revision;
+        const body =
+            route === "page-tools"
+                ? {
+                      revision,
+                      tool: {
+                          kind,
+                          pageId: "p",
+                          ...(kind === "rename"
+                              ? { title: "Harbor" }
+                              : kind === "aliases"
+                                ? { aliases: ["Port"] }
+                                : {}),
+                      },
+                  }
+                : { revision, files: [importPageFile] };
+        const before = memorySnapshot(s, chatId);
+        for (const epoch of [null, "wrong-epoch"]) {
+            expect(
+                await answer(
+                    await s.request(
+                        `${base}/${route}`,
+                        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+                        epoch,
+                    ),
+                    412,
+                ),
+            ).toMatchObject({ error: "EpochMismatch" });
+        }
+        expect(
+            await answer(await s.json(`${base}/${route}`, { ...body, revision: "old-revision" }), 409),
+        ).toMatchObject({ revision });
+        stageRun(s);
+        expect(await answer(await s.json(`${base}/${route}`, body), 409)).toMatchObject({ reason: "fenced" });
+        s.store.memory.rebuild.abandon(characterId, chatId, s.epoch);
+        await answer(
+            await s.json(`${base}/${route}`, { ...body, padding: "x".repeat(route === "import" ? 1024 : 70_000) }),
+            413,
+        );
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        const accepted = await answer(await s.json(`${base}/${route}`, body));
+        expect(accepted.revision).not.toBe(revision);
+    }
+});
+
+it("finishes each page tool and import before a competing microtask can take the chat", async () => {
+    for (const route of ["page-tools", "import"]) {
+        const s = await server();
+        const revision =
+            route === "page-tools"
+                ? s.write({ pages: [page("p")] })
+                : s.store.memory.readContents(characterId, chatId)!.revision;
+        const body =
+            route === "page-tools"
+                ? { revision, tool: { kind: "trash", pageId: "p" } }
+                : { revision, files: [importPageFile] };
+        let queued = false;
+        let atHandoff: unknown;
+        const get = StatementSync.prototype.get;
+        // SQLite is the I/O boundary. Queue a competing operation when the fence reads its rebuild row.
+        const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+            this: StatementSync,
+            ...args
+        ) {
+            const result = get.apply(this, args);
+            if (!queued && /FROM memory_rebuilds\b/.test(this.sourceSQL)) {
+                queued = true;
+                queueMicrotask(() => {
+                    atHandoff = s.store.memory.readRecord(
+                        characterId,
+                        chatId,
+                        "pages",
+                        route === "page-tools" ? "p" : "imported",
+                    )?.data;
+                    stageRun(s);
+                });
+            }
+            return result;
+        });
+        try {
+            await answer(await s.json(`${base}/${route}`, body));
+        } finally {
+            spy.mockRestore();
+        }
+        expect(queued).toBe(true);
+        expect(atHandoff).toMatchObject(
+            route === "page-tools" ? { id: "p", trashedAt: Date.now() } : { id: "imported" },
+        );
+    }
+});
+
+it("returns compact ordered live health at the chat limit without messages or record bodies", async () => {
+    const s = await server();
+    const ids = [chatId, ...Array.from({ length: MEMORY_HEALTH_CHATS_MAX - 1 }, (_, i) => `health-${i}`)];
+    s.store.applyChanges({
+        chats: ids
+            .slice(1)
+            .map((id) => ({ characterId, chatId: id, baseRevision: null, ops: [{ op: "create" as const, chat }] })),
+    });
+    const p = page("live", "PRIVATE BODY " + "x".repeat(MEMORY_SECTION_BUDGETS.location + 1));
+    p.sections[0].unsupported = true;
+    for (const id of ids)
+        writeMemory(s.store, characterId, id, {
+            pages: [p, { ...p, id: "trash", trashedAt: 1 }],
+            events: [
+                { ...event("stale"), status: "stale", rerecord: true },
+                { ...event("retracted"), status: "retracted", rerecord: true },
+            ],
+            runs: Array.from({ length: STRUCTURED_MEMORY_LIMITS.consecutiveFailures }, (_, i) =>
+                run(`failed-${i}`, "failed"),
+            ),
+        });
+    stageRun(s);
+    const staged = s.store.memory.rebuild.staged;
+    staged.write(
+        characterId,
+        chatId,
+        { epoch: s.epoch, baseRevision: staged.readContents(characterId, chatId)!.revision },
+        {
+            pages: [{ ...p, id: "staged-bad" }],
+            events: [{ ...event("staged-stale"), status: "stale", rerecord: true }],
+        },
+    );
+    const facts = {
+        paused: true,
+        lastRunFailed: true,
+        storedStale: 1,
+        pendingRepairs: 1,
+        unsupportedSections: 1,
+        overBudgetSections: 1,
+    };
+    const queries: string[] = [];
+    let bodies = 0;
+    const spies = (["get", "all"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            queries.push(this.sourceSQL);
+            const value = Reflect.apply(original, this, args);
+            if (JSON.stringify(value)?.includes("PRIVATE BODY")) bodies++;
+            return value;
+        });
+    });
+    try {
+        const refs = ids.map((chatId) => ({ characterId, chatId }));
+        const result = await answer(await s.json("/api/memory/structured/health", { chats: refs }));
+        expect(result).toEqual({ health: Array.from({ length: 64 }, () => facts) });
+        const size = bytes(result);
+        expect(size).toBeLessThan(8 * 1024);
+        expect(queries.some((sql) => /\bmessages\b/.test(sql))).toBe(false);
+        expect(bodies).toBe(0);
+        queries.length = 0;
+        s.store.memory.readContents(characterId, chatId);
+        expect(bodies).toBe(0);
+        expect(queries.some((sql) => /\bmessages\b/.test(sql))).toBe(false);
+        expect((await answer(await s.request(base))).health).toEqual(facts);
+        expect(
+            await answer(
+                await s.json("/api/memory/structured/health", {
+                    chats: [refs[0], { characterId, chatId: "gone" }, { characterId, chatId: "other" }],
+                }),
+            ),
+        ).toEqual({
+            health: [
+                facts,
+                null,
+                {
+                    paused: false,
+                    lastRunFailed: false,
+                    storedStale: 0,
+                    pendingRepairs: 0,
+                    unsupportedSections: 0,
+                    overBudgetSections: 0,
+                },
+            ],
+        });
+        await answer(await s.json("/api/memory/structured/health", { chats: [...refs, refs[0]] }), 400);
+        await answer(await s.json("/api/memory/structured/health", { chats: [{ characterId }] }), 400);
+    } finally {
+        spies.forEach((spy) => spy.mockRestore());
+    }
+});
+
+it("bounds health scans by stored bytes and answers a chat over the cap unavailable", async () => {
+    const s = await server();
+    const first = page("first", "문😀");
+    const second = page("second", "Another body");
+    s.write({ pages: [first, { ...page("trash", "x".repeat(1000)), trashedAt: 1 }] });
+    writeMemory(s.store, characterId, "other", { pages: [second] });
+    stageRun(s);
+    const refs = [chatId, "other"].map((chatId) => ({ characterId, chatId }));
+    const empty = {
+        paused: false,
+        lastRunFailed: false,
+        storedStale: 0,
+        pendingRepairs: 0,
+        unsupportedSections: 0,
+        overBudgetSections: 0,
+    };
+    expect(s.store.memory.readHealth(refs, 1)).toEqual(["unavailable", "unavailable"]);
+    expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second) - 1)).toEqual([empty]);
+    expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second))).toEqual([empty, empty]);
+});
+
+it("charges event and run bytes for health caps and stops a prefix before event bytes exceed the round budget", async () => {
+    const s = await server();
+    const first = page("first", "");
+    const second = page("second", "");
+    const later = page("later", "");
+    const e = event("large-event", "문😀".repeat(100));
+    const r = { ...run("large-run", "recorded"), input: "문😀".repeat(100) };
+    s.write({ pages: [first], events: [e] });
+    writeMemory(s.store, characterId, "other", { pages: [second], runs: [r] });
+    s.store.applyChanges({
+        chats: [{ characterId, chatId: "later", baseRevision: null, ops: [{ op: "create", chat }] }],
+    });
+    writeMemory(s.store, characterId, "later", { pages: [later] });
+    const ref = (chatId: string) => ({ characterId, chatId });
+    const empty = {
+        paused: false,
+        lastRunFailed: false,
+        storedStale: 0,
+        pendingRepairs: 0,
+        unsupportedSections: 0,
+        overBudgetSections: 0,
+    };
+    const eventCharge = bytes(first) + bytes(e);
+    const runCharge = bytes(second) + bytes(r);
+    for (const [id, charge] of [
+        [chatId, eventCharge],
+        ["other", runCharge],
+    ] as const) {
+        expect(s.store.memory.readHealth([ref(id), ref("missing"), ref("later")], charge - 1)).toEqual([
+            "unavailable",
+            null,
+            empty,
+        ]);
+        expect(s.store.memory.readHealth([ref(id)], charge)).toEqual([empty]);
+    }
+    const refs = [ref("later"), ref(chatId)];
+    expect(s.store.memory.readHealth(refs, bytes(later) + eventCharge - 1)).toEqual([empty]);
+    expect(s.store.memory.readHealth(refs, bytes(later) + eventCharge)).toEqual([empty, empty]);
+    expect(s.store.memory.readHealth([ref(chatId), ref("other"), ref("missing"), ref("later")])).toEqual([
+        empty,
+        empty,
+        null,
+        empty,
+    ]);
+});
+
+it("screens rebuild, backfill and record cost previews against current preset lists", async () => {
+    const s = await server();
+    bindChat(s);
+    const kind = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("hypaV3Presets")!;
+    const record = s.store.get(kind, "main")!;
+    const data = record.data as { selectedId: string; items: { id: string; settings: Record<string, unknown> }[] };
+    s.store.put(
+        kind,
+        "main",
+        {
+            ...data,
+            items: data.items.map((item) => ({
+                ...item,
+                settings: { ...item.settings, structured: { screening: { refusal: ["GATE OPENS"], format: [] } } },
+            })),
+        },
+        record.revision,
+    );
+    for (const query of ["mode=rebuild&turns=1", "mode=backfill&turns=1", "mode=record&turns=1&through=a"]) {
+        expect(await answer(await s.request(`${base}/cost?${query}`))).toEqual({
+            calls: 0,
+            messages: 0,
+            estimatedTokens: 0,
+        });
+    }
+    const latest = s.store.get(kind, "main")!;
+    s.store.put(kind, "main", data, latest.revision);
+    expect(await answer(await s.request(`${base}/cost?mode=rebuild&turns=1`))).toMatchObject({ calls: 1, messages: 2 });
+});
+
+it("counts character knowledge by its slot budget in health reads", async () => {
+    const s = await server();
+    const p = page("Ada", "x".repeat(1100));
+    p.type = "character";
+    p.sections = ["knowledge", "goals"].map((heading) => ({ ...p.sections[0], heading }));
+    s.write({ pages: [p] });
+    const result = await answer(await s.json("/api/memory/structured/health", { chats: [{ characterId, chatId }] }));
+    expect(result.health[0].overBudgetSections).toBe(1);
+    expect((await answer(await s.request(base))).health.overBudgetSections).toBe(1);
+});
+
+it("reads the bound writer model, persona and chat modules, and omits unresolved bindings", async () => {
+    const s = await server();
+    const binding = bindChat(s);
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const replace = (name: string, update: (data: any) => any) => {
+        const kind = kinds.get(name)!;
+        const record = s.store.get(kind, "main")!;
+        s.store.put(kind, "main", update(record.data), record.revision);
+    };
+    const meta = (set: Record<string, unknown>) =>
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId,
+                    baseRevision: s.store.chatRevision(characterId, chatId),
+                    ops: [{ op: "meta", set }],
+                },
+            ],
+        });
+    const triggerModule = {
+        id: "writer-trigger",
+        name: "Writer trigger",
+        description: "",
+        lowLevelAccess: true,
+        trigger: [
+            {
+                comment: "Writer request",
+                type: "request",
+                conditions: [],
+                lowLevelAccess: true,
+                effect: [{ type: "v2SetVar", indent: 0, var: "seen", operator: "=", value: "1", valueType: "value" }],
+            },
+        ],
+    };
+    s.store.put(kinds.get("modules")!, "main", [triggerModule], null);
+    replace("modelProfiles", (data) => [
+        ...data,
+        {
+            ...data[0],
+            modelId: "reverse_proxy",
+            id: "bound-plugin",
+            customAPIFormat: LLMFormat.Plugin,
+            currentPluginProvider: "writer-provider",
+        },
+    ]);
+    replace("modelPresets", (data) => [
+        ...data,
+        {
+            ...data[0],
+            id: "bound-model",
+            seperateModelsForAxModels: true,
+            auxSlots: { memory: { profileId: "bound-plugin" } },
+        },
+    ]);
+    replace("personas", (data) => [...data, { ...data[0], id: "bound-persona", modules: [] }]);
+    replace("presets", (data) => [...data, { ...data[0], id: "bound-prompt" }]);
+    meta({ modelPresetId: "bound-model", promptPresetId: "bound-prompt", bindedPersona: "bound-persona" });
+    const read = async (expected: "pluginModel" | "requestTrigger" | null | undefined) => {
+        const contents = await answer(await s.request(base));
+        expect(contents).toMatchObject({ pages: [], events: [], threads: [], runs: [] });
+        if (expected === undefined) expect(contents).not.toHaveProperty("writerBlockingReason");
+        else expect(contents).toHaveProperty("writerBlockingReason", expected);
+    };
+    await read("pluginModel");
+    // Selected settings may differ: only this chat's bound records decide its warning.
+    replace("modelPresets", (data) =>
+        data.map((preset: any) => ({
+            ...preset,
+            seperateModelsForAxModels: preset.id === binding.modelPresetId,
+            auxSlots: preset.id === binding.modelPresetId ? { memory: { profileId: "bound-plugin" } } : {},
+        })),
+    );
+    replace("personas", (data) =>
+        data.map((persona: any) => ({
+            ...persona,
+            modules: persona.id === binding.personaId ? [triggerModule.id] : [],
+        })),
+    );
+    replace("presets", (data) =>
+        data.map((preset: any) => ({
+            ...preset,
+            moduleIntergration: preset.id === binding.presetId ? triggerModule.id : "",
+        })),
+    );
+    await read(null);
+    replace("presets", (data) => data.map((preset: any) => ({ ...preset, moduleIntergration: triggerModule.id })));
+    await read("requestTrigger");
+    replace("presets", (data) => data.map((preset: any) => ({ ...preset, moduleIntergration: "" })));
+    replace("personas", (data) => data.map((persona: any) => ({ ...persona, modules: [triggerModule.id] })));
+    await read("requestTrigger");
+    replace("personas", (data) => data.map((persona: any) => ({ ...persona, modules: [] })));
+    meta({ modules: [triggerModule.id] });
+    await read("requestTrigger");
+    meta({ modules: [] });
+    await read(null);
+    meta({ promptPresetId: "deleted-prompt" });
+    await read(undefined);
+});
+
+it("answers the bound writer rule without reading any chat messages", async () => {
+    const s = await server();
+    bindChat(s);
+    const queries: string[] = [];
+    const spies = (["get", "all", "iterate"] as const).map((method) => {
+        const original = StatementSync.prototype[method];
+        return vi.spyOn(StatementSync.prototype, method).mockImplementation(function (
+            this: StatementSync,
+            ...args: unknown[]
+        ) {
+            queries.push(this.sourceSQL);
+            return Reflect.apply(original, this, args);
+        });
+    });
+    try {
+        expect(await answer(await s.request(base))).toHaveProperty("writerBlockingReason", null);
+        expect(queries.filter((sql) => /\bmessages\b/i.test(sql))).toEqual([]);
+    } finally {
+        spies.forEach((spy) => spy.mockRestore());
+    }
+});
+
+it("keeps flagged sections through the edit route without reviving discarded evidence on an unrelated retraction", async () => {
+    const s = await server();
+    const p = page("review");
+    p.sections = ["All dead", "Remaining evidence"].map((heading, index) => ({
+        ...p.sections[0],
+        heading,
+        unsupported: true,
+        locked: true,
+        provenance: index === 0 ? ["dead"] : ["dead", "standing"],
+        sources: [{ messageId: "gone", index: 0, hash: "recorded" }],
+    }));
+    const trash = { ...p, id: "trash", trashedAt: 1 };
+    let revision = s.write({
+        pages: [p, trash],
+        events: [{ ...event("dead"), status: "retracted" }, event("standing"), event("unrelated")],
+    });
+    const initial = revision;
+    const keep = (heading: string, preserve: boolean, pageId = "review", baseRevision = revision) =>
+        s.json(`${base}/edits`, { revision: baseRevision, edit: { kind: "sectionKeep", pageId, heading, preserve } });
+    const expected = structuredClone(p);
+    for (const [index, preserve] of [true, false].entries()) {
+        const kept = await answer(await keep(p.sections[index].heading, preserve));
+        delete expected.sections[index].unsupported;
+        expected.sections[index].provenance = index === 0 ? [] : ["standing"];
+        if (preserve) expected.sections[index].userCorrected = true;
+        expect(kept).toEqual({ revision: kept.revision, kind: "pages", data: expected });
+        expect(kept.revision).not.toBe(revision);
+        revision = kept.revision;
+        expect((await answer(await s.request(`${base}/records/pages/review`))).data).toEqual(expected);
+    }
+    await answer(await keep("All dead", true, "review", initial), 409);
+    expect((await answer(await keep("All dead", false))).revision).toBe(revision);
+    await answer(await keep("Missing", true), 404);
+    await answer(await keep("All dead", true, "trash"), 400);
+    expect((await answer(await s.request(`${base}/records/pages/trash`))).data).toEqual(trash);
+    const retract = async (eventId: string) => {
+        const result = await answer(
+            await s.json(`${base}/edits`, {
+                revision,
+                edit: { kind: "event", eventId, repair: "retract" },
+            }),
+        );
+        revision = result.revision;
+    };
+    await retract("unrelated");
+    expect((await answer(await s.request(`${base}/records/pages/review`))).data).toEqual(expected);
+    expect((await answer(await s.request(base))).unsupportedPages).toEqual([]);
+    await retract("standing");
+    expected.sections[1].unsupported = true;
+    expect((await answer(await s.request(`${base}/records/pages/review`))).data).toEqual(expected);
+    expect((await answer(await s.request(base))).unsupportedPages).toEqual(["review"]);
+});
+
+it("lists live unsupported pages in contents order and answers none when health is unavailable", async () => {
+    const s = await server();
+    const flagged = (id: string): MemoryPage => ({
+        ...page(id),
+        sections: [{ ...page(id).sections[0], unsupported: true }],
+    });
+    s.write({ pages: [flagged("z"), page("clear"), flagged("a"), { ...flagged("trash"), trashedAt: 1 }] });
+    let listed = await answer(await s.request(base));
+    expect(listed.pages.map(({ id }: { id: string }) => id)).toEqual(["z", "clear", "a"]);
+    expect(listed.unsupportedPages).toEqual(["z", "a"]);
+    expect(listed.health.unsupportedSections).toBe(2);
+    // Make only the SQLite byte-count boundary report an oversized chat, without a large body fixture.
+    const get = StatementSync.prototype.get;
+    const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+        this: StatementSync,
+        ...args: unknown[]
+    ) {
+        if (/memory_pages.*memory_events.*memory_runs.*AS bytes/s.test(this.sourceSQL))
+            return { bytes: 17 * 1024 * 1024 };
+        return Reflect.apply(get, this, args);
+    });
+    try {
+        listed = await answer(await s.request(base));
+        expect(listed.health).toBe("unavailable");
+        expect(listed.unsupportedPages).toEqual([]);
+    } finally {
+        spy.mockRestore();
+    }
+});
+
+it.each([
+    ["edits", { edit: { kind: "section", pageId: "p", heading: "Facts", body: "Changed" } }],
+    ["revert", { pageId: "p", historyId: "writer-change" }],
+    ["inherit", { sourceChatId: "other" }],
+    ["restore", { pages: [page("restored")], events: [], threads: [] }],
+    ["page-tools", { tool: { kind: "trash", pageId: "p" } }],
+    ["import", { files: [importPageFile] }],
+    ["adopt", {}],
+    ["decline", {}],
+    ["reset-summaries", {}],
+    ["events/remove", { ids: ["e"] }],
+    ["clear", {}],
+    ["rebuild/abandon", {}],
+])("refuses %s during restore maintenance while keeping reads available", async (route, body) => {
+    const s = await server();
+    s.write({ pages: [page("p")], events: [event("e")] });
+    const before = memorySnapshot(s, chatId);
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    const ui = await answer(await s.get("ui", "main"));
+    await s.context.snapshots.withMaintenance(async () => {
+        const resource = await s.put("ui", "main", { baseRevision: ui.revision, data: ui.data });
+        expect(resource.status).toBe(503);
+        const response = await s.json(`${base}/${route}`, { revision: before.contents.revision, ...body });
+        expect(response.status).toBe(503);
+        expect(response.headers.get("retry-after")).toBe(resource.headers.get("retry-after"));
+        expect(response.headers.get("retry-after")).toBe("5");
+        expect(await response.json()).toEqual(await resource.json());
+        expect((await answer(await s.request(`${base}/records/pages/p`))).data).toEqual(page("p"));
+        expect((await answer(await s.request(base))).revision).toBe(before.contents.revision);
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+    });
+});
+
+it("refuses an edit whose body finishes after restore maintenance begins", async () => {
+    const s = await server();
+    s.write({ pages: [page("p")] });
+    const before = memorySnapshot(s, chatId);
+    const entered = deferred();
+    const release = deferred();
+    const response = s.app.request(`${base}/edits`, {
+        method: "POST",
+        headers: await s.headers({ "content-type": "application/json" }),
+        body: new ReadableStream<Uint8Array>(
+            {
+                async pull(controller) {
+                    entered.resolve();
+                    await release.promise;
+                    controller.enqueue(
+                        Buffer.from(
+                            JSON.stringify({
+                                revision: before.contents.revision,
+                                edit: { kind: "section", pageId: "p", heading: "Facts", body: "Changed" },
+                            }),
+                        ),
+                    );
+                    controller.close();
+                },
+            },
+            { highWaterMark: 0 },
+        ),
+        duplex: "half",
+    } as RequestInit);
+    await entered.promise;
+    await s.context.snapshots.withMaintenance(async () => {
+        release.resolve();
+        expect(await answer(await response, 503)).toEqual({ error: "Maintenance in progress" });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    });
+    const edited = await answer(
+        await s.json(`${base}/edits`, {
+            revision: before.contents.revision,
+            edit: { kind: "section", pageId: "p", heading: "Facts", body: "Changed" },
+        }),
+    );
+    expect(edited.data.sections[0].body).toBe("Changed");
+});
+
+it("round-trips a kept greeting through edits and coverage and refuses a moved or group greeting", async () => {
+    const s = await server();
+    const kind = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("characters")!;
+    const setOwner = (fields: Record<string, unknown>) => {
+        const owner = s.store.get(kind, characterId)!;
+        s.store.put(kind, characterId, { ...(owner.data as object), ...fields }, owner.revision);
+    };
+    setOwner({ type: "character", firstMessage: "Current greeting", alternateGreetings: ["Swiped greeting"] });
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "meta", set: { fmIndex: -1 } }],
+            },
+        ],
+    });
+    const greeting = { fmIndex: -1, hash: greetingSourceHash("Original greeting") };
+    const shown = { fmIndex: -1, hash: greetingSourceHash("Current greeting") };
+    const original = {
+        ...event("greeting"),
+        greeting,
+        status: "stale" as const,
+        staleReason: "changed" as const,
+        rerecord: true,
+    };
+    const revision = s.write({ events: [original] });
+    const edit = { kind: "event", eventId: original.id, repair: "keepGreeting", greeting: shown };
+    const kept = await answer(await s.json(`${base}/edits`, { revision, edit }));
+    expect(kept).toEqual({ revision: expect.any(String), kind: "events", data: { ...original, greetingKept: shown } });
+    expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)?.data).toEqual(kept.data);
+    const coverage = await answer(await s.request(`${base}/coverage`));
+    expect(coverage.events).toEqual([
+        expect.objectContaining({ id: original.id, greeting, greetingKept: shown, messageIds: [], sourceIndex: -1 }),
+    ]);
+    // The memory revision has not moved; the current chat or card state must reject the old UI choice.
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "meta", set: { fmIndex: 0 } }],
+            },
+        ],
+    });
+    expect(await answer(await s.json(`${base}/edits`, { revision: kept.revision, edit }), 409)).toMatchObject({
+        reason: "changed",
+    });
+    setOwner({ type: "group" });
+    await answer(await s.json(`${base}/edits`, { revision: kept.revision, edit }), 400);
+    expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)).toEqual({
+        revision: kept.revision,
+        data: kept.data,
+    });
+});

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [vitest args]`:
+// `pnpm test:agent [--force] [--verbose] [--all] [--slow-tests[=<ms>]] [--no-rerun] [--no-lock] [vitest args]`:
 // `pnpm test` for agents.
 //
 // Runs `vitest run --tags-filter=!slow` (`--all` drops the tag filter, like `pnpm test:all`) with
@@ -7,11 +7,17 @@
 // warning listing the passed tests slower than <ms>, default 1000) and caches the output under
 // `node_modules/.cache/agent-test/` keyed by the working tree. Everything the run writes to stderr (Node warnings, worker-thread traces from
 // passing tests) is held back: a passing run reports only its line count, a failing run prints the
-// last STDERR_TAIL lines after the report, and `--verbose` prints all of it either way. The key is `git write-tree` over a temporary index with every change staged (untracked
-// files included, `.gitignore` honored), plus the Node and Vitest versions and the arguments. When
-// nothing changed since the last run, the stored output is printed again with the stored exit code
-// instead of running the tests, so two agents checking the same tree pay for one run. Failures are
-// cached too (the same tree gives the same result); `--force` runs anyway and replaces the entry.
+// last STDERR_TAIL lines after the report, and `--verbose` prints all of it either way. The key
+// uses the working-tree files and the git-ignored files in the type-check cache's source roots,
+// plus the Node and test tool versions and the arguments. An unchanged key replays the stored
+// output and exit code. A result (including failure) is saved only when its key still matches
+// after the run. `--force` runs anyway and replaces the entry if the inputs stayed the same.
+// A whole-suite run (no file filter: the gate, `--tags-filter=slow`, `--all`) first takes a
+// machine-wide lock (GATE_LOCK_PORT) that every checkout and worktree sees, so such runs queue
+// instead of sharing the CPUs: the suite is compute-bound, and three at once each take about
+// two and a half times as long as one, while queued they finish one after another in the single
+// run's time. A filtered run never waits. `--no-lock` skips the lock (`test:overload` passes it:
+// its runs are pinned to one CPU and meant to run under load).
 // An explicit `--tags-filter` replaces the default one. The child gets `AGENT_TEST=1`, which is what
 // lets it through the human gate in `vitest.config.ts` (`util/requireHuman.mjs`).
 // When a run fails in at most MAX_RERUN_FILES files (and has no unhandled errors), each of those files
@@ -24,30 +30,23 @@
 // the same cache. Named specs (`e2e/openChat.spec.ts` or `openChat.spec.ts`) run as named and `--all`
 // runs every spec; otherwise the specs are the ones the change reaches (`util/agentE2e.mjs`): the
 // files changed since HEAD (uncommitted and untracked), or since `--e2e-since=<rev>` for committed
-// work too. When the change reaches no spec, nothing runs and the specs are listed so the agent can
-// name the ones that cover the behavior it changed. One e2e run at a time per machine: the stack's
+// work too. A spec that only imports a changed script in the page is left out when the change touches
+// no name it uses; those are reported. When the change reaches no spec, nothing runs and the specs are
+// listed so the agent can name the ones that cover the behavior it changed. One e2e run at a time per machine: the stack's
 // ports are fixed, so a run waits for E2E_LOCK_PORT and then for the stack's ports to be free. There
 // is no rerun of failed specs alone: the specs share one stack's store in file order.
-// See `docs/structure/build-test-platforms.md`.
-import { spawn, spawnSync } from "node:child_process";
+// See `docs/structure/test-harness.md`.
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-    appendFileSync,
-    copyFileSync,
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { changedFiles, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
+import { changedFiles, fileVersions, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
 import { MAX_RERUN_FILES, RESULTS_FILE_ENV, mergeRerun, planRerun, withoutFilters } from "./agentTestResults.mjs";
 import { E2E_SERVER_PORT, E2E_VITE_PORT } from "./playwright/globalSetup.mjs";
+import { programKey, workingTreeFiles } from "./typeCheckCache.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = join(root, "node_modules", ".cache", "agent-test");
@@ -59,10 +58,18 @@ const reporter = "./util/agentTestReporter.ts";
  * sees, released by the kernel when the process ends.
  */
 const E2E_LOCK_PORT = 6199;
-/** How long an e2e run waits for the lock, and then for a leftover stack to free its ports. */
+/** Wait up to 30 minutes for the e2e lock; timeout exits 1 before checking the stack's ports. */
 const E2E_LOCK_WAIT_MS = 30 * 60_000;
+/** Held the same way by a whole-suite Vitest run (no file filter), so such runs queue per machine. */
+const GATE_LOCK_PORT = 6198;
+/** How long a whole-suite run waits for the lock before running anyway. */
+const GATE_LOCK_WAIT_MS = 15 * 60_000;
+/** A separate two-minute wait for leftover stack ports; timeout exits 1 naming the busy ports. */
 const E2E_PORTS_WAIT_MS = 2 * 60_000;
-/** How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). */
+/**
+ * How the wrapper hands `--slow-tests` to the reporter (empty: no slow-test list). Its threshold
+ * is part of the cache key: a replay keeps the stored durations; `--force` measures again.
+ */
 const SLOW_TESTS_ENV = "RISU_REPORT_SLOW_TESTS_MS";
 const STDERR_TAIL = 60;
 /** One JSON line per test that failed in a full run and passed when its file ran alone. */
@@ -72,9 +79,12 @@ const SLOW_TESTS_DEFAULT_MS = 1000;
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
+const lock = !args.includes("--no-lock");
 const verbose = args.includes("--verbose");
 const all = args.includes("--all");
 const e2e = args.includes("--e2e");
+const toolPackage = e2e ? "@playwright/test" : "vitest";
+/** Rerun policy is part of the cache key, so disabling reruns cannot replay a merged result. */
 const rerun = !args.includes("--no-rerun");
 const isSlowTests = (arg) => arg === "--slow-tests" || arg.startsWith("--slow-tests=");
 
@@ -97,20 +107,20 @@ for (const arg of args.filter(isSlowTests)) {
 // options that change the output.
 let command;
 let keyArgs;
-let toolVersion;
 const vitestArgs = [];
 if (e2e) {
+    // These flags govern the Vitest reporter and per-file reruns; e2e refuses them with exit 2.
     if (slowTestsMs !== undefined || !rerun) usage("--slow-tests and --no-rerun are for Vitest runs, not --e2e");
     const specArgs = e2eSpecArgs();
     const playwrightArgs = args.filter(
         (arg) =>
-            !["--e2e", "--force", "--verbose", "--all"].includes(arg) &&
+            !["--e2e", "--force", "--verbose", "--all", "--no-lock"].includes(arg) &&
             !arg.startsWith("--e2e-since=") &&
             !isSpecArg(arg),
     );
     command = [playwrightCli, "test", ...specArgs, "--reporter=dot", ...playwrightArgs];
+    // Selected specs and the Playwright version distinguish e2e cache entries.
     keyArgs = ["--e2e", ...specArgs, ...playwrightArgs];
-    toolVersion = `playwright ${packageVersion("@playwright/test")}`;
 } else {
     vitestArgs.push(
         ...args.filter(
@@ -119,6 +129,7 @@ if (e2e) {
                 arg !== "--verbose" &&
                 arg !== "--all" &&
                 arg !== "--no-rerun" &&
+                arg !== "--no-lock" &&
                 !isSlowTests(arg),
         ),
     );
@@ -131,7 +142,6 @@ if (e2e) {
         ...(slowTestsMs === undefined ? [] : [`--slow-tests=${slowTestsMs}`]),
         rerun ? `--rerun-alone=${MAX_RERUN_FILES}` : "--no-rerun",
     ];
-    toolVersion = packageVersion("vitest");
 }
 
 function isSpecArg(arg) {
@@ -140,6 +150,8 @@ function isSpecArg(arg) {
 
 // The spec files of an `--e2e` run, as Playwright's file filters (none: every spec). Prints what was
 // selected and why; exits with 2 when nothing can be selected.
+// Automatic selection shows up to three selecting changed paths per spec, with a count of the rest,
+// and up to four touched names per changed script that left specs out.
 function e2eSpecArgs() {
     const specs = loadSpecs(root);
     const known = new Set(specs.map((spec) => spec.file));
@@ -166,7 +178,12 @@ function e2eSpecArgs() {
     } catch (error) {
         usage(`e2e: cannot list the files changed since ${since}: ${error.message}`);
     }
-    const { selected, unnamed, ignored } = selectSpecs({ specs, changed, tracked: repositoryFiles(root) });
+    const { selected, unnamed, ignored, narrowed } = selectSpecs({
+        specs,
+        changed,
+        tracked: repositoryFiles(root),
+        versions: (file) => fileVersions(root, since, file),
+    });
     const files = (count) => `${count} ${since === "HEAD" ? "uncommitted " : ""}${count === 1 ? "file" : "files"}`;
     const sinceText = since === "HEAD" ? "" : ` changed since ${since}`;
     const listSpecs = () => {
@@ -191,6 +208,17 @@ function e2eSpecArgs() {
         log(`e2e: no spec names ${unnamed.length === 1 ? "this changed file" : "these changed files"}:`);
         for (const file of unnamed) log(`  ${file}`);
     }
+    if (narrowed.length > 0) {
+        log("e2e: left out the specs that import a changed script in the page and use no name its change touches:");
+        const NAMES = 4;
+        for (const { file, touched, skipped } of narrowed) {
+            const more = touched.length > NAMES ? `, +${touched.length - NAMES} more` : "";
+            const names = touched.length === 0 ? "no declaration" : `${touched.slice(0, NAMES).join(", ")}${more}`;
+            log(
+                `  ${file}  touches ${names}; left out ${skipped.map((spec) => spec.replace(/^e2e\//, "")).join(", ")}`,
+            );
+        }
+    }
     if (selected.length === 0) {
         log(`e2e: no spec is selected; ${guidance}. The specs:`);
         listSpecs();
@@ -208,27 +236,41 @@ function e2eSpecArgs() {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// Listens on E2E_LOCK_PORT for the rest of the process, waiting while another e2e run holds it.
-async function acquireE2eLock() {
-    const deadline = Date.now() + E2E_LOCK_WAIT_MS;
+/**
+ * Listens on `port` for the rest of the process, waiting while another `what` run holds it. Waiting
+ * emits `[agent-test] whole-suite: ...` or `[agent-test] e2e: ...`. Past `waitMs`, an e2e run exits 1
+ * naming the lock port, while a whole-suite run goes ahead without the lock (after GATE_LOCK_WAIT_MS,
+ * 15 minutes). Once the e2e lock is acquired, `waitForE2ePorts` checks the stack's ports separately.
+ */
+async function acquireLock(port, waitMs, what) {
+    const startedWaiting = Date.now();
     for (let waiting = false; ; waiting = true) {
         const server = createServer();
         const error = await new Promise((done) => {
             server.once("error", done);
-            server.listen(E2E_LOCK_PORT, "127.0.0.1", () => done(null));
+            server.listen(port, "127.0.0.1", () => done(null));
         });
         if (error === null) {
             server.unref();
+            if (waiting) log(`${what}: waited ${Math.round((Date.now() - startedWaiting) / 1000)} s for the lock`);
             return;
         }
         if (error.code !== "EADDRINUSE") throw error;
-        if (Date.now() > deadline) {
-            log(`e2e: another e2e run still holds port ${E2E_LOCK_PORT} after ${E2E_LOCK_WAIT_MS / 60_000} min`);
-            process.exit(1);
+        if (Date.now() - startedWaiting > waitMs) {
+            log(`${what}: another ${what} run still holds port ${port} after ${waitMs / 60_000} min`);
+            if (what === "e2e") process.exit(1);
+            log(`${what}: running without the lock`);
+            return;
         }
-        if (!waiting) log(`e2e: another e2e run is in progress (port ${E2E_LOCK_PORT} held); waiting for it`);
+        if (!waiting) log(`${what}: another ${what} run is in progress (port ${port} held); waiting for it`);
         await sleep(2000);
     }
+}
+
+/** A whole-suite run has no file filter according to Vitest's `parseCLI`, regardless of tag filters. */
+async function wholeSuite() {
+    const { parseCLI } = await import("vitest/node");
+    return (parseCLI(["vitest", "run", ...vitestArgs]).filter ?? []).length === 0;
 }
 
 function portAnswers(port) {
@@ -258,29 +300,6 @@ async function waitForE2ePorts() {
         }
         if (!waiting) log(`e2e: port ${busy.join(" and ")} in use; waiting for it to be free`);
         await sleep(2000);
-    }
-}
-
-function git(gitArgs, env = {}) {
-    return spawnSync("git", gitArgs, { cwd: root, env: { ...process.env, ...env }, encoding: "utf8" });
-}
-
-// Tree id of the working tree: a copy of the real index (so unchanged files keep their stat cache
-// and are not re-hashed) with everything staged, written as a tree object. Null outside git.
-function workingTreeId() {
-    const gitDir = git(["rev-parse", "--git-dir"]);
-    if (gitDir.status !== 0) return null;
-    const realIndex = join(resolve(root, gitDir.stdout.trim()), "index");
-    const tmp = mkdtempSync(join(tmpdir(), "agent-test-"));
-    const tmpIndex = join(tmp, "index");
-    try {
-        if (existsSync(realIndex)) copyFileSync(realIndex, tmpIndex);
-        const env = { GIT_INDEX_FILE: tmpIndex };
-        if (git(["add", "-A", "--", "."], env).status !== 0) return null;
-        const tree = git(["write-tree"], env);
-        return tree.status === 0 ? tree.stdout.trim() : null;
-    } finally {
-        rmSync(tmp, { recursive: true, force: true });
     }
 }
 
@@ -371,22 +390,23 @@ function printStderr(stderr, exitCode) {
     }
 }
 
-const tree = workingTreeId();
-if (tree === null) log("not a git checkout (or git failed): running without the cache");
+function cacheInputs() {
+    const inputs = workingTreeFiles(root);
+    if (inputs === null) return null;
+    const settings = { node: process.version, tool: packageVersion(toolPackage) };
+    return { tree: inputs.tree, key: programKey(keyArgs, settings, inputs.files, () => true) };
+}
 
+const inputs = cacheInputs();
+if (inputs === null) log("cache inputs unavailable, running without the cache");
 const argsHash = createHash("sha256").update(JSON.stringify(keyArgs)).digest("hex").slice(0, 16);
 const entryFile = join(cacheDir, `${argsHash}.json`);
-const key =
-    tree === null
-        ? null
-        : createHash("sha256")
-              .update(JSON.stringify([tree, process.version, toolVersion, keyArgs]))
-              .digest("hex");
 
-const cached = key === null || force ? null : readEntry(entryFile);
-if (cached && cached.key === key && typeof cached.exitCode === "number") {
+/** Cache replays start with `[agent-test] cached result ...` and finish before either lock is acquired. */
+const cached = inputs === null || force ? null : readEntry(entryFile);
+if (inputs && cached?.key === inputs.key && typeof cached.exitCode === "number") {
     log(
-        `cached result from ${ago(cached.finishedAt)}: working tree unchanged (tree ${tree.slice(0, 7)}). ` +
+        `cached result from ${ago(cached.finishedAt)}: cache inputs unchanged (tree ${inputs.tree.slice(0, 7)}). ` +
             "Pass --force to run again.",
     );
     process.stdout.write(cached.stdout);
@@ -394,6 +414,7 @@ if (cached && cached.key === key && typeof cached.exitCode === "number") {
     process.exit(cached.exitCode);
 }
 
+/** A child terminated by a signal ends the wrapper without caching either the full run or a partial rerun. */
 function interrupted(stdout, stderr) {
     process.stdout.write(stdout);
     printStderr(stderr, 1);
@@ -401,8 +422,15 @@ function interrupted(stdout, stderr) {
     process.exit(1);
 }
 
-// Runs each file of a failed full run that `planRerun` accepts again alone, one at a time, and returns
-// the final output (`mergeRerun`), or the full run's own when there is nothing to rerun.
+/**
+ * Runs each file that `planRerun` accepts again alone, one at a time. Missing or interrupted reports,
+ * unhandled errors, or more than MAX_RERUN_FILES (five) failing files prevent reruns; the latter two
+ * print `[agent-test] not rerun: ...` with the original output.
+ * `mergeRerun` replaces repeat failures with `RERUN <file> failed again when run alone` and that run's
+ * failures. The summary counts the merged result and appends `<n> failed file(s) rerun alone in <s>s`.
+ * Exit 0 means the merged result has no failed tests, module/suite errors, or unhandled errors;
+ * rerun exit codes alone do not determine it.
+ */
 async function rerunFailedFiles(full) {
     const plan = planRerun(full.report);
     if (plan.files.length === 0) {
@@ -438,8 +466,10 @@ async function rerunFailedFiles(full) {
 }
 
 if (e2e) {
-    await acquireE2eLock();
+    if (lock) await acquireLock(E2E_LOCK_PORT, E2E_LOCK_WAIT_MS, "e2e");
     await waitForE2ePorts();
+} else if (lock && (await wholeSuite())) {
+    await acquireLock(GATE_LOCK_PORT, GATE_LOCK_WAIT_MS, "whole-suite");
 }
 const startedAt = Date.now();
 const full = await run(command, slowTestsMs === undefined ? "" : String(slowTestsMs));
@@ -447,14 +477,13 @@ if (full.code === null) interrupted(full.stdout, full.stderr);
 const { code, stdout, stderr } = full.code !== 0 && rerun && !e2e ? await rerunFailedFiles(full) : full;
 process.stdout.write(stdout);
 printStderr(stderr, code);
-if (key !== null) {
+if (inputs && cacheInputs()?.key === inputs.key) {
     mkdirSync(cacheDir, { recursive: true });
     writeFileSync(
         entryFile,
         JSON.stringify(
             {
-                key,
-                tree,
+                ...inputs,
                 args: keyArgs,
                 exitCode: code,
                 finishedAt: new Date().toISOString(),
@@ -466,6 +495,8 @@ if (key !== null) {
             2,
         ),
     );
-    log(`cached (tree ${tree.slice(0, 7)}); the next run on this working tree replays this output`);
+    log(`cached (tree ${inputs.tree.slice(0, 7)}); the next run with these inputs replays this output`);
+} else if (inputs) {
+    log("cache inputs changed during the run, result was not saved");
 }
 process.exit(code);

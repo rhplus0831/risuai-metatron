@@ -20,6 +20,12 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-l
 # ------------------------------------------------------------------------------------------
 
 FROM deps AS builder
+# The build id the app shows (`server/src/buildInfo.ts`): `.dockerignore` keeps `.git` out, so the
+# README's `docker build` command passes the commit, its date, and whether the checkout had changes.
+# Without them the build id is unknown.
+ARG RISU_BUILD_COMMIT=""
+ARG RISU_BUILD_DATE=""
+ARG RISU_BUILD_DIRTY=""
 COPY . .
 # Install including dev deps
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile

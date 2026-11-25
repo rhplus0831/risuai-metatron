@@ -9,12 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Unrelated panels, dialogs and file loading are doubled.
 
 const holdFileSrc = vi.fn((path: string) => ({ src: Promise.resolve(`/file/${path}`), release: () => {} }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    holdFileSrc: (path: string) => holdFileSrc(path),
-    getFileSrc: vi.fn(async () => ""),
-    saveAsset: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
+        holdFileSrc: (path: string) => holdFileSrc(path),
+        getFileSrc: vi.fn(async () => ""),
+    }),
+);
 vi.mock("src/ts/characters", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/characters")>()),
     getCharImage: vi.fn(async () => ""),
@@ -47,11 +47,17 @@ import { alertError } from "src/ts/alert";
 import { countTokens } from "src/ts/tokenizer";
 import { assembleChats, currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
 import { ASSET_LIST_PAGE } from "src/ts/util";
-import { CharConfigSubMenu } from "src/ts/stores.svelte";
+import { get } from "svelte/store";
+import { CharConfigSubMenu, hypaV3ModalOpen } from "src/ts/stores.svelte";
 import { activeMainProfile, settings } from "src/ts/storage/settingsViews.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
-import { isRecordWrapper, setCharacterWriteListener, setRecordWriteListener } from "src/ts/storage/records.svelte";
+import {
+    applyRawCharacter,
+    isRecordWrapper,
+    setCharacterWriteListener,
+    setRecordWriteListener,
+} from "src/ts/storage/records.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 
 type Emotion = [string, string];
@@ -284,6 +290,65 @@ it("mounts without an error when the selected character's chat is not loaded", a
         expect(text).toEqual(expect.any(String));
     }
 });
+
+it.each(["emotionImages", "additionalAssets"] as const)(
+    "%s names keep focus and the caret on local renames, and blur on outside row replacement",
+    (field) => {
+        installCharacters(
+            [
+                ["apple", "p0"],
+                ["banana", "p1"],
+            ],
+            [],
+            [
+                ["apple", "p0", "png"],
+                ["banana", "p1", "png"],
+            ],
+        );
+        selectCharacter("c1");
+        if (field === "emotionImages") render();
+        else {
+            instance = mount(CharConfig, { target });
+            flushSync();
+            CharConfigSubMenu.set(1);
+            flushSync();
+            button(language.additionalAssets)!.click();
+            flushSync();
+        }
+        const nameInputs = () =>
+            field === "emotionImages"
+                ? rows().map((row) => row.name)
+                : [...target.querySelectorAll<HTMLInputElement>('table input[placeholder="..."]')];
+        const name = nameInputs()[0];
+        name.focus();
+        name.setSelectionRange(2, 2);
+        for (const [expected, caret] of [
+            ["apXple", 3],
+            ["apXYple", 4],
+        ] as const) {
+            name.value = expected;
+            name.setSelectionRange(caret, caret);
+            name.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).toBe(name);
+            expect([name.selectionStart, name.selectionEnd]).toEqual([caret, caret]);
+            expect(record("c1")[field][0][0]).toBe(expected);
+        }
+
+        const renamed = JSON.parse(JSON.stringify(record("c1")));
+        for (const replacement of [[...renamed[field]].reverse(), [renamed[field][0]]]) {
+            nameInputs()[0].focus();
+            applyRawCharacter("c1", { ...renamed, [field]: structuredClone(replacement) });
+            flushSync();
+            // Index zero stays mounted, so the guard must explicitly release its typing focus.
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).not.toBe(name);
+            expect(nameInputs().map((node) => node.value)).toEqual(replacement.map((row) => row[0]));
+            expect(JSON.parse(JSON.stringify(record("c1")[field]))).toEqual(replacement);
+        }
+    },
+);
 
 describe("CharConfig emotion images", () => {
     it("pages rows by ASSET_LIST_PAGE with Load More and resets the page per character", () => {
@@ -588,4 +653,52 @@ describe("CharConfig additional assets", () => {
         flushSync();
         expect(rowNames()).toEqual(["Asset 0", "Meanwhile", "picked.png", "clip.mp4"]);
     });
+});
+
+it("opens structured memory ahead of older flags and retains the legacy memory buttons otherwise", async () => {
+    vi.useFakeTimers();
+    installCharacters([], []);
+    selectCharacter("c1");
+    // The advanced tab uses the character's stored greeting list.
+    Object.assign(record("c1"), {
+        alternateGreetings: [],
+        bias: [],
+        supaMemory: true,
+        personality: "",
+        scenario: "",
+        additionalData: { creator: "", character_version: "" },
+        depth_prompt: { depth: 0, prompt: "" },
+    });
+    instance = mount(CharConfig, { target });
+    flushSync();
+    CharConfigSubMenu.set(2);
+    flushSync();
+    try {
+        for (const [algorithm, v2, v3, label] of [
+            ["structuredMemory", true, true, language.structuredMemory.panel.title],
+            ["structuredMemory", false, false, language.structuredMemory.panel.title],
+            ["hypaV2", true, true, language.hypaMemoryV2Modal],
+            ["hypaV3", false, true, language.hypaMemoryV3Modal],
+        ] as const) {
+            settings.ui.memoryAlgorithmType = algorithm;
+            settings.memoryTranslateMedia.supaModelType = "subModel";
+            settings.memoryTranslateMedia.hypav2 = v2;
+            settings.memoryTranslateMedia.hypaV3 = v3;
+            hypaV3ModalOpen.set(false);
+            flushSync();
+            const opener = button(label);
+            expect(opener, algorithm).toBeDefined();
+            if (algorithm === "structuredMemory") {
+                expect(button(language.hypaMemoryV2Modal)).toBeUndefined();
+                expect(button(language.hypaMemoryV3Modal)).toBeUndefined();
+            } else expect(button(language.structuredMemory.panel.title)).toBeUndefined();
+            opener!.click();
+            flushSync();
+            expect(get(hypaV3ModalOpen)).toBe(algorithm !== "hypaV2");
+        }
+    } finally {
+        hypaV3ModalOpen.set(false);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    }
 });

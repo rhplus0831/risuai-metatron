@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { CbsEvaluator, CbsHost } from "../../../shared/cbs/evaluator.ts";
 import { CbsLimitError, type CbsUsage } from "../../../shared/cbs/limits.ts";
+import type { GlobalLoreChange } from "../../../shared/triggers.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type {
@@ -10,7 +11,9 @@ import type {
     GenerationQuestion,
     ImageOrientation,
     QuestionResult,
+    SkippedHook,
 } from "../../../shared/jobs.ts";
+import { MAX_LUA_INLAY_NAME_LENGTH } from "../../../shared/jobs.ts";
 import type {
     InlaySignature,
     ModelModeExtended,
@@ -26,25 +29,43 @@ import { type InlayResource, RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../
 import { itemIds } from "../../../shared/recordPatch.ts";
 import type { ResourceKind, ResourceKindRegistry } from "../data/kinds.ts";
 import type { ResourceStore } from "../data/resourceStore.ts";
+import { claimInlayId } from "../http/assetLeases.ts";
 import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
-import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
+import { historyInsertionAnchor } from "../jobs/chatResult.ts";
+import { reduceChatOps } from "../jobs/chatOpsReducer.ts";
+import {
+    failureOf,
+    GenerationJobEndedError,
+    JobWriteConflictError,
+    markFailure,
+    type RunningJob,
+} from "../jobs/generationJobs.ts";
 import {
     chatMetadataFor,
     flushChatMetadata,
     type JobScope,
     refreshCharacter,
     refreshChat,
+    replaceScopeChat,
     refreshChatAfterWrite,
     scopeChat,
+    scopeHistoryChat,
+    scopeHistoryMessages,
 } from "../jobs/jobScope.ts";
 import { requestChatDataOuter } from "../llm/outer.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
-import { readStorageFile, storageFileExists, writeStorageFile } from "../routes/storage.ts";
+import {
+    claimAssetKey,
+    readStorageFile,
+    resolveStorageKey,
+    storageFileExists,
+    writeStorageFile,
+} from "../routes/storage.ts";
 import { type EmbeddingEnv, type EmbeddingsService, HypaProcesser } from "../prompt/embeddings.ts";
 import type { HostContext, LuaHost } from "../scripts/workerPool.ts";
 import {
@@ -56,6 +77,16 @@ import {
 } from "../mcp/jobTools.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
+
+/**
+ * Lua and native trigger host bindings for one job. Character effects and Lua character setters
+ * patch one field of the run's character by id; lore effects apply one entry operation to the current
+ * record on each write attempt. Entries use their id, or an unchanged index/value for legacy lore.
+ * `server/src/prompt/triggers.ts` warns and skips a character effect when its character or lore target
+ * is gone or changed; a patch the store refuses is latched as `LuaJobFatalError` and ends the job.
+ * That runtime's `v2SetLorebookActivation` warns and changes no lore entry for a non-integer,
+ * negative, or missing lore index.
+ */
 
 /**
  * A failure that ends the job whatever the script does with it: a write conflict, a barrier
@@ -100,6 +131,11 @@ export type LuaBindingDeps = {
     /** Called once with the first fatal failure: the runner aborts the run in progress with it. */
     onFatal?: (error: LuaJobFatalError) => void;
     /**
+     * Where a reply hook skipped for want of an owner tab is recorded (`JobRunState.skippedHooks`):
+     * the `replacerafterRequest` hook keeps the text then instead of failing the request.
+     */
+    skipped?: SkippedHook[];
+    /**
      * The generation lock: a chat write touching a message any generation owns, this job's own
      * included, is skipped (the client's `liveWrite` has no generation capability either).
      */
@@ -126,6 +162,25 @@ export type LuaWorkingCopy = {
     setVar(key: string, value: string): boolean;
 };
 
+/** Applies one lore effect to current entries; legacy entries without ids require an unchanged index. */
+export function applyGlobalLoreChange(entries: loreBook[], change: GlobalLoreChange): loreBook[] | null {
+    if (change.type === "append") return [...entries, change.entry];
+    const id = change.before.id;
+    const index = id ? entries.findIndex((entry) => entry.id === id) : change.index;
+    const current = entries[index];
+    if (
+        !current ||
+        (id
+            ? entries.filter((entry) => entry.id === id).length !== 1
+            : JSON.stringify(current) !== JSON.stringify(change.before))
+    )
+        return null;
+    const next = [...entries];
+    if (change.type === "remove") next.splice(index, 1);
+    else next[index] = { ...current, ...change.set };
+    return next;
+}
+
 /** The executing character's fields a Lua setter wrote (the trigger merges them into its copy). */
 export type CharacterPatchListener = (characterId: string, patch: Record<string, unknown>) => void;
 
@@ -148,20 +203,26 @@ export type LuaBindingServices = {
     /** The stored-merge `setChatVarOf` of the job's chat: true when it changed. */
     setChatVar(key: string, value: string, ctx?: HostContext): boolean;
     getChatVar(key: string): string;
-    /** Patches the run's character; false when it is gone. */
-    patchCharacter(patch: Record<string, unknown>, ctx: HostContext): boolean;
+    /** Patches the run's character, optionally one lore entry against the current record on each retry.
+     * False when the character or lore target is gone/changed; a refused write latches `LuaJobFatalError`.
+     */
+    patchCharacter(patch: Record<string, unknown>, ctx: HostContext, lore?: GlobalLoreChange): boolean;
     /** Sets `personaPrompt` of the persona `personaId`; false when it is gone. */
     patchPersonaPrompt(personaId: string, value: string, ctx: HostContext): boolean;
     /** `options.signal` withdraws the question: an ordinary failure, not the job's. */
     ask(question: GenerationQuestion, ctx: HostContext, options?: { signal?: AbortSignal }): Promise<unknown>;
     notice(notice: Parameters<JobChannel["notice"]>[0]): void;
-    /** A request of the job, recorded as `source` made it (and for `messageId`, where the caller knows it). */
+    /**
+     * A request of the job, recorded as `source` made it (and for `messageId`, where known).
+     * An absent `toolSet` lists tools; a prepared set, including null for no registry, is reused.
+     * `resent`: this call re-sends a rejected reply, so the job's retry count rises when it goes out.
+     */
     request(
         arg: RequestArgs,
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null; resent?: true },
     ): Promise<requestDataResponse>;
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
     /**
@@ -174,11 +235,16 @@ export type LuaBindingServices = {
         negative: string,
         characterId: string,
         ctx: HostContext,
-        options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation },
+        options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation; name?: string },
     ): Promise<string | null>;
-    tokenize(text: string): Promise<number>;
-    /** `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). */
-    activateLore(ctx: HostContext): ReturnType<typeof activateLore>;
+    /** Scripts pass their grant (false counts locally); non-script jobs keep the configured counter. */
+    tokenize(text: string, lowLevelAccess?: boolean): Promise<number>;
+    /**
+     * `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). With
+     * `stopOverBudget`, an activation whose budget pass rejects an entry without
+     * `@@ignore_on_max_context` is `stopped` and queues no flag write (`LoreActivationInput`).
+     */
+    activateLore(ctx: HostContext, options?: { stopOverBudget?: boolean }): ReturnType<typeof activateLore>;
     /** The server CBS of the job's chat with `chara` (the chat's character when none). */
     parse(text: string, chara: character | groupChat | null | undefined): string;
     /** `calcString` of `src/ts/process/infunctions.ts`, bound to the job's chat. */
@@ -201,6 +267,8 @@ export type LuaBindings = {
     fatal(): LuaJobFatalError | null;
     evaluator: CbsEvaluator;
     services: LuaBindingServices;
+    /** Prepares the prompt's tools, or null when the job has no MCP registry. */
+    listTools(ctx: HostContext): Promise<JobToolSet | null>;
     /** Runs `fn` with the chat functions on `working` (a trigger's copy); the previous slot is restored after. */
     withWorking<T>(working: LuaWorkingCopy, fn: () => Promise<T>): Promise<T>;
     /** Calls `listener` after every Lua setter that wrote the run's character; returns the unsubscribe. */
@@ -255,6 +323,25 @@ function mimeOf(meta: InlayResource): string {
     return "application/json";
 }
 
+/**
+ * A chat variable value from Lua: a non-finite number (Lua's `0/0`, `math.huge`) becomes the text
+ * a read returns (`getChatVar` answers `toString()`), "NaN" or "Infinity", since the store refuses
+ * it. Every other value passes as it is: a finite number or boolean stays raw, as upstream stores
+ * it, so reroll checkpoints holding the raw value still compare equal.
+ */
+function chatVarText(value: unknown): string {
+    return typeof value === "number" && !Number.isFinite(value) ? String(value) : (value as string);
+}
+
+/**
+ * Message or lore text from Lua: a number or boolean becomes its JavaScript text (`42` as "42", `0/0`
+ * as "NaN", `math.huge` as "Infinity"), since the store takes only text there and a script printing a
+ * score expects it shown. A string, nil, or anything else passes as it is.
+ */
+function luaText(value: unknown): string {
+    return typeof value === "number" || typeof value === "boolean" ? String(value) : (value as string);
+}
+
 /** Rejects with the signal's reason when it aborts first. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) {
@@ -290,13 +377,21 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * Chat functions work on the job's chat (`scope`), by index resolved to message ids when called,
  * and write through `job.write`; variable keys and note setters coalesce in the live scope until a
  * microtask or job barrier flushes them. After each write the scope adopts its stored data and
- * revision and sends it to the tab. A refused write of a message another generation owns is skipped with a warning, as
- * the client's `liveWrite`; any other conflict is fatal. Character functions address the run's
- * character, read live from the store.
+ * revision and sends it to the tab. Detached scopes apply chat edits to their copy only and refuse
+ * character and persona writes. A refused write of a message another generation owns is skipped with a warning, as
+ * the client's `liveWrite`; any other conflict is fatal. `getName`, `getDescription`,
+ * `getCharacterFirstMessage`, `getBackgroundEmbedding`, and their setters address the run's
+ * character. Reads refresh it from the store unless `deps.frozen`; frozen display bindings in
+ * `server/src/prompt/transform.ts` use the scope's snapshot. With access allowed, these getters
+ * return `""` when no character resolves, otherwise the stored field (possibly undefined), except
+ * `getDescription` throws "Character is a group" for a group target. Their setters leave a
+ * missing character unwritten.
  */
 export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const { job, scope, store, kinds } = deps;
     const metadata = deps.frozen ? null : chatMetadataFor(job, store, scope);
+    // Repeated preview activations see their own flags without consuming lore in the next send.
+    const previewLoreVars = job.kind === "preview" || job.kind === "previewPrompt" ? new Map<string, string>() : null;
     const kindOf = (name: string): ResourceKind => {
         const kind = kinds.get(name);
         if (!kind) {
@@ -344,8 +439,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     let lastChat: Chat | undefined = scopeChat(scope);
-    /** The job's chat as last read (the live chat; the last copy once it is gone, as the client keeps it). */
-    const liveChat = (): Chat => (scopeChat(scope) ?? lastChat) as Chat;
+    /** The live prompt view during assembly, otherwise the stored chat; the last copy once gone. */
+    const liveChat = (): Chat => (scopeHistoryChat(scope) ?? lastChat) as Chat;
     /** A trigger's working copy while its Lua runs (`withWorking`), else none. */
     let working: LuaWorkingCopy | null = null;
     /** The run's chat: the trigger's working copy, else the live chat (the client's `engineChat`). */
@@ -390,6 +485,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
      * (indexes resolved, messages and metadata copied from the stored state, never an older copy),
      * written with that revision; nothing when it returns null. A lone note setter joins the job's
      * pending metadata; every other group flushes that metadata as its own write first.
+     * A detached scope instead reduces the ops into its copy without storing or publishing them.
      */
     const writeChat = (build: (chat: Chat) => ChatOp[] | null, ctx?: HostContext): void => {
         fence(ctx);
@@ -418,6 +514,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             metadata!.queue({ note: only.set.note }, latch);
             return;
         }
+        if (scope.detached) {
+            replaceScopeChat(scope, reduceChatOps(current, ops));
+            lastChat = scopeChat(scope);
+            return;
+        }
         // A refused message group must not discard a setter that already took effect.
         flushChatMetadata(job);
         if (deps.lock && touchesGenerating(ops, current)) {
@@ -444,7 +545,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             throw latch(error);
         }
-        if (refreshChatAfterWrite(store, scope, ops, applied.chats[0])) {
+        if (refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0])) {
             lastChat = scopeChat(scope);
         }
         refreshCharacters();
@@ -546,26 +647,28 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
     };
 
-    /** Patches the run's character (`updateCharacter`): the record read again on the one retry. */
-    const patchCharacter = (patch: Record<string, unknown>, ctx: HostContext): boolean => {
+    /** Patches the run's character, unless detached; the record is read again on the one retry. */
+    const patchCharacter = (patch: Record<string, unknown>, ctx: HostContext, lore?: GlobalLoreChange): boolean => {
         fence(ctx);
         const id = deps.runCharacterId;
-        if (!id || !store.get(charactersKind, id)) {
+        if (scope.detached || !id || !store.get(charactersKind, id)) {
             return false;
         }
         let applied = false;
         try {
             job.write(() => {
                 const row = store.get(charactersKind, id);
-                applied = !!row;
-                return row
+                const globalLore =
+                    lore && row ? applyGlobalLoreChange((row.data as character).globalLore ?? [], lore) : undefined;
+                applied = !!row && globalLore !== null;
+                return applied && row
                     ? {
                           ops: [
                               {
                                   kind: charactersKind,
                                   id,
                                   baseRevision: row.revision,
-                                  patch: { set: patch },
+                                  patch: { set: globalLore ? { ...patch, globalLore } : patch },
                               },
                           ],
                       }
@@ -583,10 +686,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
 
     /**
      * `updatePersona(id, { personaPrompt })`: the one entry of the personas list, the others kept,
-     * read again on the one retry; false when the persona is gone (never recreated).
+     * read again on the one retry; false when detached or the persona is gone (never recreated).
      */
     const patchPersonaPrompt = (personaId: string, value: string, ctx: HostContext): boolean => {
         fence(ctx);
+        if (scope.detached) {
+            return false;
+        }
         let applied = false;
         try {
             job.write(() => {
@@ -616,9 +722,52 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const isSafe = (ctx: HostContext) => ctx.access === "safe" || ctx.access === "lowLevel";
     const isSafeOrEdit = (ctx: HostContext) => isSafe(ctx) || ctx.access === "editDisplay";
     const isLow = (ctx: HostContext) => ctx.access === "lowLevel";
+    const tokenize = (text: string, lowLevelAccess = true) => {
+        const tokenScope = tokenScopeFor(scope.request.db);
+        if (!lowLevelAccess) {
+            tokenScope.googleClaudeTokenizing = false;
+        }
+        return deps.tokens.count(text, tokenScope);
+    };
     const messages = () => engineChat().message;
+    // The message id is given under both `id` and `chatId`.
     const project = (message: Message | undefined) =>
-        message ? { role: message.role, data: message.data, time: message.time ?? 0 } : null;
+        message
+            ? {
+                  id: message.chatId,
+                  chatId: message.chatId,
+                  role: message.role,
+                  data: message.data,
+                  time: message.time ?? 0,
+              }
+            : null;
+    type FullChatItem = { id?: unknown; chatId?: unknown; role: unknown; data: unknown };
+    const fullChatMessages = (stored: Message[], values: FullChatItem[]) => {
+        const byId = new Map(stored.filter((message) => message.chatId).map((message) => [message.chatId!, message]));
+        const used = new Set<Message>();
+        // A stored message the key names that no earlier item took.
+        const unused = (key: unknown) => {
+            const message = typeof key === "string" ? byId.get(key) : undefined;
+            return message && !used.has(message) ? message : undefined;
+        };
+        return values.map((value, index): Message => {
+            const role = value.role as Message["role"];
+            const data = luaText(value.data);
+            // `id` first, then `chatId`, then the position.
+            let message = unused(value.id) ?? unused(value.chatId);
+            if (!message) {
+                const positional = stored[index];
+                message =
+                    positional && !used.has(positional) && positional.role === role && positional.data === data
+                        ? positional
+                        : undefined;
+            }
+            if (!message) return { role, data, chatId: randomUUID() };
+            used.add(message);
+            // Like setChat, keep the stored metadata (including translations and candidates) on a text edit.
+            return message.role === role && message.data === data ? message : { ...message, role, data };
+        });
+    };
     const roleOf = (role: unknown): "user" | "char" => (role === "user" ? "user" : "char");
     /** The client's `replaceCopyMessage`: the copy's message objects may be shared, so they are replaced. */
     const replaceCopyMessage = (chat: Chat, index: number, message: Message) => {
@@ -700,7 +849,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         payload: CallbackPayloads[N],
         ctx: HostContext,
         options: { timeoutMs?: number; skipDisconnected?: boolean } = {},
-    ): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true; value: unknown } | { ok: false; error: string; skipped?: true }> => {
         let result: CallbackResult;
         // Nothing is asked of the tab once the call or the job is over.
         fence(ctx);
@@ -718,7 +867,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
         if (options.skipDisconnected && result.outcome === "disconnected") {
             fence(ctx);
-            return { ok: false, error: result.error ?? "No owner was connected" };
+            return { ok: false, error: result.error ?? "No owner was connected", skipped: true };
         }
         switch (result.outcome) {
             case "answered":
@@ -752,10 +901,18 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!meta || meta.type !== "image" || typeof meta.asset !== "string" || meta.asset === "") {
             return false;
         }
-        return await storageFileExists(deps.savePath, meta.asset);
+        const asset = meta.asset;
+        if (resolveStorageKey(deps.savePath, asset) === null) {
+            return false;
+        }
+        const status = await claimAssetKey(deps.savePath, asset, {
+            verify: () => storageFileExists(deps.savePath, asset),
+        });
+        return status === "present";
     };
-    /** `isImageInlay`, then the call's fence: an abort during the file check stops what follows. */
+    /** Claim before the metadata read, then check the image and fence against an abort during file I/O. */
     const usableImage = async (id: string, ctx: HostContext) => {
+        claimInlayId(id);
         const usable = await isImageInlay(id);
         fence(ctx);
         return usable;
@@ -776,6 +933,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** An inlay record written by the job (a new one, or replacing the one with `id`). */
     const writeInlay = (id: string, data: InlayResource, ctx: HostContext) => {
         fence(ctx);
+        claimInlayId(id);
         try {
             job.write(() => ({
                 ops: [{ kind: inlaysKind, id, baseRevision: store.get(inlaysKind, id)?.revision ?? null, data }],
@@ -823,12 +981,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         negative: string,
         characterId: string,
         ctx: HostContext,
-        options: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation } = {},
+        options: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation; name?: string } = {},
     ): Promise<string | null> => {
-        const { orientation, ...callbackOptions } = options;
+        const { orientation, name, ...callbackOptions } = options;
         const payload: CallbackPayloads["generateImage"] = { prompt, negative, characterId };
         if (orientation !== undefined) {
             payload.orientation = orientation;
+        }
+        if (name !== undefined) {
+            payload.name = name;
         }
         const answer = await callback("generateImage", payload, ctx, callbackOptions);
         return answer === null ? null : await answeredInlayId(answer, null, ctx);
@@ -853,6 +1014,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** The native `request` trigger every request runs (`setRequestTrigger`), or none. */
     let requestTrigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null = null;
 
+    /** A late retry report may race the job's end; other emission failures still propagate. */
+    const reportRetry = () => {
+        try {
+            job.emit({ type: "retry" });
+        } catch (error) {
+            if (!(error instanceof GenerationJobEndedError)) {
+                throw error;
+            }
+        }
+    };
+
     /**
      * A request of the job: the client's outer `requestChatData` around the server request layer. A
      * failure it throws that names no stage yet is the request's (its tool list included); a script's
@@ -863,7 +1035,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null; resent?: true },
     ): Promise<requestDataResponse> =>
         runRequest(arg, mode, ctx, source, meta).catch((error: unknown) => {
             throw markFailure(error, { stage: "request" });
@@ -874,7 +1046,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null; resent?: true },
     ): Promise<requestDataResponse> => {
         const signal = AbortSignal.any([job.signal, ctx.signal]);
         const replacer = async <N extends "replacerbeforeRequest" | "replacerafterRequest">(
@@ -895,9 +1067,10 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             return value;
         };
         const db = scope.request.db;
-        // The client's `getTools()`: once per request, before the retry loop, whatever the mode.
-        let toolSet: JobToolSet | null = null;
-        if (jobTools) {
+        // Reuse assembly's prepared set, including null for no registry. Other callers list once
+        // before the retry loop, whatever the mode, as the client's `getTools()` does.
+        let toolSet: JobToolSet | null = meta?.toolSet ?? null;
+        if (meta?.toolSet === undefined && jobTools) {
             try {
                 toolSet = await jobTools.list(ctx);
             } catch (error) {
@@ -925,14 +1098,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return requestChatDataOuter(arg, mode, {
             db,
             signal,
+            reportRetry,
+            ...(meta?.resent ? { resent: true as const } : {}),
             ...(requestTrigger ? { requestTrigger } : {}),
             isFatal: (error) => error instanceof LuaJobFatalError || fatalError !== null || signal.aborted,
             attempt: (attemptArg) =>
                 deps.llm.runInJob({
                     jobId: job.id,
+                    reportRetry,
                     loaded: scope.request,
                     mode,
-                    arg: attemptArg,
+                    arg: { ...attemptArg, allowConfiguredTools: meta?.toolSet !== null },
                     source,
                     chatRef: arg.chatRef ?? ref,
                     messageId: meta?.messageId ?? null,
@@ -1007,8 +1183,29 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 : {}),
             ...(job.hooks.replacers.afterRequest
                 ? {
+                      // The reply is in hand: with no owner tab before the deadline the text goes on
+                      // unchanged and the skip is recorded, as the tail's listeners are skipped.
                       afterRequest: async (text: string, model: string) => {
-                          const value = await replacer("replacerafterRequest", { text, model });
+                          let answer: Awaited<ReturnType<typeof tryCallback>>;
+                          try {
+                              answer = await tryCallback("replacerafterRequest", { text, model }, ctx, {
+                                  skipDisconnected: true,
+                              });
+                          } catch (error) {
+                              throw markFailure(error, { stage: "script" });
+                          }
+                          if (!answer.ok) {
+                              if (answer.skipped) {
+                                  deps.skipped?.push({ name: "replacerafterRequest" });
+                                  return text;
+                              }
+                              throw markFailure(new Error("The replacerafterRequest hook failed"), { stage: "script" });
+                          }
+                          const value = answer.value;
+                          if (value === null) {
+                              // Registered when the job started, gone now: the browser path rejects too.
+                              throw markFailure(new Error("The replacerafterRequest hook failed"), { stage: "script" });
+                          }
                           if (typeof value !== "string") {
                               throw latch(
                                   markFailure(new LuaJobFatalError("The replacerafterRequest answer is not a string"), {
@@ -1158,8 +1355,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return JSON.stringify({ success: true, result: result.result });
     };
 
-    /** `loadLoreBookV3Prompt` of the job's chat as stored now, for `selectedChar` (the chat owner). */
-    const activateJobLore = (selectedChar: character, ctx: HostContext) => {
+    /**
+     * `loadLoreBookV3Prompt` of the job's chat as stored now, for `selectedChar` (the chat owner).
+     * `options.stopOverBudget` is the activation's own option; only a send's assembly sets it.
+     */
+    const activateJobLore = (selectedChar: character, ctx: HostContext, options?: { stopOverBudget?: boolean }) => {
         return activateLore(
             {
                 character: selectedChar,
@@ -1168,17 +1368,23 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 loreBookDepth: scope.db.loreBookDepth,
                 loreBookToken: scope.db.loreBookToken,
                 userName: cbsHost.getUserName(ref),
+                ...(options?.stopOverBudget === true ? { stopOverBudget: true } : {}),
             },
             {
                 clone: (value) => structuredClone(value),
                 findCharacterName: (id) => cbsHost.findCharacterById(id)?.name,
-                getChatVar: (key) => cbsHost.getChatVar(key, ref),
+                getChatVar: (key) => previewLoreVars?.get(key) ?? cbsHost.getChatVar(key, ref),
                 setChatVar: (key, value) => {
-                    setChatVar(key, value, ctx);
+                    if (previewLoreVars) {
+                        fence(ctx);
+                        previewLoreVars.set(key, value);
+                    } else {
+                        setChatVar(key, value, ctx);
+                    }
                 },
                 pickHashRand,
                 parseCBS: (text) => evaluator.risuChatParser(text, { chara: selectedChar, chatRef: ref }),
-                tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
+                tokenize: (text) => tokenize(text, isLow(ctx)),
                 testRegex: async (pattern, flags, text) => {
                     const result = await ctx.regex({ op: "test", pattern, flags, input: text });
                     if ("error" in result) {
@@ -1212,9 +1418,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             if (working) {
-                working.setVar(key as string, value as string);
+                working.setVar(key as string, chatVarText(value));
             } else {
-                setChatVar(key as string, value as string, ctx);
+                setChatVar(key as string, chatVarText(value), ctx);
             }
             return undefined;
         },
@@ -1223,8 +1429,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             const changed = working
-                ? working.setVar(key as string, value as string)
-                : setChatVar(key as string, value as string, ctx);
+                ? working.setVar(key as string, chatVarText(value))
+                : setChatVar(key as string, chatVarText(value), ctx);
             return changed === true ? true : undefined;
         },
         getGlobalVar: ([, key]) => cbsHost.getGlobalChatVar(key as string, ref),
@@ -1256,13 +1462,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (working) {
                 const message = working.chat.message?.at(index as number);
                 if (message) {
-                    replaceCopyMessage(working.chat, index as number, { ...message, data: (value as string) ?? "" });
+                    replaceCopyMessage(working.chat, index as number, { ...message, data: luaText(value) ?? "" });
                 }
                 return undefined;
             }
             writeChat((chat) => {
-                const message = chat.message.at(index as number);
-                return message?.chatId ? [{ op: "setText", id: message.chatId, text: (value as string) ?? "" }] : null;
+                const message = scopeHistoryMessages(scope, chat).at(index as number);
+                return message?.chatId ? [{ op: "setText", id: message.chatId, text: luaText(value) ?? "" }] : null;
             }, ctx);
             return undefined;
         },
@@ -1278,7 +1484,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const message = chat.message.at(index as number);
+                const message = scopeHistoryMessages(scope, chat).at(index as number);
                 return message?.chatId
                     ? [{ op: "setMessage", message: { ...structuredClone(message), role: roleOf(value) } }]
                     : null;
@@ -1294,8 +1500,9 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const kept = new Set(chat.message.slice(start as number, end as number));
-                const removed = chat.message.filter((message) => !kept.has(message)).map((message) => message.chatId!);
+                const view = scopeHistoryMessages(scope, chat);
+                const kept = new Set(view.slice(start as number, end as number).map((message) => message.chatId!));
+                const removed = view.filter((message) => !kept.has(message.chatId!)).map((message) => message.chatId!);
                 return removed.length > 0 ? [{ op: "remove", ids: removed }] : null;
             }, ctx);
             return undefined;
@@ -1309,7 +1516,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             writeChat((chat) => {
-                const message = chat.message.at(index as number);
+                const message = scopeHistoryMessages(scope, chat).at(index as number);
                 return message?.chatId ? [{ op: "remove", ids: [message.chatId] }] : null;
             }, ctx);
             return undefined;
@@ -1319,14 +1526,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             if (working) {
-                working.chat.message.push({ role: roleOf(role), data: (value as string) ?? "" });
+                working.chat.message.push({ role: roleOf(role), data: luaText(value) ?? "" });
                 return undefined;
             }
             writeChat(
                 () => [
                     {
                         op: "append",
-                        messages: [{ role: roleOf(role), data: (value as string) ?? "", chatId: randomUUID() }],
+                        messages: [{ role: roleOf(role), data: luaText(value) ?? "", chatId: randomUUID() }],
                         anchor: { end: true },
                     },
                 ],
@@ -1339,19 +1546,25 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 return undefined;
             }
             if (working) {
-                working.chat.message.splice(index as number, 0, { role: roleOf(role), data: (value as string) ?? "" });
+                working.chat.message.splice(index as number, 0, { role: roleOf(role), data: luaText(value) ?? "" });
                 return undefined;
             }
             writeChat((chat) => {
                 // Where `splice(index, 0, ...)` would insert.
-                const all = chat.message;
-                const at = index as number;
+                const all = scopeHistoryMessages(scope, chat);
+                const at = Math.trunc(index as number) || 0;
                 const position = at < 0 ? Math.max(all.length + at, 0) : Math.min(at, all.length);
-                const anchor = position === 0 ? { start: true as const } : { after: all[position - 1].chatId! };
+                const previous = position === 0 ? null : all[position - 1].chatId!;
+                const anchor = historyInsertionAnchor(
+                    chat,
+                    scope.rerollHistoryMessageId,
+                    previous,
+                    new Set(all.map((message) => message.chatId!)),
+                );
                 return [
                     {
                         op: "append",
-                        messages: [{ role: roleOf(role), data: (value as string) ?? "", chatId: randomUUID() }],
+                        messages: [{ role: roleOf(role), data: luaText(value) ?? "", chatId: randomUUID() }],
                         anchor,
                     },
                 ];
@@ -1365,22 +1578,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            const realValue = JSON.parse(value as string) as { role: unknown; data: unknown }[];
+            const realValue = JSON.parse(value as string) as FullChatItem[];
             if (working) {
-                // The copy's list: the final application gives the messages new ids.
-                working.chat.message = realValue.map((v) => ({
-                    role: v.role as Message["role"],
-                    data: v.data as string,
-                }));
+                working.chat.message = fullChatMessages(working.chat.message, realValue);
                 return undefined;
             }
-            // A whole-list replacement: the messages get new ids, as before.
-            const replaced: Message[] = realValue.map((v) => ({
-                role: v.role as Message["role"],
-                data: v.data as string,
-                chatId: randomUUID(),
-            }));
-            writeChat((chat) => [{ op: "replace", chat: { ...structuredClone(chat), message: replaced } }], ctx);
+            writeChat(
+                (chat) => [{ op: "replace", chat: { ...chat, message: fullChatMessages(chat.message, realValue) } }],
+                ctx,
+            );
             return undefined;
         },
         reloadDisplay: (_args, ctx) => {
@@ -1430,6 +1636,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return target ? target.desc : "";
         },
+        /** With access allowed, a non-string description throws "Invalid data type" without writing. */
         setDescription: ([, desc], ctx) => {
             if (!isSafe(ctx)) {
                 return undefined;
@@ -1485,6 +1692,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return applied;
         },
+        /**
+         * Searches the chat's `localLore`, owner `globalLore` with chat `loreOverrides` merged by
+         * `shared/lore/overrides.ts`, and the job's module lore. Native lore effects in
+         * `server/src/prompt/triggers.ts` address the raw character lore instead.
+         */
         getLoreBooksMain: ([, search]) => {
             const selectedChar = engineCharacter() as character | groupChat;
             if (selectedChar.type !== "character") {
@@ -1508,6 +1720,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             return JSON.stringify(found);
         },
+        /** Writes only chat `localLore`, leaving character and module lore untouched. */
         upsertLocalLoreBookMain: ([, name, content, optionsJson], ctx) => {
             if (!isSafe(ctx)) {
                 return undefined;
@@ -1523,14 +1736,16 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 regex?: boolean;
             };
             const { alwaysActive = false, insertOrder = 100, key = "", regex = false, secondKey = "" } = options;
+            const loreName = luaText(name);
+            const loreContent = luaText(content);
             const upserted = (localLore: loreBook[] | undefined): loreBook[] => {
                 const newLocalLoreBooks = (structuredClone(localLore ?? []) as loreBook[]).filter(
-                    (book) => book.comment !== name,
+                    (book) => book.comment !== loreName,
                 );
                 newLocalLoreBooks.push({
                     alwaysActive,
-                    comment: name as string,
-                    content: content as string,
+                    comment: loreName,
+                    content: loreContent,
                     insertorder: insertOrder,
                     mode: "normal",
                     key,
@@ -1556,11 +1771,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     const async: NonNullable<LuaHost["async"]> = {
-        alertInputMain: async ([, value], ctx) => {
+        alertInputMain: async ([, value, defaultValue], ctx) => {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            const answer = await ask({ kind: "alertInput", payload: { message: String(value) } }, ctx);
+            const payload: { message: string; defaultValue?: string } = { message: String(value) };
+            if (typeof defaultValue === "string") {
+                payload.defaultValue = defaultValue;
+            }
+            const answer = await ask({ kind: "alertInput", payload }, ctx);
             return typeof answer === "string"
                 ? answer
                 : answer === null || answer === undefined
@@ -1593,7 +1812,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            return await deps.tokens.count(value as string, tokenScopeFor(scope.request.db));
+            return await tokenize(value as string, isLow(ctx));
         },
         similarityMain: async ([, source, value], ctx) => {
             if (!isLow(ctx)) {
@@ -1609,9 +1828,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isLow(ctx)) {
                 return undefined;
             }
-            const { orientation } = parseLuaOptions(optionsStr) as { orientation?: unknown };
+            const { orientation, name: rawName } = parseLuaOptions(optionsStr) as {
+                orientation?: unknown;
+                name?: unknown;
+            };
             if (orientation !== undefined && orientation !== "landscape" && orientation !== "portrait") {
                 return "Error: Image orientation must be landscape or portrait, received " + String(orientation);
+            }
+            // A non-empty string labels the inlay; an empty or non-string name means none.
+            const name = typeof rawName === "string" && rawName !== "" ? rawName : undefined;
+            if (name !== undefined && name.length > MAX_LUA_INLAY_NAME_LENGTH) {
+                return `Error: Image name must be at most ${MAX_LUA_INLAY_NAME_LENGTH} characters`;
             }
             const target = runCharacter();
             if (!target || target.type === "group" || !deps.runCharacterId) {
@@ -1620,6 +1847,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             const id = await generateImageInlay(String(value ?? ""), String(negValue ?? ""), deps.runCharacterId, ctx, {
                 orientation,
+                ...(name !== undefined ? { name } : {}),
             });
             return id === null ? "Error: Image generation failed" : `{{inlay::${id}}}`;
         },
@@ -1745,8 +1973,8 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         request,
         collectStreamText,
         generateImageInlay,
-        tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
-        activateLore: (ctx) => activateJobLore(engineCharacter() as character, ctx),
+        tokenize,
+        activateLore: (ctx, options) => activateJobLore(engineCharacter() as character, ctx, options),
         parse: (text, chara) =>
             evaluator.risuChatParser(text, { chara: (chara ?? undefined) as character, chatRef: ref }),
         calc: (text) => cbsHost.calcString(text),
@@ -1781,6 +2009,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         fatal: () => fatalError,
         evaluator,
         services,
+        listTools: (ctx) => (jobTools ? jobTools.list(ctx) : Promise.resolve(null)),
         async withWorking(next, fn) {
             const previous = working;
             working = next;

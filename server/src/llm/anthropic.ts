@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/anthropic.ts` (the client's dependencies are `arg.ctx`'s).
+// Port of the former `src/ts/process/request/anthropic.ts` (the client's dependencies are `arg.ctx`'s).
 import { randomUUID } from "node:crypto";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { HttpRequest } from "@smithy/protocol-http";
@@ -14,6 +14,24 @@ import { extractJSON } from "./jsonSchema.ts";
 import { SseLines } from "./sseLines.ts";
 import type { RequestDataArgumentExtended, requestDataResponse, StreamResponseChunk } from "./request.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
+
+/**
+ * Builds Anthropic Messages bodies with user/assistant content blocks, a separate leading system prompt, image and
+ * cache blocks, thinking settings, and tool schemas. NanoGPT fixes its Messages endpoint; Ollama Cloud uses bearer
+ * auth; Bedrock signs a nonstreaming invoke body with SigV4. Messages batching submits once and polls for results.
+ *
+ * The HTTP stream emits cumulative text at key `"0"`, wrapping thinking in `<Thoughts>`; malformed SSE lines are
+ * skipped individually. EOF flushes the final line, closes any open thinking block, and ends the stream; message-stop
+ * events alone do not close it. Batching emits a single full answer on success and closes without text on cancellation.
+ * Tool execution and remembered output are handled by buffered Messages follow-ups, not the SSE parser.
+ * A request offering tools is therefore always buffered and never batched: the SSE parser and the batch result
+ * parser read text and thinking only, so its tool calls would be dropped.
+ *
+ * Unlike the shared HTTP prefix in `server/src/llm/messages.ts`, HTTP failures here carry provider text/JSON directly.
+ * Buffered Messages failures containing "overload" set `failByServerError`; SSE error events append a redacted
+ * `Error:` message to the answer. Batch errored/expired results error their stream, while polling exceptions are logged
+ * and polling continues until its timeout. Body read failures propagate through the HTTP stream.
+ */
 
 interface Claude3TextBlock {
     type: "text";
@@ -70,11 +88,21 @@ interface Claude3ExtendedChat {
     content: Claude3ContentBlock[] | string;
 }
 
+/**
+ * Builds, previews, or sends a Claude Messages/Bedrock request, optionally returning a live HTTP or batch stream
+ * (never for a request offering tools, which is sent buffered, as are its tool follow-ups).
+ * Empty input returns `No input`; system-only input becomes a user turn containing the trimmed system text. A
+ * signed Bedrock request without all three `accessKeyId:secretAccessKey:region` key parts throws before preview/send.
+ * Reverse-proxy messages join non-empty text blocks with blank lines and omit messages without text.
+ */
 export async function requestClaude(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;
     const aiModel = arg.aiModel;
-    const useStreaming = arg.useStreaming;
+    // Decided once: a request offering tools is buffered, and every `requestClaudeHTTP` call gets `httpArg`.
+    const hasTools = arg.tools !== undefined && arg.tools.length > 0;
+    const httpArg: RequestDataArgumentExtended = hasTools ? { ...arg, useStreaming: false } : arg;
+    const useStreaming = httpArg.useStreaming;
     const nanogpt = aiModel === "nanogpt";
     const ollamaCloudAnthropic = aiModel === "ollama-cloud";
     // NanoGPT does not expose a subscription Messages endpoint.
@@ -264,7 +292,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
             content: [
                 {
                     type: "text",
-                    text: "Start",
+                    text: systemPrompt.trim(),
                 },
             ],
         });
@@ -352,13 +380,12 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
     let finalChat: Claude3ExtendedChat[] = claudeChat;
 
     if (aiModel === "reverse_proxy") {
-        finalChat = claudeChat.map((v): any => {
-            if (v.content.length > 0 && v.content[0].type === "text") {
-                return {
-                    role: v.role,
-                    content: v.content[0].text,
-                };
-            }
+        finalChat = claudeChat.flatMap((chat) => {
+            const content = chat.content
+                .filter((block): block is Claude3TextBlock => block.type === "text" && block.text !== "")
+                .map((block) => block.text)
+                .join("\n\n");
+            return content ? [{ role: chat.role, content }] : [];
         });
     }
 
@@ -631,7 +658,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         };
     }
 
-    if (db.claudeBatching && !ollamaCloudAnthropic && !nanogpt) {
+    if (db.claudeBatching && !ollamaCloudAnthropic && !nanogpt && !hasTools) {
         if (body.stream !== undefined) {
             delete body.stream;
         }
@@ -970,7 +997,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
         });
     }
 
-    return requestClaudeHTTP(replacerURL, headers, body, arg);
+    return requestClaudeHTTP(replacerURL, headers, body, httpArg);
 }
 
 async function requestClaudeHTTP(
@@ -995,6 +1022,12 @@ async function requestClaudeHTTP(
                 result: await textifyReadableStream(res.body!),
             };
         }
+        /**
+         * The Anthropic stream parser's line reader, one per response body. Each `data:` event is applied once and a
+         * malformed line is skipped on its own; at most one cumulative snapshot (`StreamResponseChunk`, text at key
+         * `"0"`, thinking inside `<Thoughts>`) is emitted per read that applied an event; the flush closes an open
+         * thinking block.
+         */
         const lines = new SseLines();
         let text = "";
         let thinking = false;

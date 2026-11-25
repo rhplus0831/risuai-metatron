@@ -1,12 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import type { Chat } from "../../../../shared/database";
 
 // The character records hold no chats, so the v3 host builds the legacy shape at the boundary and
 // the setters load first.
 // - `getChar`/`getCharacterFromIndex`/`getDatabase` answer a detached character with its chats and
-//   `chatPage`; `getChatFromIndex` finds its chat again after the load (null once it is deleted).
-// - `setChar` reconciles the chats through the chat module: an omitted chat is deleted (never the
-//   last one), a `chatPage` selects, and the pins taken for the load are released on success and on
-//   a refusal.
+//   `chatPage`; `getChatFromIndex` finds its chat again after the load (null once it is trashed or
+//   deleted).
+// - `setChar` reconciles the chats through the chat module: an omitted chat stays a member in its
+//   slot, a `chatPage` selects the chat at that index of the plugin's list, and the pins taken for
+//   the load are released on success and on a refusal.
 // - `setDatabaseLite` applies at once when no chats load (the forwarded fields see the selection of
 //   the call), after the load otherwise; a character deleted while its chats load is skipped, not
 //   recreated.
@@ -24,16 +26,16 @@ const { captured, reads } = vi.hoisted(() => ({
     reads: {
         chats: new Map<string, { characterId: string; id: string; revision: string; data: unknown }>(),
         gate: null as Promise<void> | null,
+        onRead: null as (() => void) | null,
         count: 0,
     },
 }));
 
-vi.mock("src/ts/storage/resourceClient", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("src/ts/storage/resourceClient")>();
-    return {
-        ...actual,
-        readRefs: async (_refs: unknown, options: { chats?: { characterId: string; id: string }[] } = {}) => {
+vi.mock("src/ts/storage/resourceClient", async () =>
+    (await import("src/ts/storage/tests/resourceClientMock")).createResourceClientMock({
+        readRefs: async (_refs: unknown, options: { chats?: readonly { characterId: string; id: string }[] } = {}) => {
             reads.count += 1;
+            reads.onRead?.();
             if (reads.gate) {
                 await reads.gate;
             }
@@ -47,8 +49,8 @@ vi.mock("src/ts/storage/resourceClient", async (importOriginal) => {
                 ),
             };
         },
-    };
-});
+    }),
+);
 
 vi.mock("./factory", () => ({
     SandboxHost: class {
@@ -63,16 +65,7 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
@@ -86,11 +79,15 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 }));
 
 import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svelte";
-import { selectCharacter, selectPreset } from "src/ts/storage/selection.svelte";
+import { selectCharacter, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { reconcileSelection, settings } from "src/ts/storage/settingsViews.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
+import { editChatSync } from "src/ts/storage/chatEdits";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
-import { executePluginV3 } from "./v3.svelte";
+import { executePluginV3, resetPluginPermissions } from "./v3.svelte";
+import { alertConfirm } from "src/ts/alert";
+import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import * as permissionStore from "./permissionStore";
 
 const refK = { chaId: "c", chatId: "k" };
 /** The fixture's chat revision: a parsable token (a load compares the read's token with the held one). */
@@ -131,10 +128,11 @@ function installDatabase(fields: Record<string, unknown>, unloaded: readonly str
     const characters = (Array.isArray(raw.characters) ? raw.characters : []) as { chaId: string; chats?: any[] }[];
     reads.chats.clear();
     reads.gate = null;
+    reads.onRead = null;
     reads.count = 0;
     const chats = characters.flatMap((char) =>
         (char.chats ?? []).map((entry) => {
-            const record = { characterId: char.chaId, id: entry.id, revision: REVISION, data: entry };
+            const record = { characterId: char.chaId, id: entry.id, revision: REVISION, trashedAt: null, data: entry };
             // Every chat can be read back (a chat evicted by the trim is loaded again through `readRefs`).
             reads.chats.set(`${char.chaId}/${entry.id}`, record);
             if (!unloaded.includes(char.chaId)) {
@@ -153,10 +151,10 @@ function installDatabase(fields: Record<string, unknown>, unloaded: readonly str
     chatStore.assembleChats(characters, chats, orders);
 }
 
-async function makeApi(): Promise<CapturedApi> {
+async function makeApi(name = `hostApiChats-test-${Math.random().toString(36).slice(2)}`): Promise<CapturedApi> {
     captured.api = null;
     await executePluginV3({
-        name: `hostApiChats-test-${Math.random().toString(36).slice(2)}`,
+        name,
         script: "",
         version: "3.0",
     } as any);
@@ -178,9 +176,12 @@ function unloadD() {
 function holdReads() {
     let release!: () => void;
     reads.gate = new Promise<void>((resolve) => (release = resolve));
+    const started = new Promise<void>((resolve) => (reads.onRead = resolve));
     return {
+        started,
         release: () => {
             reads.gate = null;
+            reads.onRead = null;
             release();
         },
     };
@@ -203,6 +204,81 @@ afterEach(() => {
 });
 
 describe("the getters", () => {
+    it("requires nonnegative integer chat indexes for reads and writes, preserving valid indexed access", async () => {
+        const api = await makeApi();
+        const refJ = { chaId: "c", chatId: "j" };
+        const before = JSON.parse(JSON.stringify([chatStore.findChat(refK), chatStore.findChat(refJ)]));
+        const replacement = { ...chat("j", "Updated J"), note: "Written at index 1" };
+
+        for (const index of [1.5, -2]) {
+            expect(await api.getChatFromIndex(0, index)).toBeNull();
+            await api.setChatToIndex(0, index, replacement);
+            expect([chatStore.findChat(refK), chatStore.findChat(refJ)]).toEqual(before);
+        }
+
+        expect(await api.getChatFromIndex(0, 1)).toMatchObject(chat("j", "J"));
+        await api.setChatToIndex(0, 1, replacement);
+        expect(chatStore.findChat(refJ)).toMatchObject(replacement);
+        expect(await api.getChatFromIndex(0, 1)).toMatchObject(replacement);
+        expect(chatStore.findChat(refK)).toEqual(before[0]);
+    });
+
+    it.each(["cold", "warm"])("getChats builds only the requested page entries with %s chats", async (state) => {
+        const chats = Array.from({ length: 1_000 }, (_, i) => chat(`page-${i}`, `Chat ${i}`));
+        installDatabase({ characters: [{ ...liveCharacters()[0], chats }] }, state === "cold" ? ["c"] : []);
+        selectCharacter(null);
+        const api = await makeApi();
+        let entriesBuilt = 0;
+        // Count entries at both selectors so falling back to the full chat list is visible too.
+        const list = chatStore.chatList;
+        const page = chatStore.chatMemberPage;
+        vi.spyOn(chatStore, "chatList").mockImplementation((...args) => {
+            const entries = list(...args);
+            entriesBuilt += entries.length;
+            return entries;
+        });
+        vi.spyOn(chatStore, "chatMemberPage").mockImplementation((...args) => {
+            const entries = page(...args);
+            entriesBuilt += entries.length;
+            return entries;
+        });
+
+        const got = await api.getChats("c", { offset: 500, limit: 1 });
+
+        expect(got).toMatchObject({ chats: [chats[500]], total: 1_000 });
+        expect(entriesBuilt).toBeLessThanOrEqual(1);
+        expect(reads.count).toBe(state === "cold" ? 1 : 0);
+    });
+
+    it.each([
+        { change: "reorder", expectedId: "k", total: 3 },
+        { change: "insert", expectedId: "k", total: 4 },
+        { change: "trash", expectedId: "last", total: 2 },
+        { change: "permanent deletion", expectedId: "last", total: 2 },
+    ])("getChats follows a member $change while its page is loading", async ({ change, expectedId, total }) => {
+        installDatabase(
+            { characters: [{ ...liveCharacters()[0], chats: [chat("k", "K"), chat("j", "J"), chat("last", "Last")] }] },
+            ["c"],
+        );
+        selectCharacter(null);
+        const api = await makeApi();
+        const { started, release } = holdReads();
+        const pending = api.getChats("c", { offset: 1, limit: 1 });
+        await started;
+        try {
+            if (change === "reorder") chatStore.reorderChats("c", ["last", "k", "j"]);
+            else if (change === "insert") chatStore.createChat("c", chat("new", "New"), { index: 0 });
+            else if (change === "trash") chatStore.installChatTrashState(refK, REVISION, 80);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            else chatStore.acceptRemoteChat({ characterId: "c", id: "k", revision: null, data: null });
+        } finally {
+            release();
+        }
+        const got = await pending;
+        expect(got.total).toBe(total);
+        expect(got.chats.map((entry: any) => entry.id)).toEqual([expectedId]);
+    });
+
     it("getChar and getCharacterFromIndex answer the legacy shape detached: the record with its chats and chatPage", async () => {
         const api = await makeApi();
         chatStore.selectChat("c", "j");
@@ -233,7 +309,7 @@ describe("the getters", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 
-    it("getChatFromIndex finds its chat again after the load: the chat as it is then, null once it was deleted", async () => {
+    it("getChatFromIndex finds its chat again after the load: the chat as it is then, null once it was trashed or deleted", async () => {
         const api = await makeApi();
         expect((await api.getChatFromIndex(0, 0)).id).toBe("k");
         expect(await api.getChatFromIndex(0, 5)).toBeNull();
@@ -243,27 +319,282 @@ describe("the getters", () => {
         chatStore.setChatMeta(refK, { note: "changed meanwhile" });
         expect((await changed).note).toBe("changed meanwhile");
 
+        const trashed = api.getChatFromIndex(0, 0);
+        chatStore.installChatTrashState(refK, REVISION, 80);
+        expect(await trashed).toBeNull();
+        chatStore.installChatTrashState(refK, REVISION, null);
+        expect((await api.getChatFromIndex(0, 0)).id).toBe("k");
+
         const deleted = api.getChatFromIndex(0, 0);
-        chatStore.deleteChat(refK);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        chatStore.acceptRemoteChat({ characterId: "c", id: "k", revision: null, data: null });
         expect(await deleted).toBeNull();
         // The index named `k` when the call came, not `j` (now at index 0).
         expect(chatIds("c")).toEqual(["j"]);
     });
 });
 
+describe("retained plugin chat reads", () => {
+    it.each([
+        { getter: "getChatFromIndex", setter: "setChatToIndex" },
+        { getter: "getCharacterFromIndex", setter: "setCharacterToIndex" },
+        { getter: "getCharacter", setter: "setCharacter" },
+        { getter: "getChar", setter: "setChar" },
+    ])(
+        "$getter/$setter preserves concurrent message, chat, map and append changes while plugin changes win their fields",
+        async ({ getter, setter }) => {
+            const api = await makeApi();
+            chatStore.setChatMeta(refK, { scriptstate: { $plugin: "old", $user: "old", $remove: "old" } });
+            const indexedChat = getter === "getChatFromIndex";
+            const indexedCharacter = getter === "getCharacterFromIndex";
+            const got = await api[getter](...(indexedChat ? [0, 0] : indexedCharacter ? [0] : []));
+            const copy: Chat = indexedChat ? got : got.chats[0];
+            chatStore.patchMessage(refK, "a", { data: "user collision", saying: "user speaker" });
+            chatStore.setMessageText(refK, "b", "user B");
+            chatStore.setChatMeta(refK, { name: "User name" });
+            chatStore.mergeChatMeta(refK, "scriptstate", {
+                $user: "user value",
+                $added: "user added",
+                $remove: "user collision",
+            });
+            chatStore.appendMessage(refK, message("new", "user append"));
+            copy.message[0].data = "plugin A";
+            copy.note = "plugin note";
+            copy.scriptstate!.$plugin = "plugin value";
+            delete copy.scriptstate!.$remove;
+            await api[setter](...(indexedChat ? [0, 0, got] : indexedCharacter ? [0, got] : [got]));
+            expect(chatStore.findChat(refK)).toMatchObject({
+                name: "User name",
+                note: "plugin note",
+                scriptstate: { $plugin: "plugin value", $user: "user value", $added: "user added" },
+                message: [
+                    { chatId: "a", data: "plugin A", saying: "user speaker" },
+                    { chatId: "b", data: "user B" },
+                    { chatId: "new", data: "user append" },
+                ],
+            });
+            expect(chatStore.findChat(refK)!.scriptstate).not.toHaveProperty("$remove");
+            expect(warnings()).toEqual([]);
+        },
+    );
+
+    it("removes only messages explicitly omitted from the plugin read, keeping concurrent appends", async () => {
+        const api = await makeApi();
+        const got: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.appendMessage(refK, message("new", "user append"));
+        got.message = got.message.filter((entry) => entry.chatId !== "b");
+        await api.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)!.message.map((entry) => [entry.chatId, entry.data])).toEqual([
+            ["a", "A"],
+            ["new", "user append"],
+        ]);
+    });
+
+    it("consumes a read once and uses the current chat for subsequent writes without reads", async () => {
+        const api = await makeApi();
+        const got: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(refK, "b", "first user edit");
+        got.note = "first plugin edit";
+        await api.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)!.message[1].data).toBe("first user edit");
+        chatStore.setMessageText(refK, "b", "second user edit");
+        got.note = "second plugin edit";
+        await api.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)!.message[1].data).toBe("B");
+        // A fresh instance has no read: it also compares the supplied object at write time.
+        const unread = await makeApi();
+        chatStore.setMessageText(refK, "b", "third user edit");
+        await unread.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)!.message[1].data).toBe("B");
+    });
+
+    it("keeps the latest repeated read isolated from nested changes to either returned copy", async () => {
+        const api = await makeApi();
+        chatStore.setChatMeta(refK, { scriptstate: { $value: "original" } });
+        const first: Chat = await api.getChatFromIndex(0, 0);
+        first.message[0].data = "discarded copy";
+        first.scriptstate!.$value = "discarded map";
+        expect(chatStore.findChat(refK)!.message[0].data).toBe("A");
+        expect(chatStore.findChat(refK)!.scriptstate).toEqual({ $value: "original" });
+        chatStore.setMessageText(refK, "b", "latest read B");
+        const latest: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(refK, "b", "concurrent B");
+        latest.message[0].data = "plugin A";
+        latest.scriptstate!.$value = "plugin map";
+        await api.setChatToIndex(0, 0, latest);
+        expect(chatStore.findChat(refK)!.message.map((entry) => entry.data)).toEqual(["plugin A", "concurrent B"]);
+        expect(chatStore.findChat(refK)!.scriptstate).toEqual({ $value: "plugin map" });
+        // Re-reading changed the baseline: writing the earlier B is now an explicit plugin edit.
+        await api.getChatFromIndex(0, 0);
+        latest.message[1].data = "latest read B";
+        chatStore.setMessageText(refK, "b", "newer B");
+        await api.setChatToIndex(0, 0, latest);
+        expect(chatStore.findChat(refK)!.message[1].data).toBe("latest read B");
+    });
+
+    it("does not share or consume retained reads between plugin instances", async () => {
+        const first = await makeApi();
+        const second = await makeApi();
+        const old: Chat = await first.getChatFromIndex(0, 0);
+        chatStore.setMessageText(refK, "b", "second baseline B");
+        const newer: Chat = await second.getChatFromIndex(0, 0);
+        chatStore.setMessageText(refK, "b", "concurrent B");
+        old.message[1].data = "second baseline B";
+        await first.setChatToIndex(0, 0, old);
+        expect(chatStore.findChat(refK)!.message[1].data).toBe("second baseline B");
+        chatStore.setMessageText(refK, "b", "after first setter");
+        newer.note = "second plugin note";
+        await second.setChatToIndex(0, 0, newer);
+        expect(chatStore.findChat(refK)!.message[1].data).toBe("after first setter");
+    });
+
+    it("refreshes a reread in the sixteen-chat LRU and falls back for the evicted read", async () => {
+        const chats = Array.from({ length: 17 }, (_, i) =>
+            chat(`lru-${i}`, `Chat ${i}`, [message(`m-${i}`, "original")]),
+        );
+        installDatabase({ characters: [{ ...liveCharacters()[0], chats }] });
+        chatStore.initializeChats();
+        selectCharacter("c");
+        const api = await makeApi();
+        const copies: Chat[] = [];
+        for (let i = 0; i < 16; i++) copies[i] = await api.getChatFromIndex(0, i);
+        copies[0] = await api.getChatFromIndex(0, 0);
+        copies[16] = await api.getChatFromIndex(0, 16);
+        for (const i of [0, 1, 2, 16]) {
+            const ref = { chaId: "c", chatId: `lru-${i}` };
+            chatStore.setMessageText(ref, `m-${i}`, "concurrent");
+            copies[i].note = "plugin note";
+            await api.setChatToIndex(0, i, copies[i]);
+            expect(chatStore.findChat(ref)!.message[0].data).toBe(i === 1 ? "original" : "concurrent");
+            expect(chatStore.findChat(ref)!.note).toBe("plugin note");
+        }
+    });
+
+    it("drops a stale message reorder with a warning while applying the plugin's field changes", async () => {
+        const api = await makeApi();
+        const got: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(refK, "b", "concurrent B");
+        got.message.reverse();
+        got.message[1].data = "plugin A";
+        await api.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)!.message.map((entry) => [entry.chatId, entry.data])).toEqual([
+            ["a", "plugin A"],
+            ["b", "concurrent B"],
+        ]);
+        expect(warnings()).toEqual([expect.stringMatching(/order change is dropped/)]);
+    });
+
+    it("refuses a retained read after the character's chats are replaced under the same ids", async () => {
+        const api = await makeApi();
+        const got: Chat = await api.getChatFromIndex(0, 0);
+        got.note = "old plugin edit";
+        chatStore.installCharacterChats("c", [chat("k", "Replacement", [message("a", "Replacement A")])] as Chat[], {
+            firstMsgIndex: -1,
+        });
+        await api.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)).toMatchObject({
+            name: "Replacement",
+            note: "",
+            message: [{ data: "Replacement A" }],
+        });
+        expect(warnings()).toEqual([expect.stringMatching(/chats were replaced meanwhile/)]);
+    });
+
+    it("preserves a reply locked after the read while allowing an unrelated note, and refuses an explicit reply edit", async () => {
+        const api = await makeApi();
+        const got: Chat = await api.getChatFromIndex(0, 0);
+        onTestFinished(() => chatStore.endServerJob("retained-read-job"));
+        chatStore.applyServerGeneration(refK, {
+            jobId: "retained-read-job",
+            messageId: "a",
+            generationId: "retained-read-generation",
+            text: "Live A",
+            seq: 0,
+        });
+        got.note = "allowed plugin note";
+        await api.setChatToIndex(0, 0, got);
+        expect(chatStore.findChat(refK)).toMatchObject({
+            note: "allowed plugin note",
+            message: [{ data: "Live A" }, { data: "B" }],
+        });
+        expect(warnings()).toEqual([]);
+        const locked: Chat = await api.getChatFromIndex(0, 0);
+        locked.message[0].data = "refused plugin reply";
+        locked.note = "refused note";
+        await api.setChatToIndex(0, 0, locked);
+        expect(chatStore.findChat(refK)).toMatchObject({
+            note: "allowed plugin note",
+            message: [{ data: "Live A" }, { data: "B" }],
+        });
+        expect(warnings()).toEqual([expect.stringMatching(/Skipped a chat change/)]);
+    });
+});
+
 describe("the setters", () => {
-    it("setChar outside a hook applies the fields, deletes an omitted chat through the chat module (never the last one), and a chatPage selects", async () => {
+    it.each([
+        ["setDatabase", "an archived id", "g", "character"],
+        ["setDatabaseLite", "a new group", "new-group", "group"],
+    ])(
+        "%s refuses the character list before loading chats when its last entry names %s",
+        async (setter, _reason, chaId, type) => {
+            const [c, d] = liveCharacters();
+            const group = { chaId: "g", type: "group", name: "Group", chats: [chat("kg", "KG")] };
+            installDatabase({ characters: [c, group, d] }, ["g", "d"]);
+            const api = await makeApi();
+            await api[setter]({
+                characters: [
+                    { ...d, name: "Edited D", chats: [chat("kd", "Edited chat")] },
+                    { chaId: "new", name: "New character" },
+                    { chaId, type, name: "Last entry", chats: [chat("kg", "Supplied chat")] },
+                ],
+                theme: "accepted",
+            });
+            expect.soft(reads.count).toBe(0);
+            expect.soft(characterList().map(({ chaId, type, name }) => [chaId, type, name])).toEqual([
+                ["c", "character", "C"],
+                ["g", "group", "Group"],
+                ["d", "character", "D"],
+            ]);
+            expect(settings.ui.theme).toBe("accepted");
+        },
+    );
+
+    it.each(["setCharacter", "setChar", "setCharacterToIndex"])(
+        "%s refuses a group payload before loading its target's chats",
+        async (setter) => {
+            // Select the loaded chat first so the tab's own selection does not fetch the cold fixture.
+            selectCharacter("d");
+            installDatabase({ characters: liveCharacters() }, ["d"]);
+            expect(chatStore.currentChatRef()).toEqual({ chaId: "d", chatId: "kd" });
+            expect(chatStore.findChat({ chaId: "d", chatId: "kd" })).toBeUndefined();
+            const api = await makeApi();
+            const payload = { chaId: "new-group", type: "group", name: "Group", chats: [chat("kd", "Supplied chat")] };
+            if (setter === "setCharacterToIndex") await api.setCharacterToIndex(1, payload);
+            else await api[setter](payload);
+            expect.soft(reads.count).toBe(0);
+            expect(ids()).toEqual(["c", "d"]);
+            expect(characterList()[1]).toMatchObject({ type: "character", name: "D" });
+            expect(chatIds("d")).toEqual(["kd"]);
+        },
+    );
+
+    it("setChar outside a hook applies the fields, keeps an omitted chat in its slot, and a chatPage selects in the plugin's list", async () => {
         const api = await makeApi();
         const got = await api.getChar();
         await api.setChar({ ...got, name: "Renamed", chats: [got.chats[0]], chatPage: 0 });
         expect(characterList()[0].name).toBe("Renamed");
-        expect(chatIds("c")).toEqual(["k"]);
-        expect(chatStore.findChat({ chaId: "c", chatId: "j" })).toBeUndefined();
+        // The omitted chat stays a member in its slot: no delete is queued and the order is unchanged.
+        expect(chatIds("c")).toEqual(["k", "j"]);
+        expect(chatStore.chatEntry({ chaId: "c", chatId: "j" })).toMatchObject({ name: "J" });
+        expect(chatStore.selectedChatId("c")).toBe("k");
+        const work = chatStore.takeChatWork(new Set());
+        expect(work.groups.flatMap((group) => group.ops.map((op) => op.op))).not.toContain("delete");
+        for (const order of work.orders) expect(order.ids).toEqual(["k", "j"]);
         expect(chatStore.isChatPinned("c")).toBe(false);
 
-        // The last chat is never deleted (the list keeps it, without a warning).
+        // An empty list keeps every chat too (without a warning).
         await api.setChar({ ...(await api.getChar()), chats: [] });
-        expect(chatIds("c")).toEqual(["k"]);
+        expect(chatIds("c")).toEqual(["k", "j"]);
         expect(warnings()).toEqual([]);
 
         await api.setChar({
@@ -271,10 +602,15 @@ describe("the setters", () => {
             chats: [chat("n", "N"), ...(await api.getChar()).chats],
             chatPage: 0,
         });
-        expect(chatIds("c")).toEqual(["n", "k"]);
+        expect(chatIds("c")).toEqual(["n", "k", "j"]);
         expect(chatStore.selectedChatId("c")).toBe("n");
         await api.setChar({ ...(await api.getChar()), chatPage: 1 });
         expect(chatStore.selectedChatId("c")).toBe("k");
+        // `chatPage` indexes the plugin's own list, not the member order.
+        const all = await api.getChar();
+        await api.setChar({ ...all, chats: [all.chats[2]], chatPage: 0 });
+        expect(chatIds("c")).toEqual(["n", "k", "j"]);
+        expect(chatStore.selectedChatId("c")).toBe("j");
     });
 
     it("the pins taken for a setter's load are released after a refusal too", async () => {
@@ -289,11 +625,11 @@ describe("the setters", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 
-    it("setDatabaseLite applies at once when no chats load, after the load when a characters list names existing characters", async () => {
+    it("setDatabaseLite applies without a load when no chats load, after the load when a characters list names existing characters", async () => {
         const api = await makeApi();
-        const atOnce = api.setDatabaseLite({ theme: "sync" });
+        await api.setDatabaseLite({ theme: "sync" });
         expect(settings.ui.theme).toBe("sync");
-        await atOnce;
+        expect(reads.count).toBe(0);
 
         // `d`'s chat is held as its summary: the list names `d`, so its chats load first; the read
         // is held until the test releases it.
@@ -302,8 +638,7 @@ describe("the setters", () => {
         const later = api.setDatabaseLite({
             characters: [{ ...liveCharacters()[0], name: "Later" }, liveCharacters()[1]],
         });
-        await Promise.resolve();
-        expect(reads.count).toBe(1);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
         expect(characterList()[0].name).toBe("C");
         release();
         await later;
@@ -326,8 +661,7 @@ describe("the setters", () => {
                 { name: "new one", chats: [] },
             ],
         });
-        await Promise.resolve();
-        expect(reads.count).toBe(1);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
         removeCharacter("d");
         release();
         await running;
@@ -375,6 +709,19 @@ describe("lazy loading", () => {
     const queuedOps = () =>
         chatStore.takeChatWork(new Set()).groups.map((group) => [group.chatId, group.ops.map((op) => op.op)]);
 
+    it("retains a cold character read before returning its copy, preserving edits made before its setter", async () => {
+        unloadD();
+        const api = await makeApi();
+        const got = await api.getCharacterFromIndex(1);
+        expect(reads.count).toBe(1);
+        const ref = { chaId: "d", chatId: "kd" };
+        chatStore.setChatMeta(ref, { name: "User name" });
+        got.chats[0].note = "plugin note";
+        await api.setCharacterToIndex(1, got);
+        expect(chatStore.findChat(ref)).toMatchObject({ name: "User name", note: "plugin note" });
+        expect(chatStore.isChatPinned("d")).toBe(false);
+    });
+
     it("a getter on a character whose chats are not loaded loads them first (one read), answers every chat complete, and releases the pins", async () => {
         const api = await makeApi();
         unloadD();
@@ -394,7 +741,7 @@ describe("lazy loading", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 
-    it("setChar after an eviction: the plugin's change to the evicted chat is applied as a change, not a create; a chat left out of the list is deleted through the order", async () => {
+    it("setChar after an eviction: the plugin's change to the evicted chat is applied as a change, not a create; a chat left out of the list stays in its slot", async () => {
         installDatabase({ characters: manyCharacters(), pluginCustomStorage: undefined });
         chatStore.initializeChats();
         seedRevisions();
@@ -414,6 +761,11 @@ describe("lazy loading", () => {
         expect(evicted.length).toBeGreaterThanOrEqual(2);
         expect(evicted.every((id) => id.startsWith("x"))).toBe(true);
         const [changed, omitted] = evicted;
+        const remote = reads.chats.get(`c/${changed}`)!;
+        reads.chats.set(`c/${changed}`, {
+            ...remote,
+            data: { ...(remote.data as Chat), message: [message(`${changed}-0`, "changed while evicted")] },
+        });
         reads.count = 0;
         await api.setChar({
             ...got,
@@ -424,22 +776,19 @@ describe("lazy loading", () => {
                 ),
         });
         // The evicted chats were loaded for the reconcile (one read) and the changed one changed in
-        // place: a `meta` change, no create; the omitted one is deleted.
+        // place: a `meta` change, no create; the omitted one stays a member in its slot, with no op.
         expect(reads.count).toBe(1);
-        expect(chatIds("c")).toEqual(got.chats.map((entry: any) => entry.id).filter((id: string) => id !== omitted));
+        expect(chatIds("c")).toEqual(got.chats.map((entry: any) => entry.id));
+        expect(chatStore.chatEntry({ chaId: "c", chatId: omitted })).toBeDefined();
         expect(chatStore.findChat({ chaId: "c", chatId: changed })).toMatchObject({
             note: "from the plugin",
             name: "Renamed",
+            message: [{ chatId: `${changed}-0`, data: "changed while evicted" }],
         });
         expect(chatStore.chatEntry({ chaId: "c", chatId: changed })?.name).toBe("Renamed");
-        const ops = queuedOps().filter(([id]) => id === changed || id === omitted);
-        expect(ops).toEqual(
-            expect.arrayContaining([
-                [changed, ["meta"]],
-                [omitted, ["delete"]],
-            ]),
-        );
-        expect(ops).toHaveLength(2);
+        const ops = queuedOps();
+        expect(ops.filter(([id]) => id === changed || id === omitted)).toEqual([[changed, ["meta"]]]);
+        expect(ops.flatMap(([, names]) => names)).not.toContain("delete");
         expect(warnings()).toEqual([]);
         expect(chatStore.isChatPinned("c")).toBe(false);
     });
@@ -450,8 +799,7 @@ describe("lazy loading", () => {
         const { release } = holdReads();
         const [, d] = liveCharacters();
         const setting = api.setCharacterToIndex(1, { ...d, name: "Later" });
-        await Promise.resolve();
-        expect(reads.count).toBe(1);
+        await vi.waitFor(() => expect(reads.count).toBe(1));
         // A re-import of `d` under the same ids while the setter's load is out.
         chatStore.installCharacterChats("d", [chat("kd", "KD again")] as any, { firstMsgIndex: -1 });
         release();
@@ -469,5 +817,440 @@ describe("lazy loading", () => {
         holding.release();
         await expect(getting).rejects.toThrow(/character/);
         expect(chatStore.isChatPinned("d")).toBe(false);
+    });
+});
+
+describe("plugin character activity snapshots", () => {
+    it.each([
+        { label: "present", legacy: { lastInteraction: 900 } },
+        { label: "absent", legacy: {} },
+    ])(
+        "reports derived activity and preserves the $label stored field on a getChar/setChar round trip",
+        async ({ legacy }) => {
+            const characters = liveCharacters();
+            Object.assign(characters[0], legacy);
+            characters[0].chats[0].message = [
+                { ...message("a", "earlier"), time: 800 },
+                { ...message("b", "last by position"), time: 100 },
+            ];
+            characters[0].chats[1].message = [{ ...message("j", "newest chat"), time: 300 }];
+            installDatabase({ characters });
+            chatStore.initializeChats();
+            selectCharacter("c");
+            const api = await makeApi();
+            for (const snapshot of [
+                await api.getChar(),
+                await api.getCharacter(),
+                await api.getCharacterFromIndex(0),
+                (await api.getDatabase(["characters"])).characters[0],
+            ]) {
+                expect(snapshot.lastInteraction).toBe(300);
+            }
+            await api.setChar(await api.getChar());
+            if (Object.hasOwn(legacy, "lastInteraction")) {
+                expect(characterList()[0].lastInteraction).toBe(900);
+            } else {
+                expect(characterList()[0]).not.toHaveProperty("lastInteraction");
+            }
+            expect((await api.getChar()).lastInteraction).toBe(300);
+        },
+    );
+});
+
+describe("setter targets across dbWrite consent", () => {
+    beforeEach(() => {
+        vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 8, 29));
+        vi.spyOn(permissionStore, "hasPermissionGrant").mockReturnValue(false);
+        vi.spyOn(permissionStore, "getLastGrantTime").mockReturnValue(undefined);
+        vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+        vi.spyOn(permissionStore, "revokePermissionGrants").mockResolvedValue(undefined);
+    });
+
+    function holdConsent() {
+        let answer!: (granted: boolean) => void;
+        vi.mocked(alertConfirm).mockClear();
+        const shown = new Promise<void>((resolve) => {
+            vi.mocked(alertConfirm).mockImplementationOnce(() => {
+                resolve();
+                return new Promise<boolean>((respond) => (answer = respond));
+            });
+        });
+        return {
+            shown: () => shown,
+            grant: () => answer(true),
+            refuse: () => answer(false),
+        };
+    }
+
+    const retainedReadSetters = [
+        { getter: "getChatFromIndex", setter: "setChatToIndex", indexes: [0, 0] },
+        { getter: "getCharacterFromIndex", setter: "setCharacterToIndex", indexes: [0] },
+        { getter: "getChar", setter: "setChar", indexes: [] },
+        { getter: "getCharacter", setter: "setCharacter", indexes: [] },
+    ];
+    const refJ = { chaId: "c", chatId: "j" };
+
+    it.each(retainedReadSetters)(
+        "$setter uses its entry read across consent and retains a consent-time read for the next write",
+        async ({ getter, setter, indexes }) => {
+            const api = await makeApi();
+            const indexedChat = setter === "setChatToIndex";
+            const first = await api[getter](...indexes);
+            const firstChat: Chat = indexedChat ? first : first.chats[0];
+            firstChat.message[0].data = "plugin A1";
+            const consent = holdConsent();
+            const pending = api[setter](...indexes, first);
+            await consent.shown();
+            chatStore.setMessageText(refK, "b", "remote B1");
+            if (!indexedChat) chatStore.setChatMeta(refJ, { note: "remote J1" });
+            const newer = await api[getter](...indexes);
+            consent.grant();
+            await pending;
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["plugin A1", "remote B1"]);
+            if (!indexedChat) expect(chatStore.findChat(refJ)?.note).toBe("remote J1");
+
+            chatStore.setMessageText(refK, "b", "remote B2");
+            if (!indexedChat) chatStore.setChatMeta(refJ, { note: "remote J2" });
+            const newerChat: Chat = indexedChat ? newer : newer.chats[0];
+            newerChat.message[0].data = "plugin A2";
+            await api[setter](...indexes, newer);
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["plugin A2", "remote B2"]);
+            if (!indexedChat) expect(chatStore.findChat(refJ)?.note).toBe("remote J2");
+            expect(warnings()).toEqual([]);
+        },
+    );
+
+    it.each(retainedReadSetters)(
+        "$setter keeps its retained read after refused consent for a granted retry",
+        async ({ getter, setter, indexes }) => {
+            const name = `refused-chat-read-${setter}`;
+            const api = await makeApi(name);
+            const indexedChat = setter === "setChatToIndex";
+            const first = await api[getter](...indexes);
+            const firstChat: Chat = indexedChat ? first : first.chats[0];
+            firstChat.message[0].data = "plugin A";
+            const consent = holdConsent();
+            const pending = api[setter](...indexes, first);
+            await consent.shown();
+            chatStore.setMessageText(refK, "b", "remote B");
+            if (!indexedChat) chatStore.setChatMeta(refJ, { note: "remote J" });
+            consent.refuse();
+            await pending;
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["A", "remote B"]);
+
+            // Clear the refusal without unloading the instance or reading the chat again.
+            await resetPluginPermissions(name, "");
+            const retryConsent = holdConsent();
+            const retry = api[setter](...indexes, first);
+            await retryConsent.shown();
+            retryConsent.grant();
+            await retry;
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["plugin A", "remote B"]);
+            if (!indexedChat) expect(chatStore.findChat(refJ)?.note).toBe("remote J");
+            expect(warnings()).toEqual([expect.stringMatching(/dbWrite permission was not granted/)]);
+        },
+    );
+
+    it.each(["setChar", "setCharacter", "setCharacterToIndex"])(
+        "%s keeps its entry target across a consent-time selection or index change",
+        async (setter) => {
+            const api = await makeApi();
+            const indexed = setter === "setCharacterToIndex";
+            const target = liveCharacters()[indexed ? 1 : 0];
+            selectCharacter(target.chaId);
+            const consent = holdConsent();
+            const changed = { ...target, name: "Written to the original character" };
+            const pending = api[setter](...(indexed ? [1, changed] : [changed]));
+            await consent.shown();
+            expect(characterList().map(({ name }) => name)).toEqual(["C", "D"]);
+            selectCharacter(indexed ? "c" : "d");
+            // Removing an earlier character moves the indexed target from 1 to 0.
+            if (indexed) removeCharacter("c");
+            consent.grant();
+            await pending;
+            expect(characterList().map(({ chaId, name }) => [chaId, name])).toEqual(
+                indexed
+                    ? [["d", "Written to the original character"]]
+                    : [
+                          ["c", "Written to the original character"],
+                          ["d", "D"],
+                      ],
+            );
+        },
+    );
+
+    it("setChatToIndex keeps the chat chosen before consent when chats reorder", async () => {
+        const api = await makeApi();
+        const consent = holdConsent();
+        const pending = api.setChatToIndex(0, 0, { note: "Written to K" });
+        await consent.shown();
+        expect(chatStore.findChat(refK)?.note).toBe("");
+        chatStore.reorderChats("c", ["j", "k"]);
+        selectCharacter("d");
+        consent.grant();
+        await pending;
+        expect(chatIds("c")).toEqual(["j", "k"]);
+        expect(chatStore.findChat(refK)?.note).toBe("Written to K");
+        expect(chatStore.findChat({ chaId: "c", chatId: "j" })?.note).toBe("");
+    });
+
+    it.each(["setDatabase", "setDatabaseLite"])(
+        "%s keeps both selected presets and does not recreate a character deleted during consent",
+        async (setter) => {
+            installFlatDatabaseWithChats({
+                botPresets: [
+                    { id: "a", name: "A", temperature: 10, aiModel: "gpt-4o", maxContext: 1000 },
+                    { id: "b", name: "B", temperature: 20, aiModel: "gpt-4o", maxContext: 2000 },
+                ],
+                characters: liveCharacters(),
+            });
+            selectPreset("a");
+            selectModelPreset("a");
+            const api = await makeApi();
+            const consent = holdConsent();
+            const pending = api[setter]({
+                temperature: 33,
+                maxContext: 3333,
+                characters: liveCharacters().map((character) => ({ ...character, name: `${character.name} written` })),
+            });
+            await consent.shown();
+            expect(settings.presets.map(({ temperature }) => temperature)).toEqual([10, 20]);
+            expect(characterList().map(({ name }) => name)).toEqual(["C", "D"]);
+            selectPreset("b");
+            selectModelPreset("b");
+            removeCharacter("d");
+            consent.grant();
+            await pending;
+            expect(settings.presets.map(({ id, temperature }) => [id, temperature])).toEqual([
+                ["a", 33],
+                ["b", 20],
+            ]);
+            expect(settings.modelProfiles.find(({ id }) => id === "a")?.maxContext).toBe(3333);
+            expect(settings.modelProfiles.find(({ id }) => id === "b")?.maxContext).toBe(2000);
+            expect(characterList().map(({ chaId, name }) => [chaId, name])).toEqual([["c", "C written"]]);
+            expect(chatIds("d")).toEqual([]);
+        },
+    );
+
+    it.each(["setDatabase", "setDatabaseLite"])(
+        "%s selects the chat its unchanged list names when an earlier chat is trashed during consent",
+        async (setter) => {
+            const c = { ...liveCharacters()[0], chats: ["first", "chosen", "last"].map((id) => chat(id, id)) };
+            installDatabase({ characters: [c] });
+            chatStore.selectChat("c", "chosen");
+            const api = await makeApi();
+            const copy = await api.getChar();
+            expect(copy.chats.map(({ id }: { id: string }) => id)).toEqual(["first", "chosen", "last"]);
+            expect(copy.chatPage).toBe(1);
+            const consent = holdConsent();
+            const saving = api[setter]({ characters: [copy] });
+            await consent.shown();
+            // Another tab trashes the first chat, which shifts the active positions by one.
+            chatStore.installChatTrashState({ chaId: "c", chatId: "first" }, REVISION.replace(/:1$/, ":2"), 80);
+            consent.grant();
+            await saving;
+            expect(chatStore.activeChatList("c").map((entry) => entry.id)).toEqual(["chosen", "last"]);
+            expect(chatStore.selectedChatId("c")).toBe("chosen");
+        },
+    );
+});
+
+describe("whole-character plugin writes of chat memory", () => {
+    const memory = {
+        memoryEnabled: false,
+        memoryMode: "structuredMemory",
+        memoryPresetId: "memory-preset",
+        memoryProfileId: "memory-connection",
+    };
+
+    it.each([false, true])(
+        "keeps omitted memory fields without a retained read, including reordered chats (%s)",
+        async (reorder) => {
+            chatStore.setChatMeta(refK, memory);
+            const api = await makeApi();
+            // An old plugin supplies its own whole character without first reading through this host.
+            const incoming = liveCharacters()[0];
+            incoming.chats[0].name = "Plugin edit";
+            if (reorder) {
+                // A changed message order takes the whole-chat replacement branch as well.
+                incoming.chats[0].message.reverse();
+                incoming.chats.reverse();
+            }
+            await api.setChar(incoming);
+            expect(chatStore.findChat(refK)).toMatchObject({ ...memory, name: "Plugin edit" });
+            expect(chatIds("c")).toEqual(reorder ? ["j", "k"] : ["k", "j"]);
+            expect(chatStore.findChat(refK)!.message.map((message) => message.chatId)).toEqual(
+                reorder ? ["b", "a"] : ["a", "b"],
+            );
+        },
+    );
+
+    it("unsets an omitted memory field when the plugin retained a read baseline", async () => {
+        chatStore.setChatMeta(refK, memory);
+        const api = await makeApi();
+        const incoming = await api.getChar();
+        delete incoming.chats[0].memoryEnabled;
+        await api.setChar(incoming);
+        expect(chatStore.findChat(refK)).not.toHaveProperty("memoryEnabled");
+        expect(chatStore.findChat(refK)).toMatchObject({
+            memoryMode: "structuredMemory",
+            memoryPresetId: "memory-preset",
+            memoryProfileId: "memory-connection",
+        });
+    });
+});
+
+describe("plugin writes of chat bindings", () => {
+    const binding = {
+        promptPresetId: "preset",
+        modelPresetId: "model",
+        bindedPersona: "persona",
+        bindingReview: true,
+    };
+    const pluginBinding = {
+        promptPresetId: "plugin-prompt",
+        modelPresetId: "plugin-model",
+        bindedPersona: "plugin-persona",
+        bindingReview: false,
+    };
+
+    beforeEach(() => {
+        vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+    });
+
+    it("setChatToIndex applies edits from a stale copy while keeping newer binding values", async () => {
+        chatStore.setChatMeta(refK, { ...binding, bindingReview: false });
+        const api = await makeApi();
+        const copy: Chat = await api.getChatFromIndex(0, 0);
+        const newerBinding = {
+            promptPresetId: "user-prompt",
+            modelPresetId: "user-model",
+            bindedPersona: "user-persona",
+            bindingReview: true,
+        };
+        chatStore.setChatMeta(refK, newerBinding);
+
+        copy.note = "plugin note";
+        copy.message[0].data = "plugin message";
+        copy.promptPresetId = pluginBinding.promptPresetId;
+        copy.bindedPersona = pluginBinding.bindedPersona;
+        delete copy.modelPresetId;
+        delete copy.bindingReview;
+        await api.setChatToIndex(0, 0, copy);
+
+        expect(chatStore.findChat(refK)).toMatchObject({
+            ...newerBinding,
+            note: "plugin note",
+            message: [{ chatId: "a", data: "plugin message" }, { chatId: "b" }],
+        });
+        expect(warnings()).toEqual([]);
+    });
+
+    it.each(["setChatToIndex", "setChar", "setCharacter", "setCharacterToIndex", "setDatabase", "setDatabaseLite"])(
+        "%s keeps the binding when a message reorder replaces the whole chat",
+        async (setter) => {
+            chatStore.setChatMeta(refK, binding);
+            const api = await makeApi();
+            const characters = liveCharacters();
+            const incoming = characters[0];
+            const copy = Object.assign(incoming.chats[0], pluginBinding, { note: "plugin note after reorder" });
+            copy.message.reverse();
+
+            if (setter === "setChatToIndex") await api[setter](0, 0, copy);
+            else if (setter === "setCharacterToIndex") await api[setter](0, incoming);
+            else if (setter === "setDatabase" || setter === "setDatabaseLite") await api[setter]({ characters });
+            else await api[setter](incoming);
+
+            expect(chatStore.findChat(refK)).toMatchObject({
+                ...binding,
+                note: "plugin note after reorder",
+                message: [{ chatId: "b" }, { chatId: "a" }],
+            });
+            expect(warnings()).toEqual([]);
+        },
+    );
+
+    it.each([
+        { setter: "setChar", chaId: "c" },
+        { setter: "setCharacterToIndex", chaId: "replacement" },
+        { setter: "setDatabase", chaId: "added" },
+    ])("$setter creates an unbound chat", async ({ setter, chaId }) => {
+        const api = await makeApi();
+        const characters = liveCharacters();
+        const created = { ...chat("new", "New chat"), ...pluginBinding, note: "plugin note" };
+        const incoming = { ...characters[0], chaId };
+
+        if (setter === "setChar") {
+            await api.setChar({ ...incoming, chats: [...incoming.chats, created] });
+        } else if (setter === "setCharacterToIndex") {
+            await api.setCharacterToIndex(0, { ...incoming, chats: [created] });
+        } else {
+            await api.setDatabase({ characters: [...characters, { ...incoming, chats: [created] }] });
+        }
+
+        const stored = chatStore.findChat({ chaId, chatId: "new" });
+        expect(stored).toMatchObject({ name: "New chat", note: "plugin note" });
+        for (const key of Object.keys(binding)) expect(stored).not.toHaveProperty(key);
+    });
+
+    it("allows an internal chat edit to change a binding field", () => {
+        chatStore.setChatMeta(refK, binding);
+        editChatSync(refK, (draft) => {
+            draft.promptPresetId = "another-preset";
+        });
+        expect(chatStore.findChat(refK)).toMatchObject({ ...binding, promptPresetId: "another-preset" });
+    });
+});
+
+describe("plugin access to active chats", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("keeps omitted and trashed chats in their slots and resolves chatPage in the plugin's list", async () => {
+        const order = ["omitted", "hidden", "left", "right"];
+        installDatabase({ characters: [{ ...liveCharacters()[0], chats: order.map((id) => chat(id, id)) }] });
+        const api = await makeApi();
+        const copy = await api.getChar();
+        const [, hidden, left, right] = copy.chats;
+        chatStore.installChatTrashState({ chaId: "c", chatId: "hidden" }, REVISION, 80);
+        // The incoming copy predates the mark. It can neither edit nor reorder that member.
+        await api.setChar({ ...copy, chats: [right, { ...hidden, note: "stale edit" }, left], chatPage: 0 });
+        expect(chatIds("c")).toEqual(["omitted", "hidden", "right", "left"]);
+        expect(chatStore.findChat({ chaId: "c", chatId: "hidden" })?.note).toBe("");
+        expect(chatStore.selectedChatId("c")).toBe("right");
+        expect(await api.getCurrentChatIndex()).toBe(1);
+        expect((await api.getChatFromIndex(0, 2)).id).toBe("left");
+        expect(await api.getChatFromIndex(0, 3)).toBeNull();
+        expect(await api.getChats("c", { offset: 1, limit: 2 })).toMatchObject({
+            chats: [{ id: "right" }, { id: "left" }],
+            total: 3,
+        });
+        expect((await api.getChar()).chats.map((row: Chat) => row.id)).toEqual(["omitted", "right", "left"]);
+    });
+
+    it("ignores an indexed write when its target is trashed during consent", async () => {
+        vi.spyOn(permissionStore, "hasPermissionGrant").mockReturnValue(false);
+        vi.spyOn(permissionStore, "getLastGrantTime").mockReturnValue(undefined);
+        const api = await makeApi();
+        let consent!: (yes: boolean) => void;
+        const shown = new Promise<void>((resolve) => {
+            vi.mocked(alertConfirm).mockImplementationOnce(
+                () =>
+                    new Promise<boolean>((grant) => {
+                        consent = grant;
+                        resolve();
+                    }),
+            );
+        });
+        const write = api.setChatToIndex(0, 0, { note: "outdated" });
+        await shown;
+        chatStore.installChatTrashState(refK, REVISION, 80);
+        consent(true);
+        await write;
+        expect(chatStore.findChat(refK)?.note).toBe("");
+        expect(chatStore.findChat({ chaId: "c", chatId: "j" })?.note).toBe("");
     });
 });

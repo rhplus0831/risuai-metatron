@@ -2,172 +2,434 @@
 
 ## Scope
 
-- Owns:
-  - CBS (`{{fn::arg}}`, `{{#if}}`/`{{#when}}`/`{{#each}}`/`{{#func}}` blocks): the function registry and the evaluator,
-  - chat, global, and temp variables,
-  - markdown/HTML rendering and sanitization (DOMPurify) and CSS scoping,
-  - asset and inlay expansion at render time,
-  - ChatML parsing,
-  - partial edit of rendered messages,
-  - CBS editor highlighting and autocomplete.
-- Paths:
-  - `shared/cbs/{registry,evaluator,types,calc}.ts` (the runtime both the client and the server run)
-  - `shared/prompt/toggles.ts` (toggle definitions and global-value resolution)
-  - `src/ts/cbs.ts`
-  - `src/ts/parser/{parser.svelte,chatVar.svelte,chatML,partialEdit}.ts`
-  - `src/ts/parser/{assetSearch,chatStyles,sentenceBreaks}.ts`
-  - `src/ts/parser/tests/*`
-  - `src/ts/gui/highlight.ts`
-  - `src/ts/gui/codearea/cbsMonaco.ts` (stub)
-  - `src/lib/Others/MonacoEditor.svelte`
-  - `src/lib/ChatScreens/PartialEditController.svelte`
-  - Static CBS docs: `src/etc/airisu.cbs`, `src/etc/docs/{cbs_docs,cbs_intro,docs_text}.cbs` (search-ignored)
-- Not here:
-  - Regex scripts that run inside rendering → `scripts-triggers.md`.
-  - The chat component tree → `ui-theming.md`.
-  - Translation of rendered HTML → `media-aux.md`.
-  - Bilingual sentence grouping before interleaving → `media-aux.md` (`parser/sentenceBreaks.ts`).
-  - Chat-toggle writes and saved toggle presets → `persistence.md` (`src/ts/toggles/`, `shared/togglePresets.ts`).
+This guide owns the shared CBS evaluator and variables, the tab’s Markdown, sanitized HTML and scoped CSS, display
+transforms, rendered assets and inlays, ChatML, partial edits and editor highlighting. The runtime, render entrypoints
+and editors are listed under **Files**. The static author docs are in `src/etc/airisu.cbs` and
+`src/etc/docs/{cbs_docs,cbs_intro,docs_text}.cbs` (search-ignored).
+
+Follow [scripts and triggers](scripts-triggers.md) for script execution, [UI](ui-theming.md#message-row) for row
+lifetimes, [translation](translation.md) for bilingual sentence grouping and translated HTML, and
+[persistence](persistence.md) for saved toggle values and presets.
 
 ## Files
 
-- `shared/cbs/registry.ts`: the CBS function catalogue (re-exported by `cbs.ts`). `{{lorebook}}` (`worldinfo`) returns the character's `globalLore` with the chat's `loreOverrides` applied (`shared/lore/overrides.ts` `mergeOwnerLore`: an override's copy in the original's place, an off entry left out, an off folder with every entry inside it, an orphan not inserted; a group character contributes none), then the chat's `localLore`, then the chat's module lore.
-  - `registerCBS(arg: CBSRegisterArg)` enumerates every built-in function (name, callback, aliases, description, `internalOnly`/`doc_only`) into a callback supplied by the consumer. Every host read goes through `CBSRegisterArg`, including `getTriggerId` (`trigger_id`), `getViewport` (`screenwidth`/`screenheight`), and `getBrowserLanguage` (`metadata::browserlang`).
-  - `contextChar`/`contextChat`: the parse's `chatRef` character and chat, or the selected ones.
-  - `prefillsupported` (`prefill_supported`, `prefill`): for a model whose descriptor (`CBSRegisterArg.getModelInfo`, which both hosts resolve through `shared/llm/models.ts` `resolveModelInfo` with the custom flags) is Anthropic or Anthropic legacy format, its `hasPrefill` flag (so an adaptive-only Claude model answers `0`); for any other format, whether `aiModel` starts with `claude`.
-  - `defaultCBSRegisterArg` is a placeholder adapter for docs and scaffolding.
-- `shared/cbs/types.ts`: `CBSRegisterArg` (injected runtime helpers), `matcherArg` (per-call context), `RegisterCallback`, `CbsConditions`.
-- `shared/cbs/evaluator.ts` `createCbsEvaluator(host: CbsHost)`: the parse/eval loop (`risuChatParser(text, arg)`; the depth of nested parses is capped at 20, derived per child from `arg.callStack` without writing the caller's object, so sibling `call::` and `history` parses do not count), the block matchers, and its own function map, filled from `registerCBS` on first use. `CbsHost` is `CBSRegisterArg` without the parts the evaluator supplies itself (`registerFunction`, `risuChatParser`, `makeArray`, `parseArray`, `parseDict`, `dateTimeFormat`), plus `findCharacterById` (a group's last speaker). Also `risuEscape`/`risuUnescape`.
-- `shared/cbs/limits.ts`: cooperative evaluation limits for a host that sets `CbsHost.limits` (the server's `serverCbsLimits`, and the client's `CLIENT_CBS_LIMITS` in `parser.svelte.ts`: the shared `DEFAULT_CBS_MAX_WORK` of 10,000,000 units and 2 s per top-level parse, so a text the tab shows the server transform also accepts; an evaluator without limits never counts or reads the clock). `CbsLimits` (`maxWork`, `maxMs`, an optional shared `total` allowance, `now`), `CbsLimitError` (`reason`: `work`, `time`, `total`), the budget of one top-level parse shared by its nested parses (`enterCbsParse`/`leaveCbsParse`, `spendCbsWork`, `checkCbsClock`), and `replaceAllBound` (the length of a `replaceAll` result, counted before it is built). The evaluator charges a unit per scanned character and per character a function returns, the stack moves of `{{` and of the unfinished-syntax drain, each `#each` piece and `call::` substitution before it is built, and the `#each` splice; the registry charges its counted loops through `CBSRegisterArg.spend` (a no-op without limits). The matcher's swallow-all `catch` lets `CbsLimitError` through.
-- `shared/cbs/calc.ts` `calcString(text, { getChatVar, getGlobalChatVar })`: the `{{? ...}}` and trigger calculator (`$name` a chat variable, `@name` a global). `process/infunctions.ts` binds it to the selected chat's variables.
-- `parser/parser.svelte.ts`: the client host of the evaluator, and the renderer.
-  - `risuChatParser(text, arg)`: the shared evaluator with the client host (the live database, the selected character, `CurrentTriggerIdStore`, `window`, `navigator`, `findCharacterbyId`, `CLIENT_CBS_LIMITS`). A parse that reaches the budget throws `CbsLimitError` to its caller (the server's `cbs` callback fails its request on purpose, `transport.ts`); `risuChatParserForDisplay` catches only that error and answers `language.cbsLimitReached` with the reason, for the places that show the result: the chat row's pre-pass (`Chat.svelte` `displayPrePass`, also the copy of a streaming row), `BackgroundDom.svelte`, and the `PopupEditor.svelte` preview.
-  - `ParseMarkdown`, `renderMarkdown`/`renderHighlightableMarkdown` (markdown-it + KaTeX + highlight.js), `trimMarkdown` (DOMPurify plus scoped-style restore), `trimMarkdownSharingStyles` (the same, with the styles taken out for the chat screen), `parseMarkdownSafe`.
-  - Assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`, `syncAssetsCache`; `getClosestMatch`/`fuzzyIndexOf` use a per-character-list fuzzy index and bounded result memo. Video and audio `<source>` types come from `shared/assetMime.ts` for the selected asset key's extension, matching the asset route; unknown types omit the attribute.
-  - Inlays: `parseInlayAssets` (inside `ParseMarkdown`) expands `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` from `getInlayMedia` (the asset key only, no bytes). Images use `getFileSrc` in both of its modes ([global API](global-api.md)). Audio and video have two modes:
-    - Direct mode (`globalApi.svelte.ts` `getDirectAssetSrc` answers a URL: worker use enabled, the `directAssets` capability, and a controlling worker at the call): `/api/asset/<hex(utf-8 key)>`, the same URL `getFileSrc` gives. No bytes are read and no object URL is made; a missing file shows as the element's 404.
-    - Fallback (`getDirectAssetSrc` answers `null`): the typed object URL from `files/inlays.ts` `getInlayObjectUrl`, kept for the page; a missing file or one without bytes leaves the tag in place.
-    - Either way the `<source>` `type` is `shared/assetMime.ts` `assetMimeType` of the asset key's extension, so it matches the asset route's `Content-Type`, including `audio/flac` and `video/x-matroska`. An extension the table does not know (`application/octet-stream`) gets no `type` attribute, so the browser sniffs the bytes instead of skipping the source. Fallback Blobs use the same table, with `application/octet-stream` for unknown media and `application/json` for signatures.
-    - Both URLs are stable strings that are never revoked, so cached renders and translations keep working ones. A page that loses its controller renders new inlays through the fallback; HTML rendered before keeps its direct URLs.
-  - Also `postTranslationParse`, `applyMarkdownToNode`, `addMetadataToElement`, `hasher`, and the re-exported `risuEscape`/`risuUnescape` and `CbsConditions`.
-- `parser/chatStyles.ts`: `ChatStyleRegistry` (the chat screen's shared row stylesheets: `acquire(style, messageIndex, slot)` takes a `ChatStyle` with CSS and sanitized attributes and returns a release, `attach(host)` for `{@attach}`, `destroy`) and `setChatStyleRegistry`/`getChatStyleRegistry` (context). `src/lib/ChatScreens/ChatRowStyles.svelte` holds a row's uses (by value, so an equal re-render keeps them). See Display.
-- `parser/assetSearch.ts`: `boundedDistance` (shared reusable two-row UTF-16 Levenshtein scratch space, length/band/row-minimum pruning) and `findAssetPrefix` (`ChatBody.svelte`'s strict first-best prefix scan).
-- `parser/sentenceBreaks.ts`: `insertSentenceParagraphBreaks`, used by bilingual interleaving to split prose before matching translated paragraphs; see `media-aux.md` for the translation flow.
-- `parser/transformClient.ts`: the client of the server script transform (`POST /api/transform`, `self-host-server.md`); the only script stage of a render (there is no browser Lua or trigger runtime, and no browser regex stage of a render; the translator's `edittrans` regex is the one regex the tab still runs, `media-aux.md`). `captureTransform(chatID, { chatRef?, pluginContext? })` reads the call's context before its first await (the chat, the message id at `chatID`, the chat's display ids (`chatDisplayIds`, [chat bindings](persistence.md): per field the bound record when it exists, else the tab's; the persona sent as both the effective and the selected one), the plugin call context, the message's lock, its Re-render generation; the first transform sent at a Re-render's generation takes its cache bypass, for every later stage too); `ChatBody.svelte` `markParsing` captures once and passes it to `ParseMarkdown`, `translateHTML`, and its retries (their last argument: a capture, `null` for none, or none to capture there); it answers null without a chat, for a chat the server has not stored yet (no held revision), or without a preset or persona, and the caller then skips the script stage (the text as the CBS pre-pass and the assets leave it). `Chat.svelte` renders a row again once its chat's first save lands (`chatStore.svelte.ts` `chatSaveVersion`), so a new chat's rows get their transform. `serverProcessScript(char, data, mode, chatID, cbsConditions, captured, kind)` runs `editdisplay` and `editprocess` on the server (`{ data, emoChanged }`). `rerenderMessage(chatRef, messageId)` makes the message's next render skip the server cache and an older answer apply no effects. `resetTransformEffects` (on the `ReloadGUIPointer` bump) forgets which results' emotions were applied.
-- `parser/chatVar.svelte.ts`: variable accessors.
-  - Chat variables: `getChatVar`/`setChatVar`, stored in `Chat.scriptstate` as `$name`. A write merges that one entry (`mergeChatMeta`, a `meta` op's `merge`; `persistence.md`), so the other variables keep what another tab or a job set meanwhile (the same variable is last writer wins). A parse given `chatRef` (`risuChatParser(text, { chatRef })`, set by the send pipeline, triggers, and Lua) reads and writes that chat's variables and messages (`getChatVarOf`/`setChatVarOf`, `contextChar`/`contextChat` in `shared/cbs/registry.ts`); without it, the selected character's selected chat.
-  - Globals: `getGlobalChatVar`/`getGlobalChatVarOf` use `shared/prompt/toggles.ts:resolveGlobalChatVar`: chat override, legacy global, then a defined toggle's kind default (`"0"` for checkbox/select, `""` for text/textarea), else `"null"`. Empty text/textarea values count as set. Definitions come from the ref/scope's preset, enabled modules, and chat owner, first key wins; parsing is cached by source text. `globalToggleDefinitions` also supplies `toggles/chatToggles.svelte.ts:chatToggleDefinitions` for the sidebar and preset operations. The sidebar and `toggles/togglePresets.svelte.ts` call `resolveGlobalChatVar` with one computed definitions text; `shared/togglePresets.ts` captures resolved values and compares/projects saved keys and kinds. `setChatToggle(ref, key, value)` writes only that loaded chat's `GLGlobalVariables` through `mergeChatMeta`, skipping unchanged stored values; the legacy `db.globalChatVariables` collection is read-only. Opening a chat never seeds values.
-- `parser/chatML.ts` `parseChatML`: a lightweight `<|im_start|>` splitter that extracts `<Thoughts>` and CBS-parses each part. Used by `sendChat` `chatML` cards, the translator, and memory.
-- `parser/partialEdit.ts`: maps rendered text back to markdown ranges.
-  - `findAllOriginalRangesFromText`/`FromHtml` match in stages: exact, then anchor, then fuzzy, then bigram. The answer is sorted by confidence then position and deduplicated by identical source range only, so two identical occurrences on one source line both come back and the controller shows its chooser.
-  - The normalization maps every character of the normalized text to a source offset; a typographic ellipsis becomes three dots that all map to the ellipsis, so a selection ending in one stops at it.
-  - Also `replaceRange` and `EDITABLE_BLOCK_SELECTORS`.
-- `gui/highlight.ts`: editor highlighting and autocomplete.
-  - `highlighter` uses the CSS Custom Highlight API with `::highlight(cbsnest0..4)` etc. in `src/styles.css`.
-  - `AllCBS` is the autocomplete list, maintained by hand.
-  - Used by `src/lib/UI/GUI/TextAreaInput.svelte`.
-- `gui/codearea/cbsMonaco.ts`: `registerCBSMonaco` is empty, so Monaco has no CBS language support.
-- `PartialEditController.svelte`: hover and drag-select editing of rendered messages. Dispatches `save`, which `Chat.svelte:handlePartialEditSave` handles; a translation edit goes through the awaitable `saveTranslation` prop instead when the parent passes one (`media-aux.md`, the stored path), and the draft stays when that write is refused.
+Each entry is the path, its role, and the identifiers to look up; the rules are the doc comments on those identifiers
+and the module headers.
+
+### CBS runtime
+
+- `shared/cbs/registry.ts`: the CBS function catalogue, re-exported by `src/ts/cbs.ts` (`registerCBS`,
+  `defaultCBSRegisterArg`). A function's rule is the comment at its registration (`lorebook`, `prefillsupported`).
+- `shared/cbs/types.ts`: the host boundary (`CBSRegisterArg`, `RegisterCallback`, `CbsDatabase`, `CbsConditions`,
+  `matcherArg`). A new host read is a new `CBSRegisterArg` field, wired on both hosts (`src/ts/parser/parser.svelte.ts`,
+  `server/src/jobs/cbsHost.ts`).
+- `shared/cbs/evaluator.ts`: the parse loop, block statements, and matcher (module header; `createCbsEvaluator`,
+  `CbsHost`, `CbsParseArg` `callStack`, `risuEscape`/`risuUnescape`, `isCbsPlainText`).
+- `shared/cbs/limits.ts`: cooperative evaluation limits (module header; `CbsLimits`, `CbsLimitError`, `CbsLimitReason`,
+  `DEFAULT_CBS_MAX_WORK`, `enterCbsParse`/`leaveCbsParse`, `spendCbsWork`, `replaceAllBound`). The hosts are the
+  client's `CLIENT_CBS_LIMITS` (2 s per top-level parse) and the server's `serverCbsLimits` (5 s per template, 60 s per
+  job, `server/src/jobs/cbsHost.ts`), both on `DEFAULT_CBS_MAX_WORK`, so a text within the tab's work budget is within
+  the server transform's.
+- `shared/cbs/calc.ts`: the `{{? ...}}` and trigger calculator (`calcString`, `CalcVariables`);
+  `src/ts/process/infunctions.ts` binds it to the selected chat's variables.
+
+### Client host and renderer
+
+- `src/ts/parser/parser.svelte.ts`: the client host of the evaluator and the renderer (module header; `risuChatParser`,
+  `risuChatParserScoped`, `risuChatParserForDisplay`, `CLIENT_CBS_LIMITS`, `ParseMarkdown`,
+  `renderMarkdown`/`renderHighlightableMarkdown`, `trimMarkdown`, `trimMarkdownSharingStyles`, `parseMarkdownSafe`;
+  assets: `parseAdditionalAssets`, `assetRegex`, `resetAssetsCache`, `syncAssetsCache`, `getClosestMatch`,
+  `getDistance`).
+  - A parse that reaches its budget throws `CbsLimitError` to its caller; the server's `cbs` callback fails its request
+    on purpose (`src/ts/process/request/transport.ts`). The places that show a result call `risuChatParserForDisplay`
+    instead: `src/lib/ChatScreens/Chat.svelte` `displayPrePass` (also the copy of a streaming row),
+    `src/lib/ChatScreens/BackgroundDom.svelte`, and the `src/lib/Others/PopupEditor.svelte` preview.
+- `src/ts/parser/chatStyles.ts`: the chat screen's shared row stylesheets (module header; `ChatStyleRegistry`,
+  `ChatStyle`, `setChatStyleRegistry`/`getChatStyleRegistry`); `src/lib/ChatScreens/ChatRowStyles.svelte` holds a row's
+  uses by value, so an equal re-render keeps them. See [Shared styles](#shared-styles).
+- `src/ts/parser/assetSearch.ts`: the bounded asset-name distance (`boundedDistance`) and
+  `src/lib/ChatScreens/ChatBody.svelte`'s image prefix scan (`findAssetPrefix`).
+- `src/ts/parser/safeHtml.ts`: `escapeHtml` for scalar names and `sanitizeExportHtml`, the final HTML export policy
+  shared with `parseMarkdownSafe`.
+
+### Inlays
+
+`parseInlayAssets` in `src/ts/parser/parser.svelte.ts` expands the inlay tags inside `ParseMarkdown`; its comment has
+the tags, the missing-file rule, and the `<source>` `type` rule. A signature inlay's tag (a saved Gemini thought
+signature, [LLM requests](llm-requests.md#flows)) is removed, since `getInlayMedia` reports it apart from a missing
+inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). Audio and video have two modes:
+
+- Direct (`src/ts/globalApi.svelte.ts` `getDirectAssetSrc` answers a URL: worker use enabled, the `directAssets`
+  capability, and a controlling worker at the call): `/api/asset/<hex(utf-8 key)>`, the URL `getFileSrc` gives, served
+  with the `Content-Type` of `shared/assetMime.ts` `assetMimeType` (`audio/flac` and `video/x-matroska` included).
+- Fallback (`getDirectAssetSrc` answers `null`): the typed object URL of `src/ts/process/files/inlays.ts`
+  `getInlayObjectUrl`; its Blobs take their type from the same table (`application/octet-stream` for unknown media,
+  `application/json` for signatures).
+
+### Script transform client
+
+- `src/ts/parser/transformClient.ts`: the client of the server script transform (`POST /api/transform`,
+  [server generation](server-generation.md)), the only script stage of a render (module header; `captureTransform`,
+  `CapturedTransform`, `serverProcessScript`, `rerenderMessage`, `resetTransformEffects`). The translator's `edittrans`
+  regex is the one regex the tab still runs ([translation](translation.md)).
+  - A capture's display ids are `chatDisplayIds` ([chat bindings](persistence.md)).
+  - `src/lib/ChatScreens/ChatBody.svelte` `markParsing` captures once and passes the capture to `ParseMarkdown`,
+    `translateHTML`, and its retries; `src/lib/ChatScreens/Chat.svelte` renders a row again once its chat's first save
+    lands (`src/ts/storage/chatStore.svelte.ts` `chatSaveVersion`).
+- `src/ts/parser/transformResults.ts`: the tab's bounded transform cache (module header; `getTransformResult`,
+  `replaceTransformResult`, `confirmTransformResult`, `clearTransformResults`). See [Caches](#caches).
+- `src/ts/parser/displayTransformRecovery.svelte.ts`: failed display transforms and their retry rounds (module header;
+  `markDisplayTransformFailed`, `markDisplayTransformSucceeded`, `showDisplayTransformSource`,
+  `displayTransformRetryRound`). See [Display transform failures](#display-transform-failures).
+- `src/lib/ChatScreens/settledRender.svelte.ts`: [the mixed render refresh](#mixed-render-refresh).
+
+### Variables
+
+- `src/ts/parser/chatVar.svelte.ts`: the variable accessors (`getChatVar`/`setChatVar`, `getChatVarOf`/`setChatVarOf`,
+  `getGlobalChatVar`/`getGlobalChatVarOf`, `globalToggleDefinitions`). Chat variables are `Chat.scriptstate` entries; a
+  write [merges that one entry](chat-store.md#map-merges) (`mergeChatMeta`). A parse given `chatRef` (the send pipeline,
+  triggers, Lua) reads and writes that chat; without it, the selected chat.
+- `shared/prompt/toggles.ts`: toggle definitions and the global-value resolution (`parseToggleSyntax`, `valueToggles`,
+  `toggleDefault`, `resolveGlobalChatVar`).
+  - `globalToggleDefinitions` also supplies `src/ts/toggles/chatToggles.svelte.ts` `chatToggleDefinitions` for the
+    sidebar and preset operations. The sidebar and `src/ts/toggles/togglePresets.svelte.ts` call `resolveGlobalChatVar`
+    with one computed definitions text; `shared/togglePresets.ts` captures resolved values and compares/projects saved
+    keys and kinds.
+  - `setChatToggle` (`src/ts/toggles/chatToggles.svelte.ts`) writes only that loaded chat's `GLGlobalVariables` through
+    `mergeChatMeta`, skipping unchanged stored values. Opening a chat never seeds values.
+
+### Other parsers and editors
+
+- `src/ts/parser/chatML.ts`: the client ChatML splitter (`parseChatML`), used by `src/ts/process/memory/hypav3.ts`;
+  prompt-card ChatML uses `server/src/prompt/triggers.ts` `parseChatML` from `server/src/prompt/assemble.ts`.
+- `src/ts/parser/partialEdit.ts`: rendered text back to markdown ranges (module header; `findAllOriginalRangesFromText`,
+  `findAllOriginalRangesFromHtml`, `replaceRange`, `EDITABLE_BLOCK_SELECTORS`).
+- `src/ts/gui/highlight.ts`: editor highlighting and autocomplete (module header; `highlighter`, `removeHighlight`,
+  `AllCBS`, and the hand-kept lists `normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, `nestedCBS`).
+- `src/ts/gui/codearea/cbsMonaco.ts`: `registerCBSMonaco`, empty, so `src/lib/Others/MonacoEditor.svelte` has no CBS
+  language support.
+- `src/lib/ChatScreens/PartialEditController.svelte`: hover and drag-select editing of rendered messages (component
+  contract); its `save` goes to `src/lib/ChatScreens/Chat.svelte` `handlePartialEditSave`, a translation edit to the
+  `saveTranslation` prop ([translation](translation.md), the stored path).
 
 ## Flows
 
-Evaluation:
+### Evaluation
 
-1. Callers pass the text to `risuChatParser`. Callers include `Chat.svelte`, `tokenizeAccurate`, `command.ts`, the HypaV3 modal, the plugin API, the lorebook, and the playground (the server evaluates its own CBS with `shared/cbs/`).
-2. `<user>`, `<char>`, and `<bot>` are normalized to CBS.
-3. The scanner handles nested `{{...}}`, blocks, comments, `#each`, and `#func`/`call`.
-4. Plain functions go to `matcher`:
-   1. Split the arguments on `::`.
-   2. Normalize the name: lowercase, and remove whitespace, `_`, and `-`.
-   3. Invoke the callback.
-   4. Unknown functions stay as literal text.
-5. A callback may return `{text, var}`. `return` sets `__force_return__`.
+- Callers of `risuChatParser` include `src/lib/ChatScreens/Chat.svelte`, `tokenizeAccurate`, `command.ts`, the HypaV3
+  modal, the plugin API, the lorebook, and the playground; the server evaluates its own CBS with `shared/cbs/`. The
+  scan, the matcher's name normalization, and a callback's result forms are the `shared/cbs/evaluator.ts` header.
 
-Display:
+### Display
 
-1. `Chat.svelte:displaya` evaluates the message with `risuChatParser(..., {rmVar:true, visualize:true})`.
-2. `ChatBody.svelte:markParsing` calls `ParseMarkdown`, which runs in order:
-   1. `parseAdditionalAssets`.
-   2. `serverProcessScript(...,'editdisplay')` (skipped without a context, above): the context is captured before the first asset pass, the context is the render's (`markParsing`'s capture), the call joins the frame's batch (or a 16 ms timer's) for its chat, mode, and plugin handler set, and the server runs Lua `editDisplay`, the `display` trigger, CBS, and the regex scripts (the tab's `editdisplay` plugin handlers run between the two calls); the target is `background` for `mode:'back'`, else `message`. A message locked by a generation (it streams) skips this step and renders again when the lock ends. A failed request or target leaves the text as it came in (one toast per batch, on its first failure). The CBS of step 1 and every other step stay in the browser.
-   3. Assets again, then inlays.
-   4. Thoughts and tools.
-   5. Style encoding.
-   6. Markdown.
-   7. `trimMarkdown`.
-3. The template renders `{@html addMetadataToElement(pruneEmptyBilingualPairs(trimMarkdown(md)))}`. Under the chat screen (`DefaultChatScreen` provides a `ChatStyleRegistry`, `src/ts/parser/chatStyles.ts`), a body that holds a `<style>` or `<risu-style>` goes through `trimMarkdownSharingStyles` instead: the same sanitized tree, styles restored only when the input includes the case-sensitive `<risu-style` prefix (as in `trimMarkdown`), and bilingual pairs pruned on it before extracting styles.
-   - Shared styles: each nonempty `<style>` whose CSS does not match `/@layer\b|\blayer\(|@scope\b/i` gets the inert comment `/**/` in place of its CSS. The element and its attributes stay, so structural selectors, including `:empty`, match as before. `ChatRowStyles` holds its CSS and sanitized attribute list in the registry, keyed by value. The registry keeps one `<style>` per distinct CSS and attribute list in a hidden container at the end of `.default-chat-screen`, after the rows, greeting, `BackgroundDom`, suggestions, and plugin panels. It copies attributes with `setAttribute` and CSS with `textContent`, so CSS never re-enters the HTML parser; a sheet is removed when no mounted row uses it.
-   - Ordering among shared sheets follows the rows' last copies: rows sit in the DOM newest message first, then the greeting, so each use has the position (-message index, slot), a sheet stands at the maximum of its users' positions, and the oldest message's style (the greeting's last) wins a tie. A sheet moves (and is parsed again) only when that order between distinct sheets changes. Releases and moves wait for the next microtask; a release and re-acquire in one synchronous flush are coalesced, so the sheet is retained.
-   - Retained styles: custom-GUI sheets in `Chat.svelte` and sheets containing `@layer`, `layer(`, or `@scope` stay at their row positions; empty sheets stay untouched too. This preserves the first declaration order of layers and the parent of implicit scopes. Their order against a newer row's shared sheet can reverse; this matters for conflicts the layer/scope-proximity steps do not already decide. Layers declared inside imported files are not detected and remain a limit.
-   - `Chats` mounts its rows with its contexts (`getAllContexts`). Without a registry (`BookmarkList`, an `App` sibling, and component tests) a row keeps its own `<style>`s.
+1. `src/lib/ChatScreens/Chat.svelte` `displaya` runs the row's CBS pre-pass (`displayPrePass`:
+   `risuChatParserForDisplay` with `rmVar` and `visualize`).
+2. `src/lib/ChatScreens/ChatBody.svelte` `markParsing` captures the transform context and calls `ParseMarkdown` in
+   `notrim` mode for the body (`pretranslate` for translation inputs); its steps are the `ParseMarkdown` comment. Only
+   the `editdisplay` step leaves the browser: [Display transform](#display-transform). The run's abort signal goes on to
+   `ParseMarkdown`, `serverProcessScript`, `translateHTML`, and `postTranslationParse`. `src/ts/parser/renderErrors.ts`
+   marks retryable reads (network, HTTP 408, 429, 5xx); the `ChatBody` contract defines retries
+   ([ui-theming](ui-theming.md#message-row)).
+3. `ChatBody`'s `shownBody` sanitizes the result (`pruneEmptyBilingualPairs(trimMarkdown(...))`). Under the chat screen
+   (`DefaultChatScreen` provides a `ChatStyleRegistry`), a body that holds a `<style>` or `<risu-style>` goes through
+   `trimMarkdownSharingStyles` instead: [Shared styles](#shared-styles).
+
+### Display transform
+
+- The batching and in-flight join, the subscribers, the `cancelled` settlement once the last leaves (a departed target
+  gets no hook and a `cancelled` continuation entry), per-tab two-call admission, the skip of a locked (streaming)
+  message, the provisional display and its correction, and the failure toast are the `src/ts/parser/transformClient.ts`
+  header.
+- The server (`server/src/prompt/transform.ts`) runs Lua `editDisplay`, the `display` trigger, CBS, and the regex
+  scripts; the tab's `editdisplay` plugin handlers run read-only between its two calls ([Invariants](#invariants)).
+- Two-call transform chunks share the transcript charge and must fit the snapshot and retained-scope budgets; consult
+  the [capacity measurement](../reports/measurements/server/transform-snapshot-2026-11-09.md) before changing those
+  budgets.
+- `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
+  wait for the answer.
+- A locked row that no stream chunk reached (a whole reply: Response Streaming off, Half Streaming, a continue or reroll
+  of either) is held (`Chat.svelte` `held`, from `isMessageStreamed`): `ChatBody` starts no render and keeps its last
+  finished body, or the loading markup without one, until the render after the lock settles, so the raw text never shows
+  during the job's tail. An empty row (a stream before its first chunk) and a streamed row render as before; a held body
+  is settled for `whenRendered`.
+  - `Chats.svelte` sends a held row's text changes and its release as updates rather than mounting `Chat` again, so a
+    continue keeps showing the reply it extends.
+  - An auto-translate decision's empty first result after the lock still shows for its 10 ms flip.
+
+### Display transform failures
+
+- A failed `editdisplay` transform records a `notice` `transformFailed` diagnostics event. For a message with a captured
+  id and current cache and Re-render generations, `transformClient.ts` registers it with
+  `displayTransformRecovery.svelte.ts` unless it is permanent (the `transformClient.ts` header; the server's marks come
+  from `server/src/prompt/transform.ts`: a target's own text over its limit, or a single-target request over the scope
+  or snapshot budget).
+- A refused request of several targets (a 400 or 413, or a transient scope-limit result) is split in two and both halves
+  are sent at once within the original deadline, down to single targets, which then fail permanently; the original batch
+  still shows one toast (`sendChunk`, `transformClient.ts`).
+- A first call refused with 409 `chatBindingMismatch` while its chat has unacknowledged work waits for the
+  acknowledgement within the chunk's deadline and is sent once more, with no toast or notice (`ownChangeSaved`,
+  `transformClient.ts`): a binding picked in the tab renders on the next frame, before its debounced save. A refusal
+  without such work, or of the second send, fails with the binding message.
+- When a round runs and how its backoff grows and resets are the `src/ts/parser/displayTransformRecovery.svelte.ts`
+  header.
+- Each `Chat.svelte` row reports what it shows (`displaya`: the display text and the bilingual source side) through
+  `showDisplayTransformSource`. A row showing another source (an edit or a saved edit from another tab, which mount a
+  transcript row again, a stream, or a switch to or from the stored translation) drops the old failure.
+- `editprocess` calls, greetings, and bookmark previews (no captured message id) register nothing.
+
+### Mixed render refresh
+
+- An `editdisplay` answer marks its render mixed if it began with unacknowledged work or its chat's install version
+  moved before the answer, including across the plugin continuation.
+- A handed-off answer carries its originating capture's install version: the correction also marks itself mixed if it
+  began with unacknowledged work, its install version moved during its asset wait, or the originating and correction
+  captures have different install versions. A validated handoff still returns its text without another request; the
+  mixed report schedules the settled refresh.
+- `ChatBody` reports the newest live render once, after any provisional confirmation/replacement decision; `Chat.svelte`
+  registers it with `settledRender.svelte.ts`.
+- `waitForSettledRender` holds affected mounted rows per chat until it has neither unacknowledged work nor a locked
+  message, then drains each registration once, and those rows render once more through the caches (`Chat.svelte` bumps
+  `chatBodyRevision`, and disposes registrations on unmount or a chat/message change). Quarantined, deferred and
+  job-blocked work keep the chat unsettled.
+- This refresh covers the server transform; the browser CBS pre-pass keeps its own reactivity, and rows rendered before
+  this window receive no refresh (they update on remount).
+
+### Shared styles
+
+- `trimMarkdownSharingStyles` and the `src/ts/parser/chatStyles.ts` header have the placeholder, ordering, and
+  retained-sheet rules; `ChatBody` prunes bilingual pairs before the styles are taken out.
+- Equal CSS after CBS is scoped once ([Caches](#caches)) and reaches the registry as one `css` string.
+- Retained layer sheets keep the first declaration order of layers. Their order against a newer row's shared sheet can
+  reverse, which matters only for conflicts the layer step does not already decide. An `@scope` rule does not parse
+  (`@adobe/css-tools`), so its sheet takes the CSS error fallback and is never retained.
+- The registry's hidden container sits at the end of `.default-chat-screen`, after the rows, greeting, `BackgroundDom`,
+  suggestions, and plugin panels. Custom-GUI sheets in `Chat.svelte` stay at their row positions.
+- `Chats` mounts its rows with its contexts (`getAllContexts`). Without a registry (`BookmarkList`, an `App` sibling,
+  and component tests) a row keeps its own `<style>`s.
 
 ## State
 
-- Variable storage:
+### Variable storage
 
-  | Kind                | Storage                                                                                                                                                                  | Persisted |
-  | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
-  | Chat vars           | `Chat.scriptstate['$'+name]`, falling back to character `defaultVariables`, then `db.templateDefaultVariables`, then `'null'`                                            | yes       |
-  | Globals             | `Chat.GLGlobalVariables` (written per chat) → `db.globalChatVariables` (read-only legacy fallback) → defined `toggle_<name>` kind default (`"0"` or `""`), else `"null"` | yes       |
-  | Temp vars           | per `risuChatParser` call                                                                                                                                                | no        |
-  | `#func` definitions | per call                                                                                                                                                                 | no        |
+- See [Variables](#variables) for persisted values; temp vars and `#func` definitions are per-call.
 
-- Caches: the parser's file-source (`fileSrcCache`) and encoded-metadata maps, the fallback's media object URLs in `files/inlays.ts` (`mediaObjectUrls`), the scoped evaluators (`scopedEvaluators`), the asset maps (reset by `resetAssetsCache` and by `syncAssetsCache` in an `$effect.root` and at the start of an asset parse), and global `CSS.highlights`.
+### Caches
+
+- Parser and page caches: the parser's file-source (`fileSrcCache`, 2,000 entries, oldest first) and CSS scope
+  (`scopeCss`: by the CSS after CBS, 256 entries / 4 MiB) maps, the fallback's media object URLs in `files/inlays.ts`
+  (`mediaObjectUrls`), the scoped evaluators (`scopedEvaluators`), the asset maps (reset by `resetAssetsCache` and by
+  `syncAssetsCache` in an `$effect.root` and at the start of an asset parse), and global `CSS.highlights`.
+- Server transform (`server/src/prompt/transformCache.ts`): an LRU of text and emotions, 512 entries / 16 MiB, at most
+  512 KiB per entry. Its key, the character identities and the all-cached probe are the `server/src/prompt/transform.ts`
+  header ([server generation](server-generation.md)). The key holds the stored chat revision, so after a save, rows that
+  mount again render on the server again.
+- Tab transform (`parser/transformResults.ts`): its header has the bounds and eviction, the `transformClient.ts` header
+  `knownKey`, `same`, the emotions, and the generation fences.
+  - Identity includes chat ref, mode, kind, captured message id, index, source id, a synchronous source hash with an
+    exact-source hit check, conditions, captured context, handler set, viewport and browser language.
+  - `resourceClient.ts` clears the entries on a changed epoch (`setResourceEpoch`) and at once on `epochMismatch`;
+    [Script transform client](#script-transform-client) has the other resets (`rerenderMessage`,
+    `resetTransformEffects`).
 
 ## Coupling
 
-- `stores.svelte.ts` imports `resetTransformEffects` from `transformClient.ts`, which imports the stores back. Keep the module-level reads lazy (the subscriber runs at once).
-- `chatVar.svelte.ts` is used by scripts, triggers, the lorebook, `infunctions.ts`, `mcp/graphmem.ts`, and `Toggles.svelte`.
-- `registerCBS` consumers: the evaluator (`shared/cbs/evaluator.ts`), and through `cbs.ts` `PlaygroundDocs.svelte` (live docs from `description`) and `cbsMonaco.ts`.
-- `stores.svelte.ts` and `parser/transformClient.ts` import each other; the `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first, synchronous call so that loading either module first never calls into the other before its bindings exist (`stores.importOrder.test.ts`).
+- `stores.svelte.ts` imports `resetTransformEffects` from `transformClient.ts`, which imports the stores back. The
+  `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first, synchronous call so that loading either module
+  first never calls into the other before its bindings exist (`stores.importOrder.test.ts`); keep the module-level reads
+  lazy.
+- `PlaygroundDocs.svelte` uses `registerCBS` through `cbs.ts` for the live function descriptions. The unused
+  `getMacroData` in `cbsMonaco.ts` references the same catalogue.
 
 ## Invariants
 
-- `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not a final one.
-- Keep the DOMPurify hooks intact: class prefixing, the href policy, the YouTube iframe allowlist, and blob `src` retention.
-- `trimMarkdown`'s config (`trimPurifyConfig`) keeps the chat's script attributes `risu-btn`, `risu-trigger`, `risu-id`, and `risu-form` (a Lua form, `scripts-triggers.md`); DOMPurify's defaults keep the form controls and strip `on*` handlers and `javascript:` values. A form's submit never navigates (`Chat.svelte` default-prevents every submit in a row).
+- Before `{@html}`, pass rendered chat Markdown through `trimMarkdown` or `trimMarkdownSharingStyles`. The `notrim` mode
+  returns an intermediate result.
+- For custom GUI templates, `Chat.svelte` calls `risuChatParser` with `renderMode: "gui"`. The GUI host supplies
+  `formatName` to escape the `char`/`bot` and `user` substitutions before the template becomes HTML. Ordinary CBS hosts
+  keep raw names. HTML chat exports and rich copy also escape scalar names. Export bodies pass through
+  `sanitizeExportHtml` after transformations.
+- An aborted render still meets `ChatBody`'s run guards and the `isCurrent` fences.
+- Keep the DOMPurify hooks intact: class prefixing, the href policy (an `http(s)` link opens in a new tab with
+  `rel="noopener noreferrer"`, any other value is emptied, and a supplied `rel` is replaced), the YouTube iframe
+  allowlist, and blob `src` retention.
+- `applyMarkdownToNode` builds its span in the text node's own document, so Markdown inside a parsed (inert) document
+  never becomes markup of the live page before it is sanitized.
+- `trimMarkdown`'s config (`trimPurifyConfig`) keeps the chat's script attributes `risu-btn`, `risu-trigger`, `risu-id`,
+  and `risu-form` (a Lua form, `scripts-triggers.md`); DOMPurify's defaults keep the form controls and strip `on*`
+  handlers and `javascript:` values. A form's submit never navigates (`Chat.svelte` default-prevents every submit in a
+  row).
 - CSS must stay scoped:
   - Selectors are prefixed with `.chattext`.
   - Classes get the `x-risu-` prefix.
   - `<risu-style>` uses a hex round-trip so decoded CSS cannot re-enter the HTML parser.
-- On the chat screen a row's shared `<style>` elements keep their attributes and an inert `/**/` comment: their CSS is in the screen's shared sheets. Custom-GUI sheets and layer/scope sheets remain at their row positions, with the cascade limits described in Display. Code that serializes or clones a row (plugins reading `.chattext`, `html-to-image` screenshots, which inline computed styles) gets the placeholders without the shared CSS, plus any retained sheets. A row whose sheet was removed after a real gap (a `{#key}` reload, a remount) gets a new one; a release and re-acquire in one synchronous flush keep the same sheet until the next microtask reconciles. Rows `Chats` trims are detached at once but unmounted over the next frames, and keep their sheets until then.
-- Mutating functions must respect `rmVar`/`runVar`. Display evaluation uses `rmVar:true`. `setvar` is a no-op unless `runVar` is set.
+  - Both trim functions process every `style` element of the sanitized tree. Nested style rules are scoped, and an
+    already emitted scope survives a second trim of translated HTML. Imported stylesheets are an
+    [open exception](../backlog/found-issues.md#an-import-in-card-or-message-css-is-installed-without-scoping).
+- On the chat screen a row's shared `<style>` elements keep their attributes and an inert `/**/` comment, and custom-GUI
+  and layer sheets remain at their row positions: [Shared styles](#shared-styles) has the rule and its cascade limits.
+- Code that serializes or clones a row (plugins reading `.chattext`, `html-to-image` screenshots, which inline computed
+  styles) gets the placeholders without the shared CSS, plus any retained sheets.
+- A row whose sheet was removed after a real gap (a `{#key}` reload, a remount) gets a new one. Rows `Chats` trims are
+  detached at once but unmounted over the next frames, and keep their sheets until then.
+- Plugin continuations run with `PluginCallContext.purpose: "transform"`; the host's write boundary and API results are
+  owned by [plugin-sandbox](plugin-sandbox.md#invariants) and the
+  [plugin author contract](../../plugins.md#read-only-transform-continuations).
+- Transform batches key the captured plugin context as well as the server context so purposes, owner lifetimes and job
+  parents cannot be borrowed from another call. Job-channel callbacks keep their normal write contract.
+- Mutating functions must respect `rmVar`/`runVar`. Display evaluation uses `rmVar:true`. `setvar` is a no-op unless
+  `runVar` is set.
 - Keep aliases and name normalization compatible. Shared cards use historical spellings.
 - `partialEdit` offsets refer to the original markdown, not the rendered HTML. It special-cases `{{ruby::...}}`.
-- Asset path maps are built lazily by the first parse after a change, including a chat row's `simple` character argument. Asset inputs are separate derived values: the character's own asset/emotion tuples and `getModuleAssets`' plain shared tuples. An enabled asset edit changes the input value and reruns readers; lorebook edits and disabled modules' asset edits do not rebuild the parser maps or `ChatBody`'s `imageAssets`. A parse reads the input key itself, so it sees current assets even before an effect flush. `ChatBody` also reads its shared module assets before any translation/cache await, so those paths invalidate even when the parser's reads happen after an await. `resetAssetsCache(charAssets, emoAssets, moduleAssets)` keeps its public signature and map shape; an explicit reset (including `[]` modules in the golden fixture) wins until live inputs change.
-- Parser fuzzy matching scans only the character's additional assets, in order. Trimmed exact names use the first entry; other candidates must strictly improve the best and fit `floor(assetMaxDifference)`. Non-finite thresholds leave the scan unbounded by settings, and the final `dist > threshold` comparison preserves existing acceptance (including NaN and negative infinity). A distance-1 winner ends a normal scan. Cached hits remain globally closest; cached misses are reused only at an equal or smaller cutoff. Keep `trimmer`'s `[_ -.]` range and UTF-16 code-unit semantics.
-- `ChatBody`'s image fallback scans character plus module assets with the existing prefix rule, first strict improvement below 1000, and empty-path/none behavior. Its per-name hit/miss memo belongs to the `imageAssets` value, so unchanged rows do not rescan; both fuzzy result memos clear at 10,000 names. `getDistance` remains exported with its original results. Names beyond 32,767 code units can make its Int16 table wrap negative: the bounded helper uses the same recurrence in two Int16 rows for those inputs, without unsound length/row pruning, and the parser disables its distance-1 stop when overflow is possible.
-- CBS date and time functions on the server use the server's time zone and default locale; the tab's language reaches CBS only as `metadata::browserlang`.
+- Asset path maps are built lazily by the first parse after a change, including a chat row's `simple` character
+  argument. Asset inputs are separate derived values: the character's own asset/emotion tuples and `getModuleAssets`'
+  plain shared tuples. An enabled asset edit changes the input value and reruns readers; lorebook edits and disabled
+  modules' asset edits do not rebuild the parser maps or `ChatBody`'s `imageAssets`.
+  - A parse reads the input key itself, so it sees current assets even before an effect flush. `ChatBody` also reads its
+    shared module assets before any translation/cache await, so those paths invalidate even when the parser's reads
+    happen after an await.
+  - `resetAssetsCache(charAssets, emoAssets, moduleAssets)` keeps its public signature and map shape; an explicit reset
+    (including `[]` modules in the golden fixture) wins until live inputs change.
+- Parser fuzzy matching uses only character additional assets. `getClosestMatch` owns the threshold, tie and cache
+  rules. `ChatBody.svelte` uses `findAssetPrefix` with character and module assets. Its hit/miss memo is tied to the
+  asset list. Preserve legacy UTF-16 distances, including Int16 overflow for long names. See `boundedDistance` and
+  `src/ts/parser/tests/assetFuzzy.test.ts` before changing either lookup.
+
+- CBS date and time functions on the server use the server's time zone and default locale; the tab's language reaches
+  CBS only as `metadata::browserlang`.
 
 ## Recipes
 
-- Add a CBS function:
-  1. Add an entry in `shared/cbs/registry.ts:registerCBS`: name, callback, aliases, precise `description`. Use only injected helpers (a new host read is a new `CBSRegisterArg` field, wired in `parser.svelte.ts` and on the server). The file is strict-checked by the server `tsc`.
-  2. Add it to the matching list in `gui/highlight.ts` (`normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, or `nestedCBS`).
-  3. Add a test under `src/ts/parser/tests/cbs/` using the `cbs` helper from `lib.ts`.
-  4. Confirm it appears in Playground → CBS docs.
-- Change message display: `Chat.svelte:displaya` or `ChatBody.svelte:markParsing` for call order, and `ParseMarkdown`, `parseAdditionalAssets`, `renderMarkdown`, or `trimMarkdown` for rendering and security. Run `trimMarkdownStyle.test.ts`.
-- Change variable semantics: `chatVar.svelte.ts` plus the `getvar`/`setvar`/`tempvar`/`getglobalvar` callbacks.
+### Add a CBS function
+
+1. Add an entry in `shared/cbs/registry.ts:registerCBS`: name, callback, aliases, precise `description`. Use only
+   injected helpers (a new host read is a new `CBSRegisterArg` field in `shared/cbs/types.ts`, wired in
+   `parser.svelte.ts` and `server/src/jobs/cbsHost.ts`). The file is strict-checked by the server `tsc`.
+2. Add it to the matching list in `gui/highlight.ts` (`normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, or
+   `nestedCBS`).
+3. Add a test under `src/ts/parser/tests/cbs/` using the `cbs` helper from `lib.ts`.
+4. Confirm it appears in Playground → CBS docs.
+
+### Change message display
+
+`Chat.svelte:displaya` or `ChatBody.svelte:markParsing` for call order, and `ParseMarkdown`, `parseAdditionalAssets`,
+`renderMarkdown`, or `trimMarkdown` for rendering and security.
+
+### Change variable semantics
+
+`chatVar.svelte.ts` plus the `getvar`/`setvar`/`tempvar`/`getglobalvar` callbacks.
 
 ## Tests
 
-- CBS behavior and host parity: `src/ts/parser/tests/cbs/*.test.ts` and `server/src/tests/{cbs,cbsCallDepth,cbsLimits,cbsLimitsHost,cbsLimitsJobs,cbsTimeLimitsOptions,cbsToggles}.test.ts` cover the shared evaluator, client/server hosts, variables and toggles, recursion and cooperative limits. `src/ts/parser/tests/cbs/prefill.test.ts` pins Anthropic descriptor behavior; `src/ts/parser/tests/chatVar.svelte.test.ts` covers variable access.
-- Rendering and styles: `src/ts/parser/tests/{trimMarkdownStyle,trimMarkdownSharingStyles,chatStyles}.test.ts` cover sanitization, style extraction, and shared-sheet ordering/lifetime. `src/ts/parser/tests/chatML.test.ts` has skipped and FIXME cases.
-- Transform boundary: `src/ts/parser/tests/transformClient.test.ts`, `e2e/serverTransform.spec.ts`, and `e2e/transformGolden.spec.ts` cover client batching, render behavior, and browser/server parity. `server/src/tests/{transform,transformService,transformBudget,dynamicAssets}.test.ts` cover server transformation, continuation, budgets, and dynamic-asset ranking.
-- Assets: `src/ts/parser/tests/{assetFuzzy,inlayAssets}.test.ts` cover matching/live asset inputs and direct-URL/object-URL rendering. `src/ts/process/files/tests/inlays.test.ts` covers Blob MIME reconstruction.
-- Partial edit: `src/ts/parser/tests/partialEdit.test.ts` covers source offsets and matching; `src/lib/ChatScreens/PartialEditController.test.ts` covers chooser behavior and edit dispatch. Translation write semantics belong to `media-aux.md`.
-- Other anchors: `src/ts/parser/tests/scopedParser.test.ts` covers scoped parser setup.
-- Gaps: most of `shared/cbs/registry.ts`, inlay images and dynamic-asset rendering, the matcher's anchor/fuzzy/bigram stages, and `highlight.ts` are not directly tested. The transform cache key is not tested against `GLGlobalVariables`, preset/persona ids, greeting, or background targets.
+Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
+
+- Parser, rendering, tab transform, highlighting:
+  `pnpm --silent test:agent src/ts/parser/tests src/ts/gui/highlight.test.ts`.
+- Server host and limits: `pnpm --silent test:agent server/src/tests/cbs*.test.ts`.
+- Server transform:
+  `pnpm --silent test:agent server/src/tests/{transform,transformService,transformBudget,dynamicAssets}.test.ts`.
+- Shared toggles: `pnpm --silent test:agent shared/prompt/toggles.test.ts`.
+- `src/lib/ChatScreens/Chat.controls.test.ts` exercises GUI name substitutions against ordinary CBS output.
+- Editor component checks (`src/lib/ChatScreens/tests/PartialEditControllerIme.test.ts`,
+  `src/lib/Others/MonacoEditor.test.ts`) run with the [UI checks](ui-theming.md#tests).
+- `src/ts/parser/tests/cbs/lib.ts`: the `cbs` helper writes a `{{op::args}}` string; `holdMockedChats` installs fixture
+  characters and chats the way boot does.
+- Host parity: `server/src/tests/fixtures/cbs-parity.json` holds hand-derived cases pinning the legacy quirks, run
+  through the client host (`src/ts/parser/tests/cbs/hostParity.test.ts`) and a Node host
+  (`server/src/tests/cbs.test.ts`).
+- `src/ts/parser/tests/transformClient.test.ts`: the server is a function of the request, the chat module a few maps,
+  `transformReactive.svelte.ts` the lock source, and timers are fake.
+- `src/ts/parser/tests/parseMarkdownLifetime.test.ts` stubs `getFileSrc`, `getInlayMedia`, and `serverProcessScript` to
+  abort or reject a render between its awaits.
+- `src/ts/gui/highlight.test.ts` stubs `CSS.highlights` and `Highlight`, which happy-dom lacks.
+- `e2e/serverTransform.spec.ts`, and `e2e/transformGolden.spec.ts`, which compares final browser HTML with
+  `server/src/tests/fixtures/baseline/markdown.json` (read, never written).
+- `slow`: the fresh-process cases of `server/src/tests/cbsLimits.test.ts`.
+- `src/ts/parser/tests/chatML.test.ts` has skipped and FIXME cases.
+- The browser golden fixture excludes stored inlays and embedding-based dynamic assets. Tab media paths have focused
+  coverage in `src/ts/parser/tests/{inlayAssets,parseMarkdownLifetime}.test.ts`. Not directly tested: many registry
+  functions and the partial-edit matcher’s anchor, fuzzy and bigram stages.
+- Not tested: direct transform key tests still omit per-chat `GLGlobalVariables`, changes of context preset/persona ids,
+  the greeting index and background targets; preset/persona binding refusals are covered.
 
 ## Known Hazards
 
-- A CSS-only change to a shared sheet does not mutate the row's DOM, so `Chats` does not re-observe a `.far` row. Its remembered `contain-intrinsic-block-size` updates when the row renders near the viewport through `content-visibility: auto`.
-- `src/ts/gui/codearea/cbsMonaco.ts` has an empty `registerCBSMonaco`; active CBS highlighting lives in `src/ts/gui/highlight.ts`.
+### Issues
 
-- `escapes.test.ts` documents a known broken `cbr` repetition case.
-- The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content. A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails the job where the old shared call counter answered a short text with error strings.
-- `removeHighlight` deletes the stored ID but leaves the global `CSS.highlights` ranges in place.
-- `chatML.ts` references `OpenAIChat` without importing it and relies on an ambient declaration.
+- Unconfirmed: a hang in the additional-asset passes has not been reproduced. The source-image test in
+  `src/ts/parser/tests/assetFuzzy.test.ts` pauses and releases `getFileSrc`, but does not test a lookup that never
+  settles. A browser run on 2026-11-14 held the fallback asset read of three asset forms for 11 s: the rows stayed empty
+  while the read was held and rendered once it was released (`readRenderIO` checks abort only around the read). No
+  stored content was found that makes a lookup hang.
+- Unconfirmed: the reported duplicate row render after Re-render is not established as a user-visible defect.
+  `e2e/serverTransform.spec.ts` observes two targets in one request: the first bypasses cache and the second reuses its
+  result. A browser run on 2026-11-14 of three Re-render clicks (plain, randomized regex, interactive content) left one
+  row and one body replacement each.
+
+### Limitations
+
+- `{{// ...}}` stays literal everywhere in rendered and prompt text: `shared/cbs/registry.ts` registers it `doc_only`,
+  so the evaluator leaves it. Only lore key matching strips it (`shared/lore/activation.ts`). Decision: client/server
+  and upstream parity (`server/src/tests/fixtures/cbs-parity.json`).
+- Plugin-private writes and allowed indirect host effects can change opaque handler output without invalidating its
+  transform cache entry. See the [host write boundary](plugin-sandbox.md#invariants). Decision: the
+  [plugin author contract](../../plugins.md#read-only-transform-continuations); a plugin-side "re-render me" call is to
+  be part of the plugin API design (owner, 2026-11-10).
+- The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the
+  limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content.
+  A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails
+  the job. Decision: the limits are policy (`server/src/jobs/cbsHost.ts`); the `call::` trade-off is pinned in
+  `server/src/tests/cbsCallDepth.test.ts`.
+- A chat switch sends no new transform target, but already-dispatched chunks can finish before row unmount cancels their
+  last subscribers (`transformClient.ts`). The tab's `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` admission cap applies only to
+  chunks with plugin handlers; chunks without handlers acquire no permit. Decision: Found Issues Decisions (owner,
+  2026-11-08),
+  [measurement](../reports/measurements/client/render-work-budget-2026-11-05.md#acceptance-after-slices-14).
+- A chat write the render does not read still moves the chat revision in the transform key: with `useAutoSuggestions`
+  on, a suggestion save (`Suggestion.svelte`, `setChatMeta`) costs one server re-render of the rows on the next visit,
+  and a `{{random}}` row can change. Decision: Found Issues Decisions (owner, 2026-11-08).
+- When whole-chunk cancellation aborts a chunk's first `/api/transform` call (`postOnce`, `transformClient.ts`) before
+  its headers arrive, `snapshotGone` stays `true` and the chunk releases its permit at once, though the server may have
+  stored the snapshot: it lives until its 30 s TTL and counts toward `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT`, so the next
+  chunk can evict a live one (`SnapshotExpired`, a raw row, one retry round). Decision: Implementation Audit Fixes R4
+  (2026-11-06), to avoid holding a permit 30 s on every scroll-away abort.
+- A Re-render's cache bypass (`noCacheNext`) is consumed when its operation is created. A `cancelled` settlement
+  restores it, including departures in a surviving chunk (`transformClient.ts` `restoreBypass`, `departed`, `settle`).
+  Before that settlement a same-input replacement can send `noCache: false` and read the old server cache. Decision:
+  excluded as an edge (2026-11-05),
+  [RW3](../reports/audits/finished-plans/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
+- A permanent display failure is not remembered: when another target of the same row fails transiently (a legacy
+  rendered translation's paragraph beside an oversized original), that row's retry round rerenders it whole, so the
+  permanent target is requested and its toast shown again every round. A fix would remember terminal outcomes per
+  target. Decision: owner, 2026-11-10 (known-issues review): per-target terminal outcomes are not worth their lifecycle
+  state.
+- A request of the old source still in flight when its message is edited can fail after the edited source renders. The
+  failure is recorded against the source shown then, so its retry round rerenders the edited row once (typed form input
+  included). The capture carries no shown source to fence it. Decision: owner, 2026-11-10 (known-issues review): one
+  extra rerender is accepted.
+- The transform's invalidation guarantee does not cover inlay records or file existence read by Lua
+  `getCharacterImage`/`getPersonaImage`; those inputs are not keyed. Decision: owner, 2026-11-10 (known-issues review):
+  a media revision in the key waits for a card that needs it.
+- A `{{random}}` or clock row may change when it remounts after its chat changed. After eviction or Re-render elsewhere,
+  a random/clock/plugin row can be refilled with different text under the same key, and `same` can still confirm the
+  tab's older text: the key names inputs, not output. Decision: owner, 2026-11-10 (known-issues review): upstream
+  re-evaluates these on every render too.
+- Resize and rotation do not re-render rows; the new viewport takes effect on the next remount. Decision: owner,
+  2026-11-10 (known-issues review): the next remount is enough.
+- A [permanent display failure](#display-transform-failures) is not retried when only the stored data shrinks: a
+  transcript or character trimmed under the limit renders the row on its next mount or a Re-render, not on its own.
+  Decision: owner, 2026-11-10 (known-issues review): a fix needs its own invalidation of the remembered failure when
+  stored data shrinks (the per-target outcomes of the toast entry above would not clear it).
+- A script whose output size varies (`{{random}}`, a clock) can fail the head limit once and fit on the next run; it is
+  still marked permanent. Decision: owner, 2026-11-10 (known-issues review).
+- A screenshot taken while a provisional display awaits a replacing answer can capture the cached text:
+  `ChatBody.svelte`'s `whenRendered` waits for current parses and auto-translation, not the transform confirmation.
+  Decision: owner, 2026-11-10 (known-issues review).
+
+### Gotchas
+
+- A CSS-only change to a shared sheet does not mutate the row's DOM, so `Chats` does not re-observe a `.far` row. Its
+  remembered `contain-intrinsic-block-size` updates when the row renders near the viewport through
+  `content-visibility: auto`.
 - The no-argument date and time functions do not pad: `YYYY-M-D` and `H:m:s`.
-- The legacy `lastmessage` returns the last message's stored `data` without parsing its CBS, and `""` with no character selected.
-- Unconfirmed: a transform's tab-side plugin handlers run with a captured plugin context whose API still has the persistent setters; the server transform itself writes nothing, but no test pins a setter called from a handler, so the text-only contract is not enforced.
-- Unconfirmed follow-ups, deferred and not reproduced since: a hang in the additional-asset passes and a duplicate render after "Re-render" (`rerenderMessage` bypasses the transform cache). Both code paths remain.
+- The legacy `lastmessage` returns the last message's stored `data` without parsing its CBS, and `""` with no character
+  selected.

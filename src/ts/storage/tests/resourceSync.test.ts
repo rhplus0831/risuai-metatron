@@ -2,6 +2,7 @@ import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import { FakeResourceServer } from "./fakeResourceServer";
+import { settleFlush } from "./flushRetry";
 import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { materialize } from "./serverKinds";
 
@@ -21,7 +22,11 @@ const { server, alerts } = vi.hoisted(() => ({
 }));
 
 vi.mock("../serverAuth", () => ({
-    authFetch: (path: string, init?: RequestInit) => server.current.fetch(path, init),
+    // `authFetch`'s contract: `beforeDispatch` runs after authentication and signing, right before the request.
+    authFetch: (path: string, init?: RequestInit, options: { beforeDispatch?: () => void } = {}) => {
+        options.beforeDispatch?.();
+        return server.current.fetch(path, init);
+    },
 }));
 
 vi.mock("../../alert", async () =>
@@ -48,7 +53,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -383,9 +388,14 @@ describe("conflicts", () => {
         const { fake, sync, settings } = await boot();
         fake.dropNextBatchResponse = true;
         settings.ui.theme = "committed but unacknowledged";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first answer is lost: the server holds the write while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.data("ui", "main").theme).toBe("committed but unacknowledged");
-        const result = await sync.flushResources();
+        // The resend's 409 settles it as committed.
+        const result = await settleFlush(flushing);
+        expect(fake.batchCount()).toBe(2);
         expect(result.discarded).toEqual([]);
         expect(settings.ui.theme).toBe("committed but unacknowledged");
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -465,10 +475,14 @@ describe("lost acknowledgement", () => {
         const base = fake.get("ui", "main")!.revision;
         fake.dropNextBatchResponse = true;
         settings.ui.theme = "sent";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first answer is lost; the typing lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         const landed = fake.get("ui", "main")!.revision;
         settings.ui.theme = "typed after the lost answer";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe("typed after the lost answer");
         expect(settings.ui.theme).toBe("typed after the lost answer");
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -491,9 +505,14 @@ describe("lost acknowledgement", () => {
         const { fake, sync, settings } = await boot();
         fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
         settings.ui.theme = "never landed";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first request fails; the typing lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.data("ui", "main").theme).not.toBe("never landed");
         settings.ui.theme = "typed after the failure";
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe("typed after the failure");
         expect(alerts.normal).not.toHaveBeenCalled();
         // The failed request, its resend (it lands), then the newer text.
@@ -509,10 +528,14 @@ describe("lost acknowledgement", () => {
         const saved = settings.ui.theme;
         fake.dropNextBatchResponse = true;
         settings.ui.theme = "lost";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The first answer is lost; the revert lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.data("ui", "main").theme).toBe("lost");
         settings.ui.theme = saved;
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.data("ui", "main").theme).toBe(saved);
         expect(settings.ui.theme).toBe(saved);
         expect(sync.heldRecordRevision("ui", "main")).toBe(fake.get("ui", "main")!.revision);
@@ -525,10 +548,14 @@ describe("lost acknowledgement", () => {
         const { fake, sync, characterStore } = await boot();
         fake.dropNextBatchResponse = true;
         characterStore.addCharacter(character("c", "Carol"));
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
+        const flushing = sync.flushResources();
+        // The create's answer is lost; the removal lands while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.batchCount()).toBe(1);
         expect(fake.get("characters", "c")).not.toBeNull();
         characterStore.removeCharacter("c");
-        expect(await sync.flushResources()).toEqual({ discarded: [] });
+        expect(await settleFlush(flushing)).toEqual({ discarded: [], refused: [] });
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(fake.get("characters", "c")).toBeNull();
         expect(alerts.normal).not.toHaveBeenCalled();
     });
@@ -595,10 +622,13 @@ describe("a generating character (the generation deferral is gone)", () => {
         fake.set("characters", "a", character("a", "remote name"));
         characterList()[0].name = "local name";
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
+        const flushing = sync.flushResources();
+        // The conflict's reload fails: the local state stays while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
         expect(characterList()[0].name).toBe("local name");
         expect(fake.data("characters", "a").name).toBe("remote name");
-        const result = await sync.flushResources();
+        const result = await settleFlush(flushing);
         expect(result.discarded).toEqual(["characters/a"]);
         expect(characterList()[0].name).toBe("remote name");
         end();
@@ -701,10 +731,11 @@ describe("restore (412) and errors", () => {
         const reload = (location as any).reload;
         fake.restore("epoch-2");
         settings.ui.theme = "after restore";
-        await expect(sync.flushResources()).rejects.toThrow();
+        // The direct write goes first: after the halt, the save admission refuses mutations before they are sent.
         await expect(
             client.putResource("inlays", "x", { name: "x", ext: "json", type: "signature" }, null),
         ).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+        await expect(sync.flushResources()).rejects.toThrow();
         client.epochMismatch("epoch-2");
         await expect(sync.watchForRestore()).resolves.toBe(true);
         await vi.advanceTimersByTimeAsync(120_000);
@@ -719,6 +750,26 @@ describe("restore (412) and errors", () => {
         expect(alerts.terminal).toHaveBeenCalledTimes(1);
         expect(reload).toHaveBeenCalledTimes(1);
         expect(fake.data("ui", "main").theme).toBe(themeBefore);
+    });
+
+    it("asks before unload while a hold is taken with nothing to save, until every hold is released or the loop halts", async () => {
+        const { client, sync } = await boot();
+        expect(warnsOnUnload()).toBe(false);
+        const first = sync.holdUnloadWarning();
+        const second = sync.holdUnloadWarning();
+        expect(warnsOnUnload()).toBe(true);
+        // A release counts once.
+        first();
+        first();
+        expect(warnsOnUnload()).toBe(true);
+        second();
+        expect(warnsOnUnload()).toBe(false);
+        // Replaced data reloads the page: a hold does not stand in the way.
+        const held = sync.holdUnloadWarning();
+        expect(warnsOnUnload()).toBe(true);
+        client.epochMismatch("epoch-2");
+        expect(warnsOnUnload()).toBe(false);
+        held();
     });
 
     it("quarantines a record the server refuses as too large, keeps saving the rest, and retries it once it changes", async () => {
@@ -859,10 +910,15 @@ describe("restore (412) and errors", () => {
         const { fake, sync, settings } = await boot();
         fake.failNext = { status: 503, times: 1 };
         settings.ui.theme = "retry me";
-        await expect(sync.flushResources()).rejects.toMatchObject({ status: 503 });
+        const flushing = sync.flushResources();
+        // The first request fails: the edit stays dirty while the flush waits out its backoff.
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fake.failNext).toBeNull();
+        expect(fake.data("ui", "main").theme).not.toBe("retry me");
         expect(alerts.error).not.toHaveBeenCalled();
-        await sync.flushResources();
+        await settleFlush(flushing);
         expect(fake.data("ui", "main").theme).toBe("retry me");
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 });
 
@@ -871,6 +927,25 @@ describe("restore (412) and errors", () => {
 describe("the restore watch of a job ended by maintenance", () => {
     const watchReads = (fake: FakeResourceServer) =>
         fake.requests.filter((request) => request.method === "GET" && request.path === "/api/resources/ui/main").length;
+
+    it("rejects an empty flush while the restore notice is open", async () => {
+        const { fake, sync, client } = await boot();
+        let acknowledge!: () => void;
+        alerts.terminal.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (acknowledge = () => resolve(undefined))),
+        );
+        try {
+            fake.restore("epoch-2");
+            await expect(client.getResource("ui", "main")).rejects.toBeInstanceOf(client.ResourceEpochMismatchError);
+            expect(alerts.terminal).toHaveBeenCalledWith("restored");
+            expect(location.reload).not.toHaveBeenCalled();
+
+            await expect(sync.flushResources()).rejects.toThrow(/restored/);
+            expect(fake.batchCount()).toBe(0);
+        } finally {
+            acknowledge?.();
+        }
+    });
 
     it("keeps waiting through old-epoch answers, a 503, and a network failure, then halts with the notice and the reload once the epoch changes", async () => {
         const { fake, sync, settings } = await boot();
@@ -977,9 +1052,21 @@ describe("batch sizing", () => {
         const big = { bytes: 62_914_657 };
         expect(sync.splitBatches([big, big]).map((batch) => batch.length)).toEqual([1, 1]);
         const small = { bytes: 10 };
-        expect(sync.splitBatches([small, big, big, small])).toEqual([
-            [small, big],
-            [big, small],
+        expect(sync.splitBatches([small, big, big, small])).toEqual([[small], [big], [big], [small]]);
+    });
+
+    it("stops multi-unit batches at 4 MiB and sends a larger unit alone", async () => {
+        const { sync } = await boot();
+        const mib = 1024 * 1024;
+        const nearHalf = { bytes: 2 * mib - 1024 };
+        const half = { bytes: 2 * mib };
+        const extra = { bytes: 2048 };
+        const large = { bytes: 5 * mib };
+        expect(sync.splitBatches([nearHalf, half, extra, large, extra])).toEqual([
+            [nearHalf, half],
+            [extra],
+            [large],
+            [extra],
         ]);
     });
 

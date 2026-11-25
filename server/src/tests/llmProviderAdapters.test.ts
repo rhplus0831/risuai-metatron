@@ -8,8 +8,9 @@ import { normalizeModelPresets, normalizeModelProfiles, normalizePresets } from 
 import { normalizeLlmSecrets } from "../data/normalize/llmSecrets.ts";
 import { normalizeProviders } from "../data/normalize/providers.ts";
 import type { RequestContext } from "../llm/context.ts";
-import { requestChatDataMain } from "../llm/request.ts";
+import { reformater, requestChatDataMain } from "../llm/request.ts";
 import { loadRequestDb } from "../llm/settings.ts";
+import { applyAdditionalParameters } from "../llm/shared.ts";
 import { createTransport } from "../llm/transport.ts";
 
 // The provider adapters of the server request layer (`server/src/llm/`), run through
@@ -22,7 +23,8 @@ import { createTransport } from "../llm/transport.ts";
 // (SigV4), Google (buffered, streaming, a preview, a tool round trip), Vertex, NanoGPT's Messages,
 // Legacy, and Responses formats (endpoint, key, request model, provider), and a request without a
 // selected character. The NanoGPT cases and the named credential cases are not part of the oracle
-// capture below.
+// capture below. The missing-Content-Type cases assert the streaming failure contract, not the
+// captured browser behavior.
 //
 // This was the parity gate (`src/ts/process/request/tests/serverParity.test.ts`), which ran the
 // former browser adapters (the test oracles) beside the server and compared the ten outputs above.
@@ -217,6 +219,7 @@ type Scenario = {
     formats?: Record<string, LLMFormat>;
     /** The request's abort controller (Stop), when the case aborts it. */
     controller?: AbortController;
+    reportRetry?: RequestContext["reportRetry"];
     upstream: (call: Upstream) => CannedResponse;
 };
 
@@ -292,7 +295,11 @@ async function run(scenario: Scenario): Promise<Recorded> {
                 parsed = typeof call.body === "string" ? JSON.parse(call.body) : call.body;
             } catch {}
             const canned = scenario.upstream({ ...JSON.parse(JSON.stringify(call)), body: parsed });
-            return new Response(canned.body, { status: canned.status, headers: canned.headers ?? {} });
+            // Bytes preserve an absent Content-Type; a string body would synthesize text/plain.
+            return new Response(new TextEncoder().encode(canned.body), {
+                status: canned.status,
+                headers: canned.headers ?? {},
+            });
         }) as typeof fetch,
     });
     // As `buildContext`: the main profile's flags (the roots), or the request-local profile's.
@@ -312,6 +319,7 @@ async function run(scenario: Scenario): Promise<Recorded> {
         userName: loaded.userName,
         signal: controller.signal,
         transport,
+        reportRetry: scenario.reportRetry,
         alertError: (message) => alerts.push(String(message)),
         redactText: (text) => text,
         tokenizeNum: async (text) => tokenize(text),
@@ -537,6 +545,127 @@ afterEach(() => {
 });
 
 describe("the server provider adapters", () => {
+    it.each([
+        { label: "no tools", tools: [] },
+        { label: "another tool", tools: [ROLL_DICE] },
+    ])("Anthropic refuses an unoffered tool with $label and completes its follow-up", async ({ tools }) => {
+        let requests = 0;
+        const recorded = await run({
+            settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" } },
+            arg: prompt(),
+            tools,
+            upstream: () =>
+                json({
+                    content:
+                        ++requests === 1
+                            ? [{ type: "tool_use", id: "unoffered", name: "writeChat", input: { value: "bad" } }]
+                            : [{ type: "text", text: "Handled." }],
+                }),
+        });
+
+        expect(recorded.toolCalls).toEqual([]);
+        expect(recorded.calls).toHaveLength(2);
+        expect(recorded.calls[1].body).toMatchObject({
+            messages: expect.arrayContaining([
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "tool_result",
+                            tool_use_id: "unoffered",
+                            content: [{ type: "text", text: "Tool writeChat not found on any MCP" }],
+                        },
+                    ],
+                },
+            ]),
+        });
+        expect(recorded.result).toEqual({ type: "success", result: "Handled." });
+    });
+
+    it.each([false, true])(
+        "Chat Completions answers an unoffered call with an empty tool list, streaming=%s",
+        async (streaming) => {
+            let requests = 0;
+            const recorded = await run({
+                settings: { preset: { aiModel: "reverse_proxy" }, providers: { useStreaming: streaming } },
+                arg: { ...prompt(), useStreaming: streaming },
+                tools: [],
+                upstream: () => {
+                    const first = ++requests === 1;
+                    const toolCall = {
+                        id: "unoffered",
+                        type: "function",
+                        function: { name: "writeChat", arguments: "{}" },
+                    };
+                    return streaming
+                        ? sse([
+                              {
+                                  choices: [
+                                      {
+                                          delta: first
+                                              ? { tool_calls: [{ index: 0, ...toolCall }] }
+                                              : { content: "Handled." },
+                                      },
+                                  ],
+                              },
+                              "[DONE]",
+                          ])
+                        : json({
+                              choices: [
+                                  {
+                                      message: first
+                                          ? { role: "assistant", content: "", tool_calls: [toolCall] }
+                                          : { role: "assistant", content: "Handled." },
+                                  },
+                              ],
+                          });
+                },
+            });
+
+            expect(recorded.toolCalls).toEqual([]);
+            expect(recorded.calls).toHaveLength(2);
+            expect(recorded.calls[1].body).toMatchObject({
+                messages: expect.arrayContaining([
+                    {
+                        role: "tool",
+                        content: "No tool found with name: writeChat",
+                        tool_call_id: "unoffered",
+                    },
+                ]),
+            });
+            if (streaming) expect(recorded.chunks.at(-1)).toMatchObject({ "0": expect.stringContaining("Handled.") });
+            else expect(recorded.result).toEqual({ type: "success", result: expect.stringContaining("Handled.") });
+        },
+    );
+
+    it("reformats empty and all-system prompts with first-system support and restores the system block at the adapter", async () => {
+        const replacements = {
+            systemContentReplacement: "system: {{slot}}",
+            systemRoleReplacement: "assistant" as const,
+        };
+        for (const mustStartWithUser of [false, true]) {
+            const flags: LLMFlags[] = [LLMFlags.hasFirstSystemPrompt];
+            if (mustStartWithUser) flags.push(LLMFlags.mustStartWithUserInput);
+            const user = mustStartWithUser ? [{ role: "user", content: " " }] : [];
+            const expected = [{ role: "system", content: "Be brief.\n\nStay in character." }, ...user];
+            const systemOnly = (): RequestArgs["formated"] => [
+                { role: "system", content: "Be brief." },
+                { role: "system", content: "Stay in character." },
+            ];
+
+            expect(reformater([], flags, replacements)).toEqual(user);
+            expect(reformater(systemOnly(), flags, replacements)).toEqual(expected);
+
+            const recorded = await run({
+                settings: { preset: { enableCustomFlags: true, customFlags: flags, ...replacements } },
+                arg: { ...prompt(), formated: systemOnly() },
+                upstream: () => chat("ok"),
+            });
+            expect(recorded.calls.map((call) => (call.body as { messages: unknown }).messages)).toEqual([expected]);
+            expect(recorded.result).toMatchObject({ type: "success", result: "ok" });
+        }
+    });
+
     it("OpenAI-compatible, buffered: the proxy key, model, parameters, bias strings, additional parameters and headers, and the answer", async () => {
         const recorded = await run({
             settings: {
@@ -632,6 +761,18 @@ describe("the server provider adapters", () => {
             // by the transport).
             logs: [PROVIDER],
         });
+    });
+
+    it("returns the body as a failure when an initial streaming response has no Content-Type", async () => {
+        const recorded = await run({
+            settings: { providers: { useStreaming: true } },
+            arg: { ...prompt(), useStreaming: true },
+            upstream: () => ({ status: 200, body: "The gateway could not start the event stream" }),
+        });
+
+        expect(recorded.result).toEqual({ type: "fail", result: "The gateway could not start the event stream" });
+        expect(recorded.chunks).toEqual([]);
+        expect(recorded.calls).toHaveLength(1);
     });
 
     it("OpenAI-compatible: a JSON schema from an interface, the extraction path, and the CBS parses in order", async () => {
@@ -1157,6 +1298,62 @@ describe("the server provider adapters", () => {
         });
     });
 
+    it("Anthropic, buffered: sends a system-only prompt as one trimmed user turn", async () => {
+        const recorded = await run({
+            settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" } },
+            arg: {
+                ...prompt(),
+                formated: [
+                    { role: "system", content: " \nBe brief." },
+                    { role: "system", content: "Answer in plain English.\t \n" },
+                ],
+            },
+            upstream: () => json({ content: [{ type: "text", text: "claude says" }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        const body = recorded.calls[0].body as Record<string, unknown>;
+        expect(body.messages).toEqual([
+            { role: "user", content: [{ type: "text", text: "Be brief.\n\nAnswer in plain English." }] },
+        ]);
+        expect(body).not.toHaveProperty("system");
+    });
+
+    it("Anthropic, reverse proxy: preserves multimodal text and omits messages without text", async () => {
+        const recorded = await run({
+            settings: {
+                preset: {
+                    aiModel: "reverse_proxy",
+                    customAPIFormat: LLMFormat.Anthropic,
+                    forceReplaceUrl: "https://mock.test/v1/messages",
+                },
+            },
+            arg: {
+                ...prompt(),
+                formated: [
+                    {
+                        role: "user",
+                        content: "Describe this image.",
+                        multimodals: [{ type: "image", base64: "data:image/png;base64,aW1hZ2U=" }],
+                    },
+                    { role: "user", content: "Mention the colors." },
+                    { role: "assistant", content: "I see blue shapes." },
+                    {
+                        role: "user",
+                        content: "",
+                        multimodals: [{ type: "image", base64: "data:image/png;base64,aW1hZ2U=" }],
+                    },
+                ],
+            },
+            upstream: () => json({ content: [{ type: "text", text: "claude says" }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        const body = recorded.calls[0].body as Record<string, unknown>;
+        expect(body.messages).toEqual([
+            { role: "user", content: "Describe this image.\n\nMention the colors." },
+            { role: "assistant", content: "I see blue shapes." },
+        ]);
+    });
+
     it.each([
         {
             behavior: "explicitly disables thinking when off on Claude 5 Opus",
@@ -1257,6 +1454,55 @@ describe("the server provider adapters", () => {
             logs: ["https://api.anthropic.com/v1/messages"],
         });
     });
+
+    it.each([
+        { setting: "streaming", providers: { useStreaming: true }, useStreaming: true },
+        { setting: "batching", providers: { claudeBatching: true }, useStreaming: false },
+    ])(
+        "Anthropic tools with $setting enabled: buffers both Messages requests and executes the tool",
+        async ({ providers, useStreaming }) => {
+            const toolUse = { type: "tool_use", id: "tool-1", name: "rollDice", input: { sides: 6 } };
+            let requests = 0;
+            const recorded = await run({
+                settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" }, providers },
+                arg: { ...prompt(), useStreaming },
+                tools: [ROLL_DICE],
+                toolAnswer: [{ type: "text", text: "4" }],
+                upstream: () =>
+                    json({ content: ++requests === 1 ? [toolUse] : [{ type: "text", text: "rolled a 4" }] }),
+            });
+
+            expect(recorded.calls[0].url).toBe("https://api.anthropic.com/v1/messages");
+            expect(recorded.calls[0]).toMatchObject({
+                method: "POST",
+                body: {
+                    stream: false,
+                    tools: [{ name: "rollDice", description: "roll", input_schema: ROLL_DICE.inputSchema }],
+                },
+            });
+            expect(recorded.calls).toHaveLength(2);
+            expect(recorded.calls[1]).toMatchObject({
+                method: "POST",
+                url: "https://api.anthropic.com/v1/messages",
+                body: {
+                    stream: false,
+                    messages: [
+                        ...ANTHROPIC_MESSAGES,
+                        { role: "assistant", content: [toolUse] },
+                        {
+                            role: "user",
+                            content: [
+                                { type: "tool_result", tool_use_id: "tool-1", content: [{ type: "text", text: "4" }] },
+                            ],
+                        },
+                    ],
+                },
+            });
+            expect(recorded.toolCalls).toEqual([{ name: "rollDice", args: { sides: 6 } }]);
+            expect(recorded.result).toEqual({ type: "success", result: "rolled a 4" });
+            expect(recorded.chunks).toEqual([]);
+        },
+    );
 
     it("Bedrock: the Signature V4 headers with a frozen clock", async () => {
         const recorded = await run({
@@ -1623,6 +1869,69 @@ describe("the server provider adapters", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// Additional parameter safety follows the request contract rather than the browser oracle.
+
+describe("additional parameter prototype safety", () => {
+    it("skips forbidden paths with warnings in an OpenAI-compatible request and preserves ordinary nested fields", async () => {
+        const pollutionKeys = ["__risuServerAdditionalProto", "__risuServerAdditionalCtor"];
+        const originalDescriptors = pollutionKeys.map((key) => Object.getOwnPropertyDescriptor(Object.prototype, key));
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+        try {
+            const recorded = await run({
+                settings: {
+                    providers: {
+                        additionalParams: [
+                            ["options", 'json::{"keep":"sibling","nested":{"keep":"nested sibling"}}'],
+                            [`__proto__.${pollutionKeys[0]}`, "1"],
+                            [`constructor.prototype.${pollutionKeys[1]}`, "1"],
+                            ["blocked.constructor", "1"],
+                            ["blocked.prototype.value", "1"],
+                            ["a.b.c", "1"],
+                            ["options.nested.value", "2"],
+                        ],
+                    },
+                },
+                arg: prompt(),
+                upstream: () => chat("ok"),
+            });
+
+            expect(pollutionKeys.map((key) => Object.getOwnPropertyDescriptor(Object.prototype, key))).toEqual(
+                originalDescriptors,
+            );
+            expect(warn).toHaveBeenCalledTimes(4);
+            expect(recorded.calls).toHaveLength(1);
+            const body = recorded.calls[0].body as Record<string, unknown>;
+            expect(body).toMatchObject({
+                a: { b: { c: 1 } },
+                options: { keep: "sibling", nested: { keep: "nested sibling", value: 2 } },
+            });
+            for (const key of ["__proto__", "constructor", "blocked"]) {
+                expect(Object.hasOwn(body, key)).toBe(false);
+            }
+        } finally {
+            pollutionKeys.forEach((key, index) => {
+                const descriptor = originalDescriptors[index];
+                if (descriptor) Object.defineProperty(Object.prototype, key, descriptor);
+                else Reflect.deleteProperty(Object.prototype, key);
+            });
+            warn.mockRestore();
+        }
+    });
+
+    it("creates own intermediate objects instead of mutating inherited ones", () => {
+        const prototype = { branch: { keep: "prototype sibling" } };
+        const body = { existing: Object.create(prototype) as Record<string, unknown> };
+
+        applyAdditionalParameters(body, {}, [["existing.branch.a.b", "1"]]);
+
+        expect(prototype).toEqual({ branch: { keep: "prototype sibling" } });
+        expect(Object.hasOwn(body.existing, "branch")).toBe(true);
+        expect(body).toMatchObject({ existing: { branch: { a: { b: 1 } } } });
+    });
+});
+
+// ---------------------------------------------------------------------------------------------
 // Named credentials, bound on the profile: a profile's binding replaces the model's default key, a
 // profile without one keeps it, and a binding that cannot be honored refuses the request.
 
@@ -1648,6 +1957,106 @@ function withNamed(base: Settings, entries: Parameters<typeof named>[0]): Settin
     const { credentials, credentialKeys } = named(entries);
     return { ...base, credentials, secrets: { ...base.secrets, credentials: credentialKeys } };
 }
+
+describe("OpenRouter risu/free discovery", () => {
+    const routerSettings = withNamed(
+        {
+            preset: { aiModel: "openrouter", openrouterRequestModel: "risu/free", credentialId: "router" },
+            secrets: { openrouterKey: "sk-openrouter-default-SENTINEL" },
+        },
+        [{ id: "router", type: "openrouter", key: NAMED.work }],
+    );
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("discovers with the bound named key and sends the discovered free model to chat", async () => {
+        const discovery = vi.fn<typeof fetch>().mockResolvedValue(
+            Response.json({
+                data: [
+                    {
+                        id: "test/discovered-free",
+                        name: "Discovered model",
+                        context_length: 8192,
+                        pricing: { prompt: "0", completion: "0" },
+                    },
+                ],
+            }),
+        );
+        vi.stubGlobal("fetch", discovery);
+
+        const recorded = await run({
+            settings: routerSettings,
+            arg: prompt(),
+            upstream: () => chat("from free model"),
+        });
+
+        expect(discovery).toHaveBeenCalledOnce();
+        const [url, init] = discovery.mock.calls[0];
+        expect(url).toBe("https://openrouter.ai/api/v1/models");
+        expect(init?.method ?? "GET").toBe("GET");
+        expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${NAMED.work}`);
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.calls[0]).toMatchObject({
+            method: "POST",
+            url: "https://openrouter.ai/api/v1/chat/completions",
+            headers: { authorization: `Bearer ${NAMED.work}` },
+            body: { model: "test/discovered-free" },
+        });
+        expect(recorded.result).toMatchObject({ type: "success", result: "from free model" });
+    });
+
+    it.each([
+        { name: "empty", data: [] },
+        {
+            name: "all-paid",
+            data: [
+                {
+                    id: "test/paid",
+                    name: "Paid model",
+                    context_length: 8192,
+                    pricing: { prompt: "0.001", completion: "0.002" },
+                },
+            ],
+        },
+    ])("returns a no-free-model failure without chat for an $name model list", async ({ data }) => {
+        const discovery = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data }));
+        vi.stubGlobal("fetch", discovery);
+
+        const recorded = await run({
+            settings: routerSettings,
+            arg: prompt(),
+            upstream: () => chat("must not run"),
+        });
+
+        expect(discovery).toHaveBeenCalledOnce();
+        expect(recorded.result).toMatchObject({ type: "fail", result: expect.stringMatching(/free model/i) });
+        expect(recorded.calls).toEqual([]);
+    });
+
+    it("returns the discovery HTTP error cause without sending chat", async () => {
+        const discovery = vi
+            .fn<typeof fetch>()
+            .mockResolvedValue(
+                Response.json({ error: { message: "Model catalogue temporarily offline" } }, { status: 503 }),
+            );
+        vi.stubGlobal("fetch", discovery);
+
+        const recorded = await run({
+            settings: routerSettings,
+            arg: prompt(),
+            upstream: () => chat("must not run"),
+        });
+
+        expect(discovery).toHaveBeenCalledOnce();
+        expect(recorded.result).toMatchObject({
+            type: "fail",
+            result: expect.stringContaining("Model catalogue temporarily offline"),
+        });
+        expect(recorded.calls).toEqual([]);
+    });
+});
 
 const headersOf = (recorded: Recorded) => recorded.calls.map((call) => call.headers);
 const wireOf = (recorded: Recorded) => JSON.stringify([recorded.calls, recorded.observer]);
@@ -2267,7 +2676,7 @@ describe("model profiles", () => {
     });
 });
 
-// PocketRisu's shared-code fixes that applied here (`docs/research/pocketrisu-fix-crosscheck.md`).
+// PocketRisu's shared-code fixes that applied here (`docs/reports/surveys/pocketrisu-fix-crosscheck.md`).
 describe("a whitespace-only system prompt (crosscheck row 2)", () => {
     const blankSystem = (): RequestArgs => ({
         ...prompt(),
@@ -2293,6 +2702,137 @@ describe("a whitespace-only system prompt (crosscheck row 2)", () => {
         });
         const { systemInstruction: _, ...rest } = GOOGLE_BODY;
         expect(recorded.calls.map((call) => call.body)).toEqual([rest]);
+    });
+});
+
+describe("Gemini signature inlays", () => {
+    const model = "gemini-2.5-flash";
+    const enabled: Settings = { preset: { aiModel: model }, providers: { saveSignatures: true } };
+    const reply = (parts: unknown[]) => json({ candidates: [{ content: { parts } }] });
+    const signature = (token: string) => ({
+        source: model,
+        sourceFormat: LLMFormat.GoogleCloud,
+        signatures: [{ type: "text", content: token }],
+    });
+
+    it("saves the buffered provider token after JSON extraction and replays the store's raw JSON only while enabled", async () => {
+        const saved = await run({
+            settings: enabled,
+            arg: { ...prompt(), schema: "interface Answer {\n  answer: string\n}", extractJson: "answer" },
+            upstream: () => reply([{ text: '{"answer":"Hello"}', thoughtSignature: "opaque-token+/=" }]),
+        });
+        expect(saved.inlays).toEqual([{ kind: "signature", id: "id-1", signature: signature("opaque-token+/=") }]);
+        expect(saved.result).toEqual({ type: "success", result: "Hello{{inlayeddata::id-1}}" });
+
+        // The assembly boundary's signature multimodal contains the store's raw JSON text,
+        // despite the field's historical name `base64`. This is a save-then-replay adapter test.
+        const stored = saved.inlays[0] as { signature: Parameters<RequestContext["inlays"]["saveSignature"]>[1] };
+        for (const saveSignatures of [true, false]) {
+            const replayed = await run({
+                settings: { ...enabled, providers: { saveSignatures } },
+                arg: {
+                    bias: {},
+                    useStreaming: false,
+                    formated: [
+                        { role: "user", content: "Hello" },
+                        {
+                            role: "assistant",
+                            content: "Hello",
+                            multimodals: [{ type: "signature", base64: JSON.stringify(stored.signature) }],
+                        },
+                        { role: "user", content: "Continue" },
+                    ],
+                },
+                upstream: () => reply([{ text: "Next", thoughtSignature: "next-token" }]),
+            });
+            expect(replayed.calls).toHaveLength(1);
+            expect(replayed.calls[0].body).toMatchObject({
+                contents: [
+                    { role: "user", parts: [{ text: "Hello" }] },
+                    {
+                        role: "model",
+                        parts: [
+                            { text: "Hello" },
+                            ...(saveSignatures ? [{ thought: true, thoughtSignature: "opaque-token+/=" }] : []),
+                        ],
+                    },
+                    { role: "user", parts: [{ text: "Continue" }] },
+                ],
+            });
+            expect(replayed.result).toEqual({
+                type: "success",
+                result: saveSignatures ? "Next{{inlayeddata::id-1}}" : "Next",
+            });
+            expect(replayed.inlays).toEqual(
+                saveSignatures ? [{ kind: "signature", id: "id-1", signature: signature("next-token") }] : [],
+            );
+        }
+    });
+
+    it("appends signature-only buffered parts after all reply text without marking an unrelated part", async () => {
+        const recorded = await run({
+            settings: enabled,
+            arg: prompt(),
+            upstream: () =>
+                reply([
+                    { thoughtSignature: "leading-token" },
+                    { text: "First" },
+                    { text: "", thoughtSignature: "empty-text-token" },
+                    { text: "Last" },
+                ]),
+        });
+        expect(recorded.inlays).toEqual([
+            { kind: "signature", id: "id-1", signature: signature("leading-token") },
+            { kind: "signature", id: "id-2", signature: signature("empty-text-token") },
+        ]);
+        expect(recorded.result).toEqual({
+            type: "success",
+            result: "First\n\nLast{{inlayeddata::id-1}}{{inlayeddata::id-2}}",
+        });
+    });
+
+    it("still fails an otherwise empty buffered reply containing only a signature", async () => {
+        const recorded = await run({
+            settings: enabled,
+            arg: prompt(),
+            upstream: () => reply([{ thoughtSignature: "lonely-token" }]),
+        });
+        expect(recorded.result).toMatchObject({ type: "fail", result: expect.stringContaining("Got empty response") });
+    });
+
+    it("skips malformed stored signature JSON while preserving the message and valid signature", async () => {
+        const recorded = await run({
+            settings: enabled,
+            arg: {
+                bias: {},
+                useStreaming: false,
+                formated: [
+                    { role: "user", content: "Hello" },
+                    {
+                        role: "assistant",
+                        content: "Previous answer",
+                        multimodals: [
+                            { type: "signature", base64: "{broken-json" },
+                            { type: "signature", base64: JSON.stringify(signature("valid-token")) },
+                        ],
+                    },
+                    { role: "user", content: "Continue" },
+                ],
+            },
+            upstream: () => reply([{ text: "Continued" }]),
+        });
+        expect(recorded.result).toEqual({ type: "success", result: "Continued" });
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.calls[0].body).toMatchObject({
+            contents: [
+                { role: "user", parts: [{ text: "Hello" }] },
+                {
+                    role: "model",
+                    parts: [{ text: "Previous answer" }, { thought: true, thoughtSignature: "valid-token" }],
+                },
+                { role: "user", parts: [{ text: "Continue" }] },
+            ],
+        });
     });
 });
 
@@ -2384,4 +2924,286 @@ describe("the Gemini retries after a tool call (crosscheck row 3)", () => {
             expect(vi.getTimerCount()).toBe(0);
         });
     }
+});
+
+describe("the OpenAI and Responses retries after a tool call (crosscheck side finding)", () => {
+    // The same backoff as the Gemini loops, in the four OpenAI loops: the Chat and the Responses
+    // adapter, buffered and streaming. Fake clock for the waits, real I/O turns through `settle`.
+    const settle = async (done: () => boolean) => {
+        while (!done()) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+    const busy = () => json({ error: { message: "Rate limit reached", type: "rate_limit_error" } }, 429);
+    const CHAT_CALL = { id: "call_1", type: "function", function: { name: "rollDice", arguments: '{"sides":6}' } };
+    const RESPONSES_CALL = { type: "function_call", call_id: "fc_1", name: "rollDice", arguments: '{"sides":6}' };
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it("retries streaming tool replies without Content-Type and fails with the last body when retries are exhausted", async () => {
+        let followUps = 0;
+        let ended = false;
+        const pending = run({
+            settings: { providers: { useStreaming: true, requestRetrys: 2 } },
+            arg: { ...prompt(), useStreaming: true },
+            tools: [ROLL_DICE],
+            toolAnswer: [{ type: "text", text: "4" }],
+            upstream: (call) => {
+                if (!JSON.stringify(call.body).includes("tool_call_id")) {
+                    return sse([
+                        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...CHAT_CALL }] } }] },
+                        "[DONE]",
+                    ]);
+                }
+                followUps += 1;
+                return { status: 200, body: `Missing Content-Type on tool attempt ${followUps}` };
+            },
+        })
+            .then(
+                (result) => ({ result }),
+                (error: unknown) => ({ error }),
+            )
+            .finally(() => {
+                ended = true;
+            });
+
+        for (const [attempt, delay] of [
+            [1, 1000],
+            [2, 2000],
+        ]) {
+            await settle(() => ended || vi.getTimerCount() > 0);
+            expect(followUps).toBe(attempt);
+            await vi.advanceTimersByTimeAsync(delay);
+        }
+
+        await settle(() => ended || vi.getTimerCount() > 0);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(await pending).toEqual({ error: new Error("Missing Content-Type on tool attempt 3") });
+        expect(followUps).toBe(3);
+    });
+
+    /** A tool round trip whose follow-up request fails `failures` times, then answers. */
+    function roundTrip(
+        format: "chat" | "responses",
+        streaming: boolean,
+        failures: number,
+        controller?: AbortController,
+    ) {
+        const state = { followUps: 0, ended: false };
+        const pending = run({
+            settings: {
+                preset: format === "responses" ? { customAPIFormat: LLMFormat.OpenAIResponseAPI } : {},
+                providers: { requestRetrys: 3, ...(streaming ? { useStreaming: true } : {}) },
+            },
+            arg: { ...prompt(), useStreaming: streaming },
+            tools: [ROLL_DICE],
+            toolAnswer: [{ type: "text", text: "4" }],
+            controller,
+            upstream: (call) => {
+                const body = JSON.stringify(call.body);
+                const followUp =
+                    format === "chat" ? body.includes("tool_call_id") : body.includes("function_call_output");
+                if (!followUp) {
+                    if (format === "chat") {
+                        return streaming
+                            ? sse([{ choices: [{ delta: { tool_calls: [{ index: 0, ...CHAT_CALL }] } }] }, "[DONE]"])
+                            : chat("", { tool_calls: [CHAT_CALL] });
+                    }
+                    const first = { status: "completed", output: [RESPONSES_CALL] };
+                    return streaming ? sse([{ type: "response.completed", response: first }, "[DONE]"]) : json(first);
+                }
+                state.followUps += 1;
+                if (state.followUps <= failures) {
+                    return busy();
+                }
+                if (format === "chat") {
+                    return streaming
+                        ? sse([{ choices: [{ delta: { content: "rolled a 4" } }] }, "[DONE]"])
+                        : chat("rolled a 4");
+                }
+                const answer = {
+                    status: "completed",
+                    output: [{ type: "message", content: [{ type: "output_text", text: "rolled a 4" }] }],
+                };
+                return streaming ? sse([{ type: "response.completed", response: answer }, "[DONE]"]) : json(answer);
+            },
+        }).finally(() => {
+            state.ended = true;
+        });
+        /** Runs until the next wait is armed (or the request ended): the follow-ups sent so far. */
+        const waiting = async () => {
+            await settle(() => state.ended || vi.getTimerCount() > 0);
+            return state.followUps;
+        };
+        return { state, pending, waiting };
+    }
+
+    for (const format of ["chat", "responses"] as const) {
+        for (const streaming of [false, true]) {
+            const label = `${format === "chat" ? "Chat" : "Responses"}, ${streaming ? "streaming" : "buffered"}`;
+
+            it(`waits 1, 2, then 4 s before each retry (${label})`, async () => {
+                const { pending, waiting } = roundTrip(format, streaming, 3);
+                expect(await waiting()).toBe(1);
+                await vi.advanceTimersByTimeAsync(999);
+                expect(await waiting()).toBe(1);
+                await vi.advanceTimersByTimeAsync(1);
+                expect(await waiting()).toBe(2);
+                await vi.advanceTimersByTimeAsync(1999);
+                expect(await waiting()).toBe(2);
+                await vi.advanceTimersByTimeAsync(1);
+                expect(await waiting()).toBe(3);
+                await vi.advanceTimersByTimeAsync(3999);
+                expect(await waiting()).toBe(3);
+                await vi.advanceTimersByTimeAsync(1);
+                const recorded = await pending;
+                expect(recorded.calls).toHaveLength(5);
+                expect(recorded.alerts).toEqual([]);
+                const text = streaming ? JSON.stringify(recorded.chunks.at(-1)) : JSON.stringify(recorded.result);
+                expect(text).toContain("rolled a 4");
+            });
+
+            it(`sends nothing more once Stop ends a wait (${label})`, async () => {
+                const controller = new AbortController();
+                const { state, pending, waiting } = roundTrip(format, streaming, 3, controller);
+                expect(await waiting()).toBe(1);
+                controller.abort();
+                const recorded = await pending;
+                expect(state.followUps).toBe(1);
+                expect(recorded.calls).toHaveLength(2);
+                expect(vi.getTimerCount()).toBe(0);
+            });
+        }
+    }
+});
+
+describe("the Gemini overload re-request (crosscheck side finding)", () => {
+    // `antiServerOverloads` re-sends a request Gemini answered `RESOURCE_EXHAUSTED`: at most
+    // `requestRetrys` times, each after the backoff, and Stop ends it; before, without a wait or a bound.
+    const settle = async (done: () => boolean) => {
+        while (!done()) {
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    };
+    const busy = () => json({ error: { code: 429, message: "Resource exhausted", status: "RESOURCE_EXHAUSTED" } }, 429);
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    /** A request Gemini answers busy `failures` times, then with text. */
+    function overloaded(options: {
+        failures: number;
+        retries?: number;
+        anti?: boolean;
+        streaming?: boolean;
+        controller?: AbortController;
+        reportRetry?: RequestContext["reportRetry"];
+    }) {
+        const { failures, retries = 2, anti = true, streaming = false, controller } = options;
+        const state = { sent: 0, ended: false };
+        const pending = run({
+            settings: {
+                preset: { aiModel: "gemini-2.5-flash" },
+                providers: {
+                    requestRetrys: retries,
+                    antiServerOverloads: anti,
+                    ...(streaming ? { useStreaming: true } : {}),
+                },
+            },
+            arg: { ...prompt(), useStreaming: streaming },
+            controller,
+            reportRetry: options.reportRetry,
+            upstream: () => {
+                state.sent += 1;
+                if (state.sent <= failures) {
+                    return busy();
+                }
+                const answer = { candidates: [{ content: { parts: [{ text: "ok now" }] } }] };
+                return streaming ? sse([answer]) : json(answer);
+            },
+        }).finally(() => {
+            state.ended = true;
+        });
+        const waiting = async () => {
+            await settle(() => state.ended || vi.getTimerCount() > 0);
+            return state.sent;
+        };
+        return { state, pending, waiting };
+    }
+
+    for (const streaming of [false, true]) {
+        const label = streaming ? "streaming" : "buffered";
+
+        it(`re-sends after 1 s, then 2 s, and gives up as the original failure once requestRetrys is used (${label})`, async () => {
+            const { pending, waiting } = overloaded({ failures: 10, retries: 2, streaming });
+            expect(await waiting()).toBe(1);
+            await vi.advanceTimersByTimeAsync(999);
+            expect(await waiting()).toBe(1);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(await waiting()).toBe(2);
+            await vi.advanceTimersByTimeAsync(1999);
+            expect(await waiting()).toBe(2);
+            await vi.advanceTimersByTimeAsync(1);
+            const recorded = await pending;
+            expect(recorded.calls).toHaveLength(3);
+            expect(recorded.result).toMatchObject({ type: "fail", failByServerError: true });
+            expect(JSON.stringify(recorded.result)).toContain("RESOURCE_EXHAUSTED");
+            expect(vi.getTimerCount()).toBe(0);
+        });
+    }
+
+    it("reports one overload resend when its delay ends, before the second provider request", async () => {
+        const reportRetry = vi.fn(() => {
+            expect(state.sent).toBe(1);
+        });
+        const { state, pending, waiting } = overloaded({ failures: 1, reportRetry });
+        expect(await waiting()).toBe(1);
+        expect(reportRetry).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(999);
+        expect(reportRetry).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        const recorded = await pending;
+        expect(recorded.calls).toHaveLength(2);
+        expect(recorded.result).toEqual({ type: "success", result: "ok now" });
+        expect(reportRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it("answers from the re-request that gets through", async () => {
+        const { pending, waiting } = overloaded({ failures: 1, retries: 2 });
+        expect(await waiting()).toBe(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        const recorded = await pending;
+        expect(recorded.calls).toHaveLength(2);
+        expect(recorded.result).toEqual({ type: "success", result: "ok now" });
+    });
+
+    it("sends once with the setting off, or with no retries", async () => {
+        const off = await overloaded({ failures: 10, retries: 2, anti: false }).pending;
+        expect(off.calls).toHaveLength(1);
+        expect(off.result).toMatchObject({ type: "fail", failByServerError: true });
+        const none = await overloaded({ failures: 10, retries: 0 }).pending;
+        expect(none.calls).toHaveLength(1);
+        expect(none.result).toMatchObject({ type: "fail", failByServerError: true });
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("sends nothing more once Stop ends the wait", async () => {
+        const controller = new AbortController();
+        const { pending, waiting } = overloaded({ failures: 10, retries: 2, controller });
+        expect(await waiting()).toBe(1);
+        controller.abort();
+        const recorded = await pending;
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.result).toMatchObject({ type: "fail", failByServerError: true });
+        expect(vi.getTimerCount()).toBe(0);
+    });
 });

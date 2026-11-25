@@ -1,0 +1,328 @@
+# Structured Memory Rebuild: Runs, Staging, the Swap, Backfill, the Cost Preview
+
+## Scope
+
+- Owns a chat's rebuild, fresh rebuild, and backfill: a run from its plan to its swap, the staged tables, what a rebuild
+  keeps of a person's work and a fresh rebuild discards, the lock a run puts on the chat, and the cost preview that
+  rebuild, backfill, and record now share.
+- Start with `rebuildPlan` for transcript selection, `rebuildWork` for execution and `rebuildChanges` for the swap. The
+  [writer](writer.md) owns each recording, the [memory task service](../memory.md#background-memory-task) owns task
+  admission, and [server resources](../server-resources.md) owns snapshots and transactions.
+
+## Files
+
+- `server/src/prompt/memory/structured/rebuild.ts`: rebuild planning, preservation, staging adapter, preview and
+  command; `rebuildPlan`, `rebuildSeed`, `seededPage`, `rebuildWindow`, `rebuildChanges`, `swappedEvent`,
+  `readRecordSet`, `rebuildStore`, `rebuildCost`, `memoryWorkCost`, `runMemoryRebuild`.
+- `server/src/prompt/memory/memoryTasks.ts`: rebuild task execution and chaining; `createMemoryTasks`' rebuild comments,
+  `rebuildWork`, `rebuildOpen`, `commitOfRebuild`, `swapRebuild`, `noteRebuildStop`.
+- `server/src/data/memoryStore.ts`: rebuild tables and their shared write path; `MEMORY_STAGED_TABLES`,
+  `createRecordSet`, `createMemoryTables`' `rebuild`: `begin`, `readContents`, `readRecord`, `write`, `advance`,
+  `status`, `plan`, `noteStop`, `noteSourceReplaced`, `swap`, `abandon`. Other surfaces: [records](records.md).
+- `server/src/data/chatStore.ts`: rebuild schema; `MEMORY_REBUILD_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`.
+- `server/src/data/resourceStore.ts`: rebuild transaction boundary and staged writer access; `store.memory.rebuild`,
+  `staged`, `rebuilding`. Owner: [server resources](../server-resources.md).
+- `shared/structuredMemory.ts`: rebuild and cost contracts; `STRUCTURED_MEMORY_REBUILD_MODES`,
+  `StructuredMemoryRebuild`, `StructuredMemoryCostAnswer`, `StructuredMemoryAbandonAnswer`, `memoryCostTokens`,
+  `MEMORY_CALL_OVERHEAD_TOKENS`, `structuredMemoryWriterLanguage`.
+- `shared/jobs.ts`: rebuild command and task contracts; `GenerationCommand`'s `memoryRebuild`,
+  `StructuredMemoryTaskInput` and `MemoryTaskService`'s `rebuild`.
+- `server/src/routes/structuredMemory.ts`: rebuild HTTP surface; `registerStructuredMemoryRoutes`' `cost`, `clear`, and
+  `rebuild/abandon` comments, contents' `rebuild` and `recordedLanguage`.
+- `src/ts/process/structuredMemory.svelte.ts`: the tab's cost, clear, and abandon client; `readStructuredMemoryCost`,
+  `clearStructuredMemory`, `abandonStructuredMemoryRebuild`.
+- `src/lib/Others/StructuredMemory/memoryRecordPress.ts`: command presses and confirmation; `pressMemoryRecord`,
+  `pressMemoryRebuild`, `pressMemoryClear`, `pressMemoryRebuildResume`, `recordTurns`.
+- `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`: rebuild controls and contents refresh; component
+  contract, `rebuild`, `readOnly`, `languageChange`. Other controls: [read](read.md#the-memory-panel).
+- `server/src/jobs/commandRunner.ts`: rebuild dispatch; `createGenerationRunner`, `prepare`.
+- `server/src/jobs/generationJobs.ts`: run-based job lock; `rebuildLocks`, `memoryRebuilding`.
+- `server/src/app.ts`: rebuild route and checkpoint-load fences; `fenced`, `chatHeld`, `loadLocked`.
+- `server/src/prompt/memory/structured/recordJob.ts`: shared command admission; `admitRecord`. Owner:
+  [writer](writer.md).
+- `server/src/prompt/memory/structured/reconcile.ts`: rebuild's message-change reaction; `reconcileMessageChanges`.
+  Owner: [lifecycle](lifecycle.md).
+- `server/src/prompt/memory/structured/writer.ts`: staged writer, replay and historical writes;
+  `createStructuredWriter`, `commitWindow`, `openRun`, `admissionState`, `historicalAnalysis`. Owner:
+  [writer](writer.md).
+- `server/src/prompt/memory/structured/pages.ts`: historical page-target filtering; `withoutFrozenTargets`. Owner:
+  [pages](pages.md).
+
+## Flows
+
+### A run
+
+A run is a persisted row, outliving tasks and processes. The Structured Memory writer task kind works it through
+`rebuildWork`, with records in its own staged tables until [the one live write](#the-swap).
+
+1. The tab's `pressMemoryRebuild` or `pressMemoryRebuildResume` sends `memoryRebuild` through job admission, supplying
+   tab context, chat slot and full admission. `createGenerationRunner` dispatches to `runMemoryRebuild` before
+   `prepare`'s group-chat refusal; `admitRecord` still refuses an adoption-held chat. `runMemoryRebuild` owns the
+   remaining start/resume refusals.
+2. `store.memory.rebuild.begin` and `MemoryTaskService.rebuild` share one synchronous step; a refused queue abandons the
+   new run. The task gives the unchanged writer `rebuildStore` and `manual: true`, with `historical` for backfill.
+   Reads, writes and [failed-window replay](writer.md#a-writer-run) all use staged records, including staged runs.
+   `commitOfRebuild` owns the commit fence and ceiling; commits write no chat receipt and move no chat revision for the
+   tab's fence.
+3. At `maxWriterWindows` or half of `taskDeadlineMs`, the task queues its input again and ends `done`
+   (`rebuildContinues`). The next task repeats `startChecks`: a fingerprint mismatch stops the run at that start. A
+   switch away from Structured Memory is also detected [during a task](#during-a-run). A window that does not record
+   stops spending until a person resumes. `noteRebuildStop` keeps its reason and error on the row beyond the task's
+   `terminalRetentionMs`.
+4. Resume (`{ resume: true }`) passes the same admission with current settings. At the cursor's end `swapRebuild` checks
+   the fence and live hold, computes `rebuildChanges` and swaps, ending `done` (`rebuilt`). The task service's rebuild
+   comments own cursor progress, empty windows and `nothingRecorded`.
+
+`DELETE /api/memory/tasks/...` pauses the task and keeps the run. The panel's `abandonStructuredMemoryRebuild` calls
+bodyless `POST .../rebuild/abandon`; the route cancels the task and removes the run and staging in one synchronous step.
+Its comment owns refusals and no-run behavior.
+
+The run keeps the panel read-only after its task ends. The panel must reread contents at that end to discover a swap or
+abandon and release read-only; the tab's task fence alone cannot release a run's lock.
+
+The panel names a run by its stored mode wherever it speaks of one: the progress line, the read-only notice, the
+replaced notice, the abandon question and its toast, and the started and resumed toasts are keyed by
+`StructuredMemoryRebuildMode` in `language.structuredMemory.rebuild`, so a fill gaps is never abandoned under a
+rebuild's name. Words said without a run in hand, a refused send and a task's skip reason, name all three.
+
+### The plan
+
+`rebuildPlan` persists message IDs and, when included, the greeting source in `{ ids, greeting }`. Rebuild and fresh
+attach the current solo greeting to the first message window. A normal rebuild skips sources cited exclusively by
+retracted readable events, greeting included. Backfill can create its own greeting window.
+
+`rebuildWindow` reads the owner's current greeting before any model call. A mismatch stops the run at the cursor with
+`windowChanged`; commit checks again. A greeting-only window uses the first eligible anchor as its exclusive ceiling.
+Other windows use their last retained message, inclusive.
+
+With `omitUserMessages` on, a turn containing only unread user text after the mode's source exclusions gets its own
+window. A resume keeps the persisted grouping. When neither the greeting nor a message is readable, the worker advances
+the cursor without a model call. The cost preview uses the same planning rules.
+
+### What a rebuild keeps
+
+`rebuildSeed` supplies `begin` before the writer starts; `seededPage` keeps a person's page choices and, by id, the
+pages a retained thread's `who` names; `rebuildChanges` owns replacement and carry rules. Events are not seeded: carry
+is decided against live records at the swap, so a retraction during the run counts. See
+[page tools](pages.md#what-a-merge-or-split-does-to-history) for the `reshaped` mark. A page a person renamed or gave
+aliases (`namedByUser`) seeds like one with a person's grade or context mode: its id, title, and aliases, and only its
+marked sections, so a language change does not retitle it. A fresh rebuild forgets it, like every mark.
+
+Rebuild replaces a non-retracted live event only when it cites something and staged events cite every message and any
+greeting it cites. This replaces greeting-only events too; retracted events stay stored. When the chat has no greeting
+at the swap, an event that cites messages needs only those covered, since no run can cite its greeting again.
+
+Each staged event takes the trust marks of standing live events that share a source message or greeting with it. It
+takes a corrected title and summary only when exactly one of those events holds `userCorrected` and cites the same set
+of source message ids and the same presence of a greeting as the staged event. Overlaps are counted by event id. A
+shared greeting also carries adoption lineage from retracted events, which supply no trust marks. Other corrected
+overlaps with different message sets do not affect that count. With zero or several exact matches, only the marks cross
+and the staged text stays. An event the swap carries keeps its own text; a fresh rebuild carries neither corrected text
+nor marks, and backfill replaces nothing.
+
+No chat or `hypaV3Data` is written. An adopted chat's stored summaries stay until [reset](projection.md#the-reset), and
+the projection stands aside while they remain. The live store's write also preserves an adoption decline.
+
+A chat with no turn to record cannot hold a run, since a run needs a window, so the command refuses it and a swap with
+no staged event installs nothing. A person who deleted every message would be left with records of a chat that is gone.
+So when Start over's preview finds no call, `pressMemoryClear` asks and calls
+[the clear route](records.md#the-clear-route), which removes every record, the trash and the chapters included, with no
+model call and no run; Rebuild and Fill gaps there still answer that there is nothing to do.
+
+A fresh rebuild (`fresh`, the panel's Start over) keeps nothing: `rebuildSeed` gives it an empty seed, its plan excludes
+no message or greeting, a retraction included, and `rebuildChanges` removes every live event, page, thread, and trashed
+page, so marks, reverts, grades, context modes, merges, and a person's threads all go. Only the adoption lineage
+crosses: with any live event adopted or rebuilt over one, every staged event takes `adoptedSummaries`, so the stored
+summaries stay resettable. On a completed swap it empties the trash in one write. Like a normal rebuild it leaves live
+records intact when there is no staged event to install.
+
+A completed rebuild or fresh rebuild drops every [chapter](records.md#chapter-writes) of the chat at
+[the swap](#the-swap); the chapters are made again on request. A backfill keeps them, since its folds keep event ids and
+text, though a fold that moves an event can leave a chapter's events out of their listed order, which the Timeline reads
+as out of date. A run that stops, fails, or is abandoned leaves them.
+
+### Backfill
+
+When no readable event in any status cites the greeting, backfill puts a greeting-only window first, provided an
+eligible anchored message remains. This window alone can start a run and costs one analysis call; like every backfill
+window it is historical and can also need page-patch or compaction calls.
+
+Backfill includes an adopted chat's user messages that summaries left uncovered, even when their replies were recorded.
+With the preset's `omitUserMessages` on, those messages' windows hold nothing the writer reads, so the run moves past
+them with no call and [the swap](#the-swap) attaches them to live events instead. Its windows precede existing records,
+so `rebuildWork` gives the staged writer `historical: { frozenPages }`: `admissionState`, `historicalAnalysis`,
+`withoutFrozenTargets` and `commitPages` leave existing pages, their links, the scene and threads alone while adding
+events and new pages.
+
+### The swap
+
+`swapRebuild` reads live records and their revision, builds `rebuildChanges`, then calls `store.memory.rebuild.swap`.
+`server/src/data/resourceStore.ts` wraps `server/src/data/memoryStore.ts`'s swap in one transaction: one ordinary live
+`write`, moving the memory revision exactly once. The store's comments own validation, scene and `createdRevision`
+rules, staged-run transfer and cleanup. In the same transaction, after that write, the inner swap deletes the chat's
+chapters with its own statement unless the run's stored mode is `backfill`; no flag is passed in, and a failure there
+rolls the whole swap back.
+
+In a backfill whose preset has `omitUserMessages` on as stored at the swap (the task's snapshot is not read),
+`backfillFolds` attaches every user message no live or staged event cites, in a turn whose reply a live event cites, to
+the newest such event that reconciles active against the chat as stored then, a suppressed one included. The new anchors
+go in by chat position, and a target whose merged list would not reconcile active is left out whole. The folds are
+ordinary updates in the same write, keeping `createdRevision`, so a run that staged nothing but folds ends `rebuilt`.
+
+Only this changes what a chat reads. Staged writes touch no live tables and publish nothing; a plugin refreshes one
+projection for the swap. Failure or abandon leaves live records and their revision alone.
+
+### During a run
+
+The lock is the run row, lasting until a completed resume or abandon. Job admission is the chokepoint: a stopped run's
+send could write live records through a gap run or hand-off that the swap would lose. The fences span
+`server/src/jobs/generationJobs.ts`, `server/src/app.ts`, the writer's commit and the store's `rebuilding` read.
+
+| During a run                                           | What happens                                                                              |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Send, continue, command, `memoryRecord`                | Admission refuses 409 `memoryRebuilding`; the tab's words name the panel                  |
+| Preview                                                | Allowed: no write                                                                         |
+| `memoryRebuild`                                        | Reaches admission; an existing run requires resume                                        |
+| Panel mutation (edit, page tool, import, adopt, reset) | 409 `fenced`, also for revert, decline, remove, clear, restore and inherit into this chat |
+| Inherit from, chat file, checkpoint save               | Allowed: reads live records                                                               |
+| Checkpoint load                                        | Refused as `generating` via `loadLocked`; `busy` would also bar saves                     |
+| Chat deletion                                          | `invalidate` ends the task; cascade removes run and staging                               |
+| Whole-chat replace                                     | Task ends; `noteSourceReplaced` prevents resume; abandon still works                      |
+| Message edit or confirmed delete                       | `reconcileMessageChanges` reacts on live records, then staging                            |
+| In-flight window's source changed                      | Stops `windowChanged`; resume rereads that window                                         |
+| Live writer past admission                             | `commitWindow` refuses `windowChanged`; staged `rebuildStore` reports no run              |
+| Algorithm switched away                                | `rebuilding` releases job/load locks; run waits for the panel to return                   |
+| Maintenance, shutdown, restart                         | Task ends, run stays; no automatic resume or startup scan                                 |
+| Snapshot restore                                       | `DELETE FROM chats` cascades the run away                                                 |
+
+The algorithm is the chat's (`chatMemoryAlgorithm` on its stored mode and the global selection), so a switch of the
+global selection releases the run of every Legacy chat, and a chat's own mode change releases its run alone. A detached
+rebuild rereads it before each window, staged commit, cursor advance, continuation, and the swap, and ends skipped
+`notStructuredMemory` on a mismatch, leaving the run stopped. Memory routes still fence the run: their fence reads
+`status`, not `rebuilding`. A checkpoint load it lets through is a whole-chat replace, so that run can then only be
+abandoned.
+
+### The cost preview
+
+`readStructuredMemoryCost` calls `GET .../cost`; the route uses `memoryWorkCost` and answers
+`StructuredMemoryCostAnswer` without writing or accepting a record. A rebuild's, fresh rebuild's, and backfill's preview
+is the synchronous `rebuildCost`, which [the clear route](records.md#the-clear-route) also asks in its write's step. The
+route comment owns query admission, the builder owns window counting, and the shared answer and `memoryCostTokens` own
+the [estimate](../../reports/measurements/server/structured-memory-2026-11-03.md).
+
+Rebuild, fresh rebuild and backfill count the stored greeting's UTF-8 bytes in its window and one analysis call for a
+greeting-only window, without adding to `messages`. Record now counts each greeting-only window of the writer's plan the
+same way, so its confirmation sees the greeting repair's call.
+
+A backfill preview with `omitUserMessages` on also answers `folds`: the user messages the swap may attach, judged by the
+events' stored status without hashing, so an upper bound. `pressMemoryRebuild` asks for rebuild/backfill when cost is
+nonzero or unknown, or when folds are counted: with no call it asks without a model cost. A preview with neither ends
+with a toast, except Start over's, which [clears the records](#what-a-rebuild-keeps) a chat with no turn still holds.
+`pressMemoryRecord` asks at two calls or more, or an unreadable preview with unknown cost, before submitting the job.
+The press functions and `recordTurns` own cadence conversion; the server accepts `turns` 1 or 2 without checking that
+cadence.
+
+### The language change
+
+The writer's `openRun` stores `language`; the contents route reads the newest `recorded` run's language as
+`recordedLanguage`. The panel's `languageChange` compares it with `structuredMemoryWriterLanguage` and offers a line
+beside the rebuild buttons. The comparison starts no work; a person must press. The panel owns the no-language case.
+
+## State
+
+- `memory_rebuilds`: one row per chat at most: `mode`, `revision` (the staged set's own counter), `sourceReplaced`,
+  `cursor`, `total`, `plan` (message ids and optional greeting source per window, written once), `reason`, `error`.
+- `memory_staged_pages`, `_events`, `_threads`, `_runs`: the columns, uniqueness, and scene index of the live tables.
+  `readContents` of the staged set always says declined, because a chat is held by its live records.
+- `sourceReplaced` is a column, not a stored source generation: those live in memory and start over with a process, so
+  `commitTransaction` sets it inside the replace's own transaction.
+- `MemoryRun.language` and `MemoryEvent.adoptedSummaries` are optional fields of the JSON records, with no column.
+- No record of a run leaves the staged tables before the swap. The task service holds nothing a run needs: a resume
+  after a restart takes a fresh input.
+
+## Coupling
+
+- The staged tables are outside `MEMORY_TABLE_COLUMNS`, `walkMemorySnapshot`, `copyStagedMemory`, the checkpoint
+  manifest, a chat file, and an inherit. `assertSnapshotHeader` and `memoryStateLayout` look only at the tables they
+  name, and `writeValidatedStore` copies through explicit sinks, so a snapshot file carries the rows as bytes and no
+  reader takes them as records. `PRAGMA integrity_check` still walks them.
+- `createRecordSet` is `write`'s one path, so a rule added there holds for staged records too.
+- `reconcileMessageChanges` calls the same reaction twice, so a staged event gains a `rerecord` mark or a retraction as
+  a live one does, and a commit in flight gets `revisionConflict` and readmits.
+- `commitWindow` reads `store.memory.rebuild.status` on the live path, and `rebuildStore` answers null to pass.
+- The tab's fence covers a live task only, so the panel's read-only and the route's `fenced` both read the run.
+
+## Invariants
+
+- Only `swap` moves live records from a run. A staged write never touches a live table, and no reader but
+  `store.memory.rebuild` reads a staged one.
+- A rebuild writes no chat: no receipt, no `hypaV3Data`. What its runs change of the writer's state reaches the context
+  meter through [the health facts](read.md#the-read-path), not a receipt.
+- A failed or refused recording stops the run until a person resumes. An unreadable planned window can advance the
+  cursor without recording.
+- In `rebuild` mode, an event is replaced only by what cites everything it said; `fresh` removes every live event when
+  the run swaps.
+
+## Recipes
+
+- A new mark on a record: add it to `sectionMarked` or `swappedEvent`, and to `seededPage` if it is a page's.
+- A new record kind: add it to `MEMORY_STAGED_TABLES` and `MEMORY_REBUILD_TABLES_SQL` beside `MEMORY_TABLES`, and decide
+  in `rebuildChanges` whether a run replaces it.
+- A new path that writes live memory: refuse it in `fenced` or at job admission, or a swap loses what it wrote.
+
+## Tests
+
+- `structured/rebuild.test.ts` drives the plan, window, cost, seed, and `rebuildChanges` on plain records; one preview
+  pins the 3,000-token overhead per call as a literal.
+- `memoryStore.test.ts` drives the staged tables, the swap (chapters kept on a rollback included), a reopened file, and
+  a snapshot taken mid-run on a real file.
+- `memoryTasks.test.ts` drives a run on `createMemoryTasks` over a real store with the scripted provider, the chapters
+  each mode's swap drops or keeps included, and a service built again over the same store stands in for a restart.
+- `structuredMemoryRoutes.test.ts` drives the routes, the lock, the fence, the command's admission, and the reaction to
+  a chat write on a real app.
+- `StructuredMemoryPanel.test.ts` and `MemoryReceiptLine.svelte.test.ts` drive the controls and the press, the per-mode
+  wording and the start over that clears included, and `src/ts/process/structuredMemory.test.ts` the client on a
+  scripted `authFetch`.
+- Focused command:
+  `pnpm --silent test:agent rebuild memoryStore memoryTasks structuredMemoryRoutes StructuredMemoryPanel MemoryReceiptLine`.
+  No `slow` or `e2e` membership of its own.
+- Not tested: a real browser or a real provider. `MEMORY_CALL_OVERHEAD_TOKENS` (3,000) and the 3-byte rule rest on the
+  [2026-11-03 fixtures](../../reports/measurements/server/structured-memory-2026-11-03.md), scripted pages counted by
+  three tokenizer families: about 2,100 tokens of overhead per call in English and 2,800–3,700 in Korean, growing with
+  the cast.
+
+## Known Hazards
+
+### Limitations
+
+Decisions: Structured Memory slice 6b, archive, unless an entry names another.
+
+- A stopped run keeps the lock until a person resumes or abandons, across restarts too.
+- A backfill adds events and new pages, and under `omitUserMessages` sources to live events, and leaves current state
+  alone: existing pages, the scene, and threads learn nothing from it. A rebuild refreshes them.
+- A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer
+  can propose the change again. Decision: Structured Memory slice 7b, archive.
+- A fresh rebuild forgets everything a person did to the records, and the confirmation says so; it does not touch the
+  chat's stored HypaV3 summaries, which keep their own reset. Decision: owner, 2026-11-09.
+- A person's state change on a writer's thread does not survive a rebuild: only `openedBy` says whose a thread is.
+- Old receipts stay on their messages, with their event and run ids: a reply whose recording failed keeps its failed
+  receipt line after a fill gaps recorded it, while the context meter stops saying failed
+  ([the read path](read.md#the-read-path)).
+- Seeded and carried text stays in its language, and a resume under another language leaves a mix.
+- A pin spreads to every staged event sharing a message or greeting, so an adopted summary's pin reaches all its turns'
+  events.
+- The cost preview's `record` mode has no cadence, so `everyK` above 2 overstates calls.
+- The cost preview leans high on purpose: at 3,000 tokens per call it overstates a short English chat by up to
+  two-thirds and understates a long Korean one by up to a quarter. Decision: owner, 2026-11-08.
+- A build from before these tables opens an upgraded database and ignores them: no lock, so a stopped run's later swap
+  would lose what that build recorded. No snapshot refuses anything, and its restore drops them.
+
+### Gotchas
+
+- A snapshot's size includes a stopped run's staged rows, prompts in `input` included, until the run ends.
+- A rebuild's run rows join the Log, but prompt retention follows [the writer's replay rule](writer.md#a-writer-run):
+  staged settlements prune staged prompts and the swap prunes the combined history. Checkpoint saves still read the
+  remaining run text ([Limitations](lifecycle.md#limitations)).
+- `seq` is storage order, so after a backfill the last stored event is an old one: `admissionState` and `previousTitle`
+  read it, and the next ordinary window can compare against it. The read path sorts by place.
+- A swap holds the event loop for one parse of the chat's pages and events, in one synchronous step.

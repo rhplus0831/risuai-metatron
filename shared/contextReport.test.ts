@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "./database.ts";
 import {
+    CONTEXT_MEMORY_EXCLUDED,
     type ContextReport,
     displacement,
     eligibleHistory,
     fixedShare,
     historyDigest,
     parseContextReport,
+    parseLoreBudgetStop,
+    reportedLoreRejections,
     turnCount,
 } from "./contextReport.ts";
 
@@ -42,7 +45,14 @@ function report(): ContextReport {
             perMessage: 3,
         },
         memory: { kind: "hypaV3", tokens: 40, budget: 200, coverage: "gap" },
-        lore: { budgetUsed: 50, budget: 400, rejectedCount: 1, rejectedTokens: 30, active: 2 },
+        lore: {
+            budgetUsed: 50,
+            budget: 400,
+            rejectedCount: 1,
+            rejectedTokens: 30,
+            rejected: [{ name: "Far kingdom", tokens: 30 }],
+            active: 2,
+        },
         tokenScope: '["gpt4o","","",false,"o200k",null,"none"]',
         historyDigest: "abc123",
     };
@@ -62,7 +72,107 @@ const message = (chatId: string, role: Message["role"], data: string, disabled?:
     ...(disabled === undefined ? {} : { disabled }),
 });
 
+describe("parseLoreBudgetStop", () => {
+    it("accepts a capped rejection summary and refuses malformed rejection lists", () => {
+        const value = {
+            budgetUsed: 12,
+            budget: 100,
+            rejectedCount: 9,
+            rejectedTokens: 18,
+            rejected: Array.from({ length: 8 }, (_, i) => ({ name: `entry ${i}`, tokens: 2 })),
+        };
+        expect(parseLoreBudgetStop(value)).toEqual(value);
+        for (const rejected of [
+            undefined,
+            "entry",
+            [{ name: 7, tokens: 2 }],
+            [{ name: "entry", tokens: -1 }],
+            [{ name: "n".repeat(81), tokens: 2 }],
+            Array.from({ length: 9 }, () => ({ name: "entry", tokens: 2 })),
+            [{ name: "entry", tokens: 2 }, ,],
+        ]) {
+            expect(parseLoreBudgetStop({ ...value, rejected }), JSON.stringify(rejected)).toBeNull();
+        }
+    });
+});
+
 describe("parseContextReport", () => {
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "accepts an optional %s count outside input and rejects invalid counts",
+        (kind) => {
+            for (const count of [undefined, 0, 120.5]) {
+                const stored = JSON.parse(JSON.stringify({ ...report(), [kind]: count }));
+                expect(parseContextReport(stored)).toEqual(stored);
+                expect(parseContextReport(stored)?.input).toBe(640);
+            }
+            for (const count of [-1, "120", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+                expect(parseContextReport({ ...report(), [kind]: count }), String(count)).toBeNull();
+            }
+        },
+    );
+
+    it("accepts Structured Memory and legacy reports but refuses malformed manifest fields", () => {
+        const memory: NonNullable<ContextReport["memory"]> = {
+            kind: "structuredMemory",
+            tokens: 40,
+            budget: 200,
+            coverage: "covered",
+            items: [{ id: "event", kind: "event", lane: "flow", reason: "recent", tokens: 20, verified: true }],
+            excluded: [{ id: "old", kind: "event", lane: "events", reason: "stale" }],
+            excludedTotal: 1,
+            lanes: [{ lane: "flow", target: 100, spent: 20 }],
+            confirmedThrough: "a2",
+            writer: { state: "pending", reason: "due" },
+            stages: [{ stage: "card", reason: "verified" }],
+        };
+        const valid = changed((copy) => {
+            copy.memory = memory;
+        });
+        expect(parseContextReport(valid)).toEqual(valid);
+        for (const kind of ["hypaV3", "hypaV2", "supa", "hanurai"]) {
+            const legacy = changed((copy) => {
+                copy.memory = { kind, tokens: 40, coverage: "unknown" };
+            });
+            expect(parseContextReport(legacy)).toEqual(legacy);
+        }
+        const malformed: [string, unknown][] = [
+            ["items", {}],
+            ["items.0.id", 7],
+            ["items.0.kind", "summary"],
+            ["items.0.lane", "future"],
+            ["items.0.reason", null],
+            ["items.0.tokens", -1],
+            ["items.0.verified", "yes"],
+            ["items.0.verified", undefined],
+            ["excluded", {}],
+            ["excluded.0.id", 7],
+            ["excluded.0.kind", "summary"],
+            ["excluded.0.lane", "future"],
+            ["excluded.0.reason", "other"],
+            ["excluded", Array.from({ length: CONTEXT_MEMORY_EXCLUDED + 1 }, () => memory.excluded![0])],
+            ["excludedTotal", -1],
+            ["lanes", {}],
+            ["lanes.0.lane", "future"],
+            ["lanes.0.target", -1],
+            ["lanes.0.spent", "20"],
+            ["lanes", [memory.lanes![0], memory.lanes![0]]],
+            ["confirmedThrough", 2],
+            ["writer", null],
+            ["writer.state", "finished"],
+            ["writer.reason", 2],
+            ["stages", {}],
+            ["stages.0.stage", "finished"],
+            ["stages.0.reason", null],
+        ];
+        for (const [path, value] of malformed) {
+            const copy = structuredClone(valid) as Record<string, any>;
+            const keys = path.split(".");
+            const parent = keys.slice(0, -1).reduce((node, key) => node[key], copy.memory);
+            parent[keys.at(-1)!] = value;
+            expect(parseContextReport(copy), path).toBeNull();
+        }
+    });
+
     it("accepts a stored report as written, with or without its optional parts", () => {
         const stored = JSON.parse(JSON.stringify(report()));
         expect(parseContextReport(stored)).toBe(stored);
@@ -70,10 +180,15 @@ describe("parseContextReport", () => {
         const minimal = changed((copy) => {
             delete copy.trim;
             delete copy.memory;
+            delete copy.lore.rejected;
         });
         expect(parseContextReport(minimal)).toBe(minimal);
         expect(parseContextReport(changed((copy) => delete copy.trim.replyPrefix))).not.toBeNull();
         expect(parseContextReport(changed((copy) => delete copy.memory.budget))).not.toBeNull();
+        // HypaV3's meter fields; `summarized` up to the 4 messages left out (12 − 8), `prepared` up to
+        // the 8 kept.
+        const meter = { summarized: 4, prepared: 8, reserved: 200, summarizeIn: 600, lookaheadIn: 450 };
+        expect(parseContextReport(changed((copy) => Object.assign(copy.memory, meter)))).not.toBeNull();
         // Only `adjustment` is signed.
         expect(parseContextReport(changed((copy) => (copy.adjustment = -640)))).not.toBeNull();
         expect(parseContextReport(changed((copy) => (copy.sections = [])))).not.toBeNull();
@@ -118,6 +233,23 @@ describe("parseContextReport", () => {
         expect(parseContextReport(sparse)).toBeNull();
     });
 
+    it("refuses a bad rejected lore list: not a list, too long, a bad name or count, a hole", () => {
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected = "Far kingdom")))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].name = 7)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].tokens = -1)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].name = "n".repeat(81))))).toBeNull();
+        // The name limit counts code points: 80 astral characters are 160 code units.
+        expect(parseContextReport(changed((copy) => (copy.lore.rejected[0].name = "😀".repeat(80))))).not.toBeNull();
+        expect(
+            parseContextReport(
+                changed((copy) => (copy.lore.rejected = Array.from({ length: 9 }, () => ({ name: "e", tokens: 1 })))),
+            ),
+        ).toBeNull();
+        const sparse = report();
+        (sparse.lore.rejected as unknown[]) = [{ name: "a", tokens: 1 }, ,];
+        expect(parseContextReport(sparse)).toBeNull();
+    });
+
     it("refuses a bad trim ledger, reply prefix, or memory block", () => {
         expect(parseContextReport(changed((copy) => (copy.trim = null)))).toBeNull();
         expect(parseContextReport(changed((copy) => (copy.trim.queue = "none")))).toBeNull();
@@ -142,6 +274,13 @@ describe("parseContextReport", () => {
         expect(parseContextReport(changed((copy) => (copy.memory.tokens = -1)))).toBeNull();
         expect(parseContextReport(changed((copy) => (copy.memory.budget = "200")))).toBeNull();
         expect(parseContextReport(changed((copy) => (copy.memory = [])))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.summarized = 5)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.summarized = 1.5)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.prepared = 9)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.prepared = 0.5)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.reserved = -1)))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.summarizeIn = "600")))).toBeNull();
+        expect(parseContextReport(changed((copy) => (copy.memory.lookaheadIn = Number.NaN)))).toBeNull();
     });
 });
 
@@ -152,6 +291,14 @@ describe("eligibleHistory and historyDigest", () => {
         message("c1", "char", "how are you"),
         message("u2", "user", "fine"),
     ];
+
+    it("preserves exact unpadded base-36 digests for fixed histories", () => {
+        // Computed with the original historyDigest/hashString at HEAD.
+        expect(historyDigest([])).toBe("m22j75kgwk");
+        expect(historyDigest([message("u1", "user", "안녕하세요 😀"), message("c1", "char", "Hello, world!")])).toBe(
+            "28an220jilt",
+        );
+    });
 
     it("reads back to the last allBefore message, skipping disabled ones", () => {
         expect(eligibleHistory(base)).toEqual({ messages: base, reset: false });
@@ -187,6 +334,16 @@ describe("eligibleHistory and historyDigest", () => {
 });
 
 describe("the meter helpers", () => {
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "counts %s as fixed usage without adding them to message input",
+        (kind) => {
+            const stored = { ...report(), [kind]: 120 };
+            expect(fixedShare(stored)).toBeCloseTo((200 + 100 + 120) / (1000 - 100), 10);
+            expect(fixedShare({ ...stored, toolSchemas: 120, interceptions: 30 })).toBeCloseTo(450 / 900, 10);
+            expect(fixedShare(report())).toBeCloseTo(300 / 900, 10);
+        },
+    );
+
     it("turnCount reads user turns or every kept message", () => {
         expect(turnCount(report(), "user")).toEqual({ kept: 4, total: 6 });
         expect(turnCount(report(), "message")).toEqual({ kept: 8, total: 12 });
@@ -231,4 +388,38 @@ describe("the meter helpers", () => {
         delete memoryOnly.trim;
         expect(displacement(memoryOnly, 0)).toBe("unavailable");
     });
+});
+
+describe("reportedLoreRejections", () => {
+    it("keeps the first 8 entries and shortens a long name to 80 code points with an ellipsis", () => {
+        const rejected = Array.from({ length: 10 }, (_, i) => ({ name: `entry ${i}`, tokens: i }));
+        rejected[0].name = "😀".repeat(81);
+        rejected[1].name = "n".repeat(80);
+        const kept = reportedLoreRejections(rejected);
+        expect(kept.map((entry) => entry.tokens)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+        expect(kept[0].name).toBe("😀".repeat(79) + "…");
+        expect(kept[1].name).toBe("n".repeat(80));
+        expect(parseContextReport({ ...report(), lore: { ...report().lore, rejected: kept } })).not.toBeNull();
+    });
+});
+
+it("preserves the four stale reasons in a send manifest and rejects an unknown reason", () => {
+    const stored = report();
+    stored.memory = {
+        kind: "structuredMemory",
+        tokens: 0,
+        coverage: "gap",
+        items: [],
+        excluded: ["changed", "missing", "inserted", "moved"].map((staleReason, i) => ({
+            id: `e${i}`,
+            kind: "event",
+            lane: "events",
+            reason: "stale",
+            staleReason,
+        })) as NonNullable<ContextReport["memory"]>["excluded"],
+    };
+    expect(parseContextReport(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    const unknown = JSON.parse(JSON.stringify(stored));
+    unknown.memory.excluded[0].staleReason = "silently-accepted";
+    expect(parseContextReport(unknown)).toBeNull();
 });

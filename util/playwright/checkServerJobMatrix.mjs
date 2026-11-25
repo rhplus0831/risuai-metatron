@@ -471,10 +471,10 @@ try {
     watch(pageB, "B");
     await openApp(pageB);
     await pageB.waitForTimeout(1500);
-    // Tab B's open stamps the character's `lastInteraction` (a write on tab A's base). Tab A then
-    // edits the character and sends: the stamp-only remote change is rebased, not a conflict.
+    // Opening a character and sending write no character field. Tab A's unsaved character edit
+    // beside a send is stored without a conflict.
     await openChar(pageB, tabsId);
-    const stampB = (await characterOf(tabsId))?.lastInteraction ?? 0;
+    const legacyInteraction = (await characterOf(tabsId))?.lastInteraction;
     await page.bringToFront();
     // A local edit of the character in tab A (its description in the character panel), not saved yet.
     await page.getByRole("button", { name: "Character", exact: true }).first().click();
@@ -504,9 +504,9 @@ try {
     await page.waitForTimeout(3000);
     const stored = await characterOf(tabsId);
     check(
-        "two tabs: tab A's edit and the later stamp are both stored",
-        stored?.desc === "Edited in tab A" && (stored?.lastInteraction ?? 0) >= stampB,
-        { desc: stored?.desc, lastInteraction: stored?.lastInteraction, stampB },
+        "two tabs: tab A's edit is stored and the send leaves the legacy lastInteraction unchanged",
+        stored?.desc === "Edited in tab A" && stored?.lastInteraction === legacyInteraction,
+        { desc: stored?.desc, lastInteraction: stored?.lastInteraction, legacyInteraction },
     );
     // A job whose stream stalls past the server's 3 s checkpoint: tab B, with the chat open,
     // shows the checkpoint and then the final reply without a reload.
@@ -689,7 +689,7 @@ try {
     await restoreDuringSend("import", importArchive);
     // The snapshot route: an idle import takes a safety snapshot of the data as it is now (the
     // archive's), which is then restored by id during a send. The idle import's own reload is the
-    // runner's (an idle tab learns of it on its next request: `persistence.md`).
+    // runner's (an idle tab learns of it on its next request: `live-updates.md` "Restore halt").
     const prepared = await importArchive();
     epoch = prepared.body?.epoch ?? epoch;
     await openApp(page);

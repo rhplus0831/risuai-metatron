@@ -1,11 +1,37 @@
 import { isRecordId } from "../../../shared/ids.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import { UNTRUSTED_CONTENT_CSP } from "../http/securityHeaders.ts";
 import { planAuxOp, type AuxCredential } from "../llm/auxOps.ts";
 import { createRedactor } from "../llm/redact.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
+/**
+ * Reverse-proxy routes on server/src/app.ts's authenticated limiter bucket. GET/POST /proxy and
+ * /proxy2 authenticate with a registered ES256 JWT before reading raw POST
+ * bytes; their targets are unrestricted. risu-url (URI-decoded) precedes ?url=; risu-header is a
+ * URI-encoded JSON header object, otherwise incoming headers are used. Hop-by-hop fields,
+ * Connection-nominated fields, and risu-auth are stripped, and a missing x-forwarded-for is filled
+ * from the trusted client IP. The app's default 100 MiB body cap runs before this module.
+ *
+ * risu-aux-op instead requires JWT authentication and server/src/llm/auxOps.ts endpoint planning
+ * with stored credentials, optionally resolved from a stored profile by server/src/app.ts. No
+ * redirects are followed; upstream 3xx becomes 502. Response headers and error text are redacted,
+ * and successful JSON is parsed and refused if it carries the credential. Media bodies stream.
+ * A valid positive risu-timeout-ms covers fetch and the streamed body; downstream cancellation
+ * also aborts fetch. Timeout/abort before headers answers 504; a later abort closes the body.
+ * Reverse-proxy responses drop CSP, Clear-Site-Data, cache policy, and obsolete encoding/framing.
+ *
+ * GET /hub-proxy/* uses no auth and only the configured hub (default https://sv.risuai.xyz), forwarding
+ * its suffix/query with the hub Origin and allowlisted content and x-risuai-info headers. It follows at most one same-origin
+ * redirect, passing external redirects back to the browser. Its responses strip obsolete
+ * encoding/framing headers, Clear-Site-Data and all Set-Cookie fields, replace the hub's CSP with the asset sandbox
+ * policy, and set nosniff. The sandbox and nosniff also cover the limiter's 429 and request failures'
+ * 502; stream failures close the body. Content-Type is passed through only when the hub sends it.
+ */
+
 const DEFAULT_HUB_URL = "https://sv.risuai.xyz";
+const hubRequestHeaders = ["accept", "accept-language", "content-type", "range", "user-agent", "x-risuai-info"];
 
 // fetch() already decoded the body, so the upstream length/encoding/framing no longer apply.
 const strippedProxyResponseHeaders = [
@@ -17,7 +43,13 @@ const strippedProxyResponseHeaders = [
     "content-length",
     "transfer-encoding",
 ];
-const strippedHubResponseHeaders = ["content-encoding", "content-length", "transfer-encoding"];
+const strippedHubResponseHeaders = [
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "set-cookie",
+    "clear-site-data",
+];
 // Hop-by-hop or recomputed by fetch(); `risu-auth` must never leave this server.
 const strippedProxyRequestHeaders = [
     "host",
@@ -33,6 +65,13 @@ const strippedProxyRequestHeaders = [
     "risu-aux-profile",
 ];
 const nullBodyStatuses = new Set([101, 204, 205, 304]);
+
+/** Wrap hub answers, including limiter refusals, errors, and redirects, with the asset sandbox. */
+const hubHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
+    await next();
+    c.header("Content-Security-Policy", UNTRUSTED_CONTENT_CSP);
+    c.header("X-Content-Type-Options", "nosniff");
+};
 
 /**
  * Upstream request headers for `/proxy*`: the decoded `risu-header` object (or the incoming
@@ -132,6 +171,12 @@ function filterHeaders(source: Headers, stripped: string[]): Headers {
     return headers;
 }
 
+/**
+ * The proxies, all on the authenticated limiter: `/proxy` and `/proxy2` (GET and POST,
+ * `checkAuth`: a registered ES256 JWT, including with `risu-aux-op`)
+ * reach any target the tab names, with no address or local-network restriction; `/hub-proxy/*` (GET,
+ * no auth) reaches only `hubURL`.
+ */
 export function registerProxyRoutes(
     app: Hono<AppEnv>,
     arg: {
@@ -299,7 +344,7 @@ export function registerProxyRoutes(
         if (auxOpName !== undefined) {
             return await auxOp(c, auxOpName);
         }
-        const denied = await auth.checkProxyAuth(c);
+        const denied = await auth.checkAuth(c);
         if (denied) {
             return denied;
         }
@@ -374,19 +419,22 @@ export function registerProxyRoutes(
      * Realm hub proxy (GET only, no auth): only ever the hub. The path and query after `/hub-proxy`
      * go to `hubURL`; one redirect within the hub's origin is followed, and a redirect elsewhere (the
      * hub's documentation links) is answered to the browser as it is, never fetched by this server.
+     * Every answer, including 429 and 502, gets the asset sandbox CSP and nosniff; hub cookies are
+     * stripped and its Content-Type (or absence) is preserved.
      */
-    app.get("/hub-proxy/*", limiter, async (c) => {
+    app.get("/hub-proxy/*", hubHeaders, limiter, async (c) => {
         try {
             const url = new URL(c.req.url);
             const externalURL = hubURL + url.pathname.replace(/^\/hub-proxy/, "") + url.search;
 
-            const headersToSend = Object.fromEntries(c.req.raw.headers);
-            delete headersToSend.host;
-            delete headersToSend.connection;
-            delete headersToSend["content-length"];
-            delete headersToSend["x-risu-node-path"];
-            delete headersToSend["risu-auth"];
-            headersToSend.origin = new URL(hubURL).origin;
+            const headersToSend = new Headers();
+            for (const name of hubRequestHeaders) {
+                const value = c.req.raw.headers.get(name);
+                if (value !== null) {
+                    headersToSend.set(name, value);
+                }
+            }
+            headersToSend.set("origin", new URL(hubURL).origin);
 
             const request = (target: string) =>
                 fetch(target, {

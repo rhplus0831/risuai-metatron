@@ -8,6 +8,10 @@
     {
       "files": ["*.json", "*.jsonc", "*.yml", "*.yaml", "*.md"],
       "options": { "tabWidth": 2 }
+    },
+    {
+      "files": ["STRUCTURE.md", "docs/structure/**/*.md"],
+      "options": { "proseWrap": "always" }
     }
   ]
 }

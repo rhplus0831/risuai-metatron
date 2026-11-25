@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, unmount, type ComponentProps } from "svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { StreamingDisplayOptimizationMode } from "../../../shared/database.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
@@ -16,20 +16,32 @@ vi.mock("src/ts/storage/serverAuth", async () =>
 );
 
 import { language } from "src/lang";
-import { characterList } from "src/ts/storage/characterStore.svelte";
-import { selectChat, setChatMeta, setStreamingState } from "src/ts/storage/chatStore.svelte";
+import * as parser from "src/ts/parser/parser.svelte";
+import * as globalApi from "src/ts/globalApi.svelte";
+import { addCharacter, characterList, updateCharacter } from "src/ts/storage/characterStore.svelte";
+import {
+    acceptRemoteChat,
+    findChat,
+    selectChat,
+    setChatMeta,
+    setStreamingState,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { alertStore, createSimpleCharacter } from "src/ts/stores.svelte";
 import Chat from "./Chat.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 
 const ref = { chaId: "owner", chatId: "chat" };
 const message = "A complete sentence.";
+const clone = globalThis.safeStructuredClone;
 let target: HTMLDivElement;
 let instance: ReturnType<typeof mount>;
+let rowMounted = false;
 
 beforeEach(() => {
     vi.useFakeTimers();
+    vi.stubGlobal("safeStructuredClone", clone);
     installFlatDatabaseWithChats({
         characters: [
             {
@@ -85,7 +97,8 @@ beforeEach(() => {
     document.body.append(target);
 });
 afterEach(async () => {
-    if (instance) await unmount(instance);
+    if (rowMounted) await unmount(instance);
+    rowMounted = false;
     setStreamingState(ref, null);
     target.remove();
     alertStore.clearStatus();
@@ -94,7 +107,10 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
-async function render(mode: StreamingDisplayOptimizationMode = "off") {
+async function render(
+    mode: StreamingDisplayOptimizationMode = "off",
+    props: Partial<ComponentProps<typeof Chat>> = {},
+) {
     instance = mount(Chat, {
         target,
         props: {
@@ -108,12 +124,43 @@ async function render(mode: StreamingDisplayOptimizationMode = "off") {
             character: createSimpleCharacter(characterList()[0]),
             isLastMemory: false,
             streamingOptimizationMode: mode,
+            ...props,
         },
     });
+    rowMounted = true;
     flushSync();
     await instance.whenRendered();
     flushSync();
 }
+
+it("switches a mounted row between comment and normal presentation through updateRow", async () => {
+    await render("off", { isComment: false });
+    const row = target.querySelector(".risu-chat");
+    const expectNormalPresentation = () => {
+        expect(target.querySelector(".chattext")?.textContent).toContain(message);
+        expect(target.querySelector(".justify-center.italic")).toBeNull();
+        for (const control of [".button-icon-edit", ".button-icon-copy", ".button-icon-remove"]) {
+            expect(target.querySelector(control)).not.toBeNull();
+        }
+    };
+    expectNormalPresentation();
+
+    instance.updateRow({ isComment: true });
+    flushSync();
+    expect(target.querySelector(".justify-center.italic")?.textContent?.trim()).toBe(message);
+    expect(target.querySelector(".chattext")).toBeNull();
+    const remove = target.querySelector(".button-icon-remove");
+    expect(remove).not.toBeNull();
+    expect([...target.querySelectorAll("button")]).toEqual([remove]);
+    expect(target.querySelector(".risu-chat")).toBe(row);
+
+    instance.updateRow({ isComment: false });
+    flushSync();
+    await instance.whenRendered();
+    flushSync();
+    expectNormalPresentation();
+    expect(target.querySelector(".risu-chat")).toBe(row);
+});
 
 it.each(["off", "balanced", "strong"] as const)(
     "hides translate and retranslate while the message streams in %s mode and restores them afterwards",
@@ -172,3 +219,121 @@ it.each(["own wait", "newer wait", "newer progress"] as const)(
         expect(alertStore.status()).toBe(newer);
     },
 );
+
+it("rich copy keeps the sender name literal while preserving template formatting", async () => {
+    const name = "A <b>B</b> & C";
+    await render("off", { name });
+    const write = vi.spyOn(navigator.clipboard, "write").mockResolvedValue();
+    target.querySelector<HTMLButtonElement>(".button-icon-copy")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(write).toHaveBeenCalledOnce();
+    const html = await (await write.mock.calls[0][0][0].getType("text/html")).text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const heading = doc.querySelector("h3")!;
+    expect(heading.textContent).toBe(name);
+    expect(heading.children).toHaveLength(0);
+    expect(heading.style.fontWeight).toBe("600");
+    expect(doc.querySelector("p")?.textContent).toBe(message);
+});
+
+it.each(["name", "nickname"] as const)(
+    "custom GUI keeps the character %s, bot alias, and persona as text while prompt CBS keeps raw names",
+    async (source) => {
+        const name = "A <b>B</b> & C";
+        const persona = "P <i>Q</i> & R";
+        updateCharacter(ref.chaId, {
+            name: source === "name" ? name : "Owner",
+            nickname: source === "nickname" ? name : "",
+        });
+        settings.personas = [{ id: "gui-persona", name: persona, personaPrompt: "", icon: "" }];
+        setChatMeta(ref, { personaId: "gui-persona" });
+        settings.ui.theme = "customHTML";
+        settings.ui.guiHTML =
+            '<div class="owner-template"><strong>Sender</strong><span class="names">{{char}}|{{bot}}|{{user}}</span></div>';
+        const cbs = "{{char}}|{{bot}}|{{user}}";
+        const expected = `${name}|${name}|${persona}`;
+        expect(parser.risuChatParser(cbs, { chatRef: ref })).toBe(expected);
+
+        await render();
+        const names = target.querySelector(".owner-template .names")!;
+        expect(names.textContent).toBe(expected);
+        expect(names.children).toHaveLength(0);
+        expect(target.querySelector(".owner-template > strong")?.textContent).toBe("Sender");
+        expect(parser.risuChatParser(cbs, { chatRef: ref })).toBe(expected);
+    },
+);
+
+it.each(["mounted", "unmounted", "already selected"] as const)(
+    "rich copy keeps its row's avatar when another character is selected (%s)",
+    async (rowState) => {
+        const avatar = "data:image/png;base64,AQ==";
+        updateCharacter(ref.chaId, { image: avatar });
+        addCharacter({ chaId: "other", name: "Other", image: "data:image/png;base64,Ag==" });
+        vi.spyOn(globalApi, "getFileSrc").mockImplementation(async (path) => path);
+        if (rowState === "already selected") selectCharacter("other");
+        await render();
+        let finish!: (html: string) => void;
+        const parsing = new Promise<string>((resolve) => (finish = resolve));
+        const parse = vi.spyOn(parser, "ParseMarkdown").mockReturnValueOnce(parsing);
+        const write = vi.spyOn(navigator.clipboard, "write").mockResolvedValue();
+        target.querySelector<HTMLButtonElement>(".button-icon-copy")!.click();
+        expect(parse).toHaveBeenCalledOnce();
+        if (rowState === "unmounted") {
+            await unmount(instance);
+            rowMounted = false;
+        }
+        selectCharacter("other");
+        flushSync();
+        finish(`<p>${message}</p>`);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(write).toHaveBeenCalledOnce();
+        const html = await (await write.mock.calls[0][0][0].getType("text/html")).text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        expect(doc.querySelector("img")?.getAttribute("src")).toBe(avatar);
+        expect(doc.querySelector("p")?.textContent).toBe(message);
+    },
+);
+
+it("shows a read candidate's counter between active arrows with swipe off and hides the counter for a single reply", async () => {
+    settings.ui.swipe = false;
+    const current = JSON.parse(JSON.stringify(findChat(ref)!));
+    current.message[0] = {
+        ...current.message[0],
+        candidates: [
+            { id: "first", data: "First" },
+            { id: "second", data: message },
+            { id: "third", data: "Third" },
+        ],
+        selected: 1,
+        candidatesRevision: 7,
+    };
+    acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: "remote:1:7", data: current });
+    const read = findChat(ref)!.message[0];
+    const previous = vi.fn();
+    const next = vi.fn();
+    await render("off", {
+        candidateCount: read.candidates!.length,
+        candidateIndex: read.selected!,
+        candidateCarrier: true,
+        unReroll: previous,
+        onReroll: next,
+    });
+    const left = target.querySelector<HTMLButtonElement>(".button-icon-unreroll")!;
+    const right = target.querySelector<HTMLButtonElement>(".button-icon-reroll")!;
+    expect(left).not.toBeNull();
+    expect(right).not.toBeNull();
+    expect(left.disabled).toBe(false);
+    expect(right.disabled).toBe(false);
+    const counter = left.nextElementSibling!;
+    expect(counter.textContent).toBe("2/3");
+    expect(counter.nextElementSibling).toBe(right);
+    left.click();
+    right.click();
+    expect(previous).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledOnce();
+    instance.updateRow({ candidateCount: 1, candidateIndex: 0 });
+    flushSync();
+    expect(counter.isConnected).toBe(false);
+    expect(target.textContent).not.toContain("1/1");
+});

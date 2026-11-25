@@ -4,6 +4,9 @@
     import { createEventDispatcher, onDestroy } from "svelte";
     import { language } from "src/lang";
     import { alertError } from "src/ts/alert";
+    import { isImeComposing } from "src/ts/ime";
+    import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { openPartialEditorDraft, type MessageEditorDraft } from "src/ts/storage/messageEditorDrafts.svelte";
     import {
         findAllOriginalRangesFromHtml,
         findAllOriginalRangesFromText,
@@ -13,14 +16,32 @@
         type RangeResultWithContext,
     } from "src/ts/parser/partialEdit";
 
+    /**
+     * Hover (block) and drag-select (5 characters or more) editing of a rendered message, active while its body
+     * is near the viewport. A block or selection is mapped back to source ranges (`src/ts/parser/partialEdit.ts`):
+     * exactly one match at 0.95 confidence or more, or a single match, proceeds; several open a chooser; none, the
+     * match-failed dialog. For a delete, a fuzzy or bigram match is extended toward its line end (at most 5,000
+     * characters further) and its start moves back to just after a newline found within 4 characters before it,
+     * spaces and tabs skipped; then runs of blank lines collapse and the text is trimmed.
+     * - The result is dispatched as `save` (`Chat.svelte` `handlePartialEditSave`). In a translated view with
+     *   `getTranslationEditContext`, it edits the translation or nothing, never the original; a translation edit
+     *   goes through the awaitable `saveTranslation` instead when it is passed, and the draft stays open when that
+     *   write is refused (a delete's confirmation closes either way).
+     * - Escape cancels and Ctrl/Meta+Enter saves in the editor, neither while an IME composes
+     *   (`src/ts/ime.ts` `isImeComposing`).
+     * - The edit buttons live on `document.body` and hide before any dialog opens.
+     */
+
     interface Props {
         messageData: string;
         chatIndex: number;
+        chatRef?: ChatRef | null;
+        messageId?: string;
         bodyRoot: HTMLElement | null;
         blockEditEnabled?: boolean;
         dragEditEnabled?: boolean;
         translatedView?: boolean;
-        getTranslationEditContext?: () => Promise<{ key: string; data: string } | null>;
+        getTranslationEditContext?: () => Promise<{ key: string; data: string; draftKey?: string } | null>;
         /**
          * Writes a translation edit (the context's key). False when it was not taken: an edit keeps
          * its draft open. Without it a translation edit is dispatched as `save` and not checked.
@@ -31,6 +52,8 @@
     let {
         messageData = $bindable(""),
         chatIndex,
+        chatRef = null,
+        messageId,
         bodyRoot,
         blockEditEnabled = false,
         dragEditEnabled = false,
@@ -46,8 +69,10 @@
     // Min drag selection length
     const MIN_DRAG_SELECTION_LENGTH = 5;
 
-    let isEditing = $state(false);
-    let editText = $state("");
+    const emptyDraft = { text: "", base: "", open: false };
+    let editDraft = $state<MessageEditorDraft>(emptyDraft);
+    let isEditing = $derived(editDraft.open);
+    let draftSession: ReturnType<typeof openPartialEditorDraft> | undefined;
     let textareaRef: HTMLTextAreaElement | null = $state(null);
 
     let isConfirmingDelete = $state(false);
@@ -64,6 +89,7 @@
         sourceType: PartialEditTarget;
         sourceData: string;
         translationKey: string | null;
+        draftKey: string | null;
     };
 
     function createMatchingState(): MatchingState {
@@ -76,6 +102,7 @@
             sourceType: "original",
             sourceData: messageData,
             translationKey: null,
+            draftKey: null,
         };
     }
 
@@ -103,11 +130,19 @@
     let isBlockActive = $derived(blockEditEnabled && isInViewport);
     let isDragActive = $derived(dragEditEnabled && isInViewport);
 
+    const textContentCache = new WeakMap<HTMLElement, { text: string | null; result: boolean }>();
+
     // Check if element has text content (excluding buttons)
     function hasTextContent(el: HTMLElement): boolean {
+        const text = el.textContent;
+        const cached = textContentCache.get(el);
+        if (cached && cached.text === text) return cached.result;
+
         const clone = el.cloneNode(true) as HTMLElement;
         clone.querySelectorAll("button").forEach((btn) => btn.remove());
-        return !!clone.textContent?.trim();
+        const result = !!clone.textContent?.trim();
+        textContentCache.set(el, { text, result });
+        return result;
     }
 
     // Create edit/delete button pair
@@ -162,7 +197,7 @@
 
     // Show/hide block edit button
     function showBlockButton(block: HTMLElement) {
-        if (currentHoveredBlock === block && blockButtonWrapper?.style.display === "block") return;
+        if (currentHoveredBlock === block && blockButtonWrapper?.style.display === "flex") return;
 
         currentHoveredBlock = block;
 
@@ -276,6 +311,7 @@
         nextState.sourceType = sourceType;
         nextState.sourceData = sourceData;
         nextState.translationKey = translationContext?.key ?? null;
+        nextState.draftKey = translationContext?.draftKey ?? nextState.translationKey;
 
         // Determine if matching from HTML element or text
         if (typeof elementOrText === "string") {
@@ -331,8 +367,14 @@
     function proceedWithEdit(match: RangeResultWithContext) {
         matchingState.selectedRange = match;
         matchingState.mode = null;
-        editText = matchingState.sourceData.slice(match.start, match.end);
-        isEditing = true;
+        const source = matchingState.sourceData;
+        if (chatRef && messageId) {
+            draftSession = openPartialEditorDraft(chatRef, messageId, matchingState.draftKey, source, match);
+            editDraft = draftSession.draft;
+        } else {
+            const base = source.slice(match.start, match.end);
+            editDraft = { text: base, base, open: true };
+        }
 
         // Focus textarea on next tick
         setTimeout(() => {
@@ -400,16 +442,21 @@
 
     // Save edited text
     async function handleSave() {
-        if (!matchingState.selectedRange || writingTranslation) return;
+        if (!matchingState.selectedRange || !isEditing || writingTranslation) return;
 
-        const newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, editText);
+        const draft = editDraft;
+        const text = draft.text;
+        const newData = replaceRange(matchingState.sourceData, matchingState.selectedRange, text);
         const target = matchingState.sourceType;
         const translationKey = matchingState.translationKey;
         if (target === "translation") {
             // The edit session this save belongs to: a cancel or another edit started meanwhile ends it.
             const session = matchingRequestId;
+            const discard = draftSession?.close;
             const written = await writeTranslation(newData, translationKey);
+            if (draft.text !== text) return;
             if (session !== matchingRequestId) {
+                if (written) discard?.();
                 return;
             }
             if (written === false) {
@@ -421,9 +468,9 @@
                 return;
             }
         }
-        dispatch("save", { newData, target, translationKey: translationKey ?? undefined });
-
-        closeEdit();
+        if (dispatch("save", { newData, target, translationKey: translationKey ?? undefined }, { cancelable: true })) {
+            closeEdit();
+        }
     }
 
     // Cancel editing
@@ -436,8 +483,9 @@
 
     // Close edit mode
     function closeEdit() {
-        isEditing = false;
-        editText = "";
+        draftSession?.close();
+        draftSession = undefined;
+        editDraft = emptyDraft;
         resetMatchingState();
     }
 
@@ -485,6 +533,9 @@
     }
 
     function handleKeydown(e: KeyboardEvent) {
+        if (isImeComposing(e)) {
+            return;
+        }
         if (e.key === "Escape") {
             handleCancel();
         } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -571,19 +622,28 @@
                     return;
                 }
 
+                const elementAtPoint = document.elementFromPoint(lastMouseX, lastMouseY);
+                const block = elementAtPoint ? (elementAtPoint.closest(SELECTOR) as HTMLElement | null) : null;
+                if (
+                    block &&
+                    block === currentHoveredBlock &&
+                    block !== bodyRoot &&
+                    bodyRoot.contains(block) &&
+                    blockButtonWrapper?.style.display === "flex" &&
+                    hasTextContent(block)
+                ) {
+                    return;
+                }
+
                 if (currentHoveredBlock) {
                     if (isMouseInButtonZone(lastMouseX, lastMouseY, currentHoveredBlock)) {
                         return;
                     }
                 }
 
-                const elementAtPoint = document.elementFromPoint(lastMouseX, lastMouseY);
-                if (elementAtPoint) {
-                    const block = elementAtPoint.closest(SELECTOR) as HTMLElement | null;
-                    if (block && block !== bodyRoot && bodyRoot.contains(block) && hasTextContent(block)) {
-                        showBlockButton(block);
-                        return;
-                    }
+                if (block && block !== bodyRoot && bodyRoot.contains(block) && hasTextContent(block)) {
+                    showBlockButton(block);
+                    return;
                 }
 
                 hideBlockButton();
@@ -698,6 +758,7 @@
     // Cleanup on component unmount
     onDestroy(() => {
         matchingRequestId += 1;
+        draftSession?.release();
         if (blockButtonWrapper) {
             blockButtonWrapper.remove();
             blockButtonWrapper = null;
@@ -850,7 +911,7 @@
 {/if}
 
 <!-- Edit modal (shown only during edit) -->
-{#if isEditing}
+{#if isEditing && matchingState.selectedRange}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
@@ -874,9 +935,22 @@
                     </span>
                 </div>
             </div>
+            {#if editDraft.base !== matchingState.sourceData.slice(matchingState.selectedRange.start, matchingState.selectedRange.end)}
+                <div class="text-sm text-textcolor2 mb-2" role="status">
+                    {matchingState.sourceType === "translation"
+                        ? language.translationEditorChangedElsewhere
+                        : language.messageEditorChangedElsewhere}
+                </div>
+            {/if}
             <textarea
                 bind:this={textareaRef}
-                bind:value={editText}
+                bind:value={
+                    () => editDraft.text,
+                    (value) => {
+                        if (draftSession) draftSession.setText(value);
+                        else editDraft.text = value;
+                    }
+                }
                 class="partial-edit-textarea"
                 onkeydown={handleKeydown}
                 oninput={adjustHeight}

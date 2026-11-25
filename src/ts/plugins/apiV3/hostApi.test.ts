@@ -40,16 +40,7 @@ vi.mock("./factory", () => ({
     },
 }));
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(() => []),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 vi.mock("src/ts/alert", async (importOriginal) => {
     // The terminal notice is the real one: the plugin key listeners read its flag.
@@ -488,10 +479,19 @@ describe("v3 character setters normalize new characters", () => {
         ]);
         expect(chatStore.findChat({ chaId: w.chaId, chatId: w.chats[0].id })).toBeDefined();
         expect(chatStore.findChat({ chaId: "n", chatId: n.chats[0].id })!.message[0].data).toBe("hi");
-        // Existing characters keep their chats; nothing is queued for the new ones yet (their
-        // creates travel with the characters' own creates in the save loop).
+        // Existing characters keep their chats; the new ones' chats are queued as creates at once
+        // (sent once their characters' own creates are in the same batch), and nothing else is.
         expect(c.chats[0].id).toBe("k");
-        expect(chatStore.takeChatWork(new Set([n.chaId, w.chaId])).groups).toEqual([]);
+        const groups = chatStore.takeChatWork(new Set([n.chaId, w.chaId])).groups;
+        expect(groups.map((group) => [group.characterId, group.chatId, group.ops.map((op) => op.op)])).toEqual(
+            expect.arrayContaining([
+                ["n", n.chats[0].id, ["create"]],
+                [w.chaId, w.chats[0].id, ["create"]],
+            ]),
+        );
+        expect(groups).toHaveLength(2);
+        const created = groups.find((group) => group.characterId === "n")!.ops[0] as { chat: { message: any[] } };
+        expect(created.chat.message.map((message) => message.data)).toEqual(["hi"]);
     });
 
     it("refuses a list that names one id-less object twice (it would get one id twice), leaving the mirror unchanged", async () => {
@@ -721,6 +721,274 @@ describe("v3 DOM listener targets and cleanup", () => {
         }
     });
 
+    async function listenToInput(input: HTMLInputElement) {
+        input.id = "plugin-key-input";
+        element.append(input);
+        const root = await (await makeApi()).getRootDocument();
+        const field = root.querySelector("#plugin-key-input");
+        const deliveries: any[][] = [];
+        // Exercise the document, an ancestor, and the field itself in both phases.
+        for (const target of [root, root.querySelector("#plugin-event-target"), field]) {
+            for (const capture of [true, false]) {
+                const events: any[] = [];
+                deliveries.push(events);
+                for (const type of ["keydown", "keyup", "keypress"]) {
+                    await target.addEventListener(type, (event: any) => events.push(event), capture);
+                }
+            }
+        }
+        const dispatchKeys = () => {
+            for (const type of ["keydown", "keyup", "keypress"]) {
+                input.dispatchEvent(
+                    new KeyboardEvent(type, { key: "a", code: "KeyA", ctrlKey: true, repeat: true, bubbles: true }),
+                );
+            }
+        };
+        return { deliveries, dispatchKeys, field };
+    }
+
+    it("withholds password keys from document and element listeners in both phases using the event-time type", async () => {
+        const input = document.createElement("input");
+        const { deliveries, dispatchKeys } = await listenToInput(input);
+        input.type = "password";
+        dispatchKeys();
+        input.type = "text";
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) expect(events).toEqual([]);
+    });
+
+    it("withholds visible keys from marked fields and marked containers in both phases", async () => {
+        const input = document.createElement("input");
+        const { deliveries, dispatchKeys } = await listenToInput(input);
+        input.setAttribute("data-plugin-secret", "");
+        dispatchKeys();
+        input.removeAttribute("data-plugin-secret");
+        element.setAttribute("data-plugin-secret", "");
+        dispatchKeys();
+        element.removeAttribute("data-plugin-secret");
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) expect(events).toEqual([]);
+    });
+
+    it("forwards ordinary key payloads and keeps mouse, pointer, and scroll events on secret fields", async () => {
+        const input = document.createElement("input");
+        const { deliveries, dispatchKeys, field } = await listenToInput(input);
+        dispatchKeys();
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) {
+            expect(events.sort((a, b) => a.type.localeCompare(b.type))).toEqual(
+                ["keydown", "keypress", "keyup"].map((type) => ({
+                    type,
+                    key: "a",
+                    code: "KeyA",
+                    repeat: true,
+                    altKey: false,
+                    ctrlKey: true,
+                    shiftKey: false,
+                    metaKey: false,
+                })),
+            );
+        }
+
+        input.type = "password";
+        input.setAttribute("data-plugin-secret", "");
+        const nonKeys = vi.fn();
+        for (const type of ["click", "pointerdown", "scroll"]) await field.addEventListener(type, nonKeys);
+        input.dispatchEvent(new MouseEvent("click", { clientX: 12, clientY: 34 }));
+        input.dispatchEvent(new PointerEvent("pointerdown", { clientX: 56, clientY: 78 }));
+        input.dispatchEvent(new Event("scroll"));
+        expect(nonKeys.mock.calls.map(([event]) => event)).toEqual([
+            expect.objectContaining({ type: "click", clientX: 12, clientY: 34 }),
+            expect.objectContaining({ type: "pointerdown", clientX: 56, clientY: 78 }),
+            { type: "scroll" },
+        ]);
+        dispatchKeys();
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) expect(events).toHaveLength(3);
+    });
+
+    it("reports added and removed elements through each mutation record's node lists", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const removedElement = document.createElement("span");
+        removedElement.setAttribute("x-node", "removed-node");
+        element.appendChild(removedElement);
+        let observer!: SafeMutationObserver;
+        const reported = new Promise<SafeClassArray<SafeMutationRecord>>((resolve) => {
+            observer = api.createMutationObserver(resolve);
+        });
+        try {
+            await observer.observe(root.querySelector("#plugin-event-target"), { childList: true });
+            const addedElement = document.createElement("span");
+            addedElement.setAttribute("x-node", "added-node");
+            element.appendChild(addedElement);
+            element.removeChild(removedElement);
+
+            const records = await reported;
+            expect(await records.length()).toBe(2);
+            const addition = (await records.at(0))!;
+            const removal = (await records.at(1))!;
+            const addedNodes = await addition.getAddedNodes();
+            const removedNodes = await removal.getRemovedNodes();
+            expect(await addedNodes.length()).toBe(1);
+            expect(await (await addedNodes.at(0))!.getAttribute("x-node")).toBe("added-node");
+            expect(await (await addition.getRemovedNodes()).length()).toBe(0);
+            expect(await (await removal.getAddedNodes()).length()).toBe(0);
+            expect(await removedNodes.length()).toBe(1);
+            expect(await (await removedNodes.at(0))!.getAttribute("x-node")).toBe("removed-node");
+        } finally {
+            await observer.disconnect();
+        }
+    });
+
+    it("delivers text and element mutations with safe targets while omitting parentless text records", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const parent = document.createElement("span");
+        parent.setAttribute("x-node", "text-parent");
+        const text = document.createTextNode("before");
+        parent.append(text);
+        const orphan = document.createTextNode("removed before delivery");
+        element.setAttribute("x-node", "element-target");
+        element.append(parent, orphan);
+        const received = vi.fn<(records: SafeClassArray<SafeMutationRecord>) => void>();
+        const NativeObserver = globalThis.MutationObserver;
+        let delivered!: () => void;
+        let failed!: (error: unknown) => void;
+        const delivery = new Promise<void>((resolve, reject) => {
+            delivered = resolve;
+            failed = reject;
+        });
+        // Keep real DOM batching, but surface a host callback exception as a test failure.
+        vi.spyOn(globalThis, "MutationObserver").mockImplementation(
+            class extends NativeObserver {
+                constructor(callback: MutationCallback) {
+                    super((records, observer) => {
+                        try {
+                            callback(records, observer);
+                            delivered();
+                        } catch (error) {
+                            failed(error);
+                        }
+                    });
+                }
+            },
+        );
+        const observer: SafeMutationObserver = api.createMutationObserver(received);
+        try {
+            await observer.observe(root.querySelector("#plugin-event-target"), {
+                subtree: true,
+                childList: true,
+                characterData: true,
+            });
+            text.data = "after";
+            orphan.data = "changed before removal";
+            orphan.remove();
+            const added = document.createElement("b");
+            added.setAttribute("x-node", "added");
+            element.append(added);
+            await delivery;
+
+            expect(received).toHaveBeenCalledTimes(1);
+            const records = received.mock.calls[0][0];
+            expect(await records.length()).toBe(3);
+            const textRecord = (await records.at(0))!;
+            expect(await textRecord.getType()).toBe("characterData");
+            const textTarget = await textRecord.getTarget();
+            expect(await textTarget.getAttribute("x-node")).toBe("text-parent");
+            expect(await textTarget.textContent()).toBe("after");
+            for (const index of [1, 2]) {
+                const record = (await records.at(index))!;
+                expect(await record.getType()).toBe("childList");
+                expect(await (await record.getTarget()).getAttribute("x-node")).toBe("element-target");
+            }
+            expect(await (await (await records.at(1))!.getRemovedNodes()).length()).toBe(0);
+            const additions = await (await records.at(2))!.getAddedNodes();
+            expect(await additions.length()).toBe(1);
+            expect(await (await additions.at(0))!.getAttribute("x-node")).toBe("added");
+        } finally {
+            await observer.disconnect();
+        }
+    });
+
+    it("removes prior listener IDs through re-queried wrappers while keeping document and element targets independent", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.querySelector("#plugin-event-target");
+        const elementListener = vi.fn<(event: unknown) => void>();
+        const documentListener = vi.fn<(event: unknown) => void>();
+        const htmlListener = vi.fn<(event: unknown) => void>();
+        const elementId = await target.addEventListener("click", elementListener);
+        const documentId = await root.addEventListener("click", documentListener);
+        const html = root.querySelector("body");
+        const htmlId = await html.addEventListener("click", htmlListener);
+        const again = await api.getRootDocument();
+        again.removeEventListener("click", elementId);
+        html.removeEventListener("click", documentId);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(elementListener).toHaveBeenCalledTimes(1);
+        expect(documentListener).toHaveBeenCalledTimes(1);
+        expect(htmlListener).toHaveBeenCalledTimes(1);
+
+        again.querySelectorAll("#plugin-event-target").at(0).removeEventListener("click", elementId);
+        again.removeEventListener("click", documentId);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(elementListener).toHaveBeenCalledTimes(1);
+        expect(documentListener).toHaveBeenCalledTimes(1);
+        expect(htmlListener).toHaveBeenCalledTimes(2);
+        again.querySelector("body").removeEventListener("click", htmlId);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(htmlListener).toHaveBeenCalledTimes(2);
+    });
+
+    it("forgets a once listener before a reentrant throwing callback and does not tear it down again on reload", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const target = root.querySelector("#plugin-event-target");
+        const added = vi.spyOn(element, "addEventListener");
+        const removed = vi.spyOn(element, "removeEventListener");
+        let id!: string;
+        const listener = vi.fn<(event: unknown) => void>(() => {
+            expect(removed).toHaveBeenCalledTimes(1);
+            target.removeEventListener("click", id);
+            element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+            throw new Error("callback failed");
+        });
+        id = await target.addEventListener("click", listener, { once: true });
+        // Invoke the browser callback directly so a guest exception can be asserted synchronously.
+        const native = added.mock.calls[0][1] as EventListener;
+        expect(() => native(new MouseEvent("click"))).toThrow("callback failed");
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(removed).toHaveBeenCalledTimes(1);
+        await loadV3Plugins([]);
+        expect(removed).toHaveBeenCalledTimes(1);
+    });
+
+    it("forgets a delayed once key listener before delivering its callback and never tears it down twice", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const removed = vi.spyOn(document, "removeEventListener");
+        const listener = vi.fn<(event: unknown) => void>();
+        const options = { once: true, capture: true };
+        await root.addEventListener("keydown", listener, options);
+        element.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+        expect(
+            removed.mock.calls.filter(
+                ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+            ),
+        ).toHaveLength(1);
+        element.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true }));
+        await vi.advanceTimersByTimeAsync(100);
+        expect(listener).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ key: "a" }));
+        await loadV3Plugins([]);
+        expect(
+            removed.mock.calls.filter(
+                ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+            ),
+        ).toHaveLength(1);
+    });
+
     it("delivers an element's own event without delivering a sibling's event", async () => {
         const api = await makeApi();
         const root = await api.getRootDocument();
@@ -777,6 +1045,30 @@ describe("v3 DOM listener targets and cleanup", () => {
             }
         },
     );
+
+    it("removes unfired once listeners by ID and on reload from live element and document targets", async () => {
+        const root = await (await makeApi()).getRootDocument();
+        const targets = [root.querySelector("#plugin-event-target"), root];
+        const listener = vi.fn();
+        const options = { once: true, capture: true };
+        for (const target of targets) await target.addEventListener("click", listener, options);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).toHaveBeenCalledTimes(2);
+        listener.mockClear();
+
+        for (const target of targets) {
+            const id = await target.addEventListener("click", listener, options);
+            target.removeEventListener("click", id);
+        }
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+
+        for (const target of targets) await target.addEventListener("click", listener, options);
+        await loadV3Plugins([]);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+    });
 
     it("removes element and document-wide listeners from their registered targets on reload", async () => {
         const api = await makeApi();
@@ -858,4 +1150,94 @@ describe("v3 document key listeners and the terminal notice", () => {
             root.removeEventListener("keydown", bubbleId);
         }
     });
+
+    it("forgets a suppressed once key listener even when the terminal notice prevents the callback", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const removed = vi.spyOn(document, "removeEventListener");
+        const listener = vi.fn<(event: unknown) => void>();
+        const options = { once: true };
+        const notice = alertTerminal("restored");
+        let id!: string;
+        try {
+            id = await root.addEventListener("keydown", listener, options);
+            press("a");
+            await settle();
+            expect(listener).not.toHaveBeenCalled();
+            expect(
+                removed.mock.calls.filter(
+                    ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+                ),
+            ).toHaveLength(1);
+            await loadV3Plugins([]);
+            expect(
+                removed.mock.calls.filter(
+                    ([type, , registeredOptions]) => type === "keydown" && registeredOptions === options,
+                ),
+            ).toHaveLength(1);
+        } finally {
+            root.removeEventListener("keydown", id);
+            acknowledgeTerminalNotice();
+            await notice;
+            removed.mockRestore();
+        }
+    });
+});
+
+it("setChatToIndex refuses a changed memory projection with a notice while applying the plugin's message and note", async () => {
+    const { sealHypaV3Data } = await import("../../../../shared/structuredMemory.ts");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+        installDatabase({
+            memoryAlgorithmType: "structuredMemory",
+            characters: [
+                {
+                    chaId: "projection-owner",
+                    name: "Memory",
+                    type: "character",
+                    chats: [
+                        {
+                            id: "projection-chat",
+                            name: "Story",
+                            note: "",
+                            localLore: [],
+                            message: [{ chatId: "source", role: "user", data: "Original" }],
+                        },
+                    ],
+                },
+            ],
+        });
+        const ref = { chaId: "projection-owner", chatId: "projection-chat" };
+        const projection = sealHypaV3Data({
+            summaries: [{ text: "Read-only event", chatMemos: ["source"], isImportant: true }],
+        });
+        chatStore.acceptRemoteChat({
+            characterId: ref.chaId,
+            id: ref.chatId,
+            revision: "epoch:1:1",
+            data: {
+                ...JSON.parse(JSON.stringify(chatStore.findChat(ref))),
+                hypaV3Data: projection,
+            },
+        });
+        const api = await makeApi();
+        const current = await api.getChatFromIndex(0, 0);
+        expect(current.hypaV3Data).toEqual(projection);
+        await api.setChatToIndex(0, 0, current);
+        expect(warn).not.toHaveBeenCalled();
+        current.hypaV3Data.summaries[0].text = "Plugin overwrite";
+        current.note = "Plugin note";
+        current.message[0].data = "Plugin edit";
+        await api.setChatToIndex(0, 0, current);
+        expect(chatStore.findChat(ref)).toMatchObject({ note: "Plugin note", hypaV3Data: projection });
+        expect(chatStore.findChat(ref)!.message[0].data).toBe("Plugin edit");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("Refused a change to hypaV3Data"));
+    } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        warn.mockRestore();
+    }
 });

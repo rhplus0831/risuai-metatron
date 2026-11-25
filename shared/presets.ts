@@ -28,6 +28,7 @@ import { isPlainObject, type ValueKind, valueKindOf } from "./valueKinds.ts";
  * `autoSuggestClean` (`ui` fields).
  */
 
+/** Default AIN sampling settings shared by schema defaults and the preset import template. */
 export const defaultAIN: AINsettings = {
     top_p: 0.7,
     rep_pen: 1.0625,
@@ -40,6 +41,7 @@ export const defaultAIN: AINsettings = {
     top_k: 140,
 };
 
+/** Default Ooba generation and prompt formatting settings shared by schema defaults and imports. */
 export const defaultOoba: OobaSettings = {
     max_new_tokens: 180,
     do_sample: true,
@@ -115,6 +117,7 @@ type PresetOnlyExcluded =
 /** The materialized default profile; a default model preset names it in both required slots. */
 export const DEFAULT_MODEL_PROFILE_ID = "default";
 
+/** Canonical schema defaults; `undefined` leaves a field absent, and normalizers clone retained defaults. */
 export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     name: "New Preset",
     localNetworkMode: false,
@@ -167,6 +170,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     openrouterProvider: { order: [], only: [], ignore: [] },
     useInstructPrompt: false,
     customPromptTemplateToggle: "",
+    oocToggles: {},
     templateDefaultVariables: "",
     moduleIntergration: "",
     top_k: 0,
@@ -216,6 +220,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     dynamicOutput: null,
 };
 
+/** A field name in the shared prompt preset, model preset, or model profile schema. */
 export type PresetField = keyof PresetDefaults;
 
 /** Every schema field (all three owners), by its record name. */
@@ -233,6 +238,7 @@ export const MODEL_PRESET_FIELDS = [
     "seperateModelsForAxModels",
 ] as const satisfies readonly PresetField[];
 
+/** A schema field owned by the model preset's slot configuration. */
 export type ModelPresetField = (typeof MODEL_PRESET_FIELDS)[number];
 
 /** The profile's definition, key binding, connection, routing, compatibility, and capacity. */
@@ -275,6 +281,7 @@ export const MODEL_PROFILE_FIELDS = [
     "customTokenizer",
 ] as const satisfies readonly PresetField[];
 
+/** A schema field owned by a model profile's connection and capacity configuration. */
 export type ModelProfileField = (typeof MODEL_PROFILE_FIELDS)[number];
 
 /** The fields records hold for themselves (`image` is only on the prompt preset). */
@@ -539,7 +546,9 @@ function normalizeAuxSlots(value: unknown): ModelPreset["auxSlots"] {
  * `null` is kept only where it is a value (`PRESET_NULLABLE_FIELDS`: `setPreset` passed it through
  * as it was, such as `min_p`); any other `null` gets the default, as `setPreset` gave the root copy
  * (a number field cleared in the UI comes back as its default after a reload). Fields outside
- * `fields` are dropped. Nested values are not checked beyond those migrations.
+ * `fields` are dropped. The `ooba` settings and its `formating` container also receive missing
+ * defaults, with a non-object formatting container replaced. Other nested values are not checked
+ * beyond those migrations.
  */
 function normalizeFields(source: Record<string, unknown>, fields: readonly PresetField[], id: string) {
     const record: Record<string, unknown> = { id };
@@ -573,6 +582,19 @@ function normalizeFields(source: Record<string, unknown>, fields: readonly Prese
         nai.cfg_scale ??= 1;
         nai.mirostat_tau ??= 0;
         nai.mirostat_lr ??= 1;
+    }
+    if (owns("ooba") && isPlainObject(record.ooba)) {
+        const ooba = record.ooba;
+        for (const [key, value] of Object.entries(defaultOoba)) {
+            ooba[key] ??= plainClone(value);
+        }
+        const formating: Record<string, unknown> = isPlainObject(ooba.formating)
+            ? ooba.formating
+            : plainClone(defaultOoba.formating);
+        ooba.formating = formating;
+        for (const [key, value] of Object.entries(defaultOoba.formating)) {
+            formating[key] ??= plainClone(value);
+        }
     }
     if (owns("promptSettings") && isPlainObject(record.promptSettings)) {
         record.promptSettings.maxThoughtTagDepth ??= -1;

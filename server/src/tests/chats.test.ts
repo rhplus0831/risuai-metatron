@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
+import { MAX_OOC_EXCHANGE_BYTES, MAX_OOC_EXCHANGES, OOC_LOG_CONCURRENCY_SLACK } from "../../../shared/ooc.ts";
 import { assertPatchableMetaKeys, normalizeChatMeta, normalizeMessage, normalizeMessageList } from "../data/chats.ts";
 import {
     countChatOperations,
@@ -9,6 +10,7 @@ import {
     prepareChatOrders,
 } from "../data/chatStore.ts";
 import { ResourceValidationError } from "../data/resourceStore.ts";
+import { convertUpstreamDatabase } from "../data/upstream/importDatabase.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const message = (id: string, data = "", role = "user") => ({ role, data, chatId: id });
@@ -17,6 +19,38 @@ const rejects = (fn: () => unknown, error: string, label = error) => {
 };
 
 describe("normalizeChatMeta", () => {
+    const oocExchange = { id: "q", segment: "s", anchorMessageId: null, question: "Why?", time: 1 };
+
+    it.each([
+        ["a malformed OOC exchange", { oocLog: { q: { ...oocExchange, question: 1 } } }],
+        [
+            "an OOC exchange whose serialized UTF-8 bytes exceed the limit",
+            { oocLog: { q: { ...oocExchange, question: "한".repeat(Math.floor(MAX_OOC_EXCHANGE_BYTES / 3)) } } },
+        ],
+        [
+            "an OOC log above the exchange count limit",
+            {
+                oocLog: Object.fromEntries(
+                    Array.from({ length: MAX_OOC_EXCHANGES + OOC_LOG_CONCURRENCY_SLACK + 1 }, (_, index) => {
+                        const id = `q-${index}`;
+                        return [id, { ...oocExchange, id }];
+                    }),
+                ),
+            },
+        ],
+        ["a malformed OOC segment", { oocSegment: { id: "s", anchorMessageId: 1 } }],
+        ["a non-string OOC toggle value", { oocToggles: { mode: 1 } }],
+    ])("refuses %s", (_label, meta) => {
+        expect(() => normalizeChatMeta(meta, "k")).toThrow(ResourceValidationError);
+    });
+
+    it("keeps its key order when normalized again, so a write back of the same values stores the same string", () => {
+        for (const input of [{}, { name: "K" }, { id: "k", note: "n", localLore: [] }, { fmIndex: 1, id: "k" }]) {
+            const stored = JSON.stringify(normalizeChatMeta(input, "k"));
+            expect(JSON.stringify(normalizeChatMeta(JSON.parse(stored), "k")), stored).toBe(stored);
+        }
+    });
+
     it("leaves lore overrides absent, keeps the first valid override per id, and refuses malformed overrides", () => {
         expect(normalizeChatMeta({}, "k")).not.toHaveProperty("loreOverrides");
         const entry = {
@@ -146,6 +180,66 @@ describe("assertPatchableMetaKeys", () => {
 });
 
 describe("normalizeMessage", () => {
+    it("imports replies while dropping invalid candidate fields independently and retaining valid single-reply baselines", () => {
+        const pair = [
+            { id: "a", data: "A" },
+            { id: "b", data: "B" },
+        ];
+        const cases = [
+            { fields: { candidates: "bad", selected: 0 }, kept: {} },
+            { fields: { candidates: [pair[0]], selected: 0 }, kept: {} },
+            { fields: { candidates: pair, selected: 2 }, kept: { candidates: pair } },
+            {
+                fields: { candidates: pair, selected: 0, scriptstateCheckpoint: { before: [] } },
+                kept: { candidates: pair, selected: 0 },
+            },
+            {
+                fields: { candidatesRevision: -1, scriptstateCheckpoint: { before: null } },
+                kept: { scriptstateCheckpoint: { before: null } },
+            },
+            {
+                fields: { scriptstateCheckpoint: { before: { $x: 0 }, after: { $x: 1 } } },
+                kept: { scriptstateCheckpoint: { before: { $x: 0 }, after: { $x: 1 } } },
+            },
+            {
+                fields: { candidates: pair, selected: 1, scriptstateCheckpoint: { before: { $x: 0 } } },
+                kept: { candidates: pair, selected: 1, scriptstateCheckpoint: { before: { $x: 0 } } },
+            },
+            {
+                fields: {
+                    candidates: [
+                        { id: "a", data: "A".repeat(100 * 1024) },
+                        { id: "b", data: "B".repeat(100 * 1024) },
+                    ],
+                    selected: 0,
+                },
+                kept: {},
+            },
+        ];
+        const messages = cases.map(({ fields }, index) => ({ ...message(`m${index}`, "kept", "char"), ...fields }));
+        const expected = cases.map(({ kept }, index) => ({ ...message(`m${index}`, "kept", "char"), ...kept }));
+        const before = JSON.stringify(messages);
+        expect(messages.map((entry) => normalizeMessage(entry))).toEqual(expected);
+        // Each case is its chat's newest reply, the only message an import lets keep a checkpoint.
+        const imported = convertUpstreamDatabase(
+            {
+                characters: [
+                    {
+                        chaId: "c",
+                        type: "character",
+                        name: "C",
+                        chats: messages.map((entry, index) => ({ id: `k${index}`, message: [entry] })),
+                    },
+                ],
+            },
+            { now: 1 },
+        );
+        const created = imported.chats.flatMap((group) => group.ops).filter((op) => op.op === "create");
+        expect(created).toHaveLength(cases.length);
+        expect(created.flatMap((op) => (op.op === "create" ? op.chat.message : []))).toEqual(expected);
+        expect(JSON.stringify(messages)).toBe(before);
+    });
+
     it("requires a user or char role, string data, and a valid chatId, and returns the input", () => {
         const input = message("m", "hi", "char");
         expect(normalizeMessage(input)).toBe(input);
@@ -544,27 +638,27 @@ describe("chat.toolCalls", () => {
             rejects(() => prepareChatGroups([group([op])]), `chats[0].ops[0]: ${error}`);
         groupRejects(
             { op: "meta", merge: { note: { a: 1 } } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: "x" } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: [] } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: null } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: 5 },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: [] },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: {} }, set: { toolCalls: {} } },
@@ -705,7 +799,8 @@ describe("patchMessage and meta.mergeUnset", () => {
             merge: { scriptstate: { $x: "1" } },
             mergeUnset: {},
         });
-        const shape = "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate";
+        const shape =
+            "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog";
         for (const mergeUnset of [
             null,
             [],

@@ -1,3 +1,4 @@
+import { BUILD_ID_PATTERN } from "../../../shared/buildInfo.ts";
 import { GENERATION_ERROR_REASONS, GENERATION_ERROR_STAGES, GENERATION_ID_PATTERN } from "../../../shared/jobs.ts";
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import type { JobFailureInfo } from "../alert";
@@ -5,12 +6,16 @@ import type { JobFailureInfo } from "../alert";
 /**
  * The job error alert's "Copy debug info": a content-free block built only from the named fields,
  * each checked; a field that fails its check is left out. Never the job's message, never the
- * terminal as a whole. The labels are a fixed support format, in English whatever the app's
- * language, so a developer reads every report the same way.
+ * terminal as a whole. It holds checked job/request ids, receipt time, compatibility version, build
+ * id, HTTP-like status, reason, stage, and provider code. `src/lib/Others/AlertComp.svelte` calls
+ * `jobDebugInfo` for failures attached by `src/ts/alert.ts`'s `alertJobError`. The labels are a fixed
+ * support format, in English whatever the app's language, so reports use the same labels.
  */
+
 const LABELS = {
     title: "RisuAI job failure",
     version: "Version",
+    build: "Build",
     time: "Time",
     job: "Job",
     request: "Request",
@@ -24,12 +29,16 @@ const VERSION = /^[0-9A-Za-z.+-]{1,32}$/;
 
 const isId = (value: unknown): value is string => typeof value === "string" && GENERATION_ID_PATTERN.test(value);
 
-/** `failure.at` is when the tab received the job's end. */
-export function jobDebugInfo(failure: JobFailureInfo, version: string): string {
+/**
+ * `failure.at` is when the tab received the job's end. `version` is the compatibility version and
+ * `build` this bundle's build id (`src/ts/buildInfo.ts`); `unknown` fails the build check and is left out.
+ */
+export function jobDebugInfo(failure: JobFailureInfo, version: string, build: string): string {
     const { end } = failure;
     const time = new Date(failure.at);
     const fields: [string, string | null][] = [
         [LABELS.version, VERSION.test(version) ? version : null],
+        [LABELS.build, BUILD_ID_PATTERN.test(build) ? build : null],
         [LABELS.time, Number.isFinite(time.getTime()) ? time.toISOString() : null],
         [LABELS.job, isId(failure.jobId) ? failure.jobId : null],
         [LABELS.request, isId(end.requestId) ? end.requestId : null],

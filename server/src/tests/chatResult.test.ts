@@ -15,6 +15,7 @@ import { applyTriggerChat, type ChatBaseline } from "../jobs/chatResult.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { type JobScope, loadJobScope, refreshChat, scopeChat } from "../jobs/jobScope.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 
 // `applyTriggerChat` (`server/src/jobs/chatResult.ts`), the port of the client's `applyChatResult`,
 // over a real in-memory resource store guarded by the real generation lock and a fake job whose
@@ -22,11 +23,11 @@ import { type JobScope, loadJobScope, refreshChat, scopeChat } from "../jobs/job
 // translation of a conflict). Expected outcomes follow the client's rules: changed message fields
 // merged into the message as stored now (edits made meanwhile kept), removals in one op, new
 // messages anchored after their predecessor (counting the ones inserted before them), missing,
-// duplicate, or colliding ids re-keyed, chat fields set or unset, a reorder as a whole replacement
-// only while the chat is unchanged since the baseline and no job owns a message of it (else dropped
-// with a warning while the rest applies), a change to a message another job owns failing the whole
-// group (409, nothing written), a gone chat applying nothing, and the recorded replay of the copy's
-// `scriptstate` over a concurrent variable write.
+// duplicate, or colliding ids re-keyed, chat fields set or unset, map fields (`scriptstate`,
+// `GLGlobalVariables`, `toolCalls`) merged entry by entry so a concurrent variable write survives, a
+// reorder as a whole replacement only while the chat is unchanged since the baseline and no job owns a
+// message of it (else dropped with a warning while the rest applies), a change to a message another job
+// owns failing the whole group (409, nothing written), and a gone chat applying nothing.
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const kind = (name: string) => kinds.get(name)!;
@@ -186,6 +187,28 @@ describe("applyTriggerChat", () => {
         expect(s.scope.chatRevision).toBe(s.read().revision);
     });
 
+    it("merges a trigger edit by message id after another writer inserts a preceding message", () => {
+        const s = setup();
+        const base = s.baseline();
+        const result = structuredClone(base.chat);
+        result.message[1] = { ...result.message[1], data: "edited by trigger" };
+        s.external([
+            { op: "append", messages: [m("inserted", "inserted meanwhile")], anchor: { after: "m1" } },
+            { op: "setMessage", message: m("m2", "hi there", "user", { name: "external name" }) },
+        ]);
+
+        s.apply(base, result);
+
+        expect(s.ids()).toEqual(["m1", "inserted", "m2", "m3"]);
+        expect(s.texts()).toEqual([
+            "char:greeting",
+            "user:inserted meanwhile",
+            "user:edited by trigger",
+            "char:and more",
+        ]);
+        expect(s.stored().message[2]).toMatchObject({ chatId: "m2", data: "edited by trigger", name: "external name" });
+    });
+
     it("removes the messages the trigger dropped in one op, skipping one already gone", () => {
         const s = setup();
         const base = s.baseline();
@@ -262,7 +285,7 @@ describe("applyTriggerChat", () => {
         expect(ids.every((id) => isValidResourceId(id))).toBe(true);
     });
 
-    it("sets the changed chat fields and unsets the removed ones, never `message` or `id`", () => {
+    it("sets the changed chat fields, unsets the removed ones, and removes a dropped map's entries, never `message` or `id`", () => {
         const s = setup();
         const base = s.baseline();
         const result = structuredClone(base.chat);
@@ -271,8 +294,56 @@ describe("applyTriggerChat", () => {
         delete result.scriptstate;
         s.apply(base, result);
         expect(s.stored()).toMatchObject({ id: "k", name: "K", note: "n1", fmIndex: 2 });
-        expect(s.stored().scriptstate).toBeUndefined();
+        expect(s.stored().scriptstate ?? {}).toEqual({});
         expect(s.texts()).toHaveLength(3);
+    });
+
+    it("reconciles map entries against the baseline while other metadata keeps whole-field set and unset", () => {
+        for (const key of ["scriptstate", "GLGlobalVariables", "toolCalls", "bookmarkNames"] as const) {
+            const s = setup();
+            const entries = (values: Record<string, string>) =>
+                Object.fromEntries(
+                    Object.entries(values).map(([id, text]) => [
+                        id,
+                        key === "toolCalls"
+                            ? { call: { id, name: "lookup", arg: {} }, response: [{ type: "text", text }] }
+                            : text,
+                    ]),
+                );
+            s.external([
+                {
+                    op: "meta",
+                    set: {
+                        [key]: entries({ $a: "before", $removed: "before", $unchanged: "before" }),
+                        lastMemory: "before",
+                    },
+                },
+            ]);
+            const base = s.baseline();
+            const result = structuredClone(base.chat);
+            Object.assign(result, {
+                [key]: entries({ $a: "trigger", $added: "trigger", $unchanged: "before" }),
+                note: "trigger note",
+            });
+            delete result.lastMemory;
+            s.external([
+                {
+                    op: "meta",
+                    merge: {
+                        [key]: entries({ $a: "tab", $b: "tab", $removed: "tab", $unchanged: "tab" }),
+                    },
+                    set: { note: "tab note", lastMemory: "tab" },
+                },
+            ]);
+
+            s.apply(base, result);
+
+            expect(s.stored()[key], key).toEqual(
+                entries({ $a: "trigger", $added: "trigger", $b: "tab", $unchanged: "tab" }),
+            );
+            expect(s.stored().note).toBe("trigger note");
+            expect(s.stored()).not.toHaveProperty("lastMemory");
+        }
     });
 
     it("replaces the whole chat for a reorder while the chat is unchanged and no job owns a message of it", () => {
@@ -364,7 +435,13 @@ describe("applyTriggerChat", () => {
     it("applies nothing when the chat is gone", () => {
         const s = setup();
         const base = s.baseline();
-        s.external([{ op: "delete" }]);
+        // Another client deletes it (through the trash; a spare active chat lets it go there).
+        s.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
+        deleteChatThroughTrash(s.store, "c", "k");
         const result = structuredClone(base.chat);
         result.message.push({ role: "user", data: "late" });
         expect(() => s.apply(base, result)).not.toThrow();
@@ -372,13 +449,13 @@ describe("applyTriggerChat", () => {
         expect(s.emitted).toEqual([]);
     });
 
-    it("re-sets the copy's `scriptstate` over a variable written meanwhile (inherited from the tab, recorded)", () => {
+    it("keeps a variable written meanwhile when the trigger changed another one", () => {
         const s = setup();
         const base = s.baseline();
         const result = structuredClone(base.chat);
         result.scriptstate = { $a: "2" };
         s.external([{ op: "meta", set: { scriptstate: { $a: "1", $b: "ext" } } }]);
         s.apply(base, result);
-        expect(s.stored().scriptstate).toEqual({ $a: "2" });
+        expect(s.stored().scriptstate).toEqual({ $a: "2", $b: "ext" });
     });
 });

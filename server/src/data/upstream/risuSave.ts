@@ -60,6 +60,7 @@ const FORMAT_NAMES: Record<UpstreamSaveFormat, string> = {
     headerless: "data without a RisuAI save header",
 };
 
+/** A refused database decode, carrying the detected format and a user-facing reason; no partial database is returned. */
 export class UpstreamFormatError extends Error {
     readonly format: UpstreamSaveFormat;
 
@@ -371,7 +372,7 @@ function decodeBlocks(bytes: Uint8Array, maxDecodedBytes: number) {
 /**
  * Encodes a flat upstream `Database` as upstream's `encodeRisuSaveLegacy(db, "compression")` does
  * (upstream locks msgpackr 1.10.1, whose Node encoder throws on Node 23 and later for a string of 64
- * characters or more; msgpackr 2.0.6 here writes the same bytes for the values a `Database` holds):
+ * characters or more; msgpackr 2.1.3 here writes the same bytes for the values a `Database` holds):
  * MessagePack with `useRecords: false`, `fflate.compressSync` (gzip, default level, the current
  * time as the header's mtime), and the version 8 header.
  */

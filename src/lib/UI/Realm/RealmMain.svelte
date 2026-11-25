@@ -3,11 +3,22 @@
     import { ArrowLeft, ArrowRight, MenuIcon, SearchIcon, XIcon } from "@lucide/svelte";
     import { alertInput } from "src/ts/alert";
     import { language } from "src/lang";
+    import { trimMarkdown } from "src/ts/parser/parser.svelte";
     import RisuHubIcon from "./RealmHubIcon.svelte";
     import RealmPopUp from "./RealmPopUp.svelte";
     import RealmBlockedCreators from "./RealmBlockedCreators.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { filterBlockedRealmCards } from "src/ts/realmBlocking";
+    import { ensureRealmTerms } from "src/ts/realmTerms";
+    import { OpenRealmStore } from "src/ts/stores.svelte";
+
+    /**
+     * Realm browsing through `src/ts/characterCards.ts` `getRisuHub`; first listing awaits
+     * `src/ts/realmTerms.ts`, and decline leaves the Realm screen. Reactive creator filtering keeps
+     * cards hidden when either popup host or another tab changes the shared block list; missing
+     * creator metadata stays visible. The menu's management dialog refetches after unblocking.
+     * Additional hub HTML passes through the shared DOMPurify helper before insertion.
+     */
 
     let openedData: null | hubType = $state(null);
 
@@ -41,7 +52,14 @@
         return getHub();
     }
 
-    getHub();
+    // Nothing is fetched from Realm before its terms are accepted; declining leaves the Realm screen.
+    ensureRealmTerms().then((accepted) => {
+        if (accepted) {
+            getHub();
+        } else {
+            OpenRealmStore.set(false);
+        }
+    });
 </script>
 
 <div class="w-full flex justify-center mt-4 mb-2">
@@ -121,7 +139,7 @@
         {language.random}
     </button>
 </div>
-{@html hubAdditionalHTML}
+{@html trimMarkdown(hubAdditionalHTML)}
 <div class="w-full flex gap-4 p-2 flex-wrap justify-center">
     {#key visibleCharas}
         {#each visibleCharas as chara}

@@ -1,16 +1,7 @@
 import { MessageChannel as NodeMessageChannel, MessagePort as NodeMessagePort } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("src/ts/globalApi.svelte", () => ({
-    checkCharOrder: vi.fn(),
-    getFetchLogs: vi.fn(),
-    globalFetch: vi.fn(),
-    fetchNative: vi.fn(),
-    saveAsset: vi.fn(),
-    readImage: vi.fn(),
-    getFileSrc: vi.fn(),
-    downloadFile: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: vi.fn(async () => true),
@@ -24,11 +15,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
     risuUnescape: (s: string) => s,
 }));
 vi.mock("src/ts/process/modules", () => ({ moduleUpdate: vi.fn(), getModules: () => [], getModuleMcps: () => [] }));
-vi.mock("./permissionStore", () => ({
-    hasPermissionGrant: () => true,
-    getLastGrantTime: () => Date.now(),
-    recordPermissionGrants: vi.fn(),
-}));
+vi.mock("./permissionStore", async () =>
+    (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
+        hasPermissionGrant: () => true,
+        getLastGrantTime: () => Date.now(),
+        recordPermissionGrants: vi.fn(),
+    }),
+);
 
 import { fetchNative } from "src/ts/globalApi.svelte";
 import { UNREAD_PLUGIN_STREAM_TIMEOUT_MS } from "./factory";
@@ -243,6 +236,31 @@ describe("unread nativeFetch bodies expire", () => {
 });
 
 describe("terminate ends host calls", () => {
+    it("aborts a nativeFetch without a guest signal when unloaded before headers arrive", async () => {
+        let resolveFetch!: (response: Response) => void;
+        let fetchStarted!: () => void;
+        const started = new Promise<void>((resolve) => (fetchStarted = resolve));
+        vi.mocked(fetchNative).mockImplementationOnce(
+            () =>
+                new Promise<Response>((resolve) => {
+                    resolveFetch = resolve;
+                    fetchStarted();
+                }),
+        );
+        replyToGuest = () => {};
+        send({ type: "CALL_ROOT", reqId: "unsignalled", method: "nativeFetch", args: [url] });
+        await started;
+        const signal = hostSignal();
+        try {
+            expect(signal).toBeDefined();
+            expect(signal.aborted).toBe(false);
+            await loadV3Plugins([]);
+            expect(signal.aborted).toBe(true);
+        } finally {
+            resolveFetch(new Response(null, { status: 204 }));
+        }
+    });
+
     it("aborts a nativeFetch still waiting for headers, and bridges nothing when it resolves later", async () => {
         let resolveFetch!: (response: Response) => void;
         vi.mocked(fetchNative).mockImplementationOnce(

@@ -20,11 +20,18 @@ vi.mock("../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 vi.mock("../process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: new Map() }));
 
-vi.mock("./jobChannel", () => ({ rememberHydration: vi.fn(), endJobChannel: vi.fn(), handleChannelEvent: vi.fn() }));
-vi.mock("../diagnostics/collector", () => ({ recordClientEvent: vi.fn() }));
+vi.mock("./jobChannel", () => ({
+    rememberHydration: vi.fn(),
+    rememberJobStreaming: vi.fn(),
+    endJobChannel: vi.fn(),
+    handleChannelEvent: vi.fn(),
+}));
+vi.mock("../diagnostics/collector", async () =>
+    (await import("../diagnostics/tests/collectorMock")).createCollectorMock(),
+);
 
 // Real follow transport and chat module; only the socket and unrelated channel callbacks are doubles.
 class Socket {
@@ -118,6 +125,63 @@ async function boot() {
 }
 
 describe("delta replies in the real tab mirror", () => {
+    it("installs a stream reference's buffered text without JSON-cloning unchanged row fields", async () => {
+        const b = await boot();
+        const record = b.fake.chat("c", "k")!;
+        const carrier = {
+            ...m("b", "B"),
+            candidates: [
+                { id: "previous", data: "x".repeat(190 * 1024) },
+                { id: "current", data: "B" },
+            ],
+            selected: 1,
+            candidatesRevision: 1,
+            generationInfo: { model: "unchanged", outputTokens: 12 },
+        };
+        b.chat.acceptRemoteChat({
+            ...record,
+            data: { ...record.data, message: [m("a", "A", "char"), carrier, m("c", "C", "char")] },
+        });
+        b.socket.message(b.accepted("raw"));
+        b.socket.message(b.chunk(0, 3, " buffered"));
+        expect(b.text()).toBe("raw");
+        const event: GenerationEvent = {
+            type: "chatPatch",
+            epoch: b.fake.store.epoch(),
+            characterId: "c",
+            id: "k",
+            baseRevision: record.revision,
+            revision: record.revision,
+            count: 3,
+            messages: [{ after: "a", id: "b", streamed: { generationId: "g", seq: 1 } }],
+            streaming: [{ messageId: "b", generationId: "g", seq: 1 }],
+        };
+        // Encode the wire event before measuring only the client's hydration work.
+        const wire = JSON.stringify(event);
+        const stringify = vi.spyOn(JSON, "stringify");
+        let serializedBytes: number;
+        try {
+            b.socket.onmessage!({ data: wire });
+            serializedBytes = stringify.mock.results.reduce(
+                (bytes, result) => bytes + (result.type === "return" ? (result.value?.length ?? 0) : 0),
+                0,
+            );
+        } finally {
+            stringify.mockRestore();
+        }
+
+        // No unchanged field of the 190 KiB row is copied by JSON.
+        expect(serializedBytes).toBeLessThan(1024);
+        expect(b.chat.findChat(refK)!.message).toEqual([
+            m("a", "A", "char"),
+            { ...carrier, data: "raw buffered" },
+            m("c", "C", "char"),
+        ]);
+        expect(b.socket.sent).toEqual([]);
+        expect(b.fake.requests).toEqual([]);
+        expect(b.chat.hasUnsavedChatWork()).toBe(false);
+    });
+
     it("reconstructs a continued UTF-16 reply and a trim from buffered text while the display lags", async () => {
         const b = await boot();
         b.socket.message(b.accepted("A😀old suffix"));
@@ -131,7 +195,7 @@ describe("delta replies in the real tab mirror", () => {
         expect(b.text()).toBe("A😀");
         expect(b.socket.sent).toEqual([]);
         expect(b.chat.isChatBehind(refK)).toBe(false);
-        expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
     });
 
@@ -179,7 +243,7 @@ describe("delta replies in the real tab mirror", () => {
         expect(b.text()).toBe("current😀!");
         b.socket.message(b.chunk(99, 0, "miss again", 100));
         expect(b.socket.sent).toEqual([{ type: "resyncReply" }, { type: "resyncReply" }]);
-        expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
     });
 

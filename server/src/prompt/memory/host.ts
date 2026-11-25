@@ -5,6 +5,14 @@ import type { RegexOp, RegexOpResult } from "../../scripts/worker.ts";
 import type { EmbeddingEnv } from "../embeddings.ts";
 
 /**
+ * The boundary of the server's memory algorithms: they read settings, make requests, embed, and count
+ * only through these types. A job's host is built by the runner (`server/src/prompt/runner.ts`), a
+ * detached memory task's by `createMemoryTaskHost` (`memoryTaskHost.ts`). The stored memory key
+ * (`supaMemoryKey`) is used behind it, and a provider's text passes `redact` before an algorithm
+ * puts it into an error.
+ */
+
+/**
  * What the server's memory algorithms (`supaMemory.ts`, `hypav2.ts`, `hypav3.ts`,
  * `hanurai.ts` here) read and call outside their arguments. The client equivalents are module state
  * (`getDatabase`, `requestChatData`, `runSummarizer`, the LocalForage vectors, `parseChatML`,
@@ -26,7 +34,10 @@ export type MemoryHost = {
     request(formated: OpenAIChat[]): Promise<requestDataResponse>;
     /**
      * The client's `auxFetchJson("openai-completions", ...)`: OpenAI's `/v1/completions` with the
-     * stored memory key, as `{ ok, data }`.
+     * stored memory key, as `{ ok, data }`. An answer whose body is not JSON is a failure (`ok: false`
+     * with the text), and a successful answer that carries the stored key in any form is refused
+     * (`ok: false`), as the browser path's proxy refuses it; the job's host (`server/src/prompt/runner.ts`)
+     * does both. A detached task's host has none.
      */
     completions(body: {
         model: string;
@@ -38,10 +49,14 @@ export type MemoryHost = {
     summarizer(text: string): Promise<string>;
     /** The job's embeddings, for `new HypaProcesser(...)` and `new HypaProcessorV2(...)`. */
     embeddings: EmbeddingEnv;
+    /** Discards a tracked local-model refusal when the algorithm recovers from the failure and continues. */
+    recoverLocalModelFailure?(): void;
     /** A user regex on a script worker, under a per-task deadline and the run's abort signal. */
     regex(op: RegexOp, opts?: { deadlineMs?: number }): Promise<RegexOpResult>;
     /** HypaV3's summary separator limits; absent, the production ones (tests lengthen them). */
     separatorLimits?: HypaV3SeparatorLimits;
+    /** Plain-text CBS with the same scope, budget and failure checks as `parseChatML`. */
+    parse(text: string): string;
     /** `parseChatML` with the job's CBS (the job's chat and its owner). */
     parseChatML(text: string): OpenAIChat[] | null;
     /** `getUserName()`: the job's effective persona. */

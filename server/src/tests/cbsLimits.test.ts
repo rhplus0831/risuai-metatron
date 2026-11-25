@@ -231,7 +231,7 @@ describe("the clock", () => {
         const now = vi.spyOn(performance, "now");
         const ev = evaluator(undefined);
         expect(ev.risuChatParser("{{user}} {{char}} {{replace::aaa::a::$5}} {{range::[3]}} {{cbr::2}}")).toBe(
-            'User Sel $5$5$5 ["0","1","2"] cbr::2cbr::2',
+            'User Sel $5$5$5 ["0","1","2"] \\n\\n',
         );
         expect(ev.risuChatParser("{{#each [1,2] as x}}{{slot::x}}{{/each}}{{".repeat(3))).toBe("12{{12{{12{{");
         expect(now).not.toHaveBeenCalled();
@@ -366,6 +366,15 @@ describe("the registry's charges", () => {
         expect(limitError(() => bounded(1000).risuChatParser("{{cbr::100000}}")).reason).toBe("work");
         expect(limitError(() => bounded(100_000).risuChatParser("{{cbr::1e9}}")).reason).toBe("work");
         expect(unbounded.risuChatParser("{{cbr::1e9}}")).toBe("{{cbr::1e9}}");
+    });
+
+    it("escaped newline repetition charges its two-character output rather than the alias length", () => {
+        for (const alias of ["cbr", "cnl", "cnewline"]) {
+            const input = `{{${alias}::30}}`;
+            expect(bounded(200).risuChatParser(input)).toBe("\\n".repeat(30));
+            // The output alone fits, but scanning and allocating it twice exceed this allowance.
+            expect(limitError(() => bounded(100).risuChatParser(input)).reason).toBe("work");
+        }
     });
 
     it("replace: the bound follows the replacement's tokens (a literal $5 is cheap), and a missing replacement is charged as the text undefined", () => {

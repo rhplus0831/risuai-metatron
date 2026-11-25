@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // `TextAreaInput`'s popup writes its draft back to the field it was opened on when it closes, and
 // with a forwarded preset field that is the selected preset.
 
-vi.mock("./globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("./globalApi.svelte", async () => (await import("./tests/globalApiMock")).createGlobalApiMock());
 vi.mock("./alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         // No terminal notice is shown unless a test sets one (a writable here; read-only in `alert.ts`).
@@ -42,7 +42,7 @@ import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
 import { chatEntry, selectChat } from "./storage/chatStore.svelte";
 import { selectCharacter, selectedIndex, selection, selectPreset } from "./storage/selection.svelte";
-import { activePreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
+import { activePreset, editedPreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "./storage/tests/installFlatDatabase";
 import {
     alertStore,
@@ -231,6 +231,29 @@ describe("the stored hotkeys and their ui toggle", () => {
     const pressWith = (key: string) =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
 
+    it("blocks a custom send hotkey while editing a popup and dispatches it after close", () => {
+        settings.hotkeys = [{ key: "j", ctrl: true, action: "send" }];
+        settings.providers.presetChain = "B";
+        const button = document.createElement("button");
+        button.className = "button-icon-send";
+        const click = vi.fn<() => void>();
+        button.addEventListener("click", click);
+        document.body.appendChild(button);
+        try {
+            popUpEditorStore.open = true;
+            pressWith("j");
+            expect(click).not.toHaveBeenCalled();
+            expect(selection.presetId).toBe("a");
+            expect(settings.providers.presetChain).toBe("B");
+
+            popUpEditorStore.open = false;
+            pressWith("j");
+            expect(click).toHaveBeenCalledOnce();
+        } finally {
+            button.remove();
+        }
+    });
+
     it("dispatch the stored hotkeys, follow an edit of the record, and drop scrollToActiveChar while its toggle is off", () => {
         installFlatDatabase({
             characters: [],
@@ -351,6 +374,21 @@ describe("the previous/next character hotkeys", () => {
         expect(selection.characterId).toBeNull();
     });
 
+    it("steps over a group in both directions", () => {
+        installFlatDatabase({
+            characters: [
+                character("a", "Alice"),
+                { ...character("group", "Bob's group"), type: "group" },
+                character("c", "Carol"),
+            ],
+        });
+        selectCharacter("a");
+        pressChar("]");
+        expect(selection.characterId).toBe("c");
+        pressChar("[");
+        expect(selection.characterId).toBe("a");
+    });
+
     it("previous works from the last character by name (it used to refuse it)", () => {
         selectCharacter("c");
         expect(selectedIndex()).toBe(0);
@@ -435,20 +473,21 @@ describe("the preset hotkeys and Escape with the binding layers", () => {
         document.body.replaceChildren();
     });
 
-    it("Ctrl+N binds the open chat's prompt preset and leaves the tab's selection; at home it selects for the tab", async () => {
+    it("Ctrl+N with a chat open selects for the tab and leaves the chat's binding; at home it selects for the tab too", async () => {
         press("3");
         await Promise.resolve();
-        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(selection.presetId).toBe("c");
+        expect(editedPreset.temperature).toBe(30);
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
         expect(chatEntry(refJ)).not.toHaveProperty("promptPresetId");
-        expect(selection.presetId).toBe("a");
-        expect(activePreset.temperature).toBe(30);
+        expect(activePreset.temperature).toBe(50);
         expect(alertToast).toHaveBeenLastCalledWith("Changed to Preset: C");
 
         selectCharacter(null);
-        press("2");
+        press("1");
         await Promise.resolve();
-        expect(selection.presetId).toBe("b");
-        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(selection.presetId).toBe("a");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
         expect(alertToast).toHaveBeenCalledTimes(2);
     });
 
@@ -470,7 +509,8 @@ describe("the preset hotkeys and Escape with the binding layers", () => {
         closeAll();
         press("3");
         await Promise.resolve();
-        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(selection.presetId).toBe("c");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
     });
 
     it("Escape closes one layer per press, from the top: persona list, model list, preset list, dialog, then settings", () => {
@@ -897,5 +937,40 @@ describe("the preview hotkey", () => {
         await Promise.resolve();
         expect(status()).toBe(newer);
         expect(alertMd).not.toHaveBeenCalled();
+    });
+});
+
+describe("IME composition", () => {
+    // A stroke the IME is still composing (`isComposing`), or Safari's commit key after it ended the
+    // composition (`keyCode` 229): the document handler takes neither.
+    function strokeSend(composing: { isComposing?: boolean; keyCode?: number }) {
+        const ev = new KeyboardEvent("keydown", {
+            key: "Enter",
+            ctrlKey: true,
+            altKey: true,
+            bubbles: true,
+            cancelable: true,
+        });
+        for (const [name, value] of Object.entries(composing)) {
+            Object.defineProperty(ev, name, { value });
+        }
+        document.dispatchEvent(ev);
+    }
+
+    it("runs no hotkey for a composing stroke: Ctrl+Alt+Enter sends only once the composition ended", () => {
+        const sendButton = document.createElement("button");
+        sendButton.className = "button-icon-send";
+        const click = vi.fn();
+        sendButton.addEventListener("click", click);
+        document.body.appendChild(sendButton);
+        try {
+            strokeSend({ isComposing: true });
+            strokeSend({ keyCode: 229 });
+            expect(click).not.toHaveBeenCalled();
+            strokeSend({});
+            expect(click).toHaveBeenCalledTimes(1);
+        } finally {
+            sendButton.remove();
+        }
     });
 });

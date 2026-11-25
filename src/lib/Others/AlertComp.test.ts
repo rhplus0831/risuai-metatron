@@ -1,17 +1,45 @@
 // @vitest-environment happy-dom
 
 import { flushSync, mount, tick, unmount } from "svelte";
+import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { showHypaV2Alert, type alertData } from "src/ts/alert";
+import {
+    alertInput,
+    alertWait,
+    dismissReloadNotice,
+    reloadNotice,
+    showHypaV2Alert,
+    type alertData,
+} from "src/ts/alert";
+import { saveOverUnseenMemory } from "src/ts/storage/tests/memoryEditorServer";
 import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "src/ts/alertQueue";
 import { initHotkey } from "src/ts/hotkey";
+import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
 import { alertStore, settingsOpen } from "src/ts/stores.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { findCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
-import { assembleChats, findChat, selectChat, setChatMeta, setChatWorkListener } from "src/ts/storage/chatStore.svelte";
+import {
+    applyServerGeneration,
+    assembleChats,
+    captureChatBaseline,
+    chatNoticeSeq,
+    endServerJob,
+    findChat,
+    finishIdleChatRefresh,
+    hasUnsavedChatWork,
+    noteRemoteChat,
+    noteRemoteStreaming,
+    seedChats,
+    selectChat,
+    setChatMeta,
+    setChatWorkListener,
+} from "src/ts/storage/chatStore.svelte";
 import SideChatList from "src/lib/SideBars/SideChatList.svelte";
 import AlertComp from "./AlertComp.svelte";
+import { language } from "src/lang";
+import * as sourcemap from "src/ts/sourcemap";
 
 const dialogs: AlertDialog[] = [];
 let component: ReturnType<typeof mount> | undefined;
@@ -70,6 +98,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+    resetGenerationProgress();
     setChatWorkListener(null);
     for (const dialog of dialogs.splice(0)) dialog.cancel();
     alertStore.answer("");
@@ -132,6 +161,56 @@ describe("dialogs keep their requested character and chat", () => {
         input.dispatchEvent(new Event("input", { bubbles: true }));
         flushSync();
     }
+    function memoryTab(label: "Chunks" | "Summarized") {
+        [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === label)!.click();
+        flushSync();
+        return target.querySelector<HTMLTextAreaElement>("textarea")!;
+    }
+    const initialRevision = "11111111-2222-4333-8444-555555555555:1:1";
+    const jobRevision = "11111111-2222-4333-8444-555555555555:1:2";
+    async function openMemoryFor(chaId: string) {
+        const chat = ref(chaId);
+        installChats();
+        seedChats([{ characterId: chaId, id: chat.chatId, revision: initialRevision }], []);
+        select(chaId);
+        showHypaV2Alert();
+        await showAlert();
+        return chat;
+    }
+
+    it.each(["this tab's job", "the change feed"])(
+        "disables Create a Copy when %s locks a message after Chat Options opens",
+        async (origin) => {
+            installChats(true);
+            const chat = { chaId: "a", chatId: "chat-a-other" };
+            const listTarget = document.createElement("div");
+            document.body.append(listTarget);
+            sidebar = mount(SideChatList, { target: listTarget, props: { chara: findCharacter(chat.chaId)! } });
+            flushSync();
+            listTarget.querySelector<HTMLElement>(`[data-risu-chat-id="${chat.chatId}"] [role="button"]`)!.click();
+            await showAlert();
+            const copy = [...dialogPanel().querySelectorAll("button")].find(
+                (button) => button.textContent?.trim() === language.createCopy,
+            )!;
+            expect(copy.disabled).toBe(false);
+
+            const message = { messageId: "message-a-other", generationId: `reply-${origin}`, seq: 1 };
+            const jobId = "job-a-other";
+            const feed = { characterId: chat.chaId, id: chat.chatId };
+            const fromJob = origin === "this tab's job";
+            if (fromJob) applyServerGeneration(chat, { ...message, jobId, text: "The door opened and" });
+            else noteRemoteStreaming([{ ...feed, streaming: [message] }]);
+            try {
+                flushSync();
+                expect(copy.disabled).toBe(true);
+            } finally {
+                if (fromJob) endServerJob(jobId);
+                else noteRemoteStreaming([{ ...feed, streaming: [] }]);
+            }
+            flushSync();
+            expect(copy.disabled).toBe(false);
+        },
+    );
 
     it("shows the requested character's branches after selection changes while queued and while open", async () => {
         installChats();
@@ -196,6 +275,139 @@ describe("dialogs keep their requested character and chat", () => {
         expect(work).not.toHaveBeenCalled();
     });
 
+    it("keeps both HypaV2 lists read-only during generation and edits the chunks delivered by the idle read", async () => {
+        const chat = await openMemoryFor("b");
+        const original = memory(chat.chaId);
+        const job = { jobId: "preview", characterId: chat.chaId, chatId: chat.chatId };
+        const workQueued = () => hasUnsavedChatWork((id) => id === chat.chaId);
+        const expectReadOnly = (notice: string) => {
+            for (const tab of ["Chunks", "Summarized"] as const) {
+                const input = memoryTab(tab);
+                expect(input.readOnly, tab).toBe(true);
+                expect(input.disabled, tab).toBe(false);
+                expect(dialogPanel().querySelector('[role="status"]')?.textContent).toBe(notice);
+                edit("refused edit");
+                expect(workQueued()).toBe(false);
+                expect(findChat(chat)?.hypaV2Data).toEqual(original);
+            }
+        };
+
+        const release = beginLocalSend(chat)!;
+        try {
+            flushSync();
+            expectReadOnly(language.chatGenerating);
+        } finally {
+            release();
+        }
+        expect(memoryTab("Chunks").readOnly).toBe(false);
+
+        noteGenerationFrame({ ...job, state: "running", kind: "preview", clientId: "other-tab", startedAt: 1, at: 1 });
+        flushSync();
+        expectReadOnly(language.chatGenerating);
+        expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
+        noteGenerationFrame({ ...job, state: "ended" });
+        flushSync();
+        expectReadOnly(language.memoryTasks.awaitingSync);
+
+        const data = captureChatBaseline(chat).chat;
+        data.hypaV2Data = {
+            lastMainChunkID: 2,
+            chunks: [...original.chunks, { mainChunkID: 2, text: "generated chunk" }],
+            mainChunks: [
+                { id: 2, text: "generated summary", chatMemos: ["new-message"], lastChatMemo: "new-message" },
+                ...original.mainChunks,
+            ],
+        };
+        expect(
+            finishIdleChatRefresh(
+                { characterId: chat.chaId, id: chat.chatId, revision: jobRevision, data },
+                chatNoticeSeq(chat),
+                initialRevision,
+            ),
+        ).toBe(true);
+        flushSync();
+        expect(workQueued()).toBe(false);
+
+        const chunks = memoryTab("Chunks");
+        expect(chunks.readOnly).toBe(false);
+        expect([...target.querySelectorAll("textarea")].map((field) => field.value)).toEqual([
+            "b chunk",
+            "generated chunk",
+        ]);
+        edit("corrected chunk");
+        const summaries = memoryTab("Summarized");
+        expect(summaries.readOnly).toBe(false);
+        expect(summaries.value).toBe("generated summary");
+        edit("generated summary corrected");
+        expect(findChat(chat)?.hypaV2Data).toEqual({
+            lastMainChunkID: 2,
+            chunks: [
+                { mainChunkID: 1, text: "corrected chunk" },
+                { mainChunkID: 2, text: "generated chunk" },
+            ],
+            mainChunks: [
+                { ...data.hypaV2Data.mainChunks[0], text: "generated summary corrected" },
+                original.mainChunks[0],
+            ],
+        });
+        expect(workQueued()).toBe(true);
+    });
+
+    it("pauses the open HypaV2 dialog when a revision notice arrives after disconnect", async () => {
+        const chat = await openMemoryFor("c");
+        const job = { jobId: "summary-job", characterId: chat.chaId, chatId: chat.chatId };
+        noteGenerationFrame({ ...job, state: "running", kind: "send", clientId: "other-tab", startedAt: 1, at: 1 });
+        flushSync();
+        const input = target.querySelector<HTMLTextAreaElement>("textarea")!;
+        expect(input.readOnly).toBe(true);
+        resetGenerationProgress();
+        flushSync();
+        expect(input.readOnly).toBe(false);
+
+        expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
+        flushSync();
+        expect(input.readOnly).toBe(true);
+        expect(dialogPanel().querySelector('[role="status"]')?.textContent).toBe(language.memoryTasks.awaitingSync);
+        edit("refused after reconnect");
+        const workQueued = () => hasUnsavedChatWork((id) => id === chat.chaId);
+        expect(workQueued()).toBe(false);
+        expect(findChat(chat)?.hypaV2Data).toEqual(memory("c"));
+
+        const data = captureChatBaseline(chat).chat;
+        data.hypaV2Data!.chunks[0].text = "generated while disconnected";
+        expect(
+            finishIdleChatRefresh(
+                { characterId: chat.chaId, id: chat.chatId, revision: jobRevision, data },
+                chatNoticeSeq(chat),
+                initialRevision,
+            ),
+        ).toBe(true);
+        flushSync();
+        expect(input.readOnly).toBe(false);
+        expect(input.value).toBe("generated while disconnected");
+        expect(dialogPanel().querySelector('[role="status"]')).toBeNull();
+        expect(workQueued()).toBe(false);
+    });
+
+    it("shows the job's chunks in the open HypaV2 editor after an unseen memory write", async () => {
+        const chat = await openMemoryFor("a");
+        const hypaV2Data = memory("a");
+        hypaV2Data.chunks[0].text = "New job chunk";
+        try {
+            const { stored, reread } = await saveOverUnseenMemory(chat, { hypaV2Data }, () => {
+                expect(target.querySelector("textarea")!.readOnly).toBe(false);
+                edit("Correction from the old copy");
+            });
+            expect(stored.hypaV2Data).toEqual(hypaV2Data);
+            expect(reread).toBe(true);
+            flushSync();
+            expect(target.querySelector("textarea")!.value).toBe("New job chunk");
+            expect(get(reloadNotice)).toBe(language.memoryEditRefused);
+        } finally {
+            dismissReloadNotice();
+        }
+    });
+
     it.each(["unloaded", "without memory"])(
         "shows no HypaV2 editor and writes nothing when the requested chat is %s",
         async (state) => {
@@ -211,7 +423,7 @@ describe("dialogs keep their requested character and chat", () => {
                     [{ chaId: "a" }, { chaId: "b" }],
                     [
                         { characterId: "a", id: "chat-a", revision: "r1", name: "Chat a", fmIndex: 0 },
-                        { characterId: "b", id: "chat-b", revision: "r1", data: otherChat },
+                        { characterId: "b", id: "chat-b", revision: "r1", trashedAt: null, data: otherChat },
                     ],
                     [
                         { characterId: "a", revision: "o1", ids: ["chat-a"] },
@@ -233,6 +445,24 @@ describe("dialogs keep their requested character and chat", () => {
 });
 
 describe("alert dialog focus and keyboard answers", () => {
+    it("renders alertInput's secret option as a marker on its visible field and leaves ordinary prompts unmarked", async () => {
+        for (const secret of [true, false]) {
+            const answer = alertInput("Value", undefined, "Initial value", secret ? { secret: true } : undefined);
+            await showAlert();
+            const input = target.querySelector<HTMLInputElement>("#alert-input")!;
+            expect(input.type).toBe("text");
+            expect(input.hasAttribute("data-plugin-secret")).toBe(secret);
+            expect(input.value).toBe("Initial value");
+            input.value = "Typed value";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            await tick();
+            stroke("Enter");
+            await expect(answer).resolves.toBe("Typed value");
+            await hideAlert();
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+        }
+    });
+
     it.each([
         ["Enter", "yes"],
         ["Escape", ""],
@@ -285,6 +515,22 @@ describe("alert dialog focus and keyboard answers", () => {
         expect(document.activeElement).toBe(other);
     });
 
+    it("runs Cancel on a cancellable wait and removes the button on a plain wait", async () => {
+        const onCancel = vi.fn();
+        alertWait("Uploading", undefined, onCancel);
+        await showAlert();
+        const buttons = () =>
+            [...target.querySelectorAll("button")].filter((button) => button.textContent?.trim() === language.cancel);
+        expect(buttons()).toHaveLength(1);
+        buttons()[0].click();
+        expect(onCancel).toHaveBeenCalledOnce();
+
+        alertWait("Saving");
+        flushSync();
+        expect(target.textContent).toContain("Saving");
+        expect(target.querySelector("button")).toBeNull();
+    });
+
     it("leaves the composer focused when wait, wait2, and progress overlays appear", async () => {
         for (const type of ["wait", "wait2", "progress"] as const) {
             const data = { type, msg: "Working", submsg: "50" };
@@ -323,4 +569,54 @@ describe("alert dialog focus and keyboard answers", () => {
         await hideAlert();
         expect(document.activeElement).toBe(composer);
     });
+});
+
+describe("stack trace translation ownership", () => {
+    it.each(["translated", "unavailable", "rejected"] as const)(
+        "keeps an earlier error's %s trace result out of a later error across a wait status",
+        async (outcome) => {
+            const pending: {
+                trace: string;
+                resolve: (result: sourcemap.StackTraceTranslationResult) => void;
+                reject: (error: Error) => void;
+            }[] = [];
+            vi.spyOn(sourcemap, "translateStackTrace").mockImplementation(
+                (trace) => new Promise((resolve, reject) => pending.push({ trace, resolve, reject })),
+            );
+            const first = open({ type: "error", msg: "Error A", stackTrace: "raw trace A" });
+            await showAlert();
+            expect(pending.map(({ trace }) => trace)).toEqual(["raw trace A"]);
+            first.cancel();
+            alertStore.set({ type: "wait", msg: "Waiting between errors" });
+            flushSync();
+            expect(target.textContent).toContain("Waiting between errors");
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+            open({ type: "error", msg: "Error B", stackTrace: "raw trace B" });
+            flushSync();
+            expect(pending.map(({ trace }) => trace)).toEqual(["raw trace A", "raw trace B"]);
+            [...target.querySelectorAll("button")]
+                .find((button) => button.textContent?.trim() === language.showErrorDetails)!
+                .click();
+            flushSync();
+            const details = () => target.querySelector("pre")!.textContent!;
+            expect(details()).toContain(language.translating);
+
+            if (outcome === "rejected") pending[0].reject(new Error("A's map failed"));
+            else pending[0].resolve({ didTranslate: outcome === "translated", stackTrace: "translated trace A" });
+            await tick();
+            flushSync();
+            expect.soft(details()).toContain("raw trace B");
+            expect.soft(details()).not.toContain("translated trace A");
+            expect.soft(details()).not.toContain(language.stackTraceTranslationFailed);
+            expect.soft(details()).toContain(language.translating);
+            expect(pending.map(({ trace }) => trace)).toEqual(["raw trace A", "raw trace B"]);
+
+            pending[1].resolve({ didTranslate: true, stackTrace: "translated trace B" });
+            await tick();
+            flushSync();
+            expect(details()).toContain("translated trace B");
+            expect(details()).not.toContain(language.translating);
+            expect(details()).not.toContain(language.stackTraceTranslationFailed);
+        },
+    );
 });

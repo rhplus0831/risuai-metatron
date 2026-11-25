@@ -21,12 +21,22 @@
     import { getUserName, selectSingleFile } from "src/ts/util";
     import { previewChat, sendChat, type OpenAIChat } from "src/ts/process/index.svelte";
     import { isChatBusy } from "src/ts/process/chatStatus.svelte";
+    import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
+    import { checkServerJobBinding } from "src/ts/process/serverCommands";
     import { alertStore } from "src/ts/stores.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { applyChatTemplate, chatTemplates } from "src/ts/process/templates/chatTemplate";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { loadLoreBookV3Prompt } from "src/ts/process/lorebook.svelte";
     import { getModules } from "src/ts/process/modules";
+
+    /**
+     * The developer pane: chat variables, token counts, an autopilot that sends lines into the selected chat, and the
+     * prompt and lorebook previews. The prompt preview is a server preview job (`previewChat`,
+     * `src/ts/process/index.svelte.ts`) for the chat selected at the click, refused while that chat is busy. The
+     * instruct preview takes the character and user names of that chat before the await, so a selection change
+     * meanwhile cannot rename the result.
+     */
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
@@ -270,13 +280,14 @@
         className="mt-2"
         onclick={async () => {
             // Each line is appended to the chat selected at the start and sent as a server job (a
-            // group's speakers are chosen by the server); the run stops at a send that did not go.
+            // group's speakers are chosen by the server); the run stops at a send that did not go,
+            // and before a line when the binding is incomplete or lore overrides are orphaned.
             const ref = currentChatRef();
             if (!ref) {
                 return;
             }
             for (const line of autopilot) {
-                if (!findChat(ref) || isChatBusy(ref)) {
+                if (!findChat(ref) || isChatBusy(ref) || refuseOrphanedOverrides(ref) || !checkServerJobBinding(ref)) {
                     return;
                 }
                 appendMessage(ref, { role: "user", data: line });

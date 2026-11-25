@@ -14,11 +14,9 @@ const deps = vi.hoisted(() => ({
 vi.mock("localforage", () => ({
     default: { createInstance: () => ({ getItem: async () => null, setItem: async () => undefined }) },
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    globalFetch: deps.globalFetch,
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ globalFetch: deps.globalFetch }),
+);
 vi.mock("src/ts/process/request/request", () => ({ requestChatData: deps.request }));
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
@@ -46,10 +44,17 @@ import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import type { CapturedTransform } from "src/ts/parser/transformClient";
 import { runTranslator, translate, translateHTML, translateVox } from "./translator";
+import { globalFetchFromResponse } from "src/ts/tests/globalApiMock";
 import { sayTTS, stopTTS } from "src/ts/process/tts";
 import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 
 const media = settings.memoryTranslateMedia;
+const originalGlobals = new Map(
+    ["fetch", "speechSynthesis", "SpeechSynthesisUtterance"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 function configure() {
     installFlatDatabase({
         characters: [],
@@ -80,9 +85,13 @@ type Request = { body?: { text: string | string[]; target_lang: string } };
 function reply(url: string, init: Request = {}) {
     if (url.startsWith("https://translate.google.com/")) {
         const query = new URL(url).searchParams;
+        // The experimental page is requested with `rawResponse`, so it arrives as bytes.
         return {
             ok: true,
-            data: `<div class="result-container">${query.get("tl").toUpperCase()}:${query.get("q")}</div>`,
+            status: 200,
+            data: new TextEncoder().encode(
+                `<div class="result-container">${query.get("tl").toUpperCase()}:${query.get("q")}</div>`,
+            ),
         };
     }
     const { text, target_lang } = init.body;
@@ -98,7 +107,8 @@ function reply(url: string, init: Request = {}) {
               },
           };
 }
-const calls = () => deps.globalFetch.mock.calls.length + deps.fetch.mock.calls.length;
+// Every provider request goes through `globalFetch`; `deps.fetch` is the direct Google adapter's transport behind it.
+const calls = () => deps.globalFetch.mock.calls.length;
 
 it("suppresses translator failures after speech is Stopped while signal-free translator calls still alert", async () => {
     media.translatorType = "llm";
@@ -144,19 +154,37 @@ it("suppresses translator failures after speech is Stopped while signal-free tra
 beforeEach(() => {
     vi.clearAllMocks();
     configure();
-    deps.globalFetch.mockImplementation(async (url: string, init: Request) => reply(url, init));
+    deps.globalFetch.mockImplementation(async (url: string, init: Request) =>
+        url.startsWith("https://translate.googleapis.com/")
+            ? globalFetchFromResponse(deps.fetch, url, init)
+            : reply(url, init),
+    );
     deps.fetch.mockImplementation(async (url: string) => {
         const query = new URL(url).searchParams;
         return Response.json([[[`${query.get("tl").toUpperCase()}:${query.get("q")}`]]]);
     });
-    vi.stubGlobal("fetch", deps.fetch);
     deps.script.mockImplementation(async (_char: unknown, text: string) => ({ data: text }));
     // A visible marker proves that the translated node, including a replacement node, was processed.
     deps.markdown.mockImplementation((node: HTMLElement) => node.setAttribute("data-markdown", "applied"));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
+});
 
 describe("translateHTML media regressions", () => {
+    it("sends escaped markup in a combined paragraph to the provider as literal text", async () => {
+        media.translatorType = "google";
+        media.combineTranslation = true;
+
+        await translateHTML("<p>&lt;b&gt;x&lt;/b&gt;</p>", false, "", 0);
+
+        // The Markdown write-back is outside this contract; inspect only the provider request.
+        expect(deps.fetch.mock.calls.map(([url]) => new URL(url).searchParams.get("q"))).toEqual(["<b>x</b>"]);
+    });
+
     it("finishes blank nodes and more than eleven nodes in sequential bounded DeepLX batches, including the tail and an oversized node", async () => {
         await expect(translateHTML("<p>  </p>\n<span>\t</span>", false, "", 0)).resolves.toContain("<p>  </p>");
         expect(calls()).toBe(0);
@@ -263,6 +291,30 @@ describe("translateHTML media regressions", () => {
         },
     );
 
+    it.each([
+        ["translate=no", '<span translate="no">PRIVATE</span>', '[translate="no"]'],
+        ["script", "<script>PRIVATE</script>", "script"],
+    ])("preserves nested %s text when combining ordinary paragraphs", async (kind, protectedHTML, selector) => {
+        media.translatorType = "google";
+        media.combineTranslation = true;
+        const publicText = `public-${kind}`;
+        const rendered = body(
+            await translateHTML(
+                `<p><span>${publicText} ${protectedHTML}</span></p><p>ordinary-${kind} <span>paragraph</span></p>`,
+                false,
+                "",
+                0,
+            ),
+        );
+
+        const sent = deps.fetch.mock.calls.map(([url]) => new URL(url).searchParams.get("q"));
+        expect(sent.sort()).toEqual([publicText, `ordinary-${kind} paragraph`].sort());
+        const paragraphs = rendered.querySelectorAll("p");
+        expect(paragraphs[0].textContent).toContain(`KO:${publicText}`);
+        expect(paragraphs[0].querySelector(selector)?.textContent).toBe("PRIVATE");
+        expect(paragraphs[1].textContent).toBe(`KO:ordinary-${kind} paragraph`);
+    });
+
     // The LLM translator never enters the DOM traversal (it translates the whole HTML in one call).
     it.each(["deeplX", "deepl", "google"] as const)(
         "applies display scripts and Markdown to combined paragraphs with %s",
@@ -283,8 +335,9 @@ describe("translateHTML media regressions", () => {
                 const processed = changed ? `<em>${translated}</em>` : translated;
                 deps.request.mockResolvedValue({ type: "success", result: `<p>${translated}</p>` });
                 deps.script.mockResolvedValue({ data: processed });
+                const signal = new AbortController().signal;
                 const rendered = body(
-                    await translateHTML(`<p><strong>${source}</strong></p>`, false, "", 7, false, transform),
+                    await translateHTML(`<p><strong>${source}</strong></p>`, false, "", 7, false, transform, signal),
                 );
                 expect(deps.script).toHaveBeenCalledWith(
                     expect.anything(),
@@ -294,6 +347,7 @@ describe("translateHTML media regressions", () => {
                     {},
                     transform,
                     "translation",
+                    signal,
                 );
                 expect(deps.markdown).toHaveBeenCalledTimes(1);
                 expect(rendered.querySelector("p")?.getAttribute("data-markdown")).toBe("applied");
@@ -304,6 +358,67 @@ describe("translateHTML media regressions", () => {
 });
 
 describe("translate memory cache ownership", () => {
+    it("does not return or cache an experimental Google error page when the direct fallback also fails", async () => {
+        media.translatorType = "google";
+        media.useExperimentalGoogleTranslator = true;
+        const source = "experimental Google retry";
+        deps.globalFetch.mockResolvedValueOnce({
+            ok: false,
+            status: 429,
+            data: new TextEncoder().encode('<div class="result-container">Quota page text</div>'),
+        });
+        deps.fetch.mockRejectedValue(new TypeError("Direct Google unavailable"));
+
+        await expect(translate(source, false)).rejects.toThrow("Direct Google unavailable");
+        expect(deps.globalFetch).toHaveBeenCalledWith(
+            "https://translate.google.com/m?tl=ko&sl=en&q=experimental%20Google%20retry",
+            expect.objectContaining({ rawResponse: true }),
+        );
+
+        await expect(translate(source, false)).resolves.toBe("KO:experimental Google retry");
+        // The experimental page, the direct fallback, then the experimental page again.
+        expect(deps.globalFetch).toHaveBeenCalledTimes(3);
+        expect(deps.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps every chunk and the cached pair with the provider selected when translation started", async () => {
+        media.translatorType = "deepl";
+        const source = "provider-first\n{{img::provider-switch}}\nprovider-second";
+        const deeplResult = "DeepL:provider-first\n{{img::provider-switch}}\nDeepL:provider-second";
+        const deeplXResult = "DeepLX:provider-first\n{{img::provider-switch}}\nDeepLX:provider-second";
+        const started = deferred<void>();
+        const release = deferred<void>();
+        deps.globalFetch.mockImplementation(async (url: string, init: Request) => {
+            const deepl = new URL(url).host === "api-free.deepl.com";
+            const text = Array.isArray(init.body.text) ? init.body.text[0] : init.body.text;
+            if (deps.globalFetch.mock.calls.length === 1) {
+                started.resolve();
+                await release.promise;
+            }
+            return deepl
+                ? { ok: true, data: { translations: [{ text: `DeepL:${text}` }] } }
+                : { ok: true, data: { data: `DeepLX:${text}` } };
+        });
+
+        const work = translate(source, false);
+        try {
+            await started.promise;
+            media.translatorType = "deeplX";
+        } finally {
+            release.resolve();
+        }
+        await expect(work).resolves.toBe(deeplResult);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(2);
+
+        // The new configuration must not reuse the producer's old-provider result.
+        await expect(translate(source, false)).resolves.toBe(deeplXResult);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(4);
+        media.translatorType = "deepl";
+        await expect(translate(source, false)).resolves.toBe(deeplResult);
+        await expect(translate(deeplResult, true)).resolves.toBe(source);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(4);
+    });
+
     it("invalidates both lookup directions when either language or a non-LLM provider option changes", async () => {
         const cases = [
             {
@@ -450,6 +565,18 @@ describe("translate memory cache ownership", () => {
 });
 
 describe("runTranslator line breaks", () => {
+    it("the none provider preserves ordinary multiline and asset input without any provider request", async () => {
+        media.translatorType = "none";
+        const source = "Hello 한글\nsecond line\n{{img::asset}}\nlast line";
+        for (const reverse of [false, true]) {
+            await expect(runTranslator(source, reverse, "en", "ko")).resolves.toBe(source);
+        }
+        expect(deps.fetch).not.toHaveBeenCalled();
+        expect(deps.globalFetch).not.toHaveBeenCalled();
+        expect(deps.request).not.toHaveBeenCalled();
+        expect(deps.alert).not.toHaveBeenCalled();
+    });
+
     it("sends the lines between two empty or asset lines as one chunk with their line breaks, as the server does", async () => {
         const text = "first\nsecond\n\nthird\n{{img::x}}\nfourth\nfifth";
         await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(

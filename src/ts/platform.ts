@@ -1,3 +1,10 @@
+/**
+ * The platform flags, and the labels of the error dialog's stack trace block (`src/lib/Others/AlertComp.svelte`). The
+ * app runs only on the self-host server, so no module past `src/main.ts` branches on `isNodeServer`;
+ * `aiDisclosureEnabled` is the server operator's choice injected beside it, and the other flags describe the device
+ * and the browser.
+ */
+
 type UserAgentDataLike = {
     platform?: string;
     getHighEntropyValues?: (hints: string[]) => Promise<{
@@ -14,7 +21,22 @@ export type RisuEnvironmentLabel = "node" | "node(dev)";
 
 const browserNavigator = navigator as BrowserNavigator;
 
+/**
+ * True only when the page was served with the injected `globalThis.__NODE__ = true`: by the self-host server for `/`,
+ * `/index.html`, and the client routes (`serveCachedIndex` in `server/src/http/staticCache.ts`, from
+ * `server/src/app.ts`), or by the `risu-node-flag` plugin of the Vite dev server (`vite.config.ts`). Read only by
+ * `src/main.ts`.
+ */
 export const isNodeServer: boolean = !!(globalThis as typeof globalThis & { __NODE__?: boolean }).__NODE__;
+/**
+ * True only when the page was served with `globalThis.__RISU_AI_DISCLOSURE__ = true`, injected in the same script as
+ * `__NODE__` by the self-host server (from its `RISU_AI_DISCLOSURE` environment variable) or by the `risu-node-flag`
+ * plugin of the Vite dev server (from the shell's). A page-lifetime constant: a change needs a server restart and a
+ * page reload. Read only by `aiLawApplies` in `src/ts/globalApi.svelte.ts`.
+ */
+export const aiDisclosureEnabled: boolean =
+    (globalThis as typeof globalThis & { __RISU_AI_DISCLOSURE__?: boolean }).__RISU_AI_DISCLOSURE__ === true;
+/** A mobile user-agent heuristic; it misses iPads that report a desktop user agent. */
 export const isMobile: boolean = /Android|iPhone|iPad|iPod|webOS/i.test(browserNavigator.userAgent);
 
 function normalizeOSVersion(version?: string | null): string | null {
@@ -49,6 +71,7 @@ function joinOSLabel(osName: string, version: string | null): string {
     return version ? `${osName} ${version}` : osName;
 }
 
+/** An iOS device, including iPadOS 13+, which reports `MacIntel` with touch points instead of an iPad agent. */
 export function isIOS(): boolean {
     const ua = browserNavigator.userAgent || "";
     const isAppleMobile = /iPad|iPhone|iPod/.test(ua);
@@ -59,7 +82,7 @@ export function isIOS(): boolean {
     return isAppleMobile || isIpadOS;
 }
 
-function getBrowserOSName(): string {
+export function getBrowserOSName(): string {
     const uaPlatform = browserNavigator.userAgentData?.platform;
     if (uaPlatform) {
         return formatOSName(uaPlatform);
@@ -76,6 +99,17 @@ function getBrowserOSName(): string {
     if (/Linux/i.test(platform) || /Linux/i.test(ua)) return "Linux";
 
     return platform || "Unknown";
+}
+
+export function getBrowserName(): string {
+    const ua = browserNavigator.userAgent;
+    if (/\b(?:Edg|EdgA|EdgiOS|Edge)\//.test(ua)) return "Edge";
+    if (/\bSamsungBrowser\//.test(ua)) return "Samsung Internet";
+    if (/\b(?:OPR|OPRGX|OPiOS|OPT|Opera)\//.test(ua)) return "Opera";
+    if (/\b(?:Firefox|FxiOS)\//.test(ua)) return "Firefox";
+    if (/\b(?:Chrome|CriOS)\//.test(ua)) return "Chrome";
+    if (/\bSafari\//.test(ua)) return "Safari";
+    return "Browser";
 }
 
 function getUserAgentOSVersion(osName: string): string | null {
@@ -107,6 +141,7 @@ async function getBrowserHighEntropyOSVersion(): Promise<string | null> {
     }
 }
 
+/** The "Risu environment" line of the error dialog: `node(dev)` in a Vite dev build, else `node`. */
 export function getRisuEnvironmentLabel(): RisuEnvironmentLabel {
     if (import.meta.env.DEV) {
         return "node(dev)";
@@ -115,11 +150,20 @@ export function getRisuEnvironmentLabel(): RisuEnvironmentLabel {
     return "node";
 }
 
+/**
+ * The OS label, synchronously: the name can come from the Client Hints (`userAgentData.platform`), the version only
+ * from the user agent and only when the parser recognizes one. `src/lib/Others/AlertComp.svelte` shows it until
+ * `getDetailedOSLabel` resolves.
+ */
 export function getFallbackOSLabel(): string {
     const osName = getBrowserOSName();
     return joinOSLabel(osName, getUserAgentOSVersion(osName));
 }
 
+/**
+ * The OS label with the version from the User-Agent Client Hints (`platformVersion`) when the browser gives it, else
+ * the user agent's (`src/lib/Others/AlertComp.svelte`). It never rejects.
+ */
 export async function getDetailedOSLabel(): Promise<string> {
     const osName = getBrowserOSName();
     const browserVersion = await getBrowserHighEntropyOSVersion();
@@ -127,6 +171,7 @@ export async function getDetailedOSLabel(): Promise<string> {
     return joinOSLabel(osName, browserVersion ?? getUserAgentOSVersion(osName));
 }
 
+/** Unused: `loadData` in `src/ts/bootstrap.ts` recomputes standalone mode before `navigator.storage.persist`. */
 export const isInStandaloneMode =
     window.matchMedia("(display-mode: standalone)").matches ||
     !!browserNavigator.standalone ||

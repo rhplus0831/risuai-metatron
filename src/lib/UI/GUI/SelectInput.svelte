@@ -1,6 +1,8 @@
 <script lang="ts">
     import type { HTMLSelectAttributes } from "svelte/elements";
 
+    /** A styled `<select>`; its `risu-select` class (`src/styles.css`) draws the chevron and reserves its padding. */
+
     interface Props extends Omit<HTMLSelectAttributes, "value" | "size" | "children" | "onchange"> {
         value: string | number;
         className?: string;

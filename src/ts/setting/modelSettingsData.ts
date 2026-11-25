@@ -1,10 +1,11 @@
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
-// The Model page's Preset tab (`ModelSettings.svelte`) below its handwritten controls: the request
-// and provider options moved from Advanced. They are global (`providers` fields and the custom model
-// list), not fields of the model preset the tab edits, so their sections say they apply to every
-// preset.
+/**
+ * Registry items below the handwritten controls in `src/lib/Setting/Pages/ModelSettings.svelte`'s
+ * Preset tab: global provider settings and the custom model list, shared by every model preset.
+ */
+
 export const modelSettingsItems: SettingItem[] = [
     {
         id: "adv.retries",
@@ -13,7 +14,6 @@ export const modelSettingsItems: SettingItem[] = [
         bindKey: "requestRetrys",
         helpKey: "requestretrys",
         options: { min: 0, max: 20 },
-        classes: "mt-4",
     },
     {
         id: "adv.genTime",
@@ -26,7 +26,7 @@ export const modelSettingsItems: SettingItem[] = [
     {
         id: "adv.visionQual",
         type: "select",
-        fallbackLabel: "Vision Quality",
+        labelKey: "visionQuality",
         bindKey: "gptVisionQuality",
         helpKey: "gptVisionQuality",
         options: {
@@ -42,7 +42,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "autoFillRequestURL",
         bindKey: "autofillRequestUrl",
         helpKey: "autoFillRequestURL",
-        classes: "mt-4",
     },
     {
         id: "adv.autoCont",
@@ -50,7 +49,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "autoContinueChat",
         bindKey: "autoContinueChat",
         helpKey: "autoContinueChat",
-        classes: "mt-4",
     },
     {
         id: "adv.autoContinueMin",
@@ -58,29 +56,25 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "autoContinueMinTokens",
         bindKey: "autoContinueMinTokens",
         options: { min: 0 },
-        classes: "mt-2",
     },
     {
         id: "adv.remIncomp",
         type: "check",
         labelKey: "removeIncompleteResponse",
         bindKey: "removeIncompleteResponse",
-        classes: "mt-4",
     },
-    { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle", classes: "mt-4" },
+    { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle" },
     {
         id: "adv.dynamicModelRegistry",
         type: "check",
         labelKey: "dynamicModelRegistry",
         bindKey: "dynamicModelRegistry",
-        classes: "mt-4",
     },
     {
         id: "adv.antiOverload",
         type: "check",
         labelKey: "antiServerOverload",
         bindKey: "antiServerOverloads",
-        classes: "mt-4",
     },
     {
         id: "adv.openAIFlex",
@@ -89,14 +83,12 @@ export const modelSettingsItems: SettingItem[] = [
         bindKey: "openAIFlexProcessing",
         helpKey: "openAIFlexProcessing",
         showExperimental: true,
-        classes: "mt-4",
     },
     {
         id: "adv.claudeCache",
         type: "check",
         labelKey: "claude1HourCaching",
         bindKey: "claude1HourCaching",
-        classes: "mt-4",
     },
     {
         id: "adv.claudeBatch",
@@ -104,7 +96,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "claudeBatching",
         bindKey: "claudeBatching",
         showExperimental: true,
-        classes: "mt-4",
     },
     // In a collapsible section, so without its own accordion.
     {

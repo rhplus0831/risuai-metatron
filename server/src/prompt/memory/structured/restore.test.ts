@@ -1,0 +1,166 @@
+// @vitest-environment node
+import { expect, it } from "vitest";
+import { memoryRecords } from "../../../tests/memoryFixtures.ts";
+import { parseRestoredRecords } from "./restore.ts";
+
+it.each([
+    { name: "a full story date", storyTime: { text: "At dawn", date: { year: 2025, month: 4, day: 3 } } },
+    { name: "a yearless story date", storyTime: { text: "At dawn", date: { month: 2, day: 29 } } },
+    { name: "no story date", storyTime: { text: "At dawn" } },
+])("restores an event with $name", ({ storyTime }) => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    const records = { pages, events: [{ ...events[0], storyTime }], threads };
+    expect(parseRestoredRecords(records)).toStrictEqual(records);
+});
+
+it.each([
+    { name: "an impossible day", date: { year: 2025, month: 2, day: 29 } },
+    { name: "a string instead of a stored date", date: "2025-04-03" },
+])("refuses to restore an event with $name", ({ date }) => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    expect(
+        parseRestoredRecords({ pages, events: [{ ...events[0], storyTime: { text: "At dawn", date } }], threads }),
+    ).toBeNull();
+});
+
+it("keeps genuine records beyond writer limits whole, removing only runs and source lifecycle fields", () => {
+    const { pages, events, threads, runs } = memoryRecords(["saved"]);
+    const section = pages[0].sections[0];
+    pages[0].sections = Array.from({ length: 33 }, (_, index) => ({ ...section, heading: `Section ${index}` }));
+    pages.push({ ...pages[0], id: "scene", type: "scene", sections: [{ ...section, body: "문".repeat(4000) }] });
+    events[0].openThreads.close = Array.from({ length: 16 }, (_, index) => `closed-${index}`);
+    events[0].sources = [{ messageId: "lost", hash: null, index: null }];
+    events[0].keptState = "kept-state";
+    const expected = structuredClone({ pages, events, threads });
+    const body = {
+        pages,
+        events: [{ ...events[0], createdRevision: 87, rerecord: true }],
+        threads,
+        runs,
+    };
+    expect(parseRestoredRecords(body)).toEqual(expected);
+});
+
+it("preserves a true personal naming mark and refuses false or string marks", () => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    const records = {
+        pages: [{ ...pages[0], title: "Harbor", aliases: ["Old Port"], namedByUser: true }],
+        events,
+        threads,
+    };
+    expect(parseRestoredRecords(records)).toEqual(records);
+    for (const namedByUser of [false, "true"]) {
+        expect(
+            parseRestoredRecords({ ...records, pages: [{ ...records.pages[0], namedByUser }] }),
+            JSON.stringify(namedByUser),
+        ).toBeNull();
+    }
+});
+
+it("refuses malformed nested records instead of accepting or repairing them", () => {
+    const valid = memoryRecords(["saved"]);
+    const corruptions = [
+        {
+            ...valid,
+            pages: [
+                {
+                    ...valid.pages[0],
+                    sections: [
+                        { ...valid.pages[0].sections[0], sources: [{ messageId: "m", hash: "h", index: null }] },
+                    ],
+                },
+            ],
+        },
+        {
+            ...valid,
+            pages: [
+                {
+                    ...valid.pages[0],
+                    history: [
+                        {
+                            id: "h",
+                            heading: null,
+                            kind: "edit",
+                            highlighted: false,
+                            at: 1,
+                            before: { body: "old", provenance: [], sources: [null] },
+                        },
+                    ],
+                },
+            ],
+        },
+        {
+            ...valid,
+            pages: [
+                {
+                    ...valid.pages[0],
+                    history: [{ id: "h", heading: null, kind: "retract", highlighted: false, at: 1, before: null }],
+                },
+            ],
+        },
+        { ...valid, pages: [{ ...valid.pages[0], retrieval: { keywords: [7] } }] },
+        {
+            ...valid,
+            events: [{ ...valid.events[0], knowledge: [{ pageId: "p", fact: "f", stance: "impossible", quote: "q" }] }],
+        },
+        {
+            ...valid,
+            events: [
+                {
+                    ...valid.events[0],
+                    openThreads: { add: [], close: [], transitions: [{ threadId: "t", to: "impossible" }] },
+                },
+            ],
+        },
+        { ...valid, events: [{ ...valid.events[0], sources: [{ messageId: "m", hash: null, index: 0 }] }] },
+        { ...valid, threads: [{ ...valid.threads[0], who: [null] }] },
+        { ...valid, threads: [{ ...valid.threads[0], state: "impossible" }] },
+    ];
+    for (const body of [null, [], {}, { ...valid, events: null }, ...corruptions]) {
+        expect(parseRestoredRecords(body), JSON.stringify(body)).toBeNull();
+    }
+});
+
+it("validates every optional history snapshot mark as a boolean while preserving valid marks", () => {
+    const records = memoryRecords(["saved"]);
+    const marks = ["userCorrected", "disputed", "unsupported", "pinned", "suppressed"] as const;
+    const before = {
+        body: "Personal correction",
+        provenance: [],
+        sources: [],
+        userCorrected: true,
+        disputed: false,
+        unsupported: true,
+        pinned: false,
+        suppressed: true,
+    };
+    records.pages[0].history = [
+        { id: "change", heading: "Gate", before, eventId: "saved", kind: "change", highlighted: true, at: 1 },
+    ];
+    expect(parseRestoredRecords(records)?.pages[0].history[0].before).toEqual(before);
+    for (const mark of marks) {
+        for (const value of ["true", 1, null]) {
+            const malformed = structuredClone(records);
+            Object.assign(malformed.pages[0].history[0].before!, { [mark]: value });
+            expect(parseRestoredRecords(malformed), `${mark}: ${JSON.stringify(value)}`).toBeNull();
+        }
+    }
+});
+
+it("restores greeting citations and kept citations only in their stored shape", () => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    const legacy = { pages, events, threads };
+    expect(parseRestoredRecords(legacy)).toEqual(legacy);
+    const greeting = { fmIndex: -1, hash: "v3:original" };
+    const greetingKept = { fmIndex: 0, hash: "v3:kept" };
+    const valid = { ...legacy, events: [{ ...events[0], greeting, greetingKept }] };
+    expect(parseRestoredRecords(valid)).toEqual(valid);
+    for (const field of ["greeting", "greetingKept"]) {
+        for (const value of [null, { fmIndex: "0", hash: "v3:x" }, { fmIndex: 0, hash: false }, { fmIndex: 0 }]) {
+            expect(
+                parseRestoredRecords({ ...valid, events: [{ ...valid.events[0], [field]: value }] }),
+                `${field}: ${JSON.stringify(value)}`,
+            ).toBeNull();
+        }
+    }
+});

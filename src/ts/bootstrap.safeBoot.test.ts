@@ -289,8 +289,7 @@ describe("loadData with safe boot", () => {
         expect(localStorage.getItem(SAFE_BOOT_KEY)).toBe(newer);
     });
 
-    it("boots normally when localStorage throws, the nightly warning's flag included", async () => {
-        vi.stubEnv("VITE_RISU_NIGHTLY_BUILD", "TRUE");
+    it("boots normally when localStorage throws", async () => {
         const current = await app();
         const denied = () => {
             throw new DOMException("denied", "SecurityError");
@@ -299,7 +298,6 @@ describe("loadData with safe boot", () => {
         await current.loadData();
         expect(get(current.stores.loadedStore)).toBe(true);
         expect(mocks.alertError).not.toHaveBeenCalled();
-        expect(mocks.alertMd).toHaveBeenCalledWith(current.language.nightlyWarning);
         expect(current.atTheme.record).toBe("unreadable");
         settleWindow();
         expect(mocks.alertError).not.toHaveBeenCalled();

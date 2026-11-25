@@ -6,10 +6,24 @@ import type { OpenAIChat } from "../index.svelte";
 import { getUserName } from "src/ts/util";
 import { chatTemplates, renderChatTemplate, templateEffect } from "../../../../shared/prompt/chatTemplate.ts";
 
-// The templates moved to `shared/prompt/chatTemplate.ts`; this wrapper supplies the selected
-// profile's settings, the selected character, and the user's name.
+/**
+ * Tab adapter for `shared/prompt/chatTemplate.ts`, re-exporting its built-in templates and effects.
+ * Explicit request profile and names override the active main profile and selected names; null
+ * profile uses preset defaults. Missing template selection throws, and shared Jinja errors propagate.
+ * Server rendering uses its own adapter in `server/src/llm/chatTemplate.ts`.
+ */
+
+/** Re-exports the shared instruct templates and their preprocessing effects. */
 export { chatTemplates, templateEffect };
 
+/**
+ * `renderChatTemplate` (`shared/prompt/chatTemplate.ts`) with the tab's settings: `type` defaults to
+ * `instructChatTemplate` and `custom` to `JinjaTemplate`, read from `arg.profile` when one is passed
+ * (null: the defaults) and else from the active main profile (`activeMainProfile`). The names default
+ * to the selected character's and the user's (`getUserName`); throws when no template type is set,
+ * and when no character is selected and `characterName` is not passed. The server's counterpart is
+ * `server/src/llm/chatTemplate.ts`.
+ */
 export const applyChatTemplate = (
     messages: OpenAIChat[],
     arg: {

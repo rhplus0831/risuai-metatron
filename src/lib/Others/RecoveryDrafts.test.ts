@@ -1,0 +1,1354 @@
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatOp } from "../../../shared/chats.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import type { DraftEntry, DraftInput, DraftJournal, RecordLayerValues } from "src/ts/storage/draftJournal";
+import { createFakeLockManager } from "src/ts/storage/tests/fakeLockManager";
+import { advanceUntil, settleFlush } from "src/ts/storage/tests/flushRetry";
+import { bootMutations, m, plain, refK, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
+import type { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
+
+const io = vi.hoisted(() => ({
+    server: null as StoreBackedServer | null,
+    signingUnavailable: false,
+    confirm: vi.fn<typeof import("src/ts/alert").alertConfirm>(),
+    normal: vi.fn<typeof import("src/ts/alert").alertNormal>(),
+    error: vi.fn<typeof import("src/ts/alert").alertError>(),
+    download: vi.fn<typeof import("src/ts/globalApi.svelte").downloadFile>(),
+}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: async (path, init, options) => {
+            if (io.signingUnavailable && path === "/api/resources/batch") throw new Error("Signing unavailable");
+            options?.beforeDispatch?.();
+            return io.server!.fetch(path, init);
+        },
+    }),
+);
+vi.mock("src/ts/alert", async () =>
+    (await import("src/ts/tests/alertMock")).createAlertMock({
+        alertConfirm: io.confirm,
+        alertNormal: io.normal,
+        alertError: io.error,
+    }),
+);
+vi.mock("src/ts/diagnostics/collector", async () =>
+    (await import("src/ts/diagnostics/tests/collectorMock")).createCollectorMock(),
+);
+// Downloads are the I/O boundary; recovery, mutation stores and saving all run unchanged.
+vi.mock("src/ts/globalApi.svelte", async (original) => ({
+    ...(await original<typeof import("src/ts/globalApi.svelte")>()),
+    downloadFile: io.download,
+}));
+
+let h: Awaited<ReturnType<typeof bootMutations>>;
+let journal: DraftJournal;
+let drafts: typeof import("src/ts/storage/recoveryDrafts.svelte");
+let recovery: typeof import("src/ts/storage/journalRecovery");
+let language: typeof import("src/lang").language;
+let target: HTMLDivElement;
+let svelte: typeof import("svelte");
+let mounted: ReturnType<typeof svelte.mount> | undefined;
+const listeners: [EventTarget, string, EventListenerOrEventListenerObject][] = [];
+const batchPath = (path: string) => path === "/api/resources/batch";
+const epoch = () => h.fake.store.epoch();
+const chatGroups = () => h.fake.batchBodies().flatMap((body) => body.chats ?? []);
+const recordTarget = "ui\0main";
+const originalGlobals = new Map(
+    ["indexedDB", "IDBKeyRange"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+);
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => (resolve = done));
+    return { promise, resolve };
+}
+
+async function settle() {
+    await vi.advanceTimersByTimeAsync(0);
+    await journal.listDrafts();
+    await svelte.tick();
+    svelte.flushSync();
+}
+
+/**
+ * Holds the flush's resend after the first batch's failure or lost answer: the resend stays
+ * unanswered (`releaseBatch` lets it through), so an Apply waiting on the save stops at its deadline.
+ */
+function holdResend(first: "failed" | "lost") {
+    if (first === "failed") {
+        // A failed request returns before the hold applies: the hold catches the resend.
+        h.fake.holdNextBatch = true;
+        return;
+    }
+    h.fake.dropNextBatchResponse = true;
+    h.fake.beforeNextBatch = () => {
+        h.fake.holdNextBatch = true;
+    };
+}
+
+/** An Apply whose save stays unanswered: it rejects at its save deadline, with the resend in flight. */
+async function expectApplyTimeout(entry: DraftEntry) {
+    const { ResourceFlushTimeoutError } = await import("src/ts/storage/resourceFlushWait");
+    await expect(settleFlush(recovery.applyRecoveryDraft(entry))).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+    expect(h.fake.releaseBatch).not.toBeNull();
+}
+
+async function put(input: DraftInput): Promise<DraftEntry> {
+    const id = await journal.putDraft(input);
+    expect(id).not.toBeNull();
+    await drafts.recoveryDrafts.refresh();
+    return drafts.recoveryDrafts.entries.find((entry) => entry.id === id)!;
+}
+
+// The download must preserve the durable payload; the JSON envelope is not part of the user contract.
+function strings(value: unknown): string[] {
+    if (typeof value === "string") return [value];
+    if (value && typeof value === "object") return Object.values(value).flatMap(strings);
+    return [];
+}
+
+function recordInput(): DraftInput {
+    return {
+        epoch: epoch(),
+        scope: "record",
+        target: recordTarget,
+        layers: {
+            latest: {
+                op: "update",
+                baseRevision: h.fake.record("ui", "main")!.revision,
+                text: JSON.stringify({ ...plain(h.fake.record("ui", "main")!.data), theme: "recovered" }),
+            },
+        },
+    };
+}
+
+function chatInput(ops: ChatOp[], chatId = "k"): DraftInput & { scope: "chat" } {
+    return {
+        epoch: epoch(),
+        scope: "chat",
+        target: `c\0${chatId}`,
+        layers: {
+            pending: {
+                baseRevision: h.fake.chat("c", chatId)?.revision ?? null,
+                groupId: "old-page-group",
+                ops: ops.map((op) => ({ op })),
+            },
+        },
+    };
+}
+
+async function remainder(source: DraftEntry, ops: ChatOp[], chatId = "k") {
+    const rows = await journal.listDrafts();
+    expect(rows).toHaveLength(1);
+    const [kept] = rows;
+    expect(kept.id).not.toBe(source.id);
+    expect(kept).toMatchObject({
+        scope: "chat",
+        epoch: source.epoch,
+        createdAt: source.createdAt,
+        target: `c\0${chatId}`,
+    });
+    if (kept.scope !== "chat") throw new Error("Missing chat remainder");
+    expect(Object.keys(kept.layers)).toEqual(["pending"]);
+    expect(kept.layers.pending!.value).toEqual({
+        ops: ops.map((op) => ({ op })),
+        baseRevision: h.fake.chat("c", chatId)!.revision,
+        groupId: expect.any(String),
+    });
+    expect(kept.layers.pending!.value.groupId).not.toBe("old-page-group");
+    expect(drafts.recoveryDrafts.entries).toMatchObject([{ id: kept.id }]);
+    return kept;
+}
+
+const snapshot = () => ({
+    id: "gone",
+    name: "Lost story",
+    note: "durable note",
+    localLore: [],
+    message: [m("snapshot-message", "Saved snapshot text", "char")],
+});
+
+function inputFor(kind: string): DraftInput {
+    if (kind === "record") return recordInput();
+    if (kind === "order")
+        return {
+            epoch: epoch(),
+            scope: "order",
+            target: "c",
+            layers: { latest: { baseRevision: null, ids: ["j", "k"] } },
+        };
+    if (kind === "another epoch") return { ...recordInput(), epoch: "before-restore" };
+    const input = chatInput([{ op: "setText", id: "a", text: "draft message" }], kind === "chat" ? "k" : "gone");
+    if (kind === "gone chat with snapshot") input.layers.pending!.createSnapshot = snapshot();
+    return input;
+}
+
+async function render(notice = false) {
+    const component = notice
+        ? (await import("./ReloadNotice.svelte")).default
+        : (await import("./RecoveryDrafts.svelte")).default;
+    mounted = svelte.mount(component, { target });
+    svelte.flushSync();
+    await settle();
+}
+
+function button(label: string, root: ParentNode = target) {
+    const found = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+        (node) => node.textContent?.trim() === label || node.getAttribute("aria-label") === label,
+    );
+    expect(found, `Button ${label}`).toBeDefined();
+    return found!;
+}
+
+function row() {
+    const found = target.querySelector("li");
+    expect(found).not.toBeNull();
+    return found!;
+}
+
+function sentRecords() {
+    return h.fake.batchBodies().flatMap((body) => body.ops ?? []);
+}
+
+beforeAll(() =>
+    warmMutationGraph(async () => {
+        await import("src/ts/storage/journalRecovery");
+        await import("./RecoveryDrafts.svelte");
+        await import("./ReloadNotice.svelte");
+        await import("src/ts/setting/advancedSettingsData");
+    }),
+);
+
+beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    io.signingUnavailable = false;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(new Date("2026-10-28T12:00:00Z"));
+    localStorage.clear();
+    sessionStorage.clear();
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+    vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+    // A fresh module graph represents a page. Remove every page listener at teardown.
+    for (const object of [window, document]) {
+        const add = object.addEventListener.bind(object);
+        vi.spyOn(object, "addEventListener").mockImplementation((name, listener, options) => {
+            if (listener) listeners.push([object, name, listener]);
+            add(name, listener, options);
+        });
+    }
+    io.confirm.mockResolvedValue(true);
+    io.download.mockResolvedValue();
+    svelte = await import("svelte");
+    h = await bootMutations((server) => (io.server = server));
+    journal = (await import("src/ts/storage/draftJournal")).pageDraftJournal();
+    expect(await journal.start()).toBe(true);
+    drafts = await import("src/ts/storage/recoveryDrafts.svelte");
+    recovery = await import("src/ts/storage/journalRecovery");
+    language = (await import("src/lang")).language;
+    target = document.createElement("div");
+    document.body.appendChild(target);
+});
+
+afterEach(async () => {
+    if (mounted) await svelte.unmount(mounted);
+    mounted = undefined;
+    target?.remove();
+    h?.sync.stopResourceSync();
+    io.server?.releaseBatch?.();
+    io.server?.releaseBatchResponse?.();
+    await journal?.close();
+    drafts?.recoveryDrafts.close();
+    drafts?.recoveryDrafts.replace([], epoch());
+    for (const [object, name, listener] of listeners.splice(0)) object.removeEventListener(name, listener);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
+    io.server?.close();
+    io.server = null;
+});
+
+describe("recovery drafts", () => {
+    it.each(["current trash", "untrash", "missing character"] as const)(
+        "skips Apply for expired %s while retaining an exportable draft and sending no writes",
+        async (kind) => {
+            const trashTime = Date.now() - 3 * 24 * 60 * 60 * 1000 - 1;
+            const id = kind === "missing character" ? "missing" : "c";
+            if (id === "c") {
+                h.characterStore.updateCharacter(id, { trashTime });
+                await h.sync.flushResources();
+            }
+            const before = h.serverText();
+            h.fake.requests.length = 0;
+            const intended = {
+                ...(id === "c" ? plain(h.characterStore.findCharacter(id)) : { chaId: id, name: "Gone" }),
+                desc: "durable edit",
+                trashTime: kind === "untrash" ? 0 : trashTime,
+            };
+            const entry = await put({
+                epoch: epoch(),
+                scope: "record",
+                target: `characters\0${id}`,
+                layers: {
+                    latest: {
+                        op: id === "c" ? "update" : "create",
+                        baseRevision: h.fake.record("characters", id)?.revision ?? null,
+                        text: JSON.stringify(intended),
+                    },
+                },
+            });
+
+            expect(await recovery.applyRecoveryDraft(entry)).toEqual({
+                skipped: [`characters/${id}: ${language.recoveryDrafts.trashExpired}`],
+            });
+            await drafts.recoveryDrafts.refresh();
+            expect(await journal.listDrafts()).toMatchObject([
+                { id: entry.id, target: entry.target, layers: entry.layers },
+            ]);
+            expect(drafts.recoveryDrafts.entries).toEqual([entry]);
+            expect(h.serverText()).toBe(before);
+            if (id === "c") expect(h.characterStore.findCharacter(id)?.trashTime).toBe(trashTime);
+            else expect(h.characterStore.findCharacter(id)).toBeUndefined();
+            await h.sync.flushResources();
+            expect(h.fake.batchBodies()).toEqual([]);
+            await render();
+            button(language.export, row()).click();
+            await settle();
+            expect(strings(JSON.parse(io.download.mock.calls[0][1] as string))).toContain(JSON.stringify(intended));
+            expect(await journal.listDrafts()).toMatchObject([
+                { id: entry.id, target: entry.target, layers: entry.layers },
+            ]);
+        },
+    );
+
+    it("refuses Apply for a group chat draft and keeps it available to export or discard", async () => {
+        const entry = await put(chatInput([{ op: "setText", id: "a", text: "Archived edit" }]));
+        const { patchRawCharacter } = await import("src/ts/storage/records.svelte");
+        patchRawCharacter("c", [["type", "group"]]);
+        expect(recovery.recoveryDraftDetails(entry).canApply).toBe(false);
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow();
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id }]);
+
+        await render();
+        const actions = [...row().querySelectorAll("button")].map((node) => node.textContent?.trim());
+        expect(actions).not.toContain(language.apply);
+        expect(actions).toContain(language.export);
+        expect(actions).toContain(language.recoveryDrafts.discard);
+    });
+
+    it("allows Apply up to the exact trash deadline and retains the draft one millisecond beyond it", async () => {
+        const now = Date.now();
+        const age = 3 * 24 * 60 * 60 * 1000;
+        for (const offset of [-1, 0, 1]) {
+            const trashTime = now - age - offset;
+            h.characterStore.updateCharacter("c", { trashTime });
+            await h.sync.flushResources();
+            const intended = { ...plain(h.characterStore.findCharacter("c")), desc: `edit ${offset}` };
+            const entry = await put({
+                epoch: epoch(),
+                scope: "record",
+                target: "characters\0c",
+                layers: {
+                    latest: {
+                        op: "update",
+                        baseRevision: h.fake.record("characters", "c")!.revision,
+                        text: JSON.stringify(intended),
+                    },
+                },
+            });
+            const result = await recovery.applyRecoveryDraft(entry);
+            if (offset <= 0) {
+                expect(result).toEqual({ skipped: [] });
+                expect(h.fake.record("characters", "c")!.data.desc).toBe(`edit ${offset}`);
+                expect(await journal.listDrafts()).toEqual([]);
+            } else {
+                expect(result.skipped).toEqual([`characters/c: ${language.recoveryDrafts.trashExpired}`]);
+                expect(h.fake.record("characters", "c")!.data.desc).toBe("edit 0");
+                expect(await journal.listDrafts()).toMatchObject([
+                    { id: entry.id, target: entry.target, layers: entry.layers },
+                ]);
+            }
+        }
+    });
+
+    it.each(["record", "chat", "gone chat with snapshot", "gone chat without snapshot", "order", "another epoch"])(
+        "exports %s without removal and discards it only after confirmation",
+        async (kind) => {
+            const input = inputFor(kind);
+            const entry = await put(input);
+            const before = h.serverText();
+            await render();
+            const canApply = kind !== "gone chat without snapshot" && kind !== "another epoch";
+            expect([...row().querySelectorAll("button")].some((node) => node.textContent === language.apply)).toBe(
+                canApply,
+            );
+            expect(recovery.recoveryDraftDetails(entry).canApply).toBe(canApply);
+            if (!canApply) {
+                await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow();
+                expect(h.fake.batchCount()).toBe(0);
+            }
+
+            button(language.export, row()).click();
+            await settle();
+            expect(io.download).toHaveBeenCalledTimes(1);
+            const [filename, json] = io.download.mock.calls[0];
+            expect(filename).toMatch(/\.json$/);
+            expect(strings(JSON.parse(json as string))).toEqual(expect.arrayContaining(strings(input.layers)));
+            await drafts.exportDrafts();
+            expect(strings(JSON.parse(io.download.mock.calls[1][1] as string))).toEqual(
+                expect.arrayContaining(strings(input.layers)),
+            );
+            expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+            expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+
+            const answer = deferred<boolean>();
+            io.confirm.mockReturnValueOnce(answer.promise);
+            button(language.recoveryDrafts.discard, row()).click();
+            await settle();
+            expect(io.confirm).toHaveBeenCalledWith(
+                language.recoveryDrafts.discardConfirm(row().querySelector("h3")!.textContent!),
+            );
+            expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+            answer.resolve(false);
+            await settle();
+            expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+            button(language.recoveryDrafts.discard, row()).click();
+            await settle();
+            expect(await journal.listDrafts()).toEqual([]);
+            expect(drafts.recoveryDrafts.entries).toEqual([]);
+            expect(target.querySelector("li")).toBeNull();
+            expect(h.serverText()).toBe(before);
+            expect(h.fake.batchCount()).toBe(0);
+        },
+    );
+
+    it.each(["latest", "sent", "refused"] as const)(
+        "applies the %s record text on the current revision after a further server change",
+        async (layer) => {
+            const original = h.fake.record("ui", "main")!;
+            const text = (theme: string) => JSON.stringify({ ...plain(original.data), theme });
+            const intent: RecordLayerValues["latest"] = {
+                op: "update",
+                baseRevision: original.revision,
+                text: text("sent"),
+            };
+            const entry = await put({
+                epoch: epoch(),
+                scope: "record",
+                target: recordTarget,
+                layers: {
+                    refused: { op: "update", text: text("refused"), reason: "conflict" },
+                    ...(layer !== "refused" ? { sent: { ...intent, dispatched: true, inDoubt: true } } : {}),
+                    ...(layer === "latest" ? { latest: { ...intent, text: text("latest") } } : {}),
+                },
+            });
+            // A live update after the draft was listed moves the current copy again.
+            h.fake.set("ui", "main", { ...plain(original.data), theme: "server changed again" });
+            const revision = h.fake.record("ui", "main")!.revision;
+            h.sync.noteRemoteChanges({
+                resources: [
+                    {
+                        kind: "ui",
+                        id: "main",
+                        revision,
+                        patch: { baseRevision: original.revision, set: { theme: "server changed again" }, remove: [] },
+                    },
+                ],
+                chats: [],
+                chatOrders: [],
+            });
+            expect(h.settings.ui.theme).toBe("server changed again");
+            h.fake.holdNextBatchResponse = true;
+            const applying = recovery.applyRecoveryDraft(entry);
+            // Observe rejections immediately, and always release held I/O even if an assertion fails.
+            void applying.catch(() => {});
+            try {
+                await settle();
+                const ops = sentRecords().filter((op) => op.kind === "ui" && op.id === "main");
+                expect(ops).toHaveLength(1);
+                expect(ops[0].baseRevision).toBe(revision);
+                // The normal adapter may send a field patch or the whole JSON record.
+                expect(ops[0].patch?.set?.theme ?? ops[0].data?.theme).toBe(layer);
+                expect(h.fake.releaseBatchResponse).not.toBeNull();
+                expect(h.fake.record("ui", "main")!.data).toEqual(JSON.parse(text(layer)));
+                expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+                expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+            } finally {
+                h.fake.releaseBatchResponse?.();
+                await applying.catch(() => {});
+            }
+            await applying;
+            expect(await journal.listDrafts()).toEqual([]);
+            expect(drafts.recoveryDrafts.entries).toEqual([]);
+        },
+    );
+
+    it("keeps the source draft when Apply's save response misses the deadline", async () => {
+        const entry = await put(recordInput());
+        const source = { id: entry.id, layers: entry.layers };
+        await render();
+        h.fake.holdNextBatchResponse = true;
+        const apply = button(language.apply, row());
+        apply.click();
+        try {
+            await settle();
+            expect(h.fake.releaseBatchResponse).not.toBeNull();
+            expect(h.record("ui").theme).toBe("recovered");
+            expect(apply.disabled).toBe(true);
+
+            await vi.advanceTimersByTimeAsync(30_000);
+            await settle();
+            expect(io.error).toHaveBeenCalledExactlyOnceWith(
+                `${language.recoveryDrafts.failed}\nError: The server has not answered the save request. Please try again shortly.`,
+            );
+            expect(apply.disabled).toBe(false);
+            expect(await journal.listDrafts()).toMatchObject([source]);
+        } finally {
+            h.fake.releaseBatchResponse?.();
+            await h.sync.flushResources();
+            await settle();
+        }
+        expect(await journal.listDrafts()).toMatchObject([source]);
+        expect(button(language.apply, row()).disabled).toBe(false);
+        expect(io.normal).not.toHaveBeenCalled();
+    });
+
+    it("checks a late save acknowledgement and keeps the edit made before the next Apply", async () => {
+        const entry = await put(chatInput([{ op: "setText", id: "b", text: "Recovered B" }]));
+        h.fake.holdNextBatchResponse = true;
+        await render();
+        button(language.apply, row()).click();
+        await settle();
+        expect(h.fake.releaseBatchResponse).not.toBeNull();
+        expect(h.fake.texts("c", "k")[1]).toBe("Recovered B");
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        expect(io.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("server has not answered"));
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(button(language.apply, row()).disabled).toBe(false);
+        h.fake.releaseBatchResponse!();
+        await h.sync.flushResources();
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(io.normal).not.toHaveBeenCalled();
+
+        h.chat.setMessageText(refK, "b", "New edit B");
+        await h.sync.flushResources();
+        expect(h.fake.texts("c", "k")[1]).toBe("New edit B");
+        const beforeRetry = chatGroups().length;
+        button(language.apply, row()).click();
+        await settle();
+
+        expect(h.fake.texts("c", "k")[1]).toBe("New edit B");
+        expect(chatGroups()).toHaveLength(beforeRetry);
+        expect(io.confirm).toHaveBeenCalledOnce();
+        expect(io.normal).toHaveBeenCalledExactlyOnceWith(language.recoveryDrafts.applied);
+        expect(await journal.listDrafts()).toEqual([]);
+    });
+
+    it("files a translation ignored by a late save acknowledgement", async () => {
+        const translation = {
+            op: "setTranslation",
+            id: "a",
+            translation: {
+                text: "Recovered translation",
+                sourceHash: translationSourceHash("A"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+                edited: true,
+            },
+        } satisfies ChatOp;
+        const entry = await put(chatInput([translation, { op: "meta", set: { note: "Recovered note" } }]));
+        h.fake.beforeNextBatch = () => {
+            h.fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: h.fake.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "a", text: "Edited source" }],
+                },
+            ]);
+        };
+        h.fake.holdNextBatchResponse = true;
+        await render();
+        button(language.apply, row()).click();
+        await settle();
+        expect(h.fake.releaseBatchResponse).not.toBeNull();
+        expect(h.fake.chat("c", "k")!.data).toMatchObject({ note: "Recovered note" });
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        await settle();
+        expect(io.error).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("server has not answered"));
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        h.fake.releaseBatchResponse!();
+        await h.sync.flushResources();
+        expect(h.chat.hydrateChat(h.fake.chat("c", "k")!)).toBe(true);
+        const beforeRetry = chatGroups().length;
+
+        button(language.apply, row()).click();
+        await advanceUntil(() => io.normal.mock.calls.length > 0 || io.error.mock.calls.length > 1, 12);
+        await settle();
+        expect(io.normal).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(language.recoveryDrafts.skippedKept));
+        expect(h.fake.chat("c", "k")!.data.message[0]).toEqual(m("a", "Edited source", "char"));
+        expect(chatGroups()).toHaveLength(beforeRetry);
+        await remainder(entry, [translation]);
+    });
+
+    it.each(["record", "order"])(
+        "keeps a superseded %s draft and asks before sending it on a fresh Apply",
+        async (kind) => {
+            const character = h.fake.record("characters", "c")!;
+            const order = h.fake.order("c")!;
+            const description = "Recovered description";
+            const intendedOrder = [...order.ids].reverse();
+            const input: DraftInput =
+                kind === "record"
+                    ? {
+                          epoch: epoch(),
+                          scope: "record",
+                          target: "characters\0c",
+                          layers: {
+                              latest: {
+                                  op: "update",
+                                  baseRevision: character.revision,
+                                  text: JSON.stringify({ ...character.data, desc: description }),
+                              },
+                          },
+                      }
+                    : {
+                          epoch: epoch(),
+                          scope: "order",
+                          target: "c",
+                          layers: { latest: { baseRevision: order.revision, ids: intendedOrder } },
+                      };
+            const entry = await put(input);
+            const saved = () => (kind === "record" ? h.record("characters", "c").desc : h.fake.order("c")!.ids);
+            const intended = kind === "record" ? description : intendedOrder;
+            const newer = kind === "record" ? "Newer local description" : order.ids;
+            const baseline = saved();
+            await render();
+            io.signingUnavailable = true;
+            button(language.apply, row()).click();
+            await settle();
+            await vi.advanceTimersByTimeAsync(30_000);
+            await settle();
+            expect(io.error).toHaveBeenCalledWith(expect.stringContaining("server has not answered"));
+            expect(h.fake.batchCount()).toBe(0);
+            expect(saved()).toEqual(baseline);
+
+            if (kind === "record") expect(h.characterStore.updateCharacter("c", { desc: newer })).toBe(true);
+            else h.chat.reorderChats("c", order.ids);
+            io.signingUnavailable = false;
+            await settleFlush(h.sync.flushResources());
+            expect(saved()).toEqual(newer);
+            if (kind === "record") {
+                expect(sentRecords().some((op) => (op.data?.desc ?? op.patch?.set?.desc) === description)).toBe(false);
+            } else {
+                expect(h.fake.batchBodies().flatMap((body) => body.chatOrders ?? [])).not.toContainEqual(
+                    expect.objectContaining({ characterId: "c", ids: intendedOrder }),
+                );
+            }
+            const beforeRetry = h.fake.batchCount();
+            button(language.apply, row()).click();
+            await settle();
+
+            expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+            expect(saved()).toEqual(newer);
+            expect(h.fake.batchCount()).toBe(beforeRetry);
+            expect(io.error).toHaveBeenLastCalledWith(language.recoveryDrafts.superseded);
+            expect(io.confirm).toHaveBeenCalledOnce();
+            expect(io.normal).not.toHaveBeenCalled();
+
+            io.confirm.mockResolvedValueOnce(false);
+            button(language.apply, row()).click();
+            await settle();
+            expect(io.confirm).toHaveBeenCalledTimes(2);
+            expect(h.fake.batchCount()).toBe(beforeRetry);
+            expect(saved()).toEqual(newer);
+
+            button(language.apply, row()).click();
+            await settle();
+            expect(io.confirm).toHaveBeenCalledTimes(3);
+            expect(saved()).toEqual(intended);
+            expect(io.normal).toHaveBeenCalledExactlyOnceWith(language.recoveryDrafts.applied);
+            expect(await journal.listDrafts()).toEqual([]);
+        },
+    );
+
+    it("confirms applying chat operations by id on the current chat and keeps missing targets as a draft", async () => {
+        const ops: ChatOp[] = [
+            { op: "setText", id: "b", text: "Recovered B" },
+            { op: "setText", id: "missing-message", text: "Cannot be placed" },
+            { op: "append", anchor: { after: "c" }, messages: [m("draft-append", "New message")] },
+        ];
+        const entry = await put(chatInput(ops));
+        h.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: h.fake.chat("c", "k")!.revision,
+                ops: [{ op: "setText", id: "a", text: "Other tab's A" }],
+            },
+        ]);
+        const current = h.fake.chat("c", "k")!;
+        await h.chat.ensureChatLoaded(refK);
+        expect(h.chat.hydrateChat(current)).toBe(true);
+        await render();
+        expect(row().querySelector("h3")!.textContent).toContain("K");
+        expect(row().querySelector("h3")!.textContent).toContain("C");
+        io.confirm.mockResolvedValueOnce(false);
+        button(language.apply, row()).click();
+        await settle();
+        expect(h.fake.batchCount()).toBe(0);
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        const answer = deferred<boolean>();
+        io.confirm.mockReturnValueOnce(answer.promise);
+        button(language.apply, row()).click();
+        await settle();
+        expect(io.confirm).toHaveBeenLastCalledWith(
+            language.recoveryDrafts.applyConfirm(row().querySelector("h3")!.textContent!),
+        );
+        expect(h.fake.batchCount()).toBe(0);
+        const notified = deferred<void>();
+        io.normal.mockImplementationOnce(() => notified.resolve());
+        answer.resolve(true);
+        await notified.promise;
+        await settle();
+        const groups = h.fake.batchBodies().flatMap((body) => body.chats ?? []);
+        expect(groups).toHaveLength(1);
+        expect(groups[0]).toMatchObject({
+            characterId: "c",
+            chatId: "k",
+            baseRevision: current.revision,
+            ops: [ops[0], ops[2]],
+        });
+        expect(groups[0].groupId).toBeTruthy();
+        expect(groups[0].groupId).not.toBe("old-page-group");
+        expect(groups[0].retry).not.toBe(true);
+        expect(h.fake.texts("c", "k")).toEqual(["Other tab's A", "Recovered B", "C", "New message"]);
+        expect(io.normal).toHaveBeenCalledWith(expect.stringContaining("missing-message"));
+        expect(io.normal).toHaveBeenCalledWith(expect.stringContaining(language.recoveryDrafts.skipped));
+        expect(io.normal).toHaveBeenCalledWith(expect.stringContaining(language.recoveryDrafts.skippedKept));
+        const remaining = await journal.listDrafts();
+        expect(remaining).toHaveLength(1);
+        expect(remaining[0]).toMatchObject({
+            scope: "chat",
+            target: entry.target,
+            epoch: entry.epoch,
+            createdAt: entry.createdAt,
+            layers: { pending: { value: { ops: [{ op: ops[1] }] } } },
+        });
+        expect(remaining[0].id).not.toBe(entry.id);
+        expect(target.querySelectorAll("li")).toHaveLength(1);
+    });
+
+    it.each([
+        { op: "setText", id: "missing", text: "Unplaced text" },
+        { op: "setMessage", message: { chatId: "missing", role: "char", data: "Unplaced message" } },
+        { op: "patchMessage", id: "missing", set: { saying: "Unplaced speaker" } },
+        {
+            op: "setTranslation",
+            id: "missing",
+            translation: {
+                text: "번역",
+                sourceHash: translationSourceHash("Missing"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+            },
+        },
+    ] satisfies ChatOp[])(
+        "keeps a missing $op target without retaining successful edits or snapshot state",
+        async (op) => {
+            const input = chatInput([
+                { op: "begin", id: "b", generationId: "old-generation" },
+                { op: "setText", id: "b", text: "Saved B" },
+                op,
+            ]);
+            input.createdAt = Date.now() - 60_000;
+            input.layers.pending!.createSnapshot = plain(h.fake.chat("c", "k")!.data);
+            const entry = await put(input);
+
+            expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: [`${op.op}: missing`], kept: true });
+            expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+            await remainder(entry, [op]);
+        },
+    );
+
+    it.each([
+        { op: "patchMessage", id: "a", set: { saying: "Kept speaker" }, unset: ["saying"] },
+        {
+            op: "setTranslation",
+            id: "a",
+            translation: { text: "Kept translation", sourceHash: "", targetLanguage: "ko", translatedAt: 1 },
+        },
+    ] satisfies ChatOp[])("keeps a $op refused by the writer while saving independent edits", async (op) => {
+        const entry = await put(chatInput([op, { op: "setText", id: "b", text: "Saved B" }]));
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: [`${op.op}: a`], kept: true });
+        expect(h.fake.chat("c", "k")!.data.message[0]).toEqual(m("a", "A", "char"));
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        await remainder(entry, [op]);
+    });
+
+    it("keeps a translation whose source changed and can apply it once the source matches again", async () => {
+        const op = {
+            op: "setTranslation",
+            id: "a",
+            translation: {
+                text: "Recovered translation",
+                sourceHash: translationSourceHash("Earlier A"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+            },
+        } satisfies ChatOp;
+        const entry = await put(chatInput([op]));
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: ["setTranslation: a"], kept: true });
+        expect(h.fake.chat("c", "k")!.data.message[0]).not.toHaveProperty("translation");
+        const kept = await remainder(entry, [op]);
+        h.chat.setMessageText(refK, "a", "Earlier A");
+        await h.sync.flushResources();
+        expect(await recovery.applyRecoveryDraft(kept)).toEqual({ skipped: [] });
+        expect(h.fake.chat("c", "k")!.data.message[0].translation).toEqual(op.translation);
+        expect(await journal.listDrafts()).toEqual([]);
+    });
+
+    it.each(["c", "missing-anchor"])(
+        "keeps only conflicting or uninserted append rows in their original order after %s",
+        async (after) => {
+            const op = {
+                op: "append",
+                anchor: { after },
+                messages: [m("new-1", "First"), m("b", "Conflicting B"), m("a", "A", "char"), m("new-2", "Last")],
+            } satisfies ChatOp;
+            const entry = await put(chatInput([op]));
+
+            const result = await recovery.applyRecoveryDraft(entry);
+            expect(result.kept).toBe(true);
+            expect(result.skipped).toContain("append: b, a");
+            expect(h.fake.texts("c", "k")).toEqual(after === "c" ? ["A", "B", "C", "First", "Last"] : ["A", "B", "C"]);
+            const messages = after === "c" ? [op.messages[1]] : [op.messages[0], op.messages[1], op.messages[3]];
+            await remainder(entry, [{ ...op, messages }]);
+        },
+    );
+
+    it("excludes landed appends and deliberate skips from the retained content", async () => {
+        const missing = { op: "setText", id: "missing", text: "Keep only this" } satisfies ChatOp;
+        const entry = await put(
+            chatInput([
+                { op: "begin", id: "a", generationId: "old-generation" },
+                {
+                    op: "selectCandidate",
+                    messageId: "a",
+                    candidateId: "old-candidate",
+                    expect: { candidatesRevision: 0 },
+                },
+                { op: "create", chat: snapshot() },
+                { op: "replace", chat: snapshot() },
+                { op: "delete" },
+                { op: "remove", ids: ["already-removed"] },
+                { op: "append", anchor: { end: true }, messages: [m("a", "A", "char")] },
+                missing,
+            ]),
+        );
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({
+            skipped: [
+                "selectCandidate: a",
+                "create",
+                "replace",
+                "delete",
+                "remove: already-removed",
+                "append: a",
+                "setText: missing",
+            ],
+            kept: true,
+        });
+        expect(h.fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(h.fake.batchCount()).toBe(0);
+        await remainder(entry, [missing]);
+    });
+
+    it("files refused metadata separately from HypaV3 memory and saves the other edits", async () => {
+        h.settings.ui.memoryAlgorithmType = "structuredMemory";
+        await h.sync.flushResources();
+        const hypaV3Data = { summaries: [{ text: "Recovered memory", chatMemos: ["a"], isImportant: false }] };
+        const entry = await put(
+            chatInput([
+                { op: "meta", set: { id: "cannot-change-id", note: "Recovered note", hypaV3Data } },
+                { op: "setText", id: "b", text: "Saved B" },
+            ]),
+        );
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({
+            skipped: ["meta: id, note"],
+            kept: true,
+            memoryKept: "filed",
+        });
+        expect(h.fake.chat("c", "k")!.data).toMatchObject({ id: "k", note: "" });
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        expect(h.fake.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+        const rows = await journal.listDrafts();
+        expect(rows).toHaveLength(2);
+        for (const kept of rows) {
+            expect(kept.id).not.toBe(entry.id);
+            expect(kept).toMatchObject({ target: entry.target, epoch: entry.epoch, createdAt: entry.createdAt });
+        }
+        const payloads = rows.map((row) => {
+            if (row.scope !== "chat") throw new Error("Missing chat draft");
+            expect(Object.keys(row.layers)).toEqual(["pending"]);
+            expect(row.layers.pending!.value).not.toHaveProperty("createSnapshot");
+            return row.layers.pending!.value.ops;
+        });
+        const memoryOps = [{ op: { op: "meta", set: { hypaV3Data } } }];
+        expect(payloads).toEqual(
+            expect.arrayContaining([
+                memoryOps,
+                [{ op: { op: "meta", set: { id: "cannot-change-id", note: "Recovered note" }, unset: [] } }],
+            ]),
+        );
+        const memoryDraft = rows[payloads.findIndex((ops) => JSON.stringify(ops) === JSON.stringify(memoryOps))];
+        expect(recovery.recoveryDraftDetails(memoryDraft).canApply).toBe(true);
+        h.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        expect(await recovery.applyRecoveryDraft(memoryDraft)).toEqual({ skipped: [] });
+        expect(h.fake.chat("c", "k")!.data.hypaV3Data).toEqual(hypaV3Data);
+        expect(await journal.listDrafts()).toHaveLength(1);
+    });
+
+    it.each([
+        { locale: "ko", notice: "건너뛴 내용은 복구 초안으로 보관했습니다. 내보내거나 다시 적용할 수 있습니다." },
+        { locale: "de", notice: "Skipped content was kept as a recovery draft. You can export it or apply it again." },
+    ])(
+        "exports and reapplies an ops-only remainder against its recreated chat ($locale)",
+        async ({ locale, notice }) => {
+            const lang = await import("src/lang");
+            lang.changeLanguage(locale);
+            language = lang.language;
+            const missing = { op: "setText", id: "missing", text: "Recovered missing reply" } satisfies ChatOp;
+            const input = chatInput(
+                [
+                    { op: "create", chat: snapshot() },
+                    { op: "begin", id: "snapshot-message", generationId: "old-generation" },
+                    { op: "setText", id: "snapshot-message", text: "Saved snapshot edit" },
+                    missing,
+                ],
+                "gone",
+            );
+            input.createdAt = Date.now() - 60_000;
+            const entry = await put(input);
+            await render();
+            const notified = deferred<void>();
+            io.normal.mockImplementationOnce(() => notified.resolve());
+            button(language.apply, row()).click();
+            await notified.promise;
+            await settle();
+
+            expect(io.normal).toHaveBeenCalledWith(expect.stringContaining(notice));
+            expect(h.fake.texts("c", entry.id)).toEqual(["Saved snapshot edit"]);
+            const kept = await remainder(entry, [missing], entry.id);
+            expect(recovery.recoveryDraftDetails(kept)).toMatchObject({ canApply: true, blocked: false });
+            expect(row().querySelector("time")!.getAttribute("datetime")).toBe(new Date(entry.createdAt).toISOString());
+            button(language.export, row()).click();
+            await settle();
+            expect(JSON.parse(io.download.mock.calls[0][1] as string).drafts).toEqual([{ ...kept, otherEpoch: false }]);
+            expect(await journal.listDrafts()).toEqual([kept]);
+
+            h.chat.appendMessage({ chaId: "c", chatId: entry.id }, m("missing", "Restored target"));
+            await h.sync.flushResources();
+            const reapplied = deferred<void>();
+            io.normal.mockImplementationOnce(() => reapplied.resolve());
+            button(language.apply, row()).click();
+            await reapplied.promise;
+            await settle();
+            expect(io.error).not.toHaveBeenCalled();
+            expect(h.fake.texts("c", entry.id)).toEqual(["Saved snapshot edit", "Recovered missing reply"]);
+            expect(h.fake.order("c")!.ids).toEqual(["k", "j", entry.id]);
+            expect(await journal.listDrafts()).toEqual([]);
+            expect(target.querySelector("li")).toBeNull();
+        },
+    );
+
+    it.each(["null", "throw"])("keeps the saved source and disables Apply when filing returns %s", async (outcome) => {
+        const entry = await put(
+            chatInput([
+                { op: "setText", id: "b", text: "Saved B" },
+                { op: "setText", id: "missing", text: "Unplaced" },
+            ]),
+        );
+        const filing = vi.spyOn(journal, "putDraft");
+        if (outcome === "null") filing.mockResolvedValueOnce(null);
+        else filing.mockRejectedValueOnce(new Error("IndexedDB unavailable"));
+        h.fake.holdNextBatchResponse = true;
+        const applying = recovery.applyRecoveryDraft(entry);
+        const result = expect(applying).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        try {
+            await settle();
+            expect(h.fake.releaseBatchResponse).not.toBeNull();
+            expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+            expect(filing).not.toHaveBeenCalled();
+            expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        } finally {
+            h.fake.releaseBatchResponse?.();
+            await result;
+        }
+
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        await render();
+        expect([...row().querySelectorAll("button")].some((node) => node.textContent === language.apply)).toBe(false);
+        const batches = h.fake.batchCount();
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.batchCount()).toBe(batches);
+        button(language.export, row()).click();
+        await settle();
+        expect(JSON.parse(io.download.mock.calls[0][1] as string).drafts).toEqual([entry]);
+    });
+
+    it("keeps both the saved source and narrowed content when source deletion fails", async () => {
+        const missing = { op: "setText", id: "missing", text: "Unplaced" } satisfies ChatOp;
+        const entry = await put(chatInput([{ op: "setText", id: "b", text: "Saved B" }, missing]));
+        vi.spyOn(journal, "removeDraft").mockResolvedValueOnce(false);
+
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        const rows = await journal.listDrafts();
+        expect(rows).toHaveLength(2);
+        expect(rows).toContainEqual(expect.objectContaining({ id: entry.id, layers: entry.layers }));
+        const kept = rows.find((row) => row.id !== entry.id)!;
+        expect(kept).toMatchObject({
+            target: entry.target,
+            createdAt: entry.createdAt,
+            layers: { pending: { value: { ops: [{ op: missing }] } } },
+        });
+        await drafts.recoveryDrafts.refresh();
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        expect(recovery.recoveryDraftDetails(kept).canApply).toBe(true);
+    });
+
+    it("retains the full source before filing when saving fails, then narrows it after a successful retry", async () => {
+        const missing = { op: "setText", id: "missing", text: "Unplaced" } satisfies ChatOp;
+        const entry = await put(chatInput([{ op: "setText", id: "b", text: "Saved B" }, missing]));
+        const filing = vi.spyOn(journal, "putDraft");
+        h.fake.failNext = { status: 503, times: 1, match: batchPath };
+        holdResend("failed");
+
+        await expectApplyTimeout(entry);
+        expect(h.fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(filing).not.toHaveBeenCalled();
+        expect(recovery.recoveryDraftDetails(entry).canApply).toBe(true);
+        h.fake.releaseBatch!();
+        await settle();
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: ["setText: missing"], kept: true });
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        await remainder(entry, [missing]);
+    });
+
+    it("replays recovered deletions without asking and preserves only a recorded retraction mark", async () => {
+        h.settings.ui.memoryAlgorithmType = "structuredMemory";
+        await h.sync.flushResources();
+        for (const retract of [undefined, true] as const) {
+            const id = retract ? "b" : "a";
+            const op = { op: "remove" as const, ids: [id], ...(retract ? { retract } : {}) };
+            const entry = await put(chatInput([op]));
+            const fetch = vi.spyOn(h.fake, "fetch");
+            const before = h.fake.batchBodies().length;
+            expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: [] });
+            expect(
+                h.fake
+                    .batchBodies()
+                    .slice(before)
+                    .flatMap((body) => body.chats ?? [])
+                    .flatMap((group) => group.ops),
+            ).toEqual([op]);
+            expect(h.fake.chat("c", "k")!.data.message.some((message) => message.chatId === id)).toBe(false);
+            expect(fetch.mock.calls.some(([path]) => path.includes("/coverage"))).toBe(false);
+            expect(io.confirm).not.toHaveBeenCalled();
+            expect(await journal.listDrafts()).toEqual([]);
+            fetch.mockRestore();
+        }
+    });
+
+    it("restores a gone chat's snapshot under a new id", async () => {
+        const input = chatInput([], "gone");
+        input.layers.pending!.createSnapshot = snapshot();
+        const entry = await put(input);
+        await recovery.applyRecoveryDraft(entry);
+        const groups = h.fake.batchBodies().flatMap((body) => body.chats ?? []);
+        expect(groups).toHaveLength(1);
+        expect(groups[0]).toMatchObject({ characterId: "c", baseRevision: null });
+        expect(groups[0].chatId).toBeTruthy();
+        expect(groups[0].chatId).not.toBe("gone");
+        expect(groups[0].ops).toEqual([
+            expect.objectContaining({
+                op: "create",
+                chat: expect.objectContaining({ ...snapshot(), id: groups[0].chatId }),
+            }),
+        ]);
+        expect(h.fake.chat("c", "gone")).toBeNull();
+        expect(h.fake.chat("c", groups[0].chatId)!.data).toMatchObject({ ...snapshot(), id: groups[0].chatId });
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+    });
+
+    it("applies chat order while dropping deleted ids and appending current chats absent from the vector", async () => {
+        const entry = await put({
+            epoch: epoch(),
+            scope: "order",
+            target: "c",
+            layers: { latest: { baseRevision: "old-order-revision", ids: ["deleted-chat", "j"] } },
+        });
+        const revision = h.fake.order("c")!.revision;
+        await recovery.applyRecoveryDraft(entry);
+        const orders = h.fake.batchBodies().flatMap((body) => body.chatOrders ?? []);
+        expect(orders).toEqual([{ characterId: "c", baseRevision: revision, ids: ["j", "k"] }]);
+        expect(h.fake.order("c")!.ids).toEqual(["j", "k"]);
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+    });
+
+    it("keeps a chat draft after a lost save answer and never duplicates an append when applied again", async () => {
+        const entry = await put(
+            chatInput([{ op: "append", anchor: { end: true }, messages: [m("stable-append-id", "Only once")] }]),
+        );
+        const base = h.fake.chat("c", "k")!.revision;
+        holdResend("lost");
+        await expectApplyTimeout(entry);
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        const first = h.fake.batchBodies().flatMap((body) => body.chats ?? [])[0];
+        expect(first).toMatchObject({
+            baseRevision: base,
+            ops: [{ op: "append", anchor: { end: true }, messages: [m("stable-append-id", "Only once")] }],
+        });
+        expect(first.groupId).not.toBe("old-page-group");
+        // The held resend lands as the duplicate it is; Apply again then appends nothing more.
+        h.fake.releaseBatch!();
+        await settle();
+        await recovery.applyRecoveryDraft(entry);
+        const appended = h.fake.chat("c", "k")!.data.message.filter((message) => message.chatId === "stable-append-id");
+        expect(appended.map((message) => message.data)).toEqual(["Only once"]);
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+    });
+
+    it("retries Apply in the dialog after a lost create answer without duplicating the recovered chat", async () => {
+        const input = chatInput([], "gone");
+        input.layers.pending!.createSnapshot = snapshot();
+        const entry = await put(input);
+        await render();
+        holdResend("lost");
+        button(language.apply, row()).click();
+        // The answer is lost and the resend unanswered: the dialog reports the Apply's save deadline.
+        await advanceUntil(() => io.error.mock.calls.length > 0);
+        await settle();
+        expect(io.error).toHaveBeenCalledTimes(1);
+        expect(h.fake.releaseBatch).not.toBeNull();
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+        const recoveredIds = h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id));
+        expect(recoveredIds).toHaveLength(1);
+        expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
+
+        h.fake.releaseBatch!();
+        await settle();
+        button(language.apply, row()).click();
+        await settle();
+        expect(io.confirm).toHaveBeenCalledTimes(1);
+        expect(io.error).toHaveBeenCalledTimes(1);
+        expect(h.fake.order("c")!.ids.filter((id) => !["k", "j"].includes(id))).toEqual(recoveredIds);
+        expect(h.fake.texts("c", recoveredIds[0])).toEqual(["Saved snapshot text"]);
+        expect(await journal.listDrafts()).toEqual([]);
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+        expect(target.querySelector("li")).toBeNull();
+    });
+
+    it.each(["conflict", "refusal"])("keeps the record draft after a save %s", async (outcome) => {
+        const entry = await put(recordInput());
+        if (outcome === "conflict") {
+            h.fake.beforeNextBatch = () => {
+                h.fake.set("ui", "main", {
+                    ...plain(h.fake.record("ui", "main")!.data),
+                    theme: "conflicting server copy",
+                });
+            };
+        } else h.fake.failNext = { status: 413, times: 1, match: batchPath };
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow();
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        expect(h.fake.record("ui", "main")!.data.theme).not.toBe("recovered");
+        if (outcome === "conflict") {
+            await recovery.applyRecoveryDraft(entry);
+            expect(h.fake.record("ui", "main")!.data.theme).toBe("recovered");
+            // The applied draft is gone; the first Apply's conflict kept its dropped text as a draft of its own.
+            const left = await journal.listDrafts();
+            expect(left).toEqual([expect.objectContaining({ scope: "record", target: "ui\0main" })]);
+            expect(left[0].id).not.toBe(entry.id);
+            const kept = Object.values(left[0].layers)[0] as { value: { text: string } };
+            expect(JSON.parse(kept.value.text).theme).toBe("recovered");
+        }
+    });
+
+    it("keeps a draft whose delete fails: Discard alerts and keeps the row, and an Apply that saved says not to apply it again", async () => {
+        const entry = await put(recordInput());
+        const removeDraft = vi.spyOn(journal, "removeDraft").mockResolvedValue(false);
+        await render();
+        button(language.recoveryDrafts.discard, row()).click();
+        await settle();
+        expect(io.error).toHaveBeenCalledWith(
+            `${language.recoveryDrafts.failed}\nError: ${language.recoveryDrafts.removeFailed}`,
+        );
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        expect(row()).not.toBeNull();
+
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.record("ui", "main")!.data.theme).toBe("recovered");
+        expect(drafts.recoveryDrafts.entries.map((draft) => draft.id)).toEqual([entry.id]);
+        // Applying it again would repeat the saved changes: Apply is off for it while the page lives.
+        await settle();
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        expect([...row().querySelectorAll("button")].some((node) => node.textContent === language.apply)).toBe(false);
+        const batches = h.fake.batchCount();
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.batchCount()).toBe(batches);
+        removeDraft.mockRestore();
+        expect((await journal.listDrafts()).map((draft) => draft.id)).toEqual([entry.id]);
+    });
+
+    it("opens the recovery dialog from Review and the Advanced settings row only while drafts exist", async () => {
+        const { advancedSettingsItems, advancedSettingsSections } = await import("src/ts/setting/advancedSettingsData");
+        const item = advancedSettingsItems.find((item) => item.id === "adv.recoveredChanges")!;
+        expect(item).toMatchObject({ type: "button", labelKey: "recoveredChanges" });
+        expect(
+            advancedSettingsSections.some((section) =>
+                section.items.some((item) => item.id === "adv.recoveredChanges"),
+            ),
+        ).toBe(true);
+        const ctx = {
+            settings: h.settings,
+            preset: h.activePreset,
+            modelPreset: h.activeModelPreset,
+            persona: h.activePersona,
+        } as Parameters<NonNullable<typeof item.condition>>[0];
+        expect(item.condition!(ctx)).toBe(false);
+        await render(true);
+        expect(target.querySelector('[role="status"]')).toBeNull();
+        const entry = await put(recordInput());
+        await settle();
+        expect(item.condition!(ctx)).toBe(true);
+        button(language.recoveryDrafts.review).click();
+        await settle();
+        expect(drafts.recoveryDrafts.isOpen).toBe(true);
+        expect(target.querySelector('[role="dialog"]')).not.toBeNull();
+        button(language.recoveryDrafts.close).click();
+        await settle();
+        expect(drafts.recoveryDrafts.isOpen).toBe(false);
+        expect(target.querySelector('[role="dialog"]')).toBeNull();
+        await item.options!.onClick!();
+        await settle();
+        expect(target.querySelector('[role="dialog"]')).not.toBeNull();
+        await drafts.recoveryDrafts.remove(entry.id);
+        await settle();
+        expect(item.condition!(ctx)).toBe(false);
+        expect(target.querySelector('[role="status"]')).toBeNull();
+    });
+
+    it("retires only the displaced send confirmed as a user message in its chat", async () => {
+        const send = { translate: "", files: [], state: "sending" as const };
+        const displaced = [
+            { chatId: "k", id: "confirmed", input: "Confirmed input" },
+            { chatId: "k", id: "reply", input: "Input that matches a reply ID" },
+            { chatId: "j", id: "another-chat", input: "Input from another chat" },
+        ];
+        for (const { chatId, id, input } of displaced) {
+            const key = `c\0${chatId}`;
+            expect(await journal.putComposerSend(key, { ...send, input, userMessageId: id })).toBe("written");
+            expect(
+                await journal.putComposerSend(key, { ...send, input: "Later send", userMessageId: "replacement" }),
+            ).toBe("written");
+            await journal.settleComposerSend(key, "replacement");
+        }
+        await drafts.recoveryDrafts.refresh();
+        await render();
+        const previews = () =>
+            [...target.querySelectorAll("li")].map((li) => li.querySelector("p")?.textContent?.trim()).sort();
+        expect(previews()).toEqual(displaced.map(({ input }) => input).sort());
+
+        const chat = plain(h.chat.findChat(refK));
+        chat.message.push(
+            m("reply", "Assistant reply", "char"),
+            m("another-chat", "Same ID"),
+            m("confirmed", "Confirmed input"),
+        );
+        h.chat.acceptRemoteChat({ characterId: "c", id: "k", revision: `${epoch()}:1:99`, data: chat });
+        svelte.flushSync();
+        expect(previews()).toEqual(["Input from another chat", "Input that matches a reply ID"]);
+        const durable = await journal.listDrafts();
+        expect(
+            durable.map((entry) => (entry.scope === "composer" ? entry.value.userMessageId : entry.id)).sort(),
+        ).toEqual(["another-chat", "reply"]);
+    });
+
+    it("shows the record name, creation time and remaining lifetime, then removes expired drafts", async () => {
+        const createdAt = Date.now() - (47 * 60 + 58) * 60_000;
+        const input = recordInput();
+        const entry = await put({ ...input, createdAt });
+        await render();
+        expect(row().querySelector("h3")!.textContent).toBe("ui");
+        expect(row().querySelector("time")!.getAttribute("datetime")).toBe(new Date(createdAt).toISOString());
+        expect(row().querySelector("time")!.textContent).toBe(new Date(createdAt).toLocaleString());
+        expect(row().textContent).toContain(language.recoveryDrafts.expiresIn(0, 2));
+        await vi.advanceTimersByTimeAsync(60_000);
+        svelte.flushSync();
+        expect(row().textContent).toContain(language.recoveryDrafts.expiresIn(0, 1));
+        await vi.advanceTimersByTimeAsync(60_000);
+        svelte.flushSync();
+        expect(drafts.recoveryDrafts.entries).toEqual([]);
+        expect(target.querySelector("li")).toBeNull();
+        expect(await journal.listDrafts()).toEqual([]);
+        await drafts.recoveryDrafts.refresh();
+        expect(drafts.recoveryDrafts.entries.some((draft) => draft.id === entry.id)).toBe(false);
+    });
+
+    it("expires an outstanding Apply after another tab discards the last draft", async () => {
+        const { createDraftJournal, JOURNAL_ENTRY_TTL_MS } = await import("src/ts/storage/draftJournal");
+        const entry = await put({ ...recordInput(), createdAt: Date.now() - JOURNAL_ENTRY_TTL_MS + 120_000 });
+        h.fake.holdNextBatchResponse = true;
+        const { ResourceFlushTimeoutError } = await import("src/ts/storage/resourceFlushWait");
+        await expect(settleFlush(recovery.applyRecoveryDraft(entry))).rejects.toBeInstanceOf(ResourceFlushTimeoutError);
+        expect(h.fake.releaseBatchResponse).not.toBeNull();
+        h.fake.releaseBatchResponse!();
+        await h.sync.flushResources();
+        expect(drafts.recoveryApplyAttempts.has(entry.id)).toBe(true);
+
+        const otherTab = createDraftJournal({ storage: () => localStorage });
+        try {
+            expect(await otherTab.start()).toBe(true);
+            expect(otherTab.tabId).not.toBe(journal.tabId);
+            expect(await otherTab.removeDraft(entry.id)).toBe(true);
+            await drafts.recoveryDrafts.open();
+            expect(drafts.recoveryDrafts.entries).toEqual([]);
+            expect(drafts.recoveryApplyAttempts.has(entry.id)).toBe(true);
+
+            vi.setSystemTime(entry.createdAt + JOURNAL_ENTRY_TTL_MS);
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(drafts.recoveryApplyAttempts.has(entry.id)).toBe(false);
+        } finally {
+            await otherTab.close();
+        }
+    });
+});

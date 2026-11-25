@@ -6,22 +6,28 @@
 // that keeps `JSON.stringify(snapshot)` on `window.__risuBootSnapshot`), so what it compares is
 // exactly what `loadData` installs.
 //
-// Data: 14 modules of 300 asset tuples (one listed twice), 6 characters (one with a TTS API key, which is
-// never cached), 20 presets. Boots, each a reload: `cold` (cache deleted), `warm`, after one module's
-// assets change, after a module reorder, after a character's edit, after a character's deletion, after
+// FIXTURE=check (default), reported or audit uses the shared synthetic builder. Every fixture
+// includes a credential character and a duplicated module. The default data: 14 modules of 300 asset
+// tuples (one listed twice), 6 characters (one with a TTS API key, which is never cached), 20 presets.
+// Boots, each a reload: `cold` (cache deleted), `warm`, after one module's
+// assets change, after a module reorder, after a chat edit, after a character's edit, after a character's deletion, after
 // a character's creation, and `fallback` (the boot route aborted: the plain read). Per boot: the
 // snapshot equals a plain read taken right after it; a cached boot read through the boot route and
-// claimed what the cache held (from `warm` on, every module and the presets record; never the
+// claimed what the cache held (from `warm` on, every module, presets, inlays and chat collection; never the
 // credential character); the fallback boot read the plain route after the failed boot request. No
 // page error. Wait for `loadedStore` after each reload without navigating again; if the app or Vite
 // reloads, compare the snapshot of the document that finished loading. Check every boot request's
-// credential claims, and the full-cache claims of the compared document.
+// credential claims, and the full-cache claims of the compared document. Unreadable boot response
+// bodies fail the chat-edit assertion that needs them; other boots compare the captured snapshot.
 //
 // Usage: node util/playwright/checkBootCache.mjs
-import { createHash, randomUUID } from "node:crypto";
+// Ports default to server 6141 / Vite 5241; override with PORT / VITE_PORT. A loading timeout fails
+// the check, including failure to capture the loaded document's snapshot within 120 s.
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { chromium } from "playwright-core";
-import { chromePath, openApp, repoRoot, startStack } from "./stack.mjs";
+import { chromePath, clearSafeBootAttempts, openApp, repoRoot, startStack } from "./stack.mjs";
+import { assetTuples, buildBootFixture, seedBootFixture } from "./measureBoot.mjs";
 
 const { RESOURCE_KIND } = await import(path.join(repoRoot, "shared/resources.ts"));
 const BOOT_PATH = "/api/resources/boot";
@@ -34,32 +40,16 @@ const check = (name, ok, detail) => {
     console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`);
 };
 
-const hex = (seed) => createHash("sha256").update(seed).digest("hex");
-const assetTuples = (prefix, count) =>
-    Array.from({ length: count }, (_, i) => [`${prefix} asset ${i}`, `assets/${hex(`${prefix}${i}`)}.png`, "png"]);
-const character = (index, extra = {}) => ({
-    chaId: randomUUID(),
-    name: `Character ${index}`,
-    type: "character",
-    desc: `The description of character ${index}. `.repeat(50),
-    firstMessage: "Hello.",
-    globalLore: [],
-    customscript: [],
-    additionalAssets: assetTuples(`c${index}`, 50),
-    emotionImages: [],
-    bias: [],
-    viewScreen: "none",
-    chatFolders: [],
-    firstMsgIndex: -1,
-    ...extra,
-});
-
 let stack = null;
 let browser = null;
 try {
-    stack = await startStack({ serverPort: 6141, vitePort: 5241 });
+    stack = await startStack({
+        serverPort: Number(process.env.PORT ?? 6141),
+        vitePort: Number(process.env.VITE_PORT ?? 5241),
+    });
     browser = await chromium.launch({ executablePath: chromePath, headless: true });
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    await clearSafeBootAttempts(context);
     const page = await context.newPage();
     const pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 300)));
@@ -77,7 +67,7 @@ try {
         if (headers["risu-auth"]) auth = headers["risu-auth"];
         if (headers["x-resource-epoch"]) epoch = headers["x-resource-epoch"];
         if (request.method() === "POST" && new URL(request.url()).pathname === BOOT_PATH) {
-            boots.push({ document: documentNumber, body: JSON.parse(request.postData() ?? "null") });
+            boots.push({ document: documentNumber, request, body: JSON.parse(request.postData() ?? "null") });
         }
         const pathname = new URL(request.url()).pathname;
         if (
@@ -85,6 +75,14 @@ try {
             (request.method() === "GET" && pathname === PLAIN_READ_PATH)
         ) {
             reads.push(pathname);
+        }
+    });
+    page.on("response", (response) => {
+        const boot = boots.find((entry) => entry.request === response.request());
+        if (boot) {
+            boot.answer = response.json().catch((error) => {
+                boot.answerError = String(error);
+            });
         }
     });
     // The wrapper: the module as Vite serves it, `loadBootSnapshot` renamed and wrapped.
@@ -128,26 +126,11 @@ try {
     await openApp(page, stack.baseURL);
     await page.waitForTimeout(1500);
 
-    // Seed.
     const ui = await single("ui");
     epoch = ui.epoch ?? epoch;
-    const presets = await single("presets");
-    const modules = await single("modules");
-    const moduleList = Array.from({ length: 14 }, (_, i) => ({
-        id: randomUUID(),
-        name: `Module ${i}`,
-        description: "",
-        lorebook: [],
-        assets: assetTuples(`m${i}`, 300),
-    }));
-    moduleList.push(moduleList[3]);
-    const keyed = character(0, { oaiTTSConfig: { model: "tts-1", voice: "alloy", speed: "1", apiKey: "sk-check" } });
-    const characters = [keyed, ...Array.from({ length: 5 }, (_, i) => character(i + 1))];
-    const presetList = Array.from({ length: 20 }, (_, i) => ({
-        ...presets.data[0],
-        id: i === 0 ? presets.data[0].id : randomUUID(),
-        name: `Preset ${i}`,
-    }));
+    const fixture = await seedBootFixture(api, process.env.FIXTURE ?? "check", { cacheCheck: true });
+    const { characters } = fixture;
+    const keyed = characters.find((character) => character.oaiTTSConfig?.apiKey);
     const chatOps = (list) =>
         list.map((data) => ({
             characterId: data.chaId,
@@ -160,25 +143,6 @@ try {
                 },
             ],
         }));
-    const seeded = await api("/api/resources/batch", {
-        method: "POST",
-        body: JSON.stringify({
-            ops: [
-                {
-                    kind: "ui",
-                    id: "main",
-                    baseRevision: ui.revision,
-                    data: { ...ui.data, didFirstSetup: true, useLegacyGUI: true },
-                },
-                { kind: "presets", id: "main", baseRevision: presets.revision, data: presetList },
-                { kind: "modules", id: "main", baseRevision: modules?.revision ?? null, data: moduleList },
-                ...characters.map((data) => ({ kind: "characters", id: data.chaId, baseRevision: null, data })),
-            ],
-            chats: chatOps(characters),
-            chatOrders: [],
-        }),
-    });
-    check("seed: stored", seeded.status === 200, seeded.status === 200 ? undefined : seeded);
     const deleteCache = () =>
         page.evaluate(
             () =>
@@ -189,7 +153,8 @@ try {
                 }),
         );
 
-    const bootOnce = async (name, { cached = true, full = false } = {}) => {
+    let previousSnapshot;
+    const bootOnce = async (name, { cached = true, full = false, changedCollection } = {}) => {
         boots = [];
         reads = [];
         await page.reload();
@@ -220,11 +185,17 @@ try {
             throw new Error(`${name}: the app did not finish loading with a snapshot within 120 s`);
         // The tab's later writes (the cache's own, after the boot) never touch the server: the plain
         // read now is the state the boot read.
-        check(`${name}: the snapshot the tab installed equals a plain read`, snapshot === (await plainRead()));
+        const plain = await plainRead();
+        check(`${name}: the snapshot the tab installed equals a plain read`, snapshot === plain);
+        const expectedCollections = new Set([
+            ...(previousSnapshot?.chatSummaries ?? []).map((row) => row.characterId),
+            ...(previousSnapshot?.chatOrders ?? []).map((row) => row.characterId),
+        ]);
         const claims = boots.map(({ document, body }) => ({
             document,
             records: new Set((body?.known?.records ?? []).map((r) => `${r.kind}/${r.id}`)),
             moduleHashes: body?.known?.items?.find((entry) => entry.kind === "modules")?.hashes ?? [],
+            chatCollections: new Set((body?.known?.chatCollections ?? []).map((entry) => entry.characterId)),
         }));
         const comparedClaims = claims.filter((claim) => claim.document === comparedDocument);
         const noCredential = claims.every((claim) => !claim.records.has(`characters/${keyed.chaId}`));
@@ -235,11 +206,12 @@ try {
                 document: claim.document,
                 records: claim.records.size,
                 moduleHashes: claim.moduleHashes.length,
+                chatCollections: claim.chatCollections.size,
             })),
         };
         if (cached) {
             check(
-                `${name}: read through the boot route${full ? ", claiming every module and the presets record" : ""}, never the credential character`,
+                `${name}: read through the boot route${full ? ", claiming modules, presets, inlays and chat collections" : ""}, never the credential character`,
                 reads.length >= 1 &&
                     reads.every((p) => p === BOOT_PATH) &&
                     comparedClaims.length > 0 &&
@@ -249,6 +221,11 @@ try {
                             (claim) =>
                                 claim.records.has("modules/main") &&
                                 claim.records.has("presets/main") &&
+                                (previousSnapshot?.kinds.inlays ?? []).every((row) =>
+                                    claim.records.has(`inlays/${row.id}`),
+                                ) &&
+                                claim.chatCollections.size === expectedCollections.size &&
+                                [...expectedCollections].every((id) => claim.chatCollections.has(id)) &&
                                 claim.moduleHashes.length >= 14,
                         )),
                 detail,
@@ -263,6 +240,27 @@ try {
                 detail,
             );
         }
+        if (changedCollection) {
+            const current = JSON.parse(plain);
+            for (const boot of boots.filter((entry) => entry.document === comparedDocument)) {
+                const answer = await boot.answer;
+                const expectedCached = new Set([...expectedCollections].filter((id) => id !== changedCollection));
+                check(
+                    `${name}: only the changed character's collection is re-sent`,
+                    answer?.cachedChatCollections?.length === expectedCached.size &&
+                        answer.cachedChatCollections.every((id) => expectedCached.delete(id)) &&
+                        expectedCached.size === 0 &&
+                        JSON.stringify(answer.chatSummaries) ===
+                            JSON.stringify(
+                                current.chatSummaries.filter((row) => row.characterId === changedCollection),
+                            ) &&
+                        JSON.stringify(answer.chatOrders) ===
+                            JSON.stringify(current.chatOrders.filter((row) => row.characterId === changedCollection)),
+                    boot.answerError === undefined ? undefined : { error: boot.answerError },
+                );
+            }
+        }
+        previousSnapshot = JSON.parse(snapshot);
         // Let the cache write land before the next boot.
         await page
             .waitForFunction(() => performance.getEntriesByName("risu-boot-cache:written").length > 0, null, {
@@ -274,6 +272,23 @@ try {
     await deleteCache();
     await bootOnce("cold");
     await bootOnce("warm", { full: true });
+
+    const changedChat = previousSnapshot.chatSummaries.find((row) => row.characterId === characters[1].chaId);
+    const renamed = await api("/api/resources/batch", {
+        method: "POST",
+        body: JSON.stringify({
+            chats: [
+                {
+                    characterId: changedChat.characterId,
+                    chatId: changedChat.id,
+                    baseRevision: changedChat.revision,
+                    ops: [{ op: "meta", set: { name: "Renamed chat" } }],
+                },
+            ],
+        }),
+    });
+    check("chat edit: stored", renamed.status === 200, renamed.status === 200 ? undefined : renamed);
+    await bootOnce("chat edit", { full: true, changedCollection: changedChat.characterId });
 
     let current = await single("modules");
     let data = structuredClone(current.data);
@@ -322,7 +337,7 @@ try {
     check("character delete: stored", deleted.status === 200, deleted.status === 200 ? undefined : deleted);
     await bootOnce("character delete", { full: true });
 
-    const added = character(9);
+    const added = { ...buildBootFixture("check").characters[1], chaId: randomUUID(), name: "Character 9" };
     const created = await api("/api/resources/batch", {
         method: "POST",
         body: JSON.stringify({
@@ -340,7 +355,7 @@ try {
     );
     await bootOnce("fallback", { cached: false });
 
-    check("the module was wrapped on every load", wrapped >= 8, { wrapped });
+    check("the module was wrapped on every load", wrapped >= 9, { wrapped });
     check("no page error", pageErrors.length === 0, pageErrors.length === 0 ? undefined : pageErrors);
 } catch (error) {
     console.error(error);

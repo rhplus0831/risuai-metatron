@@ -1,10 +1,11 @@
 <script lang="ts">
     import { selectCharacter, selection } from "src/ts/storage/selection.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import { chatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
+    import { activeChatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
     import {
         chatStatusKey,
-        generatingChatKeys,
+        generatingBadgeKeys,
+        memoryHealthStates,
         recoveryChatKeys,
         unseenChatKeys,
     } from "src/ts/process/chatStatus.svelte";
@@ -18,6 +19,7 @@
         settingsOpen,
         sideBarClosing,
         sideBarStore,
+        sidebarLeaveDevTool,
         OpenRealmStore,
         PlaygroundStore,
         additionalHamburgerMenu,
@@ -37,6 +39,7 @@
         User2Icon,
     } from "@lucide/svelte";
     import { addCharacter, changeChar } from "../../ts/characters";
+    import { isArchivedGroup } from "src/ts/storage/archivedGroup";
     import CharConfig from "./CharConfig.svelte";
     import { language } from "../../lang";
     import isEqual from "lodash/isEqual";
@@ -56,6 +59,7 @@
         collectCharacterStatuses,
         collectMemoryProgress,
         folderStatus,
+        groupHealthState,
         groupMemoryCount,
         resolveChatStatus,
         refusedChatKeys,
@@ -68,20 +72,41 @@
     import PluginDefinedIcon from "../Others/PluginDefinedIcon.svelte";
     import { RISU_SIDEBAR_DRAG_TYPE } from "src/ts/dragTypes";
 
+    /**
+     * The sidebar: the character rail (the characters and folders of `settings.characterOrder`, reordered by
+     * drag/drop carrying `RISU_SIDEBAR_DRAG_TYPE` from `src/ts/dragTypes.ts`; each order write is followed by
+     * `checkCharOrder`, `src/ts/storage/characterOrder.ts`) and the settings pane (`SideChatList`, `OpenChatPanel`,
+     * `CharConfig`, or `DevTool`). The chat tab shows `SideChatList` while the chat is closed and `OpenChatPanel`
+     * while it is open (`selection.chatOpen`); the playground always shows the list.
+     *
+     * The pane publishes its side padding as `--sidebar-gutter`. A child that scrolls itself (the `SideChatList`
+     * list, the `OpenChatPanel` root) stretches over it with `-mr-(--sidebar-gutter) pr-(--sidebar-gutter)`, so its
+     * scrollbar sits at the pane's edge; a new self-scrolling child does the same.
+     *
+     * Status badges come from `src/lib/SideBars/chatStatus.ts` over `statusSets`: a top-level character and a member
+     * of an open folder show their character's status, a collapsed folder shows `folderStatus` over its members, and
+     * an open folder's own row has no badge.
+     */
+
     const currentCharacter = $derived(selectedCharacter());
     const pinnedChats = $derived(
-        collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
+        collectPinnedChats(characterList(), settings.characterOrder, activeChatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
+    const healthStates = $derived(memoryHealthStates());
+    /** Read reactively; only chat refusals count (`refusedChatKeys`). */
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         refused: refusedChatKeys(refusedItems()),
-        generating: generatingChatKeys(),
+        generating: generatingBadgeKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,
+        health: healthStates,
     });
+    /** Each character's status, aggregated once per change of `statusSets`; rows and folders read from it. */
     const characterStatuses = $derived(collectCharacterStatuses(statusSets));
     const memoryProgress = $derived(collectMemoryProgress(summarizing));
+    /** Each pinned chat's own status, resolved per chat rather than read from its character. */
     const pinnedStatuses = $derived.by(() => {
         const statuses = new Map<string, ChatStatus>();
         for (const item of pinnedChats) {
@@ -93,7 +118,10 @@
         }
         return statuses;
     });
-    /** A character's or folder's memory count, only when memory is the status it shows. */
+    /**
+     * A character's or folder's memory count, only when memory is the status it shows; with several summarizing
+     * chats, or only a queued task, the badge shows the status without a count (`groupMemoryCount`).
+     */
     function memoryCountOf(status: ChatStatus | null, chaIds: readonly string[]): MemoryCount | null {
         return status === "memory" ? groupMemoryCount(memoryProgress, chaIds) : null;
     }
@@ -101,6 +129,14 @@
     let editMode = $state(false);
     let menuMode = $state(0);
     let devTool = $state(false);
+    // The DevTool view shows in place of the chat and character tabs: a request for one of them
+    // (`sidebarLeaveDevTool`) leaves it, mounted already or at the next mount, and is cleared.
+    $effect(() => {
+        if ($sidebarLeaveDevTool) {
+            devTool = false;
+            sidebarLeaveDevTool.set(false);
+        }
+    });
 
     function reseter() {
         menuMode = 0;
@@ -144,7 +180,7 @@
                 const index = Object.hasOwn(idObject, id) ? idObject[id] : -1;
                 if (index !== -1) {
                     const cha = characterList()[index];
-                    if (cha.trashTime) continue;
+                    if (cha.trashTime || isArchivedGroup(cha)) continue;
                     newCharImages.push({
                         img: cha.image ?? "",
                         chaId: cha.chaId,
@@ -160,7 +196,7 @@
                     const index = Object.hasOwn(idObject, id) ? idObject[id] : -1;
                     if (index !== -1) {
                         const cha = characterList()[index];
-                        if (cha.trashTime) continue;
+                        if (cha.trashTime || isArchivedGroup(cha)) continue;
                         folderCharImages.push({
                             img: cha.image ?? "",
                             chaId: cha.chaId,
@@ -511,6 +547,7 @@
             items={pinnedChats}
             statuses={pinnedStatuses}
             memoryCounts={summarizing}
+            {healthStates}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -597,6 +634,7 @@
             items={pinnedChats}
             statuses={pinnedStatuses}
             memoryCounts={summarizing}
+            {healthStates}
             selectedChaId={selection.chatOpen ? selection.characterId : null}
             selectedChatId={selection.characterId ? selectedChatId(selection.characterId) : null}
             rounded={IconRounded}
@@ -644,11 +682,11 @@
                                 char.folder.map((member) => member.chaId),
                             )
                           : null}
-                {@const statusCount = memoryCountOf(
-                    status,
-                    char.type === "normal" ? [char.chaId] : char.folder.map((member) => member.chaId),
-                )}
-                {@const statusLabel = status ? chatStatusLabel(status, char.name, statusCount) : ""}
+                {@const statusChaIds =
+                    char.type === "normal" ? [char.chaId] : char.folder.map((member) => member.chaId)}
+                {@const statusCount = memoryCountOf(status, statusChaIds)}
+                {@const statusHealth = status === "health" ? groupHealthState(healthStates, statusChaIds) : null}
+                {@const statusLabel = status ? chatStatusLabel(status, char.name, statusCount, statusHealth) : ""}
                 {@const name = status ? `${char.name} · ${statusLabel}` : char.name}
                 <div
                     class="group relative flex items-center px-2"
@@ -827,7 +865,7 @@
                             </LazyCharImage>
                         {/if}
                         {#if status}
-                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} />
+                            <ChatStatusBadge {status} label={statusLabel} count={statusCount} health={statusHealth} />
                         {/if}
                     </div>
                 </div>
@@ -888,8 +926,10 @@
                             {#each char.folder as char2}
                                 {@const memberStatus = characterStatuses.get(char2.chaId)}
                                 {@const memberCount = memoryCountOf(memberStatus ?? null, [char2.chaId])}
+                                {@const memberHealth =
+                                    memberStatus === "health" ? groupHealthState(healthStates, [char2.chaId]) : null}
                                 {@const memberStatusLabel = memberStatus
-                                    ? chatStatusLabel(memberStatus, char2.name, memberCount)
+                                    ? chatStatusLabel(memberStatus, char2.name, memberCount, memberHealth)
                                     : ""}
                                 {@const memberName = memberStatus ? `${char2.name} · ${memberStatusLabel}` : char2.name}
                                 <div
@@ -949,6 +989,7 @@
                                                 status={memberStatus}
                                                 label={memberStatusLabel}
                                                 count={memberCount}
+                                                health={memberHealth}
                                             />
                                         {/if}
                                     </div>

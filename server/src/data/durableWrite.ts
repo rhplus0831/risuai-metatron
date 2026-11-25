@@ -3,6 +3,24 @@ import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFil
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * Durable file publication and directory creation for server state. Publication flushes the
+ * temporary file before rename and the target directory afterward; a directory-sync failure can
+ * therefore reject after the target is installed. Only EINVAL and EPERM from directory flushing
+ * are tolerated, never file-write or file-sync errors. Temporary and target directories must share
+ * a filesystem; callers create them before publishing.
+ */
+
+/** The `node:fs/promises` member `syncDir` calls (tests inject latency and failures). */
+export type DirectorySyncFs = { open(file: string, flags: string): Promise<Pick<FileHandle, "sync" | "close">> };
+
+/** The `node:fs/promises` members `writeFileDurable` calls (tests inject latency and failures). */
+export type DurableFs = {
+    open(file: string, flags: string, mode?: number): Promise<Pick<FileHandle, "writeFile" | "sync" | "close">>;
+    rename(from: string, to: string): Promise<void>;
+    rm(file: string, options: { force: boolean }): Promise<void>;
+};
+
 /** Some filesystems refuse directory flushing, including Windows mounts with read-only handles. */
 function refusesDirectorySync(error: unknown): boolean {
     const code = (error as NodeJS.ErrnoException).code;
@@ -10,10 +28,10 @@ function refusesDirectorySync(error: unknown): boolean {
 }
 
 /** Flushes directory entries; only EINVAL/EPERM from opening or syncing the directory are tolerated. */
-export async function syncDir(dir: string): Promise<void> {
-    let handle: FileHandle | undefined;
+export async function syncDir(dir: string, api: DirectorySyncFs = fs): Promise<void> {
+    let handle: Awaited<ReturnType<DirectorySyncFs["open"]>> | undefined;
     try {
-        handle = await fs.open(dir, "r");
+        handle = await api.open(dir, "r");
         await handle.sync();
     } catch (error) {
         if (!refusesDirectorySync(error)) {
@@ -109,4 +127,31 @@ export function writeFileDurableSync(
         throw error;
     }
     syncDirSync(dir);
+}
+
+/** `writeFileDurableSync` off the serving thread: the same contract, over `fs` (default `node:fs/promises`). */
+export async function writeFileDurable(
+    file: string,
+    data: string | Uint8Array,
+    options: { tempDir?: string; mode?: number; fs?: DurableFs } = {},
+): Promise<void> {
+    const api = options.fs ?? fs;
+    const dir = path.dirname(file);
+    const temp = path.join(options.tempDir ?? dir, `.${path.basename(file)}.${randomUUID()}.tmp`);
+    const handle = await api.open(temp, "wx", options.mode);
+    try {
+        try {
+            await handle.writeFile(data);
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+        await api.rename(temp, file);
+    } catch (error) {
+        try {
+            await api.rm(temp, { force: true });
+        } catch {}
+        throw error;
+    }
+    await syncDir(dir, api);
 }

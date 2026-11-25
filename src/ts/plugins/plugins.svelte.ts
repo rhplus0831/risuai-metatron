@@ -3,15 +3,41 @@ import { language } from "../../lang";
 import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
+import { globalFetch } from "../globalApi.svelte";
 import { hotReloading } from "../stores.svelte";
-import { getV3PluginInstance, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./apiV3/v3.svelte";
+import {
+    getV3PluginInstance,
+    loadV3Plugins,
+    onPluginWorkChange,
+    pluginGuestsSettled,
+    pluginWorkIdle,
+    reviewPluginPermissions,
+} from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
+import { onPermissionGrantsRemoved } from "./apiV3/permissionStore";
 import { clearPluginHooks } from "./pluginHooks";
-import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "../storage/resourceFlushWait";
+import {
+    beginMutationScope,
+    flushResources,
+    GenerationBlockedError,
+    onRemoteRecordApplied,
+} from "../storage/resourceSync.svelte";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { safeBootOff } from "../safeBoot";
 import type { GuestStartup } from "./apiV3/factory";
+import type { PluginReloadOutcome } from "../../../shared/remoteCommands.ts";
 import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugins.ts";
+
+/**
+ * Plugin import and serialized reload ownership. Installed records live in `shared/plugins.ts`;
+ * only enabled API `3.0` entries run, through `src/ts/plugins/apiV3/v3.svelte.ts` in iframes.
+ * Local loads capture their list before waiting; remote record changes wait for plugin work to
+ * become idle and read the newest list. A permission reset of a plugin running here (this tab's or
+ * another tab's) forces one such reload even with an unchanged signature, so the plugin loses the
+ * capabilities it already obtained. Safe boot leaves persistence available but starts no guest and
+ * installs neither listener (`src/ts/safeBoot.ts`).
+ */
 
 export type { RisuPlugin } from "../../../shared/plugins.ts";
 
@@ -25,6 +51,7 @@ export async function createBlankPlugin() {
 
 Risuai.log("Hello from New Plugin!");
 `.trim(),
+        { skipPermissionReview: true },
     );
 }
 
@@ -56,15 +83,16 @@ export const checkPluginUpdate = async (plugin: RisuPlugin) => {
             }
         }
 
-        const response = await fetch(plugin.updateURL, {
+        const response = await globalFetch(plugin.updateURL, {
             method: "GET",
             headers: {
                 Range: "bytes=0-512",
             },
+            rawResponse: true,
         });
 
-        if (response.status >= 200 && response.status < 300) {
-            const text = await response.text();
+        if (response.ok) {
+            const text = new TextDecoder().decode(response.data);
             const versioRegex = /\/\/@version\s+([^\s]+)/;
             const match = text.match(versioRegex);
             if (match && match[1]) {
@@ -91,14 +119,15 @@ export async function updatePlugin(plugin: RisuPlugin) {
         if (!plugin.updateURL) {
             return false;
         }
-        const response = await fetch(plugin.updateURL);
-        if (response.status >= 200 && response.status < 300) {
-            const jsFile = await response.text();
-            await importPlugin(jsFile, {
-                isUpdate: true,
-                originalPluginName: plugin.name,
-            });
-            return true;
+        const response = await globalFetch(plugin.updateURL, { method: "GET", rawResponse: true });
+        if (response.ok) {
+            const jsFile = new TextDecoder().decode(response.data);
+            return (
+                (await importPlugin(jsFile, {
+                    isUpdate: true,
+                    originalPluginName: plugin.name,
+                })) === true
+            );
         }
     } catch (error) {
         console.error("Failed to update plugin:", error);
@@ -106,6 +135,17 @@ export async function updatePlugin(plugin: RisuPlugin) {
     return false;
 }
 
+/**
+ * Imports only scripts whose `//@api` tokens include `3.0`; otherwise reports
+ * `pluginApiVersionUnsupported` and installs nothing. Updates preserve the internal name, which
+ * identifies the record in `src/ts/storage/collectionStore.svelte.ts:upsertPlugin`. Before the
+ * plugin is saved and loaded, the user is shown its permission list (`reviewPluginPermissions`, with
+ * the replaced version's grants checked) unless this is a hot reload or `skipPermissionReview`;
+ * the import goes on whatever the answer, and a failed save of the permissions is reported. When
+ * the installed plugin of that name changed while the list was open, nothing is installed or loaded:
+ * silently for an update whose plugin was removed, else with `pluginChangedDuringImport`.
+ * The installed record is flushed before loading; a failed save leaves it pending and reports why.
+ */
 export async function importPlugin(
     code: string | null = null,
     argu: {
@@ -113,6 +153,7 @@ export async function importPlugin(
         originalPluginName?: string;
         isHotReload?: boolean;
         isTypescript?: boolean;
+        skipPermissionReview?: boolean;
     } = {},
 ) {
     try {
@@ -319,6 +360,7 @@ export async function importPlugin(
                 jsFile = await pluginCodeTranspiler(jsFile);
             } catch (error) {
                 showError("Failed to transpile TypeScript code: " + error.message);
+                return;
             }
         }
 
@@ -343,6 +385,7 @@ export async function importPlugin(
         };
 
         const oldPluginIndex = (settings.plugins ?? []).findIndex((p: RisuPlugin) => p.name === pluginData.name);
+        const previousScript = settings.plugins?.[oldPluginIndex]?.script;
 
         if (originalPluginName && originalPluginName !== pluginData.name) {
             showError(
@@ -360,7 +403,71 @@ export async function importPlugin(
 
         // Replaces the installed plugin with this name, or installs it.
         if (oldPluginIndex !== -1 || !isUpdate || argu.isHotReload) {
+            if (!argu.isHotReload && !argu.skipPermissionReview) {
+                // The list is open across an await: the plugin of this name must stay as it was found.
+                const installedScript = () =>
+                    (settings.plugins ?? []).find((p: RisuPlugin) => p.name === pluginData.name)?.script;
+                const failure = await reviewPluginPermissions(pluginData, {
+                    previousScript,
+                    installing: true,
+                    stillCurrent: () => installedScript() === previousScript,
+                }).then(
+                    () => null,
+                    (error: unknown) => ({ error }),
+                );
+                const nowInstalled = installedScript();
+                if (nowInstalled !== previousScript) {
+                    // Removed meanwhile: an update is dropped, as the settings page drops one. Replaced
+                    // or installed meanwhile: this import would overwrite a script the user never saw.
+                    if (!(isUpdate && nowInstalled === undefined)) alertError(language.pluginChangedDuringImport);
+                    return;
+                }
+                if (failure) {
+                    alertError(language.pluginPermissionSaveError.replace("{error}", String(failure.error)));
+                }
+            }
+            // Read configuration after the permission review so edits made while it was open survive.
+            const previous = settings.plugins?.find((p: RisuPlugin) => p.name === pluginData.name);
+            if (previous) {
+                pluginData.enabled = previous.enabled;
+                pluginData.realArg = Object.fromEntries(
+                    Object.entries(realArg).map(([key, value]) => [
+                        key,
+                        previous.arguments?.[key] === arg[key] && Object.hasOwn(previous.realArg ?? {}, key)
+                            ? previous.realArg[key]
+                            : value,
+                    ]),
+                );
+            }
+            const scope = beginMutationScope();
             upsertPlugin(pluginData);
+            let discarded: string[];
+            try {
+                ({ discarded } = await waitForResourceFlush(flushResources({ scope })));
+            } catch (error) {
+                if (!settings.plugins.some((p) => p.name === pluginData.name && p.script === pluginData.script)) {
+                    alertError(language.pluginImportDiscarded);
+                    return false;
+                }
+                if (error instanceof ResourceFlushTimeoutError) {
+                    alertError(language.pluginImportSavePending);
+                    return false;
+                }
+                const reason =
+                    error instanceof GenerationBlockedError
+                        ? language.chatGenerating
+                        : error instanceof Error
+                          ? error.message
+                          : String(error);
+                alertError(language.pluginImportUnconfirmed.replace("{{error}}", reason));
+                return false;
+            }
+            if (discarded.includes("plugins/main")) {
+                alertError(language.pluginImportDiscarded);
+                return false;
+            }
+        } else {
+            return false;
         }
 
         if (argu.isHotReload && !hotReloading.includes(pluginData.name)) {
@@ -370,12 +477,17 @@ export async function importPlugin(
         console.log(`Imported plugin: ${pluginData.name} (API v3.0)`);
 
         loadPlugins();
+        return true;
     } catch (error) {
         console.error(error);
         alertError(language.errors.noData);
     }
 }
 
+/**
+ * Serializes the entire hook reset and sandbox replacement. Each local caller captures its enabled
+ * list before joining; a failed load is caught on the chain so the next caller can still run.
+ */
 let pluginReload: Promise<void> = Promise.resolve();
 
 // Identities (name, API version, script hash) of the non-3.0 plugins already reported in this page load.
@@ -393,7 +505,10 @@ async function unsupportedPluginIdentity(plugin: RisuPlugin): Promise<string> {
     return JSON.stringify([plugin.name, String(plugin.version ?? ""), scriptId]);
 }
 
-/** Reports each enabled plugin that does not load (not API 3.0) once per page load and identity. */
+/**
+ * Reports enabled non-3.0 entries in one alert (console only during hot reload), once per page load
+ * and identity: name, API version, and script hash. Changing a script makes it reportable again.
+ */
 async function reportUnsupportedPlugins(plugins: readonly RisuPlugin[]): Promise<void> {
     const identities = await Promise.all(plugins.map(unsupportedPluginIdentity));
     // From here on synchronous, so concurrent loads with the same plugins report them once.
@@ -415,28 +530,52 @@ async function reportUnsupportedPlugins(plugins: readonly RisuPlugin[]): Promise
 /**
  * What `loadV3Plugins` captures of each plugin it starts: its name and script, and the `allowedIPC`
  * its own channel messages are checked against. Arguments (`realArg`) are read live, so another
- * device's `setArgument` needs no reload.
+ * device's `setArgument` needs no reload. Callers pass enabled API `3.0` entries in list order;
+ * changing that order changes the signature too.
  */
 function loadSignature(plugins: readonly RisuPlugin[]): string {
     return JSON.stringify(plugins.map((p) => [p.name, p.script, p.allowedIPC ?? []]));
 }
 
-/** The load signature of the plugins running now: null before the first load and while a reload replaces them. */
+/** The running load signature: null before the first load, during replacement, or after a failed replacement. */
 let appliedSignature: string | null = null;
 let pendingLocalLoads = 0;
+const reloadWaiters: ((outcome: PluginReloadOutcome) => void)[] = [];
+let resolveBootPluginLoad!: (outcome: PluginReloadOutcome) => void;
+/** The boot loader's outcome, independent of guest startup and resumed jobs. */
+export const bootPluginLoadOutcome = new Promise<PluginReloadOutcome>((resolve) => {
+    resolveBootPluginLoad = resolve;
+});
+/**
+ * Names of the plugins of the most recent load, recorded at its start so a permission reset arriving
+ * while that load runs still counts as a reset of a running plugin.
+ */
+let runningPluginNames = new Set<string>();
 
 /** Clears and reloads the hooks with `plugins`; runs on the `pluginReload` chain only. */
 async function applyPluginLoad(plugins: RisuPlugin[], capture?: (plugins: RisuPlugin[]) => void) {
-    appliedSignature = null;
-    clearPluginHooks();
-    await loadV3Plugins(plugins);
-    capture?.(plugins);
-    appliedSignature = loadSignature(plugins);
+    // Requests arriving after this point belong to the next load, including a local replacement.
+    const waiters = reloadWaiters.splice(0);
+    try {
+        appliedSignature = null;
+        runningPluginNames = new Set(plugins.map((plugin) => plugin.name));
+        clearPluginHooks();
+        await loadV3Plugins(plugins);
+        capture?.(plugins);
+        appliedSignature = loadSignature(plugins);
+        for (const resolve of waiters) resolve("applied");
+    } catch (error) {
+        for (const resolve of waiters) resolve("failed");
+        throw error;
+    }
 }
 
 /**
- * Captures only the boot's guests, inside its serialized load. A stopped guest follows its replacement
- * until it reports, is deliberately disabled/removed, or the boot's settle window ends.
+ * Captures only the boot's guests, inside its serialized load. `ready` succeeds; `failed` or a
+ * missing initial instance fails immediately. After `stopped`, it succeeds when the reload leaves
+ * no replacement and the name is no longer loadable (disabled, removed, or no longer API `3.0`).
+ * Otherwise it follows the replacement until it reports or the boot's settle window ends. No
+ * replacement for a still-loadable name, or the same stopped instance still registered, fails.
  */
 function captureBootGuests(plugins: RisuPlugin[]) {
     let following = true;
@@ -483,20 +622,23 @@ function captureBootGuests(plugins: RisuPlugin[]) {
     };
 }
 
-/*
- * The reload after a remote `plugins` change (`plugins-mcp.md` Flows): another tab or device disabled,
- * removed, or updated a plugin that runs here. It waits until no plugin work is in flight
- * (`pluginWorkIdle`; running work is never interrupted), checks again on the `pluginReload` chain
- * right before it clears anything, and loads the list as it is then. One at a time: changes while it
- * waits only make it load the newest list. A local `loadPlugins` supersedes it.
- */
 let watchingRemotePlugins = false;
 let deferredWanted = false;
+/** A permission reset of a running plugin: the next deferred reload runs even with a matching signature. */
+let deferredForced = false;
 let deferredQueued = false;
 let deferredCheckQueued = false;
 let deferredGeneration = 0;
 let watchingPluginWork = false;
 
+/**
+ * Installs the remote `plugins` listener and the permission reset listener once. While a local load
+ * is queued or running, every remote change requests a deferred check; only the comparison inside
+ * the reload chain can discard it safely. A permission reset (this tab's or another tab's, arriving
+ * live) of a plugin running here forces one deferred reload with an unchanged signature, so the
+ * plugin restarts without the capabilities it obtained; a reset of a plugin not running here does
+ * nothing.
+ */
 function watchRemotePlugins() {
     if (watchingRemotePlugins) {
         return;
@@ -510,12 +652,36 @@ function watchRemotePlugins() {
         if (pendingLocalLoads === 0 && loadSignature(loadablePlugins()) === appliedSignature) {
             return;
         }
-        deferredWanted = true;
-        if (!watchingPluginWork) {
-            watchingPluginWork = true;
-            onPluginWorkChange(queueDeferredCheck);
+        requestDeferredReload();
+    });
+    onPermissionGrantsRemoved((_removed, resetPlugins) => {
+        if (![...resetPlugins].some((name) => runningPluginNames.has(name))) {
+            return;
         }
-        queueDeferredCheck();
+        deferredForced = true;
+        requestDeferredReload();
+    });
+}
+
+function requestDeferredReload() {
+    deferredWanted = true;
+    if (!watchingPluginWork) {
+        watchingPluginWork = true;
+        onPluginWorkChange(queueDeferredCheck);
+    }
+    queueDeferredCheck();
+}
+
+/**
+ * Forces a reload once plugin work is idle. A local load starting first also satisfies the request.
+ * `applied` means `applyPluginLoad` resolved, not that every guest finished startup. Completion is
+ * captured inside the load chain, before its errors are swallowed; later requests wait for another load.
+ */
+export function reloadPluginsWhenIdle(): Promise<PluginReloadOutcome> {
+    if (safeBootOff("plugins")) return Promise.resolve("pluginsOff");
+    return new Promise((resolve) => {
+        reloadWaiters.push(resolve);
+        requestDeferredReload();
     });
 }
 
@@ -523,7 +689,16 @@ function loadablePlugins(): RisuPlugin[] {
     return safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled && p.version === "3.0");
 }
 
-/** Checks once per microtask whether the wanted reload can start (activity notifications come in bursts). */
+/**
+ * Coalesces `onRemoteRecordApplied` changes when another tab or device disables, removes, or updates
+ * a plugin running here, and permission resets of a plugin running here, into one reload on
+ * `pluginReload`. Activity notifications retry without a wait limit or interruption. It rechecks
+ * idleness inside the chain, synchronously up to `clearPluginHooks`; when work resumed it waits again
+ * (a forced request stays forced). It loads the list as it is then and skips a matching signature,
+ * except once after a permission reset of a running plugin, which forces the reload with an unchanged
+ * signature or while explicit reload waiters are pending. A local load supersedes the deferred
+ * request and takes its waiters at load start; safe boot cancels deferred work.
+ */
 function queueDeferredCheck() {
     if (!deferredWanted || deferredQueued || deferredCheckQueued) {
         return;
@@ -547,9 +722,10 @@ function queueDeferredCheck() {
                 return;
             }
             const plugins = loadablePlugins();
-            if (loadSignature(plugins) === appliedSignature) {
+            if (!deferredForced && reloadWaiters.length === 0 && loadSignature(plugins) === appliedSignature) {
                 return;
             }
+            deferredForced = false;
             // Synchronous from the idle check to the hook reset.
             await applyPluginLoad(plugins);
         });
@@ -563,35 +739,61 @@ function queueDeferredCheck() {
     });
 }
 
+/**
+ * Reloads without inspecting guest startup. The first load installs the remote and permission reset
+ * listeners; every load supersedes a waiting deferred reload, a forced one included. With plugins
+ * disabled by safe boot, returns before reporting unsupported entries, resetting hooks, or
+ * registering those listeners; UI edits still persist.
+ */
 export async function loadPlugins(): Promise<void> {
     await reloadPlugins();
 }
 
-/** Only boot captures startup promises; other callers keep the public Promise<void> contract. */
+/**
+ * Resolves once the plugin loads queued so far have run and every loaded guest has reported its
+ * startup: the hook registries then hold what this tab's plugins register at their start. A load
+ * queued later (a deferred reload) is not waited for; a caller that must not race one holds plugin
+ * work first.
+ */
+export async function pluginsStarted(): Promise<void> {
+    await pluginReload;
+    await pluginGuestsSettled();
+}
+
+/**
+ * The boot's load, called by `src/ts/bootstrap.ts:loadData`. It captures startup promises immediately
+ * after `loadV3Plugins`, inside the reload chain before another load can replace its instances.
+ * `captureBootGuests` defines ready/failure and replacement handling; `loadPlugins` never waits for
+ * startup. Safe boot returns an empty successful capture without loading anything.
+ */
 export async function loadPluginsForBoot() {
     let guests = captureBootGuests([]);
     try {
         await reloadPlugins((plugins) => {
             guests = captureBootGuests(plugins);
         });
+        resolveBootPluginLoad(safeBootOff("plugins") ? "pluginsOff" : "applied");
         return guests;
     } catch (error) {
+        resolveBootPluginLoad("failed");
         guests.stopFollowingGuests();
         throw error;
     }
 }
 
 async function reloadPlugins(capture?: (plugins: RisuPlugin[]) => void) {
-    // Safe boot: nothing loads in this page load, so a toggle or an import only saves, and the remote
-    // listener of the deferred reload is never registered.
+    // Safe boot: nothing loads in this page load, so a toggle or an import only saves, and the
+    // listeners of the deferred reload are never registered.
     if (safeBootOff("plugins")) {
         console.log("Plugins are off for this page load (safe boot).");
         return;
     }
     console.log("Loading plugins...");
     watchRemotePlugins();
-    // This load reads the list as it is now, remote changes included: a waiting deferred reload is not needed.
+    // This load reads the list as it is now, remote changes included, and restarts every running plugin
+    // (dropping capabilities a permission reset revoked): a waiting deferred reload is not needed.
     deferredWanted = false;
+    deferredForced = false;
     deferredGeneration++;
 
     const enabled = safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled);
@@ -613,6 +815,10 @@ async function reloadPlugins(capture?: (plugins: RisuPlugin[]) => void) {
     await reload;
 }
 
+/**
+ * Legacy database keys exposed by `apiV3/v3.svelte.ts`. Other keys belong to custom plugin storage;
+ * this list never grants access to the separate server-owned `pluginPermissions` resource.
+ */
 export const allowedDbKeys = [
     "characters",
     "modules",
@@ -639,6 +845,10 @@ export const allowedDbKeys = [
     "characterOrder",
 ];
 
+/**
+ * Returns only new/changed API `3.0` entries the user confirms, without installing them. The full
+ * database setter in `apiV3/v3.svelte.ts` awaits all prompts before applying any database key.
+ */
 export async function handlePluginInstallViaPlugin(plugins: RisuPlugin[]) {
     const trimmedPlugins: RisuPlugin[] = [];
     for (const plugin of plugins) {
@@ -649,9 +859,10 @@ export async function handlePluginInstallViaPlugin(plugins: RisuPlugin[]) {
                 );
                 continue;
             }
-            const confirmation = await alertConfirm(
-                language.confirmInstallPluginViaPlugin.replace("{plugin}", plugin.name),
-            );
+            const confirmationMessage = settings.plugins.some((p: RisuPlugin) => p.name === plugin.name)
+                ? language.confirmReplacePluginViaPlugin
+                : language.confirmInstallPluginViaPlugin;
+            const confirmation = await alertConfirm(confirmationMessage.replace("{plugin}", plugin.name));
             if (confirmation) {
                 trimmedPlugins.push(plugin);
             }

@@ -64,12 +64,10 @@ function install({
     globalLore,
     overrides,
     localLore = [],
-    ownerType = "character",
 }: {
     globalLore: loreBook[];
     overrides?: ChatLoreOverride[];
     localLore?: loreBook[];
-    ownerType?: "character" | "group";
 }) {
     installFlatDatabaseWithChats({
         localActivationInGlobalLorebook: true,
@@ -77,9 +75,8 @@ function install({
             {
                 chaId: ref.chaId,
                 name: "Owner",
-                type: ownerType,
+                type: "character",
                 globalLore,
-                ...(ownerType === "group" ? { characters: ["member"], characterActive: [true] } : {}),
                 chats: [ref, other].map(({ chatId }) => ({
                     id: chatId,
                     name: chatId,
@@ -159,6 +156,10 @@ const releaseAllButtons = () =>
     [...target.querySelectorAll<HTMLButtonElement>("button")].filter(
         (element) => element.textContent?.trim() === strings.releaseAll,
     );
+const turnOffAllButtons = () =>
+    [...target.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (element) => element.textContent?.trim() === strings.turnOffAll,
+    );
 function click(element: HTMLElement) {
     element.click();
     flushSync();
@@ -195,6 +196,23 @@ function remoteOverrides(loreOverrides: ChatLoreOverride[]) {
     flushSync();
 }
 
+it("renders the character lore token budget above 4096 without an upper limit", () => {
+    install({ globalLore: [] });
+    selectedCharacter()!.loreSettings = { tokenBudget: 8000, scanDepth: 4, recursiveScanning: false };
+    render(true);
+    click(button(language.settings));
+    const caption = [...target.querySelectorAll("span")].find((node) => node.textContent === language.loreBookToken)!;
+    const input = caption.nextElementSibling as HTMLInputElement;
+    expect(input.type).toBe("number");
+    expect(input.value).toBe("8000");
+    expect(input.min).toBe("0");
+    expect(input.hasAttribute("max")).toBe(false);
+
+    edit(input, "9000");
+    expect(selectedCharacter()!.loreSettings.tokenBudget).toBe(9000);
+    expect(input.value).toBe("9000");
+});
+
 beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
@@ -216,13 +234,9 @@ afterEach(async () => {
     vi.useRealTimers();
 });
 
-it.each([
-    { ownerType: "character", idState: "missing" },
-    { ownerType: "character", idState: "duplicate" },
-    { ownerType: "group", idState: "duplicate" },
-] as const)(
-    "Override pins an independent full copy of $ownerType lore with a $idState id; Off keeps its edits",
-    ({ ownerType, idState }) => {
+it.each(["missing", "duplicate"] as const)(
+    "Override pins an independent full copy of character lore with a %s id; Off keeps its edits",
+    (idState) => {
         const source = entry("Dragon", {
             ...(idState === "duplicate" ? { id: "shared-id" } : {}),
             mode: "multiple",
@@ -236,7 +250,7 @@ it.each([
             loreCache: { key: "cached", data: ["nested value"] },
         });
         const sibling = entry("Sibling", { id: "shared-id" });
-        install({ globalLore: [source, sibling], ownerType });
+        install({ globalLore: [source, sibling] });
         render();
         expect(target.textContent).not.toContain("Member lore");
         expect(target.textContent).toContain(strings.hint);
@@ -471,6 +485,7 @@ it("writes nothing when the chat's owner is replaced during the dialog", async (
         characterId: chat.chaId,
         id: chat.chatId,
         revision: "r2",
+        trashedAt: null,
         data: copy(findChat(chat)!) as Chat,
     }));
     assembleChats([{ chaId: ref.chaId }], chats, [
@@ -672,6 +687,64 @@ it("bulk release confirms with the count and releases the overrides inside the f
     expect(characterWrites).not.toHaveBeenCalled();
 });
 
+it("turns off every entry inside a folder on its own, keeping edits and leaving folder states", () => {
+    const outside = entry("Outside", { id: "shared-id" });
+    const root = entry("Folder", { id: "root", mode: "folder", key: "root" });
+    const inner = entry("Nested", { id: "inner", mode: "folder", key: "inner", folder: "root" });
+    const a = entry("A", { id: "a", folder: "root" });
+    const b = entry("B", { id: "b", folder: "inner" });
+    const c = entry("C", { id: "c", folder: "inner" });
+    const d = entry("D", { id: "shared-id", folder: "inner" });
+    const savedA = { entry: { ...a, content: "Already customized" }, off: false };
+    const savedC = { entry: c, off: true };
+    const innerOff = { entry: inner, off: true };
+    install({ globalLore: [outside, root, a, inner, b, c, d], overrides: [savedA, savedC, innerOff] });
+    render();
+    expect(turnOffAllButtons()).toHaveLength(0);
+    click(button("Folder"));
+    click(button("Nested"));
+    expect(turnOffAllButtons()).toHaveLength(2);
+    expect(row("Folder").contains(turnOffAllButtons()[0])).toBe(true);
+    expect(row("Nested").contains(turnOffAllButtons()[1])).toBe(true);
+
+    releases.push(beginLocalSend(ref)!);
+    flushSync();
+    expect(turnOffAllButtons().map((element) => element.disabled)).toEqual([true, true]);
+    click(turnOffAllButtons()[0]);
+    expect(alertError).not.toHaveBeenCalled();
+    expect(stored().loreOverrides).toEqual([savedA, savedC, innerOff]);
+    expect(chatWrites).not.toHaveBeenCalled();
+    releases.pop()!();
+    flushSync();
+
+    expect(turnOffAllButtons().map((element) => element.disabled)).toEqual([false, false]);
+    click(turnOffAllButtons()[0]);
+    const dId = originals()[6].id;
+    expect(dId).toBeTruthy();
+    expect(dId).not.toBe("shared-id");
+    expect(stored().loreOverrides).toEqual([
+        { ...savedA, off: true },
+        savedC,
+        innerOff,
+        { entry: b, off: true },
+        { entry: { ...d, id: dId }, off: true },
+    ]);
+    expect(["Folder", "Nested", "A", "B", "C", "D", "Outside"].map((name) => pressed(name))).toEqual([
+        strings.on,
+        strings.off,
+        strings.off,
+        strings.off,
+        strings.off,
+        strings.off,
+        strings.original,
+    ]);
+    expect(indicator("Folder")).toBe(strings.changed(5));
+    expect(turnOffAllButtons()).toHaveLength(0);
+    expect(chatWrites).toHaveBeenCalledOnce();
+    expect(characterWrites).toHaveBeenCalledOnce();
+    expect(alertConfirm).not.toHaveBeenCalled();
+});
+
 it("moves an on orphan atomically with a fresh id, unchanged mode and no folder; an off orphan can only be deleted", async () => {
     const movable = { entry: entry("Lost on", { id: "lost-on", folder: "gone", mode: "constant" }), off: false };
     const off = { entry: entry("Lost off", { id: "lost-off" }), off: true };
@@ -768,30 +841,48 @@ it("shows off precedence on the override, the chat child row and the character a
 });
 
 it.each(["local send", "followed job"] as const)(
-    "refuses every state change during a %s and keeps the old segments",
+    "disables every state control and override field during a %s, keeping the old segments until it ends",
     (kind) => {
         const source = entry("No id");
         const pinned = entry("Pinned", { id: "pinned" });
         const folder = entry("Folder", { id: "folder", mode: "folder", key: "folder" });
+        const orphan = { entry: entry("Orphan", { id: "orphan" }), off: false };
         const override = { entry: pinned, off: false };
-        install({ globalLore: [source, pinned, folder], overrides: [override] });
+        install({ globalLore: [source, pinned, folder], overrides: [override, orphan] });
         render();
+        click(button("Pinned"));
+        const segments = () => [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")];
+        const overrideFields = () => [
+            ...row("Pinned").querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea"),
+        ];
+        const orphanButtons = () => [button(strings.delete), button(strings.move)];
+        expect(overrideFields().length).toBeGreaterThan(0);
         if (kind === "local send") releases.push(beginLocalSend(ref)!);
         else followedJobs.set(new Map([["job", chatStatusKey(ref)]]));
         flushSync();
+        expect(segments().every((element) => element.disabled)).toBe(true);
+        expect(overrideFields().every((element) => element.disabled || element.readOnly)).toBe(true);
+        expect(orphanButtons().every((element) => element.disabled)).toBe(true);
         setState("No id", strings.off);
         setState("Pinned", strings.off);
         setState("Pinned", strings.original);
         setState("Folder", strings.off);
-        expect(alertError).toHaveBeenCalledTimes(4);
-        expect(vi.mocked(alertError).mock.calls.every(([message]) => message === language.chatGenerating)).toBe(true);
+        click(button(strings.delete));
+        expect(alertError).not.toHaveBeenCalled();
         expect(alertConfirm).not.toHaveBeenCalled();
         expect(pressed("No id")).toBe(strings.original);
         expect(pressed("Pinned")).toBe(strings.overridden);
         expect(pressed("Folder")).toBe(strings.on);
         expect(originals()).toEqual([source, pinned, folder]);
-        expect(stored().loreOverrides).toEqual([override]);
+        expect(stored().loreOverrides).toEqual([override, orphan]);
         expect(chatWrites).not.toHaveBeenCalled();
         expect(characterWrites).not.toHaveBeenCalled();
+
+        if (kind === "local send") releases.pop()!();
+        else followedJobs.set(new Map());
+        flushSync();
+        expect(segments().some((element) => element.disabled)).toBe(false);
+        expect(overrideFields().some((element) => element.disabled || element.readOnly)).toBe(false);
+        expect(orphanButtons().some((element) => element.disabled)).toBe(false);
     },
 );

@@ -1,27 +1,58 @@
+import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+import type { RerollAttemptWrite } from "../data/chatStore.ts";
+import {
+    candidateOf,
+    isLatestReply,
+    isRerollCarrier,
+    isScriptstateSnapshot,
+    scriptstateRestorePatch,
+    rerollTurnStart,
+    trimCandidates,
+    withCandidate,
+    withoutCandidateCheckpoints,
+    type CandidateNoticeCode,
+} from "../../../shared/rerollCandidates.ts";
 import { randomUUID } from "node:crypto";
 import type { ChatOp, CheckpointOutcome, MessageGeneration } from "../../../shared/chats.ts";
-import type { Chat, character, groupChat, Message, MessageGenerationInfo } from "../../../shared/database.ts";
+import type {
+    Chat,
+    character,
+    groupChat,
+    Message,
+    MessageCandidate,
+    ScriptstateSnapshot,
+    MessageGenerationInfo,
+} from "../../../shared/database.ts";
+import { greetingText } from "../../../shared/greetings.ts";
 import { supaMemoryOnCount } from "../../../shared/characters.ts";
 import { completionNotification } from "../../../shared/notifications.ts";
 import {
+    type AnyMemoryTaskInput,
     type CallbackPayloads,
     type CallbackResult,
+    type GenerationPreviewResult,
     type GenerationStage,
     MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
     type MemoryBlockingReason,
+    type MemoryChatRef,
     type MemoryGapChoice,
-    type MemoryTaskInput,
+    type MemoryTaskBase,
     type MemoryTrimChoice,
+    type SkippedHook,
     type SummaryWriterLease,
 } from "../../../shared/jobs.ts";
 import { LLMFormat } from "../../../shared/llm.ts";
+import { interceptionMessages } from "../../../shared/llm/interception.ts";
 import type { StreamResponseChunk } from "../../../shared/llm/request.ts";
+import { responseRejection } from "../../../shared/llm/responseChecks.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import { oocTail, oocToggleValues } from "../../../shared/ooc.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { jobModules } from "../jobs/cbsHost.ts";
 import type { OwnedGeneration } from "../jobs/chatResult.ts";
 import {
@@ -34,6 +65,8 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { logEvent } from "../diagnostics/log.ts";
+import { createOutputMeter } from "./outputMeter.ts";
+import { isTokenizerTextRefusal } from "./tokens.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import {
     admitProviderModels,
@@ -42,11 +75,14 @@ import {
     type JobScope,
     loadJobScope,
     memorySettingsFingerprint,
+    resolveScopeMemoryModel,
     memoryTokenPolicy,
     refreshCharacter,
     refreshChatAfterWrite,
     refreshChat,
+    replaceScopeChat,
     scopeChat,
+    scopeHistoryChat,
 } from "../jobs/jobScope.ts";
 import {
     createJobRunState,
@@ -64,7 +100,9 @@ import { messages } from "../llm/messages.ts";
 import { resolveJobRequestModel } from "../llm/request.ts";
 import { JobRequestError } from "../llm/requests.ts";
 import { mainModelOf, mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
+import { serializeToolSchemas } from "../llm/toolSchemas.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
+import type { JobToolSet } from "../mcp/jobTools.ts";
 import { readStorageFile } from "../routes/storage.ts";
 import {
     type AssembledPrompt,
@@ -73,12 +111,34 @@ import {
     assemblePrompt,
     getGenerationModelString,
 } from "./assemble.ts";
-import { postJson } from "./embeddings.ts";
+import { type EmbeddingEnv, postJson } from "./embeddings.ts";
 import type { MemoryHost } from "./memory/host.ts";
+import { recordGapInJob } from "./memory/structured/recordJob.ts";
+import { shareRecordEmbeddingAllowance } from "./memory/structured/retrieve.ts";
+import { readMemoryRecords } from "./memory/structured/step.ts";
 import { runEmotionMode, runInlayScreen } from "./postProcess.ts";
 import { createScriptProcessor } from "./scripts.ts";
 import { localModelRefusal } from "./transformers.ts";
 import { hasRequestTriggers, parseChatML } from "./triggers.ts";
+
+// Limit repeated candidate and checkpoint notices to one of each code per job.
+const candidateNotices = new WeakMap<RunningJob["signal"], Set<CandidateNoticeCode>>();
+/** Coded notices keep an English fallback for older tabs; current tabs use their locale catalog. */
+function candidateNotice(job: RunningJob, code: CandidateNoticeCode): void {
+    if (code === "rerollCandidateDropped" || code === "scriptstateCheckpointSkipped") {
+        let noticed = candidateNotices.get(job.signal);
+        if (noticed?.has(code)) return;
+        if (!noticed) candidateNotices.set(job.signal, (noticed = new Set()));
+        noticed.add(code);
+    }
+    const messages: Record<CandidateNoticeCode, string> = {
+        rerollCandidateDropped: "Older reply candidates were dropped to keep this message within its limit.",
+        rerollCandidateTooLarge: "This reply is too large to keep as a candidate.",
+        scriptstateCheckpointSkipped:
+            "The chat variables are too large to checkpoint; this reroll will not restore them.",
+    };
+    job.channel.notice({ kind: "alertToast", payload: { code, message: messages[code] } });
+}
 
 /** How often a streaming reply's raw text is checkpointed (the client's `CHECKPOINT_INTERVAL_MS`). */
 export const CHECKPOINT_INTERVAL_MS = 3000;
@@ -185,7 +245,7 @@ function getWords(data: string) {
     return words;
 }
 
-/** `groupOrder` of `src/ts/process/group.ts`: named members first, then by chance, never none. */
+/** Orders named members first, then other members by chance; always picks at least one. */
 function groupOrder(
     chars: GroupOrder[],
     input: string | undefined,
@@ -234,7 +294,10 @@ function findCharacter(scope: JobScope, id: string | undefined): character {
     return { name: "Unknown Character", chats: [], chatPage: 0 } as unknown as character;
 }
 
-/** The kinds that run the input stage (a send's `userMessageId`). */
+/**
+ * The kinds that write a reply: they run the input stage (a send's `userMessageId`), and only they
+ * honor `context.stopOverLoreBudget`, so a preview is never stopped.
+ */
 const INPUT_KINDS = new Set(["send", "continue", "reroll", "group"]);
 
 /** The error a send's `throwError` shows when `inlayErrorResponse` is off. */
@@ -264,37 +327,92 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * 2. The input stage (a send with a nonempty `input`, unless the chat already holds the user message
  *    `userMessageId`): for a character, the `input` trigger on a copy of the chat as stored, then
  *    `editinput`, then the user message appended under that id; a group appends the input as it came.
- *    `accepted { userMessageId }` follows. It runs on the admitted preset, before `presetChain`, as
- *    the tab runs it before `sendChat`.
- * 3. `presetChain` (by name, with `deps.random`): the job's scope becomes the picked preset's (the
- *    keep rules of `setPreset`), later callbacks name it, and `preset { presetId }` tells the tab.
+ *    The append stores `inputOriginal`, when present, as the message's translation.
+ *    `accepted { userMessageId }` follows. It runs on the admitted preset, before applying
+ *    `presetChain`, as the tab runs it before `sendChat`.
+ * 3. `presetChain` (picked by name with `deps.random` before input): the scope now becomes the picked
+ *    preset's (the keep rules of `setPreset`), later callbacks name it, and `preset { presetId }` tells the tab.
+ *    A preview naming `oocExchangeId` then owns a detached chat: history through the exchange's
+ *    anchor, its OOC tail, and the chat's or picked preset's forced toggles. Groups are refused.
  * 4. The speakers: the character, or the group's members in `groupChat`'s order (one budget, one
  *    effect count, each speaker's own bindings and request projection). A preview stops after the
  *    first; a speaker that fails ends the loop.
  * 5. Per speaker: a continue's message is locked first (`begin`, `accepted`); the prompt is assembled
- *    (`assemblePrompt`); `preview` ends with the messages, `previewPrompt` with the provider body.
- *    Otherwise the request runs, and the reply is appended (or the continued message extended) and
- *    streamed: `chunk` per provider chunk, a raw checkpoint every 3 s, and the final raw write at the
- *    end, after an abort (inside the grace), or after a read failure.
+ *    (`assemblePrompt`); `preview` ends with the messages and their context report, `previewPrompt`
+ *    with the provider body. An OOC preview skips the start trigger, makes memory requests without
+ *    tools, and applies assembly and editRequest chat edits only to its copy; character writes fail.
+ *    Otherwise the request runs, and the reply is appended (or the continued message extended).
+ *    A streamed reply emits `chunk` per provider chunk and detached local `output` counts for registry
+ *    progress, with a raw checkpoint every 3 s and the final raw write at the end, after an abort
+ *    (inside the grace), or after a read failure. With Response Streaming off, Half Streaming asks
+ *    only this reply request to stream (except OobaLegacy). A stream received this way keeps the same
+ *    counts, final writes, and tail, but emits no chunks or checkpoints and claims chunk sequence 0.
+ *    A new reply streamed this way gets its row (and `begin` lock) only when the read ends, without `accepted`,
+ *    as a buffered reply does: no client shows an empty reply while it streams.
+ *    A buffered answer keeps the buffered path.
+ *    A stream read to its end passes the response checks the request layer applies to a buffered answer
+ *    (`responseRejection`: a banned script, the reply kind's minimum length). A rejected stream that was
+ *    shown fails the send with its text stored and is not requested again. A rejected Half Streaming
+ *    stream showed nothing: its text is dropped unwritten and the reply is requested again, at most
+ *    `requestRetrys` times per round, with the job's retry count and a cleared output count; past that
+ *    the send fails with the last text stored. The tail runs once, on the answer that is kept.
  * 6. The tail of a completed reply, in the tab's order on each path: `editoutput` once on
  *    the completed text, the output trigger, inlays, the `chatOutput` listeners, TTS; the
  *    auto-continue decision, `igp`, a trigger's resend, the notification, the emotion modes or the
  *    image view; the generation info with its timings; the final write. An auto-continue or a resend
  *    is another round of the same speaker (`MAX_SEND_ROUNDS` for the job).
- * 7. `done` with the last reply's id and the reroll alternatives: the reply is persisted.
+ * 7. The final write stores extra samples as candidates; `done` names the persisted reply.
+ * An in-place reroll locks its carrier before assembly, reads history without it until dispatch,
+ * and restores the previous candidate in its final write on every end without a reply.
+ *
+ * With `context.stopOverLoreBudget`, the job's first assembly (the first speaker's first round) ends
+ * the job when the lore budget pass leaves out an entry without `@@ignore_on_max_context`: an `error`
+ * with stage `assembly`, code `loreOverBudget`, and the pass's result as `lore`. It ends right after
+ * lore activation, which then wrote no keep or don't-activate-after-match flag: no history, memory,
+ * tool listing, or request ran, and what steps 1 to 3 and assembly before activation stored stays
+ * (the user message included). Later rounds, later group speakers, and previews never stop this way.
  *
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
- * it the job ends with the error.
+ * it, and always in a preview, which writes no message, the job ends with the error.
  *
  * A failure names its stage: the site nearest it names one where it knows it (a script, a write, a
  * request, with the request's id and provider code), else the stage the run was in
  * (`JobRunState.stage`: setup, input, assembly, request, tail).
  */
 export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps): Promise<void> {
+    const result = await runPromptSend(job, deps);
+    if (result.type === "preview") {
+        const { characterId, chatId } = job.context;
+        job.emit({ type: "done", revision: deps.store.chatRevision(characterId, chatId), result: result.result });
+    } else {
+        const { type, ...reply } = result;
+        job.emit({ type: "done", ...reply });
+    }
+}
+
+export type PromptSendResult =
+    | { type: "preview"; result: unknown }
+    | {
+          type: "reply";
+          revision: string | null;
+          messageId?: string;
+          stopped?: true;
+          /** The reply hooks skipped for want of an owner tab (`done.skipped`), when any was. */
+          skipped?: SkippedHook[];
+          missed?: Extract<SkippedHook, { name: "chatOutput" }>[];
+      };
+
+/**
+ * Runs one send, including failure metadata, without ending the registry job. After final chat
+ * writes and before returning, hands translations and due memory input to their detached services;
+ * failures of those services' hand-offs cannot fail the send. `runPromptJob` emits done only after
+ * this returns.
+ */
+export async function runPromptSend(job: RunningJob, deps: GenerationRunnerDeps): Promise<PromptSendResult> {
     const state = createJobRunState(job, deps.scriptWorkers.createBudget());
     let setup: RunSetup | null = null;
     try {
-        await runSend(job, deps, state, (next) => {
+        return await runSend(job, deps, state, (next) => {
             setup = next;
         });
     } catch (error) {
@@ -318,37 +436,6 @@ export async function runPromptJob(job: RunningJob, deps: GenerationRunnerDeps):
     }
 }
 
-/**
- * Stamps the owner record's `lastInteraction` (a character, or the group of a group chat) with the
- * server's clock, once per send, continue, reroll, or group job, after its scope loaded (a preview, a
- * command, and a create the admission refused stamp nothing). A field patch (the change feed carries
- * the field, so no tab reads the whole record back), read again on `job.write`'s one replay. Not
- * tracked as a job record: callbacks do not wait for it, and the owner tab learns it from the feed
- * like any other tab.
- */
-function stampInteraction(job: RunningJob, deps: GenerationRunnerDeps) {
-    const charactersKind = deps.kinds.get(RESOURCE_KIND.characters);
-    if (!charactersKind) {
-        throw new Error(`Unknown resource kind ${RESOURCE_KIND.characters}`);
-    }
-    const characterId = job.context.characterId;
-    job.write(() => {
-        const revision = deps.store.revisionOf(charactersKind, characterId);
-        return revision
-            ? {
-                  ops: [
-                      {
-                          kind: charactersKind,
-                          id: characterId,
-                          baseRevision: revision,
-                          patch: { set: { lastInteraction: Date.now() } },
-                      },
-                  ],
-              }
-            : {};
-    });
-}
-
 /** A message the job generates: its generation id and the checkpoint counter of its writes. */
 type Generation = { messageId: string; generationId: string; seq: number; final: boolean };
 
@@ -357,7 +444,7 @@ async function runSend(
     deps: GenerationRunnerDeps,
     state: JobRunState,
     onSetup: (setup: RunSetup) => void,
-): Promise<void> {
+): Promise<PromptSendResult> {
     const { store, kinds } = deps;
     const { characterId, chatId } = job.context;
     const random = deps.random ?? Math.random;
@@ -369,10 +456,8 @@ async function runSend(
     if (!owner) {
         throw new GenerationRunnerError(404, "The job's character no longer exists");
     }
-    if (INPUT_KINDS.has(job.kind)) {
-        stampInteraction(job, deps);
-    }
     const preview = job.kind === "preview" || job.kind === "previewPrompt";
+    const oocExchangeId = job.kind === "preview" ? job.context.oocExchangeId : undefined;
 
     // `presetChain` (the tab's top-level send picks one prompt preset for the whole send): picked and
     // read with the admitted configuration, applied after the input stage, where the tab's `sendChat`
@@ -394,16 +479,20 @@ async function runSend(
     }
 
     /** Writes the job's chat as the job itself (no Lua fence: the abort grace may still persist text). */
-    const writeOwn = (ops: ChatOp[], covers?: { messageId: string; generationId: string; seq: number }[]) => {
-        flushChatMetadata(job);
+    const writeOwn = (
+        ops: ChatOp[],
+        covers?: { messageId: string; generationId: string; seq: number; raw?: true }[],
+        options?: { rerollAttempt?: RerollAttemptWrite; metadataFlushed?: boolean },
+    ) => {
+        if (!options?.metadataFlushed) flushChatMetadata(job);
         refreshChat(store, scope);
         const applied = job.write(
             () => ({
                 chats: [{ characterId, chatId, baseRevision: scope.chatRevision, ops }],
             }),
-            covers ? { covers } : undefined,
+            { covers, rerollAttempt: options?.rerollAttempt },
         );
-        refreshChatAfterWrite(store, scope, ops, applied.chats[0]);
+        refreshChatAfterWrite(store, scope, applied.chats[0], applied.written?.chats[0]);
         job.emitRecords({ chats: [{ characterId, id: chatId }] });
         return applied.chats[0]?.checkpoints ?? [];
     };
@@ -411,7 +500,11 @@ async function runSend(
     // The user message of this send (appended here, or already in the chat): auto-translated with the replies.
     let sentUserMessageId: string | null = null;
     // The input stage, on the admitted preset.
-    if (INPUT_KINDS.has(job.kind) && job.context.input !== "") {
+    if (
+        INPUT_KINDS.has(job.kind) &&
+        job.context.input !== "" &&
+        !(job.kind === "reroll" && job.context.rerollMessageId)
+    ) {
         state.stage = "input";
         const userMessageId = job.context.userMessageId ?? randomUUID();
         const existing = scopeChat(scope)?.message.find((message) => message.chatId === userMessageId);
@@ -438,6 +531,7 @@ async function runSend(
                     cache: state.scriptCache,
                     assetMatches: state.assetMatches,
                     showEmotion: (chaId, name, image) => showEmotion(job, state, chaId, name, image),
+                    skipped: state.skippedHooks,
                 });
                 data = (await processor.process(owner, data, "editinput")).data;
                 if (!setup.bindings.services.refresh()) {
@@ -445,10 +539,28 @@ async function runSend(
                 }
             }
             setup.check();
+            const time = Date.now();
             writeOwn([
                 {
                     op: "append",
-                    messages: [{ role: "user", data, time: Date.now(), chatId: userMessageId }],
+                    messages: [
+                        {
+                            role: "user",
+                            data,
+                            time,
+                            chatId: userMessageId,
+                            ...(job.context.inputOriginal !== undefined
+                                ? {
+                                      translation: {
+                                          text: job.context.inputOriginal,
+                                          sourceHash: translationSourceHash(data),
+                                          targetLanguage: "original",
+                                          translatedAt: time,
+                                      },
+                                  }
+                                : {}),
+                        },
+                    ],
                     anchor: { end: true },
                 },
             ]);
@@ -470,11 +582,45 @@ async function runSend(
         job.emit({ type: "preset", presetId: chain.presetId });
     }
 
-    const caculatedChatTokens = scope.db.aiModel.startsWith("gpt") ? 5 : 3;
+    const caculatedChatTokens = chatMessageOverhead(scope);
     // The owner as the input stage and the preset pick left the projection.
     const sendOwner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     if (!sendOwner) {
         throw new GenerationRunnerError(404, "The job's character no longer exists");
+    }
+
+    if (oocExchangeId !== undefined) {
+        if (sendOwner.type === "group") {
+            throw new GenerationRunnerError(400, "OOC previews are not supported for group chats");
+        }
+        refreshChat(store, scope);
+        const chat = scopeChat(scope);
+        if (!chat?.oocLog || !Object.hasOwn(chat.oocLog, oocExchangeId)) {
+            throw new GenerationRunnerError(404, "The OOC exchange no longer exists", { code: "oocExchangeGone" });
+        }
+        const exchange = chat.oocLog[oocExchangeId];
+        const anchor = exchange.anchorMessageId;
+        const anchorIndex = anchor === null ? -1 : chat.message.findIndex((message) => message.chatId === anchor);
+        if (anchor !== null && anchorIndex === -1) {
+            throw new GenerationRunnerError(404, "The OOC anchor message no longer exists", { code: "oocAnchorGone" });
+        }
+        const copy = structuredClone(chat);
+        const messageIds = new Set(chat.message.map((message) => message.chatId));
+        copy.message = copy.message.slice(0, anchorIndex + 1);
+        for (const row of oocTail(chat.oocLog, oocExchangeId)) {
+            let chatId: string;
+            do {
+                chatId = randomUUID();
+            } while (messageIds.has(chatId));
+            messageIds.add(chatId);
+            copy.message.push({ chatId, role: row.role, data: row.data, time: exchange.time });
+        }
+        copy.GLGlobalVariables = {
+            ...copy.GLGlobalVariables,
+            ...oocToggleValues(chat.oocToggles, scope.db.oocToggles),
+        };
+        replaceScopeChat(scope, copy);
+        scope.detached = true;
     }
 
     // The speakers.
@@ -507,14 +653,23 @@ async function runSend(
         speakers = [sendOwner.chaId];
     }
 
+    const rerollMessageId = job.kind === "reroll" ? job.context.rerollMessageId : undefined;
+    if (rerollMessageId) {
+        const carrier = scopeChat(scope)?.message.find((message) => message.chatId === rerollMessageId);
+        speakers = [job.context.speakerChaId ?? carrier?.saying ?? sendOwner.chaId];
+    }
+    let firstSpeakerRound = true;
     const baseRequest = scope.request;
     // Whether a `presetChain` pick is the job's prompt preset (the memory task input says so).
     const fromChain = !!chain && "scope" in chain;
-    let last: { messageId: string; alternatives?: string[] } | null = null;
-    /** The memory task of the last completed speaker or round (its HypaV3 step's input), or none. */
+    let last: { messageId: string } | null = null;
+    /** The memory task of the last completed speaker or round (its memory step's input), or none. */
     let memoryTask: MemoryTaskHandOff | undefined;
+    let memoryVectorWarm: MemoryTaskBase | undefined;
     /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
     const replyIds = new Set<string>();
+    // Appending the next speaker prunes older stored checkpoints; keep their baselines for this job's tail.
+    const replyBaselines = new Map<string, ScriptstateSnapshot | undefined>();
     let stopped = false;
     speakers: for (const speakerId of speakers) {
         // One speaker's turn: its send, then the rounds it asks for (an auto-continue of its reply, a
@@ -535,19 +690,28 @@ async function runSend(
                 speakerId,
                 chatAdditonalTokens: caculatedChatTokens,
                 continueSend: round.continueSend,
+                rerollMessageId: firstSpeakerRound ? rerollMessageId : undefined,
+                // Only the job's first assembly: a later round or speaker follows a reply that exists.
+                stopOverLoreBudget:
+                    firstSpeakerRound && INPUT_KINDS.has(job.kind) && job.context.stopOverLoreBudget === true,
                 ...(round.continueMessageId ? { continueMessageId: round.continueMessageId } : {}),
                 usedContinueTokens: round.usedContinueTokens,
                 baseRequest,
                 fromChain,
                 onSetup,
                 writeOwn,
+                replyBaselines,
             });
+            firstSpeakerRound = false;
             if (result.type === "preview") {
                 flushChatMetadata(job);
-                job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result: result.result });
-                return;
+                return { type: "preview", result: result.result };
             }
             if (result.type === "stop") {
+                if (result.messageId) {
+                    last = { messageId: result.messageId };
+                    replyIds.add(result.messageId);
+                }
                 stopped = true;
                 break speakers;
             }
@@ -555,14 +719,15 @@ async function runSend(
                 // The reply is gone: nothing of this turn to continue. Its round completed: its memory
                 // input stands.
                 memoryTask = result.memoryTask;
+                memoryVectorWarm = result.memoryVectorWarm ?? memoryVectorWarm;
                 break;
             }
             replyIds.add(result.messageId);
             memoryTask = result.memoryTask;
-            // The reply of the last round is the one the job reports, with that round's alternatives.
+            memoryVectorWarm = result.memoryVectorWarm ?? memoryVectorWarm;
+            // The reply of the last round is the one the job reports.
             last = {
                 messageId: result.messageId,
-                ...(result.alternatives ? { alternatives: result.alternatives } : {}),
             };
             if (preview || !result.next) {
                 break;
@@ -588,14 +753,15 @@ async function runSend(
     }
     flushChatMetadata(job);
     handOffTranslations(job, deps, [...replyIds, ...(sentUserMessageId ? [sentUserMessageId] : [])]);
-    handOffMemory(job, deps, memoryTask);
-    job.emit({
-        type: "done",
+    handOffMemory(job, deps, memoryTask, memoryVectorWarm);
+    return {
+        type: "reply",
         revision: store.chatRevision(characterId, chatId),
         ...(last ? { messageId: last.messageId } : {}),
-        ...(last?.alternatives ? { alternatives: last.alternatives } : {}),
         ...(stopped ? { stopped: true as const } : {}),
-    });
+        ...(state.skippedHooks.length > 0 ? { skipped: [...state.skippedHooks] } : {}),
+        ...(state.missedHooks.length > 0 ? { missed: [...state.missedHooks] } : {}),
+    };
 }
 
 /**
@@ -627,45 +793,281 @@ function handOffTranslations(job: RunningJob, deps: GenerationRunnerDeps, messag
     }
 }
 
-/** A HypaV3 step's task input and whether its lookahead plan says summaries are due. */
-type MemoryTaskHandOff = { input: MemoryTaskInput; due: boolean };
+/** A memory step's task input and whether it has work due. */
+type MemoryTaskHandOff = { input: AnyMemoryTaskInput; due: boolean };
 
 /**
  * The chat's background memory: after the final writes and before `done`, the last completed speaker
- * or round's HypaV3 input goes to the memory task service when summaries are due or a manual start
- * waits for it (`pendingManual`). Nothing without a service, for an aborted or non-input job, or when
- * the input's epoch or source generation is no longer the chat's (a whole-chat replace or a delete
- * since the history was read): the next send's input is used. Never fails the send.
+ * or round's memory input goes to the memory task service when work is due (HypaV3's summaries, a
+ * Structured Memory window) or a manual start waits for it (`pendingManual`). Nothing without a
+ * service, for an aborted or non-input job, or when the input's epoch or source generation is no
+ * longer the chat's (a whole-chat replace or a delete since the history was read): the next send's
+ * input is used. Deferred record vectors use a separate, optional cache-only request under those same
+ * freshness checks, even when no writer window is due. Never fails the send.
  */
-function handOffMemory(job: RunningJob, deps: GenerationRunnerDeps, memoryTask: MemoryTaskHandOff | undefined) {
+function handOffMemory(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    memoryTask: MemoryTaskHandOff | undefined,
+    memoryVectorWarm: MemoryTaskBase | undefined,
+) {
     const tasks = deps.memoryTasks;
-    if (!tasks || !memoryTask || job.signal.aborted || !INPUT_KINDS.has(job.kind)) {
-        return;
-    }
-    const { input } = memoryTask;
+    if (!tasks || job.signal.aborted || !INPUT_KINDS.has(job.kind)) return;
+    const current = (input: MemoryTaskBase) =>
+        deps.store.epoch() === input.epoch &&
+        deps.store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) === input.sourceGeneration;
     try {
         if (
-            deps.store.epoch() !== input.epoch ||
-            deps.store.chatSourceGeneration(input.chatRef.chaId, input.chatRef.chatId) !== input.sourceGeneration
+            memoryTask &&
+            current(memoryTask.input) &&
+            (memoryTask.due || tasks.pendingManual(memoryTask.input.chatRef))
         ) {
-            return;
-        }
-        if (memoryTask.due || tasks.pendingManual(input.chatRef)) {
-            tasks.handOff(input);
+            tasks.handOff(memoryTask.input);
         }
     } catch (error) {
         // Memory never fails the send it follows.
         console.error("[memory] hand-off failed:", error instanceof Error ? error.name : typeof error);
     }
+    try {
+        if (memoryVectorWarm && current(memoryVectorWarm)) tasks.warmVectors?.(memoryVectorWarm);
+    } catch (error) {
+        console.warn("[memory] vector warming hand-off failed");
+    }
+}
+
+/** What a memory task of either kind takes from a job on `scope`. */
+export function jobMemoryTaskBase(arg: {
+    job: RunningJob;
+    scope: JobScope;
+    sourceGeneration: number;
+    speakerId: string | null;
+    /** Whether the job's prompt preset is a `presetChain` pick. */
+    fromChain: boolean;
+    chatAdditionalTokens: number;
+}): MemoryTaskBase {
+    const { job, scope } = arg;
+    return {
+        chatRef: { chaId: job.context.characterId, chatId: job.context.chatId },
+        epoch: job.epoch,
+        admittedRevision: job.context.chatRevision,
+        sourceGeneration: arg.sourceGeneration,
+        speakerId: arg.speakerId,
+        binding: {
+            presetId: job.context.presetId ?? null,
+            modelPresetId: job.context.modelPresetId ?? null,
+            personaId: job.context.personaId ?? null,
+        },
+        effective: {
+            presetId: scope.promptPreset.id,
+            modelPresetId: scope.modelPreset.id,
+            fromChain: arg.fromChain,
+        },
+        maxContext: scope.db.maxContext,
+        maxResponse: scope.db.maxResponse,
+        tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditionalTokens),
+        settingsFingerprint: memorySettingsFingerprint(scope),
+    };
+}
+
+/** Why a job's memory requests need its tab: a Plugin `memory` model, a `request` trigger; or null. */
+export function jobMemoryBlockingReason(scope: JobScope): Exclude<MemoryBlockingReason, "gap"> | null {
+    const resolved = resolveScopeMemoryModel(scope);
+    if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
+        return "pluginModel";
+    }
+    const stored = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
+    return hasRequestTriggers(stored, moduleTriggers(scope)) ? "requestTrigger" : null;
+}
+
+/**
+ * The memory algorithms' services of one run of a job (`memory-on-server`): the job's settings, its own
+ * requests and embeddings, its chat's CBS, and its abort. `track` wraps the local summarizer's calls,
+ * `recoverLocalModelFailure` discards a refusal the algorithm survived, and `onProgress` hears each
+ * `progress` notice.
+ */
+export function createJobMemoryHost(arg: {
+    deps: GenerationRunnerDeps;
+    setup: RunSetup;
+    chatRef: MemoryChatRef;
+    embeddingEnv: EmbeddingEnv;
+    track?: <T>(call: () => Promise<T>) => Promise<T>;
+    recoverLocalModelFailure?: () => void;
+    onProgress?: (open: boolean) => void;
+}): MemoryHost {
+    const { deps, setup, chatRef, embeddingEnv } = arg;
+    const { scope, nativeCtx } = setup;
+    const { services } = setup.bindings;
+    const track = arg.track ?? ((call) => call());
+    return {
+        db: scope.db,
+        tokenize: (text) => services.tokenize(text),
+        request: async (memoryPrompt) => {
+            setup.check();
+            const response = await services.request(
+                {
+                    formated: memoryPrompt,
+                    ...(scope.memoryProfileId !== undefined ? { profileId: scope.memoryProfileId } : {}),
+                    bias: {},
+                    useStreaming: false,
+                    noMultiGen: true,
+                    chatRef,
+                } as Parameters<typeof services.request>[0],
+                "memory",
+                nativeCtx,
+                "memory",
+                ...(scope.detached ? ([{ toolSet: null }] as const) : []),
+            );
+            setup.check();
+            return response;
+        },
+        completions: async (body) => {
+            setup.check();
+            const response = await postJson(
+                embeddingEnv,
+                "https://api.openai.com/v1/completions",
+                { headers: { Authorization: "Bearer " + embeddingEnv.supaMemoryKey }, body },
+                { strictJson: true },
+            );
+            setup.check();
+            // The browser path's proxy refuses a successful answer that carries the stored key
+            // (`routes/proxy.ts`): a summary must not put it into the chat or the next request.
+            if (response.ok && embeddingEnv.carries(response.data)) {
+                return {
+                    ok: false,
+                    data: { error: "The openai-completions answer carried the stored credential; it is not sent" },
+                };
+            }
+            return response;
+        },
+        summarizer: (text) =>
+            track(async () => {
+                setup.check();
+                try {
+                    return await deps.transformers.runSummarizer(text, nativeCtx.signal);
+                } finally {
+                    setup.check();
+                }
+            }),
+        embeddings: embeddingEnv,
+        recoverLocalModelFailure: arg.recoverLocalModelFailure,
+        regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
+        ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
+        parse: (text) => services.parse(text, undefined),
+        parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
+        userName: () => scope.effectivePersona.name,
+        progress: (payload) => {
+            arg.onProgress?.(payload.open);
+            services.notice({ kind: "progress", payload });
+        },
+        random: deps.random ?? Math.random,
+        redact: (text) => embeddingEnv.redact(text),
+        fence: () => setup.check(),
+        signal: nativeCtx.signal,
+    };
+}
+
+function chatMessageOverhead(scope: JobScope): number {
+    return scope.db.aiModel.startsWith("gpt") ? 5 : 3;
+}
+
+/** The token count of a job's prompt on `scope`, as `memoryTokenPolicy` describes it. */
+export function jobChatTokenCounter(
+    deps: Pick<GenerationRunnerDeps, "tokens">,
+    scope: JobScope,
+    chatAdditionalTokens = chatMessageOverhead(scope),
+): ChatTokenCounter {
+    const { db } = scope;
+    const requestDb = scope.request.db;
+    return new ChatTokenCounter(chatAdditionalTokens, db.aiModel.startsWith("gpt") ? "noName" : "name", {
+        count: (text) => deps.tokens.count(text, tokenScopeFor(requestDb)),
+        supportsInlayImage: () => mainModelTakesImages(requestDb),
+        mainModel: () => mainModelOf(requestDb),
+        requestModel: () => {
+            if (requestDb.aiModel === "openrouter") return requestDb.openrouterRequestModel;
+            if (requestDb.aiModel === "nanogpt") return requestDb.nanogptRequestModel;
+            return undefined;
+        },
+        gptVisionQuality: () => db.gptVisionQuality,
+    });
+}
+
+/** The chat's summary writer lease for a job (a no-op one without a service); the caller releases it. */
+export async function acquireJobWriter(
+    job: RunningJob,
+    deps: GenerationRunnerDeps,
+    setup: RunSetup,
+): Promise<SummaryWriterLease> {
+    const tasks = deps.memoryTasks;
+    if (!tasks) {
+        return { release: () => {} };
+    }
+    setup.check();
+    const { characterId: chaId, chatId } = job.context;
+    const pending = tasks.acquireSummaryWriter({ chaId, chatId }, job.id);
+    let lease: SummaryWriterLease;
+    try {
+        lease = await untilAborted(pending, setup.nativeCtx.signal);
+    } catch (error) {
+        // A lease granted after the job stopped waiting is given back.
+        pending.then(
+            (late) => late.release(),
+            () => {},
+        );
+        throw error;
+    }
+    try {
+        setup.check();
+    } catch (error) {
+        lease.release();
+        throw error;
+    }
+    return lease;
+}
+
+/** A new memory run of a job (a fresh `runId`): its `memoryProgress` notices and stop control. */
+export function openJobMemoryRun(
+    job: RunningJob,
+    setup: RunSetup,
+    phase: "blocking" | "initial" | "selection",
+    reason: MemoryBlockingReason | null,
+): AssemblyMemoryRun {
+    const { services } = setup.bindings;
+    const { characterId: chaId, chatId } = job.context;
+    const chatRef = { chaId, chatId };
+    const runId = randomUUID();
+    let opened = false;
+    let closed = false;
+    return {
+        update: (progress) => {
+            if (closed) {
+                return;
+            }
+            opened = true;
+            services.notice({
+                kind: "memoryProgress",
+                payload: { chatRef, runId, open: true, phase, reason, ...progress },
+            });
+        },
+        close: () => {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (opened) {
+                services.notice({ kind: "memoryProgress", payload: { chatRef, runId, open: false } });
+            }
+        },
+        registerStop: () => job.registerMemoryControl?.(runId) ?? null,
+    };
 }
 
 type SpeakerResult =
     | {
           type: "reply";
           messageId: string;
-          alternatives?: string[];
-          /** The round's HypaV3 task input (only with a memory task service and an input job). */
+          /** The round's memory task input (only with a memory task service and an input job). */
           memoryTask?: MemoryTaskHandOff;
+          memoryVectorWarm?: MemoryTaskBase;
           /**
            * The next round of this speaker: a continue of this reply (auto-continue, with the tokens
            * counted so far), or a fresh send (a trigger's `sendAIprompt`). None: the reply is done.
@@ -674,9 +1076,9 @@ type SpeakerResult =
       }
     | { type: "preview"; result: unknown }
     /** The output trigger removed the reply: this speaker's turn ends with the removal. */
-    | { type: "removed"; memoryTask?: MemoryTaskHandOff }
+    | { type: "removed"; memoryTask?: MemoryTaskHandOff; memoryVectorWarm?: MemoryTaskBase }
     /** The send ended for this speaker (an error shown, stopped by a trigger, nothing to continue). */
-    | { type: "stop" };
+    | { type: "stop"; messageId?: string };
 
 /** How long the tab may take for an image of the tail (an inlay image, the image view). */
 const IMAGE_CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -690,6 +1092,10 @@ async function runSpeaker(arg: {
     speakerId: string;
     chatAdditonalTokens: number;
     continueSend: boolean;
+    /** Only the first speaker round regenerates this carrier. */
+    rerollMessageId?: string;
+    /** Whether this round's assembly ends the send when the lore budget leaves a required entry out. */
+    stopOverLoreBudget: boolean;
     /** The message a continue extends: the reply of the round before (auto-continue), else the job's. */
     continueMessageId?: string;
     /** `usedContinueTokens`: the tokens of the replies this auto-continue chain produced so far. */
@@ -698,13 +1104,17 @@ async function runSpeaker(arg: {
     baseRequest: JobScope["request"];
     /** Whether the job's prompt preset is a `presetChain` pick. */
     fromChain: boolean;
+    /** Per-reply baselines for the current job, before the append cleanup discards older checkpoints. */
+    replyBaselines: Map<string, ScriptstateSnapshot | undefined>;
     onSetup: (setup: RunSetup) => void;
     writeOwn: (
         ops: ChatOp[],
-        covers?: { messageId: string; generationId: string; seq: number }[],
+        covers?: { messageId: string; generationId: string; seq: number; raw?: true }[],
+        options?: { rerollAttempt?: RerollAttemptWrite; metadataFlushed?: boolean },
     ) => CheckpointOutcome[];
 }): Promise<SpeakerResult> {
     const { job, deps, state, scope, owner, speakerId, writeOwn } = arg;
+    const ooc = job.kind === "preview" && job.context.oocExchangeId !== undefined;
     const { store, kinds } = deps;
     // Every speaker and every round of one starts over: its setup, then assembly, request, tail.
     state.stage = "setup";
@@ -715,11 +1125,30 @@ async function runSpeaker(arg: {
     const chatRef = { chaId: characterId, chatId };
     const generationId = randomUUID();
     let generation: Generation | null = null;
+    let continuingStream = false;
     let generationInfo: MessageGenerationInfo | undefined;
     let memoryTask: MemoryTaskHandOff | undefined;
+    let memoryVectorWarm: MemoryTaskBase | undefined;
+    const reroll = arg.rerollMessageId;
+    let previousCandidate: MessageCandidate | undefined;
+    let newCandidateId: string | undefined;
+    let before: ScriptstateSnapshot | undefined;
+    let failed = false;
+    let noReply = false;
+    let samples: string[] = [];
+    const candidateId = () => randomUUID().replaceAll("-", "");
+    const notice = (code: CandidateNoticeCode) => {
+        // Sends and previews skip oversized checkpoints silently; only this round can lose a reroll restore.
+        if (code === "scriptstateCheckpointSkipped" && !reroll) return;
+        candidateNotice(job, code);
+    };
     const chatNow = (): Chat | undefined => {
         refreshChat(store, scope);
         return scopeChat(scope);
+    };
+    const historyNow = () => {
+        refreshChat(store, scope);
+        return scopeHistoryChat(scope);
     };
     /**
      * The newest streamed chunk the stored reply includes, once its stream is complete. Every later
@@ -731,6 +1160,7 @@ async function runSpeaker(arg: {
             ? [{ messageId: generation.messageId, generationId: generation.generationId, seq: coverSeq }]
             : undefined;
     const owned: OwnedGeneration = {
+        reroll: !!reroll,
         get messageId() {
             return generation?.messageId ?? "";
         },
@@ -760,8 +1190,9 @@ async function runSpeaker(arg: {
 
     /**
      * The completion notification: the tab's notice and Web Push, both naming the job's chat and its
-     * owner (a group's name and message, not the speaking member's). A failure here never changes the
-     * reply.
+     * owner (a group's name and message, not the speaking member's). A requested hold delays only
+     * Web Push; an aborted runner cannot place a hold after the registry forced its job to end.
+     * A failure here never changes the reply.
      */
     function notifyCompletion() {
         try {
@@ -783,7 +1214,11 @@ async function runSpeaker(arg: {
                     tag: notification.tag,
                 },
             });
-            deps.push?.send(notification).catch((error) => console.error("[Push]", error));
+            if (job.context.completionHoldMs !== undefined && deps.completionHolds && !job.signal.aborted) {
+                deps.completionHolds.hold(job.id, notification, job.context.completionHoldMs);
+            } else {
+                deps.push?.send(notification, { jobId: job.id }).catch((error) => console.error("[Push]", error));
+            }
         } catch (error) {
             console.error("[Push] The completion notification failed", error);
         }
@@ -791,17 +1226,20 @@ async function runSpeaker(arg: {
 
     /**
      * `throwError`: into the chat with `inlayErrorResponse` (the last reply or a new message), else the
-     * job's error, with `failure` (a failed request's id and provider code).
+     * job's error, with `failure` (a failed request's id and provider code). A preview writes no message.
      */
     function throwError(error: string, failure?: GenerationFailure, status = 500): SpeakerResult {
-        if (!db.inlayErrorResponse) {
+        if (!db.inlayErrorResponse || job.kind === "preview" || job.kind === "previewPrompt") {
             throw new SendError(error, failure, status);
         }
         const chat = chatNow();
         if (!chat) {
             throw new SendError(error, failure, status);
         }
-        const lastMessage = chat.message[chat.message.length - 1];
+        const lastMessage =
+            reroll && generation && !generation.final
+                ? chat.message.find((message) => message.chatId === generation!.messageId)
+                : chat.message[chat.message.length - 1];
         const suffix = `\n\`\`\`risuerror\n${error}\n\`\`\``;
         if (lastMessage?.role === "char") {
             const mine = generation && !generation.final && generation.messageId === lastMessage.chatId;
@@ -820,7 +1258,7 @@ async function runSpeaker(arg: {
             } else if (deps.lock.holder(characterId, chatId, lastMessage.chatId!) === null) {
                 writeOwn([{ op: "setText", id: lastMessage.chatId!, text: lastMessage.data + suffix }]);
             }
-            return { type: "stop" };
+            return { type: "stop", ...(reroll && generation ? { messageId: generation.messageId } : {}) };
         }
         const message: Message = {
             role: "char",
@@ -840,9 +1278,9 @@ async function runSpeaker(arg: {
 
     /**
      * `AssemblyHost.memoryTrim.confirm`: none for a preview (it trims as before); "memory" when the user
-     * turned memory on in this job or the owner stored now has it on; the user's answer when this job
-     * already asked; "trim" when this chat said "don't ask again" since the owner's memory was last
-     * turned on (checked anew each time: a turn-on during the job voids it); otherwise the owner's tab
+     * turned memory on in this job or the chat's switch now resolves on; the user's answer when this job
+     * already asked; "trim" while this chat's acknowledgement matches the owner's legacy count
+     * (turning this chat on removes its acknowledgement); otherwise the owner's tab
      * is asked. The owner (a character or a group) is the job's `characterId`, read from the store, not
      * the job's frozen projection.
      */
@@ -859,7 +1297,7 @@ async function runSpeaker(arg: {
         }
         const readOwner = () => store.get(charactersKind, characterId)?.data as (character | groupChat) | undefined;
         const owner = readOwner();
-        if (owner?.supaMemory === true) {
+        if (chatMemoryEnabled(chatNow(), owner, db)) {
             state.memoryTrim = "memory";
             return state.memoryTrim;
         }
@@ -873,32 +1311,16 @@ async function runSpeaker(arg: {
         }
         const choice = answer as MemoryTrimChoice;
         if (choice === "memory") {
-            // Read inside the write (it may run again on a conflict): an owner turned on meanwhile is
-            // kept as it is, and only a real off→on transition counts.
-            let found = false;
-            job.write(() => {
-                const row = store.get(charactersKind, characterId);
-                found = !!row;
-                const data = row?.data as (character | groupChat) | undefined;
-                if (!row || !data || data.supaMemory === true) {
-                    return {};
-                }
-                return {
-                    ops: [
-                        {
-                            kind: charactersKind,
-                            id: characterId,
-                            baseRevision: row.revision,
-                            patch: { set: { supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(data) + 1 } },
-                        },
-                    ],
-                };
-            });
-            if (!found) {
-                throw new GenerationRunnerError(404, "The job's character no longer exists");
-            }
-            refreshCharacter(store, kinds, scope, characterId);
-            job.emitRecords({ refs: [{ kind: RESOURCE_KIND.characters, id: characterId }] });
+            services.writeChat(
+                (chat) => [
+                    {
+                        op: "meta",
+                        set: { memoryEnabled: true },
+                        ...(Object.hasOwn(chat, "memoryTrimAck") ? { unset: ["memoryTrimAck"] } : {}),
+                    },
+                ],
+                nativeCtx,
+            );
             state.memoryTrim = "memory";
             return state.memoryTrim;
         }
@@ -949,35 +1371,190 @@ async function runSpeaker(arg: {
     }
 
     /**
-     * Closes the generation (its final write, the text as stored when none is given). A final write the
-     * store ignored (another write closed the generation first) did not persist the reply: an error.
+     * Finalize from the stored row after the metadata flush. A failed reroll restores its previous
+     * candidate in this same final write, while the store rolls back attempt-owned variables.
+     * Closure is remembered only after admission succeeds, so a failed write can still recover.
      */
     const finalize = (text?: string, covers: number | undefined = coverSeq) => {
-        if (!generation || generation.final) {
-            return;
+        if (!generation || generation.final) return;
+        let flushError: unknown;
+        try {
+            flushChatMetadata(job);
+        } catch (error) {
+            if (!reroll) throw error;
+            failed = true;
+            flushError = error;
         }
-        const stored = scopeChat(scope)?.message.find((message) => message.chatId === generation!.messageId);
-        if (!stored) {
+        refreshChat(store, scope);
+        const chat = scopeChat(scope);
+        const stored = chat?.message.find((message) => message.chatId === generation!.messageId);
+        if (!stored || !chat) {
             generation.final = true;
             return;
         }
+        let message: Message = { ...structuredClone(stored), data: text ?? stored.data };
+        if (continuingStream) message.time = Date.now();
+        const rollback = !!previousCandidate && (failed || noReply || job.signal.aborted || message.data.length === 0);
+        if (rollback) {
+            const previous = previousCandidate!;
+            message.data = previous.data;
+            delete message.generationInfo;
+            delete message.promptInfo;
+            delete message.translation;
+            if (previous.generationInfo) message.generationInfo = structuredClone(previous.generationInfo);
+            if (previous.promptInfo) message.promptInfo = structuredClone(previous.promptInfo);
+            if (previous.translation) message.translation = structuredClone(previous.translation);
+            const candidates = (message.candidates ?? []).filter((candidate) => candidate.id !== newCandidateId);
+            const selected = candidates.findIndex((candidate) => candidate.id === previous.id);
+            if (selected >= 0 && candidates.length >= 2) {
+                message.candidates = candidates;
+                message.selected = selected;
+            } else {
+                delete message.candidates;
+                delete message.selected;
+            }
+            if (before !== undefined) {
+                message.scriptstateCheckpoint = {
+                    before,
+                    ...(previous.scriptstateAfter !== undefined ? { after: previous.scriptstateAfter } : {}),
+                };
+            } else delete message.scriptstateCheckpoint;
+        } else {
+            const after = structuredClone(chat.scriptstate ?? null);
+            if (!arg.replyBaselines.has(generation.messageId)) arg.replyBaselines.set(generation.messageId, before);
+            const firstReply = chat.message
+                .slice(rerollTurnStart(chat.message))
+                .find((reply) => arg.replyBaselines.has(reply.chatId!));
+            const turnBefore = firstReply ? arg.replyBaselines.get(firstReply.chatId!) : before;
+            if (turnBefore !== undefined && isScriptstateSnapshot(after))
+                message.scriptstateCheckpoint = { before: turnBefore, after };
+            else {
+                message = withoutCandidateCheckpoints(message);
+                if (before !== undefined) notice("scriptstateCheckpointSkipped");
+            }
+            message = withCandidate(message);
+            if (samples.length > 0) {
+                message.candidates = [
+                    ...(message.candidates ?? [candidateOf(message, candidateId())]),
+                    ...samples.map((data) => ({ id: candidateId(), data })),
+                ];
+                message.selected ??= 0;
+            }
+        }
+        if (!isLatestReply(chat, generation.messageId)) message = withoutCandidateCheckpoints(message);
+        message = trimCandidates(message, notice);
         generation.seq += 1;
         const gen = { id: generation.generationId, seq: generation.seq, final: true };
-        generation.final = true;
+        const ops: ChatOp[] = [{ op: "setMessage", message, generation: gen }];
+        if (rollback)
+            ops.push({ op: "setTranslation", id: generation.messageId, translation: message.translation ?? null });
         const outcomes = writeOwn(
-            [{ op: "setText", id: generation.messageId, text: text ?? stored.data, generation: gen }],
+            ops,
             covers !== undefined
                 ? [{ messageId: generation.messageId, generationId: generation.generationId, seq: covers }]
                 : undefined,
+            {
+                metadataFlushed: true,
+                ...(rollback
+                    ? {
+                          rerollAttempt: {
+                              characterId,
+                              chatId,
+                              messageId: generation.messageId,
+                              generationId: generation.generationId,
+                              action: "rollback",
+                          } as const,
+                      }
+                    : {}),
+            },
         );
         if (outcomes.at(-1) === "ignored") {
             throw new GenerationRunnerError(409, "The reply was closed by another write before it was finished", {
                 stage: "persist",
             });
         }
+        generation.final = true;
+        if (flushError !== undefined) throw flushError;
     };
 
     try {
+        flushChatMetadata(job);
+        const initialChat = chatNow();
+        const snapshot = structuredClone(initialChat?.scriptstate ?? null);
+        const targetId =
+            reroll ?? (arg.continueSend ? (arg.continueMessageId ?? job.context.continueMessageId) : undefined);
+        const initialTarget = targetId
+            ? initialChat?.message.find((message) => message.chatId === targetId)
+            : arg.continueSend
+              ? initialChat?.message.at(-1)
+              : undefined;
+        // Null is a real baseline, so preserve an explicitly absent variable map.
+        const keptBaseline = initialTarget?.scriptstateCheckpoint
+            ? initialTarget.scriptstateCheckpoint.before
+            : snapshot;
+        if (isScriptstateSnapshot(keptBaseline)) before = structuredClone(keptBaseline);
+        else notice("scriptstateCheckpointSkipped");
+        if (reroll) {
+            if (
+                !initialChat ||
+                !initialTarget ||
+                !isRerollCarrier(initialChat, reroll) ||
+                deps.lock.holder(characterId, chatId, reroll) !== null
+            ) {
+                throw new GenerationRunnerError(409, "The reply is no longer the newest reply or is being generated");
+            }
+            previousCandidate = candidateOf(
+                initialTarget,
+                initialTarget.candidates?.[initialTarget.selected ?? 0].id ?? candidateId(),
+            );
+            newCandidateId = candidateId();
+            const refreshed = withCandidate(initialTarget);
+            let begin: Message = {
+                ...refreshed,
+                data: "",
+                candidates: [...(refreshed.candidates ?? [previousCandidate]), { id: newCandidateId, data: "" }],
+                selected: refreshed.candidates?.length ?? 1,
+            };
+            if (before !== undefined) begin.scriptstateCheckpoint = { before };
+            else begin = withoutCandidateCheckpoints(begin);
+            begin = trimCandidates(begin, notice, previousCandidate.id);
+            const set: Extract<ChatOp, { op: "patchMessage" }>["set"] = { data: "" };
+            const unset: NonNullable<Extract<ChatOp, { op: "patchMessage" }>["unset"]> = [];
+            if (begin.candidates) {
+                set.candidates = begin.candidates;
+                set.selected = begin.selected;
+            } else unset.push("candidates", "selected");
+            if (begin.scriptstateCheckpoint) set.scriptstateCheckpoint = begin.scriptstateCheckpoint;
+            else unset.push("scriptstateCheckpoint");
+            const ops: ChatOp[] = [
+                { op: "patchMessage", id: reroll, set, unset },
+                { op: "setTranslation", id: reroll, translation: null },
+            ];
+            const checkpoint = initialTarget.scriptstateCheckpoint;
+            if (before !== undefined && checkpoint?.after !== undefined) {
+                const restore = scriptstateRestorePatch(before, checkpoint.after, initialChat.scriptstate);
+                if (Object.keys(restore.merge).length || restore.mergeUnset.length)
+                    ops.push({
+                        op: "meta",
+                        merge: { scriptstate: restore.merge },
+                        mergeUnset: { scriptstate: restore.mergeUnset },
+                    });
+            }
+            ops.push({ op: "begin", id: reroll, generationId });
+            writeOwn(ops, undefined, {
+                rerollAttempt: { characterId, chatId, messageId: reroll, generationId, action: "begin" },
+            });
+            generation = { messageId: reroll, generationId, seq: 0, final: false };
+            scope.rerollHistoryMessageId = reroll;
+            job.emit({
+                type: "accepted",
+                jobId: job.id,
+                messageId: reroll,
+                generationId,
+                revision: scope.chatRevision,
+                text: "",
+            });
+        }
         // A continue locks the message it extends before anything else (the client's `startGeneration`).
         if (arg.continueSend && !(job.kind === "preview" || job.kind === "previewPrompt")) {
             const chat = chatNow();
@@ -1010,10 +1587,11 @@ async function runSpeaker(arg: {
             cache: state.scriptCache,
             assetMatches: state.assetMatches,
             showEmotion: (chaId, name, image) => showEmotion(job, state, chaId, name, image),
+            skipped: state.skippedHooks,
         });
         /** `runCurrentChatFunction`: every message through CBS with variables, the changed ones written. */
         const runCurrentChatFunction = () => {
-            const chat = chatNow();
+            const chat = historyNow();
             if (!chat) {
                 return;
             }
@@ -1044,12 +1622,15 @@ async function runSpeaker(arg: {
         const stageTimings = { stage1Duration: 0, stage2Duration: 0 };
         // The memory algorithms' services of this run (`memory-on-server`): the job's settings, its
         // own requests and embeddings, its chat's CBS, and its abort.
-        // Memory algorithms can replace an error's text; keep the latest local outcome for this assembly.
+        // Memory algorithms can replace an error's text; keep a refusal until its failure is recovered.
         const localModelOutcome = { refusal: null as ReturnType<typeof localModelRefusal> };
+        const recoverLocalModelFailure = () => {
+            localModelOutcome.refusal = null;
+        };
         async function trackLocalModel<T>(call: () => Promise<T>): Promise<T> {
             try {
                 const result = await call();
-                localModelOutcome.refusal = null;
+                recoverLocalModelFailure();
                 return result;
             } catch (error) {
                 localModelOutcome.refusal = localModelRefusal(error);
@@ -1057,83 +1638,45 @@ async function runSpeaker(arg: {
             }
         }
         const embeddingEnv = services.embeddings(nativeCtx);
+        // Environments are per round; the RunningJob identity spans all group speakers and continues.
+        shareRecordEmbeddingAllowance(embeddingEnv, job);
         const embeddingTransformers = embeddingEnv.transformers;
         embeddingEnv.transformers = {
             ...embeddingTransformers,
             runEmbedding: (...args) => trackLocalModel(() => embeddingTransformers.runEmbedding(...args)),
         };
         let memoryProgressOpen = false;
-        const memory: MemoryHost = {
-            db,
-            tokenize: (text) => services.tokenize(text),
-            request: async (memoryPrompt) => {
-                setup.check();
-                const response = await services.request(
-                    {
-                        formated: memoryPrompt,
-                        bias: {},
-                        useStreaming: false,
-                        noMultiGen: true,
-                        chatRef,
-                    } as Parameters<typeof services.request>[0],
-                    "memory",
-                    nativeCtx,
-                    "memory",
-                );
-                setup.check();
-                return response;
+        const memory = createJobMemoryHost({
+            deps,
+            setup,
+            chatRef,
+            embeddingEnv,
+            track: trackLocalModel,
+            recoverLocalModelFailure,
+            onProgress: (open) => {
+                memoryProgressOpen = open;
             },
-            completions: async (body) => {
-                setup.check();
-                const response = await postJson(
-                    embeddingEnv,
-                    "https://api.openai.com/v1/completions",
-                    { headers: { Authorization: "Bearer " + embeddingEnv.supaMemoryKey }, body },
-                    { strictJson: true },
-                );
-                setup.check();
-                // The browser path's proxy refuses a successful answer that carries the stored key
-                // (`routes/proxy.ts`): a summary must not put it into the chat or the next request.
-                if (response.ok && embeddingEnv.carries(response.data)) {
-                    return {
-                        ok: false,
-                        data: { error: "The openai-completions answer carried the stored credential; it is not sent" },
-                    };
-                }
-                return response;
-            },
-            summarizer: (text) =>
-                trackLocalModel(async () => {
-                    setup.check();
-                    try {
-                        return await deps.transformers.runSummarizer(text, nativeCtx.signal);
-                    } finally {
-                        setup.check();
-                    }
-                }),
-            embeddings: embeddingEnv,
-            regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
-            ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
-            parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
-            userName: () => scope.effectivePersona.name,
-            progress: (payload) => {
-                memoryProgressOpen = payload.open;
-                services.notice({ kind: "progress", payload });
-            },
-            random: deps.random ?? Math.random,
-            redact: (text) => embeddingEnv.redact(text),
-            fence: () => setup.check(),
-            signal: nativeCtx.signal,
-        };
-        // The HypaV3 step's side of the job: its kind, the task service, the gap question, the writer
-        // lease, the `memoryProgress` runs, and the chat's sources.
+        });
+        // What a memory task of either kind takes from this job.
+        const memoryTaskBase = (sourceGeneration: number): MemoryTaskBase =>
+            jobMemoryTaskBase({
+                job,
+                scope,
+                sourceGeneration,
+                speakerId: currentChar.chaId ?? null,
+                fromChain: arg.fromChain,
+                chatAdditionalTokens: arg.chatAdditonalTokens,
+            });
+        // The memory steps' side of the job: its kind, the task service, the gap question, the writer
+        // lease, the `memoryProgress` runs, the chat's sources, and Structured Memory's records and gap run.
         const memoryJob: AssemblyMemoryJob = {
+            vectorInput: memoryTaskBase,
             preview: job.kind === "preview" || job.kind === "previewPrompt",
             input: INPUT_KINDS.has(job.kind),
             tasks: !!deps.memoryTasks,
             sourceGeneration: () => scope.chatSourceGeneration,
             readSource: () => {
-                const chat = chatNow();
+                const chat = historyNow();
                 if (!chat) {
                     return null;
                 }
@@ -1147,121 +1690,83 @@ async function runSpeaker(arg: {
                     if (!stored || stored.type === "group") {
                         return null;
                     }
-                    greeting =
-                        chat.fmIndex === -1 ? stored.firstMessage : stored.alternateGreetings?.[chat.fmIndex as number];
+                    greeting = greetingText(stored, chat.fmIndex);
                 }
                 return { messages: chat.message, fmIndex: chat.fmIndex, greeting };
             },
-            blockingReason: (): MemoryBlockingReason | null => {
-                // After a stop the job's later steps select only, whatever would block them now.
-                if (state.memoryGap === "stopped") {
-                    return null;
-                }
-                const resolved = resolveJobRequestModel(scope.request.db, "memory");
-                if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
-                    return "pluginModel";
-                }
-                const stored = scope.db.characters.find((entry) => entry?.chaId === characterId);
-                return hasRequestTriggers(stored, moduleTriggers(scope)) ? "requestTrigger" : null;
-            },
+            // After a stop the job's later steps select only, whatever would block them now.
+            blockingReason: () => (state.memoryGap === "stopped" ? null : jobMemoryBlockingReason(scope)),
             confirmGap: confirmMemoryGap,
             markStopped: () => {
                 state.memoryGap = "stopped";
             },
-            acquireWriter: async (): Promise<SummaryWriterLease> => {
-                const tasks = deps.memoryTasks;
-                if (!tasks) {
-                    return { release: () => {} };
-                }
-                setup.check();
-                const pending = tasks.acquireSummaryWriter(chatRef, job.id);
-                let lease: SummaryWriterLease;
-                try {
-                    lease = await untilAborted(pending, nativeCtx.signal);
-                } catch (error) {
-                    // A lease granted after the job stopped waiting is given back.
-                    pending.then(
-                        (late) => late.release(),
-                        () => {},
-                    );
-                    throw error;
-                }
-                try {
-                    setup.check();
-                } catch (error) {
-                    lease.release();
-                    throw error;
-                }
-                return lease;
+            acquireWriter: () => acquireJobWriter(job, deps, setup),
+            openRun: (phase, reason) => openJobMemoryRun(job, setup, phase, reason),
+            taskInput: (part) => (deps.memoryTasks ? { ...part, ...memoryTaskBase(part.sourceGeneration) } : null),
+            structuredMemory: {
+                records: () => readMemoryRecords(store, characterId, chatId),
+                taskInput: (sourceGeneration, confirmedBefore) =>
+                    deps.memoryTasks
+                        ? { ...memoryTaskBase(sourceGeneration), kind: "structuredMemory", confirmedBefore }
+                        : null,
+                recordGap: async (input) => {
+                    if (state.memoryGapRecorded) {
+                        return null;
+                    }
+                    state.memoryGapRecorded = true;
+                    return recordGapInJob(job, deps, setup, memory, input);
+                },
             },
-            openRun: (phase, reason): AssemblyMemoryRun => {
-                const runId = randomUUID();
-                let opened = false;
-                let closed = false;
-                return {
-                    update: (progress) => {
-                        if (closed) {
-                            return;
-                        }
-                        opened = true;
-                        services.notice({
-                            kind: "memoryProgress",
-                            payload: { chatRef, runId, open: true, phase, reason, ...progress },
-                        });
-                    },
-                    close: () => {
-                        if (closed) {
-                            return;
-                        }
-                        closed = true;
-                        if (opened) {
-                            services.notice({ kind: "memoryProgress", payload: { chatRef, runId, open: false } });
-                        }
-                    },
-                    registerStop: () => job.registerMemoryControl?.(runId) ?? null,
-                };
-            },
-            taskInput: (part) =>
-                deps.memoryTasks
-                    ? {
-                          ...part,
-                          chatRef,
-                          epoch: job.epoch,
-                          admittedRevision: job.context.chatRevision,
-                          speakerId: currentChar.chaId ?? null,
-                          binding: {
-                              presetId: job.context.presetId ?? null,
-                              modelPresetId: job.context.modelPresetId ?? null,
-                              personaId: job.context.personaId ?? null,
-                          },
-                          effective: {
-                              presetId: scope.promptPreset.id,
-                              modelPresetId: scope.modelPreset.id,
-                              fromChain: arg.fromChain,
-                          },
-                          maxContext: db.maxContext,
-                          maxResponse: db.maxResponse,
-                          tokenPolicy: memoryTokenPolicy(scope, arg.chatAdditonalTokens),
-                          settingsFingerprint: memorySettingsFingerprint(scope),
-                      }
-                    : null,
         };
         state.stage = "assembly";
-        const assembled: AssembledPrompt = await assemblePrompt(
+        let toolSet: JobToolSet | null | undefined;
+        let toolListFailure: Error | undefined;
+        const toolSchemaTokens = async () => {
+            try {
+                toolSet = await bindings.listTools(nativeCtx);
+            } catch (error) {
+                // Fatal/abort outcomes keep the job's fence; an ordinary list failure uses the
+                // same request-stage failure path as listing inside services.request, without retry.
+                setup.check();
+                toolListFailure = new Error(`MCP: ${error instanceof Error ? error.message : String(error)}`);
+                throw toolListFailure;
+            }
+            setup.check();
+            const text = serializeToolSchemas(resolveJobRequestModel(requestDb, "model"), toolSet?.descriptors ?? []);
+            return text === null ? 0 : deps.tokens.count(text, tokenScopeFor(requestDb), nativeCtx.signal);
+        };
+        // The reply request is a "model" request: the request layer inserts these rules' messages
+        // into it after assembly, from the settings the request is sent with. A preview reports
+        // them too, since reading the rules needs no network.
+        const interceptions = interceptionMessages(requestDb.requestInterceptions, "model");
+        const insertedMessages = [...interceptions.start, ...interceptions.end];
+        const assembled: AssembledPrompt | null = await assemblePrompt(
             {
                 db,
                 owner,
                 speaker: currentChar,
                 chatRef,
                 parse: (text, parseArg) => evaluator.risuChatParser(text, { chatRef, ...parseArg }),
-                chat: () => chatNow() ?? services.liveChat(),
+                chat: () => historyNow() ?? services.liveChat(),
                 findCharacter: (id) => findCharacter(scope, id),
                 userName: () => scope.effectivePersona.name,
                 personaPrompt: () => scope.effectivePersona.personaPrompt,
-                activateLore: () => services.activateLore(nativeCtx),
+                activateLore: (options) =>
+                    options ? services.activateLore(nativeCtx, options) : services.activateLore(nativeCtx),
                 scripts,
-                runStartTrigger: () =>
-                    setup.runOnCopy(currentChar, "start", {}, generation ? { generation: owned } : {}),
+                runStartTrigger: async () => {
+                    if (ooc) {
+                        return null;
+                    }
+                    const result = await setup.runOnCopy(
+                        currentChar,
+                        "start",
+                        {},
+                        generation ? { generation: owned } : {},
+                    );
+                    noReply ||= !!result?.noReply;
+                    return result;
+                },
                 runEditRequest: (formated) => scripts.editRequest(currentChar, formated),
                 readInlay: (id) => bindings.readInlay(id),
                 readAsset: (path) => readStorageFile(deps.savePath, path),
@@ -1321,7 +1826,12 @@ async function runSpeaker(arg: {
                         });
                     }
                 },
-                stage: (stage) => reportStage(job, stage),
+                stage: (stage) => {
+                    if (stage === "preparing") {
+                        recoverLocalModelFailure();
+                    }
+                    reportStage(job, stage);
+                },
                 captionImage: (dataUrl) =>
                     trackLocalModel(async () => {
                         setup.check();
@@ -1331,21 +1841,9 @@ async function runSpeaker(arg: {
                             setup.check();
                         }
                     }),
-                tokenizer: new ChatTokenCounter(
-                    arg.chatAdditonalTokens,
-                    db.aiModel.startsWith("gpt") ? "noName" : "name",
-                    {
-                        count: (text) => deps.tokens.count(text, tokenScopeFor(requestDb)),
-                        supportsInlayImage: () => mainModelTakesImages(requestDb),
-                        mainModel: () => mainModelOf(requestDb),
-                        requestModel: () => {
-                            if (requestDb.aiModel === "openrouter") return requestDb.openrouterRequestModel;
-                            if (requestDb.aiModel === "nanogpt") return requestDb.nanogptRequestModel;
-                            return undefined;
-                        },
-                        gptVisionQuality: () => db.gptVisionQuality,
-                    },
-                ),
+                tokenizer: jobChatTokenCounter(deps, scope, arg.chatAdditonalTokens),
+                ...(job.kind !== "preview" ? { toolSchemaTokens } : {}),
+                insertedMessages,
                 tokenScope: tokenizerIdentityKey(tokenScopeFor(requestDb)),
                 getModelInfo: (model) =>
                     resolveModelInfo(model, {
@@ -1363,9 +1861,19 @@ async function runSpeaker(arg: {
                 ...(arg.continueSend && generation ? { continueMessageId: generation.messageId } : {}),
                 generationId,
                 stageTimings,
+                ...(arg.stopOverLoreBudget ? { stopOverLoreBudget: true } : {}),
+                ...(ooc ? { ooc: true } : {}),
             },
-        );
+        ).catch((error: unknown) => {
+            if (toolListFailure !== undefined && error === toolListFailure) {
+                return null;
+            }
+            throw error;
+        });
         setup.check();
+        if (assembled === null) {
+            return throwError(toolListFailure!.message, { stage: "request" });
+        }
         if (assembled.type === "stopped") {
             return { type: "stop" };
         }
@@ -1375,64 +1883,315 @@ async function runSpeaker(arg: {
         }
         if (assembled.type === "alert") {
             // The client's `alertError` and `return false`: the job's error, never an inlay error message.
-            throw new SendError(refusal?.message ?? assembled.error, { stage: "assembly" }, refusal?.status);
+            throw new SendError(
+                refusal?.message ?? assembled.error,
+                {
+                    stage: "assembly",
+                    ...(assembled.code !== undefined ? { code: assembled.code } : {}),
+                    ...(assembled.lore !== undefined ? { lore: assembled.lore } : {}),
+                },
+                refusal?.status,
+            );
         }
         const { formated, biases, promptInfo } = assembled;
         generationInfo = assembled.generationInfo;
         memoryTask = assembled.memoryTask;
+        memoryVectorWarm = assembled.memoryVectorWarm;
         if (job.kind === "preview") {
-            return { type: "preview", result: formated };
+            const result: GenerationPreviewResult = {
+                messages: formated,
+                context: generationInfo.context,
+                ...(assembled.memoryBlock ? { memoryBlock: assembled.memoryBlock } : {}),
+                ...(ooc ? { ooc: true } : {}),
+            };
+            return { type: "preview", result };
         }
 
+        if (reroll && generation) {
+            const stored = chatNow()?.message.find((message) => message.chatId === generation!.messageId);
+            if (stored)
+                writeOwn([
+                    {
+                        op: "setMessage",
+                        message: { ...structuredClone(stored), generationInfo, promptInfo },
+                        generation: owned.next(),
+                    },
+                ]);
+        }
+        // Request triggers and every tail reader see the stored carrier again.
+        delete scope.rerollHistoryMessageId;
         const stage3Start = Date.now();
         state.stage = "request";
         if (job.kind !== "previewPrompt") {
             reportStage(job, "generating");
         }
-        const req = await services.request(
-            {
-                formated,
-                biasString: biases,
-                currentChar,
-                useStreaming: true,
-                isGroupChat: owner.type === "group",
-                bias: {},
-                continue: arg.continueSend,
-                chatId: generationId,
-                chatRef,
-                imageResponse: db.outputImageModal,
-                previewBody: job.kind === "previewPrompt",
-                escape: owner.type === "character" && owner.escapeOutput,
-                rememberToolUsage: db.rememberToolUsage,
-            } as Parameters<typeof services.request>[0],
-            "model",
-            nativeCtx,
-            "send",
-            // The reply's message: a continue's own, else the one the reply is appended as.
-            { messageId: generation?.messageId ?? generationId },
-        );
-        setup.check();
-        if (req.model) {
-            generationInfo.model = getGenerationModelString(db, req.model);
-        }
-        if (job.kind === "previewPrompt" && req.type === "success") {
-            return { type: "preview", result: req.result };
-        }
-        if (!chatNow()) {
-            // The chat was deleted while the request ran: the send is cancelled.
-            return { type: "stop" };
-        }
-        const prefixOf = (id: string) => scopeChat(scope)?.message.find((message) => message.chatId === id)?.data ?? "";
-
-        if (req.type === "fail") {
-            return throwError(
-                req.result,
+        const replyModel = resolveJobRequestModel(requestDb, "model");
+        const quiet =
+            !requestDb.useStreaming &&
+            requestDb.halfStreaming === true &&
+            job.kind !== "previewPrompt" &&
+            replyModel.kind === "resolved" &&
+            replyModel.modelInfo.format !== LLMFormat.OobaLegacy;
+        /**
+         * One request for the reply. Its arguments are built on every call, since an adapter writes into them
+         * (`bias`). `resent` marks the call that asks again for a reply whose quiet stream was rejected: the job's
+         * retry count then rises as that request goes out.
+         */
+        const requestReply = (resent: boolean) =>
+            services.request(
                 {
-                    stage: "request",
-                    ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
+                    formated,
+                    biasString: biases,
+                    currentChar,
+                    useStreaming: true,
+                    ...(quiet ? { forceStreaming: true } : {}),
+                    isGroupChat: owner.type === "group",
+                    bias: {},
+                    continue: arg.continueSend,
+                    chatId: generationId,
+                    chatRef,
+                    imageResponse: db.outputImageModal,
+                    previewBody: job.kind === "previewPrompt",
+                    escape: owner.type === "character" && owner.escapeOutput,
+                    rememberToolUsage: db.rememberToolUsage,
+                } as Parameters<typeof services.request>[0],
+                "model",
+                nativeCtx,
+                "send",
+                // The reply's message: a continue's own, else the one the reply is appended as.
+                {
+                    messageId: generation?.messageId ?? generationId,
+                    ...(toolSet !== undefined ? { toolSet } : {}),
+                    ...(resent ? { resent: true as const } : {}),
                 },
-                req.localModelRefusal?.status,
             );
+        const prefixOf = (id: string) => scopeChat(scope)?.message.find((message) => message.chatId === id)?.data ?? "";
+        /** The model assembly named: the reply's model when the answer that is kept names none. */
+        const assembledModel = generationInfo.model;
+        /**
+         * The row the reply's streams are read into and the text it held before them (a continue's), both fixed
+         * when the first stream arrives, so a later stream of the same reply uses the same id and prefix. A
+         * continue's or a reroll's row exists already; a quiet new reply's row exists only once a read ends
+         * (`openDeferredRow`).
+         */
+        let streamTarget: { messageId: string; prefix: string } | undefined;
+        /**
+         * A quiet new reply has no row while it streams, so no client shows an empty bubble: the row, its `begin`
+         * lock, and its text are written in one append when the read ends, as the buffered path appends its reply.
+         * No `accepted` follows, as on that path (it would also clear the output estimate the window shows).
+         */
+        let deferredRow = false;
+        /**
+         * Appends a quiet new reply's row with the read's text. A kept answer always has one; a stop, failure, or
+         * rejection with no text writes none, as a buffered request that ends that way writes no reply. A chat
+         * deleted during the read gets none.
+         */
+        const openDeferredRow = (text: string, kept = false) => {
+            if (!deferredRow || generation || (!text && !kept) || !chatNow()) {
+                return;
+            }
+            writeOwn([
+                {
+                    op: "append",
+                    messages: [
+                        {
+                            role: "char",
+                            data: text,
+                            saying: currentChar.chaId,
+                            time: Date.now(),
+                            generationInfo,
+                            promptInfo,
+                            chatId: generationId,
+                        },
+                    ],
+                    anchor: { end: true },
+                },
+                { op: "begin", id: generationId, generationId },
+            ]);
+            generation = { messageId: generationId, generationId, seq: 0, final: false };
+        };
+        /** The streams of this reply the response checks rejected; only a quiet one is followed by a request. */
+        let rejections = 0;
+        /** The read of the stream that is kept as the reply; none while the answer is buffered. */
+        let stream: Awaited<ReturnType<typeof readReply>> | undefined;
+        let req = await requestReply(false);
+
+        // The request and, for a stream, its read. A stream that ends whole goes through the response checks the
+        // request layer applies to a buffered answer only (`responseRejection`). A stream the user saw fails
+        // there with its text kept. A quiet stream showed nothing, so its text is dropped and the reply is
+        // requested again, up to `requestRetrys` times. A quiet new reply has no row until a read ends; a continue's
+        // or reroll's row is not written until an answer is kept, so a stop in between closes it as stored. Every
+        // result, the first as a later one, passes the same checks.
+        while (true) {
+            setup.check();
+            if (req.model) {
+                generationInfo.model = getGenerationModelString(db, req.model);
+            } else if (rejections > 0) {
+                // Not the model of an answer that was dropped.
+                generationInfo.model = assembledModel;
+            }
+            if (job.kind === "previewPrompt" && req.type === "success") {
+                return { type: "preview", result: req.result };
+            }
+            if (!chatNow()) {
+                // The chat was deleted while the request ran: the send is cancelled.
+                return { type: "stop" };
+            }
+
+            if (req.type === "fail") {
+                return throwError(
+                    req.result,
+                    {
+                        stage: "request",
+                        ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
+                    },
+                    req.localModelRefusal?.status,
+                );
+            }
+            if (req.type !== "streaming") {
+                break;
+            }
+
+            if (!streamTarget) {
+                if (generation) {
+                    // Continue keeps the message's id and text; the final write refreshes its time once.
+                    continuingStream = true;
+                    streamTarget = { messageId: generation.messageId, prefix: prefixOf(generation.messageId) };
+                } else if (quiet) {
+                    deferredRow = true;
+                    streamTarget = { messageId: generationId, prefix: "" };
+                } else {
+                    writeOwn([
+                        {
+                            op: "append",
+                            messages: [
+                                {
+                                    role: "char",
+                                    data: "",
+                                    saying: currentChar.chaId,
+                                    time: Date.now(),
+                                    generationInfo,
+                                    promptInfo,
+                                    chatId: generationId,
+                                },
+                            ],
+                            anchor: { end: true },
+                        },
+                        { op: "begin", id: generationId, generationId },
+                    ]);
+                    generation = { messageId: generationId, generationId, seq: 0, final: false };
+                    job.emit({
+                        type: "accepted",
+                        jobId: job.id,
+                        messageId: generationId,
+                        generationId,
+                        revision: scope.chatRevision,
+                        text: "",
+                    });
+                    streamTarget = { messageId: generationId, prefix: "" };
+                }
+            }
+            const { messageId, prefix } = streamTarget;
+            const meter = createOutputMeter({
+                count: (text) => deps.tokens.countLocal(text, tokenScopeFor(requestDb)),
+                report: (output) => job.emit({ type: "output", ...output }),
+                now: Date.now,
+                log: (error) => logEvent("generation.outputCount", { job: job.id }, error, deps.diagnostics),
+            });
+            let read: Awaited<ReturnType<typeof readReply>>;
+            try {
+                read = await readReply(job, req.result, {
+                    prefix,
+                    ...(quiet ? { quiet: true } : {}),
+                    removeIncompleteResponse: !!db.removeIncompleteResponse,
+                    onRaw: meter.note,
+                    emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
+                    checkpoint: (text, seq) => {
+                        generation!.seq += 1;
+                        writeOwn(
+                            [
+                                {
+                                    op: "setText",
+                                    id: messageId,
+                                    text,
+                                    generation: { id: generationId, seq: generation!.seq },
+                                },
+                            ],
+                            [{ messageId, generationId, seq, raw: true }],
+                        );
+                    },
+                });
+            } finally {
+                meter.stop();
+            }
+            if (read.error !== undefined || job.signal.aborted) {
+                // An abort or a read failure: the final write carries the text so far; nothing after
+                // the stream runs.
+                // A failure of that write is the job's error instead. A quiet new reply's row is appended first.
+                failed = true;
+                openDeferredRow(read.text);
+                finalize(read.text, read.seq);
+                if (read.error !== undefined && !job.signal.aborted) {
+                    const failure = read.failure ?? {};
+                    // A read failure is the request's; a checkpoint's is the write's.
+                    throw new GenerationRunnerError(
+                        500,
+                        read.error,
+                        failure.stage === "request" && req.request
+                            ? { requestId: req.request.id, ...failure }
+                            : failure,
+                    );
+                }
+                return { type: "stop" };
+            }
+
+            // The provider's text as it arrived: before punctuation trimming, without a continue's prefix. A
+            // `previewPrompt` result is not an answer.
+            let rejection: string | null = null;
+            if (job.kind !== "previewPrompt") {
+                try {
+                    rejection = responseRejection(read.lastChunk[Object.keys(read.lastChunk)[0]] ?? "", requestDb, {
+                        mode: "model",
+                        continue: arg.continueSend,
+                    });
+                } catch (error) {
+                    // A check that cannot run (a banned-script entry that names no script) fails the send, with
+                    // the read's text stored first.
+                    failed = true;
+                    openDeferredRow(read.text);
+                    finalize(read.text, read.seq);
+                    throw error;
+                }
+            }
+            if (rejection === null) {
+                if (deferredRow && !chatNow()) {
+                    // The chat was deleted while the quiet reply streamed: the send is cancelled.
+                    return { type: "stop" };
+                }
+                stream = read;
+                openDeferredRow(read.text, true);
+                break;
+            }
+            rejections += 1;
+            if (!quiet || rejections > requestDb.requestRetrys) {
+                // As a read failure: the final write carries the rejected text (a reroll gets its previous
+                // candidate back), and the send fails without the `risuerror` text of a buffered failure. A
+                // failure of that write is the job's error instead. A quiet read's sequence is 0.
+                failed = true;
+                openDeferredRow(read.text);
+                finalize(read.text, read.seq);
+                throw new GenerationRunnerError(500, rejection, {
+                    stage: "request",
+                    ...(req.request ? { requestId: req.request.id } : {}),
+                });
+            }
+            // The dropped text's token count leaves the progress now; the retry report alone would keep it.
+            job.emit({ type: "outputReset" });
+            setup.check();
+            if (!chatNow()) {
+                return { type: "stop" };
+            }
+            req = await requestReply(true);
         }
 
         // ---- The tail: what `sendChatInner` does after the provider answers, in its order on each
@@ -1444,7 +2203,6 @@ async function runSpeaker(arg: {
         /** The output trigger asked for another send (`sendAIprompt`). */
         let resend = false;
         let replyId: string | undefined;
-        let alternatives: string[] | undefined;
 
         const storedReply = () => {
             const id = generation?.messageId;
@@ -1470,8 +2228,9 @@ async function runSpeaker(arg: {
         /**
          * A callback of the tail. Answered: its value. Null: the hook is not registered, the hook itself
          * failed (logged), or no tab is attached (the Safety Contract: listeners and images of a reply
-         * that completes while its client is away are skipped). A barrier or protocol failure, a
-         * timeout, or an abort ends the job.
+         * that completes while its client is away are skipped; skipped listeners are recorded for the
+         * tab to run late, `done.skipped`). A barrier or protocol failure, a timeout, or an abort ends
+         * the job.
          */
         const tailCallback = async <N extends "chatOutput" | "imggen">(
             name: N,
@@ -1490,6 +2249,11 @@ async function runSpeaker(arg: {
                 case "answered":
                     return { value: outcome.value };
                 case "disconnected":
+                    // Listeners a tab had taken may have run there: only ones nobody took run late.
+                    if (name === "chatOutput") {
+                        const hooks = outcome.delivered ? state.missedHooks : state.skippedHooks;
+                        hooks.push({ name, payload: payload as CallbackPayloads["chatOutput"] });
+                    }
                     return null;
                 case "refused":
                     if (outcome.refusal === "unregistered") {
@@ -1525,6 +2289,7 @@ async function runSpeaker(arg: {
                 generation && !generation.final ? { generation: owned } : {},
             );
             setup.check();
+            noReply ||= !!triggerResult?.noReply;
             if (triggerResult && triggerResult.sendAIprompt) {
                 resend = true;
             }
@@ -1558,89 +2323,22 @@ async function runSpeaker(arg: {
             }
         };
 
-        if (req.type === "streaming") {
-            let messageId: string;
-            let prefix = "";
-            if (generation) {
-                // Continue keeps the message's id and text (read now, after the hooks).
-                messageId = generation.messageId;
-                prefix = prefixOf(messageId);
-            } else {
-                messageId = generationId;
-                writeOwn([
-                    {
-                        op: "append",
-                        messages: [
-                            {
-                                role: "char",
-                                data: "",
-                                saying: currentChar.chaId,
-                                time: Date.now(),
-                                generationInfo,
-                                promptInfo,
-                                chatId: messageId,
-                            },
-                        ],
-                        anchor: { end: true },
-                    },
-                    { op: "begin", id: messageId, generationId },
-                ]);
-                generation = { messageId, generationId, seq: 0, final: false };
-                job.emit({
-                    type: "accepted",
-                    jobId: job.id,
-                    messageId,
-                    generationId,
-                    revision: scope.chatRevision,
-                    text: "",
-                });
-            }
-            const stream = await readReply(job, req.result, {
-                prefix,
-                removeIncompleteResponse: !!db.removeIncompleteResponse,
-                emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
-                checkpoint: (text, seq) => {
-                    generation!.seq += 1;
-                    writeOwn(
-                        [
-                            {
-                                op: "setText",
-                                id: messageId,
-                                text,
-                                generation: { id: generationId, seq: generation!.seq },
-                            },
-                        ],
-                        [{ messageId, generationId, seq }],
-                    );
-                },
-            });
-            if (stream.error !== undefined || job.signal.aborted) {
-                // An abort or a read failure: the final write carries the text so far; nothing after
-                // the stream runs.
-                // A failure of that write is the job's error instead.
-                finalize(stream.text, stream.seq);
-                if (stream.error !== undefined && !job.signal.aborted) {
-                    const failure = stream.failure ?? {};
-                    // A read failure is the request's; a checkpoint's is the write's.
-                    throw new GenerationRunnerError(
-                        500,
-                        stream.error,
-                        failure.stage === "request" && req.request
-                            ? { requestId: req.request.id, ...failure }
-                            : failure,
-                    );
-                }
-                return { type: "stop" };
-            }
+        if (stream && streamTarget) {
+            const { messageId } = streamTarget;
             state.stage = "tail";
             reportStage(job, "finishing");
-            // The completed raw text is stored before any hook runs: a failure in the tail keeps it.
+            // Store completed raw text before hooks; a failed reroll later restores its previous candidate.
             // Every later write of the reply claims the stream's last chunk.
             coverSeq = stream.seq;
             writeReplyText(stream.text);
+            if (rejections > 0) {
+                // The row may still name the model of an answer that was dropped, and the exits that close the
+                // reply before its last generation-info write would keep that name.
+                writeReplyGenerationInfo();
+            }
             result = stream.result;
             replyId = messageId;
-            alternatives = Object.values(stream.lastChunk);
+            samples = Object.values(stream.lastChunk).slice(1);
 
             // `editoutput` once, on the completed text (per chunk in the tab; the Safety Contract).
             const processed = await scripts.process(owner, stream.text, "editoutput", indexOfMessage(messageId));
@@ -1651,10 +2349,15 @@ async function runSpeaker(arg: {
             runCurrentChatFunction();
             await runOutputTrigger();
             const outputMessage = storedReply();
+            if (noReply) return { type: "stop" };
             if (!outputMessage) {
                 // The trigger removed the reply: the turn ends with the removal.
                 generation!.final = true;
-                return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
+                return {
+                    type: "removed",
+                    ...(memoryTask ? { memoryTask } : {}),
+                    ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
+                };
             }
             const inlay = runInlayScreen(currentChar, outputMessage.data);
             writeReplyText(inlay.text);
@@ -1668,47 +2371,37 @@ async function runSpeaker(arg: {
         } else {
             state.stage = "tail";
             reportStage(job, "finishing");
-            // Non-streaming: the first text is the reply; every text is a reroll alternative.
+            // Non-streaming: the first text is the reply; later samples become text-only candidates.
             const msgs: readonly (readonly ["user" | "char", string])[] =
                 req.type === "success" ? [["char", req.result]] : req.type === "multiline" ? req.result : [];
-            const mrerolls: string[] = [];
             let outputMessageId: string | undefined;
             for (let i = 0; i < msgs.length; i++) {
                 const [role, mess] = msgs[i];
                 // The message a continue extends (locked since the send started).
                 const lastMessage = generation ? storedReply() : chatNow()?.message.at(-1);
-                let result2 = await scripts.process(owner, mess.trim(), "editoutput", chatNow()?.message.length ?? 0);
-                setup.check();
-                if (i === 0 && arg.continueSend) {
-                    result2 = await scripts.process(
-                        owner,
-                        ((lastMessage?.data ?? "") + mess).trim(),
-                        "editoutput",
-                        indexOfMessage(lastMessage?.chatId),
-                    );
-                    setup.check();
-                }
-                if (db.removeIncompleteResponse) {
-                    result2.data = trimUntilPunctuation(result2.data);
-                }
-                result = result2.data;
-                const inlayResult = runInlayScreen(currentChar, result);
-                result = inlayResult.text;
-                emoChanged = result2.emoChanged;
+                // The reply's index for its output scripts: where it is appended, or, after a rejected quiet
+                // stream of a continue or a reroll, that row's own place (other rows may follow it by now).
+                const outputIndex =
+                    i === 0 && rejections > 0 && generation
+                        ? indexOfMessage(generation.messageId)
+                        : (chatNow()?.message.length ?? 0);
+                const rawText = (i === 0 && arg.continueSend ? (lastMessage?.data ?? "") + mess : mess).trim();
+                // Protect the raw reply before hooks, as for streams; later writes update this same generation.
                 if (i === 0 && generation) {
                     if (!lastMessage) {
                         // The message to continue is gone.
                         generation.final = true;
                         return { type: "stop" };
                     }
-                    // Continue keeps the message's id (its metadata replaced, as the client's `replaceMessage`).
+                    // In-place writes preserve the stored row's candidate and display fields.
                     outputMessageId = generation.messageId;
                     writeOwn([
                         {
                             op: "setMessage",
                             message: {
+                                ...structuredClone(storedReply() ?? lastMessage),
                                 role: "char",
-                                data: result,
+                                data: rawText,
                                 saying: currentChar.chaId,
                                 time: Date.now(),
                                 generationInfo,
@@ -1726,7 +2419,7 @@ async function runSpeaker(arg: {
                             messages: [
                                 {
                                     role,
-                                    data: result,
+                                    data: rawText,
                                     saying: currentChar.chaId,
                                     time: Date.now(),
                                     generationInfo,
@@ -1740,9 +2433,29 @@ async function runSpeaker(arg: {
                         { op: "begin", id: outputMessageId, generationId },
                     ]);
                     generation = { messageId: outputMessageId, generationId, seq: 0, final: false };
-                    mrerolls.push(result);
+                }
+                let result2 = await scripts.process(owner, mess.trim(), "editoutput", outputIndex);
+                setup.check();
+                if (i === 0 && arg.continueSend) {
+                    result2 = await scripts.process(
+                        owner,
+                        ((lastMessage?.data ?? "") + mess).trim(),
+                        "editoutput",
+                        indexOfMessage(lastMessage?.chatId),
+                    );
+                    setup.check();
+                }
+                if (db.removeIncompleteResponse) {
+                    result2.data = trimUntilPunctuation(result2.data);
+                }
+                result = result2.data;
+                const inlayResult = runInlayScreen(currentChar, result);
+                result = inlayResult.text;
+                emoChanged = result2.emoChanged;
+                if (i === 0) {
+                    writeReplyText(result);
                 } else {
-                    mrerolls.push(result);
+                    samples.push(result);
                 }
                 // The images of the reply only: an alternative keeps its `[Generating...]` text (the tab
                 // starts their images too and never uses them).
@@ -1757,27 +2470,34 @@ async function runSpeaker(arg: {
                 return { type: "stop" };
             }
             replyId = outputMessageId;
-            if (mrerolls.length > 1) {
-                alternatives = mrerolls;
-            }
 
             runCurrentChatFunction();
             await runOutputTrigger();
+            if (noReply) return { type: "stop" };
             if (!storedReply()) {
                 generation!.final = true;
-                return { type: "removed", ...(memoryTask ? { memoryTask } : {}) };
+                return {
+                    type: "removed",
+                    ...(memoryTask ? { memoryTask } : {}),
+                    ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
+                };
             }
             await runChatOutputListeners(outputMessageId);
         }
 
         // Auto-continue: the reply is closed and the next round continues it.
         let needsAutoContinue = false;
-        const resultTokens = (await services.tokenize(result)) + arg.usedContinueTokens;
+        let resultTokens: number | null = null;
+        try {
+            resultTokens = (await services.tokenize(result)) + arg.usedContinueTokens;
+        } catch (error) {
+            if (!isTokenizerTextRefusal(error)) throw error;
+        }
         setup.check();
-        if (db.autoContinueMinTokens > 0 && resultTokens < db.autoContinueMinTokens) {
+        if (resultTokens !== null && db.autoContinueMinTokens > 0 && resultTokens < db.autoContinueMinTokens) {
             needsAutoContinue = true;
         }
-        if (db.autoContinueChat && !isLastCharPunctuation(result)) {
+        if (resultTokens !== null && db.autoContinueChat && !isLastCharPunctuation(result)) {
             //if result doesn't end with punctuation or special characters, auto continue
             needsAutoContinue = true;
         }
@@ -1795,15 +2515,15 @@ async function runSpeaker(arg: {
             }
             return false;
         };
-        if (needsAutoContinue && roundLeft()) {
+        if (needsAutoContinue && resultTokens !== null && roundLeft()) {
             // The continue takes the reply over as a new generation (a resend this round's trigger
             // asked for is dropped with it, as the tab's recursion drops it).
             finalize();
             return {
                 type: "reply",
                 messageId: replyId,
-                ...(alternatives ? { alternatives } : {}),
                 ...(memoryTask ? { memoryTask } : {}),
+                ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
                 next: { type: "continue", usedContinueTokens: resultTokens },
             };
         }
@@ -1865,8 +2585,8 @@ async function runSpeaker(arg: {
         const reply = (next?: { type: "resend" }): SpeakerResult => ({
             type: "reply",
             messageId: replyId!,
-            ...(alternatives ? { alternatives } : {}),
             ...(memoryTask ? { memoryTask } : {}),
+            ...(memoryVectorWarm ? { memoryVectorWarm } : {}),
             ...(next ? { next } : {}),
         });
 
@@ -1959,6 +2679,7 @@ async function runSpeaker(arg: {
         finalize();
         return reply();
     } catch (error) {
+        failed = true;
         if (error instanceof JobWriteConflictError) {
             throw new GenerationRunnerError(409, "The send's write conflicted with another change", {
                 ...failureOf(error),
@@ -1967,7 +2688,8 @@ async function runSpeaker(arg: {
         }
         throw error;
     } finally {
-        // A generation the send did not close (a continue that failed or stopped) is released as stored.
+        delete scope.rerollHistoryMessageId;
+        // Every unfinished attempt closes while its lock is held, including recovery after a tail failure.
         if (generation && !generation.final) {
             try {
                 finalize();
@@ -1979,19 +2701,23 @@ async function runSpeaker(arg: {
 }
 
 /**
- * Reads a streaming reply to its end, an abort, or a read failure: each chunk's first value
- * (`trimUntilPunctuation` with `removeIncompleteResponse`) after `prefix`, trimmed, is sent as a
- * `chunk`. Text not yet stored is checkpointed `CHECKPOINT_INTERVAL_MS` after the last checkpoint
- * (a timer, so a provider that stalls after a chunk does not hold it back). Returns the text, the
- * newest chunk's sequence, the last chunk, and the read failure (an abort, or a checkpoint that
- * failed, is one).
+ * Reads a streaming reply to its end, an abort, or a read failure: each chunk's first value is passed
+ * to `onRaw` before trimming or adding the continue's prefix. With `removeIncompleteResponse` it is
+ * trimmed by `trimUntilPunctuation`, then combined with `prefix` and trimmed. Unless `quiet`, the text
+ * is sent as a `chunk` and text not yet stored is checkpointed `CHECKPOINT_INTERVAL_MS` after the last
+ * checkpoint (a timer, so a provider that stalls after a chunk does not hold it back). A quiet read
+ * calls neither publication callback, starts no checkpoint timer, and keeps sequence 0; `onRaw` and
+ * the returned text are unchanged. Returns the text, the newest published chunk's sequence, the last
+ * chunk, and the read failure (an abort, or a checkpoint that failed, is one).
  */
 async function readReply(
     job: RunningJob,
     stream: ReadableStream<StreamResponseChunk>,
     options: {
         prefix: string;
+        quiet?: boolean;
         removeIncompleteResponse: boolean;
+        onRaw?: (raw: string) => void;
         emitChunk: (text: string, seq: number) => void;
         checkpoint: (text: string, seq: number) => void;
     },
@@ -2017,38 +2743,44 @@ async function readReply(
         void reader.cancel().catch(() => {});
     };
     job.signal.addEventListener("abort", onAbort, { once: true });
-    const timer = setInterval(
-        () => {
-            if (job.signal.aborted || checkpointError !== null || checkpointed >= seq) {
-                return;
-            }
-            if (Date.now() - lastCheckpoint < CHECKPOINT_INTERVAL_MS) {
-                return;
-            }
-            lastCheckpoint = Date.now();
-            checkpointed = seq;
-            try {
-                options.checkpoint(text, seq);
-            } catch (error) {
-                checkpointError = error;
-                void reader.cancel().catch(() => {});
-            }
-        },
-        Math.min(250, CHECKPOINT_INTERVAL_MS),
-    );
+    const timer = options.quiet
+        ? undefined
+        : setInterval(
+              () => {
+                  if (job.signal.aborted || checkpointError !== null || checkpointed >= seq) {
+                      return;
+                  }
+                  if (Date.now() - lastCheckpoint < CHECKPOINT_INTERVAL_MS) {
+                      return;
+                  }
+                  lastCheckpoint = Date.now();
+                  checkpointed = seq;
+                  try {
+                      options.checkpoint(text, seq);
+                  } catch (error) {
+                      checkpointError = error;
+                      void reader.cancel().catch(() => {});
+                  }
+              },
+              Math.min(250, CHECKPOINT_INTERVAL_MS),
+          );
     try {
         while (!job.signal.aborted && checkpointError === null) {
             const read = await reader.read();
-            if (read.value) {
-                lastChunk = read.value;
+            const chunk = typeof read.value === "string" ? { "0": read.value } : read.value;
+            if (chunk) {
+                lastChunk = chunk;
                 let result = lastChunk[Object.keys(lastChunk)[0]] ?? "";
+                options.onRaw?.(result);
                 if (options.removeIncompleteResponse) {
                     result = trimUntilPunctuation(result);
                 }
                 chunkResult = result;
                 text = (options.prefix + result).trim();
-                seq += 1;
-                options.emitChunk(text, seq);
+                if (!options.quiet) {
+                    seq += 1;
+                    options.emitChunk(text, seq);
+                }
             }
             if (read.done) {
                 break;
@@ -2076,7 +2808,9 @@ async function readReply(
             failure,
         };
     } finally {
-        clearInterval(timer);
+        if (timer !== undefined) {
+            clearInterval(timer);
+        }
         job.signal.removeEventListener("abort", onAbort);
         void reader.cancel().catch(() => {});
     }

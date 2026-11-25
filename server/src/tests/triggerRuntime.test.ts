@@ -1,11 +1,16 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { calcString } from "../../../shared/cbs/calc.ts";
-import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
+import type { Chat, Message, character, groupChat, loreBook } from "../../../shared/database.ts";
 import type { GenerationQuestion } from "../../../shared/jobs.ts";
 import type { RequestArgs } from "../../../shared/llm/request.ts";
 import type { triggerEffect, triggerscript } from "../../../shared/triggers.ts";
-import { type LuaBindingServices, LuaJobFatalError, type LuaWorkingCopy } from "../lua/bindings.ts";
+import {
+    applyGlobalLoreChange,
+    type LuaBindingServices,
+    LuaJobFatalError,
+    type LuaWorkingCopy,
+} from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import {
     createTriggerRuntime,
@@ -24,7 +29,7 @@ import type { HostContext } from "../scripts/workerPool.ts";
 // The server trigger runtime (`server/src/prompt/triggers.ts`), the port of the client's
 // `runTrigger`, over controlled job services, the real regex engine (`runRegexOp`, which the worker
 // runs), and the real command executor for the `/trigger` route. Expected values are derived from
-// the client's effect switch (`src/ts/process/triggers.ts`), not from the port: variables and their
+// the client's effect switch (the former `src/ts/process/triggers.ts`), not from the port: variables and their
 // precedence, the immediate `scriptstate`/note writes (none in display runs), control flow, the
 // manual-name and mode filters, the allowlists and the bare returns, the array, dictionary, string,
 // and calculator effects with the client's fallback values, the evaluation order of an output name
@@ -172,10 +177,15 @@ function harness(options: {
             return true;
         },
         getChatVar: (key) => String(live.scriptstate?.[`$${key}`] ?? "null"),
-        patchCharacter(patch, ctx) {
+        patchCharacter(patch, ctx, lore) {
             fence(ctx);
             if (state.characterGone) {
                 return false;
+            }
+            if (lore) {
+                const globalLore = applyGlobalLoreChange(stored.globalLore, lore);
+                if (!globalLore) return false;
+                patch = { ...patch, globalLore };
             }
             characterPatches.push(structuredClone(patch));
             Object.assign(stored, structuredClone(patch));
@@ -271,6 +281,7 @@ function harness(options: {
             ...arg,
         });
     return {
+        host,
         runtime,
         run,
         live,
@@ -304,6 +315,52 @@ const notice = (h: Harness, kind: string) => h.notices.filter((entry) => entry.k
 
 afterEach(() => {
     vi.restoreAllMocks();
+});
+
+describe("trigger stage chat copies", () => {
+    it("returns null without copying the chat when the character and modules have no triggers", async () => {
+        const h = harness({ triggers: [] });
+        const clone = vi.spyOn(globalThis, "structuredClone");
+
+        for (const mode of ["start", "input", "output", "manual"] as const) {
+            clone.mockClear();
+            const result = await h.runtime.runTrigger(h.stored, mode, { chat: h.live });
+
+            expect(result, mode).toBeNull();
+            expect(
+                clone.mock.calls.filter(([value]) => value === h.live),
+                mode,
+            ).toHaveLength(0);
+        }
+    });
+
+    it("keeps a working chat copy and a non-null result when a character or module trigger exists, even for another stage", async () => {
+        for (const source of ["character", "module"] as const) {
+            const trigger = trig([]);
+            const h = harness({
+                triggers: source === "character" ? [trigger] : [],
+                moduleTriggers: source === "module" ? [trigger] : [],
+            });
+            const clone = vi.spyOn(globalThis, "structuredClone");
+            try {
+                for (const mode of ["start", "input", "output", "manual"] as const) {
+                    clone.mockClear();
+                    const result = await h.runtime.runTrigger(h.stored, mode, { chat: h.live, manualName: "go" });
+                    const label = `${source} trigger, ${mode} stage`;
+
+                    expect(result, label).toMatchObject({ chat: h.live });
+                    expect(
+                        clone.mock.calls.filter(([value]) => value === h.live),
+                        label,
+                    ).toHaveLength(1);
+                    expect(result?.chat, label).not.toBe(h.live);
+                    expect(result?.chat.message[0], label).not.toBe(h.live.message[0]);
+                }
+            } finally {
+                clone.mockRestore();
+            }
+        }
+    });
 });
 
 describe("variables", () => {
@@ -561,6 +618,54 @@ describe("control flow", () => {
         const result = await h.run();
         expect(result?.chat.scriptstate).toEqual({ $n: "3", $k: "2" });
         expect(texts(result?.chat).slice(2)).toEqual(["char:after loops", "char:second trigger"]);
+    });
+
+    it("breaks out of the enclosing loop before a nested loop in its body", async () => {
+        const h = harness({
+            triggers: [
+                trig([
+                    ef("v2LoopNTimes", v("3")),
+                    setVar("outer", "+=", "1", 1),
+                    ef("v2BreakLoop", {}, 1),
+                    ef("v2LoopNTimes", v("2"), 1),
+                    setVar("inner", "+=", "1", 2),
+                    ef("v2EndIndent", { endOfLoop: true }, 2),
+                    setVar("tail", "+=", "1", 1),
+                    ef("v2EndIndent", { endOfLoop: true }, 1),
+                    say("char", "after outer {{getvar::outer}}"),
+                ]),
+            ],
+        });
+
+        const result = await h.run();
+
+        expect(result?.chat.scriptstate).toEqual({ $outer: "1" });
+        expect(texts(result?.chat).slice(2)).toEqual(["char:after outer 1"]);
+    });
+
+    it("breaks out of the enclosing loop from an if before a sibling loop", async () => {
+        const h = harness({
+            triggers: [
+                trig([
+                    ef("v2LoopNTimes", v("3")),
+                    setVar("outer", "+=", "1", 1),
+                    ef("v2If", { condition: "=", source: "outer", target: "1", targetType: "value" }, 1),
+                    ef("v2BreakLoop", {}, 2),
+                    ef("v2EndIndent", {}, 2),
+                    ef("v2LoopNTimes", v("2"), 1),
+                    setVar("inner", "+=", "1", 2),
+                    ef("v2EndIndent", { endOfLoop: true }, 2),
+                    setVar("tail", "+=", "1", 1),
+                    ef("v2EndIndent", { endOfLoop: true }, 1),
+                    say("char", "after outer {{getvar::outer}}"),
+                ]),
+            ],
+        });
+
+        const result = await h.run();
+
+        expect(result?.chat.scriptstate).toEqual({ $outer: "1" });
+        expect(texts(result?.chat).slice(2)).toEqual(["char:after outer 1"]);
     });
 
     it("yields to the event loop every 100 loop iterations without losing count", async () => {
@@ -833,6 +938,82 @@ describe("arrays, dictionaries, strings, and the calculator", () => {
         expect(s.$ignored).toBeUndefined();
     });
 
+    it("stores an extracted value holding a non-finite number as the text a read returns, other values raw", async () => {
+        const get = (name: string, key: string) =>
+            out("v2GetDictVar", name, { var: "d", varType: "var", key, keyType: "value" });
+        const h = harness({
+            triggers: [
+                trig([
+                    // JSON `1e400` parses to Infinity, which the store refuses.
+                    setVar("d", "=", '{"score":1e400,"ok":5,"nest":{"a":[1,-1e400]},"fine":{"a":1}}'),
+                    get("score", "score"),
+                    get("ok", "ok"),
+                    get("nest", "nest"),
+                    get("fine", "fine"),
+                    setVar("a", "=", "[1e400,2]"),
+                    out("v2GetArrayVar", "at0", { var: "a", index: "0", indexType: "value" }),
+                    out("v2GetArrayVar", "at1", { var: "a", index: "1", indexType: "value" }),
+                    setVar("p", "=", "[1,-1e400]"),
+                    out("v2PopArrayVar", "popped", { var: "p" }),
+                    setVar("q", "=", "[1e400,1]"),
+                    out("v2ShiftArrayVar", "shifted", { var: "q" }),
+                ]),
+            ],
+        });
+        const s = (await h.run())?.chat.scriptstate ?? {};
+        expect(s).toMatchObject({
+            $score: "Infinity",
+            $ok: 5,
+            $nest: "[object Object]",
+            $fine: { a: 1 },
+            $at0: "Infinity",
+            $at1: 2,
+            $popped: "-Infinity",
+            $shifted: "Infinity",
+        });
+        // The store's side gets the same values.
+        expect(h.varWrites).toEqual(
+            expect.arrayContaining([
+                ["score", "Infinity"],
+                ["nest", "[object Object]"],
+                ["popped", "-Infinity"],
+                ["shifted", "Infinity"],
+            ]),
+        );
+    });
+
+    it("takes only a finite lorebook insert order: a create defaults to 100 and a modify keeps the previous one", async () => {
+        const lore = (name: string, insertOrder: string, insertOrderType = "value") => ({
+            name,
+            nameType: "value",
+            key: name,
+            keyType: "value",
+            content: name,
+            contentType: "value",
+            insertOrder,
+            insertOrderType,
+        });
+        const h = harness({
+            triggers: [
+                trig([
+                    setVar("order", "=", "1e400"),
+                    ef("v2CreateLorebook", lore("A", "1e400")),
+                    ef("v2CreateLorebook", lore("B", "order", "var")),
+                    ef("v2CreateLorebook", lore("C", "-Infinity")),
+                    ef("v2CreateLorebook", lore("D", "7")),
+                    ef("v2ModifyLorebookByIndex", { index: "3", indexType: "value", ...lore("{{slot}}", "Infinity") }),
+                ]),
+            ],
+        });
+        await h.run();
+        expect(h.stored.globalLore.map((book) => [book.comment, book.insertorder])).toEqual([
+            ["A", 100],
+            ["B", 100],
+            ["C", 100],
+            ["D", 7],
+        ]);
+    });
+
     it("runs the string effects and the calculator with `$var` substitution (an unparsable variable counts 0)", async () => {
         const h = harness({
             triggers: [
@@ -1008,7 +1189,10 @@ describe("the regex sites", () => {
     });
 
     describe("v2ReplaceString", () => {
-        /** The client's replacer (`src/ts/process/triggers.ts` `v2ReplaceString`), the oracle for the worker-based port. */
+        /**
+         * The client's replacer (`v2ReplaceString` of the former `src/ts/process/triggers.ts`), the oracle for the
+         * worker-based port.
+         */
         const clientReplace = (
             source: string,
             pattern: string,
@@ -1116,6 +1300,114 @@ describe("the regex sites", () => {
     });
 });
 
+describe("concurrent lore effects", () => {
+    const entry = (key: string, id?: string): loreBook => ({
+        key,
+        id,
+        comment: key,
+        content: `before-${key}`,
+        mode: "normal",
+        insertorder: 100,
+        alwaysActive: false,
+        secondkey: "",
+        selective: false,
+    });
+    const pause = () => out("v2GetAlertInput", "answer", { display: "pause", displayType: "value" });
+
+    it("preserves another writer's lore edit and reorder while modifying the run's entry by id", async () => {
+        const target = entry("target", "target-id");
+        const other = entry("other", "other-id");
+        const h = harness({
+            char: { globalLore: [target, other] },
+            triggers: [
+                trig([
+                    pause(),
+                    ef("v2ModifyLorebook", { targetType: "value", target: "target", ...v("from-trigger") }),
+                    out("v2GetLorebook", "after", { targetType: "value", target: "target" }),
+                ]),
+            ],
+        });
+        h.answers.push(async () => {
+            h.stored.globalLore = [
+                { ...other, content: "from-other-writer" },
+                { ...target, alwaysActive: true },
+            ];
+            return "continue";
+        });
+        const result = await h.run();
+        expect(h.stored.globalLore).toEqual([
+            { ...other, content: "from-other-writer" },
+            { ...target, content: "from-trigger", alwaysActive: true },
+        ]);
+        expect(result?.chat.scriptstate?.$after).toBe("from-trigger");
+    });
+
+    it("appends a created lore entry to the current array after another writer appends", async () => {
+        const original = entry("original");
+        const concurrent = entry("concurrent", "new-id");
+        const h = harness({
+            char: { globalLore: [original] },
+            triggers: [
+                trig([
+                    pause(),
+                    ef("v2CreateLorebook", {
+                        name: "created",
+                        nameType: "value",
+                        key: "created",
+                        keyType: "value",
+                        content: "from-trigger",
+                        contentType: "value",
+                        insertOrder: "7",
+                        insertOrderType: "value",
+                    }),
+                    out("v2GetLorebookCountNew", "count"),
+                ]),
+            ],
+        });
+        h.answers.push(async () => {
+            h.stored.globalLore = [original, concurrent];
+            return "continue";
+        });
+        const result = await h.run();
+        expect(h.stored.globalLore).toEqual([
+            original,
+            concurrent,
+            {
+                key: "created",
+                comment: "created",
+                content: "from-trigger",
+                mode: "normal",
+                insertorder: 7,
+                alwaysActive: false,
+                secondkey: "",
+                selective: false,
+            },
+        ]);
+        // Later effects see this run's own append, rather than rereading external edits.
+        expect(result?.chat.scriptstate?.$count).toBe("2");
+    });
+
+    it("warns and refuses deletion of a legacy entry changed while the trigger waits", async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const target = entry("legacy");
+        const other = entry("other");
+        const h = harness({
+            char: { globalLore: [target, other] },
+            triggers: [trig([pause(), ef("v2DeleteLorebookByIndex", { index: "0", indexType: "value" })])],
+        });
+        h.answers.push(async () => {
+            h.stored.globalLore = [{ ...target, content: "newer-content" }, other];
+            return "continue";
+        });
+        await h.run();
+        expect(h.stored.globalLore).toEqual([{ ...target, content: "newer-content" }, other]);
+        expect(h.characterPatches).toEqual([]);
+        expect(warn).toHaveBeenCalledExactlyOnceWith(
+            "[Trigger] The character or lore entry is gone or changed; the lore change was not saved",
+        );
+    });
+});
+
 describe("chat, character, persona, and UI effects", () => {
     it("edits the working copy: cut, modify, impersonate, and the message reads", async () => {
         const h = harness({
@@ -1162,6 +1454,55 @@ describe("chat, character, persona, and UI effects", () => {
         for (const fmIndex of [2, 9, -2, undefined]) {
             const h = harness({ triggers: [trig([out("v2GetFirstMessage", "first")])], chat: { fmIndex } });
             expect((await h.run())?.chat.scriptstate, String(fmIndex)).toMatchObject({ $first: "first" });
+        }
+    });
+
+    it("deprecated lore effects read and write object fields without adding numeric properties", async () => {
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        const entries = ["first", "target"].map((key) => ({
+            key,
+            comment: `comment-${key}`,
+            content: `content-${key}`,
+            mode: "normal" as const,
+            insertorder: 5,
+            alwaysActive: false,
+            secondkey: "",
+            selective: false,
+        }));
+        const h = harness({
+            char: { globalLore: entries },
+            triggers: [
+                trig([
+                    out("v2GetLorebook", "before", { targetType: "value", target: "target" }),
+                    ef("v2ModifyLorebook", { targetType: "value", target: "target", ...v("updated") }),
+                    out("v2GetLorebook", "after", { targetType: "value", target: "target" }),
+                    out("v2GetLorebookEntry", "indexed", { indexType: "value", index: "1" }),
+                    out("v2GetLorebookIndexViaName", "index", { nameType: "value", name: "target" }),
+                    ef("v2SetLorebookActivation", { indexType: "var", index: "index", value: true }),
+                    out("v2GetLorebook", "missing", { targetType: "value", target: "missing" }),
+                    out("v2GetLorebookIndexViaName", "missingIndex", { nameType: "value", name: "missing" }),
+                    out("v2GetLorebookEntry", "badIndex", { indexType: "value", index: "8" }),
+                    out("v2GetLorebookEntry", "nanIndex", { indexType: "value", index: "NaN" }),
+                    ...["-1", "1.5", "NaN", "8"].map((index) =>
+                        ef("v2SetLorebookActivation", { indexType: "value", index, value: false }),
+                    ),
+                ]),
+            ],
+        });
+
+        expect((await h.run())?.chat.scriptstate).toMatchObject({
+            $before: "content-target",
+            $after: "updated",
+            $indexed: "updated",
+            $index: "1",
+            $missing: "null",
+            $missingIndex: "-1",
+            $badIndex: "null",
+            $nanIndex: "content-first",
+        });
+        expect(h.stored.globalLore).toEqual([entries[0], { ...entries[1], content: "updated", alwaysActive: true }]);
+        for (const entry of h.stored.globalLore) {
+            for (const key of ["0", "1", "2"]) expect(Object.hasOwn(entry, key)).toBe(false);
         }
     });
 
@@ -1398,6 +1739,75 @@ describe("chat, character, persona, and UI effects", () => {
         expect(h.trace.filter((entry) => entry.startsWith("tokens:"))).toEqual(["tokens:S\n\n", "tokens:PE\n\n"]);
     });
 
+    it.each([
+        { name: "granted contributors", parentAccess: true, childAccess: true, prefix: "", remoteAccess: true },
+        { name: "ungranted child", parentAccess: true, childAccess: false, prefix: "", remoteAccess: false },
+        { name: "ungranted parent", parentAccess: false, childAccess: true, prefix: "", remoteAccess: false },
+        { name: "unknown origin", parentAccess: true, childAccess: true, prefix: "outside\n\n", remoteAccess: false },
+    ])(
+        "keeps mixed or unknown system-prompt provenance local across nested runs ($name)",
+        async ({ parentAccess, childAccess, prefix, remoteAccess }) => {
+            const h = harness({
+                char: { lowLevelAccess: parentAccess },
+                triggers: [
+                    trig([
+                        ef("v2SystemPrompt", { location: "start", ...v("parent") }),
+                        ef("v2RunTrigger", { target: "child" }),
+                        ef("v2SystemPrompt", { location: "promptend", ...v("separate") }),
+                    ]),
+                ],
+                moduleTriggers: [
+                    trig([ef("v2SystemPrompt", { location: "start", ...v("child") })], {
+                        comment: "child",
+                        lowLevelAccess: childAccess,
+                    }),
+                ],
+            });
+            const counts = vi.spyOn(h.services, "tokenize");
+            const result = await h.run("manual", {
+                additonalSysPrompt: { start: prefix, historyend: "", promptend: "" },
+            });
+
+            const start = `${prefix}parent\n\nchild\n\n`;
+            expect(result?.additonalSysPrompt).toEqual({ start, historyend: "", promptend: "separate\n\n" });
+            expect(result?.tokens).toBe(start.length + "separate\n\n".length);
+            // Both the nested and outer counts must retain every contributor's permission.
+            expect(counts.mock.calls.filter(([text]) => text === start)).toEqual([
+                [start, remoteAccess],
+                [start, remoteAccess],
+            ]);
+            expect(counts).toHaveBeenCalledWith("separate\n\n", parentAccess);
+            expect(counts).toHaveBeenCalledTimes(3);
+        },
+    );
+
+    it.each(["{{setvar::x::1}}", "{{return::/echo example}}"])(
+        "continues past a literal /multisend without evaluating %s or dispatching it",
+        async (argument) => {
+            const line = `/multisend ${argument}`;
+            const h = harness({ triggers: [trig([ef("v2Command", v(line)), setVar("next", "=", "ran")])] });
+            const result = await h.run();
+            expect(h.trace).not.toContain(`parse:${line}`);
+            expect(h.commands).toEqual([]);
+            expect(result?.chat.scriptstate).toEqual({ $next: "ran" });
+        },
+    );
+
+    it("resolves a variable command and evaluates a pipeline before dispatching their retired segments", async () => {
+        const h = harness({
+            chat: { scriptstate: { $line: "/multisend from variable" } },
+            cbs: { key: "line", first: "a", last: "b" },
+            triggers: [
+                trig([
+                    ef("v2Command", { valueType: "var", value: "{{key}}" }),
+                    ef("v2Command", v("/echo {{first}}|/multisend {{last}}")),
+                ]),
+            ],
+        });
+        await h.run();
+        expect(h.commands).toEqual(["/multisend from variable", "/echo a|/multisend b"]);
+    });
+
     it("runs v2Command with the CBS'd line through the job's executor and v2Wait as an abortable sleep", async () => {
         const h = harness({
             triggers: [
@@ -1514,7 +1924,6 @@ describe("recursion and the effect limit", () => {
                 runManualTrigger: async (name) => {
                     await h.runtime.runTrigger(h.stored, "manual", { chat: structuredClone(h.live), manualName: name });
                 },
-                multisend: () => {},
             });
             h.state.command = (line) => executor.processMultiCommand(line);
             await expect(h.run()).rejects.toThrow(`more than ${MAX_TRIGGER_EFFECTS} trigger effects`);
@@ -1628,6 +2037,45 @@ describe("the fences", () => {
 });
 
 describe("the run's character copy", () => {
+    it("returns null without copying the character or observing patches when neither character nor modules have triggers", async () => {
+        const h = harness({ triggers: [], moduleTriggers: [] });
+        const clone = vi.spyOn(globalThis, "structuredClone");
+        const observe = vi.spyOn(h.host, "observeCharacterPatches");
+
+        const result = await h.runtime.runTrigger(h.stored, "display", {
+            chat: h.live,
+            displayMode: true,
+            displayData: "hello",
+        });
+
+        expect(result).toBeNull();
+        expect(clone).not.toHaveBeenCalled();
+        expect(observe).not.toHaveBeenCalled();
+    });
+
+    it("copies the character and observes patches with one character or module trigger", async () => {
+        const clone = vi.spyOn(globalThis, "structuredClone");
+        for (const source of ["character", "module"] as const) {
+            const trigger = trig([], { type: "display" });
+            const h = harness({
+                triggers: source === "character" ? [trigger] : [],
+                moduleTriggers: source === "module" ? [trigger] : [],
+            });
+            const observe = vi.spyOn(h.host, "observeCharacterPatches");
+            clone.mockClear();
+
+            const result = await h.runtime.runTrigger(h.stored, "display", {
+                chat: h.live,
+                displayMode: true,
+                displayData: "hello",
+            });
+
+            expect(result?.displayData, source).toBe("hello");
+            expect(clone, source).toHaveBeenCalledWith(expect.objectContaining({ chaId: "c", desc: "d0" }));
+            expect(observe, source).toHaveBeenCalledExactlyOnceWith(expect.any(Function));
+        }
+    });
+
     it("shares the asset lists with the source and copies every other field, so the run's edits leave the source alone", async () => {
         const additionalAssets: [string, string, string][] = [["a", "assets/a.png", "png"]];
         const emotionImages: [string, string][] = [["happy", "assets/happy.png"]];

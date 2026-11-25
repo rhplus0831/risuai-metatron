@@ -3,24 +3,31 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
-import type { MessageTranslation } from "../../../shared/database.ts";
-import type { BatchConflict } from "../../../shared/resources.ts";
+import type { Message, MessageTranslation } from "../../../shared/database.ts";
+import { mergeHypaV2Write } from "../../../shared/memory.ts";
+import { MAX_OOC_EXCHANGES, oocPrune, type OocExchange } from "../../../shared/ooc.ts";
+import { MAX_FEED_PATCH_BYTES, type BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import { createCheckpointService } from "../data/checkpointService.ts";
 import { CHAT_TABLES_SQL, MAX_CHAT_GROUP_IDS, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
     createResourceStore,
     nextRevision,
     ResourceBatchConflictError,
+    type MessagesChanged,
     type ResourceStore,
+    type WrittenChanges,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
 const characters = kinds.get("characters")!;
@@ -51,8 +58,8 @@ function tempDir() {
     dirs.push(dir);
     return dir;
 }
-function fileStore(dir: string, name = "live.sqlite") {
-    const store = createResourceStore({ file: path.join(dir, name), kinds });
+function fileStore(dir: string, name = "live.sqlite", feed?: ReturnType<typeof createChangeFeed>) {
+    const store = createResourceStore({ file: path.join(dir, name), kinds, feed });
     stores.push(store);
     return store;
 }
@@ -115,6 +122,39 @@ function seed(store: ResourceStore) {
         character: result.results[0].revision!,
     };
 }
+
+it("opens a pre-trash database and keeps plugin trashedAt metadata separate across edits and replacement", () => {
+    const dir = tempDir();
+    const original = fileStore(dir);
+    const { chat: revision } = seed(original);
+    original.close();
+    const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+    try {
+        db.exec("ALTER TABLE chats DROP COLUMN trashedAt");
+    } finally {
+        db.close();
+    }
+
+    const store = fileStore(dir);
+    const migrated = new DatabaseSync(path.join(dir, "live.sqlite"), { readOnly: true });
+    try {
+        expect(migrated.prepare("PRAGMA table_info(chats)").all()).toContainEqual(
+            expect.objectContaining({ name: "trashedAt", type: "INTEGER", notnull: 0 }),
+        );
+    } finally {
+        migrated.close();
+    }
+    expect(chat(store, "k")).toMatchObject({ revision, trashedAt: null, data: { name: "K" } });
+    store.applyChanges({ chats: [group("k", revision, [{ op: "meta", set: { trashedAt: 41 } }])] });
+    const edited = chat(store, "k")!;
+    expect(edited).toMatchObject({ trashedAt: null, data: { trashedAt: 41 } });
+    const replacement = { ...edited.data, trashedAt: 73 };
+    store.applyChanges({ chats: [group("k", edited.revision, [{ op: "replace", chat: replacement }])] });
+    expect(chat(store, "k")).toMatchObject({ trashedAt: null, data: { trashedAt: 73 } });
+    expect(
+        store.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0].chats[0],
+    ).not.toHaveProperty("trashedAt");
+});
 
 describe("creating characters and chats", () => {
     it("creates a character with its initial chats and order in one batch, normalizing message ids", () => {
@@ -253,7 +293,7 @@ describe("atomicity and cascades", () => {
         expect(snapshotState(store)).toBe(before);
         expect(store.writeCount()).toBe(writes);
 
-        // A stale chat delete: the valid character write is rolled back; the order and chat conflicts are all listed.
+        // A stale chat replace: the valid character write is rolled back; the order and chat conflicts are all listed.
         expect(
             conflictsOf(() =>
                 store.applyChanges({
@@ -261,7 +301,7 @@ describe("atomicity and cascades", () => {
                         { kind: characters, id: "c", baseRevision: tokens.character, data: { chaId: "c", name: "x" } },
                     ],
                     chats: [
-                        group("k", bumped(tokens.chat, -1), [{ op: "delete" }]),
+                        group("k", bumped(tokens.chat, -1), [{ op: "replace", chat: { message: [] } as never }]),
                         group("other", null, [{ op: "create", chat: {} as never }]),
                     ],
                     chatOrders: [order(bumped(tokens.order, 1), ["k"])],
@@ -388,7 +428,7 @@ describe("atomicity and cascades", () => {
 });
 
 describe("revision rules", () => {
-    it("applies by-id ops on a stale revision when the target exists, and needs the current one for delete, replace, and multi-id remove", () => {
+    it("applies by-id ops on a stale revision when the target exists, needs the current one for replace and multi-id remove, and refuses delete at any revision", () => {
         const store = memoryStore();
         const tokens = seed(store);
         const stale = tokens.chat;
@@ -416,8 +456,11 @@ describe("revision rules", () => {
 
         const writes = store.writeCount();
         const state = snapshotState(store);
+        // A delete group is refused whatever its revision: deletion goes through the trash.
+        expect(conflictsOf(() => store.applyChanges({ chats: [group("k", stale, [{ op: "delete" }])] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: current, reason: "useTrash" },
+        ]);
         for (const ops of [
-            [{ op: "delete" }],
             [{ op: "replace", chat: { message: [] } }],
             [{ op: "remove", ids: ["a", "b"] }],
             // A group mixing a tolerant op with a destructive one is judged as a whole.
@@ -505,20 +548,29 @@ describe("revision rules", () => {
             fmIndex: -1,
             message: [m("z", "Z"), { ...m("z", "Z2"), chatId: replaced.messageIds![1] }],
         });
-        const deleted = store.applyChanges({ chats: [group("k", replaced.revision!, [{ op: "delete" }])] });
-        expect(deleted.chats).toEqual([{ characterId: "c", id: "k", revision: null }]);
-        expect(deleted.chatOrders).toEqual([{ characterId: "c", revision: expect.any(String), ids: [] }]);
+        // A delete on the current revision is refused too, and changes nothing.
+        const replacedState = snapshotState(store);
+        expect(
+            conflictsOf(() => store.applyChanges({ chats: [group("k", replaced.revision!, [{ op: "delete" }])] })),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: replaced.revision, reason: "useTrash" }]);
+        expect(snapshotState(store)).toBe(replacedState);
+        // The trash deletes it, which needs another active chat of the character.
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         expect(chat(store, "k")).toBeNull();
+        expect(orderOf(store)!.ids).toEqual(["j"]);
     });
 
     it("rejects tokens of another incarnation or epoch, even for stale-tolerant ops", () => {
         const store = memoryStore();
         const tokens = seed(store);
-        store.applyChanges({ chats: [group("k", tokens.chat, [{ op: "delete" }])] });
+        // A sibling (seq 2) keeps the character an active chat while k goes through the trash.
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         const recreated = store.applyChanges({
             chats: [group("k", null, [{ op: "create", chat: { message: [m("a")] } as never }])],
         }).chats[0].revision!;
-        expect(recreated).toMatch(/:2:1$/);
+        expect(recreated).toMatch(/:3:1$/);
         expect(tokens.chat).toMatch(/:1:1$/);
         const otherEpoch = recreated.replace(/^[0-9a-f-]{36}/, "00000000-0000-4000-8000-000000000000");
         for (const token of [tokens.chat, otherEpoch, "garbage", "", `${recreated}:1`]) {
@@ -571,7 +623,8 @@ describe("revision rules", () => {
         expect(snapshotState(store)).toBe(state);
         expect(chat(store, "k3")).toBeNull();
 
-        // A stale delete with its dependent reorder is a 409 naming the chat, not a permutation error.
+        // A stale delete (refused: deletion goes through the trash) with its dependent reorder is a 409
+        // naming the chat, not a permutation error.
         const kRevision = chat(store, "k")!.revision;
         store.applyChanges({ chats: [group("k", kRevision, [{ op: "meta", set: { note: "moved on" } }])] });
         expect(
@@ -581,7 +634,7 @@ describe("revision rules", () => {
                     chatOrders: [order(committed, ["k2"])],
                 }),
             ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: bumped(kRevision, 1) }]);
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: bumped(kRevision, 1), reason: "useTrash" }]);
         // The same with a stale resource op instead.
         expect(
             conflictsOf(() =>
@@ -606,6 +659,83 @@ describe("revision rules", () => {
         expect(conflictsOf(() => store.applyChanges({ chatOrders: [order(committed, ["k2", "k"])] }))).toEqual([
             { kind: "chatOrder", characterId: "c", revision: bumped(committed, 1) },
         ]);
+    });
+});
+
+describe("memory evidence changes", () => {
+    function setup(message: Message) {
+        const store = memoryStore();
+        store.applyChanges({
+            ops: [
+                createCharacter("c", {
+                    type: "group",
+                    characters: ["member-a", "member-b"],
+                    characterTalks: [1, 1],
+                    characterActive: [true, true],
+                }),
+            ],
+            chats: [group("k", null, [{ op: "create", chat: { name: "Group", message: [message] } } as ChatOp])],
+        });
+        const notices: MessagesChanged[] = [];
+        store.onMessagesChanged((notice) => notices.push(notice));
+        return { store, notices };
+    }
+
+    it("reports speaker-only setMessage and patchMessage writes by a person as rewrites", () => {
+        for (const op of ["setMessage", "patchMessage"] as const) {
+            const original = { ...m("b", "B", "char"), saying: "member-a" };
+            const { store, notices } = setup(original);
+            const changed = { ...original, saying: "member-b" };
+            const edit: ChatOp =
+                op === "setMessage" ? { op, message: changed } : { op, id: "b", set: { saying: "member-b" } };
+            store.applyChanges({ chats: [group("k", chat(store, "k")!.revision, [edit])] });
+
+            expect(chat(store, "k")!.data.message, op).toEqual([changed]);
+            expect(notices, op).toEqual([
+                {
+                    epoch: store.epoch(),
+                    characterId: "c",
+                    id: "k",
+                    rewritten: ["b"],
+                    retracted: [],
+                    speakerChanged: ["b"],
+                },
+            ]);
+        }
+    });
+
+    it("emits no rewrite notice when setMessage or patchMessage changes an absent speaker to empty", () => {
+        for (const op of ["setMessage", "patchMessage"] as const) {
+            const original = m("b", "B", "char");
+            const { store, notices } = setup(original);
+            const changed = { ...original, saying: "" };
+            const edit: ChatOp = op === "setMessage" ? { op, message: changed } : { op, id: "b", set: { saying: "" } };
+            store.applyChanges({ chats: [group("k", chat(store, "k")!.revision, [edit])] });
+
+            expect(chat(store, "k")!.data.message, op).toEqual([changed]);
+            expect(notices, op).toEqual([]);
+        }
+    });
+
+    it("reports a person's markup-only data write as a rewrite: memory filters it by stored hash version", () => {
+        const block = '<div class="am-illustration-projection"><img src="{{raw::한민재.__am__.chat.e6470a96}}"></div>';
+        for (const op of ["setMessage", "patchMessage", "setText"] as const) {
+            const original = m("b", "He opened the door.\n\nThe hall was dark.", "char");
+            const data = `He opened the door.\n\n${block}\n\nThe hall was dark.`;
+            const edit: ChatOp =
+                op === "setMessage"
+                    ? { op, message: { ...original, data } }
+                    : op === "patchMessage"
+                      ? { op, id: "b", set: { data } }
+                      : { op, id: "b", text: data };
+            const { store, notices } = setup(original);
+            store.applyChanges({ chats: [group("k", chat(store, "k")!.revision, [edit])] });
+
+            expect(chat(store, "k")!.data.message[0].data, op).toBe(data);
+            expect(notices, op).toEqual([
+                { epoch: store.epoch(), characterId: "c", id: "k", rewritten: ["b"], retracted: [] },
+            ]);
+        }
     });
 });
 
@@ -787,6 +917,9 @@ describe("patchMessage", () => {
                 characterId: "c",
                 id: "k",
                 revision: patched.revision,
+                trashedAt: null,
+                // No message has a time and the metadata is untouched: the summary is the stored base's.
+                summaryBase: storedBase,
                 patch: {
                     baseRevision: storedBase,
                     count: 3,
@@ -803,6 +936,8 @@ describe("patchMessage", () => {
                 characterId: "c",
                 id: "k",
                 revision: same.revision,
+                trashedAt: null,
+                summaryBase: patched.revision,
                 patch: { baseRevision: patched.revision, count: 3 },
             },
         ]);
@@ -995,8 +1130,14 @@ describe("idempotent replay", () => {
         expect(conflictsOf(() => store.applyChanges(replaceBatch))).toEqual([
             { kind: "chat", characterId: "c", id: "n", revision: replaced },
         ]);
+        // A delete group is refused (deletion goes through the trash); once the trash deleted the chat,
+        // the same group conflicts as gone.
         const deleteBatch = { chats: [group("n", replaced, [{ op: "delete" }] as ChatOp[])] };
-        store.applyChanges(deleteBatch);
+        expect(conflictsOf(() => store.applyChanges(deleteBatch))).toEqual([
+            { kind: "chat", characterId: "c", id: "n", revision: replaced, reason: "useTrash" },
+        ]);
+        expect(chat(store, "n")!.revision).toBe(replaced);
+        deleteChatThroughTrash(store, "c", "n");
         expect(conflictsOf(() => store.applyChanges(deleteBatch))).toEqual([
             { kind: "chat", characterId: "c", id: "n", revision: null },
         ]);
@@ -1293,7 +1434,7 @@ describe("revision counters", () => {
             `UPDATE chats SET revision = ${limit} WHERE id = 'k'; UPDATE chatOrders SET revision = ${limit}; UPDATE resources SET revision = ${limit};`,
         );
         db.close();
-        store.replaceAll(store.readSnapshot(path.join(dir, "snapshot.sqlite")));
+        await installSnapshot(store, path.join(dir, "snapshot.sqlite"), kinds);
         const state = snapshotState(store);
         const writes = store.writeCount();
         const k = chat(store, "k")!.revision;
@@ -1328,14 +1469,10 @@ describe("revision counters", () => {
                 chats: [group("k", k, [{ op: "setText", id: "a", text: "x", generation: { id: "g", seq: 1 } }])],
             }).chats[0].revision,
         ).toBe(k);
-        // The order counter: a chat create, a chat delete, and a reorder all bump it (the first two
-        // fail inside a group's op, the reorder outside any group).
+        // The order counter: a chat create and a reorder both bump it (the create fails inside a
+        // group's op, the reorder outside any group); a permanent deletion is checked below.
         rejects(
             () => store.applyChanges({ chats: [group("k3", null, [{ op: "create", chat: {} as never }])] }),
-            `chats[0].ops[0]: ${exhausted}`,
-        );
-        rejects(
-            () => store.applyChanges({ chats: [group("k2", k2, [{ op: "delete" }])] }),
             `chats[0].ops[0]: ${exhausted}`,
         );
         rejects(() => store.applyChanges({ chatOrders: [order(orderToken, ["k2", "k"])] }), exhausted);
@@ -1359,10 +1496,108 @@ describe("revision counters", () => {
             reopened.applyChanges({ chats: [group("k2", k2, [{ op: "meta", set: { note: "ok" } }])] }).chats[0]
                 .revision,
         ).toBe(bumped(k2, 1));
+        // A permanent deletion bumps the order counter too: it is refused and rolled back, leaving the
+        // chat in the trash.
+        const trashed = reopened.changeChatTrash(
+            "trash",
+            { characterId: "c", chatId: "k2", revision: bumped(k2, 1) },
+            reopened.epoch(),
+            () => false,
+        );
+        if ("error" in trashed) throw new Error(JSON.stringify(trashed));
+        const trashedState = snapshotState(reopened);
+        const trashedWrites = reopened.writeCount();
+        rejects(
+            () =>
+                reopened.changeChatTrash(
+                    "delete",
+                    { characterId: "c", chatId: "k2", revision: trashed.revision },
+                    reopened.epoch(),
+                    () => false,
+                ),
+            exhausted,
+        );
+        expect(snapshotState(reopened)).toBe(trashedState);
+        expect(reopened.writeCount()).toBe(trashedWrites);
+        expect(reopened.chatTrashState("c", "k2")).toEqual({
+            revision: trashed.revision,
+            trashedAt: trashed.trashedAt,
+        });
+        expect(orderOf(reopened)).toEqual({ characterId: "c", revision: orderToken, ids: ["k", "k2"] });
     });
 });
 
 describe("snapshots", () => {
+    it("reports the stored message count after membership changes, rollback, recreation and snapshot restore", async () => {
+        const dir = tempDir();
+        const feed = createChangeFeed();
+        const events: Extract<ChangeFeedEvent, { type: "change" }>[] = [];
+        feed.subscribe((event) => {
+            if (event.type === "change") events.push(event);
+        });
+        const store = fileStore(dir, "live.sqlite", feed);
+        seed(store);
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        const write = (ops: ChatOp[]) => store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] });
+        let edit = 0;
+        const check = (ops: ChatOp[], expectedIds: string[]) => {
+            for (const changes of [true, false]) {
+                let written: WrittenChanges | undefined;
+                store.applyChanges(
+                    {
+                        chats: [
+                            group("k", store.chatRevision("c", "k"), [
+                                ...(changes ? ops : []),
+                                // Replacing the whole text keeps the feed on its row-manifest path.
+                                {
+                                    op: "setText",
+                                    id: expectedIds[0],
+                                    text: String(++edit % 2).repeat(MAX_FEED_PATCH_BYTES + 1),
+                                },
+                            ]),
+                        ],
+                    },
+                    {
+                        changes,
+                        committed: (_applied, change) => {
+                            written = change;
+                            return [];
+                        },
+                    },
+                );
+                expect(messageIds(store, "k")).toEqual(expectedIds);
+                if (changes) expect(written?.chats[0]?.count).toBe(expectedIds.length);
+                expect(events.at(-1)?.changes.chats[0].rows?.count).toBe(expectedIds.length);
+            }
+        };
+
+        check([], ["a", "b", "c"]);
+        check([{ op: "append", anchor: { end: true }, messages: [m("d")] }], ["a", "b", "c", "d"]);
+        check([{ op: "append", anchor: { after: "a" }, messages: [m("x")] }], ["a", "x", "b", "c", "d"]);
+        check([{ op: "remove", ids: ["b", "c"] }], ["a", "x", "d"]);
+        expect(() =>
+            store.applyChanges({
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "append", anchor: { end: true }, messages: [m("rolled-back")] },
+                    ]),
+                    group("missing", store.chatRevision("c", "k"), [{ op: "delete" }]),
+                ],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        check([], ["a", "x", "d"]);
+        write([{ op: "replace", chat: { message: [m("z")] } as never }]);
+        check([], ["z"]);
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
+        expect(chat(store, "k")).toBeNull();
+        write([{ op: "create", chat: { message: [m("r"), m("s")] } as never }]);
+        check([], ["r", "s"]);
+        await installSnapshot(store, snapshot, kinds);
+        check([], ["a", "b", "c"]);
+    });
+
     /** A live store with a character, two chats (one fenced), and a second character; returns a snapshot path. */
     async function snapshotOf(dir: string, store: ResourceStore, name = "snapshot.sqlite") {
         const file = path.join(dir, name);
@@ -1414,7 +1649,10 @@ describe("snapshots", () => {
 
     it("reads back every chat table, validated and with positions compacted, and restores it under a new epoch with fences intact", async () => {
         const dir = tempDir();
-        const store = fileStore(dir);
+        const feed = createChangeFeed();
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        const store = fileStore(dir, "live.sqlite", feed);
         populate(store);
         const file = await snapshotOf(dir, store);
         const validated = store.readSnapshot(file);
@@ -1485,7 +1723,7 @@ describe("snapshots", () => {
         const oldEpoch = store.epoch();
         const oldToken = chat(store, "n", "d")!.revision;
         const writes = store.writeCount();
-        const epoch = store.replaceAll(validated);
+        const epoch = await installSnapshot(store, file, kinds);
         expect(epoch).not.toBe(oldEpoch);
         expect(store.writeCount()).toBe(writes + 1);
         const read = store.readKinds([characters], { chats: true });
@@ -1537,15 +1775,21 @@ describe("snapshots", () => {
             store.readSnapshot(await snapshotOf(dir, store, "after.sqlite")).messages.map((x) => x.position),
         ).toEqual([0, 1, 2, 3, 4, 0]);
 
-        // A failing restore (a duplicate message id) rolls back every table, the epoch, and the write count.
+        // A failing restore (its late copy fails) rolls back every table, the epoch, and the write
+        // count, and publishes nothing. The snapshot differs from the live state, so a kept copy shows.
+        const failing = await stageSnapshot(file, kinds);
         const state = snapshotState(store);
+        const summaries = store.readKinds([], { chatSummaries: true }).chatSummaries;
         const count = store.writeCount();
-        expect(() =>
-            store.replaceAll({ ...validated, messages: [...validated.messages, validated.messages[0]] }),
-        ).toThrow("UNIQUE constraint failed");
+        events.length = 0;
+        expect(() => withFailingInstallCopy(() => store.replaceAll(failing.file, failing.report))).toThrow(
+            INJECTED_COPY_FAILURE,
+        );
         expect(store.epoch()).toBe(epoch);
         expect(store.writeCount()).toBe(count);
         expect(snapshotState(store)).toBe(state);
+        expect(store.readKinds([], { chatSummaries: true }).chatSummaries).toEqual(summaries);
+        expect(events).toEqual([]);
     });
 
     it("compacts crafted positions so inserts stay correct, and refuses a crafted order seq", async () => {
@@ -1565,7 +1809,7 @@ describe("snapshots", () => {
             ["c", 2],
             ["x", 0],
         ]);
-        store.replaceAll(validated);
+        await installSnapshot(store, crafted, kinds);
         expect(messageIds(store, "k")).toEqual(["a", "b", "c"]);
         const k = chat(store, "k")!.revision;
         store.applyChanges({
@@ -1581,7 +1825,7 @@ describe("snapshots", () => {
         expect(store.readSnapshot(again).messages.map((x) => x.position)).toEqual([0, 1, 2, 3, 4, 0]);
         // A position at the limit is compacted too, so the next append cannot overflow.
         const atLimit = tamper(file, `UPDATE messages SET position = ${Number.MAX_SAFE_INTEGER} WHERE id = 'c'`);
-        store.replaceAll(store.readSnapshot(atLimit));
+        await installSnapshot(store, atLimit, kinds);
         const k2 = chat(store, "k")!.revision;
         store.applyChanges({ chats: [group("k", k2, [{ op: "append", messages: [m("e")], anchor: { end: true } }])] });
         expect(messageIds(store, "k")).toEqual(["a", "b", "c", "e"]);
@@ -1659,7 +1903,12 @@ describe("snapshots", () => {
                 `UPDATE messages SET data = '{"role":"user","data":"X","chatId":"y"}' WHERE id = 'x'`,
                 "message row 4: message.chatId must equal the row id",
             ],
-            ["message not JSON", "UPDATE messages SET data = 'nope' WHERE id = 'x'", "message row 4: data is not JSON"],
+            // Only a file without the role index can hold such a row; the index parses `data` on every write.
+            [
+                "message not JSON",
+                "DROP INDEX messages_role; UPDATE messages SET data = 'nope' WHERE id = 'x'",
+                "message row 4: data is not JSON",
+            ],
             [
                 "message bad role",
                 `UPDATE messages SET data = '{"role":"system","data":"X","chatId":"x"}' WHERE id = 'x'`,
@@ -1754,9 +2003,9 @@ describe("snapshots", () => {
         const loose = tamper(
             file,
             `CREATE TABLE chats2 AS SELECT * FROM chats; DROP TABLE chats;
-             CREATE TABLE chats (seq INTEGER, characterId TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, meta TEXT NOT NULL);
+             CREATE TABLE chats (seq INTEGER, characterId TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, meta TEXT NOT NULL, trashedAt INTEGER);
              INSERT INTO chats SELECT * FROM chats2; DROP TABLE chats2;
-             INSERT INTO chats VALUES (3, 'c', 'k', 1, 1, '{}');`,
+             INSERT INTO chats VALUES (3, 'c', 'k', 1, 1, '{}', NULL);`,
         );
         rejects(() => store.readSnapshot(loose), "chat row 3: duplicate chat");
         // A non-integer position needs a table without STRICT.
@@ -1824,7 +2073,431 @@ describe("per-chat toggle metadata", () => {
     });
 });
 
+describe("job memory writes", () => {
+    function openMemoryStore(file = ":memory:") {
+        const guard = createGenerationLock();
+        guard.addToken("memory-job");
+        return createResourceStore({ file, kinds, guard });
+    }
+
+    const hypaMemory = (...chunks: string[]) => ({
+        lastMainChunkID: chunks.length,
+        chunks: chunks.map((text, index) => ({ mainChunkID: index + 1, text })),
+        mainChunks: chunks.map((text, index) => {
+            const messageId = index === 0 ? "a" : "b";
+            return { id: index + 1, text, chatMemos: [messageId], lastChatMemo: messageId };
+        }),
+    });
+
+    it("identifies refused operations and memory fields in a mixed group and replays the same receipt", () => {
+        const store = openMemoryStore();
+        stores.push(store);
+        const question = (id: string): OocExchange => ({
+            id,
+            segment: "s",
+            anchorMessageId: "a",
+            question: "Why?",
+            time: 1,
+        });
+        const answer = (id: string, text: string) => ({ ...question(id), answer: text });
+        const complete = (id: string): ChatOp => ({
+            op: "meta",
+            ifOocUnanswered: id,
+            merge: { oocLog: { [id]: answer(id, `Recovered ${id}`) } },
+        });
+        const base = store.applyChanges({
+            chats: [
+                group("k", seed(store).chat, [
+                    {
+                        op: "meta",
+                        merge: { oocLog: { q: answer("q", "First Q"), r: question("r"), s: answer("s", "First S") } },
+                    },
+                ]),
+            ],
+        }).chats[0].revision;
+        store.applyChanges(
+            { chats: [group("k", base, [{ op: "meta", set: { supaMemoryData: "Job summary" } }])] },
+            { jobToken: "memory-job" },
+        );
+        const independentMemory = hypaMemory("Recovered chunk");
+        const mixed = {
+            ...group("k", base, [
+                complete("q"),
+                {
+                    op: "meta",
+                    set: { supaMemoryData: "Older summary", hypaV2Data: independentMemory, note: "Recovered note" },
+                },
+                complete("r"),
+                complete("s"),
+            ]),
+            groupId: "mixed-recovery-edit",
+        };
+        const receipt = store.applyChanges({ chats: [mixed] }).chats[0];
+
+        expect(receipt).toMatchObject({
+            refusedMeta: [{ index: 0 }, { index: 1, memoryFields: ["supaMemoryData"] }, { index: 3 }],
+            memoryRefused: true,
+            oocAnswerRefusals: ["answered"],
+        });
+        expect(chat(store, "k")!.data).toMatchObject({
+            supaMemoryData: "Job summary",
+            hypaV2Data: independentMemory,
+            note: "Recovered note",
+            oocLog: { q: answer("q", "First Q"), r: answer("r", "Recovered r"), s: answer("s", "First S") },
+        });
+        store.applyChanges({ chats: [group("k", receipt.revision, [{ op: "meta", set: { note: "Newer note" } }])] });
+        expect(store.applyChanges({ chats: [{ ...mixed, retry: true }] }).chats[0]).toEqual(receipt);
+        expect(chat(store, "k")!.data.note).toBe("Newer note");
+    });
+
+    it("refuses only stale fields written by a job and remembers the refusal on replay", () => {
+        const store = openMemoryStore();
+        stores.push(store);
+        const base = seed(store).chat;
+        const generated = hypaMemory("Job chunk");
+        const job = store.applyChanges(
+            { chats: [group("k", base, [{ op: "meta", set: { hypaV2Data: generated } }])] },
+            { jobToken: "memory-job" },
+        ).chats[0];
+        const stale = {
+            ...group("k", base, [
+                {
+                    op: "meta",
+                    set: {
+                        hypaV2Data: hypaMemory("Stale chunk"),
+                        supaMemoryData: "Independent summary",
+                        note: "Same op",
+                    },
+                },
+                { op: "meta", set: { name: "Next op" } },
+            ]),
+            groupId: "mixed-memory-edit",
+        };
+        const receipt = store.applyChanges({ chats: [stale] }).chats[0];
+        expect(receipt).toMatchObject({ stale: true, memoryRefused: true, revision: bumped(job.revision!, 2) });
+        expect(chat(store, "k")!.data).toMatchObject({
+            hypaV2Data: generated,
+            supaMemoryData: "Independent summary",
+            note: "Same op",
+            name: "Next op",
+        });
+        expect(store.applyChanges({ chats: [{ ...stale, retry: true }] }).chats[0]).toEqual(receipt);
+
+        // The HypaV2 base is current for this field even though the chat has newer sibling edits.
+        const fresh = hypaMemory("Fresh chunk edit");
+        expect(
+            store.applyChanges({ chats: [group("k", job.revision, [{ op: "meta", set: { hypaV2Data: fresh } }])] })
+                .chats[0].memoryRefused,
+        ).toBeUndefined();
+        const summary = store.applyChanges(
+            { chats: [group("k", base, [{ op: "meta", set: { supaMemoryData: "Job summary" } }])] },
+            { jobToken: "memory-job" },
+        ).chats[0];
+        const refused = store.applyChanges({ chats: [group("k", base, [{ op: "meta", unset: ["supaMemoryData"] }])] })
+            .chats[0];
+        expect(refused).toMatchObject({ memoryRefused: true, revision: summary.revision });
+        expect(chat(store, "k")!.data).toMatchObject({ hypaV2Data: fresh, supaMemoryData: "Job summary" });
+    });
+
+    it("preserves a retained HypaV2 chunk edit when the job writes memory second", () => {
+        const store = openMemoryStore();
+        stores.push(store);
+        const original = hypaMemory("Original chunk");
+        const base = store.applyChanges({
+            chats: [group("k", seed(store).chat, [{ op: "meta", set: { hypaV2Data: original } }])],
+        }).chats[0].revision;
+        const corrected = hypaMemory("Corrected chunk");
+        store.applyChanges({
+            chats: [
+                group("k", base, [{ op: "meta", set: { hypaV2Data: corrected, supaMemoryData: "Manual summary" } }]),
+            ],
+        });
+
+        const merged = mergeHypaV2Write(
+            original,
+            hypaMemory("Original chunk", "New chunk"),
+            chat(store, "k")!.data.hypaV2Data,
+        );
+        expect(merged).not.toBeNull();
+        expect(
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", base, [
+                            { op: "meta", set: { hypaV2Data: merged!, supaMemoryData: "Computed summary" } },
+                        ]),
+                    ],
+                },
+                { jobToken: "memory-job" },
+            ).chats[0].memoryRefused,
+        ).toBeUndefined();
+        expect(chat(store, "k")!.data).toMatchObject({
+            hypaV2Data: hypaMemory("Corrected chunk", "New chunk"),
+            supaMemoryData: "Computed summary",
+        });
+    });
+
+    it("opens a pre-stamp database and preserves refusal boundaries across restart, rollback, and restore", async () => {
+        const dir = tempDir();
+        const file = path.join(dir, "memory.sqlite");
+        const old = openMemoryStore(file);
+        const base = seed(old).chat;
+        old.close();
+        const legacy = new DatabaseSync(file);
+        legacy.exec("DROP TABLE IF EXISTS chatMemoryWrites");
+        legacy.close();
+
+        const set = (supaMemoryData: string): ChatOp => ({ op: "meta", set: { supaMemoryData } });
+        const manual = openMemoryStore(file);
+        let beforeJob: string;
+        try {
+            manual.applyChanges({ chats: [group("k", base, [{ op: "meta", set: { note: "Newer note" } }])] });
+            beforeJob = manual.applyChanges({ chats: [group("k", base, [set("Legacy edit")])] }).chats[0].revision!;
+            expect(chat(manual, "k")!.data.supaMemoryData).toBe("Legacy edit");
+            manual.applyChanges({ chats: [group("k", beforeJob, [set("Job summary")])] }, { jobToken: "memory-job" });
+        } finally {
+            manual.close();
+        }
+        const store = openMemoryStore(file);
+        stores.push(store);
+        const current = () => chat(store, "k")!.revision;
+        expect(
+            store.applyChanges({ chats: [group("k", beforeJob, [set("Stale after restart")])] }).chats[0],
+        ).toMatchObject({ memoryRefused: true, revision: current() });
+
+        const jobRevision = current();
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", jobRevision, [set("Rolled back")]),
+                        group("absent", jobRevision, [set("Absent")]),
+                    ],
+                },
+                { jobToken: "memory-job" },
+            ),
+        ).toThrow(ResourceBatchConflictError);
+        store.applyChanges({ chats: [group("k", jobRevision, [{ op: "meta", set: { note: "Later note" } }])] });
+        store.applyChanges({ chats: [group("k", jobRevision, [set("Fresh after rollback")])] });
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after rollback");
+
+        const checkpoint = store.checkpoints.save("c", "k", "Before next job", "manual")!;
+        const beforeRestore = current();
+        store.applyChanges(
+            { chats: [group("k", beforeRestore, [set("New job summary")])] },
+            { jobToken: "memory-job" },
+        );
+        const checkpoints = createCheckpointService({ store, busy: () => false, memoryTasks: null });
+        expect(
+            checkpoints.load({
+                epoch: store.epoch(),
+                body: { characterId: "c", chatId: "k", id: checkpoint.id, chatBaseRevision: current() },
+            }).status,
+        ).toBe(200);
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after rollback");
+        expect(() =>
+            store.applyChanges({ chats: [group("k", beforeRestore, [set("Before checkpoint restore")])] }),
+        ).toThrow(ResourceBatchConflictError);
+
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        await installSnapshot(store, snapshot, kinds);
+        const restored = current();
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after rollback");
+        store.applyChanges({ chats: [group("k", restored, [{ op: "meta", set: { note: "After restore" } }])] });
+        store.applyChanges({ chats: [group("k", restored, [set("Fresh after restore")])] });
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after restore");
+
+        store.applyChanges(
+            { chats: [group("k", current(), [set("Job summary before deletion")])] },
+            { jobToken: "memory-job" },
+        );
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
+        const recreated = store.applyChanges({
+            chats: [group("k", null, [{ op: "create", chat: { id: "k", message: [] } as never }])],
+        }).chats[0].revision!;
+        expect(() => store.applyChanges({ chats: [group("k", restored, [set("Previous incarnation")])] })).toThrow(
+            ResourceBatchConflictError,
+        );
+        store.applyChanges({ chats: [group("k", recreated, [{ op: "meta", set: { note: "Recreated chat" } }])] });
+        store.applyChanges({ chats: [group("k", recreated, [set("Fresh incarnation")])] });
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh incarnation");
+    });
+});
+
 describe("meta merge", () => {
+    it("merges an OOC exchange on an older revision while keeping another device's exchange", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        const first = {
+            id: "first",
+            segment: "s",
+            anchorMessageId: "a",
+            question: "Why?",
+            answer: "Because.",
+            time: 1,
+        };
+        const second = { id: "second", segment: "s", anchorMessageId: "a", question: "How?", time: 2 };
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { oocLog: { first } } }])],
+        });
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { oocLog: { second } } }])],
+        });
+        expect(chat(store, "k")!.data.oocLog).toEqual({ first, second });
+        expect(chat(store, "k")!.data.message).toEqual([m("a", "A"), m("b", "B"), m("c", "C")]);
+    });
+
+    describe("conditional OOC answers", () => {
+        const question: OocExchange = { id: "q", segment: "s", anchorMessageId: null, question: "Why?", time: 1 };
+        const complete = (answer: string): Extract<ChatOp, { op: "meta" }> => ({
+            op: "meta",
+            ifOocUnanswered: question.id,
+            merge: { oocLog: { q: { ...question, answer } } },
+        });
+
+        it("validates a single matching answered exchange before changing the chat", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            const valid = complete("");
+            const bad = [
+                { ...valid, ifOocUnanswered: {} },
+                { ...valid, ifOocUnanswered: "another" },
+                { ...valid, merge: { oocLog: { q: question } } },
+                { ...valid, merge: { oocLog: { q: { ...question, answer: "", time: "invalid" } } } },
+                { ...valid, set: { note: "Independent edit" } },
+                { ...valid, mergeUnset: { oocLog: ["another"] } },
+                {
+                    ...valid,
+                    merge: { oocLog: { q: { ...question, answer: "" }, r: { ...question, id: "r", answer: "" } } },
+                },
+                { ...valid, merge: { scriptstate: { q: "Wrong map" } } },
+            ];
+            const before = chat(store, "k");
+            for (const invalid of bad) {
+                expect(() =>
+                    store.applyChanges({
+                        chats: [
+                            {
+                                ...group("k", base, [{ op: "meta", set: { note: "Rolled back" } }]),
+                                ops: [{ op: "meta", set: { note: "Rolled back" } }, invalid],
+                            },
+                        ],
+                    }),
+                ).toThrow(/ifOocUnanswered/);
+                expect(chat(store, "k")).toEqual(before);
+            }
+        });
+
+        it("keeps an empty winning answer, remembers a refusal, and leaves a removed exchange absent", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            store.applyChanges({ chats: [group("k", base, [{ op: "meta", merge: { oocLog: { q: question } } }])] });
+            const won = store.applyChanges({ chats: [group("k", base, [complete("")])] }).chats[0].revision!;
+            const losing = {
+                ...group("k", base, [complete("Late answer"), { op: "meta", set: { note: "Sibling note" } }]),
+                groupId: "losing-answer",
+            };
+            const refused = store.applyChanges({ chats: [losing] }).chats[0];
+            expect(refused).toMatchObject({ revision: bumped(won, 1), oocAnswerRefusals: ["answered"] });
+            expect(store.applyChanges({ chats: [{ ...losing, retry: true }] }).chats[0]).toEqual(refused);
+            expect(chat(store, "k")!.data).toMatchObject({
+                oocLog: { q: { ...question, answer: "" } },
+                note: "Sibling note",
+            });
+
+            const oldTab = { ...question, answer: "Unconditional legacy write" };
+            store.applyChanges({
+                chats: [group("k", refused.revision, [{ op: "meta", merge: { oocLog: { q: oldTab } } }])],
+            });
+            expect(chat(store, "k")!.data.oocLog?.q).toEqual(oldTab);
+            const deleted = store.applyChanges({
+                chats: [group("k", base, [{ op: "meta", mergeUnset: { oocLog: ["q"] } }])],
+            }).chats[0].revision;
+            expect(
+                store.applyChanges({ chats: [group("k", deleted, [complete("Late answer")])] }).chats[0],
+            ).toMatchObject({ revision: deleted, oocAnswerRefusals: ["missing"] });
+            expect(chat(store, "k")!.data.oocLog).toEqual({});
+        });
+
+        it("completes a question after pruning a full log and leaves unrelated operations eligible", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            const earlier = Array.from({ length: MAX_OOC_EXCHANGES }, (_, index) => {
+                const id = `earlier-${index}`;
+                return { ...question, id, segment: "earlier", question: id, time: index, answer: "Saved" };
+            });
+            const full = Object.fromEntries(earlier.map((exchange) => [exchange.id, exchange]));
+            const remove = oocPrune(full, { id: question.segment, anchorMessageId: null }, ["earlier-0"])!;
+            expect(remove).toEqual(["earlier-1"]);
+            store.applyChanges({
+                chats: [
+                    group("k", base, [
+                        { op: "meta", set: { oocLog: full } },
+                        { op: "meta", merge: { oocLog: { q: question } }, mergeUnset: { oocLog: remove } },
+                        complete("New answer"),
+                    ]),
+                ],
+            });
+            const extraCondition = { op: "setText", id: "a", text: "Edited message", ifOocUnanswered: "q" };
+            store.applyChanges({ chats: [{ ...group("k", base, []), ops: [extraCondition] }] });
+            const { oocLog } = chat(store, "k")!.data;
+            expect(Object.keys(oocLog!)).toHaveLength(MAX_OOC_EXCHANGES);
+            expect(oocLog!["earlier-0"]).toEqual(earlier[0]);
+            expect(oocLog!["earlier-1"]).toBeUndefined();
+            expect(oocLog!.q).toEqual({ ...question, answer: "New answer" });
+            expect(text(store, "k", "a")).toBe("Edited message");
+        });
+
+        it("accepts only a full exchange match for recovery and leaves its revision unchanged", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            const winner = { ...question, answer: "", attached: ["earlier-a", "earlier-b"] };
+            const revision = store.applyChanges({
+                chats: [group("k", base, [{ op: "meta", merge: { oocLog: { q: winner } } }])],
+            }).chats[0].revision;
+            const reconcile = (exchange: OocExchange, recovery = true) =>
+                store.applyChanges({
+                    chats: [
+                        group("k", revision, [
+                            {
+                                ...complete(""),
+                                merge: { oocLog: { q: exchange } },
+                                ...(recovery ? { acceptMatchingOocExchange: true } : {}),
+                            },
+                        ]),
+                    ],
+                }).chats[0];
+            const reordered = {
+                answer: "",
+                attached: winner.attached,
+                time: winner.time,
+                question: winner.question,
+                anchorMessageId: winner.anchorMessageId,
+                segment: winner.segment,
+                id: winner.id,
+            };
+            expect(reconcile(reordered)).toMatchObject({ revision });
+            expect(reconcile(reordered).oocAnswerRefusals).toBeUndefined();
+            for (const different of [
+                { ...winner, question: "Different question" },
+                { ...winner, time: 2 },
+                { ...winner, segment: "another" },
+                { ...winner, anchorMessageId: "a" },
+                { ...winner, attached: [...winner.attached].reverse() },
+            ]) {
+                expect(reconcile(different)).toMatchObject({ revision, oocAnswerRefusals: ["answered"] });
+            }
+            expect(reconcile(winner, false)).toMatchObject({ revision, oocAnswerRefusals: ["answered"] });
+            expect(chat(store, "k")).toMatchObject({ revision, data: { oocLog: { q: winner } } });
+            const invalid = { op: "meta", merge: { oocLog: { q: winner } }, acceptMatchingOocExchange: true };
+            expect(() => store.applyChanges({ chats: [{ ...group("k", revision, []), ops: [invalid] }] })).toThrow(
+                /ifOocUnanswered/,
+            );
+        });
+    });
+
     const record = (id: string, text = id) => ({
         call: { id, name: "t", arg: {} },
         response: [{ type: "text", text }],
@@ -1932,6 +2605,31 @@ describe("meta mergeUnset and scriptstate merge", () => {
     });
     const meta = (store: ResourceStore) => chat(store, "k")!.data as unknown as Record<string, unknown>;
     const current = (store: ResourceStore) => chat(store, "k")!.revision!;
+
+    it("edits a note without comparing 100 variables when no reroll attempt is active", () => {
+        const store = memoryStore();
+        const variables = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`$v${i}`, `value-${i}`]));
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [group("k", null, [{ op: "create", chat: { scriptstate: variables, message: [] } as never }])],
+        });
+        const values = new Set(Object.values(variables));
+        const revision = current(store);
+        const stringify = vi.spyOn(JSON, "stringify");
+        let variableSerializations = 0;
+        try {
+            store.applyChanges({ chats: [group("k", revision, [{ op: "meta", set: { note: "Edited" } }])] });
+            // Storage validation also uses a function replacer, but on whole records. Only
+            // variable comparisons serialize these individual values during this note edit.
+            variableSerializations = stringify.mock.calls.filter(
+                ([value, replacer]) => typeof replacer === "function" && typeof value === "string" && values.has(value),
+            ).length;
+        } finally {
+            stringify.mockRestore();
+        }
+        expect(variableSerializations).toBe(0);
+        expect(meta(store)).toMatchObject({ note: "Edited", scriptstate: variables });
+    });
 
     it("keeps both writers' scriptstate keys, removes one key and keeps the rest on an older revision, adds an id named in both halves, and leaves a non-map field alone for removals", () => {
         const store = memoryStore();
@@ -2056,6 +2754,9 @@ describe("meta mergeUnset and scriptstate merge", () => {
                 characterId: "c",
                 id: "k",
                 revision: removed.revision,
+                trashedAt: null,
+                // `scriptstate` is outside the summary: unchanged since the stored base.
+                summaryBase: storedBase,
                 patch: {
                     baseRevision: storedBase,
                     count: 3,
@@ -2437,6 +3138,9 @@ describe("missing targets", () => {
                 characterId: "c",
                 id: "k",
                 revision: result.revision,
+                trashedAt: null,
+                // Neither the old last row nor the appended one has a time: the summary is the actual base's.
+                summaryBase: current,
                 patch: {
                     baseRevision: current,
                     count: 3,
@@ -2479,7 +3183,9 @@ describe("missing targets", () => {
         expect(store.writeCount()).toBe(writes);
         // Published at the unchanged revision without a patch (as a replayed append is): a client
         // holding that revision ignores it.
-        expect(events.at(-1)!.changes.chats).toEqual([{ characterId: "c", id: "k", revision: current }]);
+        expect(events.at(-1)!.changes.chats).toEqual([
+            { characterId: "c", id: "k", revision: current, trashedAt: null },
+        ]);
     });
 
     it("still rolls the whole group back for an append after a gone anchor, a multi-id remove with a gone id, and a begin of a gone message", () => {
@@ -2552,6 +3258,48 @@ describe("group idempotency ids", () => {
             db.close();
         }
     }
+
+    it("answers remembered edits and expired retries before refusing writes to a trashed chat", () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
+        onTestFinished(() => {
+            vi.useRealTimers();
+        });
+        const { store, events, base } = setup();
+        store.applyChanges({
+            chats: [
+                group("spare", null, [{ op: "create", chat: { name: "Spare", note: "", localLore: [], message: [] } }]),
+            ],
+        });
+        const first = identified("k", base, [note("first")], "first");
+        let revision = store.applyChanges({ chats: [first] }).chats[0].revision!;
+        // Fill the receipt window with newer edits so the first retry really did land and expire.
+        for (let i = 1; i < MAX_CHAT_GROUP_IDS; i++) {
+            revision = store.applyChanges({ chats: [identified("k", revision, [note(String(i))], String(i))] }).chats[0]
+                .revision!;
+        }
+        const last = identified("k", revision, [note("last")], "last");
+        const applied = store.applyChanges({ chats: [last] }).chats[0];
+        const marked = store.changeChatTrash(
+            "trash",
+            { characterId: "c", chatId: "k", revision: applied.revision! },
+            store.epoch(),
+            () => false,
+        );
+        expect(marked).not.toHaveProperty("error");
+        const writes = store.writeCount();
+        events.length = 0;
+        expect(store.applyChanges({ chats: [{ ...last, retry: true }] }).chats).toEqual([applied]);
+        // A receipt is keyed by group id and takes precedence even over the legacy delete refusal.
+        expect(store.applyChanges({ chats: [{ ...last, ops: [{ op: "delete" }], retry: true }] }).chats).toEqual([
+            applied,
+        ]);
+        expect(conflictsOf(() => store.applyChanges({ chats: [{ ...first, retry: true }] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: marked.revision, reason: "expired" },
+        ]);
+        expect(chat(store, "k")).toMatchObject({ revision: marked.revision, data: { note: "last" } });
+        expect(store.writeCount()).toBe(writes);
+        expect(events).toEqual([]);
+    });
 
     it("answers a replayed id with the earlier result and changes nothing: another writer's later edit stays, the revision and write count stay, and the feed carries nothing new", () => {
         const { store, events, base } = setup();
@@ -2792,7 +3540,7 @@ describe("group idempotency ids", () => {
         await store.backupTo(snapshot);
         expect(rememberedIds(snapshot).map((row) => row.groupId)).toEqual(["g6"]);
         store.applyChanges({ chats: [identified("k", first.revision!, [note("after the backup")], "g7")] });
-        store.replaceAll(store.readSnapshot(snapshot));
+        await installSnapshot(store, snapshot, kinds);
         store.close();
         expect(rememberedIds(file)).toEqual([]);
         store = createResourceStore({ file, kinds });
@@ -2805,7 +3553,7 @@ describe("group idempotency ids", () => {
         olderDb.close();
         const restoredBase = chat(store, "k")!.revision;
         store.applyChanges({ chats: [identified("k", restoredBase, [note("before the older restore")], "g8")] });
-        store.replaceAll(store.readSnapshot(older));
+        await installSnapshot(store, older, kinds);
         expect(chat(store, "k")!.data.note).toBe("");
         // Deleting the chat drops its ids with it (another incarnation under the id remembers none):
         // the old group's base names the old incarnation, so it conflicts instead of applying.
@@ -2815,7 +3563,8 @@ describe("group idempotency ids", () => {
         expect(rememberedIds(file).map((row) => row.groupId)).toEqual(["g9"]);
         store = createResourceStore({ file, kinds });
         const deleted = chat(store, "k")!.revision;
-        store.applyChanges({ chats: [identified("k", deleted, [{ op: "delete" }], "g10")] });
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         store.close();
         expect(rememberedIds(file)).toEqual([]);
         store = createResourceStore({ file, kinds });
@@ -2860,5 +3609,1031 @@ describe("group idempotency ids", () => {
         expect(
             store.applyChanges({ chats: [identified("k", base, [note("x")], "x".repeat(128))] }).chats[0].revision,
         ).toBe(bumped(base, 1));
+    });
+});
+
+describe("last-message activity", () => {
+    it("reads the final message by position after append, insert, setMessage, patchMessage, remove and replace, also from a fresh store", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    {
+                        op: "create",
+                        chat: {
+                            id: "k",
+                            name: "K",
+                            message: [
+                                { ...m("a"), time: 900 },
+                                { ...m("b"), time: 100 },
+                            ],
+                        } as never,
+                    },
+                ]),
+            ],
+        });
+        const check = (expected: number | undefined) => {
+            const read = (source: ResourceStore) => [
+                source.chatSummary("c", "k")!,
+                source.readKinds([], { chatSummaries: true }).chatSummaries![0],
+                source.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0].chats[0],
+            ];
+            const summaries = read(store);
+            for (const summary of summaries) {
+                if (expected === undefined) expect(summary).not.toHaveProperty("lastMessageAt");
+                else expect(summary.lastMessageAt).toBe(expected);
+            }
+            const fresh = createResourceStore({ file: path.join(dir, "live.sqlite"), kinds });
+            try {
+                expect(read(fresh)).toEqual(summaries);
+            } finally {
+                fresh.close();
+            }
+        };
+        const apply = (op: ChatOp, expected: number | undefined) => {
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), [op])] });
+            check(expected);
+        };
+        check(100); // The earlier message has the largest time.
+        apply({ op: "append", anchor: { end: true }, messages: [{ ...m("c"), time: 300 }] }, 300);
+        apply({ op: "append", anchor: { after: "c" }, messages: [{ ...m("d"), time: 200 }] }, 200);
+        apply({ op: "append", anchor: { start: true }, messages: [{ ...m("first"), time: 1000 }] }, 200);
+        apply({ op: "setMessage", message: { ...m("d"), time: 50 } }, 50);
+        apply({ op: "patchMessage", id: "d", set: { time: 75 } }, 75);
+        apply({ op: "remove", ids: ["d"] }, 300);
+        apply(
+            {
+                op: "replace",
+                chat: { id: "k", name: "K", message: [{ ...m("older"), time: 800 }, m("undated")] } as never,
+            },
+            undefined,
+        );
+        // Missing and nonnumeric last-message times never search backward for a date.
+        for (const time of ["900", null]) {
+            apply({ op: "setMessage", message: { ...m("undated"), time } as never }, undefined);
+        }
+        apply({ op: "setMessage", message: { ...m("undated"), time: 0 } }, 0);
+        apply({ op: "remove", ids: ["older", "undated"] }, undefined);
+        apply({ op: "append", anchor: { end: true }, messages: [{ ...m("again"), time: 150 }] }, 150);
+    });
+
+    it("does not retain activity read inside a transaction that rolls back, even when a metadata commit reuses its revision", () => {
+        const store = memoryStore();
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { id: "k", name: "K", message: [{ ...m("a"), time: 100 }] } as never },
+                ]),
+            ],
+        });
+        const before = store.chatSummary("c", "k")!;
+        expect(before.lastMessageAt).toBe(100);
+        let rolledBackRevision: string | undefined;
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", before.revision, [
+                            { op: "append", anchor: { end: true }, messages: [{ ...m("b"), time: 400 }] },
+                        ]),
+                    ],
+                },
+                {
+                    inTransaction: {
+                        after: () => {
+                            const provisional = store.chatSummary("c", "k")!;
+                            expect(provisional.lastMessageAt).toBe(400);
+                            rolledBackRevision = provisional.revision;
+                            throw new Error("roll back the reply");
+                        },
+                    },
+                },
+            ),
+        ).toThrow("roll back the reply");
+        expect(messageIds(store, "k")).toEqual(["a"]);
+        store.applyChanges({ chats: [group("k", before.revision, [{ op: "meta", set: { name: "Renamed" } }])] });
+        expect(store.chatSummary("c", "k")).toMatchObject({
+            revision: rolledBackRevision,
+            name: "Renamed",
+            lastMessageAt: 100,
+        });
+        expect(store.readKinds([], { chatSummaries: true }).chatSummaries![0].lastMessageAt).toBe(100);
+    });
+});
+
+describe("summary reads in transactions", () => {
+    it("answers stale metadata without repairing it or disturbing the enclosing rollback", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { id: "k", name: "Before", note: "", localLore: [], message: [m("a")] } },
+                ]),
+            ],
+        });
+        const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+        try {
+            const old = db.prepare("SELECT * FROM chatSummaries").all();
+            db.exec("UPDATE chats SET revision = revision + 1, meta = json_set(meta, '$.name', 'Current')");
+            // A failed derived write may roll SQLite's whole transaction back. A summary read
+            // must not attempt it, or subsequent batch writes could escape into autocommit.
+            db.exec(`CREATE TRIGGER refuse_summary_repair BEFORE INSERT ON chatSummaries
+                BEGIN SELECT RAISE(ROLLBACK, 'summary repair aborted the transaction'); END`);
+            const revision = store.chatRevision("c", "k")!;
+            expect(() =>
+                store.applyChanges(
+                    {
+                        chats: [group("k", revision, [{ op: "append", anchor: { end: true }, messages: [m("b")] }])],
+                    },
+                    {
+                        inTransaction: {
+                            before(tx) {
+                                expect(store.chatSummary("c", "k")).toMatchObject({ name: "Current", revision });
+                                tx.writePolicy("c", "k", { autoEvery: 2, autoKeep: 3, lastAutoTurns: null });
+                            },
+                            after() {
+                                throw new Error("roll back the batch");
+                            },
+                        },
+                    },
+                ),
+            ).toThrow("roll back the batch");
+            expect(store.chatRevision("c", "k")).toBe(revision);
+            expect(messageIds(store, "k")).toEqual(["a"]);
+            expect(store.checkpoints.readPolicy("c", "k")).toBeNull();
+            expect(db.prepare("SELECT * FROM chatSummaries").all()).toEqual(old);
+            db.exec("DROP TRIGGER refuse_summary_repair");
+            expect(store.chatSummary("c", "k")).toMatchObject({ name: "Current", revision });
+            expect(
+                db
+                    .prepare(
+                        "SELECT s.revision = c.revision AS fresh FROM chatSummaries s JOIN chats c ON c.seq = s.chatSeq",
+                    )
+                    .get(),
+            ).toEqual({ fresh: 1 });
+        } finally {
+            db.close();
+        }
+    });
+});
+
+describe("persisted reply candidates", () => {
+    const candidates = [
+        { id: "first", data: "First", scriptstateAfter: { $x: "1" } },
+        { id: "second", data: "Second", scriptstateAfter: { $x: "2" } },
+    ];
+    const checkpoint = { before: { $x: "0" }, after: { $x: "2" } };
+    const reply = () => ({ ...m("r", "Second", "char"), candidates, selected: 1, scriptstateCheckpoint: checkpoint });
+    const init = (store: ResourceStore) =>
+        store.applyChanges({
+            ops: [createCharacter("c")],
+            chats: [
+                group("k", null, [
+                    { op: "create", chat: { name: "K", note: "", localLore: [], message: [m("u", "q"), reply()] } },
+                ]),
+            ],
+        });
+    const row = (store: ResourceStore) => chat(store, "k")!.data.message.find((entry) => entry.chatId === "r")!;
+    const write = (store: ResourceStore, ops: ChatOp[]) =>
+        store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] });
+
+    const select = (candidateId: string, candidatesRevision: number, messageId = "r"): ChatOp => ({
+        op: "selectCandidate",
+        messageId,
+        candidateId,
+        expect: { candidatesRevision },
+    });
+
+    /** Observe real SQLite reads, including how far a lazy iterator is consumed. */
+    function watchCandidateReads() {
+        const carrier = { calls: 0, ids: [] as string[] };
+        const cleanup = { calls: 0, ids: [] as string[], plans: [] as string[][], indexRows: [] as number[] };
+        const prepare = DatabaseSync.prototype.prepare;
+        const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql) {
+            const statement = prepare.call(this, sql);
+            const isCarrier = /FROM messages\b/.test(sql) && /AS role\b/.test(sql) && /AS isComment\b/.test(sql);
+            const isCleanup = /^SELECT id, data FROM messages\b/.test(sql) && sql.includes("scriptstateCheckpoint");
+            if (!isCarrier && !isCleanup) return statement;
+            const reads = isCarrier ? carrier : cleanup;
+            const start = (args: unknown[]) => {
+                reads.calls++;
+                if (isCleanup) {
+                    const explain = prepare.call(this, `EXPLAIN QUERY PLAN ${sql}`);
+                    const plan = Reflect.apply(explain.all, explain, args) as ReturnType<typeof explain.all>;
+                    cleanup.plans.push(plan.map((row) => String(row.detail)));
+                    const index = prepare
+                        .call(
+                            this,
+                            "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'messages_checkpoints'",
+                        )
+                        .get();
+                    const predicate = String(index?.sql).split(/\bWHERE\b/i)[1];
+                    // Count the actual partial index entries, independently of the cleanup filter.
+                    // An empty index plus its query plan proves that SQLite reads no message row.
+                    const count = predicate
+                        ? prepare
+                              .call(
+                                  this,
+                                  `SELECT COUNT(*) AS n FROM messages INDEXED BY messages_checkpoints
+                            WHERE chatSeq = ? AND (${predicate})`,
+                              )
+                              .get(Number(args[0]))!.n
+                        : -1;
+                    cleanup.indexRows.push(Number(count));
+                }
+            };
+            const record = (row: ReturnType<typeof statement.get>) => {
+                if (row) reads.ids.push(String(isCarrier ? row.chatId : row.id));
+            };
+            const { all, get, iterate } = statement;
+            statement.all = function (...args) {
+                start(args);
+                const rows = Reflect.apply(all, this, args) as ReturnType<typeof all>;
+                rows.forEach(record);
+                return rows;
+            };
+            statement.get = function (...args) {
+                start(args);
+                const row = Reflect.apply(get, this, args) as ReturnType<typeof get>;
+                record(row);
+                return row;
+            };
+            statement.iterate = function* (...args) {
+                start(args);
+                for (const row of Reflect.apply(iterate, this, args) as ReturnType<typeof iterate>) {
+                    record(row);
+                    yield row;
+                }
+                return undefined;
+            };
+            return statement;
+        });
+        return { carrier, cleanup, restore: () => spy.mockRestore() };
+    }
+
+    const expectIndexedCleanup = ({ plans }: ReturnType<typeof watchCandidateReads>["cleanup"]) => {
+        expect(plans.length).toBeGreaterThan(0);
+        for (const plan of plans) {
+            // One indexed search, with no correlated json_tree/json_each candidate traversal. When
+            // it returns no rows below, the empty checkpoint index needs no message-row reads.
+            expect(plan).toEqual([expect.stringMatching(/SEARCH messages USING INDEX messages_checkpoints\b/)]);
+        }
+    };
+
+    it.each([0, 500])(
+        "reads two carrier rows and no cleanup rows or candidate arrays in a 1,000-message chat with %i candidate lists",
+        (candidateLists) => {
+            const observed = watchCandidateReads();
+            try {
+                const store = memoryStore();
+                const texts = [
+                    { id: "first", data: "First" },
+                    { id: "second", data: "Second" },
+                ];
+                const messages = Array.from({ length: 1_000 }, (_, index) => ({
+                    ...m(`m${index}`, index % 2 ? "Second" : "Question", index % 2 ? "char" : "user"),
+                    ...(candidateLists && index % 2 ? { candidates: texts, selected: 1 } : {}),
+                }));
+                store.applyChanges({
+                    ops: [createCharacter("c")],
+                    chats: [
+                        group("k", null, [
+                            { op: "create", chat: { name: "K", note: "", localLore: [], message: messages } },
+                        ]),
+                    ],
+                });
+                const selected = write(store, [select("first", candidateLists ? 1 : 0, "m999")]);
+                expect(selected.chats[0].selections).toEqual([candidateLists ? "applied" : "refused"]);
+                expect(observed.carrier.calls).toBe(1);
+                expect(observed.carrier.ids).toHaveLength(2);
+                expect(observed.carrier.ids).toEqual(["m999", "m998"]);
+
+                write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "Next question")] }]);
+                expect(observed.cleanup.calls).toBe(1);
+                expectIndexedCleanup(observed.cleanup);
+                expect(observed.cleanup.ids).toEqual([]);
+                expect(observed.cleanup.indexRows).toEqual([0]);
+                const saved = chat(store, "k")!.data.message;
+                expect(saved).toHaveLength(1_001);
+                expect(saved[999].data).toBe(candidateLists ? "First" : "Second");
+                const history = saved.filter((message) => message.candidates);
+                expect(history).toHaveLength(candidateLists);
+                for (const message of history) expect(message.candidates).toEqual(texts);
+            } finally {
+                observed.restore();
+            }
+        },
+    );
+
+    it("selects only a trailing char carrier after skipping comments and checking its predecessor", () => {
+        const scenarios: { prefix: Message[]; tail: Message[]; role: Message["role"]; outcome: string }[] = [
+            { prefix: [], tail: [], role: "char", outcome: "applied" },
+            { prefix: [m("u")], tail: [], role: "char", outcome: "applied" },
+            { prefix: [m("older", "Older reply", "char")], tail: [], role: "char", outcome: "refused" },
+            { prefix: [m("u")], tail: [m("later", "Later reply", "char")], role: "char", outcome: "refused" },
+            { prefix: [], tail: [], role: "user", outcome: "refused" },
+        ];
+        for (const { prefix, tail, role, outcome } of scenarios) {
+            const store = memoryStore();
+            store.applyChanges({
+                ops: [createCharacter("c")],
+                chats: [
+                    group("k", null, [
+                        {
+                            op: "create",
+                            chat: {
+                                name: "K",
+                                note: "",
+                                localLore: [],
+                                message: [
+                                    ...prefix,
+                                    { ...m("between", "Comment", "char"), isComment: true },
+                                    { ...reply(), role },
+                                    ...tail,
+                                    { ...m("trailing", "Comment", "user"), isComment: true },
+                                ],
+                            },
+                        },
+                    ]),
+                ],
+            });
+            const before = chat(store, "k")!;
+            expect(write(store, [select("first", 1)]).chats[0].selections).toEqual([outcome]);
+            if (outcome === "refused") expect(chat(store, "k")).toEqual(before);
+            else expect(row(store)).toMatchObject({ data: "First", selected: 0 });
+        }
+    });
+
+    it.each(["whole-chat import", "snapshot restore", "opening a file without the index"])(
+        "cleans both checkpoint locations after %s, keeps candidate texts, and leaves no cleanup rows",
+        async (source) => {
+            const dir = tempDir();
+            const observed = watchCandidateReads();
+            try {
+                let store = fileStore(dir);
+                const texts = [
+                    { id: "first", data: "First" },
+                    { id: "second", data: "Second" },
+                ];
+                // Whole-chat create is the resource store's import boundary. Separate rows ensure that
+                // both the message checkpoint and a candidate-only snapshot reach the partial index.
+                store.applyChanges({
+                    ops: [createCharacter("c")],
+                    chats: [
+                        group("k", null, [
+                            {
+                                op: "create",
+                                chat: {
+                                    name: "K",
+                                    note: "",
+                                    localLore: [],
+                                    message: [
+                                        { ...reply(), candidates: texts },
+                                        { ...m("snapshots", "Second", "char"), candidates, selected: 1 },
+                                    ],
+                                },
+                            },
+                        ]),
+                    ],
+                });
+                if (source === "snapshot restore") {
+                    const snapshot = path.join(dir, "snapshot.sqlite");
+                    await store.backupTo(snapshot);
+                    const db = new DatabaseSync(snapshot);
+                    try {
+                        // Snapshots can predate the index and contain non-canonical JSON spacing.
+                        db.exec("DROP INDEX IF EXISTS messages_checkpoints");
+                        for (const row of db.prepare("SELECT id, data FROM messages").all()) {
+                            db.prepare("UPDATE messages SET data = ? WHERE id = ?").run(
+                                JSON.stringify(JSON.parse(String(row.data)), null, 2),
+                                row.id,
+                            );
+                        }
+                    } finally {
+                        db.close();
+                    }
+                    store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+                    deleteChatThroughTrash(store, "c", "k");
+                    await installSnapshot(store, snapshot, kinds);
+                }
+                if (source === "opening a file without the index") {
+                    store.close();
+                    const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+                    try {
+                        db.exec("DROP INDEX IF EXISTS messages_checkpoints");
+                        expect(
+                            db.prepare("SELECT name FROM sqlite_schema WHERE name = 'messages_checkpoints'").get(),
+                        ).toBeUndefined();
+                    } finally {
+                        db.close();
+                    }
+                    store = fileStore(dir);
+                }
+                observed.cleanup.calls = 0;
+                observed.cleanup.ids.length = 0;
+                observed.cleanup.plans.length = 0;
+                observed.cleanup.indexRows.length = 0;
+                expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+                expect(chat(store, "k")!.data.message[1].candidates).toEqual(candidates);
+                write(store, [{ op: "append", anchor: { end: true }, messages: [m("next")] }]);
+                const saved = chat(store, "k")!.data.message;
+                expect(saved).toHaveLength(3);
+                expect(saved[0]).not.toHaveProperty("scriptstateCheckpoint");
+                expect(saved[0].candidates).toEqual(texts);
+                expect(saved[1].candidates).toEqual(texts);
+                expect(observed.cleanup.ids.sort()).toEqual(["r", "snapshots"]);
+
+                observed.cleanup.ids.length = 0;
+                write(store, [{ op: "append", anchor: { end: true }, messages: [m("next-again")] }]);
+                expect(observed.cleanup.calls).toBe(2);
+                expectIndexedCleanup(observed.cleanup);
+                expect(observed.cleanup.ids).toEqual([]);
+                expect(observed.cleanup.indexRows).toEqual([2, 0]);
+            } finally {
+                observed.restore();
+            }
+        },
+    );
+
+    it("switches stored fields and unchanged variables by candidate id, preserving edits and the turn baseline", () => {
+        const store = memoryStore();
+        init(store);
+        const translation = (data: string, text: string): MessageTranslation => ({
+            text,
+            sourceHash: translationSourceHash(data),
+            targetLanguage: "ko",
+            translatedAt: 1,
+        });
+        const before = { $x: "0", $foreign: "0" };
+        const leaving = { $x: "2", $foreign: "2", $removed: "2" };
+        const target = { $x: "1", $foreign: "1", $added: "1" };
+        write(store, [
+            {
+                op: "patchMessage",
+                id: "r",
+                set: {
+                    data: "Edited second",
+                    generationInfo: { model: "edited" },
+                    promptInfo: { promptName: "edited" },
+                    candidates: [
+                        {
+                            id: "first",
+                            data: "First",
+                            generationInfo: { model: "first" },
+                            promptInfo: { promptName: "first" },
+                            translation: translation("First", "첫째"),
+                            scriptstateAfter: target,
+                        },
+                        { id: "second", data: "Second", scriptstateAfter: leaving },
+                        { id: "text", data: "Text only", translation: translation("old text", "stale") },
+                    ],
+                    selected: 1,
+                    scriptstateCheckpoint: { before, after: leaving },
+                },
+            },
+            { op: "setTranslation", id: "r", translation: translation("Edited second", "편집") },
+            { op: "meta", set: { scriptstate: leaving } },
+            {
+                op: "append",
+                anchor: { end: true },
+                messages: [{ ...m("comment", "annotation", "char"), isComment: true }],
+            },
+        ]);
+        const readByTab = chat(store, "k")!;
+        const revision = row(store).candidatesRevision!;
+        write(store, [{ op: "meta", merge: { scriptstate: { $foreign: "9" } } }]);
+        const switched = store.applyChanges({ chats: [group("k", readByTab.revision, [select("first", revision)])] });
+        expect(switched.chats[0].selections).toEqual(["applied"]);
+        expect(row(store)).toMatchObject({
+            data: "First",
+            generationInfo: { model: "first" },
+            promptInfo: { promptName: "first" },
+            translation: translation("First", "첫째"),
+            selected: 0,
+            candidatesRevision: revision + 1,
+            scriptstateCheckpoint: { before, after: target },
+        });
+        expect(row(store).candidates![1]).toEqual({
+            id: "second",
+            data: "Edited second",
+            generationInfo: { model: "edited" },
+            promptInfo: { promptName: "edited" },
+            translation: translation("Edited second", "편집"),
+            scriptstateAfter: leaving,
+        });
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1", $foreign: "9", $added: "1" });
+        write(store, [select("text", revision + 1)]);
+        expect(row(store).scriptstateCheckpoint).toEqual({ before });
+        expect(row(store).data).toBe("Text only");
+        for (const field of ["generationInfo", "promptInfo", "translation"] as const)
+            expect(row(store)[field]).toBeUndefined();
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1", $foreign: "9", $added: "1" });
+        write(store, [select("second", revision + 2)]);
+        expect(row(store)).toMatchObject({
+            data: "Edited second",
+            selected: 1,
+            candidatesRevision: revision + 3,
+            generationInfo: { model: "edited" },
+            promptInfo: { promptName: "edited" },
+            translation: translation("Edited second", "편집"),
+            scriptstateCheckpoint: { before, after: leaving },
+        });
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1", $foreign: "9", $added: "1" });
+    });
+
+    it.each(["two become three", "full ring rotates"])(
+        "refuses stale candidate revisions when %s and remembers every selection outcome on resend",
+        (scenario) => {
+            const store = memoryStore();
+            init(store);
+            const count = scenario === "full ring rotates" ? 16 : 2;
+            const list = Array.from({ length: count }, (_, i) => ({ id: `C${i}`, data: `Reply ${i}` }));
+            write(store, [
+                {
+                    op: "patchMessage",
+                    id: "r",
+                    set: { candidates: list, selected: count - 1, data: list.at(-1)!.data },
+                },
+            ]);
+            const stale = chat(store, "k")!;
+            const staleRevision = row(store).candidatesRevision!;
+            const newer = [...(count === 16 ? list.slice(1) : list), { id: `C${count}`, data: "New reply" }];
+            write(store, [
+                {
+                    op: "patchMessage",
+                    id: "r",
+                    set: { candidates: newer, selected: newer.length - 1, data: "New reply" },
+                },
+            ]);
+            const stored = row(store);
+            const ops: ChatOp[] = [
+                select(`C${count - 2}`, staleRevision),
+                select(count === 16 ? "C0" : "unknown", stored.candidatesRevision!),
+                { op: "meta", set: { note: "independent edit" } },
+            ];
+            const request = { ...group("k", stale.revision, ops), groupId: `stale-${count}` };
+            const answer = store.applyChanges({ chats: [request] });
+            expect(answer.chats[0].selections).toEqual(["refused", "refused"]);
+            expect(row(store)).toEqual(stored);
+            expect(chat(store, "k")!.data.note).toBe("independent edit");
+            write(store, [{ op: "meta", set: { note: "later edit" } }]);
+            const resend = store.applyChanges({ chats: [{ ...request, retry: true }] });
+            expect(resend.chats[0].selections).toEqual(["refused", "refused"]);
+            expect(row(store)).toEqual(stored);
+            expect(chat(store, "k")!.data.note).toBe("later edit");
+        },
+    );
+
+    it.each(["older reply", "two-reply tail", "user tail"])(
+        "refuses a candidate switch on a %s without changing the chat",
+        (tail) => {
+            const store = memoryStore();
+            init(store);
+            const messages: Message[] =
+                tail === "older reply"
+                    ? [m("u2", "next"), m("r2", "new reply", "char")]
+                    : [m("tail", "tail", tail === "user tail" ? "user" : "char")];
+            write(store, [{ op: "append", anchor: { end: true }, messages }]);
+            const before = chat(store, "k")!;
+            const answer = write(store, [select("first", row(store).candidatesRevision!)]);
+            expect(answer.chats[0].selections).toEqual(["refused"]);
+            expect(chat(store, "k")).toEqual(before);
+            if (tail === "two-reply tail") {
+                write(store, [{ op: "patchMessage", id: "tail", set: { candidates, selected: 1 } }]);
+                const current = chat(store, "k")!;
+                const newest = current.data.message.at(-1)!;
+                const result = write(store, [select("first", newest.candidatesRevision!, "tail")]);
+                expect(result.chats[0].selections).toEqual(["refused"]);
+                expect(chat(store, "k")).toEqual(current);
+            }
+        },
+    );
+
+    it("refuses a locked candidate carrier with the generating conflict", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        lock.addToken("owner");
+        lock.acquire(
+            { characterId: "c", chatId: "k", messageId: "r" },
+            { jobId: "J", generationId: "G", token: "owner" },
+        );
+        const before = chat(store, "k")!;
+        expect(conflictsOf(() => write(store, [select("first", row(store).candidatesRevision!)]))).toEqual([
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "k",
+                revision: before.revision,
+                reason: "generating",
+                messageIds: ["r"],
+            },
+        ]);
+        expect(chat(store, "k")).toEqual(before);
+    });
+
+    it("refuses an oversized refreshed candidate list without trimming or applying any part of the switch", () => {
+        const store = memoryStore();
+        init(store);
+        write(store, [{ op: "patchMessage", id: "r", set: { data: "x".repeat(192 * 1024) } }]);
+        const before = chat(store, "k")!;
+        const result = write(store, [select("first", row(store).candidatesRevision!)]);
+        expect(result.chats[0].selections).toEqual(["refused"]);
+        expect(chat(store, "k")).toEqual(before);
+    });
+
+    it("refuses malformed and oversized candidate writes atomically and owns revisions across old whole-row writes and list removal", () => {
+        const store = memoryStore();
+        init(store);
+        const original = snapshotState(store);
+        const invalid = [
+            { candidates: [candidates[0]], selected: 0 },
+            { candidates: [candidates[0], candidates[0]], selected: 0 },
+            { candidates: [{ id: "", data: "A" }, candidates[1]] },
+            { candidates: [{ id: "a".repeat(33), data: "A" }, candidates[1]] },
+            { candidates: [{ id: "a", data: 3 }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", generationInfo: { model: 3 } }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", promptInfo: { promptName: 3 } }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", translation: {} }, candidates[1]] },
+            { candidates: [{ id: "a", data: "A", scriptstateAfter: [] }, candidates[1]] },
+            { candidates: Array.from({ length: 17 }, (_, i) => ({ id: String(i), data: "A" })) },
+            { candidates: [{ id: "a", data: "A".repeat(256 * 1024) }, candidates[1]] },
+            {
+                candidates: [
+                    { id: "a", data: "A".repeat(100 * 1024) },
+                    { id: "b", data: "B".repeat(100 * 1024) },
+                ],
+            },
+            { selected: 2 },
+            { selected: 0.5 },
+            { candidatesRevision: -1 },
+            { scriptstateCheckpoint: { after: null } },
+            { scriptstateCheckpoint: { before: [] } },
+            { scriptstateCheckpoint: { before: null, after: { $x: "X".repeat(64 * 1024) } } },
+        ];
+        for (const fields of invalid) {
+            for (const op of [
+                { op: "patchMessage", id: "r", set: fields },
+                { op: "setMessage", message: { ...reply(), ...fields } },
+            ] as ChatOp[]) {
+                expect(
+                    () => write(store, [{ op: "meta", set: { note: "must roll back" } }, op]),
+                    JSON.stringify(fields).slice(0, 150),
+                ).toThrow(ResourceValidationError);
+                expect(snapshotState(store)).toBe(original);
+            }
+        }
+        expect(row(store).candidatesRevision).toBe(1);
+        const old = structuredClone(row(store));
+        write(store, [{ op: "patchMessage", id: "r", set: { selected: 0, candidatesRevision: 99 } }]);
+        expect(row(store).candidatesRevision).toBe(2);
+        write(store, [{ op: "setMessage", message: old }]);
+        expect(row(store)).toMatchObject({ selected: 1, candidatesRevision: 3 });
+        write(store, [{ op: "patchMessage", id: "r", unset: ["candidates", "selected", "candidatesRevision"] }]);
+        expect(row(store).candidatesRevision).toBe(4);
+        expect(row(store).candidates).toBeUndefined();
+        write(store, [{ op: "setMessage", message: old }]);
+        expect(row(store).candidatesRevision).toBe(5);
+        write(store, [{ op: "setMessage", message: old }]);
+        expect(row(store).candidatesRevision).toBe(5);
+    });
+
+    it("drops corrupt optional candidate fields on stored chat, collection, and own-write reads while keeping the reply", () => {
+        const dir = tempDir();
+        const store = fileStore(dir);
+        init(store);
+        const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+        try {
+            db.prepare("UPDATE messages SET data = ? WHERE id = 'r'").run(
+                JSON.stringify({
+                    ...reply(),
+                    candidates: [{ id: "only", data: "keep the carrier" }],
+                    selected: 9,
+                    candidatesRevision: -1,
+                    scriptstateCheckpoint: { before: [] },
+                }),
+            );
+        } finally {
+            db.close();
+        }
+        const expected = m("r", "Second", "char");
+        expect(row(store)).toEqual(expected);
+        expect(store.readRefs([], { chatCollections: ["c"] }).chatCollections[0].chats[0].data.message[1]).toEqual(
+            expected,
+        );
+        expect(store.readKinds([characters], { chats: true }).chats![0].data.message[1]).toEqual(expected);
+        let written: WrittenChanges | undefined;
+        store.applyChanges(
+            { chats: [group("k", store.chatRevision("c", "k"), [{ op: "setText", id: "r", text: "Edited" }])] },
+            {
+                changes: true,
+                committed(_applied, changes) {
+                    written = changes;
+                    return [];
+                },
+            },
+        );
+        expect(written?.chats).toHaveLength(1);
+        expect(written!.chats[0]!.rows.map((entry) => JSON.parse(entry.data))).toEqual([
+            { ...expected, data: "Edited" },
+        ]);
+        expect(row(store)).toMatchObject({ ...expected, data: "Edited" });
+    });
+
+    it("retains the same snapshots for separate and coalesced end appends, stripping comments", () => {
+        const saved = [false, true].map((coalesced) => {
+            const store = memoryStore();
+            init(store);
+            const newest = { ...reply(), chatId: "newest" };
+            const comment = { ...reply(), chatId: "comment", isComment: true };
+            write(
+                store,
+                coalesced
+                    ? [{ op: "append", anchor: { end: true }, messages: [newest, comment] }]
+                    : [
+                          { op: "append", anchor: { end: true }, messages: [newest] },
+                          { op: "append", anchor: { end: true }, messages: [comment] },
+                      ],
+            );
+            return chat(store, "k")!.data.message.map(({ candidatesRevision: _revision, ...message }) => message);
+        });
+        const cleaned = {
+            ...m("r", "Second", "char"),
+            candidates: [
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ],
+            selected: 1,
+        };
+        const expected = [
+            m("u", "q"),
+            cleaned,
+            { ...reply(), chatId: "newest" },
+            { ...cleaned, chatId: "comment", isComment: true },
+        ];
+        expect(saved).toEqual([expected, expected]);
+    });
+
+    it("keeps the newest reply's snapshots after a start insertion and restores the selected candidate's variables", () => {
+        const store = memoryStore();
+        init(store);
+        write(store, [{ op: "meta", set: { scriptstate: { $x: "2" } } }]);
+
+        write(store, [{ op: "append", anchor: { start: true }, messages: [m("earlier", "Earlier question")] }]);
+
+        expect(messageIds(store, "k")).toEqual(["earlier", "u", "r"]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "2" });
+
+        const answer = write(store, [select("first", row(store).candidatesRevision!)]);
+        expect(answer.chats[0].selections).toEqual(["applied"]);
+        expect(row(store)).toMatchObject({
+            data: "First",
+            selected: 0,
+            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "1" } },
+        });
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "1" });
+    });
+
+    it.each(["setMessage", "patchMessage"] as const)(
+        "acknowledges refused snapshot replay through %s in a later group and permits the lock owner",
+        (op) => {
+            const lock = createGenerationLock();
+            const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+            stores.push(store);
+            init(store);
+            const old = structuredClone(row(store));
+            write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "Next question")] }]);
+            const cleaned = row(store);
+            expect(cleaned).not.toHaveProperty("scriptstateCheckpoint");
+            expect(cleaned.candidates).toEqual([
+                { id: "first", data: "First" },
+                { id: "second", data: "Second" },
+            ]);
+            const replay: ChatOp =
+                op === "setMessage"
+                    ? { op, message: old }
+                    : {
+                          op,
+                          id: "r",
+                          set: { scriptstateCheckpoint: old.scriptstateCheckpoint, candidates: old.candidates },
+                      };
+
+            const answer = write(store, [replay]).chats[0];
+            expect(answer.candidateRows).toEqual([
+                { id: "r", candidatesRevision: cleaned.candidatesRevision, cleared: true },
+            ]);
+            expect(row(store)).toEqual(cleaned);
+
+            const token = "snapshot-owner";
+            lock.addToken(token);
+            lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), [replay])] }, { jobToken: token });
+            expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+            expect(row(store).candidates).toEqual(candidates);
+        },
+    );
+
+    it("acknowledges cleaned candidate rows, omits unchanged rows, and replays the original corrections", () => {
+        const store = memoryStore();
+        init(store);
+        const append = {
+            ...group("k", store.chatRevision("c", "k"), [
+                { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            ]),
+            groupId: "clean-candidate-snapshots",
+        };
+        const answer = store.applyChanges({ chats: [append] }).chats[0];
+        expect(answer.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
+        expect(row(store)).not.toHaveProperty("scriptstateCheckpoint");
+        expect(row(store).candidates).toEqual([
+            { id: "first", data: "First" },
+            { id: "second", data: "Second" },
+        ]);
+        expect(row(store).candidatesRevision).toBe(2);
+
+        const plainAppend = write(store, [
+            { op: "append", anchor: { end: true }, messages: [m("plain", "Another question")] },
+        ]).chats[0];
+        expect(plainAppend).not.toHaveProperty("candidateRows");
+        const edited = candidates.map(({ scriptstateAfter: _after, ...entry }) => ({
+            ...entry,
+            data: `${entry.data}!`,
+        }));
+        write(store, [{ op: "setMessage", message: { ...reply(), candidates: edited } }]);
+        expect(row(store).candidatesRevision).toBe(3);
+        const replay = store.applyChanges({ chats: [append] }).chats[0];
+        expect(replay.revision).toBe(answer.revision);
+        expect(replay.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
+        expect(row(store).candidates).toEqual(edited);
+        expect(row(store).candidatesRevision).toBe(3);
+    });
+
+    it("refuses a later whole-row write in the same group that would restore cleaned snapshots", () => {
+        const store = memoryStore();
+        init(store);
+        const answer = write(store, [
+            { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            { op: "setMessage", message: reply() },
+        ]).chats[0];
+
+        expect(answer.candidateRows).toEqual([{ id: "r", candidatesRevision: 2, cleared: true }]);
+        expect(row(store)).not.toHaveProperty("scriptstateCheckpoint");
+        expect(row(store).candidates).toEqual(candidates.map(({ scriptstateAfter: _after, ...entry }) => entry));
+        expect(row(store).candidatesRevision).toBe(2);
+    });
+
+    it("clears older checkpoints on append, retains candidate texts, and admits the open carrier's later final write", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        write(store, [{ op: "append", anchor: { end: true }, messages: [{ ...m("comment"), isComment: true }] }]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "next question")] }]);
+        expect(row(store).scriptstateCheckpoint).toBeUndefined();
+        expect(row(store).candidates).toEqual(candidates.map(({ scriptstateAfter: _after, ...entry }) => entry));
+        expect(row(store).candidatesRevision).toBe(2);
+        const token = "reroll-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        const own = (ops: ChatOp[]) =>
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] }, { jobToken: token });
+        // Only the row's lock owner may put snapshots back on a cleaned row.
+        own([{ op: "setMessage", message: reply() }]);
+        own([{ op: "begin", id: "r", generationId: "g" }]);
+        own([{ op: "append", anchor: { end: true }, messages: [m("trigger", "from Lua", "char")] }]);
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(
+            own([{ op: "setText", id: "r", text: "Finished", generation: { id: "g", seq: 1, final: true } }]).chats[0]
+                .checkpoints,
+        ).toEqual(["applied"]);
+        expect(row(store).data).toBe("Finished");
+    });
+
+    it("clears checkpoint and candidate snapshots on append after a generation job ends without a final write", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        const token = "ended-job-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        store.applyChanges(
+            { chats: [group("k", store.chatRevision("c", "k"), [{ op: "begin", id: "r", generationId: "g" }])] },
+            { jobToken: token },
+        );
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(lock.holder("c", "k", "r")).toBe(token);
+
+        lock.endJob(token);
+        expect(lock.holder("c", "k", "r")).toBeNull();
+        write(store, [{ op: "append", anchor: { end: true }, messages: [m("next", "next question")] }]);
+
+        expect(row(store)).not.toHaveProperty("scriptstateCheckpoint");
+        expect(row(store).candidates).toEqual([
+            { id: "first", data: "First" },
+            { id: "second", data: "Second" },
+        ]);
+    });
+
+    it("preserves checkpoint and candidate snapshots when the live owner's begin follows the append in the same group", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        const token = "live-job-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        expect(lock.holder("c", "k", "r")).toBe(token);
+
+        store.applyChanges(
+            {
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "append", anchor: { end: true }, messages: [m("next", "next question")] },
+                        { op: "begin", id: "r", generationId: "g" },
+                    ]),
+                ],
+            },
+            { jobToken: token },
+        );
+
+        expect(row(store).scriptstateCheckpoint).toEqual(checkpoint);
+        expect(row(store).candidates).toEqual(candidates);
+        expect(lock.holder("c", "k", "r")).toBe(token);
+    });
+
+    it("rolls back only attempt-owned variables, preserves intervening writes even when overwritten or removed, and discards rolled-back ledger entries", () => {
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        stores.push(store);
+        init(store);
+        write(store, [{ op: "meta", set: { scriptstate: { $x: "1", $removed: "1", $own: "1", $later: "1" } } }]);
+        const token = "attempt-token";
+        lock.addToken(token);
+        lock.acquire({ characterId: "c", chatId: "k", messageId: "r" }, { token, jobId: "J", generationId: "g" });
+        const control = { characterId: "c", chatId: "k", messageId: "r", generationId: "g" };
+        const own = (ops: ChatOp[]) =>
+            store.applyChanges({ chats: [group("k", store.chatRevision("c", "k"), ops)] }, { jobToken: token });
+        store.applyChanges(
+            {
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "meta", merge: { scriptstate: { $x: "0", $removed: "0", $own: "0", $later: "0" } } },
+                        { op: "begin", id: "r", generationId: "g" },
+                    ]),
+                ],
+            },
+            { jobToken: token, rerollAttempt: { ...control, action: "begin" } },
+        );
+        write(store, [{ op: "meta", merge: { scriptstate: { $x: "9", $removed: "9" } } }]);
+        own([
+            {
+                op: "meta",
+                merge: { scriptstate: { $x: "2", $own: "2", $introduced: "attempt", $later: "2" } },
+                mergeUnset: { scriptstate: ["$removed"] },
+            },
+        ]);
+        write(store, [{ op: "meta", merge: { scriptstate: { $later: "outside" } } }]);
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", store.chatRevision("c", "k"), [
+                            { op: "meta", merge: { scriptstate: { $x: "not committed" } } },
+                        ]),
+                    ],
+                },
+                {
+                    inTransaction: {
+                        after() {
+                            throw new Error("rollback transaction");
+                        },
+                    },
+                },
+            ),
+        ).toThrow("rollback transaction");
+        const result = store.applyChanges(
+            {
+                chats: [
+                    group("k", store.chatRevision("c", "k"), [
+                        { op: "setMessage", message: reply(), generation: { id: "g", seq: 1, final: true } },
+                    ]),
+                ],
+            },
+            { jobToken: token, rerollAttempt: { ...control, action: "rollback" } },
+        );
+        expect(result.chats[0].checkpoints).toEqual(["applied"]);
+        expect(chat(store, "k")!.data.scriptstate).toEqual({ $x: "9", $removed: "9", $own: "1", $later: "outside" });
+        expect(row(store).data).toBe("Second");
     });
 });

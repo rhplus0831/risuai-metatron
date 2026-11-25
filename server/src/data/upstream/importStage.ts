@@ -11,6 +11,7 @@ import {
 import { ArchiveRejectedError, copyRecordToFile, readRecord } from "../archive.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../kinds.ts";
 import { createResourceStore, type ResourceStore } from "../resourceStore.ts";
+import { stageValidatedSnapshot, type StagedFileReport } from "../restore/stageValidatedSnapshot.ts";
 import { type ColdRecordResult, readColdEntry, type UpstreamArchivePlan } from "./archive.ts";
 import { convertUpstreamDatabase } from "./importDatabase.ts";
 import { decodeUpstreamSave, type UpstreamSave } from "./risuSave.ts";
@@ -19,17 +20,18 @@ import { decodeUpstreamSave, type UpstreamSave } from "./risuSave.ts";
  * The upstream import's prepare work, the body of the import worker (`importWorker.ts`) and free of
  * any worker API, so it also runs in process. It reads the classified archive (the
  * `planUpstreamArchive` plan, made by the route), decodes the database (`risuSave.ts`), reads the
- * cold-storage payloads, converts (`convertUpstreamDatabase`), writes a fresh staged store in the
- * converter's hand-off order, copies it with `backupTo` into one self-contained `resources.sqlite`,
- * validates that file with `readSnapshot` (the result is dropped: the commit validates again), and
- * extracts every archive asset into the staging folder, so a commit only links. It writes only into
- * `staging`; it never opens the live store.
+ * cold-storage payloads, converts (`convertUpstreamDatabase`), writes a build store in the converter's
+ * hand-off order, checks it and writes the trusted staged store `resources.sqlite`
+ * (`stageValidatedSnapshot`, whose report goes to the route; the commit reads no row), and extracts
+ * every archive asset into the staging folder, so a commit only links. It writes only into `staging`;
+ * it never opens the live store. It works with the default resource kinds: a store with custom kinds
+ * is not supported by the import.
  */
 
 /** Chats per `applyChanges` call while the staged store is written. */
 const CHAT_BATCH = 200;
 
-/** The staged store's file in the staging folder, what the commit validates and installs. */
+/** The staged store's file in the staging folder, what the commit verifies and installs. */
 export const STAGED_DATABASE_FILE = "resources.sqlite";
 /** The folder of the extracted assets in the staging folder; asset `i` of the plan is `assets/<i>`. */
 export const STAGED_ASSETS_DIR = "assets";
@@ -51,6 +53,8 @@ export type UpstreamStageInput = {
 export type UpstreamStageResult = {
     report: UpstreamImportReport;
     selection: UpstreamImportSelection;
+    /** The staged store, as the commit must find it. */
+    databaseReport: StagedFileReport;
 };
 
 export type UpstreamStageProgress = (phase: UpstreamImportPhase, done: number, total: number) => void;
@@ -115,7 +119,7 @@ export async function stageUpstreamImport(
         cold.clear();
         onProgress("convert", 1, 1);
 
-        await writeStagedStore(staging, converted, onProgress);
+        const databaseReport = await writeStagedStore(staging, converted, onProgress);
 
         const assetsDir = path.join(staging, STAGED_ASSETS_DIR);
         await fs.mkdir(assetsDir, { recursive: true });
@@ -124,7 +128,7 @@ export async function stageUpstreamImport(
             await copyRecordToFile(handle, asset.record, path.join(assetsDir, String(index)));
             onProgress("assets", index + 1, plan.assets.length);
         }
-        return { report: converted.report, selection: converted.selection };
+        return { report: converted.report, selection: converted.selection, databaseReport };
     } finally {
         await handle.close().catch(() => {});
     }
@@ -133,14 +137,14 @@ export async function stageUpstreamImport(
 /**
  * Writes the conversion into a fresh store at `staging/build.sqlite` in the converter's hand-off
  * order (the singletons at their current revision or created, the characters, then the chats in
- * batches in array order), copies it to `staging/resources.sqlite` with `backupTo`, validates the
- * copy, and removes the build.
+ * batches in array order), closes it, checks it and writes `staging/resources.sqlite` from it
+ * (`stageValidatedSnapshot`), and removes the build. Returns the staged file's report.
  */
 async function writeStagedStore(
     staging: string,
     converted: ReturnType<typeof convertUpstreamDatabase>,
     onProgress: UpstreamStageProgress,
-): Promise<void> {
+): Promise<StagedFileReport> {
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
     const buildFile = path.join(staging, "build.sqlite");
     const stagedFile = path.join(staging, STAGED_DATABASE_FILE);
@@ -165,10 +169,10 @@ async function writeStagedStore(
             store.applyChanges({ chats: batch });
             onProgress("write", start + batch.length, chats.length);
         }
-        onProgress("validate", 0, 1);
-        await store.backupTo(stagedFile);
-        store.readSnapshot(stagedFile);
-        onProgress("validate", 1, 1);
+        store.close();
+        return await stageValidatedSnapshot(buildFile, stagedFile, kinds, (done, total) =>
+            onProgress("validate", done, total),
+        );
     } finally {
         store?.close();
         for (const suffix of ["", "-wal", "-shm", "-journal"]) {

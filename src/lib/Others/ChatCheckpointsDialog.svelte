@@ -6,7 +6,7 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { alertConfirm, alertError, alertInput, alertNormal } from "src/ts/alert";
-    import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, isChatGenerating, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { ResourceEpochMismatchError } from "src/ts/storage/resourceClient";
     import {
         checkpointLoadBusy,
@@ -32,6 +32,14 @@
         type CheckpointSummary,
     } from "../../../shared/chatCheckpoints.ts";
 
+    /**
+     * The checkpoint dialog of one chat (`chatCheckpointsDialog`, `src/ts/checkpoints/chatCheckpoints.svelte.ts`).
+     * An action captures the chat ref and the selected row, with its revision, before its prompt and checks
+     * afterward that the chat is still listed; one action runs at a time and the list and policy are read again
+     * after each. The dialog closes itself once the chat's entry is gone, but not while a load holds
+     * `checkpointLoadBusy` (from before its flush until its refresh ends).
+     */
+
     interface Props {
         chatRef: ChatRef;
         close: () => void;
@@ -45,6 +53,7 @@
     const selected = $derived(checkpoints.find((checkpoint) => checkpoint.id === selectedId));
     let pending = $state(true);
     const disabled = $derived(pending || $checkpointLoadBusy);
+    const generating = $derived(isChatGenerating(chatRef));
     let policyAvailable = $state(false);
     let autoEnabled = $state(false);
     let autoEvery = $state(5);
@@ -53,7 +62,10 @@
     let active = true;
 
     $effect(() => {
-        if (!entry && !$checkpointLoadBusy) close();
+        if (entry?.trashedAt !== undefined) {
+            close();
+            alertNormal(language.chatTrash.checkpointsClosed);
+        } else if (!entry && !$checkpointLoadBusy) close();
     });
 
     onMount(() => {
@@ -130,7 +142,7 @@
         pending = true;
         try {
             const result = await action();
-            if (result) report(result);
+            if (active && result) report(result);
         } catch (error) {
             reportException(error);
         } finally {
@@ -140,10 +152,12 @@
     }
 
     function stillHere(ref: ChatRef) {
-        return active && !!chatEntry(ref);
+        const target = chatEntry(ref);
+        return active && !!target && target.trashedAt === undefined;
     }
 
     function save() {
+        if (generating) return;
         const ref = { ...chatRef };
         const defaultName = truncateCheckpointText(
             `${entry?.name ?? ""} ${new Date().toLocaleDateString()}`,
@@ -157,6 +171,7 @@
     }
 
     function load() {
+        if (generating) return;
         const ref = { ...chatRef };
         const row = selected;
         if (!row) return;
@@ -226,12 +241,12 @@
         <div class="flex flex-wrap gap-2">
             <button
                 class="bg-darkbutton hover:bg-selected rounded px-3 py-2 disabled:opacity-50"
-                {disabled}
+                disabled={disabled || generating}
                 onclick={save}>{language.chatCheckpoints.saveAs}</button
             >
             <button
                 class="bg-darkbutton hover:bg-selected rounded px-3 py-2 disabled:opacity-50"
-                disabled={disabled || !selected}
+                disabled={disabled || generating || !selected}
                 onclick={load}>{language.chatCheckpoints.load}</button
             >
             <button

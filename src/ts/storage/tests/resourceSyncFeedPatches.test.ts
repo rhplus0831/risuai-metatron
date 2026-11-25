@@ -1,7 +1,9 @@
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../../shared/chats.ts";
-import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import type { Message } from "../../../../shared/database.ts";
+import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { textHash } from "../../../../shared/textHash.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
@@ -50,7 +52,7 @@ vi.mock("../../process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("../../parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("../../globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("../../globalApi.svelte", async () => (await import("../../tests/globalApiMock")).createGlobalApiMock());
 
 type Sync = typeof import("../resourceSync.svelte");
 type Client = typeof import("../resourceClient");
@@ -75,7 +77,14 @@ const refK = { chaId: "c", chatId: "k" };
  * with the change feed: presets `pa` and `pb`, character `c` (chats `k` with messages a, b, c and
  * `j`, empty) and character `d` (chat `m`), at home. Then live delivery starts.
  */
-async function boot(options: { summaries?: boolean } = {}) {
+async function boot(
+    options: {
+        summaries?: boolean;
+        meta?: Record<string, unknown>;
+        messages?: Message[];
+        prepare?: (fake: StoreBackedServer) => void;
+    } = {},
+) {
     vi.resetModules();
     const fake = await StoreBackedServer.create({ lock: true, feed: true });
     fake.set("presets", "main", [
@@ -95,11 +104,22 @@ async function boot(options: { summaries?: boolean } = {}) {
             { kind: fake.kind("characters"), id: "d", baseRevision: null, data: { chaId: "d", name: "D" } },
         ],
         chats: [
-            create("c", "k", [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")]),
+            create("c", "k", options.messages ?? [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")]),
             create("c", "j"),
             create("d", "m", [m("x", "X")]),
         ],
     });
+    if (options.meta) {
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "meta", set: options.meta }],
+            },
+        ]);
+    }
+    options.prepare?.(fake);
     server.current = fake;
 
     const client: Client = await import("../resourceClient");
@@ -107,6 +127,8 @@ async function boot(options: { summaries?: boolean } = {}) {
     const chatModule: ChatModule = await import("../chatStore.svelte");
     const bootstrap: Bootstrap = await import("../../bootstrap");
     const selection: Selection = await import("../selection.svelte");
+    const records = await import("../records.svelte");
+    const characters = await import("../characterStore.svelte");
 
     const snapshot = await client.readKinds(KINDS, options.summaries ? { chatSummaries: true } : { chats: true });
     sync.seedResources(snapshot);
@@ -146,7 +168,7 @@ async function boot(options: { summaries?: boolean } = {}) {
         }
     };
 
-    return { fake, sync, client, chat: chatModule, live, flushFeed };
+    return { fake, sync, client, chat: chatModule, records, characters, live, flushFeed };
 }
 beforeAll(() => warmMutationGraph(), 60_000);
 
@@ -188,7 +210,1076 @@ const quiet = (b: Booted) => {
     expect(alerts.error).not.toHaveBeenCalled();
 };
 
+/** The oversized field is only one byte over the cap; both row encodings must carry it. */
+function rerollRows() {
+    const candidates = [
+        { id: "previous", data: "", scriptstateAfter: { $x: "1" } },
+        { id: "other", data: "Other", scriptstateAfter: { $x: "2" } },
+    ];
+    const text = "x".repeat(MAX_FEED_PATCH_BYTES + 1 - new TextEncoder().encode(JSON.stringify(candidates)).length);
+    candidates[0].data = text;
+    const original: Message = {
+        role: "char",
+        chatId: "c",
+        data: text,
+        candidates,
+        selected: 0,
+        candidatesRevision: 1,
+        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "1" } },
+    };
+    const begun: Message = {
+        ...original,
+        data: "",
+        candidates: [...candidates, { id: "attempt", data: "" }],
+        selected: 2,
+        candidatesRevision: 2,
+        scriptstateCheckpoint: { before: { $x: "0" } },
+    };
+    const begin: ChatOp[] = [
+        {
+            op: "patchMessage",
+            id: "c",
+            set: {
+                data: "",
+                candidates: begun.candidates,
+                selected: 2,
+                scriptstateCheckpoint: begun.scriptstateCheckpoint,
+            },
+            unset: [],
+        },
+        { op: "setTranslation", id: "c", translation: null },
+        { op: "meta", merge: { scriptstate: { $x: "0" } }, mergeUnset: { scriptstate: [] } },
+        { op: "begin", id: "c", generationId: "g" },
+    ];
+    const restored = { ...original, candidatesRevision: 3 };
+    const rollback: ChatOp[] = [
+        { op: "setMessage", message: original, generation: { id: "g", seq: 1, final: true } },
+        { op: "setTranslation", id: "c", translation: null },
+    ];
+    const selected: Message = {
+        ...original,
+        data: "Other",
+        selected: 1,
+        candidatesRevision: 2,
+        scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+    };
+    const select: ChatOp[] = [
+        { op: "selectCandidate", messageId: "c", candidateId: "other", expect: { candidatesRevision: 1 } },
+    ];
+    return { original, begun, restored, selected, begin, rollback, select };
+}
+
+/** Largest JSON parse input and stringify output during synchronous observer delivery only. */
+function jsonPassSizes(deliver: () => void) {
+    const parse = vi.spyOn(JSON, "parse");
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+        deliver();
+        return {
+            parsed: Math.max(0, ...parse.mock.calls.map(([text]) => text.length)),
+            stringified: Math.max(
+                0,
+                ...stringify.mock.results.map((result) =>
+                    result.type === "return" && typeof result.value === "string" ? result.value.length : 0,
+                ),
+            ),
+        };
+    } finally {
+        parse.mockRestore();
+        stringify.mockRestore();
+    }
+}
+
+describe("resource entry patches through the tab save adapter", () => {
+    it("applies consecutive dictionary entries beside a large history and a plugin toggle without whole JSON passes or reads", async () => {
+        const history = "x".repeat(256 * 1024);
+        const initial = {
+            pluginStorage: {
+                _ownedPluginStorage: { history: [history], counter: 0 },
+                _pluginStorage: { legacy: "kept" },
+                _safeLocalPluginStorage: { flag: false },
+            },
+            plugins: [
+                { name: "first", enabled: true },
+                { name: "second", enabled: true },
+            ],
+        };
+        const b = await boot({
+            prepare: (fake) => {
+                fake.set("pluginStorage", "main", initial.pluginStorage);
+                fake.set("plugins", "main", initial.plugins);
+            },
+        });
+        // A separate client's module state and epoch, talking to the same real store.
+        vi.resetModules();
+        const writer: Client = await import("../resourceClient");
+        expect(writer).not.toBe(b.client);
+        const snapshot = await writer.readKinds(["pluginStorage", "plugins"]);
+        writer.setResourceEpoch(snapshot.epoch);
+        b.fake.requests.length = 0;
+        b.live.paused = true;
+        for (const counter of [1, 2]) {
+            await writer.applyBatchText(
+                JSON.stringify({
+                    ops: [
+                        {
+                            kind: "pluginStorage",
+                            id: "main",
+                            baseRevision: b.fake.record("pluginStorage", "main")!.revision,
+                            patch: {
+                                nested: {
+                                    _ownedPluginStorage: { set: { counter } },
+                                    ...(counter === 1
+                                        ? { _pluginStorage: { set: { added: "new" } } }
+                                        : { _safeLocalPluginStorage: { set: { flag: true } } }),
+                                },
+                            },
+                        },
+                        ...(counter === 1
+                            ? [
+                                  {
+                                      kind: "plugins",
+                                      id: "main",
+                                      baseRevision: snapshot.kinds.plugins[0].revision,
+                                      patch: { itemKey: "name", changes: [{ id: "second", set: { enabled: false } }] },
+                                  },
+                              ]
+                            : []),
+                    ],
+                }),
+            );
+            const event = b.live.queue.at(-1)!;
+            if (event.type !== "change") throw new Error("missing feed change");
+            expect(event.changes.resources).toHaveLength(counter === 1 ? 2 : 1);
+            for (const ref of event.changes.resources) {
+                expect(ref).toHaveProperty("entryPatch");
+                expect(ref).not.toHaveProperty("patch");
+            }
+
+            // The server commit and assertions stay outside the observer's JSON measurement.
+            const sizes = jsonPassSizes(b.flushFeed);
+            expect(sizes.parsed, `update ${counter}: parsed text`).toBeLessThan(history.length);
+            expect(sizes.stringified, `update ${counter}: serialized value`).toBeLessThan(history.length);
+            const expected = {
+                pluginStorage: {
+                    _ownedPluginStorage: { history: [history], counter },
+                    _pluginStorage: { legacy: "kept", added: "new" },
+                    _safeLocalPluginStorage: { flag: counter === 2 },
+                },
+                plugins: [initial.plugins[0], { name: "second", enabled: false }],
+            };
+            for (const kind of ["pluginStorage", "plugins"] as const) {
+                expect(b.records.recordData(kind)).toEqual(expected[kind]);
+                expect(b.fake.record(kind, "main")!.data).toEqual(expected[kind]);
+                expect(b.sync.heldRecordSnapshot(kind, "main")).toEqual({
+                    revision: b.fake.record(kind, "main")!.revision,
+                    text: JSON.stringify(expected[kind]),
+                });
+            }
+            expect(reads(b)).toEqual([]);
+        }
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(2);
+        quiet(b);
+    });
+
+    it.each([
+        {
+            label: "a top-level custom-key set",
+            patch: { set: { custom: "remote" }, nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+            expected: { custom: "remote", _ownedPluginStorage: { counter: 1 } },
+        },
+        {
+            label: "a top-level custom-key removal",
+            patch: { remove: ["custom"], nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+            expected: { _ownedPluginStorage: { counter: 1 } },
+        },
+        {
+            label: "an array-index-like dictionary key",
+            patch: { nested: { _ownedPluginStorage: { set: { "12": "remote" } } } },
+            expected: { custom: "kept", _ownedPluginStorage: { "12": "remote", counter: 0 } },
+        },
+    ])("keeps whole-record patching for $label", async ({ patch, expected }) => {
+        const history = "x".repeat(256 * 1024);
+        const b = await boot({
+            prepare: (fake) =>
+                fake.set("pluginStorage", "main", {
+                    custom: "kept",
+                    _ownedPluginStorage: { counter: 0, history },
+                }),
+        });
+        vi.resetModules();
+        const writer: Client = await import("../resourceClient");
+        writer.setResourceEpoch(b.client.getResourceEpoch());
+        b.live.paused = true;
+        await writer.applyBatchText(
+            JSON.stringify({
+                ops: [
+                    {
+                        kind: "pluginStorage",
+                        id: "main",
+                        baseRevision: b.fake.record("pluginStorage", "main")!.revision,
+                        patch,
+                    },
+                ],
+            }),
+        );
+        const event = b.live.queue.at(-1)!;
+        if (event.type !== "change") throw new Error("missing feed change");
+        expect(event.changes.resources[0]).toHaveProperty("entryPatch");
+        const sizes = jsonPassSizes(b.flushFeed);
+        expect(sizes.parsed).toBeGreaterThanOrEqual(history.length);
+        expect(sizes.stringified).toBeGreaterThanOrEqual(history.length);
+        const data = { ...expected, _ownedPluginStorage: { ...expected._ownedPluginStorage, history } };
+        expect(b.records.recordData("pluginStorage")).toEqual(data);
+        expect(b.fake.record("pluginStorage", "main")!.data).toEqual(data);
+        expect(b.sync.heldRecordSnapshot("pluginStorage", "main")).toEqual({
+            revision: b.fake.record("pluginStorage", "main")!.revision,
+            text: JSON.stringify(data),
+        });
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(1);
+        quiet(b);
+    });
+
+    it("preserves and saves an unsaved dictionary edit when a remote entry arrives inside a local write batch", async () => {
+        const initial = { _ownedPluginStorage: { counter: 0, local: "saved" } };
+        const b = await boot({ prepare: (fake) => fake.set("pluginStorage", "main", initial) });
+        const storage = b.records.trackedRecord("pluginStorage")!;
+        const held = b.sync.heldRecordSnapshot("pluginStorage", "main");
+        vi.resetModules();
+        const writer: Client = await import("../resourceClient");
+        writer.setResourceEpoch(b.client.getResourceEpoch());
+        b.live.paused = true;
+        await writer.applyBatchText(
+            JSON.stringify({
+                ops: [
+                    {
+                        kind: "pluginStorage",
+                        id: "main",
+                        baseRevision: b.fake.record("pluginStorage", "main")!.revision,
+                        patch: { nested: { _ownedPluginStorage: { set: { counter: 1 } } } },
+                    },
+                ],
+            }),
+        );
+        b.records.batchRecordWrites(() => {
+            storage._ownedPluginStorage.local = "unsaved";
+            const sizes = jsonPassSizes(b.flushFeed);
+            expect(b.sync.heldRecordSnapshot("pluginStorage", "main")).toEqual(held);
+            expect(sizes.stringified).toBeGreaterThanOrEqual(held!.text.length);
+            expect(b.records.recordData("pluginStorage")).toEqual({
+                _ownedPluginStorage: { counter: 0, local: "unsaved" },
+            });
+        });
+        b.live.paused = false;
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        const expected = { _ownedPluginStorage: { counter: 1, local: "unsaved" } };
+        expect(b.records.recordData("pluginStorage")).toEqual(expected);
+        expect(b.fake.record("pluginStorage", "main")!.data).toEqual(expected);
+        expect(b.sync.heldRecordSnapshot("pluginStorage", "main")).toEqual({
+            revision: b.fake.record("pluginStorage", "main")!.revision,
+            text: JSON.stringify(expected),
+        });
+        const batches = b.fake.batchCount();
+        expect(batches).toBeGreaterThan(1);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(b.fake.batchCount()).toBe(batches);
+        quiet(b);
+    });
+
+    it.each([
+        {
+            label: "an unknown field-patch member",
+            kind: "pluginStorage",
+            id: "main",
+            patch: { set: { counter: 99 }, remove: [], future: true },
+        },
+        {
+            label: "an unknown dictionary-entry patch member",
+            kind: "pluginStorage",
+            id: "main",
+            patch: {
+                set: {},
+                remove: [],
+                nested: { _ownedPluginStorage: { set: { counter: 99 }, remove: [], future: true } },
+            },
+        },
+        {
+            label: "an unknown item-change member",
+            kind: "plugins",
+            id: "main",
+            patch: {
+                itemKey: "name",
+                items: [],
+                changes: [{ id: "first", set: { enabled: false }, remove: [], future: true }],
+            },
+        },
+        {
+            label: "an undeclared dictionary",
+            kind: "pluginStorage",
+            id: "main",
+            patch: { set: {}, remove: [], nested: { custom: { set: { counter: 99 }, remove: [] } } },
+        },
+        {
+            label: "a nested patch on a character",
+            kind: "characters",
+            id: "c",
+            patch: {
+                set: { name: "forged" },
+                remove: [],
+                nested: { _ownedPluginStorage: { set: { counter: 99 }, remove: [] } },
+            },
+        },
+        {
+            label: "itemKey on a non-plugin kind",
+            kind: "modules",
+            id: "main",
+            patch: { itemKey: "name", items: [], changes: [{ id: "first", set: { enabled: false }, remove: [] }] },
+        },
+    ] as const)(
+        "reads the whole record for $label without first advancing the saved revision",
+        async ({ kind, id, patch }) => {
+            const b = await boot({
+                prepare: (fake) => {
+                    fake.set("pluginStorage", "main", {
+                        counter: 0,
+                        custom: { counter: 0 },
+                        _ownedPluginStorage: { counter: 0 },
+                    });
+                    fake.set("plugins", "main", [{ name: "first", enabled: true }]);
+                    fake.set("modules", "main", [{ id: "module-id", name: "first", enabled: true }]);
+                },
+            });
+            b.live.paused = true;
+            const mirrorRecord = () =>
+                kind === "characters"
+                    ? b.characters.characterList().find((entry) => entry.chaId === id)
+                    : b.records.recordData(kind);
+            // Both envelopes must reject unsupported members, including messages from future servers.
+            for (const carrier of ["entryPatch", "patch"] as const) {
+                const before = JSON.stringify(mirrorRecord());
+                const held = b.sync.heldRecordSnapshot(kind, id)!;
+                const stored = b.fake.record(kind, id)!.data;
+                const data = Array.isArray(stored)
+                    ? stored.map((item) => ({ ...item, note: carrier }))
+                    : { ...stored, note: carrier };
+                b.fake.set(kind, id, data);
+                const revision = b.fake.record(kind, id)!.revision;
+                b.sync.noteRemoteChanges({
+                    resources: [{ kind, id, revision, [carrier]: { baseRevision: held.revision, ...patch } }],
+                    chats: [],
+                    chatOrders: [],
+                });
+                expect(b.sync.heldRecordSnapshot(kind, id)).toEqual(held);
+                expect(JSON.stringify(mirrorRecord())).toBe(before);
+                expect(reads(b)).toEqual([]);
+                await b.sync.flushResources();
+                await vi.advanceTimersByTimeAsync(1500);
+                expect(reads(b)).toEqual([expect.objectContaining({ refs: [{ kind, id }] })]);
+                expect(b.sync.heldRecordRevision(kind, id)).toBe(revision);
+                const saved = JSON.parse(b.sync.heldRecordSnapshot(kind, id)!.text);
+                expect(saved).toEqual(b.fake.record(kind, id)!.data);
+                expect(b.fake.batchCount()).toBe(0);
+                b.fake.requests.length = 0;
+            }
+            quiet(b);
+        },
+    );
+});
+
 describe("feed patches through the tab save adapter", () => {
+    it("applies a filtered patch after an appended id is removed with base rows without rereading the chat", async () => {
+        const b = await boot();
+        const baseRevision = b.chat.heldChatRevision(refK);
+        remote(b, [
+            { op: "append", anchor: { start: true }, messages: [m("temporary", "TEMP")] },
+            { op: "setText", id: "c", text: "C!" },
+            { op: "remove", ids: ["b", "temporary", "a"] },
+        ]);
+
+        const patch = latest(b);
+        expect(patch.baseRevision).toBe(baseRevision);
+        expect(patch.count).toBe(1);
+        expect(mirror(b).message).toEqual([m("c", "C!")]);
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        quiet(b);
+    });
+
+    it.each(["begin", "write-back", "switch"] as const)(
+        "reads an oversized reroll %s carrier and restored variables by id without a whole-chat read",
+        async (step) => {
+            const rows = rerollRows();
+            const original =
+                step === "switch"
+                    ? {
+                          ...rows.original,
+                          candidates: [
+                              { ...rows.original.candidates![0], data: "Before manual edit" },
+                              rows.original.candidates![1],
+                          ],
+                      }
+                    : rows.original;
+            const b = await boot({
+                messages: [m("a", "A"), m("b", "B"), original],
+                meta: { scriptstate: { $x: "1" } },
+            });
+            b.fake.lock!.addToken("job");
+            const attempt = { characterId: "c", chatId: "k", messageId: "c", generationId: "g" };
+            const write = (ops: ChatOp[], action?: "begin" | "rollback") => {
+                const options = { jobToken: "job", ...(action ? { rerollAttempt: { ...attempt, action } } : {}) };
+                b.fake.store.applyChanges(
+                    { chats: [{ characterId: "c", chatId: "k", baseRevision: b.fake.chat("c", "k")!.revision, ops }] },
+                    options,
+                );
+            };
+            if (step !== "switch") b.fake.lock!.acquire(attempt, { jobId: "J", generationId: "g", token: "job" });
+            if (step === "write-back") {
+                write(rows.begin, "begin");
+                expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+                b.fake.requests.length = 0;
+            }
+            const before = JSON.parse(JSON.stringify(mirror(b)));
+            const baseRevision = b.chat.heldChatRevision(refK);
+            const expected = step === "begin" ? rows.begun : step === "write-back" ? rows.restored : rows.selected;
+            const scriptstate = { $x: step === "begin" ? "0" : step === "write-back" ? "1" : "2" };
+            write(
+                step === "begin" ? rows.begin : step === "write-back" ? rows.rollback : rows.select,
+                step === "switch" ? undefined : step === "begin" ? "begin" : "rollback",
+            );
+            const event = b.fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("expected a committed change");
+            const revision = b.fake.chat("c", "k")!.revision;
+            expect(event.changes.chats[0]).toEqual({
+                characterId: "c",
+                id: "k",
+                revision,
+                trashedAt: null,
+                summaryBase: baseRevision,
+                rows: { baseRevision, changed: ["c"], removed: [], count: 3, meta: ["scriptstate"] },
+            });
+            expect(mirror(b)).toEqual(before);
+            expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+            expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+            expect(reads(b)).toEqual([
+                {
+                    refs: [],
+                    chats: [],
+                    continue: true,
+                    chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["c"], meta: ["scriptstate"] }],
+                },
+            ]);
+            expect(mirror(b)).toEqual({ ...before, scriptstate, message: [m("a", "A"), m("b", "B"), expected] });
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(b.chat.heldChatRevision(refK)).toBe(revision);
+            await b.sync.flushResources();
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        },
+    );
+
+    it("JSON-clones only a row diff's changed field and detaches it from the feed event", async () => {
+        const carrier: Message = {
+            ...m("b", "B", "char"),
+            candidates: [
+                { id: "previous", data: "x".repeat(190 * 1024) },
+                { id: "current", data: "B" },
+            ],
+            selected: 1,
+            candidatesRevision: 1,
+            saying: "Speaker",
+            generationInfo: { model: "before", outputTokens: 1 },
+        };
+        const b = await boot({ messages: [m("a", "A"), carrier] });
+        const before = JSON.parse(JSON.stringify(mirror(b).message[1])) as Message;
+        const generationInfo = { model: "m".repeat(70), outputTokens: 34 };
+        const fieldBytes = JSON.stringify(generationInfo).length;
+        b.live.paused = true;
+        remote(b, [{ op: "patchMessage", id: "b", set: { generationInfo } }]);
+        const event = b.live.queue[0];
+        if (event.type !== "change") throw new Error("expected a committed change");
+        const delta = event.changes.chats[0].rowDelta!;
+        expect(delta.rowDiffs).toEqual([{ id: "b", fields: { set: { generationInfo }, unset: [] } }]);
+
+        const stringify = vi.spyOn(JSON, "stringify");
+        let serializedBytes: number;
+        try {
+            b.flushFeed();
+            serializedBytes = stringify.mock.results.reduce(
+                (bytes, result) => bytes + (result.type === "return" ? (result.value?.length ?? 0) : 0),
+                0,
+            );
+        } finally {
+            stringify.mockRestore();
+        }
+
+        // The changed field, not the 190 KiB row it sits on.
+        expect(serializedBytes).toBeLessThan(fieldBytes + 1024);
+        const expected = { ...before, generationInfo: { ...generationInfo } };
+        expect(mirror(b).message).toEqual([m("a", "A"), expected]);
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        (delta.rowDiffs[0].fields!.set.generationInfo as Message["generationInfo"])!.model = "mutated event";
+        expect(mirror(b).message[1]).toEqual(expected);
+        expect(reads(b)).toEqual([]);
+        quiet(b);
+    });
+
+    it("diffs candidate checkpoint cleanup and a later edit from the row before the append group", async () => {
+        const data = "x".repeat(SMALL_FEED_PATCH_BYTES);
+        const candidates = [
+            { id: "old", data: "Old", scriptstateAfter: { $x: "1" } },
+            { id: "current", data, scriptstateAfter: { $x: "2" } },
+        ];
+        const carrier: Message = {
+            ...m("b", data, "char"),
+            candidates,
+            selected: 1,
+            candidatesRevision: 1,
+            scriptstateCheckpoint: { before: { $x: "0" }, after: { $x: "2" } },
+        };
+        const b = await boot({ messages: [m("a", "Question"), carrier] });
+        const baseRevision = b.chat.heldChatRevision(refK);
+        remote(b, [
+            { op: "append", anchor: { end: true }, messages: [m("next", "Next question")] },
+            { op: "setText", id: "b", text: data + "!" },
+        ]);
+        const cleaned = [
+            { id: "old", data: "Old" },
+            { id: "current", data },
+        ];
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.chats[0].rowDelta).toEqual({
+            baseRevision,
+            count: 3,
+            messages: [{ after: "b", message: m("next", "Next question") }],
+            rowDiffs: [
+                {
+                    id: "b",
+                    text: { keep: data.length, text: "!", base: { length: data.length, hash: textHash(data) } },
+                    fields: { set: { candidates: cleaned, candidatesRevision: 2 }, unset: ["scriptstateCheckpoint"] },
+                },
+            ],
+        });
+        expect(mirror(b).message).toEqual([
+            m("a", "Question"),
+            { ...m("b", data + "!", "char"), candidates: cleaned, selected: 1, candidatesRevision: 2 },
+            m("next", "Next question"),
+        ]);
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        expect(reads(b)).toEqual([]);
+        quiet(b);
+    });
+
+    it("reads an over-cap carrier once by id and applies inserted and removed rows", async () => {
+        const b = await boot();
+        const before = JSON.parse(JSON.stringify(mirror(b)));
+        const baseRevision = b.chat.heldChatRevision(refK);
+        const carrier = {
+            ...m("b", "B", "char"),
+            candidates: [
+                { id: "previous", data: "한".repeat(24 * 1024) },
+                { id: "current", data: "B" },
+            ],
+            candidatesRevision: 1,
+        };
+        remote(b, [
+            { op: "setMessage", message: carrier },
+            { op: "append", anchor: { after: "b" }, messages: [m("inserted", "I")] },
+            { op: "remove", ids: ["a", "c"] },
+        ]);
+        const revision = b.fake.chat("c", "k")!.revision;
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(mirror(b)).toEqual(before);
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toEqual([
+            {
+                refs: [],
+                chats: [],
+                continue: true,
+                chatRows: [{ characterId: "c", id: "k", revision, messageIds: ["b", "inserted"], meta: [] }],
+            },
+        ]);
+        expect(mirror(b)).toEqual({ ...before, message: [carrier, m("inserted", "I")] });
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.messagePositionOf(refK, "b")).toBe(0);
+        expect(b.chat.messagePositionOf(refK, "inserted")).toBe(1);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("applies whole scriptstate and absent-field removal from a reroll manifest without a whole read", async () => {
+        const b = await boot({ meta: { scriptstate: { keep: "same", old: "remove" }, folderId: "gone" } });
+        const before = JSON.parse(JSON.stringify(mirror(b)));
+        const carrier = {
+            ...m("b", "B", "char"),
+            candidates: [
+                { id: "previous", data: "x".repeat(MAX_FEED_PATCH_BYTES + 1) },
+                { id: "current", data: "B" },
+            ],
+            candidatesRevision: 1,
+        };
+        remote(b, [
+            { op: "setMessage", message: carrier },
+            { op: "begin", id: "b", generationId: "reroll" },
+            {
+                op: "meta",
+                merge: { scriptstate: { active: "reroll" } },
+                mergeUnset: { scriptstate: ["old"] },
+                unset: ["folderId"],
+            },
+        ]);
+        const revision = b.fake.chat("c", "k")!.revision;
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toHaveLength(1);
+        expect(reads(b)[0].chats).toEqual([]);
+        expect(reads(b)[0].chatRows).toEqual([
+            {
+                characterId: "c",
+                id: "k",
+                revision,
+                messageIds: ["b"],
+                meta: expect.arrayContaining(["folderId", "scriptstate"]),
+            },
+        ]);
+        expect(reads(b)[0].chatRows[0].meta).toHaveLength(2);
+        const expected = {
+            ...before,
+            scriptstate: { keep: "same", active: "reroll" },
+            message: [m("a", "A", "char"), carrier, m("c", "C")],
+        };
+        delete expected.folderId;
+        expect(mirror(b)).toEqual(expected);
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("applies a metadata-only over-cap manifest without a whole read", async () => {
+        const b = await boot();
+        const before = JSON.parse(JSON.stringify(mirror(b)));
+        const baseRevision = b.chat.heldChatRevision(refK);
+        const note = "n".repeat(MAX_FEED_PATCH_BYTES + 1);
+        remote(b, [{ op: "meta", set: { note } }]);
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        const revision = b.fake.chat("c", "k")!.revision;
+        expect(event.changes.chats[0]).toEqual({
+            characterId: "c",
+            id: "k",
+            revision,
+            trashedAt: null,
+            summaryBase: baseRevision,
+            rows: { baseRevision, changed: [], removed: [], count: 3, meta: ["note"] },
+        });
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toEqual([
+            {
+                refs: [],
+                chats: [],
+                continue: true,
+                chatRows: [{ characterId: "c", id: "k", revision, messageIds: [], meta: ["note"] }],
+            },
+        ]);
+        expect(mirror(b)).toEqual({ ...before, note });
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toHaveLength(1);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it.each(["at a newer revision", "deleted"] as const)(
+        "reads a moved chat whole once in the same refresh when it is %s",
+        async (state) => {
+            const b = await boot();
+            const before = JSON.parse(JSON.stringify(mirror(b)));
+            const carrier = {
+                ...m("b", "B", "char"),
+                candidates: [
+                    { id: "previous", data: "x".repeat(MAX_FEED_PATCH_BYTES + 1) },
+                    { id: "current", data: "B" },
+                ],
+                candidatesRevision: 1,
+            };
+            remote(b, [{ op: "setMessage", message: carrier }]);
+            const requestedRevision = b.fake.chat("c", "k")!.revision;
+            b.live.paused = true;
+            if (state === "deleted") b.fake.deleteChatForever("c", "k");
+            else remote(b, [{ op: "setText", id: "c", text: "newer" }]);
+            b.live.queue.length = 0;
+            const currentRevision = state === "deleted" ? null : b.fake.chat("c", "k")!.revision;
+            expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+            expect(reads(b)).toEqual([
+                {
+                    refs: [],
+                    chats: [],
+                    continue: true,
+                    chatRows: [{ characterId: "c", id: "k", revision: requestedRevision, messageIds: ["b"], meta: [] }],
+                },
+                { refs: [], chats: [{ characterId: "c", id: "k" }], continue: true },
+            ]);
+            if (state === "deleted") expect(b.chat.findChat(refK)).toBeUndefined();
+            else expect(mirror(b)).toEqual({ ...before, message: [m("a", "A", "char"), carrier, m("c", "newer")] });
+            expect(b.chat.heldChatRevision(refK) ?? null).toBe(currentRevision);
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b).flatMap((read) => read.chatRows ?? [])).toHaveLength(1);
+            expect(reads(b).flatMap((read) => read.chats ?? [])).toEqual([{ characterId: "c", id: "k" }]);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        },
+    );
+
+    it("applies successive row diffs without reads or rebuilding positions, then applies mixed whole rows and metadata", async () => {
+        const prefix = "x".repeat(100 * 1024) + "😀";
+        const b = await boot({ messages: [m("a", "A"), { ...m("b", prefix, "char"), saying: "gone" }, m("c", "C")] });
+        expect(b.chat.messagePositionOf(refK, "b")).toBe(1);
+        const positions = b.chat.messagePositionStats();
+        const generationInfo = { model: "remote", outputTokens: 34 };
+        const steps: { ops: ChatOp[]; row: Message }[] = [
+            {
+                ops: [{ op: "setText", id: "b", text: prefix + " appended" }],
+                row: { ...m("b", prefix + " appended", "char"), saying: "gone" },
+            },
+            {
+                ops: [{ op: "patchMessage", id: "b", set: { generationInfo } }],
+                row: { ...m("b", prefix + " appended", "char"), saying: "gone", generationInfo },
+            },
+            {
+                ops: [{ op: "patchMessage", id: "b", unset: ["saying"] }],
+                row: { ...m("b", prefix + " appended", "char"), generationInfo },
+            },
+        ];
+        for (const { ops, row } of steps) {
+            const baseRevision = b.chat.heldChatRevision(refK);
+            remote(b, ops);
+            const event = b.fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("expected a committed change");
+            const entry = event.changes.chats[0];
+            expect(entry.rowDelta?.baseRevision).toBe(baseRevision);
+            expect(entry.rowDelta?.rowDiffs).toHaveLength(1);
+            expect(entry.rowDelta).not.toHaveProperty("messages");
+            expect(entry).not.toHaveProperty("delta");
+            expect(entry).not.toHaveProperty("patch");
+            expect(mirror(b).message[1]).toEqual(row);
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(b.chat.heldChatRevision(refK)).toBe(entry.revision);
+            expect(b.chat.isChatBehind(refK)).toBe(false);
+            expect(b.chat.messagePositionOf(refK, "b")).toBe(1);
+            expect(b.chat.messagePositionStats().builds).toBe(positions.builds);
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toEqual([]);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        }
+        remote(b, [
+            { op: "remove", ids: ["a"] },
+            { op: "setText", id: "b", text: prefix + " final" },
+            { op: "append", anchor: { after: "b" }, messages: [m("inserted", "I")] },
+            { op: "meta", set: { note: "remote note" } },
+        ]);
+        expect(mirror(b).message).toEqual([
+            { ...m("b", prefix + " final", "char"), generationInfo },
+            m("inserted", "I"),
+            m("c", "C"),
+        ]);
+        expect(mirror(b).note).toBe("remote note");
+        expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([]);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it("reloads a row diff whose held text has the stored base's length but a different hash", async () => {
+        const stored = "A".repeat(9000);
+        const held = "B".repeat(9000);
+        const b = await boot({ messages: [m("b", stored, "char")] });
+        const record = b.fake.chat("c", "k")!;
+        const baseRevision = b.chat.heldChatRevision(refK)!;
+        // Install a different mirror at the same revision without queuing a save.
+        b.chat.acceptRemoteChat({ ...record, data: { ...record.data, message: [m("b", held, "char")] } });
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(mirror(b).message[0].data).toBe(held);
+        quiet(b);
+
+        b.live.paused = true;
+        remote(b, [{ op: "setText", id: "b", text: stored + "!" }]);
+        const event = b.live.queue[0];
+        if (event.type !== "change") throw new Error("expected a committed change");
+        const entry = event.changes.chats[0];
+        expect(entry.rowDelta).toEqual({
+            baseRevision,
+            count: 1,
+            rowDiffs: [
+                {
+                    id: "b",
+                    text: { keep: stored.length, text: "!", base: { length: stored.length, hash: textHash(stored) } },
+                },
+            ],
+        });
+        expect(entry).not.toHaveProperty("patch");
+        b.flushFeed();
+        expect(b.chat.isChatBehind(refK)).toBe(true);
+        expect(mirror(b).message[0].data).toBe(held);
+        expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+        expect(reads(b)).toEqual([]);
+
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual([expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(mirror(b).message).toEqual([m("b", stored + "!", "char")]);
+        expect(b.chat.heldChatRevision(refK)).toBe(entry.revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it.each([
+        { label: "absent", base: undefined, outcome: "ignored" },
+        { label: "non-integer length", base: { length: 1.5, hash: textHash("B") }, outcome: "noticed" },
+        { label: "non-string hash", base: { length: 1, hash: 42 }, outcome: "noticed" },
+    ] as const)("accepts an absent text base and rejects malformed bases: $label", async ({ base, outcome }) => {
+        const b = await boot();
+        const baseRevision = b.chat.heldChatRevision(refK)!;
+        b.live.paused = true;
+        remote(b, [{ op: "setText", id: "b", text: "B!" }]);
+        const revision = b.fake.chat("c", "k")!.revision;
+        // Model an older server or a malformed feed body at the public admission boundary.
+        const body = {
+            baseRevision,
+            count: 3,
+            rowDiffs: [{ id: "b", text: { keep: 1, text: "!", ...(base === undefined ? {} : { base }) } }],
+        } as Parameters<ChatModule["noteRemoteChat"]>[2];
+        // The mark rides beside the revision, as the server's feed entry carries it.
+        expect(b.chat.noteRemoteChat(refK, revision, body, { trashedAt: null })).toBe(outcome);
+        const applied = outcome === "ignored";
+        expect(mirror(b).message[1].data).toBe(applied ? "B!" : "B");
+        expect(b.chat.heldChatRevision(refK)).toBe(applied ? revision : baseRevision);
+        expect(b.chat.isChatBehind(refK)).toBe(!applied);
+
+        await b.sync.flushResources();
+        await vi.advanceTimersByTimeAsync(1500);
+        expect(reads(b)).toEqual(applied ? [] : [expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(mirror(b).message[1].data).toBe("B!");
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
+
+    it.each(["another revision", "short held text", "missing held row", "generating", "stale"] as const)(
+        "leaves a row delta unapplied for %s and reads the whole chat once idle",
+        async (state) => {
+            const data = "x".repeat(100 * 1024);
+            const b = await boot({ messages: [m("a", "A"), { ...m("b", data, "char"), saying: "gone" }, m("c", "C")] });
+            const baseRevision = b.chat.heldChatRevision(refK)!;
+            b.live.paused = true;
+            if (state === "another revision") {
+                remote(b, [{ op: "meta", set: { note: "missed" } }]);
+                b.live.queue.length = 0;
+            }
+            if (state === "short held text" || state === "missing held row") {
+                const held = b.fake.chat("c", "k")!;
+                const messages = [
+                    m("a", "A"),
+                    {
+                        ...m(
+                            state === "missing held row" ? "other" : "b",
+                            state === "short held text" ? "short" : data,
+                            "char",
+                        ),
+                        saying: "gone",
+                    },
+                    m("c", "C"),
+                ];
+                b.chat.acceptRemoteChat({ ...held, data: { ...held.data, message: messages } } as Parameters<
+                    ChatModule["acceptRemoteChat"]
+                >[0]);
+            }
+            if (state === "generating") {
+                expect(
+                    b.chat.applyServerGeneration(refK, {
+                        jobId: "J",
+                        messageId: "c",
+                        generationId: "g",
+                        seq: 1,
+                        text: "streaming",
+                    }),
+                ).toBe(true);
+            }
+            if (state === "stale") {
+                const future = baseRevision.replace(/:\d+$/, ":999");
+                expect(
+                    b.sync.applyPatchHydration({
+                        characterId: "c",
+                        id: "k",
+                        baseRevision: future,
+                        revision: future.replace(/999$/, "1000"),
+                        count: 3,
+                    }),
+                ).toBe("mismatch");
+                expect(b.chat.isChatStale(refK)).toBe(true);
+            }
+            const before = JSON.parse(JSON.stringify(mirror(b)));
+            remote(b, [
+                { op: "setText", id: "a", text: "A!" },
+                { op: "setText", id: "b", text: data + " appended" },
+                { op: "patchMessage", id: "b", set: { generationInfo: { model: "remote" } }, unset: ["saying"] },
+                { op: "meta", set: { note: "remote note" } },
+            ]);
+            const event = b.live.queue[0];
+            if (event.type !== "change") throw new Error("expected a committed change");
+            expect(event.changes.chats[0].rowDelta?.rowDiffs.map(({ id }) => id)).toEqual(["a", "b"]);
+            b.flushFeed();
+            expect(reads(b)).toEqual([]);
+            expect(mirror(b)).toEqual(before);
+            expect(b.chat.heldChatRevision(refK)).toBe(baseRevision);
+            expect(b.chat.isChatBehind(refK)).toBe(true);
+            if (state === "generating") {
+                await vi.advanceTimersByTimeAsync(1500);
+                expect(reads(b)).toEqual([]);
+                expect(mirror(b)).toEqual(before);
+                b.chat.endServerJob("J");
+            }
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toHaveLength(1);
+            expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
+            expect(reads(b)[0].chatSummaryCollections ?? []).toEqual([]);
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(mirror(b).message[1]).toEqual({
+                ...m("b", data + " appended", "char"),
+                generationInfo: { model: "remote" },
+            });
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.isChatBehind(refK)).toBe(false);
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toHaveLength(1);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+        },
+    );
+
+    it("applies metadata deltas as remote values equal to a whole read without queuing a write", async () => {
+        const memory = "m".repeat(100 * 1024);
+        const b = await boot({
+            meta: {
+                supaMemoryData: memory,
+                folderId: "remove me",
+                scriptstate: { keep: "same", change: "old", gone: "remove" },
+            },
+        });
+        const expected: Record<string, unknown> = {
+            id: "k",
+            name: "k",
+            note: "remote note",
+            localLore: [],
+            fmIndex: -1,
+            message: [m("a", "A", "char"), m("b", "B", "char"), m("c", "C")],
+            supaMemoryData: memory,
+            autoTranslate: true,
+            scriptstate: { keep: "same", change: "new", added: "value" },
+        };
+        const cases: { ops: ChatOp[]; scriptstate?: unknown }[] = [
+            {
+                ops: [
+                    {
+                        op: "meta",
+                        set: { note: "remote note", autoTranslate: true },
+                        unset: ["folderId"],
+                        merge: { scriptstate: { change: "new", added: "value" } },
+                        mergeUnset: { scriptstate: ["gone"] },
+                    },
+                ],
+                scriptstate: expected.scriptstate,
+            },
+            { ops: [{ op: "meta", set: { scriptstate: "legacy string" } }], scriptstate: "legacy string" },
+            { ops: [{ op: "meta", set: { scriptstate: { restored: "map" } } }], scriptstate: { restored: "map" } },
+            { ops: [{ op: "meta", unset: ["scriptstate"] }] },
+            { ops: [{ op: "meta", merge: { scriptstate: { appeared: "map" } } }], scriptstate: { appeared: "map" } },
+        ];
+        for (const { ops, scriptstate } of cases) {
+            remote(b, ops);
+            const event = b.fake.feedEvents.at(-1)!;
+            if (event.type !== "change") throw new Error("expected a committed change");
+            expect(event.changes.chats[0]).toHaveProperty("delta.metaFields");
+            expect(event.changes.chats[0]).not.toHaveProperty("patch");
+            if (scriptstate === undefined) delete expected.scriptstate;
+            else expected.scriptstate = scriptstate;
+            expect(JSON.parse(JSON.stringify(mirror(b)))).toEqual(expected);
+            expect(JSON.parse(JSON.stringify(mirror(b)))).toEqual(b.fake.chat("c", "k")!.data);
+            expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+            expect(b.chat.isChatBehind(refK)).toBe(false);
+            expect(b.chat.hasUnsavedChatWork()).toBe(false);
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(1500);
+            expect(reads(b)).toEqual([]);
+            expect(b.fake.batchCount()).toBe(0);
+            expect(b.fake.requests).toEqual([]);
+            quiet(b);
+        }
+    });
+
+    it("reads a loaded chat for a mismatched delta or a plain reference without echoing metadata", async () => {
+        for (const notice of ["mismatched delta", "plain reference"]) {
+            const b = await boot({ meta: { supaMemoryData: "m".repeat(100 * 1024) } });
+            const base = b.chat.heldChatRevision(refK);
+            b.live.paused = true;
+            remote(b, [{ op: "meta", set: { note: "missed note" } }]);
+            b.live.queue.length = 0;
+            remote(b, [{ op: "meta", set: { autoTranslate: true } }]);
+            const event = b.live.queue[0];
+            if (event.type !== "change") throw new Error("expected a committed change");
+            const entry = event.changes.chats[0];
+            expect(entry.delta?.baseRevision).not.toBe(base);
+            expect(entry.delta).toBeDefined();
+            const { characterId, id, revision } = entry;
+            b.sync.noteRemoteChanges({
+                resources: [],
+                chats: [notice === "plain reference" ? { characterId, id, revision } : entry],
+                chatOrders: [],
+            });
+            expect(mirror(b).autoTranslate).toBeUndefined();
+            expect(mirror(b).note).toBe("");
+            expect(b.chat.heldChatRevision(refK)).toBe(base);
+            expect(b.chat.isChatBehind(refK)).toBe(true);
+            await vi.advanceTimersByTimeAsync(1500);
+            await b.sync.flushResources();
+            expect(reads(b)).toHaveLength(1);
+            expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
+            expect(reads(b)[0].chatSummaryCollections ?? []).toEqual([]);
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(mirror(b)).toMatchObject({ note: "missed note", autoTranslate: true });
+            expect(b.chat.heldChatRevision(refK)).toBe(revision);
+            expect(b.fake.batchCount()).toBe(0);
+            quiet(b);
+            b.fake.close();
+        }
+    });
+
     it("applies a loaded idle patch immediately without a notice, read, outgoing work, or discard", async () => {
         const b = await boot();
         const scope = b.sync.beginMutationScope();
@@ -208,15 +1299,15 @@ describe("feed patches through the tab save adapter", () => {
         expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
         expect(b.chat.isChatBehind(refK)).toBe(false);
         await vi.advanceTimersByTimeAsync(1000);
-        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
         quiet(b);
     });
 
-    it.each(["another revision", "stale", "local work", "generating", "summary only"])(
+    it.each(["another revision", "stale", "local work", "generating"])(
         "falls back to the existing notice/read path for %s",
         async (state) => {
-            const b = await boot({ summaries: state === "summary only" });
+            const b = await boot();
             const scope = b.sync.beginMutationScope();
             const base = b.fake.chat("c", "k")!.revision;
             if (state === "another revision") {
@@ -252,32 +1343,51 @@ describe("feed patches through the tab save adapter", () => {
             expect(b.chat.heldChatRevision(refK)).toBe(base);
             expect(b.chat.isChatBehind(refK)).toBe(true);
             expect(reads(b)).toEqual([]);
-            if (state === "summary only") expect(b.chat.findChat(refK)).toBeUndefined();
-            else expect(mirror(b).message[1].data).toBe(state === "generating" ? "raw streaming" : "B");
+            expect(mirror(b).message[1].data).toBe(state === "generating" ? "raw streaming" : "B");
             if (state === "generating") {
                 await vi.advanceTimersByTimeAsync(600);
                 expect(reads(b)).toEqual([]);
                 b.chat.endServerJob("J");
             }
-            expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+            expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
             await vi.advanceTimersByTimeAsync(1200);
             expect(reads(b)).toHaveLength(1);
-            if (state === "summary only") {
-                expect(reads(b)[0]).toMatchObject({ chatSummaryCollections: ["c"] });
-                expect(reads(b)[0].chats ?? []).toEqual([]);
-                expect(b.chat.findChat(refK)).toBeUndefined();
-            } else {
-                expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
-                expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
-                expect(mirror(b).message[1].data).toBe("stored checkpoint");
-                if (state === "local work") expect(mirror(b).note).toBe("local note");
-                if (state === "another revision") expect(mirror(b).note).toBe("unseen prior change");
-            }
+            expect(reads(b)[0]).toMatchObject({ chats: [{ characterId: "c", id: "k" }] });
+            expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
+            expect(mirror(b).message[1].data).toBe("stored checkpoint");
+            if (state === "local work") expect(mirror(b).note).toBe("local note");
+            if (state === "another revision") expect(mirror(b).note).toBe("unseen prior change");
             expect(b.chat.isChatBehind(refK)).toBe(false);
             expect(b.fake.batchCount()).toBe(state === "local work" ? 1 : 0);
             quiet(b);
         },
     );
+
+    it("never applies a feed patch to a chat held only as its summary: the summary base advances its revision with no read", async () => {
+        const b = await boot({ summaries: true });
+        const scope = b.sync.beginMutationScope();
+        const base = b.fake.chat("c", "k")!.revision;
+        expect(b.chat.heldChatRevision(refK)).toBe(base);
+        remote(b, [{ op: "setText", id: "b", text: "stored checkpoint" }]);
+        const { revision } = latest(b);
+        // A text write leaves the summary as it was at the held revision: the entry's `summaryBase`.
+        const event = b.fake.feedEvents.at(-1)!;
+        if (event.type !== "change") throw new Error("expected a committed change");
+        expect(event.changes.chats[0].summaryBase).toBe(base);
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(reads(b)).toEqual([]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
+        await vi.advanceTimersByTimeAsync(1200);
+        // Neither the character's summary list nor the chat whole is read, and nothing is written.
+        expect(reads(b)).toEqual([]);
+        expect(b.chat.findChat(refK)).toBeUndefined();
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(b.chat.isChatBehind(refK)).toBe(false);
+        expect(b.fake.batchCount()).toBe(0);
+        quiet(b);
+    });
 
     it("lets the owner's later job patch fit both a locked feed notice and an already applied unlocked feed patch", async () => {
         const b = await boot();
@@ -299,7 +1409,7 @@ describe("feed patches through the tab save adapter", () => {
         expect(mirror(b)).toEqual(b.fake.chat("c", "k")!.data);
         expect(b.chat.isChatBehind(refK)).toBe(false);
         await vi.advanceTimersByTimeAsync(1000);
-        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
         expect(b.fake.requests).toEqual([]);
         quiet(b);
     });
@@ -382,6 +1492,130 @@ describe("the feed's generation locks", () => {
     const locked = (b: Booted, id = "b") => b.chat.isMessageLocked(refK, id);
     const setText = (op: "setText", id: string, text: string): ChatOp => ({ op, id, text });
 
+    it.each([
+        { behavior: "keeps", streaming: [lockOf("b", "g", 1)], expectedLock: true },
+        { behavior: "releases", streaming: [], expectedLock: false },
+    ])("$behavior the reply lock according to a newer whole read's snapshot", async ({ streaming, expectedLock }) => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "waiting for provider")], [lockOf("b", "g", 1)]);
+        const announcedRevision = b.chat.heldChatRevision(refK);
+        expect(locked(b)).toBe(true);
+
+        // An unrelated write advances the chat; its frame never reaches this observer.
+        b.live.paused = true;
+        remote(b, [{ op: "meta", set: { note: "another writer" } }]);
+        if (!expectedLock) jobEnd(b);
+        b.fake.streamingForChat = (characterId, id) => (characterId === "c" && id === "k" ? streaming : undefined);
+        const readRevision = b.fake.chat("c", "k")!.revision;
+        expect(readRevision).not.toBe(announcedRevision);
+        expect(locked(b)).toBe(true);
+
+        b.sync.reconcileRemote(b.fake.store.listRevisions());
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(reads(b)).toEqual([expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(mirror(b).note).toBe("another writer");
+        expect(b.chat.heldChatRevision(refK)).toBe(readRevision);
+        expect(locked(b)).toBe(expectedLock);
+        expect(b.chat.isChatGenerating(refK)).toBe(expectedLock);
+        quiet(b);
+    });
+
+    it("recovers a lost follow by unlocking the reply from an empty whole-read snapshot at the same revision", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "last checkpoint")], [lockOf("b", "g", 1)]);
+        const revision = b.chat.heldChatRevision(refK);
+        expect(
+            b.chat.applyServerGeneration(refK, {
+                jobId: "J",
+                messageId: "b",
+                generationId: "g",
+                seq: 1,
+                text: "last checkpoint",
+            }),
+        ).toBe(true);
+        b.chat.detachServerJob("J");
+        b.live.paused = true;
+        jobEnd(b); // The job ends without writing, and its release frame is missed too.
+        b.fake.streamingForChat = () => [];
+        expect(locked(b)).toBe(true);
+        expect(b.chat.isChatGenerating(refK)).toBe(true);
+
+        // `recoverJobChat` uses this stale mark and the save loop's immediate idle refresh.
+        expect(b.chat.markChatStale(refK)).toBe(true);
+        expect(await b.sync.refreshStaleChat(refK)).toBe(true);
+        expect(reads(b)).toEqual([expect.objectContaining({ chats: [{ characterId: "c", id: "k" }] })]);
+        expect(b.chat.heldChatRevision(refK)).toBe(revision);
+        expect(mirror(b).message[1].data).toBe("last checkpoint");
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        quiet(b);
+    });
+
+    it("does not reinstall a lock from a whole-read answer delayed past the job's end frame", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "waiting for provider")], [lockOf("b", "g", 1)]);
+        b.live.paused = true;
+        remote(b, [{ op: "meta", set: { note: "sampled while running" } }]);
+        b.live.queue.length = 0;
+        b.live.paused = false;
+        b.fake.streamingForChat = () => [lockOf("b", "g", 1)];
+        let onSampled!: () => void;
+        let releaseAnswer!: () => void;
+        const sampled = new Promise<void>((resolve) => {
+            onSampled = resolve;
+        });
+        const answer = new Promise<void>((resolve) => {
+            releaseAnswer = resolve;
+        });
+        const fetch = b.fake.fetch;
+        vi.spyOn(b.fake, "fetch").mockImplementation(async (path, init) => {
+            const response = await fetch(path, init);
+            if (path === "/api/resources/read") {
+                onSampled();
+                await answer;
+            }
+            return response;
+        });
+        b.chat.markChatStale(refK);
+        const refresh = b.sync.refreshStaleChat(refK);
+        try {
+            await sampled;
+            expect(locked(b)).toBe(true);
+            jobEnd(b); // No refs: a revision fence alone cannot reject the pending snapshot.
+            expect(locked(b)).toBe(false);
+        } finally {
+            releaseAnswer();
+            await refresh;
+        }
+        expect(mirror(b).note).toBe("sampled while running");
+        expect(b.chat.heldChatRevision(refK)).toBe(b.fake.chat("c", "k")!.revision);
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        quiet(b);
+    });
+
+    it("releases a removed chat's feed locks when a collection read drops its held revision", async () => {
+        const b = await boot();
+        jobLock(b);
+        jobWrite(b, [setText("setText", "b", "last checkpoint")], [lockOf("b", "g", 1)]);
+        b.live.paused = true;
+        jobEnd(b);
+        b.fake.deleteChatForever("c", "k");
+        expect(locked(b)).toBe(true);
+        expect(b.chat.heldChatRevision(refK)).not.toBeNull();
+
+        const read = await b.client.readRefs([], { chatSummaryCollections: ["c"] });
+        expect(b.chat.applyRemoteCollection(read.chatSummaryCollections![0])).toBe(true);
+        expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
+        expect(b.chat.heldChatRevision(refK)).toBeNull();
+        expect(locked(b)).toBe(false);
+        expect(b.chat.isChatGenerating(refK)).toBe(false);
+        quiet(b);
+    });
+
     it.each(["feed", "this tab"])(
         "protects character membership during a %s job and defers recovery only for this tab's stream",
         async (owner) => {
@@ -409,29 +1643,28 @@ describe("the feed's generation locks", () => {
 
             // The missed deletion makes the sibling edit conflict and forces a recovery list read.
             b.live.paused = true;
-            b.fake.chatBatch([
-                {
-                    characterId: "c",
-                    chatId: "j",
-                    baseRevision: b.fake.chat("c", "j")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-            ]);
+            b.fake.deleteChatForever("c", "j");
             b.chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "queued on the deleted sibling" });
-            expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"] });
+            expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"], refused: [] });
             const recoveryReads = () => reads(b).filter((body) => body.chatSummaryCollections?.includes("c"));
+            // The recovery's list read runs in the background queue, not in the flush.
+            await vi.advanceTimersByTimeAsync(1000);
             expect(recoveryReads()).toHaveLength(owner === "feed" ? 1 : 0);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(owner === "feed" ? ["k"] : ["k", "j"]);
             expect(b.chat.isCharacterGenerating("c")).toBe(true);
 
+            // The server ends the job; its release frame is still on the way (the feed is paused).
+            jobEnd(b);
             b.chat.endServerJob("J");
-            // Ending this tab's follow does not release the independent feed lock.
-            expect(b.chat.isCharacterGenerating("c")).toBe(true);
-            expect(await b.sync.flushResources()).toEqual({ discarded: [] });
+            // The end of this tab's job releases the feed lock of its generation with its own; a job
+            // this tab does not follow keeps its feed lock until the feed releases it.
+            expect(b.chat.isCharacterGenerating("c")).toBe(owner === "feed");
+            expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            await vi.advanceTimersByTimeAsync(1000);
             expect(recoveryReads()).toHaveLength(1);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["k"]);
             b.live.paused = false;
-            jobEnd(b);
+            b.flushFeed();
             expect(b.chat.isCharacterGenerating("c")).toBe(false);
         },
     );
@@ -473,7 +1706,7 @@ describe("the feed's generation locks", () => {
         quiet(b);
         // Unlocked: an edit goes out as usual.
         b.chat.setMessageText(refK, "b", "edited after");
-        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [] });
+        expect(await b.sync.flushResources({ scope })).toEqual({ discarded: [], refused: [] });
         expect(b.fake.texts("c", "k")).toEqual(["A", "edited after", "C"]);
     });
 
@@ -484,7 +1717,7 @@ describe("the feed's generation locks", () => {
         jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);
         // No lock here yet: the edit is accepted locally and refused by the server (409 `generating`).
         b.chat.setMessageText(refK, "b", "edited");
-        await expect(b.sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"] });
+        await expect(b.sync.flushResources()).resolves.toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(b.fake.texts("c", "k")).toEqual(["A", "one", "C"]);
         expect(alerts.normal.mock.calls.map(([value]) => value).sort()).toEqual(["generating", "reloaded"]);
         expect(b.chat.hasUnsavedChatWork()).toBe(false);
@@ -517,8 +1750,8 @@ describe("the feed's generation locks", () => {
             b.chat.applyServerGeneration(refK, { jobId: "J", messageId: "b", generationId: "g", seq: 1, text: "one" }),
         ).toBe(true);
         expect(locked(b)).toBe(true);
-        // The follow ends `lost` (`releaseGenerationJob` → `endServerJob`) while the server job goes on.
-        b.chat.endServerJob("J");
+        // The follow ends `lost` (`detachGenerationJob` → `detachServerJob`) while the server job goes on.
+        b.chat.detachServerJob("J");
         expect(locked(b)).toBe(true);
         expect(b.chat.isChatGenerating(refK)).toBe(true);
         expect(() => b.chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
@@ -536,7 +1769,7 @@ describe("the feed's generation locks", () => {
         expect(b.chat.hasUnsavedChatWork()).toBe(false);
     });
 
-    it("the owner's job events of a generation the feed already released still apply: the two locks are independent", async () => {
+    it("the feed's release does not retire the generation: the owner's later job events still apply", async () => {
         const b = await boot();
         jobLock(b);
         jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);

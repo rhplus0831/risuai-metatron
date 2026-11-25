@@ -2,6 +2,10 @@ import type { character } from "../../../shared/database.ts";
 import type { GenerationCommand } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
+import { runMemoryChapters } from "../prompt/memory/structured/chapters.ts";
+import { runMemoryRebuild } from "../prompt/memory/structured/rebuild.ts";
+import { runMemoryRecord } from "../prompt/memory/structured/recordJob.ts";
+import { runMemoryTest } from "../prompt/memory/structured/testRun.ts";
 import { runPromptJob } from "../prompt/runner.ts";
 import { localModelRefusal } from "../prompt/transformers.ts";
 import {
@@ -24,11 +28,29 @@ import {
 export type { GenerationRunnerDeps } from "./runSetup.ts";
 
 /**
- * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers); every
- * other kind is a send, a continue, or a preview (`src/server/prompt/runner.ts`).
+ * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers),
+ * but for a start of the memory writer (`recordJob.ts`), a test run of it (`testRun.ts`), chapter
+ * synopses (`chapters.ts`), or a chat's rebuild (`rebuild.ts`); every other kind (a send, a continue,
+ * a reroll, a group chat's send, or a preview) is a prompt job (`prompt/runner.ts` `runPromptJob`).
  */
 export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRunner {
     return async (job) => {
+        if (job.command?.type === "memoryRecord") {
+            await runMemoryRecord(job, job.command.messageId, deps);
+            return;
+        }
+        if (job.command?.type === "memoryTest") {
+            await runMemoryTest(job, deps);
+            return;
+        }
+        if (job.command?.type === "memoryChapters") {
+            await runMemoryChapters(job, deps);
+            return;
+        }
+        if (job.command?.type === "memoryRebuild") {
+            await runMemoryRebuild(job, job.command, deps);
+            return;
+        }
         if (job.kind === "command") {
             await runCommand(job, deps);
             return;
@@ -107,11 +129,11 @@ async function runCommand(job: RunningJob, deps: GenerationRunnerDeps): Promise<
  * A Lua button or form as a command job: each Lua trigger of the character and of its modules, in
  * the client's order, runs `onButtonClick` with the button's data or `onFormSubmit` with the form's
  * key and values as metadata on a fresh engine (no Lua global survives between runs), all under one
- * aggregate budget. A trigger stops the loop when the chat is gone. A load failure ends the job with its error
- * (the client's `doString` throws out of the loop), as do a spent budget and a worker failure; a
- * failure inside the handler is logged and the next trigger runs (the client's catch); a fatal host
- * failure (a write conflict, a lost owner, an abort) ends the job. `accepted` and `done` carry no
- * message.
+ * aggregate budget. A trigger stops the loop when the chat is gone or Lua calls `stopChat`. A load failure
+ * ends the job with its error (as the client's former `doString` threw out of the loop), as do a spent budget and a worker
+ * failure; a failure inside the handler is logged and the next trigger runs (as the client's former
+ * catch did); a fatal host failure (a write conflict, a lost owner, an abort) ends the job.
+ * `accepted` carries no message. The job ends after the handlers finish.
  */
 async function runLuaInteractionTrigger(
     job: RunningJob,
@@ -173,13 +195,12 @@ async function runLuaInteractionTrigger(
             }
             console.error("[Lua]", result.error);
         }
+        if (result.stopSending) {
+            break;
+        }
     }
     flushChatMetadata(job);
-    job.emit({
-        type: "done",
-        revision: store.chatRevision(characterId, chatId),
-        ...(state.followUps.length > 0 ? { followUps: state.followUps } : {}),
-    });
+    finishCommand(job, deps, state);
 }
 
 /**
@@ -193,7 +214,6 @@ async function runLuaInteractionTrigger(
  * job with it; a fatal host failure or an abort ends it as in a button.
  */
 async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, name: string): Promise<void> {
-    const { characterId, chatId } = job.context;
     const { setup, state, character } = prepare(job, deps);
     try {
         await setup.runOnCopy(character, "manual", { manualName: name });
@@ -214,9 +234,17 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
     }
     setup.check();
     flushChatMetadata(job);
+    finishCommand(job, deps, state);
+}
+
+/** Ends the command at the chat's current revision and reports its skipped or missed hooks. */
+function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, state: JobRunState): void {
+    const { characterId, chatId } = job.context;
+    const { skippedHooks, missedHooks } = state;
     job.emit({
         type: "done",
         revision: deps.store.chatRevision(characterId, chatId),
-        ...(state.followUps.length > 0 ? { followUps: state.followUps } : {}),
+        ...(skippedHooks.length > 0 ? { skipped: skippedHooks } : {}),
+        ...(missedHooks.length > 0 ? { missed: missedHooks } : {}),
     });
 }

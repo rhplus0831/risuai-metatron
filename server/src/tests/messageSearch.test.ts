@@ -14,7 +14,7 @@ import { createServerContext } from "../app.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
 import type { MessageSearchRouteOptions } from "../routes/messageSearch.ts";
-import { createSigner, json, TEST_INDEX_HTML } from "./testSupport.ts";
+import { createSigner, json, TEST_INDEX_HTML, testRestoreRunner } from "./testSupport.ts";
 
 /**
  * `POST /api/chats/search`. The server is built with `createServerContext({ messageSearch })`
@@ -105,7 +105,7 @@ async function createSearchServer(messageSearch: MessageSearchRouteOptions = {})
     writeFileSync(path.join(rootDir, "dist", "index.html"), TEST_INDEX_HTML);
     mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
     writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    const context = createServerContext({ rootDir, messageSearch });
+    const context = createServerContext({ rootDir, messageSearch, restore: { runner: testRestoreRunner() } });
     const signer = await createSigner();
     await context.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
     const s = {
@@ -333,6 +333,24 @@ describe("POST /api/chats/search hits", () => {
         expect(refs(await s.page({ query: "hit", characterId: "§playground", chatId: "pk" }))).toEqual(["pk/p1"]);
     });
 
+    it("omits group chats from all searches and returns an empty page for either named group scope", async () => {
+        const s = await createSearchServer();
+        await s.batch({
+            ops: [character("c"), character("g", { type: "group", characters: ["c"] })],
+            chats: [
+                createChat("c", "k", [m("a", "hit in a character chat")]),
+                createChat("g", "gk", [m("b", "hit in a group chat")]),
+            ],
+        });
+
+        const all = await s.page({ query: "hit" });
+        expect(refs(all)).toEqual(["k/a"]);
+        expect(all.next).toBeNull();
+        for (const scope of [{ characterId: "g" }, { characterId: "g", chatId: "gk" }]) {
+            expect(await s.page({ query: "hit", ...scope })).toMatchObject({ hits: [], next: null });
+        }
+    });
+
     it("clamps limit to the maximum", async () => {
         const s = await createSearchServer();
         await s.batch({ ops: [character("c")] });
@@ -416,13 +434,56 @@ describe("POST /api/chats/search paging", () => {
         const first = await s.page({ query: "hit", limit: 1 });
         expect(refs(first)).toEqual(["k/k2"]);
 
-        await s.batch({ chats: [group("c", "k", revision, [{ op: "delete" }])] });
+        // Deleted through the trash: trash, then delete with the token the trash answered.
+        const epoch = { headers: { "x-resource-epoch": s.epoch } };
+        const trash = await s.json("/api/chat-trash/trash", { characterId: "c", chatId: "k", revision }, epoch);
+        expect(trash.status, await trash.clone().text()).toBe(200);
+        const trashed = (await trash.json()) as { revision: string };
+        const removal = { characterId: "c", chatId: "k", revision: trashed.revision };
+        expect((await s.json("/api/chat-trash/delete", removal, epoch)).status).toBe(200);
         await s.batch({ chats: [createChat("c", "k", [m("k1", "hit again"), m("k9", "hit new incarnation")])] });
 
         const rest = await s.allPages({ query: "hit", limit: 1, cursor: first.next });
         expect(allRefs(rest)).toEqual(["j/j1"]);
         // A fresh search sees the new incarnation first.
         expect(refs(await s.page({ query: "hit" }))).toEqual(["k/k9", "k/k1", "j/j1"]);
+    });
+
+    it("omits a trashed chat in every search scope and when continuing from its cursor", async () => {
+        const s = await createSearchServer();
+        await s.batch({ ops: [character("c"), character("d")] });
+        await s.batch({ chats: [createChat("d", "dk", [m("d1", "hit elsewhere")])] });
+        await s.batch({ chats: [createChat("c", "j", [m("j1", "hit in an active sibling")])] });
+        const created = await s.batch({
+            chats: [createChat("c", "k", [m("k1", "hit earlier"), m("k2", "hit latest")])],
+        });
+        const scope = { query: "hit", characterId: "c", chatId: "k" };
+        const first = await s.page({ query: "hit", limit: 1 });
+        expect(refs(first)).toEqual(["k/k2"]);
+        expect(first.next).toEqual(expect.any(String));
+
+        const trash = await s.json(
+            "/api/chat-trash/trash",
+            { characterId: "c", chatId: "k", revision: created.chats![0].revision },
+            { headers: { "x-resource-epoch": s.epoch } },
+        );
+        expect(trash.status, await trash.clone().text()).toBe(200);
+
+        const direct = await s.page(scope);
+        const characterPage = await s.page({ query: "hit", characterId: "c" });
+        const globalPage = await s.page({ query: "hit" });
+        const continuation = await s.page({ query: "hit", cursor: first.next });
+        expect({
+            direct: { hits: direct.hits, next: direct.next },
+            character: refs(characterPage),
+            global: refs(globalPage),
+            continuation: refs(continuation),
+        }).toEqual({
+            direct: { hits: [], next: null },
+            character: ["j/j1"],
+            global: ["j/j1", "dk/d1"],
+            continuation: ["j/j1", "dk/d1"],
+        });
     });
 
     it("drops the cursor's chat when its character was trashed between pages", async () => {
@@ -721,6 +782,48 @@ describe("POST /api/chats/search refusals", () => {
 });
 
 describe("POST /api/chats/search with malformed stored text", () => {
+    it("keeps literal ASCII search results and stops matching at a stored NUL", async () => {
+        const s = await createSearchServer();
+        await s.batch({ ops: [character("c")] });
+        await s.batch({
+            chats: [
+                createChat("c", "k", [
+                    m("ascii", "MiXeD"),
+                    m("upper", "ÄÖ"),
+                    m("lower", "äö"),
+                    m("percent", "100%"),
+                    m("underscore", "a_b"),
+                    m("backslash", "c\\d"),
+                    m("wildcards", "100x aXb cXd"),
+                    m("after-nul", "\u0000MiXeD ÄÖ äö 100% a_b c\\d tail"),
+                    m("before-nul", "MiXeD ÄÖ 100% a_b c\\d\u0000tail"),
+                    m("repeated-prefix", "A".repeat(512)),
+                ]),
+            ],
+        });
+
+        const scope = { characterId: "c", chatId: "k" };
+        for (const [query, expected] of [
+            ["mIXeD", ["k/before-nul", "k/ascii"]],
+            ["ÄÖ", ["k/before-nul", "k/upper"]],
+            ["äö", ["k/lower"]],
+            ["0%", ["k/before-nul", "k/percent"]],
+            ["a_b", ["k/before-nul", "k/underscore"]],
+            ["c\\d", ["k/before-nul", "k/backslash"]],
+            ["tail", []],
+        ] as const) {
+            const page = await s.page({ ...scope, query });
+            expect(refs(page), query).toEqual(expected);
+            expect(page.next, query).toBeNull();
+        }
+
+        const miss = await s.page({ ...scope, query: "absent" });
+        expect(miss.hits).toEqual([]);
+        expect(miss.next).toBeNull();
+        const nearMiss = await s.page({ ...scope, query: "a".repeat(199) + "b" });
+        expect(nearMiss).toEqual(miss);
+    });
+
     it("does not report a stored lone surrogate as a hit for the replacement character", async () => {
         const s = await createSearchServer();
         await s.batch({ ops: [character("c")] });

@@ -7,9 +7,12 @@
     import TabRequestLogs from "./TabRequestLogs.svelte";
 
     /**
-     * The `requestlogs` popup (`alertRequestLogs`): the server's request history, and this tab's own
-     * request log for what only the browser saw.
+     * The `requestlogs` popup (`src/ts/alert.ts`'s `alertRequestLogs`): Server history and This tab tabs.
+     * It owns the history's job filter, initialized from the alert and bound to ServerRequestHistory;
+     * switching tabs keeps that filter even though the server viewer is unmounted. This tab shows
+     * the window's own request log.
      */
+
     let tab: "server" | "tab" = $state("server");
     /** The history's job filter: the job the popup was opened for (`alertRequestLogs`), kept across tabs. */
     let jobId: string | null = $state(untrack(() => $alertStore.jobId ?? null));

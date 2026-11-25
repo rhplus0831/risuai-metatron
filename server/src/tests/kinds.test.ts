@@ -27,11 +27,14 @@ const settingsKinds = [
     "hypaV3Presets",
     "togglePresets",
     "customModels",
+    "inputHooks",
     "credentials",
     "enabledModules",
     "statics",
     "modelPresets",
     "modelProfiles",
+    "moduleFolders",
+    "personaFolders",
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const rejects = (name: string, id: string, input: unknown, message: string) => {
@@ -44,7 +47,7 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the seven record kinds (no root), five of them singletons, and the 21 settings singletons (including credentials and togglePresets); presets and the settings kinds materialize", () => {
+    it("holds the seven record kinds (no root), five of them singletons, and the 24 settings singletons (including credentials, togglePresets, inputHooks, moduleFolders, and personaFolders); presets and the settings kinds materialize", () => {
         expect([...kinds.keys()]).toEqual([...recordKinds, ...settingsKinds]);
         expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([
@@ -133,6 +136,13 @@ describe("default normalizers", () => {
         accepts("pluginStorage", "main", { _safeLocalPluginStorage: { a: 1 } });
         accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {} });
         accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: { p_db_lastGrantTime: 1 } });
+        accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: {}, standing: { h_db: true } });
+        for (const standing of [{ h_db: false }, { h_db: 1 }, [], "h_db"]) {
+            expect(
+                () => kind("pluginPermissions").normalize({ grants: {}, lastGrantTime: {}, standing }, { id: "main" }),
+                JSON.stringify(standing),
+            ).toThrow(ResourceValidationError);
+        }
         // `characters` returns a copy with the shared defaults (`normalizeCharacter`);
         // the input is not changed.
         for (const [id, input] of [
@@ -170,12 +180,26 @@ describe("default normalizers", () => {
         }
     });
 
+    it("refuses a Map as a plugin storage record", () => {
+        expect(() => kind("pluginStorage").normalize(new Map(), { id: "main" })).toThrow(ResourceValidationError);
+    });
+
     it("require the character id to match and refuse a character record holding chats", () => {
         rejects("characters", "c1", {}, "character.chaId must equal the resource id");
         rejects("characters", "c1", { chaId: "c2" }, "character.chaId must equal the resource id");
         // Chats are their own resource; a character record with embedded chats is refused.
         rejects("characters", "c1", { chaId: "c1", chats: [] }, "character must not hold chats");
         rejects("characters", "c1", { chaId: "c1", chats: undefined }, "character must not hold chats");
+    });
+
+    it("accepts numeric plugin reset counts and rejects nonnumeric counts", () => {
+        accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 1 } });
+        rejects(
+            "pluginPermissions",
+            "main",
+            { grants: {}, lastGrantTime: {}, resets: { foo: "1" } },
+            "pluginPermissions.resets values must be numbers",
+        );
     });
 
     it("require the plugin permission maps to hold true and numbers", () => {

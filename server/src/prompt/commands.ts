@@ -1,4 +1,5 @@
-import type { character, groupChat } from "../../../shared/database.ts";
+import { isRetiredMultisend } from "../../../shared/slashCommands.ts";
+import type { character, Chat, groupChat, Message } from "../../../shared/database.ts";
 import type { LuaBindingServices } from "../lua/bindings.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
 import { randomUUID } from "node:crypto";
@@ -9,14 +10,10 @@ export type CommandHost = {
     ctx: HostContext;
     /** The job's chat's character as stored now (the client's `ref.chaId` lookup). */
     character(): character | groupChat | undefined;
+    /** The job's history view of stored `chat` (carrier hidden during reroll assembly); absent: `chat.message`. */
+    historyMessages?(chat: Chat): readonly Message[];
     /** `/trigger`: a manual trigger on the job's chat as stored now, its result applied after. */
     runManualTrigger(name: string): Promise<void>;
-    /**
-     * `/multisend`: the parts to send in turn, with the tab's `clear` mode. A command job queues them
-     * for its tab to send after the job; inside a send nothing happens, as in the tab while a send
-     * runs.
-     */
-    multisend(clear: boolean, parts: string[]): void;
 };
 
 /** The client's `/?` text. */
@@ -77,22 +74,26 @@ const HELP_TEXT = `
             `;
 
 /**
- * `processMultiCommand` of `src/ts/process/command.ts` on the job's chat: the same pipe and quote
- * splitting, argument parsing, and CBS of the arguments, each command reading and writing the job's
- * chat as stored when it runs. Alerts and questions go through the job's channel (`/speak` as a
- * `tts` notice, `/?` as `alertMd`). `/multisend` queues its parts for the tab to send after a
- * command job (`host.multisend`); `/send` and `/sendas` only append, as on the client. A question
- * that is not answered ends the line with its error.
+ * Runs a trigger's command line against the job's chat. Every unquoted pipe separates commands
+ * until the retired `/multisend` consumes the rest of the line. Commands remove one pair of
+ * surrounding double quotes before pipe/slot substitution and CBS evaluation of their arguments.
+ * Each command reads and writes the job's chat as stored when it runs. `/comment`, indexed/ranged
+ * `/cut`, and `/del` use its history view. Alerts and questions go through the job's channel
+ * (`/speak` as a `tts` notice, `/?` as `alertMd`). An unanswered question ends the line with its error.
  */
 export function createCommandExecutor(host: CommandHost) {
     const { services, ctx } = host;
 
-    async function processMultiCommand(command: string): Promise<string | false | undefined> {
+    async function processMultiCommand(
+        command: string,
+        lowLevelAccess = ctx.access === "lowLevel",
+    ): Promise<string | false | undefined> {
         let pipe: string | undefined = "";
         const splited: string[] = [];
         let lastIndex = 0;
         let quoteDepth = false;
         for (let i = 0; i < command.length; i++) {
+            if (i === lastIndex && isRetiredMultisend(command.slice(lastIndex))) break;
             const char = command[i];
             if (char === '"') {
                 quoteDepth = !quoteDepth;
@@ -109,7 +110,7 @@ export function createCommandExecutor(host: CommandHost) {
                 // The chat went away while an earlier command waited: the line is consumed, not sent.
                 return "";
             }
-            const result = await processCommand(splited[i].trim(), pipe as string);
+            const result = await processCommand(splited[i].trim(), pipe as string, lowLevelAccess);
             if (result === false) {
                 return false;
             } else {
@@ -119,15 +120,25 @@ export function createCommandExecutor(host: CommandHost) {
         return pipe;
     }
 
-    async function processCommand(command: string, pipe: string): Promise<false | string | undefined> {
+    async function processCommand(
+        command: string,
+        pipe: string,
+        lowLevelAccess: boolean,
+    ): Promise<false | string | undefined> {
         const currentChar = host.character();
         if (!currentChar) {
             // Its character went away; `false` would mean "not a command" and send the line as text.
             return "";
         }
+        if (isRetiredMultisend(command)) return "";
         const parsed = commandParser(command, pipe);
         const { commandName, namedArg } = parsed;
         let { arg } = parsed;
+
+        // Speaking can reach a provider. Refusing it still consumes the command.
+        if (!lowLevelAccess && commandName === "speak") {
+            return pipe;
+        }
 
         if (!arg) {
             arg = pipe;
@@ -215,10 +226,11 @@ export function createCommandExecutor(host: CommandHost) {
                 return pipe;
             }
             case "comment": {
-                //works differently, but its close enough
+                // Appends the comment to the last message in the history view.
                 const addition = `<Comment>\n${arg}\n</Comment>`;
                 services.writeChat((chat) => {
-                    const last = chat.message.at(-1);
+                    const view = host.historyMessages?.(chat) ?? chat.message;
+                    const last = view.at(-1);
                     return last?.chatId ? [{ op: "setText", id: last.chatId, text: last.data + addition }] : null;
                 }, ctx);
                 return pipe;
@@ -226,17 +238,17 @@ export function createCommandExecutor(host: CommandHost) {
             case "cut": {
                 const cutArg = arg;
                 services.writeChat((chat) => {
+                    const view = host.historyMessages?.(chat) ?? chat.message;
                     let removed: string[];
-                    if (cutArg.includes("-")) {
-                        // Keeps the messages of the range (as `Array.slice` does), removes the rest.
-                        const [start, end] = cutArg.split("-");
-                        const kept = new Set(chat.message.slice(parseInt(start), parseInt(end)));
-                        removed = chat.message
-                            .filter((message) => !kept.has(message))
-                            .map((message) => message.chatId!);
-                    } else if (!isNaN(parseInt(cutArg))) {
-                        // Removes the one message at the index (a negative one takes the range branch above).
-                        const target = chat.message.at(parseInt(cutArg));
+                    const range = /^(-?\d+)-(\d+)$/.exec(cutArg);
+                    if (range) {
+                        // Keeps the history view's range (as `Array.slice` does), removes the rest of the view.
+                        const [, start, end] = range;
+                        const kept = new Set(view.slice(parseInt(start), parseInt(end)));
+                        removed = view.filter((message) => !kept.has(message)).map((message) => message.chatId!);
+                    } else if (/^-?\d+$/.test(cutArg)) {
+                        // Removes the history view's indexed message; negative indexes count from its end.
+                        const target = view.at(parseInt(cutArg));
                         removed = target?.chatId ? [target.chatId] : [];
                     } else {
                         //For risu, doesn'ts work for STScript
@@ -247,14 +259,13 @@ export function createCommandExecutor(host: CommandHost) {
                 return pipe;
             }
             case "del": {
-                // Keeps the last `size` messages (as `slice(length - size)` does), removes the rest.
+                // Keeps the history view's last `size` messages (as `slice(length - size)` does), removes its rest.
                 const size = parseInt(arg);
                 if (!isNaN(size)) {
                     services.writeChat((chat) => {
-                        const kept = new Set(chat.message.slice(chat.message.length - size));
-                        const removed = chat.message
-                            .filter((message) => !kept.has(message))
-                            .map((message) => message.chatId!);
+                        const view = host.historyMessages?.(chat) ?? chat.message;
+                        const kept = new Set(view.slice(view.length - size));
+                        const removed = view.filter((message) => !kept.has(message)).map((message) => message.chatId!);
                         return removed.length > 0 ? [{ op: "remove", ids: removed }] : null;
                     }, ctx);
                 }
@@ -268,16 +279,6 @@ export function createCommandExecutor(host: CommandHost) {
                     }
                 } catch {}
                 return pipe;
-            }
-            case "multisend": {
-                const splited = arg.split("|||");
-                let clearMode = false;
-                if (splited[0] && splited[0].trim() === "clear") {
-                    clearMode = true;
-                    splited.shift();
-                }
-                host.multisend(clearMode, splited);
-                return "";
             }
             case "setvar": {
                 const value = arg;
@@ -307,7 +308,7 @@ export function createCommandExecutor(host: CommandHost) {
                 return pipe;
             }
             case "test_lorebook": {
-                const p = await services.activateLore(ctx);
+                const p = await services.activateLore(lowLevelAccess ? ctx : { ...ctx, access: "safe" });
                 services.fence(ctx);
                 console.log(p);
                 services.notice({
@@ -351,8 +352,11 @@ function commandParser(command: string, pipe: string) {
             argArray.push(sliced[i]);
         }
     }
-    const arg = argArray
-        .join(" ")
+    let arg = argArray.join(" ");
+    if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
+        arg = arg.slice(1, -1);
+    }
+    arg = arg
         .replace("{{pipe}}", pipe) //STScript compatibility
         .replace("{{slot}}", pipe); //Risu default
     return { commandName, arg, namedArg };

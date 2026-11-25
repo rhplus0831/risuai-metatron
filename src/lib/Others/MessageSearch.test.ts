@@ -42,13 +42,9 @@ vi.mock("src/ts/parser/transformClient", () => ({
     captureTransform: vi.fn(),
     serverProcessScript: vi.fn(),
 }));
-vi.mock("src/ts/globalApi.svelte", () => ({
-    openPinnedChat: mocks.openPinnedChat,
-    downloadFile: vi.fn(),
-    saveAsset: vi.fn(),
-    changeChatTo: vi.fn(),
-    createChatCopyName: vi.fn(),
-}));
+vi.mock("src/ts/globalApi.svelte", async () =>
+    (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({ openPinnedChat: mocks.openPinnedChat }),
+);
 vi.mock("src/ts/messageSearch.svelte", async (importOriginal) => ({
     ...(await importOriginal<typeof import("src/ts/messageSearch.svelte")>()),
     searchMessages: mocks.searchMessages,

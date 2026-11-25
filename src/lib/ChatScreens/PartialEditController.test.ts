@@ -22,9 +22,10 @@ vi.mock("src/ts/process/modules", () => ({
     getModuleAssets: vi.fn(() => []),
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
-vi.mock("src/ts/globalApi.svelte", () => ({ downloadFile: vi.fn(), saveAsset: vi.fn() }));
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { language } from "src/lang";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import PartialEditController from "./PartialEditController.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void };
@@ -62,6 +63,7 @@ function render(props: {
     /** Which rendered block the pointer is over (default the first paragraph). */
     hovered?: (bodyRoot: HTMLElement) => HTMLElement;
     dragEditEnabled?: boolean;
+    chatRef?: { chaId: string; chatId: string };
 }) {
     const source = props.source ?? SOURCE;
     const target = document.createElement("div");
@@ -73,26 +75,27 @@ function render(props: {
     // The hover detection asks the document what is under the pointer.
     document.elementFromPoint = () => block;
     const saved: SaveEvent[] = [];
-    mounted.push(
-        mount(PartialEditController, {
-            target,
-            props: {
-                messageData: source,
-                chatIndex: 0,
-                bodyRoot,
-                blockEditEnabled: true,
-                dragEditEnabled: props.dragEditEnabled ?? false,
-                translatedView: props.translatedView ?? false,
-                getTranslationEditContext: props.context,
-                saveTranslation: props.saveTranslation,
+    const instance = mount(PartialEditController, {
+        target,
+        props: {
+            chatRef: props.chatRef,
+            messageId: props.chatRef ? "reply" : undefined,
+            messageData: source,
+            chatIndex: 0,
+            bodyRoot,
+            blockEditEnabled: true,
+            dragEditEnabled: props.dragEditEnabled ?? false,
+            translatedView: props.translatedView ?? false,
+            getTranslationEditContext: props.context,
+            saveTranslation: props.saveTranslation,
+        },
+        events: {
+            save: (event: CustomEvent<SaveEvent>) => {
+                saved.push(event.detail);
             },
-            events: {
-                save: (event: CustomEvent<SaveEvent>) => {
-                    saved.push(event.detail);
-                },
-            },
-        }),
-    );
+        },
+    });
+    mounted.push(instance);
     flushSync();
 
     const query = <T extends Element>(selector: string) => document.querySelector<T>(selector);
@@ -190,7 +193,26 @@ function render(props: {
         query<HTMLButtonElement>(".partial-edit-modal .partial-edit-cancel-btn")!.click();
         flushSync();
     };
-    return { saved, start, dragStart, choices, choose, confirmDelete, textarea, type, save, cancel, query, block };
+    const remove = async () => {
+        await unmount(instance);
+        mounted.splice(mounted.indexOf(instance), 1);
+        target.remove();
+    };
+    return {
+        saved,
+        start,
+        dragStart,
+        choices,
+        choose,
+        confirmDelete,
+        textarea,
+        type,
+        save,
+        cancel,
+        query,
+        block,
+        remove,
+    };
 }
 
 beforeEach(() => {
@@ -211,6 +233,47 @@ afterEach(async () => {
     vi.clearAllTimers();
     vi.restoreAllMocks();
     vi.useRealTimers();
+});
+
+describe("PartialEditController block hover", () => {
+    it("clones and measures an unchanged paragraph once across ten frames, and checks its text again when it changes", () => {
+        const frames = new Map<number, FrameRequestCallback>();
+        let nextFrameId = 0;
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+            frames.set(++nextFrameId, callback);
+            return nextFrameId;
+        });
+        vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+
+        const ui = render({ html: "<p><em>Hello world</em></p>", hovered: (root) => root.querySelector("em")! });
+        const paragraph = ui.block.closest("p")!;
+        // happy-dom has no layout. Give the paragraph a rectangle, then count calls through that stub.
+        paragraph.getBoundingClientRect = () => new DOMRect(100, 100, 300, 100);
+        const clone = vi.spyOn(paragraph, "cloneNode");
+        const rect = vi.spyOn(paragraph, "getBoundingClientRect");
+        const move = (offset: number) => {
+            document.dispatchEvent(
+                new MouseEvent("mousemove", { clientX: 120 + offset, clientY: 120 + offset, bubbles: true }),
+            );
+            expect(frames.size).toBe(1);
+            const pending = [...frames.values()];
+            frames.clear();
+            for (const callback of pending) callback(0);
+            flushSync();
+        };
+
+        for (let i = 0; i < 10; i++) move(i);
+
+        expect(clone).toHaveBeenCalledTimes(1);
+        expect(rect).toHaveBeenCalledTimes(1);
+        expect(ui.query<HTMLElement>(".partial-edit-btn-wrapper")!.style.display).toBe("flex");
+
+        // The pointer still hits the same child and paragraph, but the cached positive result is now stale.
+        ui.block.textContent = "   ";
+        move(10);
+        expect(clone).toHaveBeenCalledTimes(2);
+        expect(ui.query<HTMLElement>(".partial-edit-btn-wrapper")!.style.display).toBe("none");
+    });
 });
 
 describe("PartialEditController translation writes", () => {
@@ -409,6 +472,95 @@ describe("PartialEditController occurrence targeting", () => {
         ui.save();
         await vi.waitFor(() => expect(ui.saved).toHaveLength(1));
         expect(ui.saved[0].newData).toBe("EDITNext");
+    });
+});
+
+describe("retained paragraph edits", () => {
+    const chatRef = { chaId: "c", chatId: "paragraph-drafts" };
+
+    beforeEach(() => {
+        window.getSelection()?.removeAllRanges();
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    chats: [
+                        { id: chatRef.chatId, message: [{ chatId: "reply", role: "char", data: "Opening\n\nEnding" }] },
+                    ],
+                },
+            ],
+            zoomsize: 100,
+            lineHeight: 1.25,
+        });
+    });
+
+    it("recovers a paragraph after the row is replaced and saves it alongside the outside edit", async () => {
+        const row = render({ chatRef, source: "Opening\n\nEnding", html: "<p>Opening</p><p>Ending</p>" });
+        await row.start("edit", { settle: false });
+        row.type("My opening");
+        await row.remove();
+
+        const replacement = render({
+            chatRef,
+            source: "Opening\n\nNew ending",
+            html: "<p>Opening</p><p>New ending</p>",
+        });
+        await replacement.start("edit", { settle: false });
+        expect(replacement.textarea()?.value).toBe("My opening");
+        replacement.cancel();
+        await replacement.start("edit", { settle: false });
+        expect(replacement.textarea()?.value).toBe("Opening");
+        replacement.type("My opening");
+        replacement.save();
+        expect(replacement.saved).toEqual([{ newData: "My opening\n\nNew ending", target: "original" }]);
+    });
+
+    it("keeps the draft from a removed repeat away from the remaining repeated paragraph", async () => {
+        const row = render({
+            chatRef,
+            source: "Repeat\n\nRepeat\n\nEnding",
+            html: "<p>Repeat</p><p>Repeat</p><p>Ending</p>",
+        });
+        await row.start("edit", { settle: false });
+        expect(row.choices()).toEqual(["Repeat", "Repeat"]);
+        await row.choose(0);
+        row.type("Draft on the first repeat");
+        await row.remove();
+
+        const replacement = render({ chatRef, source: "Repeat\n\nEnding", html: "<p>Repeat</p><p>Ending</p>" });
+        await replacement.start("edit", { settle: false });
+        replacement.save();
+        expect(replacement.saved).toEqual([{ newData: "Repeat\n\nEnding", target: "original" }]);
+    });
+
+    it("recovers an overwritten paragraph between unchanged neighbors and shows the overwrite notice", async () => {
+        const hovered = (bodyRoot: HTMLElement) => bodyRoot.querySelectorAll("p")[1];
+        const row = render({
+            chatRef,
+            source: "Opening\n\nMiddle\n\nEnding",
+            html: "<p>Opening</p><p>Middle</p><p>Ending</p>",
+            hovered,
+        });
+        await row.start("edit", { settle: false });
+        row.type("My middle paragraph");
+        await row.remove();
+
+        const replacement = render({
+            chatRef,
+            source: "Opening\n\nAn outside rewrite\n\nEnding",
+            html: "<p>Opening</p><p>An outside rewrite</p><p>Ending</p>",
+            hovered,
+        });
+        await replacement.start("edit", { settle: false });
+        expect(replacement.textarea()?.value).toBe("My middle paragraph");
+        expect(replacement.query('.partial-edit-modal [role="status"]')?.textContent?.trim()).toBe(
+            language.messageEditorChangedElsewhere,
+        );
+        replacement.save();
+        expect(replacement.saved).toEqual([
+            { newData: "Opening\n\nMy middle paragraph\n\nEnding", target: "original" },
+        ]);
     });
 });
 

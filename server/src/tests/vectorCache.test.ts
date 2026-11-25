@@ -44,6 +44,101 @@ afterEach(() => {
 });
 
 describe("the rows", () => {
+    it.each([
+        { label: "default 256-row budget", budget: 256, maxBytes: 12_000, options: {} },
+        { label: "configured 3-row budget", budget: 3, maxBytes: 400, options: { trimRowsPerSet: 3 } },
+    ])(
+        "evicts least recently used rows within the $label and continues to 90% on later sets",
+        ({ budget, maxBytes, options }) => {
+            let now = 1_000_000;
+            const cache = open({ maxBytes, now: () => now, ...options });
+            const rowBytes = Float32Array.BYTES_PER_ELEMENT;
+            const seedRows = maxBytes / rowBytes - 1;
+            for (let index = 0; index < seedRows; index++) {
+                cache.set(`seed-${index}`, new Float32Array([index]), cache.generation());
+                now++;
+            }
+            const seeded = cache.stats();
+            expect(seeded).toEqual({ rows: seedRows, bytes: maxBytes - rowBytes });
+            now += 61_000;
+            expect(cache.get("seed-0")).toEqual(new Float32Array([0]));
+            const incoming = new Float32Array([10, 20]);
+            const rowsToRemove = Math.ceil((seeded.bytes + incoming.byteLength - maxBytes * 0.9) / rowBytes);
+            const setsToTarget = Math.ceil(rowsToRemove / budget);
+            for (let index = 0; index < setsToTarget; index++) {
+                const before = cache.stats();
+                now++;
+                cache.set("incoming", incoming, cache.generation());
+                const after = cache.stats();
+                expect(cache.get("incoming")).toEqual(incoming);
+                expect(before.rows + (index === 0 ? 1 : 0) - after.rows).toBeLessThanOrEqual(budget);
+                expect(after.bytes).toBeLessThanOrEqual(maxBytes);
+                if (index === 0) {
+                    expect(after.bytes).toBeGreaterThan(maxBytes * 0.9);
+                    expect(cache.get("seed-0")).toEqual(new Float32Array([0]));
+                    expect(cache.get("seed-1")).toBeNull();
+                    expect(cache.get(`seed-${budget}`)).toBeNull();
+                    expect(cache.get(`seed-${budget + 1}`)).not.toBeNull();
+                }
+            }
+            expect(cache.stats().bytes).toBeLessThanOrEqual(maxBytes * 0.9);
+        },
+    );
+
+    it("skips a vector that cannot fit after the eviction budget without exceeding maxBytes", () => {
+        const cache = open({ maxBytes: 100, trimRowsPerSet: 2, now: () => 1_000_000 });
+        for (let index = 0; index < 24; index++) {
+            cache.set(`seed-${index}`, new Float32Array([index]), cache.generation());
+        }
+        const before = cache.stats();
+        expect(before.bytes).toBe(96);
+        cache.set("too-large-for-this-set", new Float32Array(10), cache.generation());
+        expect(cache.get("too-large-for-this-set")).toBeNull();
+        expect(before.rows - cache.stats().rows).toBeLessThanOrEqual(2);
+        expect(cache.stats()).toEqual({ rows: 22, bytes: 88 });
+    });
+
+    it("rolls back eviction with a failed insert and accounts the next write from the unchanged file", () => {
+        const file = tempFile();
+        let now = 1_000_000;
+        const cache = open({ file, maxBytes: 100, trimRowsPerSet: 3, now: () => now++ });
+        for (let index = 0; index < 24; index++) {
+            cache.set(`seed-${index}`, new Float32Array([index]), cache.generation());
+        }
+        const other = new DatabaseSync(file);
+        try {
+            other.exec(
+                "CREATE TRIGGER refuse_insert BEFORE INSERT ON vectors BEGIN SELECT RAISE(ABORT, 'write failed'); END",
+            );
+            const before = cache.stats();
+            cache.set("incoming", new Float32Array([1, 2]), cache.generation());
+            expect(cache.stats()).toEqual(before);
+            expect(cache.get("seed-0")).toEqual(new Float32Array([0]));
+            expect(cache.get("incoming")).toBeNull();
+            other.exec("DROP TRIGGER refuse_insert");
+            cache.set("incoming", new Float32Array([1, 2]), cache.generation());
+            expect(cache.stats()).toEqual({ rows: 22, bytes: 92 });
+            expect(cache.get("incoming")).toEqual(new Float32Array([1, 2]));
+        } finally {
+            other.close();
+        }
+    });
+
+    it("trims an over-bound file to 90% before serving even when it takes several row budgets", () => {
+        const file = tempFile();
+        let now = 1_000_000;
+        const seed = open({ file, maxBytes: 1_000, now: () => now++ });
+        for (let index = 0; index < 20; index++) {
+            seed.set(`seed-${index}`, [index], seed.generation());
+        }
+        seed.close();
+        const cache = open({ file, maxBytes: 100, trimRowsPerSet: 2, now: () => now });
+        expect(cache.stats()).toEqual({ rows: 11, bytes: 88 });
+        expect(cache.get("seed-8")).toBeNull();
+        expect(cache.get("seed-9")).toEqual([9]);
+        expect(cache.get("seed-19")).toEqual([19]);
+    });
+
     it("stores a Float32Array subview's own bytes and answers an independent Float32Array", () => {
         const cache = open();
         const backing = new Float32Array([99, 1.25, 2.5, 88]);

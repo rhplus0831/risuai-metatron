@@ -1,5 +1,17 @@
 import { writable, type Readable } from "svelte/store";
 import type { alertData } from "./alert";
+import { isImeComposing } from "./ime";
+
+/**
+ * Dialog queue and replaceable status slot for src/ts/stores.svelte.ts and src/ts/alert.ts.
+ * Answers and cancellation settle the targeted dialog handle; identical consecutive notices can
+ * share that handle, so their callers also share its answer promise.
+ * During the gap after a visible dialog closes, a queued dialog (including one opened during the gap)
+ * waits to appear and keeps dialog work pending, reading as type `none` with `dialogPending: true`;
+ * an empty queue is idle. Status replacement and cleanup must not answer a dialog over that status.
+ * src/ts/hotkey.ts feeds the key gate at window capture phase so a held or composing stroke cannot
+ * answer a newly shown dialog, including when a notice stops the event from bubbling further.
+ */
 
 /** Loading, progress and toast: one status slot, the newest replaces it. */
 const STATUS_TYPES: ReadonlySet<alertData["type"]> = new Set(["wait", "progress", "toast"]);
@@ -18,6 +30,7 @@ export interface AlertDialog {
     cancel(): void;
 }
 
+/** The alert store surface; a dialog waiting for the gap reads as `none` with `dialogPending: true`. */
 export interface AlertQueue extends Readable<alertData> {
     /**
      * Status types replace the status; `none` closes the shown dialog with its `msg` (the dialog's own
@@ -25,10 +38,21 @@ export interface AlertQueue extends Readable<alertData> {
      */
     set(value: alertData): void;
     update(change: (value: alertData) => alertData): void;
-    /** Queues a dialog. An identical notice right behind the last queued one returns that one's handle. */
+    /**
+     * Consecutive normal/error/markdown/wait2 notices share the tail's handle when type, msg and
+     * submsg (missing equals empty) match and neither carries jobFailure. Other fields, including
+     * stackTrace, are not compared.
+     */
     open(value: alertData): AlertDialog;
     /** Closes the shown dialog with `msg`, only while `expected` (when given) is the one shown. */
     answer(msg: string, expected?: alertData): void;
+    /**
+     * Updates the shown confirmation in place without queuing a second dialog: its one checkbox, or
+     * with `id` that item of its checklist.
+     */
+    setConfirmChecked(checked: boolean, expected: alertData, id?: string): void;
+    /** Answers a confirmation, carrying its checkbox state, or its checklist's checked ids, when present. */
+    answerConfirm(confirmed: boolean, expected?: alertData): void;
     /** Clears the status slot, only while `expected` (when given) is the status. A dialog stays. */
     clearStatus(expected?: alertData): void;
     /** The status slot (`wait`, `progress`, `toast`), shown or held behind a dialog, or null. */
@@ -179,6 +203,32 @@ export function createAlertQueue(initial: alertData, options: { gapMs?: number }
         update: (change) => set(change(current)),
         open,
         answer,
+        setConfirmChecked(checked, expected, id) {
+            if (!headVisible || dialogs[0].data !== expected) return;
+            const target =
+                id === undefined ? expected.confirmCheckbox : expected.confirmChecklist?.find((item) => item.id === id);
+            if (!target) return;
+            target.checked = checked;
+            // Keep the dialog identity: keyboard gating must not treat this as a newly shown dialog.
+            store.set(current);
+        },
+        answerConfirm(confirmed, expected) {
+            if (!headVisible || (expected !== undefined && dialogs[0].data !== expected)) return;
+            const { confirmCheckbox: checkbox, confirmChecklist: checklist } = dialogs[0].data;
+            answer(
+                checklist
+                    ? JSON.stringify({
+                          confirmed,
+                          checked: checklist.filter((item) => item.checked).map((item) => item.id),
+                      })
+                    : checkbox
+                      ? JSON.stringify({ confirmed, checked: checkbox.checked })
+                      : confirmed
+                        ? "yes"
+                        : "no",
+                expected,
+            );
+        },
         clearStatus(expected?: alertData) {
             if (expected !== undefined && status !== expected) {
                 return;
@@ -198,7 +248,7 @@ export function createAlertQueue(initial: alertData, options: { gapMs?: number }
     };
 }
 
-type DialogKeyEvent = { key: string; repeat: boolean; isComposing?: boolean };
+type DialogKeyEvent = { key: string; repeat: boolean; isComposing?: boolean; keyCode?: number };
 
 /** The keys `hotkey.ts` answers a dialog with. */
 const DIALOG_KEYS = new Set(["Enter", "Escape"]);
@@ -208,7 +258,7 @@ const DIALOG_KEYS = new Set(["Enter", "Escape"]);
  * (window, capture phase, so no element's `stopPropagation` hides one) and a reset on blur. A dialog
  * takes Enter or Escape only from a stroke that began after it appeared: never a repeat, and never
  * the stroke that was down when it appeared (including the keydown that opened it). A later
- * non-repeated keydown is a new stroke even if its keyup was lost.
+ * non-repeated keydown is a new stroke even if its keyup was lost. Composing keys never answer.
  */
 export function createDialogKeyGate(queue: AlertQueue) {
     const strokes = new Map<string, number>();
@@ -247,7 +297,7 @@ export function createDialogKeyGate(queue: AlertQueue) {
             return (
                 shown !== null &&
                 !ev.repeat &&
-                !ev.isComposing &&
+                !isImeComposing(ev) &&
                 heldWhenShown.get(ev.key) !== (strokes.get(ev.key) ?? 0)
             );
         },

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { openApp, repoRoot } from "../util/playwright/stack.mjs";
 
 // The script transform golden test (`server/src/tests/fixtures/baseline/README.md`): the final
@@ -114,7 +114,7 @@ const captureMarkdown = (page: Page) =>
                 if (key === "loreBookPage") return selectionModule.selectLoreBookPage(value);
                 writeSettingsRoot(key, clone(value));
             };
-            presetActions.changeToPreset(settings.presets[0].id, true);
+            presetActions.changeToPreset(settings.presets[0].id);
             for (const [key, value] of Object.entries(baseSettings)) {
                 applyRoot(key, value);
             }

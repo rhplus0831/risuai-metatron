@@ -1,3 +1,17 @@
+/**
+ * Iframe-only plugin execution and bidirectional RPC. `SandboxHost.run` installs the sandbox, CSP,
+ * and `GUEST_BRIDGE_SCRIPT`; calls, callbacks, abort signals, and stream credit/cancel cross this bridge.
+ * Host callback arguments use the same value conversion as call results.
+ * Finalized guest proxies release refs in microtask batches; IDs are monotonic per host and released
+ * refs passed back are refused.
+ * Host callback wrappers are weakly cached; finalization releases the guest callback only if its
+ * send count still matches, so resending a function protects it from an older wrapper's release.
+ * Both message listeners check source before data: the host accepts only its iframe window and the
+ * guest only its parent. Never log RPC payloads or answers: fetch headers and bodies can contain secrets.
+ * Abort controllers outlive a returned stream until every stream finishes or is cleaned up;
+ * termination must close bridges in both directions so neither reader waits on a removed iframe.
+ */
+
 type MsgType =
     | "CALL_ROOT"
     | "CALL_INSTANCE"
@@ -5,6 +19,7 @@ type MsgType =
     | "CALLBACK_RETURN"
     | "RESPONSE"
     | "RELEASE_INSTANCE"
+    | "RELEASE_CALLBACK"
     | "ABORT_SIGNAL"
     | "SCRIPT_SETTLED";
 
@@ -12,6 +27,8 @@ interface RpcMessage {
     type: MsgType;
     reqId?: string;
     id?: string;
+    ids?: string[];
+    sendCount?: number;
     method?: string;
     args?: any[];
     result?: any;
@@ -35,6 +52,13 @@ interface RemoteRef {
 interface CallbackRef {
     __type: "CALLBACK_REF";
     id: string;
+    sendCount: number;
+}
+
+interface CallbackCacheEntry {
+    id: string;
+    sendCount: number;
+    wrapper: WeakRef<Function>;
 }
 
 interface AbortSignalRef {
@@ -43,24 +67,56 @@ interface AbortSignalRef {
     aborted: boolean;
 }
 
+let currentHostCallSignal: AbortSignal | undefined;
+
+/** Like currentContext, read only on an API method's first synchronous line, before any await. */
+export function hostCallSignal(): AbortSignal | undefined {
+    return currentHostCallSignal;
+}
+
+/** Instance methods may be inherited from API classes, but never from the built-in prototypes. */
+function getInstanceMethod(instance: any, method: unknown): Function | undefined {
+    if (typeof method !== "string" || method === "constructor") return;
+    for (let owner = instance; owner && owner !== Object.prototype && owner !== Function.prototype;) {
+        if (Object.hasOwn(owner, method)) {
+            const fn = instance[method];
+            return typeof fn === "function" ? fn : undefined;
+        }
+        owner = Object.getPrototypeOf(owner);
+    }
+}
+
 const GUEST_BRIDGE_SCRIPT = `
 await (async function() {
     const pendingRequests = new Map();
     const callbackRegistry = new Map();
     const callbackIdByFunction = new WeakMap();
-    const proxyRefRegistry = new Map();
+    const proxyRefRegistry = new WeakMap();
+    const pendingReleases = [];
+    const releaseRegistry = new FinalizationRegistry((id) => {
+        pendingReleases.push(id);
+        if (pendingReleases.length !== 1) return;
+        queueMicrotask(() => {
+            const ids = pendingReleases.splice(0);
+            try {
+                send({ type: 'RELEASE_INSTANCE', ids });
+            } catch (_) {
+                // The frame may be tearing down; termination clears the host registry.
+            }
+        });
+    });
     const abortControllers = new Map();
 
     function serializeArg(arg) {
         if (typeof arg === 'function') {
-            const existingId = callbackIdByFunction.get(arg);
-            if (existingId) {
-                return { __type: 'CALLBACK_REF', id: existingId };
+            let registration = callbackIdByFunction.get(arg);
+            if (!registration) {
+                registration = { id: 'cb_' + Math.random().toString(36).substring(2), sendCount: 0 };
+                callbackIdByFunction.set(arg, registration);
             }
-            const id = 'cb_' + Math.random().toString(36).substring(2);
-            callbackRegistry.set(id, arg);
-            callbackIdByFunction.set(arg, id);
-            return { __type: 'CALLBACK_REF', id: id };
+            registration.sendCount++;
+            callbackRegistry.set(registration.id, { fn: arg, sendCount: registration.sendCount });
+            return { __type: 'CALLBACK_REF', ...registration };
         }
         if (arg && typeof arg === 'object') {
             const refId = proxyRefRegistry.get(arg);
@@ -97,8 +153,9 @@ await (async function() {
                     if (prop === 'release') {
                         return () => send({ type: 'RELEASE_INSTANCE', id: val.id });
                     }
+                    // Reading the ID through the owner keeps it alive while an extracted method is held.
                     return (...args) => sendRequest('CALL_INSTANCE', {
-                        id: val.id,
+                        id: proxyRefRegistry.get(proxy),
                         method: prop,
                         args: args
                     });
@@ -106,6 +163,8 @@ await (async function() {
             });
             // Store the mapping so we can serialize it back
             proxyRefRegistry.set(proxy, val.id);
+            // The held value is only the ID, so the registry cannot retain the proxy.
+            releaseRegistry.register(proxy, val.id);
             return proxy;
         }
         if (val && typeof val === 'object' && val.__type === 'CALLBACK_STREAMS') {
@@ -221,7 +280,9 @@ await (async function() {
             if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
             if (obj.constructor === Object) {
                 const out = {};
-                for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
+                for (const k of Object.keys(obj)) {
+                    Object.defineProperty(out, k, { value: replace(obj[k]), enumerable: true, writable: true, configurable: true });
+                }
                 return { result: out, ports, cleanups };
             }
         } catch (error) {
@@ -270,7 +331,9 @@ await (async function() {
         if (obj.__type === 'STREAM_PORT') return reconstruct(obj);
         if (obj.constructor === Object) {
             const out = {};
-            for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
+            for (const k of Object.keys(obj)) {
+                Object.defineProperty(out, k, { value: reconstruct(obj[k]), enumerable: true, writable: true, configurable: true });
+            }
             return out;
         }
 
@@ -341,8 +404,14 @@ await (async function() {
             }
         }
 
+        else if (data.type === 'RELEASE_CALLBACK' && data.id) {
+            if (callbackRegistry.get(data.id)?.sendCount === data.sendCount) {
+                callbackRegistry.delete(data.id);
+            }
+        }
+
         else if (data.type === 'INVOKE_CALLBACK' && data.id) {
-            const fn = callbackRegistry.get(data.id);
+            const fn = callbackRegistry.get(data.id)?.fn;
             const response = { type: 'CALLBACK_RETURN', reqId: data.reqId };
             const usedAbortIds = [];
             let transferables = [];
@@ -370,7 +439,7 @@ await (async function() {
                         if (a.aborted) { controller.abort(); }
                         return controller.signal;
                     }
-                    return a;
+                    return deserializeResult(a);
                 });
                 const result = await fn(...deserializedArgs);
                 response.result = result;
@@ -460,9 +529,14 @@ await (async function() {
 })();
 `;
 
-/** A bridged host stream the plugin has not pulled from within this time is cancelled (its fetch and upstream end). */
+/**
+ * A host stream never pulled within 60 s errors with `Unread plugin response expired` and cancels
+ * its reader, ending the fetch and `/proxy` upstream. The guest reconstructs with `highWaterMark: 0`,
+ * so only a pending read grants credit; prefetch must not defeat this expiry. No timeout after a pull.
+ */
 export const UNREAD_PLUGIN_STREAM_TIMEOUT_MS = 60_000;
 
+/** Owns one guest's RPC, startup, and activity lifetime; callers must terminate it when unloading. */
 export class SandboxHost {
     private iframe: HTMLIFrameElement;
     private apiFactory: any;
@@ -470,9 +544,23 @@ export class SandboxHost {
     private csp = `connect-src 'none'; script-src 'nonce-${this.nonce}' 'wasm-unsafe-eval'; frame-src 'none'; object-src 'none'; style-src * 'unsafe-inline'; default-src 'none'; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; base-uri 'none';`;
 
     private instanceRegistry = new Map<string, any>();
+    private refIdCounter = 0;
     private abortControllers = new Map<string, AbortController>();
+    private hostCallControllers = new Set<AbortController>();
     private messageHandlerRef: ((event: MessageEvent) => void) | null = null;
-    private callbackWrapperCache = new Map<string, Function>();
+    private callbackWrapperCache = new Map<string, CallbackCacheEntry>();
+    private callbackReleaseRegistry = new FinalizationRegistry<CallbackCacheEntry>((entry) => {
+        if (this.callbackWrapperCache.get(entry.id) === entry) this.callbackWrapperCache.delete(entry.id);
+        if (this.terminated) return;
+        try {
+            this.iframe?.contentWindow?.postMessage(
+                { type: "RELEASE_CALLBACK", id: entry.id, sendCount: entry.sendCount } as RpcMessage,
+                "*",
+            );
+        } catch (_) {
+            // Termination clears the guest registry if its window is already gone.
+        }
+    });
 
     private pendingCallbacks = new Map<string, { resolve: Function; reject: Function }>();
 
@@ -577,13 +665,14 @@ export class SandboxHost {
         return transferables;
     }
 
-    private serialize(val: any): any {
+    private serialize(val: any, allocatedRefs?: string[]): any {
         if (val && (typeof val === "object" || typeof val === "function") && val.__classType === "REMOTE_REQUIRED") {
             if (val === null) return null;
             if (Array.isArray(val)) return val;
 
-            const id = "ref_" + Math.random().toString(36).substring(2);
+            const id = "ref_" + ++this.refIdCounter;
             this.instanceRegistry.set(id, val);
+            allocatedRefs?.push(id);
             return { __type: "REMOTE_REF", id } as RemoteRef;
         }
 
@@ -610,13 +699,22 @@ export class SandboxHost {
         return val;
     }
 
+    /**
+     * Callback wrappers must remove pending entries if preparation or posting fails, including a
+     * missing guest window: no reply can arrive to release them or make the sandbox idle.
+     * Refs allocated for an undelivered callback are rolled back; earlier refs remain registered.
+     */
     private deserializeArgs(args: any[], usedAbortIds?: string[]) {
         return args.map((arg) => {
             if (arg && arg.__type === "CALLBACK_REF") {
                 const cbRef = arg as CallbackRef;
 
                 const cached = this.callbackWrapperCache.get(cbRef.id);
-                if (cached) return cached;
+                const retained = cached?.wrapper.deref();
+                if (retained) {
+                    cached.sendCount = Math.max(cached.sendCount, cbRef.sendCount);
+                    return retained;
+                }
 
                 const wrapper = async (...innerArgs: any[]) => {
                     return new Promise((resolve, reject) => {
@@ -626,6 +724,7 @@ export class SandboxHost {
                         }
                         const reqId = "cb_req_" + Math.random().toString(36).substring(2);
                         this.pendingCallbacks.set(reqId, { resolve, reject });
+                        const allocatedRefs: string[] = [];
 
                         try {
                             const receiver = this.iframe?.contentWindow;
@@ -664,7 +763,7 @@ export class SandboxHost {
                                     }
                                     return ref;
                                 }
-                                return arg;
+                                return this.serialize(arg, allocatedRefs);
                             });
 
                             const message = {
@@ -676,6 +775,7 @@ export class SandboxHost {
                             const transferables = this.collectTransferables(message);
                             receiver.postMessage(message, "*", transferables);
                         } catch (error) {
+                            for (const id of allocatedRefs) this.instanceRegistry.delete(id);
                             // Never delivered: no answer will come, so it is not pending.
                             this.pendingCallbacks.delete(reqId);
                             this.activityChanged();
@@ -683,7 +783,9 @@ export class SandboxHost {
                         }
                     });
                 };
-                this.callbackWrapperCache.set(cbRef.id, wrapper);
+                const entry = { id: cbRef.id, sendCount: cbRef.sendCount, wrapper: new WeakRef(wrapper) };
+                this.callbackWrapperCache.set(cbRef.id, entry);
+                this.callbackReleaseRegistry.register(wrapper, entry);
                 return wrapper;
             }
             if (arg && arg.__type === "REMOTE_REF") {
@@ -692,6 +794,7 @@ export class SandboxHost {
                 if (instance) {
                     return instance;
                 }
+                throw new Error("Instance not found or released");
             }
             if (arg && typeof arg === "object" && arg.constructor === Object) {
                 let out: any = null;
@@ -804,7 +907,14 @@ export class SandboxHost {
             if (obj instanceof ReadableStream) return { result: replace(obj), ports, cleanups };
             if (obj.constructor === Object) {
                 const out: any = {};
-                for (const k of Object.keys(obj)) out[k] = replace(obj[k]);
+                for (const k of Object.keys(obj)) {
+                    Object.defineProperty(out, k, {
+                        value: replace(obj[k]),
+                        enumerable: true,
+                        writable: true,
+                        configurable: true,
+                    });
+                }
                 return { result: out, ports, cleanups };
             }
         } catch (error) {
@@ -815,6 +925,10 @@ export class SandboxHost {
         return { result: obj, ports, cleanups };
     }
 
+    /**
+     * A failed reconstruction cancels every guest stream already built. `CALLBACK_RETURN` resolves a
+     * result or rejects an error and removes the pending entry in both cases.
+     */
     private reconstructStreamsFromPorts(obj: any, ports: readonly MessagePort[]): any {
         if (!obj || typeof obj !== "object") return obj;
 
@@ -882,7 +996,14 @@ export class SandboxHost {
             if (obj.__type === "STREAM_PORT") return reconstruct(obj);
             if (obj.constructor === Object) {
                 const out: any = {};
-                for (const k of Object.keys(obj)) out[k] = reconstruct(obj[k]);
+                for (const k of Object.keys(obj)) {
+                    Object.defineProperty(out, k, {
+                        value: reconstruct(obj[k]),
+                        enumerable: true,
+                        writable: true,
+                        configurable: true,
+                    });
+                }
                 return out;
             }
         } catch (error) {
@@ -920,7 +1041,8 @@ export class SandboxHost {
         this.activeStreamCleanups.clear();
     }
 
-    public run(container: HTMLElement | HTMLIFrameElement, userCode: string) {
+    /** The optional guest prelude runs after bridge initialization, before the plugin's code. */
+    public run(container: HTMLElement | HTMLIFrameElement, userCode: string, options?: { guestPrelude?: string }) {
         if (container instanceof HTMLIFrameElement) {
             this.iframe = container;
         } else {
@@ -979,18 +1101,26 @@ export class SandboxHost {
             }
 
             if (data.type === "RELEASE_INSTANCE") {
-                this.instanceRegistry.delete(data.id!);
+                if (typeof data.id === "string") this.instanceRegistry.delete(data.id);
+                if (Array.isArray(data.ids)) {
+                    for (const id of data.ids) {
+                        if (typeof id === "string") this.instanceRegistry.delete(id);
+                    }
+                }
                 return;
             }
 
             if (data.type === "CALL_ROOT" || data.type === "CALL_INSTANCE") {
                 const response: RpcMessage = { type: "RESPONSE", reqId: data.reqId };
                 const usedAbortIds: string[] = [];
+                const callController = new AbortController();
+                this.hostCallControllers.add(callController);
                 let transferables: Transferable[] = [];
                 let streamCleanups: (() => void)[] = [];
 
                 const releaseAbortControllers = () => {
                     for (const id of usedAbortIds) this.abortControllers.delete(id);
+                    this.hostCallControllers.delete(callController);
                 };
 
                 const rollbackStreams = () => {
@@ -1005,19 +1135,30 @@ export class SandboxHost {
                 this.pendingHostCalls++;
                 try {
                     const args = this.deserializeArgs(data.args || [], usedAbortIds);
+                    const methodName = typeof data.method === "string" ? data.method : "<non-string>";
                     let result: any;
 
-                    if (data.type === "CALL_ROOT") {
-                        const fn = this.apiFactory[data.method!];
-                        if (typeof fn !== "function") throw new Error(`API method ${data.method} not found`);
-                        result = await fn(...args);
-                    } else {
-                        const instance = this.instanceRegistry.get(data.id!);
-                        if (!instance) throw new Error("Instance not found or released");
-                        if (typeof instance[data.method!] !== "function")
-                            throw new Error(`Method ${data.method} missing on instance`);
-                        result = await instance[data.method!](...args);
+                    const previousCallSignal = currentHostCallSignal;
+                    currentHostCallSignal = callController.signal;
+                    try {
+                        if (data.type === "CALL_ROOT") {
+                            const fn =
+                                typeof data.method === "string" && Object.hasOwn(this.apiFactory, data.method)
+                                    ? this.apiFactory[data.method]
+                                    : undefined;
+                            if (typeof fn !== "function") throw new Error(`API method ${methodName} not found`);
+                            result = fn(...args);
+                        } else {
+                            const instance = this.instanceRegistry.get(data.id!);
+                            if (!instance) throw new Error("Instance not found or released");
+                            const fn = getInstanceMethod(instance, data.method);
+                            if (!fn) throw new Error(`Method ${methodName} missing on instance`);
+                            result = fn.apply(instance, args);
+                        }
+                    } finally {
+                        currentHostCallSignal = previousCallSignal;
                     }
+                    result = await result;
 
                     // Unloaded while the call ran: bridge nothing, and end the streams nobody will read.
                     if (this.terminated) {
@@ -1087,7 +1228,7 @@ export class SandboxHost {
             window.__risuGuestStarted = true;
             document.querySelector('meta#csp-meta')?.remove();
             (async () => {
-                ${GUEST_BRIDGE_SCRIPT}
+                ${GUEST_BRIDGE_SCRIPT}${options?.guestPrelude ? "\n" + options.guestPrelude : ""}
                     
                 await (async () => {
                     ${userCode}
@@ -1121,12 +1262,18 @@ export class SandboxHost {
         };
     }
 
+    /**
+     * Aborts retained host-call and guest-signal controllers before closing streams and rejecting
+     * callbacks. A call resolving after termination posts nothing, creates no bridge, and cancels
+     * its undelivered response streams.
+     */
     public terminate() {
         this.terminated = true;
         // A start still pending ends here (a no-op once the guest reported).
         this.settleStartup("stopped");
         // An in-flight host call (a `nativeFetch` still waiting for headers) stops with its sandbox.
         for (const controller of this.abortControllers.values()) controller.abort();
+        for (const controller of this.hostCallControllers) controller.abort();
         if (this.messageHandlerRef) {
             window.removeEventListener("message", this.messageHandlerRef);
             this.messageHandlerRef = null;
@@ -1142,6 +1289,7 @@ export class SandboxHost {
         }
         this.pendingCallbacks.clear();
         this.abortControllers.clear();
+        this.hostCallControllers.clear();
         this.callbackWrapperCache.clear();
         this.activityChanged();
         this.activityListener = null;

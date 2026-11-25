@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { calcString } from "../../../shared/cbs/calc.ts";
 import { createCbsEvaluator } from "../../../shared/cbs/evaluator.ts";
 import { CbsLimitError, type CbsLimits, type CbsUsage } from "../../../shared/cbs/limits.ts";
@@ -44,7 +44,12 @@ const kind = (name: string) => kinds.get(name)!;
 // A range too large for the work limit (a non-advancing one answers `[]`).
 const HUGE = "{{range::[0,1e18]}}";
 
+beforeEach(() => {
+    // Ordinary evaluator work cannot spend the server's wall-time allowance.
+    vi.spyOn(performance, "now").mockReturnValue(0);
+});
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
 });
 
@@ -403,14 +408,18 @@ describe("the bindings", () => {
     });
 
     it("share one job allowance between the runs' bindings, and give a bindings without one its own", () => {
+        const clock = vi.mocked(performance.now);
         const setup = bindingsSetup({});
         cleanups.push(setup.cleanup);
         const usage: CbsUsage = { usedMs: 0 };
         const first = setup.make(usage);
         const second = setup.make(usage);
+        // Each parse starts at one tick and ends at the next, regardless of its clock-read count.
+        clock.mockReturnValueOnce(0).mockReturnValue(1);
         first.evaluator.risuChatParser("{{char}} ".repeat(2000));
         const afterFirst = usage.usedMs;
         expect(afterFirst).toBeGreaterThan(0);
+        clock.mockReturnValueOnce(1).mockReturnValue(2);
         second.evaluator.risuChatParser("{{char}} ".repeat(2000));
         expect(usage.usedMs).toBeGreaterThan(afterFirst);
         // The allowance is spent (as the input stage and the earlier speakers of a job may have spent it):
@@ -429,11 +438,11 @@ describe("the bindings", () => {
 
 describe("the native effect loop", () => {
     /**
-     * The runtime over fake services whose `parse` holds the thread for `holdMs`, with the effect
-     * loop reading `now` (the real clock unless given). The first parse queues a stop due
-     * `stopAfterMs` later: queued inside the first effect, it cannot race the run's own first turn.
+     * Each parse charges `parseMs` to the injected effect clock. The first parse queues a stop
+     * through the test's scheduler, after the runtime's initial turn and before any effect yield.
      */
-    function runtimeHolding(holdMs: number, effects: number, stopAfterMs: number, now?: () => number) {
+    function runtimeHolding(parseMs: number, effects: number, queueStop: (abort: () => void) => void) {
+        let time = 0;
         const controller = new AbortController();
         const parsed: string[] = [];
         let fatal: LuaJobFatalError | null = null;
@@ -507,13 +516,10 @@ describe("the native effect loop", () => {
             activateLore: async () => ({ actives: [] }),
             parse: (text: string) => {
                 if (parsed.length === 0) {
-                    setTimeout(() => controller.abort(), stopAfterMs);
+                    queueStop(() => controller.abort());
                 }
                 parsed.push(text);
-                const until = performance.now() + holdMs;
-                while (performance.now() < until) {
-                    // Holding the thread, as a large legal CBS parse does.
-                }
+                time += parseMs;
                 return text;
             },
             calc: () => 0,
@@ -536,14 +542,15 @@ describe("the native effect loop", () => {
             effectivePersonaId: null,
             runCommand: async () => undefined,
             runLua: async () => ({ stopSending: false }),
-            now,
+            now: () => time,
         } as unknown as TriggerHost;
         return { runtime: createTriggerRuntime(host), controller, parsed, chat, char, effects: host.effects };
     }
 
     it("yields a turn once an effect held the thread over 50 ms, so a stop queued meanwhile ends the run before the next effect", async () => {
-        // Queued from the first effect and due during it, the stop can only run on a yield.
-        const { runtime, parsed, char, chat, effects } = runtimeHolding(80, 4, 5);
+        // Queued from the first effect ahead of the runtime's next setImmediate: the stop can
+        // run only when the effect loop yields, regardless of how fast either parse executes.
+        const { runtime, parsed, char, chat, effects } = runtimeHolding(80, 4, (abort) => setImmediate(abort));
         await expect(runtime.runTrigger(char, "start", { chat, displayMode: false })).rejects.toThrow(
             "request aborted",
         );
@@ -556,14 +563,15 @@ describe("the native effect loop", () => {
 
     it("does not yield between quick effects: a stop queued during them lands after the run", async () => {
         // A stopped clock: the effects take no time, however long the machine takes to run them.
-        const { runtime, controller, parsed, char, chat } = runtimeHolding(0, 4, 0, () => 0);
+        // A real queued stop would run before the next effect if the runtime incorrectly yielded.
+        const { runtime, controller, parsed, char, chat } = runtimeHolding(0, 4, (abort) => setImmediate(abort));
         const result = await runtime.runTrigger(char, "start", { chat, displayMode: false });
         expect(result).not.toBeNull();
         expect(parsed).toHaveLength(8);
         expect(Object.keys(chat.scriptstate!).sort()).toEqual(["$v0", "$v1", "$v2", "$v3"]);
         // The stop queued from the first effect was still pending through the run, and lands after it.
         expect(controller.signal.aborted).toBe(false);
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => setImmediate(resolve));
         expect(controller.signal.aborted).toBe(true);
     });
 });

@@ -1,8 +1,9 @@
 import { boundedDistance } from "./assetSearch";
 import type { ChatStyle } from "./chatStyles";
+import { escapeHtml, sanitizeExportHtml } from "./safeHtml";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
-import { type ChatRef, currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
+import { currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { isFrozenAssetList, isRecordWrapper, wrapperFieldStamp } from "../storage/records.svelte";
 import {
@@ -13,7 +14,7 @@ import {
     type SettingsRootKey,
 } from "../storage/settingsViews.svelte";
 import DOMPurify from "dompurify";
-import markdownit from "markdown-it";
+import markdownit, { type MarkdownIt } from "markdown-it";
 import {
     appVer,
     type character,
@@ -22,7 +23,7 @@ import {
     type triggerscript,
 } from "../storage/database.svelte";
 import { CurrentTriggerIdStore } from "../stores.svelte";
-import { aiWatermarkingLawApplies, getDirectAssetSrc, getFileSrc } from "../globalApi.svelte";
+import { getDirectAssetSrc, getFileSrc } from "../globalApi.svelte";
 import {
     getChatVar,
     getChatVarOf,
@@ -32,6 +33,7 @@ import {
     getGlobalChatVarOf,
 } from "./chatVar.svelte";
 import { type CapturedTransform, captureTransform, serverProcessScript } from "./transformClient";
+import { readRenderIO } from "./renderErrors";
 import { get } from "svelte/store";
 import { selectedIndex } from "../storage/selection.svelte";
 import css, { type CssAtRuleAST } from "@adobe/css-tools";
@@ -59,6 +61,26 @@ import type { CbsConditions, CbsDatabase } from "../../../shared/cbs/types.ts";
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 import { assetExtension, assetMimeType } from "../../../shared/assetMime.ts";
 import cssSelectorParser from "postcss-selector-parser";
+
+/**
+ * The tab's CBS host and its message renderer.
+ *
+ * - `risuChatParser` is the shared evaluator (`shared/cbs/evaluator.ts`) with the client host (`clientCbsHost`):
+ *   the live records through `cbsDatabase`, the selected character (untracked), `CurrentTriggerIdStore`, `window`
+ *   for the viewport, `navigator.language`, `findCharacterbyId` in the legacy shape, and `CLIENT_CBS_LIMITS`. One
+ *   evaluator serves the tab; a parse for a chat with display ids gets a scoped one (`risuChatParserScoped`, the 16
+ *   last-created scopes kept, in creation order: a hit does not renew one). Each evaluator has its own budget.
+ * - A parse that reaches its budget throws `CbsLimitError` to its caller. `risuChatParserForDisplay` turns it into
+ *   the limit message; style restoration (`decodeStyleContent`) turns it, like any failure of a style's CBS or CSS
+ *   parse, into its CSS error fallback. Successful CSS scoping is cached by the exact text after CBS evaluation.
+ * - `ParseMarkdown` renders a message body; `trimMarkdown` (and `trimMarkdownSharingStyles` for a chat row whose
+ *   styles are shared, `chatStyles.ts`) sanitizes it. Style tags in any case, with their attributes, travel
+ *   hex-encoded as `<risu-style>` through Markdown and the sanitizer. Both trim functions scope every style in
+ *   the sanitized tree, including ordinary styles the encoder did not recognize, and retain sanitized attributes.
+ * - The DOMPurify hooks below apply to every `DOMPurify.sanitize` in the tab once this module is loaded, among
+ *   them: an `iframe` other than a YouTube embed is removed; classes get the `x-risu-` prefix (`hljs*` and
+ *   already-prefixed ones excepted); an `href` other than `http(s)://` is emptied.
+ */
 
 const markdownItOptions = {
     html: true,
@@ -144,9 +166,14 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
         case "href": {
             if (data.attrValue.startsWith("http://") || data.attrValue.startsWith("https://")) {
                 node.setAttribute("target", "_blank");
+                node.setAttribute("rel", "noopener noreferrer");
                 break;
             }
             data.attrValue = "";
+            break;
+        }
+        case "rel": {
+            data.attrValue = "noopener noreferrer";
             break;
         }
     }
@@ -162,7 +189,12 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
 
 export { risuEscape, risuUnescape };
 
-function renderMarkdown(md: markdownit, data: string) {
+/**
+ * markdown-it with curly quotes in the input made straight and typographer quotes rendered as the quote set
+ * (`customQuotes`), wrapped in `<mark risu-mark>` for styling unless `unformatQuotes`. `$$...$$` becomes KaTeX
+ * MathML first and stays as written when KaTeX fails.
+ */
+function renderMarkdown(md: MarkdownIt, data: string) {
     let quotes = ["“", "”", "‘", "’"];
     if (settings.ui.customQuotes) {
         quotes = settings.ui.customQuotesData ?? quotes;
@@ -217,7 +249,12 @@ function renderMarkdown(md: markdownit, data: string) {
     return text;
 }
 
-async function renderHighlightableMarkdown(data: string) {
+/**
+ * `renderMarkdown` with fenced code highlighted by highlight.js, each language loaded on first use; an unknown
+ * language is escaped plain code, `risuerror` an error box, and a block that fails to highlight stays a placeholder.
+ * Checks the render signal before each fence and after each language import; cancellation propagates to the caller.
+ */
+async function renderHighlightableMarkdown(data: string, signal?: AbortSignal) {
     let rendered = renderMarkdown(mdHighlight, data);
     const highlightPlaceholders = rendered.match(/<pre-hljs-placeholder lang="(.+?)">(.+?)<\/pre-hljs-placeholder>/gms);
     if (!highlightPlaceholders) {
@@ -225,6 +262,7 @@ async function renderHighlightableMarkdown(data: string) {
     }
 
     for (const placeholder of highlightPlaceholders) {
+        signal?.throwIfAborted();
         try {
             let lang = placeholder.match(/lang="(.+?)"/)?.[1];
             const code = placeholder.match(/<pre-hljs-placeholder lang=".+?">(.+?)<\/pre-hljs-placeholder>/ms)?.[1];
@@ -394,6 +432,7 @@ async function renderHighlightableMarkdown(data: string) {
                     fileExt = "none";
                 }
             }
+            signal?.throwIfAborted();
             if (languageModule) {
                 hljs.registerLanguage(lang, languageModule.default);
             }
@@ -414,12 +453,15 @@ async function renderHighlightableMarkdown(data: string) {
                     `<pre class="hljs" x-hl-lang="${fileExt}"><code>${highlighted}</code></pre>`,
                 );
             }
-        } catch (error) {}
+        } catch (error) {
+            if (signal?.aborted) throw error;
+        }
     }
 
     return rendered;
 }
 
+/** The asset macros `parseAdditionalAssets` expands, `{{type::name}}`; a global regex, so `exec` keeps state. */
 export const assetRegex = /{{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)}}/gms;
 
 function getAssetSrc(assetArr: readonly (readonly string[])[], assetPaths: AssetPaths) {
@@ -443,15 +485,32 @@ function getEmoSrc(emoArr: readonly (readonly string[])[], emoPaths: AssetPaths)
     }
 }
 
+const FILE_SRC_CACHE_LIMIT = 2000;
 const fileSrcCache = new Map<string, string>();
 
-async function getFileSrcCached(path: string) {
-    let cached = fileSrcCache.get(path);
+/** Controller loss invalidates parser URLs, including direct asset URLs that need the signing worker. */
+export function invalidateFileSrcCache(): void {
+    fileSrcCache.clear();
+}
+
+function readRenderFileSrc(path: string, signal?: AbortSignal, rejectFailedAssetReads = false) {
+    return readRenderIO(
+        () => (rejectFailedAssetReads ? getFileSrc(path, { rejectFailedReads: true }) : getFileSrc(path)),
+        signal,
+    );
+}
+
+async function getFileSrcCached(path: string, signal?: AbortSignal, rejectFailedAssetReads = false) {
+    signal?.throwIfAborted();
+    const cached = fileSrcCache.get(path);
     if (cached) {
         return cached;
     }
-    const src = await getFileSrc(path);
+    const src = await readRenderFileSrc(path, signal, rejectFailedAssetReads);
     fileSrcCache.set(path, src);
+    if (fileSrcCache.size > FILE_SRC_CACHE_LIMIT) {
+        fileSrcCache.delete(fileSrcCache.keys().next().value!);
+    }
     return src;
 }
 
@@ -542,6 +601,10 @@ const parserCharacterAssets = $derived.by(() => {
 const parserAssetInputs = $derived.by(() => ({ character: parserCharacterAssets, modules: parserModuleAssets }));
 let lastAssetInputs: typeof parserAssetInputs | undefined;
 
+/**
+ * Replaces the exact-name asset maps (names lower-cased; character and module assets in one map, where a repeated
+ * name keeps only the paths with its first entry's extension; emotions in another, the last one per name).
+ */
 export function resetAssetsCache(
     charAssets: readonly (readonly string[])[],
     emoAssets: readonly (readonly string[])[],
@@ -560,7 +623,12 @@ export function resetAssetsCache(
     emoAssetsCache = charEmoPaths;
 }
 
-/** Also read by a parse: tracked, and current even before the root effect has flushed. */
+/**
+ * Also read by a parse: tracked, and current even before the root effect has flushed. A change of the live
+ * inputs (the selected character's assets and emotions, the enabled modules' assets) drops the maps, so the next
+ * asset pass builds them again from those inputs; the character passed to that pass supplies them only while no
+ * character, or a group, is selected.
+ */
 function syncAssetsCache() {
     const inputs = parserAssetInputs;
     if (!Object.is(inputs, lastAssetInputs)) {
@@ -582,16 +650,25 @@ $effect.root(() => {
 const imageCBS = ["img", "image", "emotion", "asset", "bg", "raw", "path"];
 const videoExtensions = ["mp4", "webm", "avi", "m4p", "m4v"];
 
+/**
+ * Expands `assetRegex` macros. A name matches the exact-name maps first (`syncAssetsCache`; `emotion`: its own
+ * map, no fallback), then, unless `legacyMediaFindings`, the closest asset of `char`'s own list
+ * (`getClosestMatch`); no match, or an image macro under `hideAllImages`, expands to nothing, and `bg` expands
+ * only in `back` mode. A name with several paths picks
+ * one by `pickHashRand` of the chat index and character, so a message keeps its pick. A `<source>` `type` is
+ * `shared/assetMime.ts` `assetMimeType` of the path's extension, left out for `application/octet-stream`.
+ * `{{source::char}}`/`{{source::user}}` read only the requested icons from `arg`.
+ */
 async function parseAdditionalAssets(
     data: string,
     char: simpleCharacterArgument | character | AnyClientCharacter,
     mode: "normal" | "back",
-    /** `chatRef`: the chat the render captured (its persona's icon), else the selected chat's. */
-    arg: { ch: number; chatRef?: ChatRef | null },
+    /** Source icons resolved before the render's first await, shared by both asset passes. */
+    arg: { ch: number; charIcon?: string; userIcon?: string },
+    signal?: AbortSignal,
+    rejectFailedAssetReads = false,
 ) {
-    // Read before the first await (the selected chat can change meanwhile), untracked as the read
-    // after the awaits was: a render must not rerun on a persona change elsewhere.
-    const userIcon = untrack(() => getUserIcon(arg.chatRef));
+    signal?.throwIfAborted();
     const assetWidthString =
         (settings.ui.assetWidth && settings.ui.assetWidth !== -1) || settings.ui.assetWidth === 0
             ? `max-width:${settings.ui.assetWidth}rem;`
@@ -613,6 +690,7 @@ async function parseAdditionalAssets(
     let cx: number | null = null;
 
     data = await replaceAsync(data, assetRegex, async (full: string, type: string, name: string) => {
+        signal?.throwIfAborted();
         name = name.toLocaleLowerCase();
 
         // Skip image-related assets when hideAllImages is enabled
@@ -623,7 +701,8 @@ async function parseAdditionalAssets(
 
         if (type === "emotion") {
             const srcPath = emoPaths?.[name]?.srcPaths?.[0];
-            const path = srcPath ? await getFileSrcCached(srcPath) : null;
+            const path = srcPath ? await getFileSrcCached(srcPath, signal, rejectFailedAssetReads) : null;
+            signal?.throwIfAborted();
             if (!path) {
                 return "";
             }
@@ -667,7 +746,8 @@ async function parseAdditionalAssets(
             pSrc = match.srcPaths[selIndex];
         }
 
-        const p = await getFileSrcCached(pSrc);
+        const p = await getFileSrcCached(pSrc, signal, rejectFailedAssetReads);
+        signal?.throwIfAborted();
         const mime = assetMimeType(assetExtension(pSrc));
         const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
         switch (type) {
@@ -701,13 +781,18 @@ async function parseAdditionalAssets(
         return "";
     });
 
-    if (needsSourceAccess) {
-        const chara = selectedCharacter();
-        if (chara.image) {
-        }
-        data = data.replace(/\uE9b4CHAR\uE9b4/g, chara.image ? await getFileSrc(chara.image) : "");
-
-        data = data.replace(/\uE9b4USER\uE9b4/g, userIcon ? await getFileSrc(userIcon) : "");
+    signal?.throwIfAborted();
+    if (needsSourceAccess && data.includes("\uE9b4CHAR\uE9b4")) {
+        data = data.replace(
+            /\uE9b4CHAR\uE9b4/g,
+            arg.charIcon ? await readRenderFileSrc(arg.charIcon, signal, rejectFailedAssetReads) : "",
+        );
+    }
+    if (needsSourceAccess && data.includes("\uE9b4USER\uE9b4")) {
+        data = data.replace(
+            /\uE9b4USER\uE9b4/g,
+            arg.userIcon ? await readRenderFileSrc(arg.userIcon, signal, rejectFailedAssetReads) : "",
+        );
     }
 
     return data;
@@ -717,7 +802,8 @@ async function parseAdditionalAssets(
  * The character asset closest to `name` (lower-cased) by `getDistance` of the trimmed names, the
  * first one on a tie; null past `assetMaxDifference`. The result per trimmed name, a miss included,
  * is cached on the asset list's index, which a change of the list replaces (and a render that read
- * it reruns).
+ * it reruns). A miss is reused only at a cutoff no greater than its own. A lookup that has to compute while the
+ * index holds `FUZZY_RESULT_LIMIT` results clears them first (a retried miss at a larger cutoff included).
  */
 function getClosestMatch(
     char: simpleCharacterArgument | character | AnyClientCharacter,
@@ -850,7 +936,18 @@ function trimmer(str: string) {
     return str.trim().replace(/[_ -.]/g, "");
 }
 
-async function parseInlayAssets(data: string) {
+/**
+ * Expands `{{inlay::id}}`, `{{inlayed::id}}`, and `{{inlayeddata::id}}` (the last two wrapped in a
+ * `risu-inlay-image` block) from `getInlayMedia` (`src/ts/process/files/inlays.ts`: the asset key, no bytes).
+ * Images use `getFileSrc` with the render's failure opt-in; `hideAllImages` removes them without reading bytes.
+ * Audio and video use `getDirectAssetSrc`, else `getInlayObjectUrl`. Signature inlay markers are removed;
+ * a missing inlay, or no URL for visible media, leaves the tag in place. The `<source>` `type` is
+ * `assetMimeType` of the key's extension, matching the asset route's `Content-Type`; `application/octet-stream`
+ * gets none, so the browser sniffs the bytes. Object URLs stay pinned for cached renders;
+ * a page that loses its controlling worker renders later inlays through the fallback.
+ */
+async function parseInlayAssets(data: string, signal?: AbortSignal, rejectFailedAssetReads = false) {
+    signal?.throwIfAborted();
     const inlayMatch = data.match(/{{(inlay|inlayed|inlayeddata)::(.+?)}}/g);
     if (inlayMatch) {
         for (const inlay of inlayMatch) {
@@ -860,14 +957,22 @@ async function parseInlayAssets(data: string) {
             let postfix = inlayType !== "inlay" ? `</div>\n\n` : "";
 
             // Images use getFileSrc; audio and video use direct asset URLs with a capable controlling
-            // worker, otherwise typed object URLs per asset key. These URLs are never revoked, so
-            // cached renders and translations never hold dead ones.
-            const media = await getInlayMedia(id);
-            const url = !media
-                ? ""
-                : media.type === "image"
-                  ? await getFileSrc(media.asset)
-                  : (getDirectAssetSrc(media.asset) ?? (await getInlayObjectUrl(id)) ?? "");
+            // worker, otherwise typed object URLs per asset key. Object URLs stay pinned for
+            // cached renders and translations.
+            const media = await readRenderIO(() => getInlayMedia(id), signal);
+            if (!media) {
+                continue;
+            }
+            if (media.type === "signature" || (media.type === "image" && settings.ui.hideAllImages)) {
+                data = data.replace(inlay, "");
+                continue;
+            }
+            const url =
+                media.type === "image"
+                    ? await readRenderFileSrc(media.asset, signal, rejectFailedAssetReads)
+                    : (getDirectAssetSrc(media.asset) ??
+                      (await readRenderIO(() => getInlayObjectUrl(id), signal)) ??
+                      "");
             if (!url) {
                 continue;
             }
@@ -875,11 +980,6 @@ async function parseInlayAssets(data: string) {
             const sourceType = mime === "application/octet-stream" ? "" : ` type="${mime}"`;
             switch (media.type) {
                 case "image":
-                    // Hide inlay images when hideAllImages is enabled
-                    if (settings.ui.hideAllImages) {
-                        data = data.replace(inlay, "");
-                        break;
-                    }
                     data = data.replace(inlay, `${prefix}<img src="${url}"/>${postfix}`);
                     break;
                 case "video":
@@ -934,6 +1034,29 @@ function parseThoughtsAndTools(data: string) {
     });
 }
 
+/**
+ * Renders a message body for display, in this order:
+ * 1. `parseAdditionalAssets`, for a character that is not a group;
+ * 2. the server script stage (`transformClient.ts` `serverProcessScript`, `editdisplay`; target `background` in
+ *    `back` mode, else `message`), skipped without a character or a transform context;
+ * 3. the asset pass again, only when the script stage changed the text; then `parseInlayAssets`;
+ * 4. `<Thoughts>` to a collapsed `<details>`, `<tool_call>` to a notice;
+ * 5. each `<style ...>...</style>` in any case to a hex `<risu-style>`, carrying its attributes,
+ *    so Markdown and the sanitizer leave that CSS alone; the trim step scopes any ordinary styles too;
+ * 6. Markdown (`renderHighlightableMarkdown`), in `normal` and `notrim` modes only;
+ * 7. `trimMarkdown`, except in `notrim`, which answers the Markdown output unsanitized.
+ *
+ * The transform context is `capturedTransform` (null: none), or captured here before the first await when it is
+ * omitted. `{{source::char}}` is the image of the owner of the render's chat (the capture's, else the selected
+ * chat; a group owner included), else of the selected character; `{{source::user}}` is that chat's persona icon.
+ * Both are read untracked before the first await and shared by both asset passes.
+ * The signal is checked before each awaited stage (both asset passes, the script stage, inlays and Markdown)
+ * and after the last; Markdown highlighting also checks before each fence and after each language import.
+ * `serverProcessScript` also checks it on entry. Asset failures resolve `""` unless `rejectFailedAssetReads`
+ * opts into rejections for ChatBody: network failures, 408, 429 and 5xx are transient, while permanent
+ * HTTP refusals are not retried; missing/empty files still resolve `""`.
+ * Rejected inlay record and media reads are also marked transient.
+ */
 export async function ParseMarkdown(
     data: string,
     charArg: character | simpleCharacterArgument | groupChat | AnyClientCharacter | string = null,
@@ -942,7 +1065,10 @@ export async function ParseMarkdown(
     cbsConditions: CbsConditions = {},
     /** A render that captured its transform context earlier (`ChatBody`); null: no context (the script stage is skipped). */
     capturedTransform?: CapturedTransform | null,
+    signal?: AbortSignal,
+    options: { rejectFailedAssetReads?: boolean } = {},
 ) {
+    signal?.throwIfAborted();
     let firstParsed = "";
     const additionalAssetMode = mode === "back" ? "back" : "normal";
     let char = typeof charArg === "string" ? findCharacterbyId(charArg) : charArg;
@@ -950,17 +1076,37 @@ export async function ParseMarkdown(
     const transform = char ? (capturedTransform === undefined ? captureTransform(chatID) : capturedTransform) : null;
     // The chat this render is for, also when the server path does not apply (no transform).
     const renderRef = transform?.chatRef ?? untrack(() => currentChatRef());
+    // Resolve the chat owner's source icon before either asset pass can await, including group chats.
+    // Untracked: a render must not rerun on a persona change elsewhere.
+    const sourceIcons = untrack(() => {
+        const sourceChar =
+            (renderRef ? characterList().find((entry) => entry.chaId === renderRef.chaId) : null) ??
+            selectedCharacter();
+        return {
+            charIcon: sourceChar?.image,
+            userIcon: char && char.type !== "group" ? getUserIcon(renderRef) : undefined,
+        };
+    });
 
     if (char && char.type !== "group") {
-        data = await parseAdditionalAssets(data, char, additionalAssetMode, {
-            ch: chatID,
-            chatRef: renderRef,
-        });
+        signal?.throwIfAborted();
+        data = await parseAdditionalAssets(
+            data,
+            char,
+            additionalAssetMode,
+            {
+                ch: chatID,
+                ...sourceIcons,
+            },
+            signal,
+            options.rejectFailedAssetReads,
+        );
         firstParsed = data;
     }
 
     // Without a context the script stage is skipped: the text stays as it is.
     if (char && transform) {
+        signal?.throwIfAborted();
         data = (
             await serverProcessScript(
                 char,
@@ -970,24 +1116,37 @@ export async function ParseMarkdown(
                 cbsConditions,
                 transform,
                 mode === "back" ? "background" : "message",
+                signal,
             )
         ).data;
     }
 
     if (firstParsed !== data && char && char.type !== "group") {
-        data = await parseAdditionalAssets(data, char, additionalAssetMode, {
-            ch: chatID,
-            chatRef: renderRef,
-        });
+        signal?.throwIfAborted();
+        data = await parseAdditionalAssets(
+            data,
+            char,
+            additionalAssetMode,
+            {
+                ch: chatID,
+                ...sourceIcons,
+            },
+            signal,
+            options.rejectFailedAssetReads,
+        );
     }
 
-    data = await parseInlayAssets(data ?? "");
+    signal?.throwIfAborted();
+    data = await parseInlayAssets(data ?? "", signal, options.rejectFailedAssetReads);
+    signal?.throwIfAborted();
 
     data = parseThoughtsAndTools(data);
 
     data = encodeStyle(data);
     if (mode === "normal" || mode === "notrim") {
-        data = await renderHighlightableMarkdown(data);
+        signal?.throwIfAborted();
+        data = await renderHighlightableMarkdown(data, signal);
+        signal?.throwIfAborted();
 
         if (mode === "notrim") {
             return data;
@@ -1029,17 +1188,27 @@ const trimPurifyConfig = {
     ],
 };
 
+/**
+ * Sanitizes rendered HTML (DOMPurify with `trimPurifyConfig` and this module's hooks), then turns each
+ * `<risu-style>` element into a `<style>`, retaining sanitized attributes. Every style's CSS, including ordinary
+ * styles the encoder missed, is CBS-parsed again (`risuChatParser`, the selected
+ * chat), class selectors prefixed `x-risu-` and every selector scoped under `.chattext`, and an `@import` whose
+ * raw value starts with `data:` emptied (a quoted or `url(...)` data import is kept). A style whose CBS or CSS
+ * parse fails (a `CbsLimitError` included) becomes text: `CSS ERROR: ...` with `returnCSSError`, else nothing.
+ * The CSS is set as the element's text, not fed back to the HTML parser during restoration.
+ * Successful scoping reuses a bounded cache keyed by the exact CSS after CBS evaluation.
+ */
 export function trimMarkdown(data: string) {
     if (!data) {
         return "";
     }
 
-    // Without a <risu-style> there is nothing to decode, so the plain string
-    // result is already final. Note the tag itself is not trusted input:
-    // risu-style is in ADD_TAGS, so cards, model output and user scripts can
-    // author one directly. Only its position in the parsed tree is relied on.
-    if (!data.includes("<risu-style")) {
-        return DOMPurify.sanitize(data, trimPurifyConfig);
+    // Plain messages keep the string path. Check the sanitized output too: only the
+    // parsed tree decides which elements need scoping, never the encoder's spelling.
+    if (!/<(?:risu-)?style/i.test(data)) {
+        const sanitized = DOMPurify.sanitize(data, trimPurifyConfig);
+        if (!/<(?:risu-)?style/i.test(sanitized)) return sanitized;
+        data = sanitized;
     }
 
     // Decoded CSS must never be handed back to the HTML sanitizer as <style>
@@ -1061,18 +1230,25 @@ export function trimMarkdown(data: string) {
     return root.innerHTML;
 }
 
-/** Turns each `<risu-style>` element of `trimMarkdown`'s sanitized tree into its `<style>`. */
-function restoreStyles(root: HTMLElement) {
-    // Only real <risu-style> elements are decoded. A <risu-style> that survived
-    // inside an attribute value is not an element, so it is left as inert text
-    // and a <style> tag can never be restored into an attribute context.
-    for (const el of Array.from(root.querySelectorAll("risu-style"))) {
-        const decoded = decodeStyleContent(el.textContent ?? "");
+/** Restores encoded styles and scopes ordinary styles in the sanitized tree through the same CSS path. */
+function restoreStyles(root: HTMLElement | DocumentFragment) {
+    // Only actual elements are processed; tag text inside an attribute stays inert.
+    // Snapshot both kinds before replacing any, so a restored style is scoped once.
+    for (const el of Array.from(root.querySelectorAll("risu-style, style, template"))) {
+        // Template contents have their own tree, outside querySelectorAll's descendants.
+        if (el.localName === "template") {
+            const content = (el as HTMLTemplateElement).content;
+            if (content) restoreStyles(content);
+            continue;
+        }
+        const text = el.textContent ?? "";
+        const decoded = decodeStyleContent(text, el.localName === "risu-style");
         if (decoded.css === undefined) {
             el.replaceWith(root.ownerDocument.createTextNode(decoded.fallback ?? ""));
             continue;
         }
         const style = root.ownerDocument.createElement("style");
+        for (const { name, value } of Array.from(el.attributes)) style.setAttribute(name, value);
         // <style> is RAWTEXT, so '</style' is the only sequence that can end the
         // block early and leak the rest of the CSS as markup once this string is
         // parsed again ('\/' is still '/' inside CSS).
@@ -1102,7 +1278,7 @@ export function trimMarkdownSharingStyles(
     if (!root) {
         return { html: "", styles: [] };
     }
-    if (data.includes("<risu-style")) restoreStyles(root);
+    restoreStyles(root);
     prepare?.(root);
     const styles: ChatStyle[] = [];
     for (const style of Array.from(root.querySelectorAll("style"))) {
@@ -1115,79 +1291,11 @@ export function trimMarkdownSharingStyles(
     return { html: root.innerHTML, styles };
 }
 
-const metaCodes = [
-    "\u200B", //zero width space
-    "\u200C", //zero width non-joiner
-    "\u200D", //zero width joiner
-    "\uFEFF", //zero width no-break space
-    "\u2060", //word joiner
-    "\u180E", //mongolian vowel separator
-];
-
-const encodedMetadataCache = new Map<string, string>();
-
-function encodeMetadata(modelShortName: string) {
-    const metadata = "{" + ["risuai", modelShortName.toLocaleLowerCase().replace(/[^a-z]/g, "")].join("|") + "}";
-
-    const cached = encodedMetadataCache.get(metadata);
-    if (cached !== undefined) {
-        return cached;
-    }
-
-    let encodedMetaCode = "";
-    for (let i = 0; i < metadata.length; i++) {
-        let byte = (metadata.charCodeAt(i) - 97).toString(6).padStart(2, "0");
-        for (let j = 0; j < byte.length; j++) {
-            switch (byte.charAt(j)) {
-                case "0": {
-                    encodedMetaCode += metaCodes[0];
-                    break;
-                }
-                case "1": {
-                    encodedMetaCode += metaCodes[1];
-                    break;
-                }
-                case "2": {
-                    encodedMetaCode += metaCodes[2];
-                    break;
-                }
-                case "3": {
-                    encodedMetaCode += metaCodes[3];
-                    break;
-                }
-                case "4": {
-                    encodedMetaCode += metaCodes[4];
-                    break;
-                }
-                case "5": {
-                    encodedMetaCode += metaCodes[5];
-                    break;
-                }
-            }
-        }
-    }
-
-    encodedMetadataCache.set(metadata, encodedMetaCode);
-    return encodedMetaCode;
-}
-
-export function addMetadataToElement(data: string, modelShortName: string) {
-    if (!aiWatermarkingLawApplies()) {
-        return data;
-    }
-
-    const encodedMetaCode = encodeMetadata(modelShortName);
-    console.log("Encoded metadata:", encodedMetaCode.length, "characters");
-    console.log("This requires at least", Math.ceil(encodedMetaCode.length / 32), "<p> tags to store");
-
-    let d = data.replace(/\<p\>/g, (v) => {
-        return "<p>" + encodedMetaCode;
-    });
-
-    return d + encodedMetaCode;
-}
-
-export async function postTranslationParse(data: string) {
+/**
+ * Trims translated HTML lines and renders Markdown, checking the signal before each code fence and after each
+ * language import during highlighting.
+ */
+export async function postTranslationParse(data: string, signal?: AbortSignal) {
     let lines = data.split("\n");
 
     for (let i = 0; i < lines.length; i++) {
@@ -1197,26 +1305,27 @@ export async function postTranslationParse(data: string) {
         }
     }
 
-    data = await renderHighlightableMarkdown(lines.join("\n"));
+    data = await renderHighlightableMarkdown(lines.join("\n"), signal);
     return data;
 }
 
+/**
+ * Markdown for text outside a chat row (a chat export, the playground docs): no `a` or `style` elements (plus
+ * `forbidTags`) and no `style`, `href`, or `class` attributes; no assets, CBS, or style restore.
+ */
 export function parseMarkdownSafe(
     data: string,
     arg: {
         forbidTags?: string[];
     } = {},
 ) {
-    return DOMPurify.sanitize(renderMarkdown(md, data), {
-        FORBID_TAGS: ["a", "style", ...(arg.forbidTags || [])],
-        FORBID_ATTR: ["style", "href", "class"],
-    });
+    return sanitizeExportHtml(renderMarkdown(md, data), arg);
 }
 
-const styleRegex = /\<style\>(.+?)\<\/style\>/gms;
+const styleRegex = /<style(\s(?:[^>"']|"[^"]*"|'[^']*')*)?>(.*?)<\/style\s*>/gis;
 function encodeStyle(txt: string) {
-    return txt.replaceAll(styleRegex, (f, c1) => {
-        return "<risu-style>" + Buffer.from(c1).toString("hex") + "</risu-style>";
+    return txt.replaceAll(styleRegex, (_match, attributes: string = "", content: string) => {
+        return "<risu-style" + attributes + ">" + Buffer.from(content).toString("hex") + "</risu-style>";
     });
 }
 
@@ -1227,27 +1336,38 @@ function decodeStyleRule(rule: CssAtRuleAST) {
                 let slt: string = rule.selectors[i];
                 if (slt) {
                     const parser = cssSelectorParser((root) => {
-                        root.walkClasses((classes) => {
-                            if (classes.type === "class" && !classes.value.startsWith("x-risu-")) {
-                                classes.value = "x-risu-" + classes.value;
+                        root.each((selector) => {
+                            const first = selector.first;
+                            const next = selector.nodes[1];
+                            // Translated HTML can pass through trim again. Recognize only the
+                            // leading descendant scope we emit; all other classes still get prefixed.
+                            const scoped =
+                                first?.type === "class" &&
+                                first.value === "chattext" &&
+                                next?.type === "combinator" &&
+                                next.value === " ";
+                            selector.walkClasses((classes) => {
+                                if ((!scoped || classes !== first) && !classes.value.startsWith("x-risu-")) {
+                                    classes.value = "x-risu-" + classes.value;
+                                }
+                            });
+                            if (!scoped) {
+                                selector.prepend(cssSelectorParser.combinator({ value: " " }));
+                                selector.prepend(cssSelectorParser.className({ value: "chattext" }));
                             }
                         });
                     });
 
                     slt = parser.processSync(slt);
 
-                    rule.selectors[i] = ".chattext " + slt;
+                    rule.selectors[i] = slt;
                 }
             }
         }
     }
-    if (
-        rule.type === "media" ||
-        rule.type === "supports" ||
-        rule.type === "document" ||
-        rule.type === "host" ||
-        rule.type === "container"
-    ) {
+    // Grouping rules carry nested style rules. Statement layers have no rules,
+    // while keyframes and declaration blocks use different AST fields.
+    if ("rules" in rule && rule.rules) {
         for (let i = 0; i < rule.rules.length; i++) {
             rule.rules[i] = decodeStyleRule(rule.rules[i]);
         }
@@ -1260,30 +1380,56 @@ function decodeStyleRule(rule: CssAtRuleAST) {
     return rule;
 }
 
-/**
- * Decodes one <risu-style> body into scoped CSS. Returns the CSS on its own so
- * the caller can put it into a real <style> element instead of a markup string.
- * On a CSS parse error the style is dropped and `fallback` holds the text that
- * takes its place.
- */
-function decodeStyleContent(hexText: string): { css?: string; fallback?: string } {
-    try {
-        let text = Buffer.from(hexText, "hex").toString("utf-8");
-        text = risuChatParser(text);
-        const ast = css.parse(text);
-        const rules = ast?.stylesheet?.rules;
-        if (rules) {
-            for (let i = 0; i < rules.length; i++) {
-                rules[i] = decodeStyleRule(rules[i]);
-            }
-            ast.stylesheet.rules = rules;
+const SCOPED_CSS_MAX_ENTRIES = 256;
+const SCOPED_CSS_MAX_BYTES = 4 * 1024 * 1024;
+const scopedCssCache = new Map<string, string>();
+let scopedCssCacheBytes = 0;
+
+/** Scopes post-CBS CSS; successful strings use an LRU bounded by entries and UTF-16 key/value bytes. */
+function scopeCss(text: string): string {
+    // Anything decodeStyleRule or the stringify reads must join this exact post-CBS key.
+    const cached = scopedCssCache.get(text);
+    if (cached !== undefined) {
+        scopedCssCache.delete(text);
+        scopedCssCache.set(text, cached);
+        return cached;
+    }
+
+    const ast = css.parse(text);
+    const rules = ast?.stylesheet?.rules;
+    if (rules) {
+        for (let i = 0; i < rules.length; i++) {
+            rules[i] = decodeStyleRule(rules[i]);
         }
-        return {
-            css: css.stringify(ast, {
-                indent: "",
-                compress: true,
-            }),
-        };
+        ast.stylesheet.rules = rules;
+    }
+    const scoped = css.stringify(ast, {
+        indent: "",
+        compress: true,
+    });
+    const size = (text.length + scoped.length) * 2;
+    if (size > SCOPED_CSS_MAX_BYTES) return scoped;
+
+    while (scopedCssCache.size >= SCOPED_CSS_MAX_ENTRIES || scopedCssCacheBytes + size > SCOPED_CSS_MAX_BYTES) {
+        const oldest = scopedCssCache.keys().next().value!;
+        scopedCssCacheBytes -= (oldest.length + scopedCssCache.get(oldest)!.length) * 2;
+        scopedCssCache.delete(oldest);
+    }
+    scopedCssCache.set(text, scoped);
+    scopedCssCacheBytes += size;
+    return scoped;
+}
+
+/**
+ * Decodes an encoded style body when requested, evaluates CBS for the selected chat, then reuses scoped CSS.
+ * Returns the CSS on its own so the caller can put it into a real <style> element instead of a markup string.
+ * On a CBS or CSS error the style is dropped and `fallback` holds the text that takes its place.
+ */
+function decodeStyleContent(text: string, encoded: boolean): { css?: string; fallback?: string } {
+    try {
+        if (encoded) text = Buffer.from(text, "hex").toString("utf-8");
+        text = risuChatParser(text);
+        return { css: scopeCss(text) };
     } catch (error) {
         if (settings.ui.returnCSSError) {
             return { fallback: `CSS ERROR: ${error}` };
@@ -1301,8 +1447,13 @@ export type { CbsConditions };
 // The evaluator and the registry live in `shared/cbs/`, so the server runs the same code; the
 // client supplies its host here.
 let cbsEvaluator: CbsEvaluator | null = null;
+let guiCbsEvaluator: CbsEvaluator | null = null;
 
-function clientCbsEvaluator(): CbsEvaluator {
+function clientCbsEvaluator(renderMode?: "gui"): CbsEvaluator {
+    if (renderMode === "gui") {
+        guiCbsEvaluator ??= createCbsEvaluator(clientCbsHost(renderMode));
+        return guiCbsEvaluator;
+    }
     cbsEvaluator ??= createCbsEvaluator(clientCbsHost());
     return cbsEvaluator;
 }
@@ -1359,11 +1510,12 @@ const tabCbsDatabase = cbsDatabase();
 // Allow 2 s of UI-thread time per top-level parse (each row's pre-pass is one); the budget resets for each.
 const CLIENT_CBS_LIMITS: CbsLimits = { maxWork: DEFAULT_CBS_MAX_WORK, maxMs: 2_000 };
 
-function clientCbsHost(): CbsHost {
+function clientCbsHost(renderMode?: "gui"): CbsHost {
     return {
         limits: CLIENT_CBS_LIMITS,
         getDatabase: () => tabCbsDatabase,
         getUserName: getUserName,
+        formatName: renderMode === "gui" ? escapeHtml : undefined,
         getPersonaPrompt: getPersonaPrompt,
         safeStructuredClone: safeStructuredClone,
         // A parse with a `chatRef` reads and writes that chat's variables, not the selected chat's.
@@ -1391,7 +1543,7 @@ function clientCbsHost(): CbsHost {
         getTriggerId: () => get(CurrentTriggerIdStore),
         getViewport: () => ({ width: window.innerWidth, height: window.innerHeight }),
         getBrowserLanguage: () => navigator.language,
-        // The shared evaluator reads the legacy shape (its chats) until `aggregate-removal`.
+        // The shared evaluator reads the legacy shape (a character carrying its chats).
         findCharacterById: (id) => withCompatChats(findCharacterbyId(id)) as character,
     };
 }
@@ -1399,6 +1551,8 @@ function clientCbsHost(): CbsHost {
 /** `CbsParseArg` as the client passes it: `chara` may be a chat-free client character. */
 export type ClientCbsParseArg = Omit<CbsParseArg, "chara"> & {
     chara?: CbsParseArg["chara"] | AnyClientCharacter | null;
+    /** Keeps scalar names as text while preserving the owner's GUI template markup. */
+    renderMode?: "gui";
 };
 
 /** The argument the shared evaluator gets: a character in the legacy shape it reads (`withCompatChats`). */
@@ -1422,10 +1576,14 @@ export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string 
             return risuChatParserScoped(da, arg, ids);
         }
     }
-    return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
+    return clientCbsEvaluator(arg.renderMode).risuChatParser(da, sharedParseArg(arg));
 }
 
-/** Show a localized message when a display parse exceeds its budget. Other callers keep throwing. */
+/**
+ * Show a localized message when a display parse exceeds its budget; `risuChatParser` itself keeps throwing.
+ * Only `CbsLimitError` is caught: the answer is `language.cbsLimitReached` with the error's message, and any
+ * other error propagates.
+ */
 export function risuChatParserForDisplay(da: string, arg: ClientCbsParseArg = {}): string {
     try {
         return risuChatParser(da, arg);
@@ -1455,10 +1613,10 @@ export function risuChatParserScoped(
     scope: { presetId: string; modelPresetId: string; personaId: string },
 ): string {
     // Every captured id is part of the key: the cached evaluator closes over its scope.
-    const key = JSON.stringify([scope.presetId, scope.modelPresetId, scope.personaId]);
+    const key = JSON.stringify([scope.presetId, scope.modelPresetId, scope.personaId, arg.renderMode]);
     let evaluator = scopedEvaluators.get(key);
     if (!evaluator) {
-        const base = clientCbsHost();
+        const base = clientCbsHost(arg.renderMode);
         const personaOf = () => {
             const persona = settings.personas?.find((entry) => entry?.id === scope.personaId);
             if (!persona) {
@@ -1516,7 +1674,7 @@ export function applyMarkdownToNode(node: Node) {
         if (text) {
             let markdown = renderMarkdown(md, text);
             if (markdown !== text) {
-                const span = document.createElement("span");
+                const span = (node.ownerDocument ?? document).createElement("span");
                 span.innerHTML = markdown;
 
                 // inherit inline style from the parent node

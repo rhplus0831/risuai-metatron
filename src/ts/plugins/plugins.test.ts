@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { settleFlush } from "../storage/tests/flushRetry";
+import { bootMutations, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
+import type { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // Plugin API 2.0/2.1 was removed. Two contracts replaced it:
 // - `importPlugin` installs a script only when one of its `//@api` tokens is
@@ -12,9 +15,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 //   keeps a reload from running every handler twice.
 
 const mocks = vi.hoisted(() => ({
+    server: null as StoreBackedServer | null,
     alertError: vi.fn(),
-    alertConfirm: vi.fn(async () => true),
+    alertConfirm: vi.fn(async (_message: string) => true),
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
+    reviewPluginPermissions: vi.fn(
+        async (
+            _plugin: { name: string; script: string },
+            _options?: { previousScript?: string; installing?: boolean; stillCurrent?: () => boolean },
+        ) => false,
+    ),
 }));
 
 vi.mock("src/ts/alert", async () =>
@@ -24,10 +34,14 @@ vi.mock("src/ts/alert", async () =>
     }),
 );
 
-vi.mock("src/ts/util", () => ({
-    selectSingleFile: vi.fn(),
-}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init) => mocks.server!.fetch(path, init),
+    }),
+);
 
+// The update check and download go through `globalFetch`.
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/stores.svelte", async () =>
     (await import("src/ts/tests/storesMock")).createStoresMock({
         hotReloading: [] as string[],
@@ -36,17 +50,27 @@ vi.mock("src/ts/stores.svelte", async () =>
 
 vi.mock("./apiV3/v3.svelte", () => ({
     loadV3Plugins: mocks.loadV3Plugins,
+    reviewPluginPermissions: mocks.reviewPluginPermissions,
+    pluginGuestsSettled: async () => {},
+    pluginWorkIdle: () => true,
+    onPluginWorkChange: () => () => {},
+    getV3PluginInstance: () => undefined,
 }));
 
-vi.mock("./apiV3/transpiler", () => ({
-    pluginCodeTranspiler: vi.fn(async (code: string) => code),
-}));
-
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
 import { hotReloading } from "src/ts/stores.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { importPlugin, loadPlugins } from "./plugins.svelte";
+import { globalFetch } from "src/ts/globalApi.svelte";
+import {
+    checkPluginUpdate,
+    handlePluginInstallViaPlugin,
+    importPlugin,
+    loadPlugins,
+    pluginsStarted,
+    updatePlugin,
+    type RisuPlugin,
+} from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
 
 // The plugin functions read and write the plugin list through the settings views: the records are
@@ -59,6 +83,8 @@ beforeEach(() => {
     settings.plugins = [];
     mocks.alertError.mockClear();
     mocks.loadV3Plugins.mockClear();
+    mocks.reviewPluginPermissions.mockClear();
+    mocks.reviewPluginPermissions.mockResolvedValue(false);
 });
 
 describe("importPlugin API version gate", () => {
@@ -91,6 +117,397 @@ describe("importPlugin API version gate", () => {
             enabled: true,
         });
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("importPlugin permission review", () => {
+    const body = (version: string) => script(`//@api 3.0\n//@version ${version}`);
+
+    const heldReview = () => {
+        let answer!: (saved: boolean) => void;
+        mocks.reviewPluginPermissions.mockImplementationOnce(
+            () => new Promise<boolean>((resolve) => (answer = resolve)),
+        );
+        return (saved: boolean) => answer(saved);
+    };
+
+    it("shows a new plugin's permission list before it is saved and loaded", async () => {
+        const answer = heldReview();
+        const importing = importPlugin(body("1.0.0"));
+        await vi.waitFor(() => expect(mocks.reviewPluginPermissions).toHaveBeenCalledTimes(1));
+        expect(settings.plugins).toEqual([]);
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        answer(true);
+        await importing;
+
+        expect(mocks.reviewPluginPermissions).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ name: "test_plugin", script: body("1.0.0") }),
+            { previousScript: undefined, installing: true, stillCurrent: expect.any(Function) },
+        );
+        expect(settings.plugins).toHaveLength(1);
+        expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps completion settings as they stand when an imported update finishes its permission review", async () => {
+        await importPlugin(body("1.0.0"));
+        settings.plugins[0].completionWait = false;
+        settings.plugins[0].completionQuietSeconds = 7;
+        let reviewStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+            reviewStarted = resolve;
+        });
+        let finishReview!: (saved: boolean) => void;
+        mocks.reviewPluginPermissions.mockImplementationOnce(() => {
+            reviewStarted();
+            return new Promise<boolean>((resolve) => {
+                finishReview = resolve;
+            });
+        });
+        const updating = importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+        await started;
+        settings.plugins[0].completionWait = true;
+        settings.plugins[0].completionQuietSeconds = 11;
+        finishReview(false);
+        await updating;
+
+        expect(settings.plugins).toHaveLength(1);
+        expect(settings.plugins[0]).toMatchObject({
+            name: "test_plugin",
+            script: body("2.0.0"),
+            versionOfPlugin: "2.0.0",
+            completionWait: true,
+            completionQuietSeconds: 11,
+        });
+    });
+
+    it("passes the replaced version's script on an update, so its grants can be carried over", async () => {
+        await importPlugin(body("1.0.0"));
+        mocks.reviewPluginPermissions.mockClear();
+
+        await importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+
+        expect(mocks.reviewPluginPermissions).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ script: body("2.0.0") }),
+            { previousScript: body("1.0.0"), installing: true, stillCurrent: expect.any(Function) },
+        );
+    });
+
+    it("drops an update whose plugin was removed while its permission list was open", async () => {
+        await importPlugin(body("1.0.0"));
+        mocks.loadV3Plugins.mockClear();
+        const answer = heldReview();
+        const updating = importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+        await vi.waitFor(() => expect(mocks.reviewPluginPermissions).toHaveBeenCalledTimes(2));
+        settings.plugins = [];
+        answer(false);
+        await updating;
+
+        expect(settings.plugins).toEqual([]);
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        expect(mocks.alertError).not.toHaveBeenCalled();
+    });
+
+    it("installs nothing over a plugin that was replaced while the permission list was open", async () => {
+        await importPlugin(body("1.0.0"));
+        mocks.loadV3Plugins.mockClear();
+        const answer = heldReview();
+        const updating = importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+        await vi.waitFor(() => expect(mocks.reviewPluginPermissions).toHaveBeenCalledTimes(2));
+        const stillCurrent = mocks.reviewPluginPermissions.mock.calls[1][1]!.stillCurrent!;
+        expect(stillCurrent()).toBe(true);
+        // Another tab finished a later update meanwhile.
+        settings.plugins = [{ ...settings.plugins[0], script: body("3.0.0"), versionOfPlugin: "3.0.0" }];
+        expect(stillCurrent()).toBe(false);
+        answer(false);
+        await updating;
+
+        expect(settings.plugins.map((p) => p.versionOfPlugin)).toEqual(["3.0.0"]);
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(language.pluginChangedDuringImport);
+    });
+
+    it("installs the plugin and reports the error when saving the permissions fails", async () => {
+        mocks.reviewPluginPermissions.mockRejectedValueOnce(new Error("write failed"));
+
+        await importPlugin(body("1.0.0"));
+
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(
+            language.pluginPermissionSaveError.replace("{error}", "Error: write failed"),
+        );
+        expect(settings.plugins).toHaveLength(1);
+        expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks nothing for a hot reload, a skipped review, or an update of a plugin that is not installed", async () => {
+        await importPlugin(body("1.0.0"), { isHotReload: true });
+        // A hot reload lists the plugin in `hotReloading`, which later tests read.
+        hotReloading.length = 0;
+        await importPlugin(body("1.0.1"), { skipPermissionReview: true });
+        settings.plugins = [];
+        await importPlugin(body("1.0.2"), { isUpdate: true });
+
+        expect(mocks.reviewPluginPermissions).not.toHaveBeenCalled();
+        expect(settings.plugins).toEqual([]);
+    });
+});
+
+it("keeps the installed plugin when a TypeScript update fails to compile", async () => {
+    const original = "//@name test_plugin\n//@api 3.0\n//@version 1.0.0\nconst value: number = 1;";
+    await importPlugin(original, { isTypescript: true });
+    expect(mocks.alertError).not.toHaveBeenCalled();
+    expect(settings.plugins).toHaveLength(1);
+    const { script: savedScript } = settings.plugins[0];
+    expect(savedScript).toContain("const value = 1;");
+    mocks.loadV3Plugins.mockClear();
+    mocks.reviewPluginPermissions.mockClear();
+
+    await importPlugin("//@name test_plugin\n//@api 3.0\n//@version 2.0.0\nconst value: number = ;", {
+        isTypescript: true,
+        isUpdate: true,
+        originalPluginName: "test_plugin",
+    });
+
+    expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(
+        expect.stringMatching(/^Failed to transpile TypeScript code: Unexpected token/),
+    );
+    expect(settings.plugins).toMatchObject([{ name: "test_plugin", script: savedScript, versionOfPlugin: "1.0.0" }]);
+    expect(mocks.reviewPluginPermissions).not.toHaveBeenCalled();
+    expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+});
+
+describe("plugin updates through globalFetch", () => {
+    const updateURL = "https://plugins.test/test_plugin.js";
+    const bytes = (text: string) => ({ ok: true, status: 200, headers: {}, data: new TextEncoder().encode(text) });
+    beforeEach(() => vi.mocked(globalFetch).mockClear());
+
+    it("reads the newer version from the first bytes of the update URL", async () => {
+        vi.mocked(globalFetch).mockResolvedValueOnce({
+            ...bytes("//@name version_probe\n//@version 1.2.0\n"),
+            status: 206,
+        });
+        const plugin = { name: "version_probe", updateURL, versionOfPlugin: "1.0.0" } as RisuPlugin;
+
+        await expect(checkPluginUpdate(plugin)).resolves.toEqual({ version: "1.2.0", updateURL });
+        expect(globalFetch).toHaveBeenCalledExactlyOnceWith(updateURL, {
+            method: "GET",
+            headers: { Range: "bytes=0-512" },
+            rawResponse: true,
+        });
+    });
+
+    it("installs the script the update URL answers in place of the installed one", async () => {
+        await importPlugin(script("//@api 3.0\n//@version 1.0.0"));
+        vi.mocked(globalFetch).mockResolvedValueOnce(bytes(script("//@api 3.0\n//@version 2.0.0")));
+
+        await expect(updatePlugin({ ...settings.plugins[0], updateURL })).resolves.toBe(true);
+        expect(globalFetch).toHaveBeenLastCalledWith(updateURL, { method: "GET", rawResponse: true });
+        expect(settings.plugins).toHaveLength(1);
+        expect(settings.plugins[0].versionOfPlugin).toBe("2.0.0");
+    });
+});
+
+describe("plugin source replacement", () => {
+    it.each(["re-import", "update"] as const)(
+        "%s preserves disabled state and compatible arguments, defaulting new or changed declarations",
+        async (path) => {
+            const original = script(
+                "//@api 3.0\n//@version 1.0.0\n//@arg secret string\n//@arg count int\n//@arg changed int\n//@arg removed string",
+            );
+            await importPlugin(original);
+            await pluginsStarted();
+            expect(settings.plugins[0]).toMatchObject({
+                enabled: true,
+                realArg: { secret: "", count: 0, changed: 0, removed: "" },
+            });
+            Object.assign(settings.plugins[0], {
+                enabled: false,
+                realArg: { secret: "saved-api-key", count: 42, changed: 7, removed: "old" },
+            });
+
+            const replace = (source: string) => {
+                if (path === "re-import") return importPlugin(source);
+                vi.mocked(globalFetch).mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    headers: {},
+                    data: new TextEncoder().encode(source),
+                });
+                return updatePlugin({ ...settings.plugins[0], updateURL: "https://plugins.test/test_plugin.js" });
+            };
+            await replace(path === "re-import" ? original : original.replace("1.0.0", "2.0.0"));
+            await pluginsStarted();
+            expect(settings.plugins[0]).toMatchObject({
+                enabled: false,
+                realArg: { secret: "saved-api-key", count: 42, changed: 7, removed: "old" },
+            });
+
+            let reviewStarted!: () => void;
+            const started = new Promise<void>((resolve) => (reviewStarted = resolve));
+            let finishReview!: (saved: boolean) => void;
+            mocks.reviewPluginPermissions.mockImplementationOnce(() => {
+                reviewStarted();
+                return new Promise<boolean>((resolve) => (finishReview = resolve));
+            });
+            const replacing = replace(
+                script(
+                    "//@api 3.0\n//@version 3.0.0\n//@arg secret string\n//@arg count int\n//@arg changed string\n//@arg added int",
+                ),
+            );
+            await started;
+            settings.plugins[0].realArg.secret = "edited-during-review";
+            finishReview(false);
+            await replacing;
+            await pluginsStarted();
+
+            expect(settings.plugins).toHaveLength(1);
+            expect(settings.plugins[0].enabled).toBe(false);
+            expect(settings.plugins[0].realArg).toEqual({
+                secret: "edited-during-review",
+                count: 42,
+                changed: "",
+                added: 0,
+            });
+            expect(mocks.alertError).not.toHaveBeenCalled();
+        },
+    );
+});
+
+describe("plugin import save confirmation", () => {
+    let sync: typeof import("../storage/resourceSync.svelte") | undefined;
+    beforeAll(() => warmMutationGraph(), 60_000);
+    beforeEach(() => {
+        localStorage.clear();
+        sessionStorage.clear();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+    afterEach(() => {
+        sync?.stopResourceSync();
+        mocks.server?.releaseBatch?.();
+        mocks.server?.close();
+        mocks.server = null;
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    async function boot() {
+        vi.resetModules();
+        const h = await bootMutations((server) => (mocks.server = server));
+        sync = h.sync;
+        return { ...h, plugins: await import("./plugins.svelte") };
+    }
+
+    it("starts an imported plugin only after its save is acknowledged", async () => {
+        const h = await boot();
+        h.fake.holdNextBatch = true;
+        let completed = false;
+        const importing = h.plugins.importPlugin(script("//@api 3.0")).then((saved) => {
+            completed = true;
+            return saved;
+        });
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(completed).toBe(false);
+            expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+            expect(h.fake.releaseBatch).not.toBeNull();
+            expect(h.record("plugins").some((plugin: RisuPlugin) => plugin.name === "test_plugin")).toBe(false);
+        } finally {
+            h.fake.releaseBatch?.();
+            await importing;
+        }
+        expect(await importing).toBe(true);
+        await h.plugins.pluginsStarted();
+        expect(h.record("plugins")).toContainEqual(expect.objectContaining({ name: "test_plugin", enabled: true }));
+        expect(mocks.loadV3Plugins).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({ name: "test_plugin" })]);
+        expect(mocks.alertError).not.toHaveBeenCalled();
+    });
+
+    it("an update save the server does not answer returns false, reports the pending save, and retains the pending plugin without starting it", async () => {
+        const h = await boot();
+        await h.plugins.importPlugin(script("//@api 3.0\n//@version 1.0.0"));
+        await h.plugins.pluginsStarted();
+        mocks.loadV3Plugins.mockClear();
+        const replacement = script("//@api 3.0\n//@version 2.0.0");
+        vi.mocked(globalFetch).mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            headers: {},
+            data: new TextEncoder().encode(replacement),
+        });
+        // The save stays unanswered (a failed request is retried by the flush): the update stops
+        // waiting at its save deadline.
+        h.fake.holdNextBatch = true;
+
+        expect(
+            await settleFlush(
+                h.plugins.updatePlugin({
+                    ...h.settings.plugins.find((p) => p.name === "test_plugin")!,
+                    updateURL: "https://plugins.test/test_plugin.js",
+                }),
+            ),
+        ).toBe(false);
+        expect(h.fake.releaseBatch).not.toBeNull();
+        await h.plugins.pluginsStarted();
+
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(language.pluginImportSavePending);
+        expect(h.settings.plugins).toContainEqual(
+            expect.objectContaining({ name: "test_plugin", script: replacement, versionOfPlugin: "2.0.0" }),
+        );
+        expect(h.record("plugins")).toContainEqual(
+            expect.objectContaining({ name: "test_plugin", versionOfPlugin: "1.0.0" }),
+        );
+    });
+});
+
+describe("handlePluginInstallViaPlugin", () => {
+    const plugin: RisuPlugin = {
+        name: "Dialog Test Plugin",
+        script: 'console.log("incoming script");',
+        version: "3.0",
+        arguments: {},
+        realArg: {},
+        customLink: [],
+        argMeta: {},
+    };
+
+    beforeEach(() => {
+        mocks.alertConfirm.mockClear();
+    });
+
+    describe.each(["en", "ko", "zh-Hant"])("%s confirmations", (locale) => {
+        beforeEach(() => changeLanguage(locale));
+        afterEach(() => changeLanguage("en"));
+
+        it("names a new plugin using install wording", async () => {
+            await handlePluginInstallViaPlugin([{ ...plugin }]);
+
+            expect(mocks.alertConfirm).toHaveBeenCalledTimes(1);
+            const message = mocks.alertConfirm.mock.calls[0][0];
+            expect(message).toContain(plugin.name);
+            expect(message).toBe(language.confirmInstallPluginViaPlugin.replace("{plugin}", plugin.name));
+        });
+
+        it("names an installed plugin with a changed script using distinct replace wording", async () => {
+            settings.plugins = [{ ...plugin, script: 'console.log("installed script");' }];
+
+            await handlePluginInstallViaPlugin([{ ...plugin }]);
+
+            expect(mocks.alertConfirm).toHaveBeenCalledTimes(1);
+            const message = mocks.alertConfirm.mock.calls[0][0];
+            expect(message).toContain(plugin.name);
+            expect(message).toBe(language.confirmReplacePluginViaPlugin.replace("{plugin}", plugin.name));
+        });
+    });
+
+    it("does not ask about an installed plugin with the same name and script", async () => {
+        settings.plugins = [{ ...plugin }];
+
+        await handlePluginInstallViaPlugin([{ ...plugin }]);
+
+        expect(mocks.alertConfirm).not.toHaveBeenCalled();
     });
 });
 

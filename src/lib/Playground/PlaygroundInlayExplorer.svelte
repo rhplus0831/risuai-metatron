@@ -9,6 +9,15 @@
     import Button from "../UI/GUI/Button.svelte";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
 
+    /**
+     * Browses and deletes inlays through `src/ts/process/files/inlays.ts`.
+     * `listInlayAssets` reads server metadata without media bytes; previews load on
+     * request. Sizes use metadata `size`, falling back to text length and then zero.
+     * Deletion and destruction revoke cached preview URLs; pending loads create no
+     * URL after destruction or once deletion starts.
+     * Mounted by `src/lib/Playground/PlaygroundMenu.svelte` for `PlaygroundStore` id 14.
+     */
+
     const PAGE_SIZE = 36;
 
     let allAssets = $state<[string, InlayResource][]>([]);
@@ -17,6 +26,8 @@
     let loadMoreSentinel: HTMLDivElement | null = $state(null);
     // For revoking
     let previewURLs = $state<Map<string, string>>(new Map());
+    let destroyed = false;
+    const removedIds = new Set<string>();
     let selection = $state<Set<string>>(new SvelteSet());
 
     const displayedAssets = $derived(allAssets.slice(0, displayCount));
@@ -26,6 +37,8 @@
     const getPreviewURL = async (id: string) => {
         if (previewURLs.has(id)) return previewURLs.get(id)!;
         const result = await getInlayAssetBlob(id);
+        if (destroyed || removedIds.has(id)) return null;
+        if (previewURLs.has(id)) return previewURLs.get(id)!;
         if (result) {
             const url = URL.createObjectURL(result.data);
             previewURLs.set(id, url);
@@ -54,6 +67,7 @@
         if (!(await alertConfirm(language.playground.inlayDeleteConfirm.replace("{name}", name)))) {
             return;
         }
+        removedIds.add(id);
         await removeInlayAsset(id);
         if (previewURLs.has(id)) {
             URL.revokeObjectURL(previewURLs.get(id)!);
@@ -73,6 +87,7 @@
             return;
         }
         for (const id of selection) {
+            removedIds.add(id);
             await removeInlayAsset(id);
             if (previewURLs.has(id)) {
                 URL.revokeObjectURL(previewURLs.get(id)!);
@@ -134,6 +149,7 @@
     });
 
     onDestroy(() => {
+        destroyed = true;
         previewURLs.forEach((url) => URL.revokeObjectURL(url));
         observer?.disconnect();
     });
@@ -235,7 +251,9 @@
                         <span>{getAssetSize(asset)}</span>
                     </div>
 
-                    <Button onclick={() => deleteAsset(id, asset.name)} styled="danger" size="sm">Delete</Button>
+                    <Button onclick={() => deleteAsset(id, asset.name)} styled="danger" size="sm"
+                        >{language.playground.inlayDelete}</Button
+                    >
                 </div>
             {/key}
         {/each}
@@ -243,7 +261,7 @@
 
     {#if hasMore}
         <div bind:this={loadMoreSentinel} class="h-12 flex items-center justify-center text-textcolor2 text-sm">
-            Loading...
+            {language.playground.inlayLoading}
         </div>
     {/if}
 {/if}

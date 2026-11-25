@@ -15,7 +15,15 @@
     import { hypaV3ModalOpen, settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import type { SearchState, BulkEditState, CategoryManagerState, FilterState, UIState } from "./types";
 
+    /**
+     * The modal's header: search, the importance and last-selection filters, bulk-edit mode, the
+     * category manager, reset (the modal's `onResetData`), the Memory settings link, and close. It
+     * edits only the view state it is bound to, never the memory data. The memory task's status line
+     * and controls below it belong to `HypaV3Modal.svelte`.
+     */
+
     interface Props {
+        readOnly: boolean;
         searchState: SearchState;
         filterImportant: boolean;
         dropdownOpen: boolean;
@@ -31,6 +39,7 @@
     }
 
     let {
+        readOnly,
         searchState = $bindable(),
         filterImportant = $bindable(),
         dropdownOpen = $bindable(),
@@ -140,7 +149,8 @@
         <!-- Bulk Edit Mode Button -->
         {#if bulkEditState}
             <button
-                class="p-2 transition-colors {bulkEditState.isEnabled
+                disabled={readOnly}
+                class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors {bulkEditState.isEnabled
                     ? 'text-blue-400 hover:text-blue-300'
                     : 'text-zinc-400 hover:text-zinc-200'}"
                 tabindex="-1"
@@ -197,7 +207,8 @@
 
                         <!-- Reset Data Button -->
                         <button
-                            class="p-2 transition-colors text-zinc-400 hover:text-rose-300"
+                            disabled={readOnly}
+                            class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors text-zinc-400 hover:text-rose-300"
                             tabindex="-1"
                             onclick={async () => await resetData()}
                         >

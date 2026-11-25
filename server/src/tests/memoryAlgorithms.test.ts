@@ -2,10 +2,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Database } from "../../../shared/database.ts";
+import type { Chat, Database } from "../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
 import type { CachedVector, VectorCache } from "../data/vectorCache.ts";
+import { loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
 import { hanuraiMemory } from "../prompt/memory/hanurai.ts";
@@ -94,6 +98,7 @@ function hostOf(
         summarizer: (text) => world.summarizer(text),
         embeddings,
         regex: async (op) => runRegexOp(op),
+        parse: (text) => text,
         parseChatML: options.parseChatML ?? (() => null),
         userName: () => USER_NAME,
         progress: (payload) => world.progress(payload),
@@ -191,26 +196,29 @@ describe("the server ports against the browser fixture", () => {
     });
 
     // The server's contextual document keys add the key version and the chunk's position in its group;
-    // the tab's keys, which the fixture records, do not (query keys are alike). The rest of these
+    // the tab's keys, which the fixture records, do not (query keys are alike). The server's custom-model
+    // keys also name the endpoint the world's settings request; the tab's do not. The rest of these
     // outcomes is the browser's.
+    const serverCustomKey = (key: string) =>
+        key.endsWith("|custom-em") ? `${key}|endpoint-v1:http://embed.test/v1/embeddings` : key;
     const serverCacheKeys: Record<string, string[]> = {
         "v3-voyage-similar-full": [
-            "Gravel underfoot.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:1",
+            "Gravel underfoot.|voyageContext3|ctx:0277353d251a21|chunk-cache-v2|index:1",
             "Old summary four: a whisper in the orchard.|voyageContext3|chunk-cache-v2|index:0",
-            "Old summary one: the river crossing.|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:0",
-            "Old summary six: ember and willow.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:0",
-            "Old summary three: copper coins traded.|voyageContext3|ctx:shczrm|chunk-cache-v2|index:0",
-            "The harbor was silent.|voyageContext3|ctx:shczrm|chunk-cache-v2|index:1",
-            "They camped by the lantern.|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:1",
+            "Old summary one: the river crossing.|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:0",
+            "Old summary six: ember and willow.|voyageContext3|ctx:0277353d251a21|chunk-cache-v2|index:0",
+            "Old summary three: copper coins traded.|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:0",
+            "The harbor was silent.|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:1",
+            "They camped by the lantern.|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:1",
         ],
         "v3exp-existing-voyage-groups": [
             "Message 11: willow silent harbor river meadow gravel.|voyageContext3|voyageContext3|query",
             "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|voyageContext3|voyageContext3|query",
             "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.|voyageContext3|voyageContext3|query",
-            "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:0",
-            "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:shczrm|chunk-cache-v2|index:0",
-            "The harbor was silent.|voyageContext3|voyageContext3|ctx:shczrm|chunk-cache-v2|index:1",
-            "They camped by the lantern.|voyageContext3|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:1",
+            "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:0",
+            "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:0",
+            "The harbor was silent.|voyageContext3|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:1",
+            "They camped by the lantern.|voyageContext3|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:1",
         ],
     };
 
@@ -226,11 +234,40 @@ describe("the server ports against the browser fixture", () => {
         "v3exp-existing-voyage-groups": [queued(1), queued(0)],
     };
 
+    // The server marks a stored memory cursor missing from the history, which the browser's result
+    // never carried, so an OOC preview can tell it from other memory errors.
+    const serverCursorMissing = new Set(["supa-id-not-found", "hyper-id-not-found"]);
+
     for (const scenario of scenarios) {
+        const browser = fixture.cases[scenario.name];
+        // The frozen client skipped failed windows. The server retries them before moving coverage.
+        if (scenario.name === "v2-repeated-failure") {
+            it(`${scenario.name}: the port stops after three tries on the same window`, async () => {
+                const [request] = browser.requests;
+                expect(await runServer(scenario)).toEqual({
+                    ...browser,
+                    requests: [request, request, request],
+                    result: {
+                        ...(browser.result as object),
+                        error: "[HypaV2] Summarization failed multiple times. Aborting to prevent infinite loop.",
+                    },
+                });
+            });
+            continue;
+        }
+        if (scenario.name === "v2-one-failure-then-success") {
+            it(`${scenario.name}: the port records the same window after recovery`, async () => {
+                const recovered = await runServer({ ...scenario, summaries: scenario.summaries?.slice(1) });
+                expect(await runServer(scenario)).toEqual({
+                    ...recovered,
+                    requests: [browser.requests[0], ...recovered.requests],
+                });
+            });
+            continue;
+        }
         it(`${scenario.name}: the port's outcome is the browser's`, async () => {
-            const browser = fixture.cases[scenario.name];
-            const keys = serverCacheKeys[scenario.name];
-            if (keys) {
+            const keys = serverCacheKeys[scenario.name] ?? browser.cacheKeys?.map(serverCustomKey);
+            if (serverCacheKeys[scenario.name]) {
                 // Without the version and position, the keys are the tab's.
                 expect(keys.map((key) => key.replace(/\|chunk-cache-v2\|index:\d+$/, ""))).toEqual(browser.cacheKeys);
             }
@@ -239,6 +276,9 @@ describe("the server ports against the browser fixture", () => {
                 ...browser,
                 ...(keys ? { cacheKeys: keys } : {}),
                 ...(leading ? { progress: [...leading, ...browser.progress] } : {}),
+                ...(serverCursorMissing.has(scenario.name)
+                    ? { result: { ...(browser.result as object), cursorMissing: true } }
+                    : {}),
             });
         });
     }
@@ -281,6 +321,168 @@ describe("the server ports against the browser fixture", () => {
 });
 
 describe("what the server adds to the algorithms", () => {
+    describe("HypaV2 summarization retries", () => {
+        const coldOverflow = scenarios.find(({ name }) => name === "v2-cold-overflow")!;
+        const blank = " \n\t ";
+        const blanks = [blank, blank, blank];
+
+        it.each([
+            { provider: "subModel", calls: "requests", answers: { summaries: blanks } },
+            { provider: "distilbart", calls: "summarizer", answers: { summarizer: blanks } },
+            {
+                provider: "instruct35",
+                calls: "completions",
+                answers: { completions: blanks.map((text) => ({ ok: true, data: { choices: [{ text }] } })) },
+            },
+        ] as const)("keeps the same messages uncovered after three blank $provider summaries", async (row) => {
+            const outcome = await runServer({
+                ...coldOverflow,
+                settings: { supaModelType: row.provider, hypaChunkSize: 160, hypaModel: "MiniLM" },
+                ...row.answers,
+            });
+
+            expect(outcome.result).toMatchObject({
+                error: "[HypaV2] Summarization failed multiple times. Aborting to prevent infinite loop.",
+                chats: coldOverflow.chats,
+            });
+            expect(outcome.result).not.toHaveProperty("memory");
+            const [first] = outcome[row.calls];
+            expect(outcome[row.calls]).toEqual([first, first, first]);
+        });
+
+        it("records the failed window when its next summary succeeds and leaves later messages in the prompt", async () => {
+            const outcome = await runServer({
+                ...coldOverflow,
+                settings: { hypaChunkSize: 160, hypaModel: "MiniLM" },
+                maxContextTokens: 572,
+                summaries: [{ fail: "Provider temporarily unavailable." }, "Recovered summary."],
+            });
+
+            expect(outcome.result).toMatchObject({
+                memory: {
+                    mainChunks: [
+                        {
+                            text: "Recovered summary.",
+                            chatMemos: ["m1", "m2", "m3", "m4", "m5"],
+                            lastChatMemo: "m5",
+                        },
+                    ],
+                },
+            });
+            expect(outcome.result).not.toHaveProperty("error");
+            const { chats } = outcome.result as { chats: OpenAIChat[] };
+            expect(chats.slice(1)).toEqual(coldOverflow.chats.slice(6));
+            const [first] = outcome.requests;
+            expect(outcome.requests).toEqual([first, first]);
+        });
+    });
+
+    it.each([
+        { algorithm: "v3", field: "hypaV3Data", data: {}, missing: "summaries" },
+        {
+            algorithm: "v3",
+            field: "hypaV3Data",
+            data: { summaries: [{ text: "A past event", isImportant: false }] },
+            missing: "chatMemos",
+        },
+        { algorithm: "v2", field: "hypaV2Data", data: {}, missing: "both chunk lists" },
+        { algorithm: "v2", field: "hypaV2Data", data: { chunks: [], lastMainChunkID: 0 }, missing: "mainChunks" },
+        { algorithm: "v2", field: "hypaV2Data", data: { mainChunks: [], lastMainChunkID: 0 }, missing: "chunks" },
+    ] as const)(
+        "reads stored $algorithm metadata missing $missing without rewriting it",
+        async ({ algorithm, field, data }) => {
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const store = createResourceStore({ file: ":memory:", kinds });
+            try {
+                const first = (kind: string) => (store.get(kinds.get(kind)!, "main")!.data as { id: string }[])[0].id;
+                const binding = {
+                    presetId: first("presets"),
+                    modelPresetId: first("modelPresets"),
+                    personaId: first("personas"),
+                };
+                const memoryKind = kinds.get("memoryTranslateMedia")!;
+                const memory = store.get(memoryKind, "main")!;
+                store.put(
+                    memoryKind,
+                    "main",
+                    { ...(memory.data as object), hypav2: algorithm === "v2" },
+                    memory.revision,
+                );
+                store.put(
+                    kinds.get("characters")!,
+                    "c",
+                    { chaId: "c", name: "Mira", type: "character", firstMessage: "Hello" },
+                    null,
+                );
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        id: "k",
+                                        memoryEnabled: true,
+                                        ...(algorithm === "v3" ? { memoryMode: "hypaV3" as const } : {}),
+                                        promptPresetId: binding.presetId,
+                                        modelPresetId: binding.modelPresetId,
+                                        bindedPersona: binding.personaId,
+                                        message: [{ chatId: "u1", role: "user", data: "Hello" }],
+                                        [field]: data,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                });
+                const stored = store.readChatSource("c", "k");
+                const scope = loadJobScope(store, kinds, {
+                    characterId: "c",
+                    chatId: "k",
+                    ...binding,
+                    mode: "normal",
+                    input: "",
+                    chatRevision: store.chatRevision("c", "k")!,
+                });
+                const room = scopeChat(scope)!;
+                const character = scope.db.characters[0];
+                expect(room[field]).toStrictEqual(data);
+                expect(chatMemoryEnabled(room, character, scope.db)).toBe(true);
+                expect(chatMemoryAlgorithm(scope.db, room)).toBe(algorithm === "v3" ? "hypaMemoryV3" : "hypaMemoryV2");
+                const scenario: Scenario = {
+                    name: "missing stored lists",
+                    algorithm,
+                    room: {},
+                    char: { type: "character", name: "Mira" },
+                    chats: [{ role: "user", content: "Hello", memo: "u1" }],
+                    maxContextTokens: 4096,
+                    settings: { hypaModel: "MiniLM" },
+                };
+                const world = createWorld(scenario);
+                const host = hostOf(scenario, world);
+                const result = await (algorithm === "v3" ? hypaMemoryV3 : hypaMemoryV2)(
+                    host,
+                    structuredClone(scenario.chats),
+                    100,
+                    4096,
+                    room,
+                    character,
+                    { tokenizeChat },
+                );
+                expect(result.error).toBeUndefined();
+                expect(result.chats).toContainEqual({ role: "user", content: "Hello", memo: "u1" });
+                expect(room[field]).toStrictEqual(data);
+                expect(store.readChatSource("c", "k")).toStrictEqual(stored);
+                expect(world.snapshot(result).requests).toEqual([]);
+            } finally {
+                store.close();
+            }
+        },
+    );
+
     describe("contextual summary vectors", () => {
         const shared = "Shared paragraph.";
         const cases = [
@@ -521,6 +723,60 @@ describe("what the server adds to the algorithms", () => {
         expect((failed.result as { error: string }).error).toMatch(/Summarization failed/);
         expect((failed.result as { memory: { summaries: unknown[] } }).memory.summaries).toHaveLength(1);
     });
+
+    it.each([
+        { model: "subModel", stage: "consolidation", answer: "" },
+        { model: "subModel", stage: "consolidation", answer: " \n\t " },
+        { model: "distilbart", stage: "history summarization", answer: " \n\t " },
+    ])(
+        "rejects blank $model answers during $stage without replacing stored memory (%j)",
+        async ({ model, stage, answer }) => {
+            const summary =
+                stage === "consolidation"
+                    ? ["Earlier journey. ", "A lasting promise. ", "The lost map. ", "An old alliance. "]
+                          .map((text) => text.repeat(25))
+                          .join("\n\n")
+                    : "Earlier journey.";
+            const cursor = stage === "consolidation" ? "m14" : "m0";
+            const room = { supaMemoryData: `${cursor}\n${summary}`, lastMemory: cursor };
+            const scenario: Scenario = {
+                name: "blank-supa-summary",
+                algorithm: "supa",
+                settings: { supaModelType: model },
+                chats: makeChats(16),
+                room,
+                char: { type: "character", name: "Cara" },
+                maxContextTokens: 300,
+                summaries: [answer],
+                summarizer: [answer],
+            };
+            const world = createWorld(scenario);
+            const result = await supaMemory(
+                hostOf(scenario, world),
+                structuredClone(scenario.chats),
+                await defaultCurrentTokens(scenario.chats),
+                scenario.maxContextTokens,
+                room as Chat,
+                scenario.char as never,
+                { tokenizeChat },
+            );
+
+            expect(result).toMatchObject({
+                error: expect.stringMatching(
+                    model === "subModel" ? /^SupaMemory: HTTP: / : /^SupaMemory: Summarizer: /,
+                ),
+            });
+            expect(result.memory).toBeUndefined();
+            expect(result.lastId).toBeUndefined();
+            expect(room.supaMemoryData).toBe(`${cursor}\n${summary}`);
+            expect(room.lastMemory).toBe(cursor);
+            if (stage === "consolidation") {
+                expect(world.log.requests.map((messages) => messages[0].content)).toEqual([summary]);
+            } else {
+                expect(world.log.summarizer[0]).toMatch(/^User: Message 0: /);
+            }
+        },
+    );
 
     it("gives the ChatML parser the summary prompt with the slot filled", async () => {
         const seen: string[] = [];

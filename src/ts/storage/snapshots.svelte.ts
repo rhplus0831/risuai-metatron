@@ -1,9 +1,11 @@
 import { untrack } from "svelte";
-import type { character, Database, groupChat } from "../../../shared/database.ts";
+import type { character, Chat, Database, groupChat } from "../../../shared/database.ts";
 import { plainClone } from "../../../shared/presets.ts";
 import { SECTION_FIELDS } from "../../../shared/sections.ts";
+import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { isArchivedGroup } from "./archivedGroup";
 import { characterList } from "./characterStore.svelte";
-import { withChatsCopy } from "./chatStore.svelte";
+import { characterLastChattedAt, chatSummaryList, withChatsCopy } from "./chatStore.svelte";
 import {
     isForwardedPresetRoot,
     isSettingsRootKey,
@@ -42,19 +44,64 @@ export function rootSnapshot(): Record<string, unknown> {
     });
 }
 
+/** Plugin indexes follow storage order with archived groups skipped. */
+export function pluginCharacterList() {
+    return characterList().filter((character) => !isArchivedGroup(character));
+}
+
+export function archivedGroupIds() {
+    return new Set(
+        characterList()
+            .filter(isArchivedGroup)
+            .map((character) => character.chaId),
+    );
+}
+
+/** Drop known group ids without repairing the order. Invalid writes still reach the order validator. */
+export function pluginCharacterOrder(order: unknown): unknown {
+    if (!Array.isArray(order)) return order;
+    const groups = archivedGroupIds();
+    if (!groups.size) return order;
+    const keep = (id: unknown) => typeof id !== "string" || !groups.has(id);
+    return Array.from(order)
+        .filter(keep)
+        .map((entry) =>
+            isPlainObject(entry) && Array.isArray(entry.data) ? { ...entry, data: entry.data.filter(keep) } : entry,
+        );
+}
+
 /**
  * The plugin `getDatabase` subset (`allowedDbKeys`, filtered by the caller): `characters` in the
- * legacy shape with their chats (`withChatsCopy`: the caller loads and pins them first, and calls
- * this in the same synchronous pass), `selectedPersona` as the selected persona's index, and every
- * other key as its view reads it. With `scope` (a hook's captured presets, checked by the caller), a
+ * legacy shape with their chats (`withChatsCopy`: the caller pins loaded chats and supplies plain
+ * unloaded copies in `detached`, or loads all chats first, then calls this synchronously).
+ * In summaries mode, characters instead have `chatSummaries` from the tab's held metadata, no
+ * `chats` or `chatPage`, and the same derived activity fallback, without preparing any chats.
+ * `characterOrder` omits archived groups. `selectedPersona` is the selected persona's index.
+ * With `scope` (a hook's captured presets, checked by the caller), a
  * preset field is its owning preset's of that pair. `pluginCustomStorage`, a user-keyed map, is copied through JSON.
  */
-export function buildDatabaseSubset(keys: readonly string[], scope: PresetScope | null): Record<string, unknown> {
+export function buildDatabaseSubset(
+    keys: readonly string[],
+    scope: PresetScope | null,
+    detached?: ReadonlyMap<string, ReadonlyMap<string, Chat>>,
+    chats: "full" | "summaries" = "full",
+): Record<string, unknown> {
     return untrack(() => {
         const subset: Record<string, unknown> = {};
         for (const key of keys) {
             if (key === "characters") {
-                subset[key] = characterList().map((character) => withChatsCopy($state.snapshot(character)));
+                subset[key] = pluginCharacterList().map((character) => {
+                    const copy = $state.snapshot(character);
+                    if (chats === "summaries") {
+                        const lastChatted = characterLastChattedAt(copy.chaId, copy.lastInteraction);
+                        return {
+                            ...copy,
+                            ...(lastChatted > 0 ? { lastInteraction: lastChatted } : {}),
+                            chatSummaries: chatSummaryList(copy.chaId),
+                        };
+                    }
+                    return withChatsCopy(copy, undefined, detached?.get(character.chaId));
+                });
                 continue;
             }
             if (key === "selectedPersona") {
@@ -67,13 +114,16 @@ export function buildDatabaseSubset(keys: readonly string[], scope: PresetScope 
                     : isSettingsRootKey(key)
                       ? readSettingsRoot(key)
                       : undefined;
-            subset[key] = key === "pluginCustomStorage" ? plainClone(value) : $state.snapshot(value);
+            subset[key] =
+                key === "pluginCustomStorage"
+                    ? plainClone(value)
+                    : $state.snapshot(key === "characterOrder" ? pluginCharacterOrder(value) : value);
         }
         return subset;
     });
 }
 
-/** The keys the settings report leaves out, besides the `llmSecrets` fields and the credential-like names. */
+/** The keys the settings report leaves out, besides the secret fields and the credential-like names. */
 const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "characters",
     "blockedRealmCreators",
@@ -111,17 +161,22 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "translatorPresets",
     "translatorPresetId",
     "customModels",
+    "inputHooks",
+    "moduleFolders",
+    "personaFolders",
+    "requestInterceptions",
     "credentials",
     "mcpURLs",
     "authRefreshes",
 ]);
 
 const llmSecretFields: ReadonlySet<string> = new Set(SECTION_FIELDS.llmSecrets as readonly string[]);
+const auxiliarySecretFields: ReadonlySet<string> = new Set(SECTION_FIELDS.secrets as readonly string[]);
 
 /**
  * The settings report for a bug report: the legacy flat settings (`rootSnapshot`) without the
- * personal and bulky keys (`REPORT_REMOVED_KEYS`), every `llmSecrets` field (its credentials are
- * `""` here anyway), and every key whose name contains `key`, `proxy`, or `hypa` (any case); then
+ * personal and bulky keys (`REPORT_REMOVED_KEYS`), every `llmSecrets` or auxiliary `secrets` field,
+ * and every key whose name contains `key`, `proxy`, or `hypa` (any case); then
  * `meta`.
  */
 export function buildSettingsReport(): Record<string, unknown> {
@@ -131,6 +186,7 @@ export function buildSettingsReport(): Record<string, unknown> {
         if (
             REPORT_REMOVED_KEYS.has(key) ||
             llmSecretFields.has(key) ||
+            auxiliarySecretFields.has(key) ||
             lower.includes("key") ||
             lower.includes("proxy") ||
             lower.includes("hypa")

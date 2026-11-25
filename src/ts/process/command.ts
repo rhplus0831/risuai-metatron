@@ -1,3 +1,5 @@
+import { isRetiredMultisend } from "../../../shared/slashCommands.ts";
+import { language } from "src/lang";
 import { characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import {
     appendMessage,
@@ -6,52 +8,36 @@ import {
     ensureChatLoaded,
     findChat,
     pinChat,
-    removeMessages,
+    removeMessagesUnasked,
     setMessageText,
 } from "../storage/chatStore.svelte";
 import { setChatVarOf } from "../parser/chatVar.svelte";
 import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
-import { sendChat } from "./index.svelte";
-import { isChatBusy } from "./chatStatus.svelte";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runServerManualTrigger } from "./serverCommands";
 
 /**
- * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
- * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
- * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
- * other chats' work does not refuse it. Stops when a part's chat is gone or busy, or its send returns
- * false (refused, failed, lost, or stopped); false then. A server command job's `/multisend` runs it
- * too, after the job (`serverCommands.ts`).
+ * Executes slash-command pipelines typed in the composer against a captured, pinned chat. `processMultiCommand` loads
+ * the chat before dispatch and passes its ref to chat operations and CBS parsing. Calculator variable lookup follows
+ * `src/ts/process/infunctions.ts`. An unknown command returns false after any earlier effects, allowing the caller to
+ * treat the line as text. Manual triggers delegate to `src/ts/process/serverCommands.ts`.
  */
-export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
-    for (const e of parts) {
-        const chat = findChat(ref);
-        if (!chat || isChatBusy(ref)) {
-            return false;
-        }
-        if (clearMode) {
-            removeMessages(
-                ref,
-                chat.message.map((message) => message.chatId),
-            );
-        }
-        appendMessage(ref, { role: "user", data: e });
-        const sent = await sendChat(-1, { target: ref });
-        if (!sent) {
-            return false;
-        }
-    }
-    return true;
-}
 
 /**
  * Runs a command line typed in the chat input. Every command writes to and reads (CBS arguments,
  * lore) `ref`: by default the chat selected when the line started. `/trigger` runs on the server (a
  * server trigger's `v2Command` runs on the server too). The chat is pinned (kept loaded) for the
  * whole line, and loaded first.
+ *
+ * `|` outside double quotes pipes commands until `/send`, `/sendas`, or `/comment` takes the rest of the
+ * input as text, trimming only its edges. The retired `/multisend` consumes the rest of the line and shows
+ * one removal notice. Other commands remove one surrounding double quote pair from
+ * their argument. Each command's result fills the first `{{pipe}}` and the first `{{slot}}` of the next
+ * one's argument, and is that argument when it has none. `false` means the line
+ * contains an unknown command, even when an earlier part of it ran: the screen then sends the line as
+ * ordinary text. `/send` only appends a user message; it does not generate.
  */
 export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
     const release = ref ? pinChat(ref) : null;
@@ -71,6 +57,10 @@ async function processPinnedCommands(command: string, ref: ChatRef | null) {
     let lastIndex = 0;
     let quoteDepth = false;
     for (let i = 0; i < command.length; i++) {
+        if (i === lastIndex) {
+            const segment = command.slice(lastIndex);
+            if (isRetiredMultisend(segment) || matchTextCommand(segment)) break;
+        }
         const char = command[i];
         if (char === '"') {
             quoteDepth = !quoteDepth;
@@ -97,10 +87,18 @@ async function processPinnedCommands(command: string, ref: ChatRef | null) {
     return pipe;
 }
 
+/**
+ * One command of a line. A new command is a case of this switch, with its entry in the hand-written `/?`
+ * help text (the `"?"` case), which is all `/?` shows.
+ */
 async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
     const currentChar = ref ? characterList().find((character) => character?.chaId === ref.chaId) : selectedCharacter();
     if (!currentChar) {
         // Its character went away; `false` would mean "not a command" and send the line as text.
+        return "";
+    }
+    if (isRetiredMultisend(command)) {
+        alertNormal(language.multisendRemoved);
         return "";
     }
     // The chat as it is now; chat writes go through the chat module, addressed by `ref`.
@@ -150,10 +148,6 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             }
             return pipe;
         }
-        case "setinput": {
-            //NOT IMPLEMENTED
-            return false;
-        }
         case "speak": {
             if (currentChar.type === "character") {
                 await sayTTS(currentChar, arg);
@@ -184,23 +178,24 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             return pipe;
         }
         case "cut": {
-            if (arg.includes("-")) {
+            const range = /^(-?\d+)-(\d+)$/.exec(arg);
+            if (range) {
                 // Keeps the messages of the range (as `Array.slice` does), removes the rest.
-                const [start, end] = arg.split("-");
+                const [, start, end] = range;
                 const kept = new Set(currentChat.message.slice(parseInt(start), parseInt(end)));
-                removeMessages(
+                removeMessagesUnasked(
                     ref,
                     currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
                 );
-            } else if (!isNaN(parseInt(arg))) {
-                // Removes the one message at the index (a negative one takes the range branch above, as upstream).
+            } else if (/^-?\d+$/.test(arg)) {
+                // Removes the one message at the index; negative indexes count from the end.
                 const target = currentChat.message.at(parseInt(arg));
                 if (target) {
-                    removeMessages(ref, [target.chatId]);
+                    removeMessagesUnasked(ref, [target.chatId]);
                 }
             } else {
                 //For risu, doesn'ts work for STScript
-                removeMessages(ref, [arg]);
+                removeMessagesUnasked(ref, [arg]);
             }
             return pipe;
         }
@@ -209,7 +204,7 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             const size = parseInt(arg);
             if (!isNaN(size)) {
                 const kept = new Set(currentChat.message.slice(currentChat.message.length - size));
-                removeMessages(
+                removeMessagesUnasked(
                     ref,
                     currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
                 );
@@ -224,16 +219,6 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
                 }
             } catch (error) {}
             return pipe;
-        }
-        case "multisend": {
-            const splited = arg.split("|||");
-            let clearMode = false;
-            if (splited[0] && splited[0].trim() === "clear") {
-                clearMode = true;
-                splited.shift();
-            }
-            await runMultisend(ref, clearMode, splited);
-            return "";
         }
         case "setvar": {
             // One variable merged (`setChatVarOf`): the chat's other variables stay as stored.
@@ -290,12 +275,15 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             - Example: /speak Hello World
             # /send [text]
             - Send text to chat
+            - Rest of the line is text; | does not pipe commands
             - Example: /send Hello World
             # /sendas [text]
             - Send text to chat as character
+            - Rest of the line is text; | does not pipe commands
             - Example: /sendas Hello World
             # /comment [text]
             - Add comment to chat
+            - Rest of the line is text; | does not pipe commands
             - Example: /comment Hello World
             # /cut [index]
             - Cut chat message
@@ -315,6 +303,9 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             # /getvar key=[key]
             - Get variable
             - Example: /getvar key=damage
+            # /test_lorebook
+            - Show the active lorebook entries' prompts
+            - Return the lore prompt result as JSON
             # /trigger [name]
             - Run trigger
             # /?
@@ -326,7 +317,20 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
     return false;
 }
 
+function matchTextCommand(command: string) {
+    return /^\s*\/?(send|sendas|comment)(?=\s|$)/.exec(command);
+}
+
 function commandParser(command: string, pipe: string) {
+    const textCommand = matchTextCommand(command);
+    if (textCommand) {
+        const arg = command
+            .slice(textCommand[0].length)
+            .trim()
+            .replace("{{pipe}}", pipe) //STScript compatibility
+            .replace("{{slot}}", pipe); //Risu default
+        return { commandName: textCommand[1], arg, namedArg: {} };
+    }
     if (command.startsWith("/")) {
         command = command.slice(1);
     }
@@ -342,8 +346,11 @@ function commandParser(command: string, pipe: string) {
             argArray.push(sliced[i]);
         }
     }
-    const arg = argArray
-        .join(" ")
+    let arg = argArray.join(" ");
+    if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
+        arg = arg.slice(1, -1);
+    }
+    arg = arg
         .replace("{{pipe}}", pipe) //STScript compatibility
         .replace("{{slot}}", pipe); //Risu default
     return { commandName, arg, namedArg };

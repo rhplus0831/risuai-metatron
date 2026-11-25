@@ -27,150 +27,430 @@
 
 ## Files
 
-Chat:
+Each component's contract is the JSDoc block at the top of its `<script>`; a `.ts` module's is its header or the
+comments on its exports. An entry names the path, its role, and the identifiers to look up there.
 
-- `ChatScreen.svelte`: layout theme switch (`waifu`, classic). Mounts `BackgroundDom`, `TransitionImage`, `ResizeBox`, `ChatList`, and the module menu.
-- `DefaultChatScreen.svelte`: input box, send/reroll (see `chat-pipeline.md`), and menus. The Stop button's rotating circle takes `chat-process-stage-1`–`4` (blue preparing, pink memory, green generating, purple finishing) from the selected chat's newest staged job (`chatStageOf($jobStages, currentChatRef())`, `src/ts/process/jobStages.ts`), else `chat-process-stage-0`; another chat's job never colors it. In auto mode `.autoload` (green, declared after the stage rules) wins over every stage. The class names and hex colors are kept as they are, since `display.customCSS` can target them. The hamburger menu pins with `setChatMeta(ref, { pinned: true })` and unpins by unsetting `pinned`. Chooses home, playground, the closed chat (`ClosedChatScreen.svelte`, while `selection.chatOpen` is false), or chat.
-  - The `metatron` theme adds `metatron-chat-theme` to the chat scroller; `src/styles.css` styles each message (`.risu-chat`) as a card under it. Any other non-`waifu` theme keeps the classic layout.
-  - Owns the loaded row window and accepts guarded trims from `Chats`. Unfolding adds `messages.length - foldedIndex` to preserve the folded window's oldest row. Binds `Chats.revealing` to hide the separate greeting with `visibility: hidden` until the opening batch finishes revealing. Screenshot capture waits for all rows and their current markdown (`whenRendered`) with `loadPages = Infinity`, releases any reveal batch, suspends trimming/containment, and restores the previous window and scroll offset for the same chat in `finally`. `src/lib/ChatScreens/screenshotCapture.ts` sets `includeQueryParams: true` so html-to-image keeps original and thumbnail URLs in separate cache entries.
-  - Message jumps use the bookmark index or search-hit id. Search claims a request once, verifies the selected and shown chat after each await, and re-resolves the message by `Message.chatId`; a folded target unfolds the window before scrolling and ringing it. Both jump types suspend trimming.
-  - The chat scroller publishes `settings.ui.chatScreenWidth` (Display, default 900) as `--chat-screen-width`. The transcript (`Chats`), the first greeting (`.default-chat-screen > .risu-chat`), the composer, and the rows around them carry `chat-screen-content-width` (`src/styles.css`): one centered column of `min(--chat-screen-width, 100%)`. A new row in the chat scroller gets the class too, and a popup tied to the composer (the composer menu) is positioned inside the composer row so it follows the column instead of the viewport or scroller edge.
-- `Chats.svelte`: imperatively mounts rows keyed by chat and `Message.chatId`. The structural diff tracks row identity/order, streaming entry, window and reload inputs, not message text; each row's disposable effect handles its own text and display updates. Streaming reaches only that chat's active row. Opening windows mount and reveal newest rows first, then arm older rows after render or interaction, or at a diff that changes the shown rows (a diff that shows the same rows, such as the reload a module change makes right after a switch, keeps the staging); a row reveals once rendered and its unfinished images in the transcript's view have loaded (lazy images outside the view, which do not load while hidden, never hold it), or at a 1200 ms deadline. Screenshot mode bypasses staging and containment. At the bottom, appends trim only old rows while keeping at least `CHAT_ROW_CAP` (150) plus visible rows and one load page; folds, screenshots, jumps, and open editors block trimming. Scrolling follows a scroll anchor: `start` keeps a row's top at the scroller's top, `end` keeps the bottom, none leaves the position to the reader. Opening a chat (not folded, captured, or jumping) anchors the newest row's start, or the bottom while it streams. With `autoScrollToNewMessage`, a reply that arrives whole (locked or not) anchors its start, and a streamed one (`isMessageStreamed`: chunks only, so this tab's or another's stream, and never a continue that has not streamed) the bottom until its lock ends, then its start unless `scrollToReplyStartAfterStreaming` is off; both apply only while the reader follows (`followsLatest`: an anchor or the bottom, or `alwaysScrollToNewMessage`), otherwise a reply sets the new-message indicator. A generation that never streamed ends at the newest start only while the anchor holds, so a reader who scrolled is left alone. The reader's own send moves an anchored transcript to the bottom. Swiped rerolls (`DefaultChatScreen`) anchor the newest start through `scrollToLatestMessage` when the reader followed before the swap, as the new-message button does; `openRoute` (a notification) sets `ShowLatestMessageStore`, and the screen then shows the newest start even for a chat that was already open. A `ResizeObserver` on the transcript and scroller re-applies the anchor before paint; wheel, touchmove, a press on the scroller itself (its scrollbar), and scroll keys outside inputs release it, and so does a jump or screenshot (`suspendTrim`), during which new replies only set the indicator. The anchor scrolls by measured offset, not `scrollIntoView`, which can move ancestor scrollports too. An `IntersectionObserver` contains only distant rows, with measured intrinsic size.
-- `Chat.svelte`: one message. Branching clears `pinned` on the new chat; with `createFolderOnBranch`, a source chat that `chatFolderOf` lists under no folder (none, or a dangling `folderId`) and its branch go into a new "Branches of" folder. Controls, bookmarks (`toggleBookmark`), TTS button, `displaya`, partial edit, and `renderGuiHtmlPart` for custom GUI HTML. Message theme branches are `mobilechat`, `cardboard`, `customHTML`, and classic. Both original-message editors bind a separate `draft`, initialized on opening and cleared on save; a long-press cancel keeps the draft for reopening but never changes `message`, the display, partial-edit source, or storage. With `clickToEdit`, a click on the message body opens the original-message editor, except a click inside a `risu-form` form, a `risu-btn` or `risu-trigger` element (any tag), or an interactive control (`input`, `textarea`, `select`, `button`, `label`, `a`, contenteditable). Each row gets its owning `ChatRef` from `Chats.svelte` (`chatRef`; other mounts default to the selection at mount): message actions, Lua buttons, manual triggers, and forms address that chat, not the selection at the event. A Lua button reloads its row only when its job started, so a refused button keeps typed values beside it. A bookmark preview passes no `messageId` and tells the row it streams through `streamingOverride`. `isEditing` exposes open original/translation editors to the trim guard. `ChatBody` is keyed only by the reload pointer; `whenRendered` loops until the bound body stays the same across its render wait and DOM flush, including replacements from `ReloadGUIPointer`. Body-less rows settle immediately. Optional `pendingReveal` hides the greeting's whole row without changing its layout.
-- `ChatBody.svelte`: `markParsing`, which handles translation and parsing, then `{@html}`. `whenRendered` waits for the current parse and its DOM update for ordered reveal and screenshot capture (forwarded by `Chat` and `Chats`), rechecking replacement parses after each flush. The rendered auto-translate path's initial empty result is not settled: the wait includes its delayed `translated` update and the resulting real parse. Raw streaming settles immediately and remains visible as raw text.
-  - While a render is pending it shows `lastParsed`; only the newest render (`parseRun`, kept by its retries) writes it, so an older render that settles later does not show again (`ChatBody.svelte.test.ts`).
-- `Suggestion.svelte`: reply suggestions through `requestChatData`.
-- `ContextMeter.svelte`: the composer's context chip, mounted after the textarea and keyed by the open chat (a switch starts closed); not shown in a group chat or while `settings.ui.contextMeter` is off. It reads the newest message whose `generationInfo.context` passes `parseContextReport` (`shared/contextReport.ts`, [chat-pipeline](chat-pipeline.md)), scanning only the message list and each message's `generationInfo`, so streaming text does not rerun it; with no valid report anywhere it falls back to the newest `inputTokens / maxContext`, and with neither it renders nothing. Chip: the share of the prompt budget (`maxContext − maxResponse`) while every eligible message was kept, else the kept count by `contextMeterTurnUnit` ("18 turns" / "18 messages"); with memory, the kept count plus "summarized", "gap", or "memory on" by `coverage` (the note is hidden below `sm`); danger tone when `fixedShare` exceeds `contextMeterFixedWarn`. The popover (`Portal` to the body, fixed above the chip when space allows, below it otherwise, or within the viewport when neither side has room; below dialogs and alerts, repositioned on resize, scroll, and composer growth) lists the sections largest first with the signed `adjustment` as an "Other" row outside the bar, the omitted history, the lorebook activation budget (warning tone when entries were rejected), the HypaV3 budget or the memory line, the fixed share, and a basis line whose link opens the `interaction.contextMeter` section through `openSetting`. It closes on Escape (unless an alert, terminal notice, or binding dialog is above it; focus returns to the chip), a pointer down outside, focus leaving both it and the chip, its close button, when its source disappears, or when the chip leaves view or the viewport is too short to show it. While the composer has text (`draft`, passed with `generating` by `DefaultChatScreen`), the chip adds a displacement estimate ("≈ −2", "≈ −8+" past the saved trim queue) and the popover an estimate block: `displacement` over the report's `trim` ledger with the draft and the last reply counted in `jobTokenScope()` (each without its `<Thoughts>` block, plus `trim.perMessage`; a continue's `replyPrefix` subtracted). The estimate needs the report on the chat's last, enabled message, `historyDigest` of the messages before it unchanged, the same token scope, effective `maxContext` and `maxResponse`, no send or job in the chat, a complete binding, no memory configured (it may run instead of the trim loop), and no `presetChain`; a continue whose overflow reaches the queue's last entry shows none. The reply count is kept per basis, so typing recounts only the draft; a new basis or an emptied draft resets the count, and a failed count hides the estimate.
-- Also: `TransitionImage.svelte`, `EmotionBox.svelte`, `ResizeBox.svelte`, `BackgroundDom.svelte`, `CreatorQuote.svelte`. `Message.svelte` is dead (TODO rewrite).
+### Chat screen
 
-Sidebar:
+- `src/lib/ChatScreens/ChatScreen.svelte`: the chat layout, custom background, and `isolate` that keeps local content
+  below app popups ([portals](#dialogs-popovers-and-portals)).
+- `src/lib/ChatScreens/DefaultChatScreen.svelte`: home/playground/closed-chat selection, composers and menus, the row
+  window, screenshots (`src/lib/ChatScreens/screenshotExport.ts`), and message jumps. The closed-chat branch is
+  `src/lib/ChatScreens/ClosedChatScreen.svelte`; sending and rerolling belong to [chat pipeline](chat-pipeline.md).
+- The Stop-other button (`foreignStoppable`) shows while the screen's own Stop does not and the chat has a foreign mark
+  ([chat pipeline](chat-pipeline.md#state)) or a running feed job of another client (`foreignGeneration`,
+  [live updates](live-updates.md#feed-connection)). Its ring takes `chat-process-stage-<n>` from that job's stage, the
+  colors of the screen's own ring; a mark alone leaves it uncolored.
+- `src/lib/ChatScreens/messageJump.ts` owns `runMessageJump` and `messageJumpWindow`. The screen supplies DOM lookups;
+  stored targets resolve their message id again after mounting, and a greeting target reveals the full history and finds
+  the row at `-1`. Structured Memory citations, bookmarks, and message search use the same screen jump. The chat column
+  width and `metatron` card theme are in `src/styles.css`.
+- Screenshot capture uses `src/lib/ChatScreens/screenshotCapture.ts` `prepareScreenshotCapture`; preserve its source
+  contract. Follow [asset sources](assets.md#asset-sources) for `withFileSrcFetch` and `SCREENSHOT_CAPTURE_OPTIONS`.
 
-- `Sidebar.svelte`: character rail and folders (`characterOrder`, drag/drop with the `RISU_*` MIME types, `checkCharOrder`) plus the settings pane (`SideChatList` | `OpenChatPanel` | `CharConfig` | `DevTool`). A pinned-chat rail follows the menu buttons in `menuSideBar` and sits immediately above the shared character-avatar area in either hamburger placement. The chat tab shows `SideChatList` while the chat is closed and `OpenChatPanel` while it is open; the playground chat always shows the list. The pane publishes its side padding as `--sidebar-gutter` (`1rem`, `0.5rem` under DynamicGUI); a child that scrolls itself (the `SideChatList` list, the `OpenChatPanel` root) stretches over it with `-mr-(--sidebar-gutter) pr-(--sidebar-gutter)` so its scrollbar sits at the pane's edge, like the pane's own scrollbar in the character tab.
-  - `statusSets` reads `refusedChatKeys(refusedItems())` from the save adapter’s reactive refusal inventory, `recoveryChatKeys`, `generatingChatKeys()`, and `unseenChatKeys` from `src/ts/process/chatStatus.svelte.ts` and `summarizingChats()` from `src/ts/process/memoryTasks.svelte.ts` reactively. `characterStatuses` aggregates once per change; top-level characters and members of open folders read their character's status. Collapsed folders use `folderStatus` over their members; an open folder has no badge on its own row. `pinnedStatuses` resolves each pinned chat separately and is passed to both rail placements with the summarizing chats' counts (`memoryCounts`). A row whose winning status is `memory` shows the count of its only summarizing chat (`collectMemoryProgress`, `groupMemoryCount`: over the character, or over a collapsed folder's members); with several summarizing chats, or a queued task, it shows the status without a count.
-- `SideChatList.svelte`: chat list, folders, and chat actions. It captures a `ChatRef` before dialogs and re-resolves it with `chatEntry` afterward; new chats and JSONL imports open through `changeChatTo`, while JSON/HTML imports only add entries. Structure changes go through the chat module. A dangling `folderId` displays at the root and remains stored; drag/drop writes a complete chat order. Its Korean-aware filter keeps hidden rows mounted for SortableJS, temporarily disables sorting, and opens matching folders without changing `folded`; the character catalog uses the same `matchesAny` helper.
-- `PinnedChatsRail.svelte` / `pinnedChats.ts`: collect pinned chats from summaries in character order (folders expanded, remaining characters appended), omit trashed characters, and open through `globalApi.openPinnedChat` (select chat before character). The same projection supplies home cards. Optional status and memory-count maps are keyed by `chaId\u0000chatId`; badge priority and labeling live in `chatStatus.ts`.
-- `src/lib/SideBars/chatStatus.ts`: pure status resolution and aggregation for characters, folders, and pinned chats. Priority is recovery → refused → generating → memory task → unseen; only chat refusals produce a refused chat badge.
-- `src/lib/SideBars/ChatStatusBadge.svelte`: accessible, non-interactive 20px status badge. Running memory tasks may show `k/n`; other statuses use icons and theme tokens. Character, folder, pin, and home-card labels include the status.
-- `OpenChatPanel.svelte`: open-chat header, binding, translation, author note, and prompt toggles. Chat-bound editors capture a `ChatRef` and are recreated for another chat; binding pickers and dialogs use that ref. New-chat defaults and translation behavior are documented in [persistence](persistence.md) and [media-aux](media-aux.md).
-- `DevTool.svelte`: prompt preview via `sendChat(-1, {preview})`, token counts, and variables. The instruct preview takes the character and user names of the chat it was started for, before the await (`DevTool.test.ts`).
-- `Toggles.svelte`: per-chat prompt toggles resolve current chat values, legacy globals, and kind defaults; `setChatToggle` writes one key. Optional presets apply/link, unlink, save, rename, and delete. Async actions capture and re-check the `ChatRef`; `PopupEditor` sets `presets={false}`. See `src/lib/SideBars/Toggles.test.ts`.
-- Also: `SidebarAvatar.svelte`, `SidebarIndicator.svelte`, `BarIcon.svelte` (legacy), `DropList.svelte`.
+### Composer
 
-Others:
+- Both composers are textareas in `DefaultChatScreen.svelte`; `createComposer` in
+  `src/ts/process/composerDrafts.svelte.ts` owns text/files and `inputTranslation.svelte.ts` owns key routing. A new
+  button goes in the composer row; popup behavior follows
+  [Dialogs, popovers, and portals](#dialogs-popovers-and-portals).
+- `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
+  incomplete chat bindings, the Stop button's `processStage` ring (the chat's foreign job's stage when it has no own
+  staged job, as during a remote send), and the loading label beside Stop while a discovered job's chat loads.
+- `src/lib/ChatScreens/RemoteSendMarker.svelte` shows the sender's selected host above the composer and opens the Device
+  Link controls ([remote send](network-jobs.md#remote-send)).
+- Draft and BTW hooks are available outside the playground. The Draft textarea binds `composer.draft` and stays visible
+  while the selected id resolves to a Draft hook or draft text remains. The BTW menu opens
+  `src/lib/ChatScreens/InputHookPicker.svelte` when a choice is needed and shows plain-text results in the originating
+  chat. Keep busy, Stop, and retry behavior aligned with [input hooks](chat-pipeline.md#input-hooks).
+- `src/lib/ChatScreens/HandoffControls.svelte` renders handoff and take-back beside Stop from the screen's followed job
+  ids; presence, target selection, and requests belong to [network jobs](network-jobs.md#generation-job-client).
 
-- `BookmarkList.svelte`, `ChatList.svelte`, `GithubStars.svelte`, `Help.svelte`, `SavePopupIcon.svelte`.
-- `Others/ChatCheckpointsDialog.svelte`: per-chat checkpoints UI, mounted by `App` beneath alerts and above binding dialogs. The checkpoint module owns its store and server operations. Actions capture the chat and row revision before prompts; a load holds the modal and blocks hotkeys through save, request, and refresh. See `ChatCheckpointsDialog.test.ts` and [persistence](persistence.md), Chat checkpoints.
-- `MessageSearch.svelte`: search panel mounted by `App`, opened for one character from the chat list or all characters from the catalog. It supports this chat, this character, and all-character scopes; debounces queries, cancels stale requests, displays snippets as text, and opens a hit through `openPinnedChat` before requesting the guarded message jump. Search state and shared request types belong to [chat-pipeline](chat-pipeline.md); the route is in [self-host-server](self-host-server.md).
-- `PopupEditor.svelte`: Monaco popup.
-- `HypaV3Progress.svelte`: selected-chat memory progress overlay. It shows the newest run belonging to the selected chat and restores it after switching back; otherwise it shows the legacy progress notice. The stop action captures the job and run ids. Progress notices and task lifecycle are covered by [memory](memory.md).
-- HypaV3 background task UI: `memoryTasks.svelte.ts` supplies status and edit-fence state to the sidebar badges and `HypaV3Modal`. The modal shows queued/running/terminal status, pending-manual state, and Summarize/Cancel actions; memory task protocol, revision fences, and outcomes are owned by [memory](memory.md).
-- `HypaV3Modal.svelte`: edits the selected chat's memory copy. It refuses memory edits while the chat is sending or its task fence is active, rolls the local edit back, and shows task status and controls supplied by `memoryTasks.svelte.ts` ([memory](memory.md)). Lore writes are not fenced by background tasks.
+### Transcript rows and the mount hold
 
-GUI primitives (`src/lib/UI/GUI/*`):
+- `src/lib/ChatScreens/Chats.svelte`: hand-mounted keyed rows, the mount hold for rows added above the view, the reader
+  lock, reveal, containment, trimming, and `whenRendered`. Its header owns the structural-effect and hold rules.
+- The reader lock (`lockRowsAboveView`): at a scroll's first wheel, touch move or scroll key, rows whose top is above
+  the view (the straddling row included) keep their last `ResizeObserver` height. `chat-row-locked` (`src/styles.css`)
+  aligns their content to the row's bottom and clips it at the top, so late images, re-renders and far-row estimates
+  grow upward, as at rest in this reversed scroller. The rows are released with the held rows after the scroll.
+- A locked size is never recorded (`rowHeights`, the containment estimate). An anchor, a capture, an editor on the row,
+  or a remount correction unlocks the row first. Measured in headed Chrome with native wheel input (2026-11-22): a late
+  600 px image above the view moved the reader 600 px before, 0 px after.
 
-- `Button`, `IconButton`, `CheckInput` (`disabled` prevents toggling and dims with theme tokens; `indeterminate` displays the native mixed state and a dash), `ColorInput`, `NumberInput`, `TextInput`, `TextAreaInput` (contenteditable plus CBS highlight and autocomplete), `TextAreaResizable`, `SelectInput`/`OptionInput` (`SelectInput` forwards native select attributes, including accessible labels and data attributes, and carries `risu-select`), `SegmentedControl` (buttons carry `aria-pressed`; optional `label` makes the container a named `role="group"`, `describedBy` sets its `aria-describedby`, and `margin={false}` drops the bottom margin settings pages use; a bound value that matches no option shows no indicator), `SliderInput` (`-1000` means disabled; a touch or pen drags only after it moves sideways past a slop, a vertical move is left to page scrolling, and a tap sets the value through its click), `OptionalInput` (nullable), `MultiLangInput`/`MultiLangDisplay`.
-- `Portal`/`PortalConsumer`/`LazyPortal`.
-- `LazyFileSrc`: holds a stored file's URL through `holdFileSrc` only once its wrapper nears the viewport (an `IntersectionObserver`, 200px margin) and renders its snippet with it. The loading effect releases its hold on a path change or unmount; a reused row waits to be seen again. Unpinned fallback object URLs are revoked after the last hold and a short grace period (`global-api.md`). Asset lists preview through it; filtering, paging, live-row indices, and name-cache rules belong to [characters-modules](characters-modules.md).
-- `LazyCharImage`: defers `getCharImage` until its wrapper nears the viewport and restarts the read on a path change; it loads immediately without `IntersectionObserver`. Its optional 256/512 `thumb` class requests server thumbnails through `getCharImage`; catalog, sidebar, pins, and persona lists use 256, while chat avatars and active persona/character editors use 512. `cardboard` chat keeps the original; editors and asset previews do too. See `LazyCharImage.test.ts` for the observer contract.
-- `SideBarArrow`.
-- `SyntaxHighlightedTextarea` is empty.
+### Transcript scrolling
 
-Editor token counts in `CharConfig`, `ChatNoteEditor`, `LoreBookData`, `PromptSettings`, `PromptPresetSettings` (the legacy prompt fields), `PopupEditor`, and `PlaygroundTokenizer` use `createTokenCountField` (as does the `ContextMeter` estimate, above); see [llm-requests](llm-requests.md). Each input carries the tokenizer scope (`tokenCountInput` or `tokenScopeKey`), so switching the main model recounts unchanged text: expanded fields compare the expanded text and scope, `ChatNoteEditor` compares raw text and scope (its CBS parse stays behind the idle-first scheduling), `PopupEditor` reuses its expanded preview, and the playground names its tokenizer. The first count runs on open, later edits debounce 400 ms, newer work aborts stale requests, failures preserve the last value (the meter instead clears its estimate on failure and counts at once on its first eligible non-empty draft or a new basis; see its entry above), and closing or unmounting sends nothing.
+- A jump caused by rows mounting above the view is the hold in
+  [Transcript rows and the mount hold](#transcript-rows-and-the-mount-hold), not this section.
+- `Chats.svelte` owns scroll anchors and reply-stream following. `DefaultChatScreen` follows a swiped reroll, while
+  `openRoute` asks the screen to reveal the newest message even when its chat was already open
+  ([app shell](app-shell.md)).
+- Scroll input releases the anchor (`release`), except while an opening still hides its newest row; a sideways wheel is
+  not input. An anchor whose row left the DOM falls to `latestAnchor()`.
+- A row whose `Chat` is mounted again keeps its height until the new instance has rendered, then its top is put back
+  (`keepRowHeight`, `settleRowHeight`). The height comes from a per-row `ResizeObserver` and the offset from scroll
+  events: a layout read at the remount sees a row already collapsed and sets off the browser's scroll anchoring. The
+  browser's anchoring stays on (no `overflow-anchor` rule) and holds a reader through other growth. Measurements and the
+  cases left: [fork chat scroll](../reports/surveys/fork-chat-scroll.md).
+- Opening an inline editor remembers the row's top, or that the reader was at the bottom, and reveals the text area when
+  it fits; closing restores that place through the row-height hold unless the reader scrolled meanwhile. The editor
+  opened last owns the place, and a restore that would clip another open text area is skipped.
 
-Other UI:
+### Message row
 
-- `UI/RefusedDataBanner.svelte` / `UI/refusedData.ts`: partition the save adapter's refusal inventory into a chat banner and an app-level pill. The mounted chat registers its `ChatRef`; the app list omits it until unmount. Chat actions are Export, Retry, and confirmed Discard; the app list can also open a refused chat. Record export includes only fields owned by that resource and excludes managed credentials and client-only chat fields. Stable `data-risu-refused-*` attributes support browser checks.
-  - `App` mounts the `app` form beside reload and terminal notices as a fixed, accessible pill with a bounded list. It stays below alerts. Settings, home, or a loading chat unmounts the chat form, returning that refusal to the app list.
-  - Membership resolves through `chatEntry`, including unloaded summaries. The app list offers Open for a refused chat; deletion, order, and records without local data have no Export. Discard requires confirmation; failed actions use `alertError`.
-  - Record Export downloads `{ kind, id, data }` using only that kind’s `SECTION_FIELDS`. Managed credentials, the pending secret queue, and client-only character fields are excluded. Labels and reasons use `language.refusedData`; the chat badge uses `language.chatStatus.refused`.
+- `src/lib/ChatScreens/Chat.svelte`: one message row, its theme branches, controls, and display/streaming props.
+- `src/lib/ChatScreens/ChatBody.svelte`: sanitized body rendering and parse lifecycle; its component contract owns
+  abort, retry, and pending-body behavior. Permanent HTTP asset refusals skip its retries.
+- `src/lib/ChatScreens/TransitionImage.svelte`: an image that drops an older `src` resolving late.
 
-- `UI/PopupButton.svelte` writes `popupStore`. `UI/PopupList.svelte` is the fixed-position host mounted by `App`.
-- `UI/Accordion.svelte` (its button carries `aria-expanded`; the `styled` one takes an optional `badge` pill beside the name; `startOpen`, read at mount, opens it; optional bindable `open` lets a caller control subsequent transitions while keeping user toggles), `UI/BaseRoundedButton.svelte`, `UI/NewGUI/Button.svelte` (no secondary variant).
+### Message editors
 
-Mobile:
+- `src/lib/ChatScreens/Chat.svelte` owns original and translation editing, auto-popup eligibility, and `clickToEdit`.
+  `src/ts/storage/messageEditorDrafts.svelte.ts` retains original-message and stored-translation drafts across screen or
+  row unmounts. It keys text by chat ref, message id, and editor kind, and drops it on owner replacement or deletion.
+- An original reply's draft is also keyed by its selected candidate and generation, so it reopens only on that
+  candidate. When a standalone reply gains its first candidate id, its draft follows it into that slot.
+- The same store keeps the drafts of the rendered-translation editor (by captured cache key and reply) and of the
+  partial-edit popover (by its source range: both neighbor hashes match, or the text is unique then and now). A reply is
+  its candidate id and generation id; an id that appears or disappears on one generation keeps its drafts. At most 8
+  such drafts per message stay without an open editor, least recently written dropped first.
+- A bookmark preview passes the message id and shares the message's draft. Save and the user's cancel end a draft; the
+  rendered-translation Save cannot overlap itself, and its overwrite notice needs a fresh click.
+- `src/lib/ChatScreens/messageEditPopup.ts`: the pure eligibility and stable-height rules.
 
-- `Mobile/MobileCharacters.svelte`: the list view of the character grid (`Others/GridCatalog.svelte`). The separate beta mobile shell was removed; small screens use the desktop layout.
+### Context meter
 
-Theme and GUI helpers:
+- `src/lib/ChatScreens/ContextMeter.svelte`: the composer's context line and popover (header), over
+  `generationInfo.context` (`shared/contextReport.ts`, [chat pipeline](chat-pipeline.md)); `estimateBasis`,
+  `displacement`, `position`, `loreBudgetWarnOff`. Task wording follows `MemoryTaskStatus.kind`; [memory](memory.md)
+  owns outcomes and forecasts. The popover's `loreBudgetWarnOff` toggle also turns the chat's lore budget send stop off
+  and on ([chat pipeline](chat-pipeline.md#send)).
+- The occupied count and percentage are `input` plus the report's `toolSchemas` and `interceptions`, each also a row of
+  its own (`contextUsage.toolSchemas`, and `contextUsage.interceptions`, "Inserted prompts (estimated)") sorted among
+  the sections. A rule edited since the last reply shows in the meter only after the next one (`estimateBasis` does not
+  track the rules).
+- The bar, legend, and row dots color by group: fixed (neutral), memory, history. `SPLIT_GROUPS` names the fixed
+  sections that grow with the bot: the lorebook, and the character group (description, examples, persona). A group at or
+  above `SPLIT_FROM` percent of the prompt budget is drawn apart from the rest of the fixed group in its own color
+  (`--color-meter-lore`, `--color-meter-character` in `src/styles.css`, fixed for every theme); a smaller one stays
+  neutral. A fixed share over its warning colors the tick and the line under the bar, never a segment.
+- The memory segment uses `--color-meter-memory`, defined the same way as the two group colors, so it stays apart from
+  history under simulated color blindness.
+- The line's memory word is the chat's memory now (`memoryNow`: `chatMemoryAlgorithm` and `chatMemoryEnabled`, as the
+  next send resolves them), so a chat with memory set up has a line before its first reply; the last reply's coverage is
+  the word only while that memory is still on (`reportedNow`). It warns on a gap, and on memory off with history left
+  out unless `memoryTrimAck` holds. The popover's memory block holds the switch (`setChatMemoryEnabled`) and opens the
+  memory panel and settings.
 
-- `src/styles.css`:
-  - The Tailwind v4 `@theme` tokens map `--color-<name>` to `var(--risu-theme-<name>)`.
-  - Root palette variables.
-  - Chat typography.
-  - Shared classes `x-risu-button-default` and `x-risu-risu-comment`.
-  - `risu-select`, on `SelectInput` and the popup editor's language select: WebKit draws a native `<select>` as a fixed-height menulist that ignores vertical padding and clips the selected text, so the class drops the native appearance, draws its own chevron in `currentColor` (the select's theme text color), and reserves `2.25rem` of right padding for it. It is unlayered, so that padding overrides Tailwind `px-*`/`pr-*`. Under `forced-colors: active` it restores the native appearance, since forced colors remove background images.
-  - The `metatron-chat-theme` message-card rules.
-  - `.chat-message-container.far` alone uses `content-visibility: auto` and `contain-intrinsic-block-size: auto 240px` (the observer supplies a measured fallback). Width remains controlled by the flex column.
-  - CBS `::highlight(...)` colors.
-- `src/ts/gui/colorscheme.ts`:
-  - `ColorScheme` (declared in `shared/settings.ts`) has nine colors plus `type`.
-  - `colorShemes` presets: default, dark, light, cherry, galaxy, nature, ocean, aurora, twilight, realblack, Monokai, lite, ...
-  - `changeColorScheme`, `updateColorScheme`, `updateTextThemeAndCSS` (text theme, fonts, custom CSS unless `SafeModeStore`), and import/export.
-  - `updateColorScheme` also sets the root's inline `color-scheme` from the scheme's `type` (`light`, otherwise `dark`), so native controls (select popups, scrollbars, date inputs) follow the app scheme instead of the OS; `src/styles.css` `:root` declares `color-scheme: dark` for the page before boot. Every scheme change goes through it.
-- `src/ts/gui/guisize.ts`: `updateGuisize`. `--sidebar-size = 24 + 4*sideBarSize` rem.
-- `src/ts/gui/animation.ts` `updateAnimationSpeed`.
-- `src/ts/gui/tooltip.ts`: `tooltip`, `tooltipRight` (Tippy).
-- `src/ts/gui/longtouch.ts` `longpress`.
-- `src/ts/gui/branches.ts` `getChatBranches`: branch graph used by `AlertComp`.
+### Sidebar
+
+- `src/lib/SideBars/Sidebar.svelte`: the character rail and folders (`RISU_*`, `checkCharOrder`), settings pane, and
+  chat status badges. The `memory` badge comes from memory tasks; `health` comes from
+  [Structured Memory](structured-memory/read.md#the-health-badge).
+- `src/lib/SideBars/chatStatus.ts` owns badge priority and group states; `src/lib/SideBars/SideChatList.svelte` owns the
+  chat list, folders, filtering, and actions such as `reorderActiveChats` on a drop. A row's own buttons stop their
+  click, so only the row itself opens its chat; the options' copy and settings-only copy
+  ([fields](persistence.md#chat-fields)) select the new chat without opening it.
+- The Trash button shows the character's trashed chat count when nonzero. Trash hides New Chat and shows newest-first
+  rows with name, existing folder, trash time, and days left from [retention](settings-i18n.md#pages). Search filters by
+  name and the rows cannot open chats. See the `SideChatList.svelte` header for drag and view lifetime.
+- Restore asks no confirmation. Delete forever and Empty trash ask once. Empty trash freezes every trashed chat of the
+  character regardless of the filter with its [trash token](chat-store.md#chat-trash) and reports failures together.
+  Folder deletion clears `folderId` only on active chats. Trash closes an open `ChatCheckpointsDialog.svelte` with a
+  notice, and its load and delete handlers recheck the target at dispatch.
+- `src/lib/SideBars/PinnedChatsRail.svelte` and `src/lib/SideBars/pinnedChats.ts` share the pinned-chat projection with
+  home cards (`openPinnedChat`).
+- The sidebar's chat tab switches from `SideChatList` to `src/lib/SideBars/OpenChatPanel.svelte` when
+  `selection.chatOpen`. The playground keeps the list. Binding, memory (`src/lib/SideBars/ChatMemoryPanel.svelte`), and
+  translation panels work from the open chat's list entry before its messages load. The binding panel's picker receives
+  the chat ref ([binding](persistence.md#chat-binding)). The Chat settings dialog reuses the binding and memory panels.
+- The author note and `src/lib/SideBars/ChatDraftHookPanel.svelte` wait for the loaded chat. The hook panel writes
+  `draftHookId` with `setChatMeta` and keeps a missing choice visible. New-chat defaults, memory choices, and
+  translation behavior belong to [persistence](persistence.md), [memory](memory.md), and [translation](translation.md).
+- `src/lib/SideBars/DevTool.svelte` owns prompt/lore previews and autopilot; `src/lib/SideBars/Toggles.svelte` owns
+  per-chat prompt toggles.
+
+### Dialogs, popovers, and portals
+
+- There is no shared popup/dismissal helper. Follow the nearest pattern: anchored popover (`ContextMeter`), click menu
+  (`PopupButton`/`PopupList`), composer menu, or an `App`-mounted panel (`MessageSearch`).
+- `src/lib/UI/GUI/Portal.svelte` mounts to `document.body` or a target while keeping caller contexts. `ChatScreen`'s
+  `isolate` keeps local content below app popups and alerts; use a portal or `App` mount when the popup must escape that
+  stack.
+- `src/lib/Others/LoreBudgetStopDialog.svelte` is mounted after the picker lists, one instance per shown request
+  (`loreBudgetStopDialog`); its own buttons, Escape, its teardown, and its chat leaving the list answer the request. Its
+  navigation buttons reach the sidebar's local views through one-shot stores (`sidebarLeaveDevTool`,
+  `loreBookSubmenuRequest`) that the panels take and clear.
+- `src/ts/gui/dialogLayers.ts` `topBindingLayer` follows the pickers and dialogs' mount order in `App`; see
+  [app shell](app-shell.md#escape-order) for the full Escape order. Components own their z-index classes and local
+  dismissal behavior.
+- Capture-phase Escape handlers yield to alerts, the terminal notice, and `topBindingLayer()` before the global hotkey
+  listener. `ContextMeter` also closes on outside press or focus leaving its trigger/panel, and restores focus when it
+  closes.
+- `src/lib/UI/PopupButton.svelte` writes `popupStore`; `src/lib/UI/PopupList.svelte` is the fixed-position host mounted
+  by `App`.
+- `src/lib/Others/RecoveryDrafts.svelte` ([draft recovery](draft-recovery.md#recovery-drafts)),
+  `src/lib/Others/ChatCheckpointsDialog.svelte` ([chat store](chat-store.md#chat-checkpoints)),
+  `src/lib/Others/MessageSearch.svelte` (search state belongs to [chat pipeline](chat-pipeline.md)).
+- `src/lib/Others/OocPanel.svelte`: the selected chat's OOC session, `App`-mounted before `MessageSearch` with its
+  lifecycle (open flag in `src/ts/ooc/oocPanel.svelte.ts`). Wide (`lg:`): a right-edge column without a backdrop, the
+  chat usable beside it; narrow: the full viewport. Rows render through `ChatBody` with `idx={-1}`, not `Chat.svelte`; a
+  streaming answer is parsed as a stored one. Escape closes it only from inside it or the page body. Actions:
+  [chat pipeline](chat-pipeline.md#ooc-session).
+- `OocPanel`'s header gear opens an anchored settings popover: "use this chat's own OOC toggles" and, while on,
+  `OocToggleEditor` over the chat's `oocToggles`. Outside press or Escape inside the popover closes the popover, not the
+  panel. Below the header buttons the panel may show the one-time offer to force an OOC toggle on in the preset.
+- `src/lib/Others/PopupEditor.svelte`, `src/ts/popupEditorSession.svelte.ts` (`openPopupEditorSession`,
+  `closePopupEditorSession`, `popUpEditorStore`), `src/ts/gui/popupEditorMode.ts` (per-device Monaco/textarea).
+- HypaV3 modal/progress UI is chat-specific; its data and task fences belong to [memory](memory.md).
+
+### GUI primitives
+
+- `src/lib/UI/GUI/SelectInput.svelte` (`risu-select`), `src/lib/UI/GUI/SliderInput.svelte`,
+  `src/lib/UI/GUI/OptionalInput.svelte`, `src/lib/UI/GUI/SegmentedControl.svelte`,
+  `src/lib/UI/GUI/TextAreaResizable.svelte`: each one's rules are its header.
+- `src/lib/UI/GUI/Alert.svelte`: inline status box (`info`, `warning`, `error`, `success`, `neutral`) with an icon, an
+  optional title, body, and an `actions` snippet; its header has the color and `role` rules. Dialogs stay with
+  `src/ts/alert.ts`.
+- `src/lib/UI/GUI/NumberInput.svelte`: while focused it shows the typed entry, so a binding setter may refuse an empty
+  or out-of-range entry without the box snapping back; `change`, blur, or a bound value changed from outside (`seen`)
+  shows the bound value again. Adopting an outside value retires the refused draft and advances its comparison baseline,
+  so returning to an earlier number cannot revive that draft.
+- `src/lib/UI/GUI/CheckInput.svelte` reads an absent value as false without writing through its setter on mount; user
+  changes still write and notify once per change.
+- `src/lib/UI/GUI/TextAreaInput.svelte`: textarea or CBS-highlighted contenteditable that opens the popup editor
+  (`popupEditor`, `popupEditorContext`). A field tied to a selected record passes its id as `popupEditorContext`;
+  wrappers that forward it include `RegexList`, `TriggerList`, `PromptDataItem`, `MultiLangInput`, and
+  `SettingTextarea`. A row of an index-bound list (`PromptDataItem`, `RegexData`) adds `recordValueIdentity` of its row,
+  in an object replaced only when owner or row changes: a remote list replacement then drops the draft.
+- A `TextAreaInput` whose write-back can be refused mid-popup passes `onPopupUnsaved(text)`: a close while `readonly`
+  then writes nothing, and changed text the popup could not write back (read-only close, value or context change,
+  unmount) reaches the callback once per session; `LoreEntryFields` shows it for copying through `alertNormal`.
+- `src/lib/UI/GUI/LazyFileSrc.svelte` (object-URL ownership is in [assets](assets.md)) and
+  `src/lib/UI/GUI/LazyCharImage.svelte` (256/512 server thumbnails, `thumb`) defer reads until near the viewport.
+
+### Editor token counts
+
+- `CharConfig`, `ChatNoteEditor`, `LoreEntryFields`, prompt settings, `PopupEditor`, `PlaygroundTokenizer`, and
+  `ContextMeter` use `createTokenCountField` (`src/ts/tokenCountField.ts`); its header owns scope, debounce, abort, and
+  failure behavior. See [tab token counting](tokenizers.md#tab-token-counting).
+
+### Other UI
+
+- `src/lib/UI/RefusedDataBanner.svelte`, `src/lib/UI/refusedData.ts`: the save adapter's refusal inventory as a chat
+  banner and an app-level pill (`refusedItemsFor`), and Record Export (`refusedRecordExportText`). `App` mounts the
+  `app` form beside reload and terminal notices, below alerts.
+- `src/lib/Others/RemoteHostScreen.svelte` renders the host lock between plugin containers and app alerts. Leave host
+  mode stays reachable above an alert or status overlay. Follow [app shell](app-shell.md#entry-and-screens) for screen
+  and drop behavior.
+- `util/headlessHost.mjs` reads the lock's `data-remote-host-screen` presence marker, `data-feed-connected`,
+  `data-dialogs`, `data-plugins-off`, and each command's `data-command-id`, `data-command-type`, `data-command-state`
+  and optional `data-command-code`. Change producer and reader together, including the
+  [terminal and reload notices](global-api.md#terminal-and-reload-notices). See
+  [headless host](build-test-platforms.md#headless-host).
+- `src/lib/Others/GenerationProgressWindow.svelte` reads non-preview jobs from the
+  [live feed](live-updates.md#feed-connection) when `ui.generationProgressWindow` is enabled. A row opens its chat
+  through `openPinnedChat`. `App` passes `memoryProgressShown` to keep the window below the memory progress overlay.
+- `src/lib/Mobile/MobileCharacters.svelte`: the list view of the character grid (`src/lib/Others/GridCatalog.svelte`).
+  There is no separate mobile shell; small screens use the desktop layout.
+
+### Theme
+
+- `src/styles.css`: the Tailwind v4 `@theme` tokens map `--color-<name>` to `var(--risu-theme-<name>)`; its comments
+  hold the `risu-select`, `.chat-message-container.far`, and `:root` `color-scheme` rules.
+- `src/ts/gui/colorscheme.ts`: `updateColorScheme`, `updateTextThemeAndCSS` apply the saved palette and custom text/CSS.
+  `src/ts/gui/animation.ts` `updateAnimationSpeed` and `src/ts/gui/guisize.ts` `updateGuisize` apply the other display
+  values. Boot calls these together ([app shell](app-shell.md#boot)); `src/ts/gui/displayApply.ts`
+  `applyDisplaySettings` runs all four for the writers named under Flows.
 
 ## Flows
 
 - Desktop: `App` → `Sidebar` + `ChatScreen` → `DefaultChatScreen` → `Chats` → `Chat` → `ChatBody`.
-- First greeting: rendered as a separate `Chat` with `idx: -1`. `fmIndex: -1` means `firstMessage`. `fmIndex >= 0` selects `alternateGreetings[fmIndex]`. The chat screen, the CBS registry, triggers (`v2GetFirstMessage`) and regex `repeatBack` read it through `shared/greetings.ts` (`greetingIndex`, `greetingText`, `nextGreetingIndex`, `previousGreetingIndex`): a missing, non-integer or out-of-range index reads as -1. Not converted yet: `server/src/prompt/assemble.ts` (prompt assembly) and `src/ts/characters.ts`, `src/ts/gui/branches.ts` and `src/lib/Others/HypaV3Modal/utils.ts` index `alternateGreetings` directly.
-- Popups: `PopupButton` → `popupStore` → `App` renders `PopupList`, which closes on the next document click.
-- Theme: at boot `bootstrap.ts` calls `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, and `updateGuisize`. The display settings call the same functions. Plugins can call them via `apiV3`.
+- First greeting: rendered as a separate `Chat` with `idx: -1`. The chat screen, prompt assembly, the CBS registry,
+  triggers (`v2GetFirstMessage`) and regex `repeatBack` read the greeting through `shared/greetings.ts`
+  (`greetingIndex`, `greetingText`, `nextGreetingIndex`, `previousGreetingIndex`). Not converted yet:
+  `src/ts/characters.ts`, `src/ts/gui/branches.ts` and `src/lib/Others/HypaV3Modal/utils.ts` index `alternateGreetings`
+  directly.
+- Theme: a remote `ui` record (`watchRemoteRecords`), an applied `ui` recovery draft (`applyRecoveryDraft`), and a
+  plugin database write of a `ui` field (`applyPluginKey`) call `applyDisplaySettings`; the display settings and the
+  plugin theme APIs call the applier they change. Every color-scheme writer also calls `updateTextThemeAndCSS`, whose
+  font colors follow the scheme's `type`.
 
 ## State
 
-- Components mutate the settings through the record views (`settings.ui.*`, `settingsViews.svelte.ts`) and the characters through the character module's records (`selectedCharacter()`, `characterList()`), and rely on the records' write-through saves: each write queues the record it changed (`persistence.md`).
-- Invalidation signals:
-  - `ReloadGUIPointer`: structural changes.
-  - `ReloadChatPointer`: message re-render, by `reloadChatKey` (`m:` and the message id; the greeting `i:` and its index), so a row keeps its counter when messages before it are added or removed. Mounted row effects subscribe through the store; a changed entry remounts only its row.
-  - Reassigning an array after an in-place mutation, e.g. `chat.bookmarks = [...]`.
-- Theme DB fields: `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`, `textAreaSize`, `sideBarSize`, `textAreaTextSize`.
+- Components write settings and character/chat data through their record views; writes queue persistence
+  ([persistence](persistence.md)). Chat fields use the chat module or a synced editing copy, never a direct binding.
+- `ReloadGUIPointer` signals structural UI changes; `ReloadChatPointer` remounts a row by `reloadChatKey` (message id or
+  greeting index), so adding/removing earlier messages does not reset that row's counter. Reassign arrays after in-place
+  mutations so Svelte observes them.
+- `src/ts/gui/itemFolderFold.svelte.ts` shares per-device module fold state (`isFolderFolded`, `setFolderFolded`)
+  between the module catalog and the chat's module menu. Folder membership is server-backed. The persona grid navigates
+  into one folder in component state ([characters and modules](characters-modules.md#personas-and-conversion)).
+- Theme settings are `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`,
+  `textAreaSize`, `sideBarSize`, and `textAreaTextSize`.
 
 ## Coupling
 
-- The chat tree depends on `process/index.svelte.ts` (`sendChat`), the local send registry (`localSends.ts`), the chat status (`chatStatus.svelte.ts` `isChatBusy`), the parser, `scripts`, the translator, `globalApi` (`changeChatTo`, assets, folding), `characters.ts`, and `database.svelte.ts`.
+- The chat tree depends on `process/index.svelte.ts` (`sendChat`), the local send registry (`localSends.ts`), the chat
+  status (`chatStatus.svelte.ts` `isChatBusy`), the parser, `scripts`, the translator, `globalApi` (`changeChatTo`,
+  assets, folding), `characters.ts`, and `database.svelte.ts`.
 - The sidebar depends on `characters.ts`, `dragTypes.ts`, SortableJS, and the GUI primitives.
-- The GUI primitives are imported by the settings, playground, sidebar, and prompt editors.
 
 ## Invariants
 
-- Use theme tokens (see STRUCTURE.md U1). To add a color: a root variable, an `@theme` token, a `ColorScheme` field, `updateColorScheme`, and presets.
-- Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see `updateChatBody` and the per-row effect above for remount conditions. `Chat.updateRow` changes only supplied position/streaming fields or display-only `name?: string` and `img?: string | Promise<string>` props; name/image updates never reset the `ChatBody` key. Never read every row's text in the structural effect; per-chunk transcript JavaScript work must not grow with mounted row count.
-- Chat structure operations go through the chat module (`createChat`, `deleteChat`, `reorderChats`, `setChatMeta` for `folderId`; `persistence.md`) and select with `changeChatTo`/`selectChat`; `chatPage` is derived from the per-tab selected chat id and is never assigned. Components never `bind:` a chat field directly: bind a getter/setter pair that calls the module, or a synced editing copy. A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and regenerate controls disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
+- Use theme tokens (see STRUCTURE.md U1). To add a color: a root variable, an `@theme` token, a `ColorScheme` field,
+  `updateColorScheme`, and presets. The shade ramps (`primary`, `secondary`, `danger`, `success`, `warning`, `neutral`)
+  are fixed for every theme: only a root variable and an `@theme` token per shade.
+- A title never differs from the text under it by weight alone: `--risu-font-family` can be the user's `customFont`,
+  which may render no visible bold. Pair `font-semibold` with a size step or a muted color on the secondary text, as the
+  Read view of `TimelineTab.svelte` does.
+- Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see
+  `updateChatBody` and the per-row effect for remount conditions. Never read every row's text in the structural effect;
+  per-chunk transcript JavaScript work must not grow with mounted row count.
+- `Chat.updateRow` changes only supplied position/streaming fields, `isComment`, `messageGenerationInfo`,
+  `candidateCount`, `candidateIndex`, `candidateCarrier`, `rerollIcon`, or display-only `name` and `img` props;
+  name/image updates never reset the `ChatBody` key.
+- Chat structure operations go through the [chat module](chat-store.md#chat-writes) (`createChat`, `confirmTrashChat` in
+  `src/ts/checkpoints/chatTrash.ts`, `reorderActiveChats`, `setChatMeta` for `folderId`) and
+  [select](chat-store.md#selection) with `changeChatTo`/`selectChat`; `chatPage` is derived from the per-tab selected
+  chat id and is never assigned.
+- Components never `bind:` a chat field directly: bind a getter/setter pair that calls the module, or a synced editing
+  copy.
+- A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and
+  regenerate controls disabled, and its open message or stored-translation editor turns read-only with the text kept
+  until release, the expanded popup included. Its Branch item is disabled too, and the handler checks the lock again
+  before it copies; an earlier, finished row can still branch. The chat list's Create a Copy is disabled while any
+  message of that chat is locked (`isChatGenerating`), and the handler checks again before and after it loads the
+  source.
+- While the chat is busy, the reroll arrows of every row, the side menu's Continue and Reroll, and checkpoint Save and
+  Load are disabled, and Enter in the draft box does what its disabled Send Draft button does. The handlers keep their
+  checks. Ctrl+M and the move-to-trash action show `chatGenerating` when blocked.
+- `Chat.svelte` `isInteractiveBodyTarget` excludes an entire `form[risu-form]` from click-to-edit, but plain form text
+  still opens message editing when `clickToEdit` is enabled; preserve that distinction when changing the selector.
 - HTML boundaries:
-  - `ChatBody`, `BackgroundDom`, suggestions, and plugin panels use `{@html}` only on sanitized parser output.
-  - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
-  - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`; so must the `customHTML` theme's GUI HTML (`Chat.svelte` renders the classic row instead).
-- A list of inputs over a list that can change while one of them has focus keys its rows by entry and binds each input to the entry captured at mount (getter/setter functions that drop a write once the list no longer holds it), never `bind:value={list[i]}` in an unkeyed `#each`: Chrome fires `change` on a focused, edited control while removing it, and an index binding resolves `list[i]` at that moment. The lorebook and character asset editors follow this ([characters-modules](characters-modules.md) Invariants).
-- Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores, `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
-- Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values, callback props (`onclick`, `onchange`), and `children: Snippet`.
+  - `ChatBody` sanitizes body HTML through `shownBody` and renders the fixed `LOADING_HTML` literal while translation
+    loads; `BackgroundDom` and suggestions render sanitized parser output. Plugin panels render HTML sanitized with
+    DOMPurify by `setChatPanel` in `src/ts/plugins/apiV3/v3.svelte.ts`; a `style` element in it needs the plugin's
+    `globalStyle` grant ([permission list](plugin-sandbox.md#permission-list)).
+  - Custom GUI rendering uses `risuChatParser` with `renderMode: "gui"` to escape character/nickname, `bot`, and persona
+    name substitutions before parsing the owner's template; ordinary prompt CBS keeps raw names. `renderGuiHtmlPart`
+    whitelists tags and allows only `https` links.
+  - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`; so must the `customHTML`
+    theme's GUI HTML (`Chat.svelte` renders the classic row instead).
+- For new lists that can change while an input has focus, key rows by entry and bind through guarded getter/setters;
+  never bind `list[i]` in an unkeyed `#each`. Chrome fires `change` on a focused, edited control while removing it, and
+  an index binding then resolves the new row at that index. Existing `CharConfig` and `ModuleMenu` index-addressed name
+  rows release focus on owner or outside row replacement; `LoreBookList` guards keyed rows by live-list membership. See
+  [characters and modules](characters-modules.md#lorebook-rows-and-writers).
+- Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores,
+  `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
+- Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values,
+  callback props (`onclick`, `onchange`), and `children: Snippet`.
 
 ## Recipes
 
-- Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (row key, mount key, and `Chat.updateRow` fields) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
-- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write through the chat module, open a chat with `changeChatTo` (or only select it with `selectChat`), and bump `ReloadGUIPointer`. Cross-character pins use `openPinnedChat`, selecting the chat before the character.
+- Change message rendering: `DefaultChatScreen` props → `Chats.updateChatBody` (row key, mount key, and `Chat.updateRow`
+  fields) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
+- Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write
+  through the chat module, open a chat with `changeChatTo` (or only select it with `selectChat`), and bump
+  `ReloadGUIPointer` where the operation needs a structural refresh. Cross-character pins use `openPinnedChat`,
+  selecting the chat before the character.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
-- Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host (`PopupButton`/`PopupList` or `Portal`). Clean up mounts and listeners.
+- Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host, by
+  [the rules](#dialogs-popovers-and-portals). Clean up mounts and listeners.
 
 ## Tests
 
-- Theme and primitives: `src/lib/UI/GUI/guiRendering.test.ts`, `src/ts/gui/guiRecords.test.ts`, `src/lib/UI/GUI/SecretInput.test.ts`, `src/lib/UI/GUI/LazyFileSrc.test.ts`, `src/lib/UI/GUI/LazyFileSrcHold.test.ts`, and `src/lib/UI/GUI/LazyCharImage.test.ts`. Catalog and home icon coverage is in `src/lib/Others/GridCatalog.test.ts`, `src/lib/Mobile/MobileCharacters.test.ts`, `src/lib/UI/MainMenu.status.test.ts`, and `e2e/welcomeAndChatSettings.spec.ts`.
-- Chat row/render behavior: `src/lib/ChatScreens/Chat.test.ts`, `src/lib/ChatScreens/Chat.draft.test.ts`, `src/lib/ChatScreens/Chat.interactions.svelte.test.ts` (row-owned chat, Lua button refusal, click-to-edit, jump scrolling, bookmark Escape and streaming previews), `src/lib/ChatScreens/ChatBody.svelte.test.ts`, `src/lib/ChatScreens/ChatBody.assets.svelte.test.ts`, `src/lib/ChatScreens/Chats.svelte.test.ts`, `src/lib/ChatScreens/Chats.rows.svelte.test.ts`, `src/lib/ChatScreens/ChatScreen.test.ts`, `src/lib/ChatScreens/PartialEditController.test.ts`, `src/lib/ChatScreens/Suggestion.svelte.test.ts`, `src/lib/ChatScreens/ContextMeter.svelte.test.ts` (chip states and units, the warning boundary, report precedence and the legacy fallback, popover rows, placement, dismissal, the settings jump; the displacement estimate over a stubbed count route with deferred answers: the immediate first count and the 400 ms debounce, Thoughts stripping, the three outcomes in both units, a continue's prefix and its queue boundary, each availability condition, the recount after a failed count, and aborts on a failure, a basis change, and unmount), and `src/ts/chatLoadPages.test.ts`. `util/playwright/measureChats.mjs` checks production row counts, memory, and streaming cost.
-- Screenshot thumbnail caching: `src/ts/screenshotCaptureCache.test.ts` verifies the original and each thumbnail size stay separate after capture.
-- Sidebar and status behavior: `src/lib/SideBars/SideChatList.test.ts`, `src/lib/SideBars/Sidebar.test.ts`, `src/lib/SideBars/OpenChatHeader.test.ts`, `src/lib/SideBars/ChatBindingPanel.test.ts`, `src/lib/SideBars/ChatTranslationPanel.test.ts`, `src/lib/SideBars/Toggles.test.ts`, `src/lib/SideBars/chatStatus.test.ts`, and `src/lib/SideBars/PinnedChatsRail.status.test.ts`. Refusal UI has `src/lib/UI/RefusedDataBanner.test.ts` and `e2e/refusedData.spec.ts`; status badges also have `util/playwright/checkSidebarChatStatus.mjs`.
-- Overlays: `src/lib/Others/ChatCheckpointsDialog.test.ts`, `src/lib/Others/MessageSearch.test.ts`, `src/ts/messageSearch.test.ts`, and `src/lib/ChatScreens/messageJump.test.ts`. The search-to-transcript claim and scroll wiring still need a browser check.
-- Memory progress UI: `src/lib/Others/HypaV3Progress.test.ts` and `src/ts/network/jobChannel.test.ts`; background task lifecycle and fencing are covered in [memory](memory.md). The manual recovery check is to switch away from a running chat, stop the server until reattach attempts fail, confirm its recovery badges, then restart the server and reopen the chat.
-- Token count consumers: `src/ts/tokenCountField.test.ts`, `src/lib/SideBars/CharConfig.emotions.test.ts`, `src/lib/SideBars/LoreBook/LoreBookList.test.ts`, `src/lib/SideBars/ChatNoteEditor.test.ts`, and `src/lib/Setting/Pages/PromptPresetSettings.tokenCount.test.ts`; implementation ownership is in [llm-requests](llm-requests.md).
-- Sidebar composition and mobile interactions still need browser checks.
+- Focused:
+  `pnpm --silent test:agent src/lib/ChatScreens src/lib/SideBars src/lib/UI src/lib/Others src/lib/Mobile src/ts/gui`,
+  plus `src/ts/{tokenCountField,messageSearch,chatLoadPages,screenshotCaptureCache,stores.popupEditorSession}.test.ts`
+  for the logic outside those folders.
+- `slow`: none in this guide's paths.
+- `e2e` for the chat screen: `e2e/serverTransform.spec.ts` (row render lifecycle: final render once, existing rows
+  untouched, an open details stays open), `e2e/chatBinding.spec.ts` (incomplete-binding mark, composer placeholder and
+  readonly state, setup dialog), `e2e/openChat.spec.ts` (closed chat), `e2e/perChatSends.spec.ts` (per-chat Stop, auto
+  mode), `e2e/refusedData.spec.ts` (refused chat badge and banner export).
+- `e2e` for the sidebar and settings: `e2e/personaBinding.spec.ts` (binding panel and Chat Settings dialog),
+  `e2e/readersCharacters.spec.ts` (sidebar folder menu stays addressed while the order changes),
+  `e2e/welcomeAndChatSettings.spec.ts` (catalog and home icons, chat screen settings).
+- `installFlatDatabase.ts` ([persistence](persistence.md#tests)) gives most component tests their records.
+- `Chats.rows.svelte.test.ts` stands in for `IntersectionObserver` with its own `Observer` class and fakes
+  `requestAnimationFrame`; its anchor cases stand in for `ResizeObserver` and report the rows' sizes (`sizes`), and end
+  an opening's reveal (`endReveal`) before the reader's input.
+- `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
+  one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
+- `OocPanel.test.ts` mocks the OOC module and stands in for `ChatBody` with `tests/OocChatBodyStub.svelte`; the panel's
+  wide and narrow layout and a real streamed answer's display scripts need a browser check.
+- `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.
+- `DefaultChatScreen.drafts.test.ts` mounts the screen with its children mocked; `tests/ChatsStub.svelte` stands in for
+  `Chats` (`followsLatest`, `scrollToLatestMessage`, bindable `holding`, the props it got) for the notification reveal,
+  swiped-reroll alignment, and the held load-more skip. `DefaultChatScreen.foreignProgress.test.ts` mounts it the same
+  way for the Stop-other ring of a feed job.
+- `GenerationProgressWindow.test.ts` drives the window from the real progress store with fake `Date` and intervals, and
+  mocks `openPinnedChat` at the module boundary.
+- `screenshotExport.test.ts` fakes canvases (happy-dom has no 2D context), counting sizes, draws, and releases.
+- `src/lib/UI/tests/`: `reactiveProps.svelte.ts` changes a mounted component's props from a `.test.ts` file;
+  `LazyCharImageFixture.svelte` awaits the image as real consumers do. `ChatStyleProviderFixture.svelte`
+  (`src/lib/ChatScreens/tests/`) provides the `ChatStyleRegistry` the chat screen would.
+- Browser scripts: `util/playwright/measureChats.mjs` checks production row counts, memory, and streaming cost;
+  `util/playwright/checkSidebarChatStatus.mjs` covers the status badges;
+  `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` prints the reader's position through openings, chat writes
+  and streams (no assertions; happy-dom has no layout, so this is the check for a scroll change); `probeEditorOpen.mjs`
+  beside it asserts the inline editor's open, cancel, save and two-editor cases.
+- Not tested: the search-to-transcript claim and scroll wiring, sidebar composition, mobile interactions, and a failed
+  screenshot's restore need a browser check. The mounted `DefaultChatScreen.svelte` bookmark path through
+  `scrollToMessageId` is also untested; `messageJump.test.ts` drives only the pure helper.
+- Not tested automatically: lost-follow recovery. Switch away from a running chat, stop the server until reattach
+  attempts fail, confirm its recovery badges, then restart the server and reopen the chat.
+- `Chat.draft.test.ts` and `Chat.test.ts` cover an open editor's text across a row remount and an outside change of the
+  stored value. Not tested: the round trip through `App.svelte`'s Settings branch, which destroys the chat screen.
 
 ## Known Hazards
 
-- `src/lib/ChatScreens/Message.svelte` is an unused TODO rewrite; `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` is empty. Confirm intent before extending either.
+### Limitations
 
-- A far row's fixed-position or overflowing custom content is contained while it is far. Near rows are deliberately uncontained; do not apply `content-visibility` to every row or to the transcript ancestor.
-- Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next renders (edit, reload, remount, etc.); restoring the old last-five key would add unnecessary renders on every append.
+- The reader lock covers rows above the view at a scroll's first input only: a row that passes above the view later in
+  the same scroll (toward newer messages) can still grow mid-animation and move the reader. A scrollbar drag takes no
+  lock. Growth inside a row already in view moves what is below its growth point, as at rest: an image without a
+  reserved size (`{{raw::...}}` with `height:auto`, `checkImg`'s `.root-loaded-image`) still pushes the text under it.
+- A locked row can stay locked until the next touch when two fingers start on one node that a re-render detaches. A
+  visible locked row whose remount settles in the quiet window after the last scroll event grows from its bottom at
+  release instead of keeping its top. Decision: owner accepted both as edge cases (2026-11-22).
+- Browsers without `align-content` on block boxes clip a locked row at the bottom and shift its content at release.
+  Decision: the reader lock replaced the deferred `scrollend` anchor restoration (`0aad24ce5`); a height-sum correction
+  overcorrected incremental input in Chrome (2026-11-22).
+- A reader's place can still move in these cases: a chat write that returns every message without its id is taken for an
+  opening (the reader goes to the newest message's start); a row that changes size in the same window as another row's
+  remount gets a partial correction; a scroll written by other code in the task of a remount skips its correction.
+  Decision: left by the scroll fixes of 2026-11-18, [report](../reports/surveys/fork-chat-scroll.md#10-fixes).
+- A far row's fixed-position or overflowing custom content is contained while it is far. Near rows are deliberately
+  uncontained; do not apply `content-visibility` to every row or to the transcript ancestor. Decision: `src/styles.css`,
+  `.chat-message-container.far`.
+- `src/lib/Others/PopupEditor.svelte` keeps only the text across its Monaco toggle: the textarea or the Monaco model is
+  recreated, so selection and undo history are lost. One model across the switch is a larger editor-lifetime change.
+  Observed by the
+  [cross-plan review](../reports/audits/finished-plans/cross-plan-2026-10-29.md#noted-not-recommended-to-fix). Decision:
+  text-only toggle contract kept, commit `634bc14c7`.
+- Pixel anchoring across far and near row toggles was checked only by a manual Chrome script, with no kept test, and the
+  chat list was never driven in Firefox or Safari (far-row containment, anchoring, the newest-first reveal). A client
+  JSON chat import remounts the list once, and the `checkIfAtBottom` layout read (`Chats.svelte`) remains. Decision:
+  chat rendering perf series and slice 3f (2026-10-14, 2026-10-16), Audit Findings and Performance Leftovers,
+  [archive](../archived-plan/README.md); Found Issues Clearance (owner, 2026-11-09).
+- Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
+  renders (edit, reload, remount, etc.). Decision: `docs/reports/surveys/risunest-ideas.md`.
+- Screenshot export's renderer peak grows with row count despite bounded pages: html-to-image creates per-row clone,
+  SVG, and decoded-image garbage that the browser reclaims lazily. Per-page releases do not bound this peak; reducing
+  copied custom properties needs pixel comparisons. Decision: measured miss recorded 2026-11-09
+  ([audit](../reports/measurements/client/screenshot-memory-2026-11-09.md)).
 
-- `LazyPortal` and the generic `tooltip` action have no active callers found.
+### Gotchas
+
+- The avatar variant of `ChatStatusBadge.svelte` uses `pointer-events-none`, so a badge-level `title` cannot supply
+  hover text; `Sidebar.svelte` adds status to the avatar name and `PinnedChatsRail.svelte` puts it in the row's `title`.
+- `ContextMeter.svelte`'s `estimate` counts displaced old history; for an ordinary next send with nonempty user and
+  reply messages, the next report's kept message count is the previous kept count + 2 minus that displacement, because
+  `DefaultChatScreen.svelte` sends a new user message and the previous reply joins history.
+- `src/lib/ChatScreens/Message.svelte` is an unused TODO rewrite; `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` is
+  empty. Confirm intent before extending either.
+- `LazyPortal` has no active callers found.
+- A transcript scroll-animation jump reproduces with real wheel input; CDP-dispatched wheel events do not animate.

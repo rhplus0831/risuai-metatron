@@ -2,6 +2,13 @@ import { Template } from "@huggingface/jinja";
 import type { OpenAIChat } from "../openai.ts";
 
 /**
+ * Shared synchronous instruct rendering with Hugging Face Jinja. Callers supply the template
+ * choice and name callbacks; this module copies role/content before applying template effects.
+ * Only user, assistant, and system roles reach rendering. Template errors propagate and rendering
+ * has no time limit, so hosts must choose the execution boundary for untrusted templates.
+ */
+
+/**
  * Instruct chat templates, shared by the client and the server. The caller resolves the settings
  * (`instructChatTemplate`, `JinjaTemplate`) and the names.
  */
@@ -16,12 +23,15 @@ export const chatTemplates = {
     vicuna: "{%- set ns = namespace(found=false) -%}\n{%- for message in messages -%}\n    {%- if message['role'] == 'system' -%}\n        {%- set ns.found = true -%}\n    {%- endif -%}\n{%- endfor -%}\n{%- if not ns.found -%}\n    {{- '' + 'A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions.' + '\\n\\n' -}}\n{%- endif %}\n{%- for message in messages %}\n    {%- if message['role'] == 'system' -%}\n        {{- '' + message['content'] + '\\n\\n' -}}\n    {%- else -%}\n        {%- if message['role'] == 'user' -%}\n            {{-'USER: ' + message['content'] + '\\n'-}}\n        {%- else -%}\n            {{-'ASSISTANT: ' + message['content'] + '</s>\\n' -}}\n        {%- endif -%}\n    {%- endif -%}\n{%- endfor -%}\n{%- if add_generation_prompt -%}\n    {{-'ASSISTANT:'-}}\n{%- endif -%}",
     alpaca: "{%- set ns = namespace(found=false) -%}\n{%- for message in messages -%}\n    {%- if message['role'] == 'system' -%}\n        {%- set ns.found = true -%}\n    {%- endif -%}\n{%- endfor -%}\n{%- if not ns.found -%}\n    {{- '' + 'Below is an instruction that describes a task. Write a response that appropriately completes the request.' + '\\n\\n' -}}\n{%- endif %}\n{%- for message in messages %}\n    {%- if message['role'] == 'system' -%}\n        {{- '' + message['content'] + '\\n\\n' -}}\n    {%- else -%}\n        {%- if message['role'] == 'user' -%}\n            {{-'### Instruction:\\n' + message['content'] + '\\n\\n'-}}\n        {%- else -%}\n            {{-'### Response:\\n' + message['content'] + '\\n\\n' -}}\n        {%- endif -%}\n    {%- endif -%}\n{%- endfor -%}\n{%- if add_generation_prompt -%}\n    {{-'### Response:\\n'-}}\n{%- endif -%}",
 };
+/** A preprocessing effect applied before instruct template rendering. */
 export type TemplateEffect = "no_system_messages" | "alter_user_assistant_roles";
+/** Built-in preprocessing effects by template name; unlisted templates receive none. */
 export const templateEffect = {
     gemma: ["no_system_messages"],
     mistral: ["no_system_messages", "alter_user_assistant_roles"],
 } as { [key: string]: TemplateEffect[] };
 
+/** Template selection, custom Jinja source, and late-read character and user names. */
 export type ChatTemplateInput = {
     /** A `chatTemplates` key, or `jinja` for `jinjaTemplate`. */
     type: string;
@@ -31,6 +41,16 @@ export type ChatTemplateInput = {
     userName: () => string;
 };
 
+/**
+ * Renders `messages` with a Hugging Face Jinja template (`@huggingface/jinja`): `chatTemplates[type]`,
+ * or `input.jinjaTemplate` for `jinja`. Only `user`, `assistant`, and `system` messages are passed.
+ * A type's `templateEffect` list applies its effects first, each on its own: `no_system_messages`
+ * turns system messages into `System: ` user messages, and `alter_user_assistant_roles` folds
+ * same-role runs into alternating turns that start with the user. The template sees
+ * `add_generation_prompt` true and empty `bos_token` and `eos_token`, and both names are read on every
+ * render. Rendering is synchronous with no work or time limit, so a template that loops long blocks
+ * its caller; a template error or `raise_exception` throws.
+ */
 export function renderChatTemplate(messages: OpenAIChat[], input: ChatTemplateInput): string {
     const type = input.type;
     // Only `role` and `content` are read, and the effects rewrite them, so those are the copy.

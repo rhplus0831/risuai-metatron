@@ -1,19 +1,24 @@
 import { getContext, setContext } from "svelte";
 
-/*
- * The chat screen's shared row stylesheets. Each row used to keep its own `<style>` copy of its CSS,
- * so rows repeating a style cost one sheet, one import and one set of font faces each. Here a chat
- * screen keeps one `<style>` per distinct CSS text and attribute list, held by the mounted rows that
- * use it, in a container after the rows.
+/**
+ * The chat screen's shared row stylesheets. A chat screen keeps one `<style>` per distinct CSS text and
+ * attribute list, held by the mounted rows that use it, in a container after the rows, so rows repeating a
+ * style cost one sheet, one import, and one set of font faces instead of one each. A sheet is made with
+ * `setAttribute` and `textContent` (its CSS never re-enters the HTML parser) and removed once no mounted row
+ * uses it.
  *
- * Among shared sheets, the order keeps the cascade the rows' own copies gave: newest message first,
- * then the greeting, and each style's last copy decided where its rules fell. So every row's style
- * has the position (-message index, slot in the row), a sheet stands where its latest position is,
- * and sheets are ordered by that: the style of the oldest message (the greeting last) comes last.
+ * Among shared sheets, the order keeps the cascade the rows' own copies would give: rows sit newest message
+ * first, then the greeting, and each style's last copy decides where its rules fall. So every use has the
+ * position (-message index, slot in the row), a sheet stands at the latest of its users' positions, and sheets
+ * are ordered by that: the style of the oldest message (the greeting last) comes last, so its rules win at equal
+ * specificity; equal positions keep creation order. A sheet moves (and is parsed again) only when the order
+ * between distinct sheets changes. Releases and moves wait for the next microtask, so a release and a
+ * re-acquire in one synchronous flush keep the sheet.
  * Custom-GUI sheets and sheets containing @layer, layer(), or @scope stay at their row positions;
  * their order against a newer row's shared sheet can reverse. Layers inside imports are not detected.
  */
 
+/** One shareable row style: its CSS and its sanitized `<style>` element's attributes, compared by value. */
 export interface ChatStyle {
     readonly css: string;
     readonly attributes: readonly (readonly [string, string])[];
@@ -35,6 +40,11 @@ interface Entry {
 const comparePositions = (a: Position, b: Position) => a[0] - b[0] || a[1] - b[1];
 const compareEntries = (a: Entry, b: Entry) => comparePositions(a.at, b.at) || a.seq - b.seq;
 
+/**
+ * One chat screen's registry (`DefaultChatScreen` creates it and provides it with `setChatStyleRegistry`): each
+ * row acquires its styles' uses and releases them on unmount; `attach` puts the container in the screen;
+ * `destroy` ends it.
+ */
 export class ChatStyleRegistry {
     /** Holds the sheets; in the document only while attached (`attach`). */
     readonly container: HTMLDivElement;

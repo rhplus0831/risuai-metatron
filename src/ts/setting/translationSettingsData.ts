@@ -28,7 +28,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "translatorLanguage",
         bindKey: "translator",
-        classes: "mt-4",
         options: {
             selectOptions: [
                 { value: "", labelKey: "disabled" },
@@ -62,7 +61,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "translatorType",
         bindKey: "translatorType",
-        classes: "mt-4",
         condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
         options: {
             selectOptions: [
@@ -80,7 +78,7 @@ export const translationSettingsItems: SettingItem[] = [
         type: "text",
         labelKey: "deeplKey",
         bindPath: "deeplOptions.key",
-        classes: "mt-4",
+        options: { secret: true },
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "deepl",
@@ -91,7 +89,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "deeplFreeKey",
         bindPath: "deeplOptions.freeApi",
-        classes: "mt-2",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "deepl",
@@ -102,7 +99,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "text",
         labelKey: "deeplXUrl",
         bindPath: "deeplXOptions.url",
-        classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "deeplX",
@@ -113,7 +109,7 @@ export const translationSettingsItems: SettingItem[] = [
         type: "text",
         labelKey: "deeplXToken",
         bindPath: "deeplXOptions.token",
-        classes: "mt-4",
+        options: { secret: true },
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "deeplX",
@@ -134,7 +130,6 @@ export const translationSettingsItems: SettingItem[] = [
         labelKey: "llmTranslationTarget",
         bindKey: "llmTranslationTarget",
         helpKey: "llmTranslationTarget",
-        classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "llm",
@@ -154,7 +149,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "number",
         labelKey: "translatorHistoryMaxTokens",
         helpKey: "translatorHistoryMaxTokens",
-        classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "llm" &&
@@ -173,7 +167,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "sourceLanguage",
         bindKey: "translatorInputLanguage",
-        classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "google",
@@ -199,7 +192,6 @@ export const translationSettingsItems: SettingItem[] = [
         labelKey: "combineTranslation",
         bindKey: "combineTranslation",
         helpKey: "combineTranslation",
-        classes: "mt-4",
         condition: (ctx) => !!ctx.settings.memoryTranslateMedia.translator,
     },
 
@@ -209,7 +201,6 @@ export const translationSettingsItems: SettingItem[] = [
         labelKey: "legacyTranslation",
         bindKey: "legacyTranslation",
         helpKey: "legacyTranslation",
-        classes: "mt-4",
         // The rendered path's option: every translator but the LLM one on `"message"` takes it.
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
@@ -223,7 +214,6 @@ export const translationSettingsItems: SettingItem[] = [
         labelKey: "translateBeforeHTMLFormatting",
         bindKey: "translateBeforeHTMLFormatting",
         helpKey: "translateBeforeHTMLFormatting",
-        classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "llm" &&
@@ -236,7 +226,6 @@ export const translationSettingsItems: SettingItem[] = [
         labelKey: "autoTranslateCachedOnly",
         bindKey: "autoTranslateCachedOnly",
         helpKey: "autoTranslateCachedOnly",
-        classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
             ctx.settings.memoryTranslateMedia.translatorType === "llm" &&
@@ -249,7 +238,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "noWaitForTranslate",
         bindKey: "noWaitForTranslate",
-        classes: "mt-4",
     },
 
     // Moved from Accessibility, keeping its id.
@@ -258,7 +246,6 @@ export const translationSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "showTranslationLoading",
         bindKey: "showTranslationLoading",
-        classes: "mt-4",
         keywords: ["translation", "loading", "indicator"],
     },
 
@@ -266,12 +253,11 @@ export const translationSettingsItems: SettingItem[] = [
     {
         id: "adv.exp.googleTrans",
         type: "check",
-        fallbackLabel: "New Google Translate Experimental",
+        labelKey: "newGoogleTranslateExperimental",
         bindKey: "useExperimentalGoogleTranslator",
         condition: (ctx) => ctx.settings.ui.useExperimental,
         helpKey: "unrecommended",
         helpUnrecommended: true,
-        classes: "mt-4",
     },
 
     // Translation Cache

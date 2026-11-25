@@ -1,3 +1,4 @@
+import type { MessageJumpTarget } from "src/lib/ChatScreens/messageJump";
 import { untrack } from "svelte";
 import {
     MESSAGE_SEARCH_PATH,
@@ -114,6 +115,7 @@ export function openMessageSearch(scope: MessageSearchScope) {
     messageSearchPanel.open = true;
 }
 
+/** Closes the panel while retaining its scope and the panel component's query and results. */
 export function closeMessageSearch() {
     messageSearchPanel.open = false;
 }
@@ -125,7 +127,7 @@ export function closeMessageSearch() {
 export type MessageJump = {
     token: number;
     ref: ChatRef;
-    messageId: string;
+    messageId: MessageJumpTarget;
     state: "pending" | "claimed";
 };
 
@@ -163,10 +165,10 @@ function stillSelected(held: HeldJump): boolean {
 }
 
 /**
- * Records a jump to `messageId` in `ref`, replacing any older jump (pending or claimed), and returns
+ * Records a jump to a message id or the greeting in `ref`, replacing any older jump (pending or claimed), and returns
  * its token. Called right after the hit's chat was selected: a later change of the selection cancels it.
  */
-export function requestMessageJump(ref: ChatRef, messageId: string): number {
+export function requestMessageJump(ref: ChatRef, messageId: MessageJumpTarget): number {
     const previous = untrack(() => jump);
     if (previous) {
         drop(previous);

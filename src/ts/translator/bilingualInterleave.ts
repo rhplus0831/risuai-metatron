@@ -1,20 +1,27 @@
 import { insertSentenceParagraphBreaks } from "../parser/sentenceBreaks";
 
-/*
- * The bilingual display (ported from the Fastify fork): the source and its stored translation
- * interleaved before the display transform, paired by position (the k-th unit of the source beside
- * the k-th unit of the translation), and the empty pairs the display scripts left pruned after
- * rendering. The class names keep the sanitizer's `x-risu-` prefix, so they survive it.
+/**
+ * Bilingual display pairs source and stored translation by position before the display transform
+ * in `src/lib/ChatScreens/ChatBody.svelte`, then prunes empty pairs after rendering. Sentence
+ * grouping uses `src/ts/parser/sentenceBreaks.ts`; styling lives under `.chattext` in `src/styles.css`.
+ * Wrapper classes must retain the sanitizer's `x-risu-` prefix so they survive rendering.
  */
 
+/** Marks the translated side independently of emphasis, for post-render pruning. */
 export const BILINGUAL_TRANSLATION_CLASS = "x-risu-bilingual-translation";
+/** Pair boundary shared by pre-render wrapping and post-render pruning. */
 export const BILINGUAL_PAIR_CLASS = "x-risu-bilingual-pair";
+/** De-emphasized side; visual-only pair collapse removes it from the surviving side. */
 export const BILINGUAL_MUTED_CLASS = "x-risu-bilingual-muted";
 
 const BILINGUAL_SIDE_SELECTOR = `.${BILINGUAL_TRANSLATION_CLASS}, .${BILINGUAL_MUTED_CLASS}`;
 const VISUAL_CONTENT_SELECTOR =
     'img, svg, video, audio, iframe, canvas, embed, object, picture, hr, [style*="background"]';
 
+/**
+ * Emphasis changes side order as well as muting (default original); sentence grouping is applied
+ * independently to both texts before positional pairing, without semantic alignment.
+ */
 export interface BilingualInterleaveOptions {
     emphasize?: "original" | "translation";
     sentenceBreaks?: {
@@ -110,6 +117,8 @@ function collapseVisualOnlyPair(pair: Element): void {
 /**
  * After rendering: drops each side that renders nothing, then each pair that renders nothing; a pair
  * that only shows visual content (an image) keeps one side, unmuted. Untouched without a pair.
+ * Parse as a template fragment so a leading `<style>` restored by display scripts is not lost
+ * into a document head. Call `pruneEmptyBilingualPairsIn` when the caller already has a tree.
  */
 export function pruneEmptyBilingualPairs(html: string): string {
     if (!html.includes(BILINGUAL_PAIR_CLASS)) return html;

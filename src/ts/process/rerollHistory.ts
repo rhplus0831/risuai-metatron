@@ -1,7 +1,27 @@
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import type { ScriptstateSnapshot } from "../../../shared/database.ts";
+import { restoredScriptstate } from "../../../shared/rerollCandidates.ts";
 import type { Message } from "../storage/database.svelte";
 import { editChatSync } from "../storage/chatEdits";
-import { type ChatRef, findChat } from "../storage/chatStore.svelte";
+import {
+    type ChatRef,
+    chatHydrationHold,
+    chatOwnerToken,
+    findChat,
+    isChatBehind,
+    pinChat,
+    restoreUnsentRemoval,
+} from "../storage/chatStore.svelte";
+import { flushResources, refreshStaleChat } from "../storage/resourceSync.svelte";
+import { isChatBusy } from "./chatStatus.svelte";
+
+/**
+ * Keeps screen-local reroll bundles and restores replies removed by a failed reroll. Tail swaps
+ * use `src/ts/storage/chatEdits.ts` only while anchor and current-bundle ids still match. Recovery
+ * first withdraws an unsent removal; otherwise it waits for a settled send and current chat mirror,
+ * checks the owner token and busy state, and restores only an unchanged empty tail. Uncertain or
+ * busy recovery leaves the removed replies untouched rather than inserting beside a new reply.
+ */
 
 type Slot = { anchor: string | null; bundles: Message[][]; cursor: number };
 
@@ -12,7 +32,11 @@ const sameIds = (left: DeepReadonly<Message[]>, right: DeepReadonly<Message[]>) 
 /**
  * A screen's swipe history, bounded by chat and valid only while its current bundle is still the tail.
  * The bundle at the cursor is refreshed from the chat before the slot is kept or the tail swapped, so an
- * edit of a reply (or a prereroll swap) made since it was recorded is what a later back or forward brings.
+ * edit of a reply (or a candidate switch) made since it was recorded is what a later back or forward brings.
+ * It holds up to 16 chats, evicting the least recently used (every read of a chat's slot counts as use).
+ * A back or forward swaps the tail inside `editChatSync` only while the chat still has the slot's anchor
+ * and its tail's message ids are the current bundle's; otherwise the edit changes nothing and the chat's
+ * history is cleared.
  */
 export function createRerollHistory() {
     const slots = new Map<string, Slot>();
@@ -87,8 +111,17 @@ export function createRerollHistory() {
                 clear(ref);
                 return;
             }
-            slot.bundles[slot.cursor] = safeStructuredClone(chat.message.slice(anchorIndex + 1));
-            chat.message = [...chat.message.slice(0, anchorIndex + 1), ...safeStructuredClone(slot.bundles[cursor])];
+            const leaving = chat.message.slice(anchorIndex + 1);
+            const arriving = slot.bundles[cursor];
+            const leavingAfter = leaving.findLast((message) => !message.isComment && message.role === "char")
+                ?.scriptstateCheckpoint?.after;
+            const arrivingAfter = arriving.findLast((message) => !message.isComment && message.role === "char")
+                ?.scriptstateCheckpoint?.after;
+            slot.bundles[slot.cursor] = safeStructuredClone(leaving);
+            chat.message = [...chat.message.slice(0, anchorIndex + 1), ...safeStructuredClone(arriving)];
+            if (leavingAfter !== undefined && arrivingAfter !== undefined) {
+                chat.scriptstate = restoredScriptstate(arrivingAfter, leavingAfter, chat.scriptstate);
+            }
             applied = true;
         });
         if (applied) {
@@ -105,5 +138,154 @@ export function createRerollHistory() {
         return move(ref, -1);
     }
 
-    return { record, begin, canForward, forward, back, clear };
+    /**
+     * `restoreRerolledReplies` for this history: a reply that only the chat's read brings (its job's end
+     * had not applied) is recorded, so Undo Reroll reaches the removed replies.
+     */
+    function restore(
+        ref: ChatRef,
+        owner: string,
+        anchor: string | null,
+        removed: DeepReadonly<Message[]>,
+        end: RerollSendEnd,
+        syncChat?: (ref: ChatRef) => Promise<boolean>,
+        variables?: RestoreOptions["variables"],
+    ) {
+        return restoreRerolledReplies(ref, owner, anchor, removed, end, {
+            syncChat,
+            variables,
+            onReply: (bundle) => record(ref, anchor, bundle),
+        });
+    }
+
+    return { record, begin, canForward, forward, back, clear, restore };
+}
+
+/** How a reroll's send ended (`sendChatMain`'s result), for `restoreRerolledReplies`. */
+export type RerollSendEnd = { ran: boolean; settled: boolean; blockedChats: readonly ChatRef[] };
+
+type RestoreOptions = {
+    syncChat?: (ref: ChatRef) => Promise<boolean>;
+    onReply?: (bundle: DeepReadonly<Message[]>) => void;
+    /** The values before removal and after its rollback; restore only keys still matching that rollback. */
+    variables?: { before: ScriptstateSnapshot; after: ScriptstateSnapshot };
+};
+
+/** Saves what is queued and reads the chat again when it is known to be behind; true when it is current. */
+async function syncRerolledChat(ref: ChatRef): Promise<boolean> {
+    await flushResources();
+    return await refreshStaleChat(ref);
+}
+
+/**
+ * Puts back the replies a reroll removed after `anchor` when its send brought none, so they are not
+ * lost. A send that did not run first withdraws the removal while it is still unsent
+ * (`restoreUnsentRemoval`). Otherwise, once nothing of the send writes to the chat any more (`settled`),
+ * they are written back after the anchor while the character is the one the reroll removed them from
+ * (`owner`), the chat still ends at the anchor and holds none of them, and the chat is free. Before
+ * deciding, a chat whose mirror may lack the job's end (marked behind, or local work that kept the
+ * job's chat copy from applying) is saved and read again (`syncChat`), the chat pinned meanwhile; a reply
+ * that read brings goes to `onReply`.
+ * `"unsafe"`: they stay removed because that could not be told (the chat stayed behind or its work
+ * unsaved), or another send or generation writes into the chat (`isChatBusy`, a create refused as
+ * busy, or a save the server refused for this chat's generation), so they would land beside its reply.
+ */
+export async function restoreRerolledReplies(
+    ref: ChatRef,
+    owner: string,
+    anchor: string | null,
+    removed: DeepReadonly<Message[]>,
+    end: RerollSendEnd,
+    options: RestoreOptions = {},
+): Promise<"restored" | "unsafe" | "none"> {
+    if (!end.ran && restoreUnsentRemoval(ref, owner, anchor, removed)) {
+        if (options.variables) {
+            const { before, after } = options.variables;
+            editChatSync(ref, (draft) => {
+                draft.scriptstate = restoredScriptstate(before, after, draft.scriptstate);
+            });
+        }
+        return "restored";
+    }
+    if (!end.settled || removed.length === 0) {
+        return "none";
+    }
+    // Kept loaded through the save and read below.
+    const release = pinChat(ref);
+    try {
+        return await restorePinned(ref, owner, anchor, removed, end, options);
+    } finally {
+        release();
+    }
+}
+
+async function restorePinned(
+    ref: ChatRef,
+    owner: string,
+    anchor: string | null,
+    removed: DeepReadonly<Message[]>,
+    end: RerollSendEnd,
+    { syncChat = syncRerolledChat, onReply, variables }: RestoreOptions,
+): Promise<"restored" | "unsafe" | "none"> {
+    const ids = new Set(removed.map((message) => message.chatId));
+    /** The chat's anchor index while it ends at the anchor and holds none of the removed replies, else null. */
+    const anchorEnd = () => {
+        const chat = chatOwnerToken(ref.chaId) === owner ? findChat(ref) : undefined;
+        if (!chat) {
+            return null;
+        }
+        const index = anchor === null ? -1 : chat.message.findIndex((message) => message.chatId === anchor);
+        if (
+            (anchor !== null && index === -1) ||
+            index !== chat.message.length - 1 ||
+            chat.message.some((message) => ids.has(message.chatId))
+        ) {
+            return null;
+        }
+        return index;
+    };
+    const current = () => !isChatBehind(ref) && chatHydrationHold(ref) === "none";
+    if (anchorEnd() === null) {
+        return "none";
+    }
+    if (!current()) {
+        try {
+            await syncChat(ref);
+        } catch (error) {
+            console.error("[Reroll]", error);
+        }
+        if (anchorEnd() === null) {
+            // The read brought what the job left after the anchor: recorded as its reply unless it holds the
+            // removed replies or a user turn (another send's, not this reroll's).
+            const chat = chatOwnerToken(ref.chaId) === owner ? findChat(ref) : undefined;
+            const index =
+                anchor === null ? -1 : (chat?.message.findIndex((message) => message.chatId === anchor) ?? -1);
+            const tail = chat && (anchor === null || index !== -1) ? chat.message.slice(index + 1) : [];
+            if (tail.length > 0 && !tail.some((message) => ids.has(message.chatId) || message.role === "user")) {
+                onReply?.(tail);
+            }
+            return "none";
+        }
+        if (!current()) {
+            return "unsafe";
+        }
+    }
+    if (
+        isChatBusy(ref) ||
+        end.blockedChats.some((blocked) => blocked.chaId === ref.chaId && blocked.chatId === ref.chatId)
+    ) {
+        return "unsafe";
+    }
+    const anchorIndex = anchorEnd()!;
+    let applied = false;
+    editChatSync(ref, (draft) => {
+        if (draft.message.length === anchorIndex + 1) {
+            draft.message.push(...(safeStructuredClone(removed) as Message[]));
+            if (variables) {
+                draft.scriptstate = restoredScriptstate(variables.before, variables.after, draft.scriptstate);
+            }
+            applied = true;
+        }
+    });
+    return applied ? "restored" : "none";
 }

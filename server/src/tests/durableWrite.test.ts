@@ -4,7 +4,14 @@ import promises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { syncDir, syncDirSync, syncFile, writeFileDurableSync } from "../data/durableWrite.ts";
+import {
+    syncDir,
+    syncDirSync,
+    syncFile,
+    writeFileDurable,
+    writeFileDurableSync,
+    type DurableFs,
+} from "../data/durableWrite.ts";
 
 vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof import("node:fs")>()) }));
 
@@ -131,6 +138,143 @@ describe("durable file publication", () => {
                 expect(fs.readdirSync(dir), code).toEqual(["state.json"]);
             } finally {
                 vi.restoreAllMocks();
+            }
+        }
+    });
+});
+
+function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((yes, no) => {
+        resolve = yes;
+        reject = no;
+    });
+    return { promise, resolve, reject };
+}
+
+describe("asynchronous durable publication", () => {
+    it("keeps the old file until the exclusive temporary file is flushed, then waits for the directory flush", async () => {
+        const target = path.join(dir, "keys.json");
+        fs.writeFileSync(target, "old");
+        const fileSync = deferred<void>();
+        const fileEntered = deferred<void>();
+        const dirSync = deferred<void>();
+        const dirEntered = deferred<void>();
+        const operations: string[] = [];
+        const api: DurableFs = {
+            ...promises,
+            async open(file, flags, mode) {
+                const handle = await promises.open(file, flags, mode);
+                const sync = handle.sync.bind(handle);
+                if (file !== dir) {
+                    expect(flags).toBe("wx");
+                    expect(mode).toBe(0o600);
+                    expect(file).not.toBe(target);
+                }
+                return Object.assign(handle, {
+                    sync: async () => {
+                        operations.push(file === dir ? "directory" : "file");
+                        (file === dir ? dirEntered : fileEntered).resolve();
+                        await (file === dir ? dirSync : fileSync).promise;
+                        await sync();
+                    },
+                });
+            },
+            async rename(from, to) {
+                operations.push("rename");
+                await promises.rename(from, to);
+            },
+        };
+        let answered = false;
+        const writing = writeFileDurable(target, "new", { mode: 0o600, fs: api }).then(() => {
+            answered = true;
+        });
+        try {
+            await fileEntered.promise;
+            expect(fs.readFileSync(target, "utf8")).toBe("old");
+            expect(answered).toBe(false);
+            fileSync.resolve();
+            await dirEntered.promise;
+            expect(fs.readFileSync(target, "utf8")).toBe("new");
+            expect(operations).toEqual(["file", "rename", "directory"]);
+            expect(answered).toBe(false);
+        } finally {
+            fileSync.resolve();
+            dirSync.resolve();
+            await writing;
+        }
+        expect(answered).toBe(true);
+        expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+        expect(fs.readdirSync(dir)).toEqual(["keys.json"]);
+    });
+
+    it("cleans up only a temporary file it created and preserves the target after a failed write", async () => {
+        const target = path.join(dir, "keys.json");
+        const unrelated = path.join(dir, ".someone-elses.tmp");
+        fs.writeFileSync(target, "old");
+        fs.writeFileSync(unrelated, "keep");
+        for (const phase of ["open", "sync", "rename"] as const) {
+            let temporary = "";
+            const error = failure(phase === "open" ? "EEXIST" : "EIO");
+            const api: DurableFs = {
+                ...promises,
+                async open(file, flags, mode) {
+                    temporary = file;
+                    expect(flags).toBe("wx");
+                    if (phase === "open") {
+                        fs.writeFileSync(file, "owned by another writer");
+                        throw error;
+                    }
+                    const handle = await promises.open(file, flags, mode);
+                    if (phase === "sync")
+                        Object.assign(handle, {
+                            sync: async () => {
+                                throw error;
+                            },
+                        });
+                    return handle;
+                },
+                async rename(from, to) {
+                    if (phase === "rename") throw error;
+                    await promises.rename(from, to);
+                },
+            };
+            await expect(writeFileDurable(target, "new", { fs: api }), phase).rejects.toBe(error);
+            expect(fs.readFileSync(target, "utf8"), phase).toBe("old");
+            expect(fs.readFileSync(unrelated, "utf8"), phase).toBe("keep");
+            if (phase === "open") {
+                expect(fs.readFileSync(temporary, "utf8")).toBe("owned by another writer");
+                fs.unlinkSync(temporary);
+            } else expect(fs.existsSync(temporary), phase).toBe(false);
+        }
+        expect(fs.readdirSync(dir).sort()).toEqual([".someone-elses.tmp", "keys.json"]);
+    });
+
+    it("tolerates EINVAL and EPERM only for the directory flush and rejects other durability failures", async () => {
+        const target = path.join(dir, "keys.json");
+        for (const directory of [true, false]) {
+            for (const code of ["EINVAL", "EPERM", "EIO"]) {
+                fs.writeFileSync(target, "old");
+                const error = failure(code);
+                const api: DurableFs = {
+                    ...promises,
+                    async open(file, flags, mode) {
+                        const handle = await promises.open(file, flags, mode);
+                        if ((file === dir) === directory)
+                            Object.assign(handle, {
+                                sync: async () => {
+                                    throw error;
+                                },
+                            });
+                        return handle;
+                    },
+                };
+                const writing = writeFileDurable(target, "new", { fs: api });
+                if (directory && code !== "EIO") await expect(writing).resolves.toBeUndefined();
+                else await expect(writing).rejects.toBe(error);
+                expect(fs.readFileSync(target, "utf8")).toBe(directory ? "new" : "old");
+                expect(fs.readdirSync(dir)).toEqual(["keys.json"]);
             }
         }
     });

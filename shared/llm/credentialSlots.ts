@@ -1,6 +1,14 @@
 import { CREDENTIAL_TYPES, type CredentialType } from "../database.ts";
 import { LLMFormat, LLMProvider, type LLMModel } from "../llm.ts";
 
+/**
+ * Credential routing metadata consumed by `shared/llm/credentialBinding.ts` in both runtimes.
+ * Model-id exceptions precede provider rules: custom endpoints and reverse proxies accept every non-Vertex key
+ * type without a flat default, and `keyIdentifier` entries accept only custom keys. A null slot refuses any named
+ * binding; this module describes defaults without reading secrets or injecting request credentials.
+ */
+
+/** The credential-routing identities, distinct from model-preset slots in `shared/llm/modelSlots.ts`. */
 export type CredentialSlotName =
     | "openai"
     | "anthropic"
@@ -17,6 +25,7 @@ export type CredentialSlotName =
     | "customModel"
     | "reverseProxy";
 
+/** Accepted named-key types and the adapter's default source for a credential-routing identity. */
 export type CredentialSlot = {
     slot: CredentialSlotName;
     accepts: readonly CredentialType[];
@@ -38,6 +47,13 @@ function slot(
  * Credential metadata for the client and server resolver. Bindings live on model profiles.
  * Keep the defaults aligned with the adapters: every NanoGPT format reads the NanoGPT key by
  * default. This describes routing only; it neither resolves a binding nor changes a request.
+ *
+ * It answers the named-key type a model accepts, or `null` for a model with no named-key type; the binding itself is
+ * the profile's `credentialId` (`shared/llm/credentialBinding.ts`). This table owns the provider and model exceptions:
+ * reverse proxies and custom endpoints have no flat default, and a `keyIdentifier` model uses its own
+ * `OaiCompAPIKeys` entry unless a `custom` credential is bound. A new provider gets a row here (and a
+ * `CREDENTIAL_TYPES` entry in `shared/database.ts` if it needs its own type, with `language.sharedApiKeys.types` and
+ * `defaults` strings), and its server adapter prefers `arg.key`.
  */
 export function credentialSlotOf(
     modelId: string,

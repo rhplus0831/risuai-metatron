@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from "svelte";
 import { expect, it, vi } from "vitest";
 
 // Monaco runs with its textarea input, not Chrome's EditContext (crosscheck row 13,
-// `docs/research/pocketrisu-fix-crosscheck.md`): EditContext kept a stale Ctrl after the Ctrl+X popup
+// `docs/reports/surveys/pocketrisu-fix-crosscheck.md`): EditContext kept a stale Ctrl after the Ctrl+X popup
 // editor opened, and its host is a plain `div`, so typed keys reached the global hotkeys.
 
 const monaco = vi.hoisted(() => ({ options: [] as Record<string, unknown>[] }));

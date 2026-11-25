@@ -13,20 +13,11 @@ import {
     type RequestHistoryTruncation,
 } from "../../../shared/requestHistory.ts";
 
-export type {
-    RequestHistoryExchange,
-    RequestHistoryFieldCut,
-    RequestHistoryRecord,
-    RequestHistoryStatus,
-    RequestHistorySummary,
-    RequestHistoryTruncation,
-} from "../../../shared/requestHistory.ts";
-
 /**
- * The durable LLM request history: one row per request (a `runInJob` or `start` call, so each retry
- * is its own row), in a file of its own (`save/data/request-history.sqlite`). It is diagnostic data:
- * in no snapshot, backup, or export, and a restore, an import, or a maintenance does not touch it.
- * Only its caps and the user clear it.
+ * The durable LLM request history: one best-effort row per admitted `runInJob` or `start` attempt
+ * (admitted retries are separate attempts), in its own file (`save/data/request-history.sqlite`).
+ * It is diagnostic data: in no snapshot, backup, or export, and a restore, an import, or a maintenance
+ * does not touch it. Only its caps and the user clear it.
  *
  * A row is begun `pending`, gets the transport's log entries as exchanges, and is finished once with
  * its outcome. Rows still `pending` when the store opens become `interrupted` (the server stopped
@@ -50,12 +41,24 @@ export type {
  * `synchronous = NORMAL` can lose the last commits on a power failure.
  *
  * The store never throws to its caller: a failure to open leaves it inert (writes skipped, reads
- * empty, `available()` false), and a failed operation is skipped with one warning for the process
- * (`deleteAll` then answers null). A transaction that cannot be rolled back closes the store.
+ * empty, `available()` false), including when a newer schema is found: its file is left untouched.
+ * A failed operation is skipped with one warning per store (`deleteAll` then answers null). A
+ * transaction that cannot be rolled back closes the store. A failed limit read skips that prune.
  */
 
+export type {
+    RequestHistoryExchange,
+    RequestHistoryFieldCut,
+    RequestHistoryRecord,
+    RequestHistoryStatus,
+    RequestHistorySummary,
+    RequestHistoryTruncation,
+} from "../../../shared/requestHistory.ts";
+
+/** Outcomes a live request may write; startup alone supplies `interrupted`. */
 export type RequestHistoryEndStatus = "success" | "error" | "aborted";
 
+/** Admission metadata; content capture is fixed for this row when it begins. */
 export type RequestHistoryBegin = {
     /** The request id (`RequestBegin.requestId`); at most 256 bytes, else the row is not begun. */
     id: string;
@@ -79,11 +82,17 @@ export type RequestHistoryModel = {
     profileName?: string | null;
     /** The `LLMFormat` name. */
     provider?: string | null;
+    /**
+     * The request interception prompts inserted into the request; a value that is not a whole,
+     * nonnegative number is stored as null. A fixed column: summary metadata, kept with content off.
+     */
+    interceptions?: number | null;
 };
 
 /** The original bytes of exchange fields the caller already cut (a stream tee's bound). */
 export type RequestHistoryExchangeCuts = Partial<Record<"url" | "header" | "body" | "response", number>>;
 
+/** The first completion's metadata; error text is bounded and kept even with content capture off. */
 export type RequestHistoryOutcome = {
     status: RequestHistoryEndStatus;
     completedAt?: number;
@@ -96,6 +105,7 @@ export type RequestHistoryOutcome = {
     responseBytes?: number | null;
 };
 
+/** Summary filters and an opaque `seq` cursor, traversing begin order newest first. */
 export type RequestHistoryListQuery = {
     /** The `next` of the previous page. */
     cursor?: string | null;
@@ -110,13 +120,16 @@ export type RequestHistoryListQuery = {
 /** What a share reads (`readShare`): a job's rows, or a request's own when it ran without a job. */
 export type RequestHistoryShareQuery = { jobId: string } | { requestId: string };
 
+/** One transaction snapshot, oldest rows first, or a failure without a partial list. */
 export type RequestHistoryShareRead =
     | { status: "ok"; target: RequestHistoryShareTarget; records: RequestHistoryRecord[] }
     | { status: "missing" }
     | { status: "tooLarge"; bytes: number }
     | { status: "failed" };
 
+/** Best-effort history operations: missing or pruned rows are skipped, and failures never escape. */
 export type RequestHistory = {
+    /** Begins a pending row once per id; a duplicate id leaves the existing row unchanged. */
     begin(summary: RequestHistoryBegin): void;
     /**
      * Sets the prompt of a pending row with content on and no prompt yet, as the given text (the
@@ -127,12 +140,13 @@ export type RequestHistory = {
     describe(id: string, model: RequestHistoryModel): void;
     /** The first byte of a pending row; the first one wins. */
     firstByte(id: string, at?: number): void;
-    /** Appends a transport log entry (content on only), whatever the row's status. */
+    /** Appends a transport log entry (content on only), including one that arrives after completion. */
     exchange(id: string, entry: FetchLogEntry, cuts?: RequestHistoryExchangeCuts): void;
     /** Ends a pending row; the first finish wins. */
     finish(id: string, outcome: RequestHistoryOutcome): void;
-    /** Summaries, newest first. */
+    /** Summaries in descending `seq` order; `next` is an opaque cursor, null on the last page. */
     list(query?: RequestHistoryListQuery): { items: RequestHistorySummary[]; next: string | null };
+    /** A row with its kept content, or null when missing, pruned, or unreadable. */
     get(id: string): RequestHistoryRecord | null;
     /**
      * Removes every row, pending ones included; returns the count, or null when nothing was removed
@@ -158,19 +172,29 @@ export type RequestHistory = {
     clearShared(target: RequestHistoryShareTarget): string[] | null;
     /** Removes the oldest rows until both caps hold (`limit` defaults to the `limit` option). */
     prune(limit?: number): void;
+    /** Logical stored bytes and rows, both zero when the store is unavailable. */
     stats(): { rows: number; bytes: number };
     /** Whether the database is open (false when it failed to open, after a failed rollback, or once closed). */
     available(): boolean;
+    /** Closes the connection; subsequent operations are inert. Safe to repeat. */
     close(): void;
 };
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
 
+/** The default logical stored-byte cap, including row and exchange overhead rather than SQLite file size. */
 export const REQUEST_HISTORY_MAX_BYTES = 512 * MIB;
+/** The row cap when no finite numeric setting is supplied. */
 export const REQUEST_HISTORY_DEFAULT_LIMIT = 1000;
+/** The lowest configured row cap after clamping. */
 export const REQUEST_HISTORY_MIN_LIMIT = 10;
+/** The highest configured row cap after clamping. */
 export const REQUEST_HISTORY_MAX_LIMIT = 10_000;
+/**
+ * UTF-8 field-byte caps and the kept exchange count; cuts are recorded, oversized identity fields
+ * omitted whole.
+ */
 export const REQUEST_HISTORY_BOUNDS = {
     prompt: 2 * MIB,
     body: 2 * MIB,
@@ -184,8 +208,9 @@ export const REQUEST_HISTORY_BOUNDS = {
     id: 256,
     exchanges: 32,
 } as const;
-/** The bytes a row and an exchange count for their fixed columns. */
+/** The bytes a row counts for its fixed columns. */
 export const REQUEST_HISTORY_ROW_OVERHEAD = 256;
+/** The bytes a kept exchange counts for its fixed columns. */
 export const REQUEST_HISTORY_EXCHANGE_OVERHEAD = 64;
 
 const SCHEMA_VERSION = "1";
@@ -269,6 +294,7 @@ type SummaryRow = {
     profile_id: string | null;
     profile_name: string | null;
     provider: string | null;
+    interceptions: number | bigint | null;
     started_at: number | bigint;
     first_byte_at: number | bigint | null;
     completed_at: number | bigint | null;
@@ -288,7 +314,7 @@ type SummaryRow = {
 
 const SUMMARY_COLUMNS =
     "seq, id, job_id, source, mode, cha_id, chat_id, message_id, model_id, profile_id, profile_name, provider, " +
-    "started_at, first_byte_at, completed_at, status, http_status, provider_code, error IS NOT NULL AS has_error, " +
+    "interceptions, started_at, first_byte_at, completed_at, status, http_status, provider_code, error IS NOT NULL AS has_error, " +
     "request_bytes, response_bytes, content, exchange_count, exchanges_stored, truncation, shared_at, bytes";
 
 function nullableNumber(value: number | bigint | null): number | null {
@@ -313,6 +339,7 @@ function toSummary(row: SummaryRow): RequestHistorySummary {
         profileId: row.profile_id,
         profileName: row.profile_name,
         provider: row.provider,
+        interceptions: nullableNumber(row.interceptions),
         startedAt: Number(row.started_at),
         firstByteAt: nullableNumber(row.first_byte_at),
         completedAt: nullableNumber(row.completed_at),
@@ -349,6 +376,10 @@ function truncationText(truncation: RequestHistoryTruncation): string | null {
     return Object.keys(truncation).length === 0 ? null : JSON.stringify(truncation);
 }
 
+/**
+ * Opens the separate SQLite/WAL history and marks unfinished rows interrupted; an unsupported schema
+ * stays inert.
+ */
 export function createRequestHistory(options: {
     file: string;
     maxBytes?: number;
@@ -446,17 +477,17 @@ export function createRequestHistory(options: {
         return {
             insert: open.prepare(
                 "INSERT INTO requests (id, job_id, source, mode, cha_id, chat_id, message_id, model_id, profile_id, profile_name, provider, " +
-                    "started_at, status, content, prompt, truncation, bytes) " +
+                    "interceptions, started_at, status, content, prompt, truncation, bytes) " +
                     "VALUES (:id, :jobId, :source, :mode, :chaId, :chatId, :messageId, :modelId, :profileId, :profileName, :provider, " +
-                    ":startedAt, 'pending', :content, :prompt, :truncation, :bytes) ON CONFLICT(id) DO NOTHING",
+                    ":interceptions, :startedAt, 'pending', :content, :prompt, :truncation, :bytes) ON CONFLICT(id) DO NOTHING",
             ),
             row: open.prepare(
                 "SELECT seq, status, content, exchange_count, exchanges_stored, truncation, bytes, " +
-                    "model_id, profile_id, profile_name, provider, prompt IS NULL AS no_prompt FROM requests WHERE id = ?",
+                    "model_id, profile_id, profile_name, provider, interceptions, prompt IS NULL AS no_prompt FROM requests WHERE id = ?",
             ),
             describe: open.prepare(
                 "UPDATE requests SET model_id = :modelId, profile_id = :profileId, profile_name = :profileName, provider = :provider, " +
-                    "truncation = :truncation, bytes = :bytes WHERE seq = :seq",
+                    "interceptions = :interceptions, truncation = :truncation, bytes = :bytes WHERE seq = :seq",
             ),
             setPrompt: open.prepare("UPDATE requests SET prompt = ?, truncation = ?, bytes = ? WHERE seq = ?"),
             firstByte: open.prepare(
@@ -544,8 +575,15 @@ export function createRequestHistory(options: {
                     "started_at INTEGER NOT NULL, first_byte_at INTEGER, completed_at INTEGER, status TEXT NOT NULL, " +
                     "http_status INTEGER, provider_code TEXT, error TEXT, request_bytes INTEGER, response_bytes INTEGER, " +
                     "content INTEGER NOT NULL, prompt TEXT, exchange_count INTEGER NOT NULL DEFAULT 0, " +
-                    "exchanges_stored INTEGER NOT NULL DEFAULT 0, truncation TEXT, shared_at INTEGER, bytes INTEGER NOT NULL)",
+                    "exchanges_stored INTEGER NOT NULL DEFAULT 0, truncation TEXT, shared_at INTEGER, bytes INTEGER NOT NULL, " +
+                    "interceptions INTEGER)",
             );
+            // A file created before the column gains it here; the version stays, since an older
+            // server names its columns in every query and keeps working on the file.
+            const columns = open.prepare("PRAGMA table_info(requests)").all() as { name: string }[];
+            if (!columns.some((column) => column.name === "interceptions")) {
+                open.exec("ALTER TABLE requests ADD COLUMN interceptions INTEGER");
+            }
             open.exec("CREATE INDEX IF NOT EXISTS requests_job ON requests (job_id, seq)");
             open.exec("CREATE INDEX IF NOT EXISTS requests_chat ON requests (cha_id, chat_id, seq)");
             open.exec(
@@ -653,6 +691,7 @@ export function createRequestHistory(options: {
         profile_id: string | null;
         profile_name: string | null;
         provider: string | null;
+        interceptions: number | bigint | null;
         no_prompt: number | bigint;
     };
 
@@ -740,6 +779,7 @@ export function createRequestHistory(options: {
                         s.insert.run({
                             id,
                             ...fields,
+                            interceptions: size(summary.interceptions),
                             startedAt,
                             content: summary.content ? 1 : 0,
                             prompt,
@@ -824,6 +864,11 @@ export function createRequestHistory(options: {
                             previous);
                     s.describe.run({
                         ...next,
+                        // A fixed column (`REQUEST_HISTORY_ROW_OVERHEAD`): no bytes of its own.
+                        interceptions:
+                            model.interceptions === undefined
+                                ? nullableNumber(row.interceptions)
+                                : size(model.interceptions),
                         truncation: truncationJson,
                         bytes: Number(row.bytes) + delta,
                         seq: row.seq,

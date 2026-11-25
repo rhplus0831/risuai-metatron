@@ -14,9 +14,10 @@ import { isPlainObject } from "../../../../shared/valueKinds.ts";
  * names it, in this order: character and group images, emotions, additional assets, VITS files, card
  * assets (`ccAssets` `uri`), the GPT-SoVITS reference audio, the user icon and background, persona
  * icons and embedded modules, folder images (`img`, `imgFile`), preset images, and module assets and
- * icons. Every field is optional and read defensively, since neither the store's normalizers nor
- * upstream check asset list shapes. Values that are not `assets/` keys (`embeded://`, `ccdefault:`,
- * data URIs, URLs) are not assets.
+ * icons, then retained plugin custom values. Every field is optional and read defensively, since
+ * neither the store's normalizers nor upstream check asset list shapes. Values that are not `assets/`
+ * keys (`embeded://`, `ccdefault:`, data URIs, URLs) are not assets. Plugin strings holding JSON
+ * objects or arrays are walked with at most two decoding layers along each value's path.
  */
 export function collectUpstreamAssetReferences(db: Readonly<Record<string, unknown>>): UpstreamAssetReference[] {
     const found = new Map<string, UpstreamAssetReference>();
@@ -72,6 +73,26 @@ export function collectUpstreamAssetReferences(db: Readonly<Record<string, unkno
     for (const entry of objects(db.modules)) {
         module(entry, entry.name);
     }
+    if (isPlainObject(db.pluginCustomStorage)) {
+        for (const [owner, value] of Object.entries(db.pluginCustomStorage)) {
+            const pending: { value: unknown; jsonDepth: number }[] = [{ value, jsonDepth: 0 }];
+            while (pending.length > 0) {
+                const { value: current, jsonDepth } = pending.pop()!;
+                if (Array.isArray(current) || isPlainObject(current)) {
+                    for (const child of Object.values(current)) {
+                        pending.push({ value: child, jsonDepth });
+                    }
+                } else {
+                    add(current, owner, "plugin");
+                    if (typeof current === "string" && jsonDepth < 2 && /^\s*[\[{]/.test(current)) {
+                        try {
+                            pending.push({ value: JSON.parse(current), jsonDepth: jsonDepth + 1 });
+                        } catch {}
+                    }
+                }
+            }
+        }
+    }
     return [...found.values()];
 }
 
@@ -79,8 +100,9 @@ export function collectUpstreamAssetReferences(db: Readonly<Record<string, unkno
  * The asset references of stored resource records (`{ kind, data }`, as the import converter emits
  * them): the records placed where an upstream `Database` holds them (`characters` records into
  * `characters`, `presets` into `botPresets`, the `ui` section's `customBackground`, the `personas`,
- * `characterOrder`, and `modules` lists) and walked by `collectUpstreamAssetReferences`. Other kinds
- * reference no asset; metatron keeps the user icon on the persona.
+ * `characterOrder`, and `modules` lists, and `pluginStorage` into `pluginCustomStorage`) and walked by
+ * `collectUpstreamAssetReferences`. Other kinds reference no asset; metatron keeps the user icon on
+ * the persona.
  */
 export function collectAssetReferences(records: Iterable<{ kind: string; data: unknown }>): UpstreamAssetReference[] {
     const characters: unknown[] = [];
@@ -102,6 +124,9 @@ export function collectAssetReferences(records: Iterable<{ kind: string; data: u
                 break;
             case RESOURCE_KIND.presets:
                 db.botPresets = data;
+                break;
+            case RESOURCE_KIND.pluginStorage:
+                db.pluginCustomStorage = data;
                 break;
         }
     }

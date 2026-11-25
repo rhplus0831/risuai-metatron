@@ -8,10 +8,13 @@ import type { Chat } from "./database.ts";
 /** How a new chat starts (`Database.newChatBinding`, the `ui` section). */
 export type NewChatBinding = "inherit" | "empty";
 
+/** Accepted new-chat binding modes. */
 export const NEW_CHAT_BINDING_VALUES: readonly NewChatBinding[] = ["inherit", "empty"];
 
+/** Default initialization mode for a new chat's binding. */
 export const DEFAULT_NEW_CHAT_BINDING: NewChatBinding = "inherit";
 
+/** Whether `value` is an accepted new-chat binding mode. */
 export function isNewChatBinding(value: unknown): value is NewChatBinding {
     return (NEW_CHAT_BINDING_VALUES as readonly unknown[]).includes(value);
 }
@@ -19,6 +22,7 @@ export function isNewChatBinding(value: unknown): value is NewChatBinding {
 /** The binding fields of a chat, a chat summary, or a chat list entry. `bindedPersona` holds the persona id. */
 export type ChatBindingFields = Pick<Chat, "modelPresetId" | "promptPresetId" | "bindedPersona" | "bindingReview">;
 
+/** A binding's logical field name; `personaId` names the stored `bindedPersona` field. */
 export type ChatBindingField = "modelPresetId" | "promptPresetId" | "personaId";
 
 /**
@@ -33,8 +37,10 @@ export type ChatBindingIds = {
     review: boolean;
 };
 
+/** Why a binding cannot be sent: an unset id, a missing record, or pending import review. */
 export type ChatBindingProblem = { field: ChatBindingField; reason: "unset" | "gone" } | { field: "review" };
 
+/** A send-ready set of existing bound ids, or every problem preventing its use. */
 export type ChatBindingResult =
     | { ok: true; ids: { modelPresetId: string; promptPresetId: string; personaId: string } }
     | { ok: false; problems: ChatBindingProblem[] };
@@ -51,6 +57,7 @@ function boundId(value: unknown): string | null {
     return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
+/** Reads stored ids and the review flag without checking record existence; nonblank ids stay untrimmed. */
 export function readChatBindingIds(chat: ChatBindingFields): ChatBindingIds {
     return {
         modelPresetId: boundId(chat.modelPresetId),

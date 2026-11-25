@@ -4,8 +4,8 @@ import type { RequestContext } from "./context.ts";
 
 /**
  * The client's `applyChatTemplate` (`src/ts/process/templates/chatTemplate.ts`) with the request's
- * preset, its selected character, and its user name. The client reads `currentChar.name` lazily,
- * so a template that names the character with none selected throws, here as there.
+ * preset, its selected character, and its user name. Both names are read on every render,
+ * so any template throws when no character is selected.
  */
 export function applyChatTemplate(
     messages: OpenAIChat[],

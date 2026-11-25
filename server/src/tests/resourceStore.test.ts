@@ -1,11 +1,14 @@
 // @vitest-environment node
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, appendFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
-import { createKindRegistry, type ResourceKind } from "../data/kinds.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
+import { createRequestHistory } from "../data/requestHistory.ts";
+import { createVectorCache } from "../data/vectorCache.ts";
 import {
     createResourceStore,
     ResourceBatchConflictError,
@@ -13,7 +16,11 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
-import { sleep } from "./testSupport.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
+import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
+import { verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
+import type { ChatOp } from "../../../shared/chats.ts";
+import type { ChangeSet } from "../../../shared/resources.ts";
 
 const root: ResourceKind = { name: "root", schemaVersion: 1, normalize: (input) => input };
 const presets: ResourceKind = { name: "presets", schemaVersion: 2, normalize: (input) => input };
@@ -46,6 +53,397 @@ const conflictWith = (fn: () => unknown, current: string | null, label: string) 
     expect(error, label).toBeInstanceOf(ResourceConflictError);
     expect((error as ResourceConflictError).current, label).toBe(current);
 };
+
+describe("bounded revision replay", () => {
+    const characters: ResourceKind = { name: "characters", schemaVersion: 1, normalize: (input) => input };
+    const registry = createKindRegistry([root, presets, characters]);
+    const empty: ChangeSet = { resources: [], chats: [], chatOrders: [] };
+    const createChat = (characterId: string, id: string) => ({
+        characterId,
+        chatId: id,
+        baseRevision: null,
+        ops: [{ op: "create", chat: { id, name: id, note: "", localLore: [], message: [] } } as ChatOp],
+    });
+    function open(changeLogLimit?: number) {
+        const store = createResourceStore({ file: ":memory:", kinds: registry, changeLogLimit });
+        stores.push(store);
+        return store;
+    }
+    function replay(store: ResourceStore, since: number, until: number, changes: ChangeSet) {
+        expect(store.cursor()).toBeGreaterThanOrEqual(until);
+        expect(store.listChanges(since, until, store.epoch())).toEqual({
+            epoch: store.epoch(),
+            cursor: until,
+            changes,
+        });
+    }
+
+    it("logs each committed ref once across puts, batches, transactions and character cascades, and nothing from rollbacks", () => {
+        const store = open();
+        expect(store.cursor()).toBe(0);
+        replay(store, 0, 0, empty);
+        const character = store.put(characters, "c", { chaId: "c" }, null).revision;
+        const order = () => store.listRevisions().chatOrders.find((row) => row.characterId === "c")!;
+        expect(store.cursor()).toBe(2); // Character plus its new order.
+        replay(store, 0, 2, {
+            ...empty,
+            resources: [{ kind: "characters", id: "c", revision: character }],
+            chatOrders: [order()],
+        });
+        const batch = store.applyChanges({
+            ops: [{ kind: root, id: "r", baseRevision: null, data: { private: "not a replay payload" } }],
+            chats: [createChat("c", "k"), createChat("c", "j")],
+        });
+        expect(store.cursor()).toBe(6); // Record, two chats, one final order.
+        replay(store, 2, 6, {
+            resources: [{ kind: "root", id: "r", revision: batch.results[0].revision }],
+            chats: batch.chats.map(({ characterId, id, revision }) => ({ characterId, id, revision })),
+            chatOrders: [order()],
+        });
+        const reordered = store.applyChanges({
+            chatOrders: [{ characterId: "c", baseRevision: order().revision, ids: ["j", "k"] }],
+        });
+        expect(store.cursor()).toBe(7);
+        replay(store, 6, 7, {
+            ...empty,
+            chatOrders: reordered.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
+        });
+
+        let final!: string;
+        store.transaction(() => {
+            const first = store.put(root, "r", 2, batch.results[0].revision).revision;
+            final = store.put(root, "r", 3, first).revision;
+            store.put(presets, "r", [], null);
+            expect(store.cursor()).toBe(7); // Uncommitted writes cannot advance the public cursor.
+        });
+        expect(store.cursor()).toBe(9);
+        replay(store, 7, 9, {
+            ...empty,
+            resources: [
+                { kind: "root", id: "r", revision: final },
+                { kind: "presets", id: "r", revision: store.get(presets, "r")!.revision },
+            ],
+        });
+        expect(() =>
+            store.transaction(() => {
+                store.put(root, "r", 4, final);
+                store.put(root, "rolled-back", 1, null);
+                throw new Error("rollback body");
+            }),
+        ).toThrow("rollback body");
+        expect(() =>
+            store.applyChanges({
+                ops: [
+                    { kind: root, id: "r", baseRevision: final, data: 5 },
+                    { kind: presets, id: "r", baseRevision: null, data: [] },
+                ],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        expect(store.cursor()).toBe(9);
+        replay(store, 9, 9, empty);
+        expect(store.get(root, "r")).toEqual({ revision: final, data: 3 });
+
+        store.delete(characters, "c", character);
+        expect(store.cursor()).toBe(13);
+        replay(store, 9, 13, {
+            resources: [{ kind: "characters", id: "c", revision: null }],
+            chats: [
+                { characterId: "c", id: "k", revision: null },
+                { characterId: "c", id: "j", revision: null },
+            ],
+            chatOrders: [{ characterId: "c", revision: null }],
+        });
+        const created = store.applyChanges({
+            ops: [{ kind: characters, id: "d", baseRevision: null, data: { chaId: "d" } }],
+            chats: [createChat("d", "k")],
+        });
+        expect(store.cursor()).toBe(16);
+        replay(store, 13, 16, {
+            resources: [{ kind: "characters", id: "d", revision: created.results[0].revision }],
+            chats: [{ characterId: "d", id: "k", revision: created.chats[0].revision }],
+            chatOrders: created.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
+        });
+        store.applyChanges({
+            ops: [{ kind: characters, id: "d", baseRevision: created.results[0].revision, delete: true }],
+        });
+        expect(store.cursor()).toBe(19);
+        replay(store, 16, 19, {
+            resources: [{ kind: "characters", id: "d", revision: null }],
+            chats: [{ characterId: "d", id: "k", revision: null }],
+            chatOrders: [{ characterId: "d", revision: null }],
+        });
+    });
+
+    it("replays tombstones and only the newest incarnation per key within the requested upper bound", () => {
+        const store = open();
+        for (const id of ["c", "d"]) store.put(characters, id, { chaId: id }, null);
+        // `c/j` stays active, so `c/k` can go to the trash.
+        store.applyChanges({ chats: [createChat("c", "k"), createChat("d", "k"), createChat("c", "j")] });
+        expect(store.cursor()).toBe(9);
+        // The trash is its own commit (the chat only); the deletion then logs the tombstone and order.
+        const { trashed } = deleteChatThroughTrash(store, "c", "k");
+        expect(store.cursor()).toBe(12);
+        const deletedOrder = store.listRevisions().chatOrders.find((row) => row.characterId === "c")!;
+        const recreated = store.applyChanges({ chats: [createChat("c", "k")] });
+        const updated = store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: recreated.chats[0].revision,
+                    ops: [{ op: "meta", set: { name: "new incarnation" } }],
+                },
+            ],
+        });
+        expect(store.cursor()).toBe(15);
+        // Replay stays bare: the trashed revision without its mark.
+        replay(store, 9, 10, { ...empty, chats: [{ characterId: "c", id: "k", revision: trashed.revision }] });
+        for (const since of [9, 10]) {
+            replay(store, since, 12, {
+                ...empty,
+                chats: [{ characterId: "c", id: "k", revision: null }],
+                chatOrders: [deletedOrder],
+            });
+        }
+        replay(store, 9, 15, {
+            ...empty,
+            chats: [{ characterId: "c", id: "k", revision: updated.chats[0].revision }],
+            chatOrders: recreated.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
+        });
+        const all = store.listChanges(4, 15, store.epoch());
+        expect(all.changes?.chats).toEqual([
+            { characterId: "c", id: "k", revision: updated.chats[0].revision },
+            { characterId: "d", id: "k", revision: store.chatRevision("d", "k") },
+            { characterId: "c", id: "j", revision: store.chatRevision("c", "j") },
+        ]);
+    });
+
+    it("retains exactly the newest rows and expires uncovered bounds without resetting the high-water cursor", () => {
+        const store = open(3);
+        const revisions = Array.from({ length: 5 }, (_, i) => store.put(root, String(i), i, null).revision);
+        expect(store.cursor()).toBe(5);
+        replay(store, 2, 5, {
+            ...empty,
+            resources: [2, 3, 4].map((i) => ({ kind: "root", id: String(i), revision: revisions[i] })),
+        });
+        replay(store, 2, 3, { ...empty, resources: [{ kind: "root", id: "2", revision: revisions[2] }] });
+        replay(store, 5, 5, empty);
+        for (const [since, until] of [
+            [1, 5],
+            [6, 6],
+            [2, 6],
+            [4, 3],
+            [-1, 5],
+            [2.5, 5],
+            [2, Number.NaN],
+        ]) {
+            expect(store.listChanges(since, until, store.epoch()), `${since}..${until}`).toEqual({
+                epoch: store.epoch(),
+                cursor: 5,
+                expired: true,
+            });
+        }
+        expect(store.listChanges(2, 5, "another epoch")).toEqual({ epoch: store.epoch(), cursor: 5 });
+        store.put(root, "last", 6, null);
+        expect(store.cursor()).toBe(6);
+        expect(store.listChanges(2, 6, store.epoch())).toEqual({ epoch: store.epoch(), cursor: 6, expired: true });
+    });
+
+    it("prunes one row at a full default window with a primary-key range delete and no retained-row scan", async () => {
+        const prepare = DatabaseSync.prototype.prepare;
+        let deleteSql = "";
+        const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+            this: DatabaseSync,
+            sql: string,
+        ) {
+            if (/^\s*DELETE\s+FROM\s+changes\b/i.test(sql)) deleteSql = sql;
+            return prepare.call(this, sql);
+        });
+        let store: ResourceStore;
+        try {
+            store = open();
+        } finally {
+            spy.mockRestore();
+        }
+        const limit = 20_000;
+        store.applyChanges({
+            ops: Array.from({ length: limit }, (_, i) => ({ kind: root, id: String(i), baseRevision: null, data: i })),
+        });
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-prune-"));
+        dirs.push(dir);
+        for (const [name, oldest, newest] of [
+            ["full", 1, limit],
+            ["pruned", 2, limit + 1],
+        ] as const) {
+            if (name === "pruned") store.put(root, "next", null, null);
+            expect(store.cursor()).toBe(newest);
+            const file = path.join(dir, `${name}.sqlite`);
+            await store.backupTo(file);
+            const db = new DatabaseSync(file);
+            try {
+                expect(
+                    db.prepare("SELECT COUNT(*) AS n, MIN(cursor) AS oldest, MAX(cursor) AS newest FROM changes").get(),
+                ).toEqual({ n: limit, oldest, newest });
+                if (name === "full") {
+                    expect(deleteSql).not.toBe("");
+                    const plan = db
+                        .prepare(`EXPLAIN QUERY PLAN ${deleteSql}`)
+                        .all(1)
+                        .map((row) => row.detail)
+                        .join("\n");
+                    expect(plan).not.toMatch(/\bSCAN changes\b/i);
+                    expect(plan).toMatch(/\bSEARCH changes USING INTEGER PRIMARY KEY \(rowid<\?\)/i);
+                }
+            } finally {
+                db.close();
+            }
+        }
+    });
+
+    it("prunes multi-row commits to exactly the newest rows and keeps none with zero retention", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-batch-"));
+        dirs.push(dir);
+        for (const limit of [0, 3]) {
+            const store = open(limit);
+            const batch = store.applyChanges({
+                ops: Array.from({ length: 5 }, (_, i) => ({ kind: root, id: String(i), baseRevision: null, data: i })),
+            });
+            async function check(high: number, resources: ChangeSet["resources"]) {
+                expect(store.cursor()).toBe(high);
+                const file = path.join(dir, `${limit}.sqlite`);
+                await store.backupTo(file);
+                const db = new DatabaseSync(file);
+                try {
+                    expect(db.prepare("SELECT cursor, id FROM changes ORDER BY cursor").all()).toEqual(
+                        resources.map(({ id }, i) => ({ cursor: high - resources.length + i + 1, id })),
+                    );
+                } finally {
+                    db.close();
+                }
+                const floor = high - resources.length;
+                replay(store, floor, high, { ...empty, resources });
+                expect(store.listChanges(floor - 1, high, store.epoch())).toEqual({
+                    epoch: store.epoch(),
+                    cursor: high,
+                    expired: true,
+                });
+            }
+            const retained =
+                limit === 0 ? [] : batch.results.slice(2).map(({ id, revision }) => ({ kind: "root", id, revision }));
+            await check(5, retained);
+
+            const committed = store.transaction(() =>
+                [5, 6, 7].map((i) => ({
+                    kind: "root",
+                    id: String(i),
+                    revision: store.put(root, String(i), i, null).revision,
+                })),
+            );
+            await check(8, limit === 0 ? [] : committed);
+        }
+    });
+
+    it("opens a current-version file without a log, normalizes without logging, and keeps later cursors across reopen", () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-open-"));
+        dirs.push(dir);
+        const file = path.join(dir, "resources.sqlite");
+        const first = createResourceStore({ file, kinds: registry });
+        first.put(root, "legacy", { old: true }, null);
+        first.close();
+        const db = new DatabaseSync(file);
+        const version = db.prepare("PRAGMA user_version").get();
+        db.exec("DROP TABLE changes");
+        db.close();
+        const normalized: ResourceKind = { ...root, normalize: () => ({ normalized: true }) };
+        const nextKinds = createKindRegistry([normalized, presets, characters]);
+        const reopened = createResourceStore({ file, kinds: nextKinds });
+        stores.push(reopened);
+        expect(reopened.get(normalized, "legacy")?.data).toEqual({ normalized: true });
+        expect(reopened.cursor()).toBe(0);
+        replay(reopened, 0, 0, empty);
+        const written = reopened.put(presets, "p", [], null).revision;
+        expect(reopened.cursor()).toBe(1);
+        replay(reopened, 0, 1, { ...empty, resources: [{ kind: "presets", id: "p", revision: written }] });
+        reopened.close();
+        const again = createResourceStore({ file, kinds: nextKinds });
+        stores.push(again);
+        expect(again.cursor()).toBe(1);
+        replay(again, 0, 1, { ...empty, resources: [{ kind: "presets", id: "p", revision: written }] });
+        const check = new DatabaseSync(file);
+        try {
+            expect(check.prepare("PRAGMA user_version").get()).toEqual(version);
+        } finally {
+            check.close();
+        }
+    });
+
+    it("empties replay on replacement without importing a snapshot log or restarting its cursor", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-log-restore-"));
+        dirs.push(dir);
+        const store = open();
+        store.put(root, "old", 1, null);
+        store.put(root, "other", 2, null);
+        const oldEpoch = store.epoch();
+        const source = open();
+        for (const id of ["a", "b", "c", "d"]) source.put(root, id, id, null);
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await source.backupTo(snapshot);
+        const db = new DatabaseSync(snapshot);
+        try {
+            expect(db.prepare("SELECT COUNT(*) AS n FROM changes").get()).toEqual({ n: 4 });
+        } finally {
+            db.close();
+        }
+        const epoch = await installSnapshot(store, snapshot, registry);
+        expect(epoch).not.toBe(oldEpoch);
+        expect(store.cursor()).toBe(2);
+        replay(store, 2, 2, empty);
+        expect(store.listChanges(0, 2, epoch)).toEqual({ epoch, cursor: 2, expired: true });
+        expect(store.listChanges(2, 2, oldEpoch)).toEqual({ epoch, cursor: 2 });
+        const next = store.put(root, "after", 3, null).revision;
+        expect(store.cursor()).toBe(3);
+        replay(store, 2, 3, { ...empty, resources: [{ kind: "root", id: "after", revision: next }] });
+    });
+});
+
+describe("connection durability", () => {
+    it("selects FULL durability for resources by default and NORMAL by option, while history and vectors use NORMAL", () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-durability-"));
+        dirs.push(dir);
+        const exec = DatabaseSync.prototype.exec;
+        for (const [name, initial, expected, create] of [
+            ["resources", "NORMAL", 2, (file: string) => createResourceStore({ file, kinds })],
+            [
+                "resources-normal",
+                "FULL",
+                1,
+                (file: string) => createResourceStore({ file, kinds, synchronous: "normal" }),
+            ],
+            ["history", "FULL", 1, (file: string) => createRequestHistory({ file })],
+            ["vectors", "FULL", 1, (file: string) => createVectorCache({ file })],
+        ] as const) {
+            let connection: DatabaseSync | undefined;
+            const spy = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+                this: DatabaseSync,
+                sql: string,
+            ) {
+                if (!connection) {
+                    connection = this;
+                    exec.call(this, `PRAGMA synchronous = ${initial}`);
+                }
+                return exec.call(this, sql);
+            });
+            let store: { close(): void } | undefined;
+            try {
+                store = create(path.join(dir, `${name}.sqlite`));
+                expect(connection?.prepare("PRAGMA synchronous").get(), name).toEqual({ synchronous: expected });
+            } finally {
+                spy.mockRestore();
+                store?.close();
+            }
+        }
+    });
+});
 
 describe("revision tokens", () => {
     it("carries the epoch, incarnation, and write count, and refuses tokens from another epoch or incarnation", () => {
@@ -275,8 +673,8 @@ describe("snapshots", () => {
         dirs.push(dir);
         return dir;
     }
-    function fileStore(dir: string, name = "live.sqlite") {
-        const store = createResourceStore({ file: path.join(dir, name), kinds });
+    function fileStore(dir: string, name = "live.sqlite", feed?: ReturnType<typeof createChangeFeed>) {
+        const store = createResourceStore({ file: path.join(dir, name), kinds, feed });
         stores.push(store);
         return store;
     }
@@ -499,13 +897,14 @@ describe("snapshots", () => {
         source.put(root, "b", { v: "b" }, null);
         source.put(root, "a", { v: "a" }, null);
         source.put(presets, "p", [], null);
-        await source.backupTo(path.join(dir, "source-copy.sqlite"));
-        const validated = store.readSnapshot(path.join(dir, "source-copy.sqlite"));
+        const copy = path.join(dir, "source-copy.sqlite");
+        await source.backupTo(copy);
+        const validated = store.readSnapshot(copy);
 
         const oldEpoch = store.epoch();
         const oldToken = store.get(root, "old")!.revision;
         const before = store.writeCount();
-        const epoch = store.replaceAll(validated);
+        const epoch = await installSnapshot(store, copy, kinds);
         expect(epoch).not.toBe(oldEpoch);
         expect(store.epoch()).toBe(epoch);
         expect(store.writeCount()).toBe(before + 1);
@@ -523,24 +922,27 @@ describe("snapshots", () => {
 
         // The epoch survives a reopen.
         store.close();
-        const reopened = fileStore(dir);
+        const feed = createChangeFeed();
+        const events: ChangeFeedEvent[] = [];
+        feed.subscribe((event) => events.push(event));
+        const reopened = fileStore(dir, "live.sqlite", feed);
         expect(reopened.epoch()).toBe(epoch);
         expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
 
-        // A failing insert (the live UNIQUE constraint) rolls the whole replacement back.
-        const failing = {
-            rows: [
-                { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "1" },
-                { kind: "root", id: "dup", revision: 1, schemaVersion: 1, text: "2" },
-            ],
-            ...noChats,
-        };
+        // A failing copy rolls the whole replacement back; the snapshot's extra row shows a kept copy.
+        source.put(root, "extra", { v: "extra" }, null);
+        const larger = path.join(dir, "larger-copy.sqlite");
+        await source.backupTo(larger);
+        const failing = await stageSnapshot(larger, kinds);
         const count = reopened.writeCount();
-        expect(() => reopened.replaceAll(failing)).toThrow("UNIQUE constraint failed");
+        expect(() => withFailingInstallCopy(() => reopened.replaceAll(failing.file, failing.report))).toThrow(
+            INJECTED_COPY_FAILURE,
+        );
         expect(reopened.epoch()).toBe(epoch);
         expect(reopened.writeCount()).toBe(count);
         expect(reopened.list(root).map((r) => r.id)).toEqual(["b", "a"]);
-        expect(() => reopened.transaction(() => reopened.replaceAll({ rows: [], ...noChats }))).toThrow(
+        expect(events).toEqual([]);
+        expect(() => reopened.transaction(() => reopened.replaceAll(failing.file, failing.report))).toThrow(
             "Nested resource transactions are not supported",
         );
         expect(reopened.list(root)).toHaveLength(2);
@@ -720,12 +1122,17 @@ describe("transaction", () => {
     it("rolls back a body that returns a promise or a thenable and rejects the continuation's write", async () => {
         const store = memoryStore();
         const late: string[] = [];
+        let bothLate!: () => void;
+        const lateWritten = new Promise<void>((resolve) => (bothLate = resolve));
         const lateWrite = (id: string) => {
             try {
                 store.put(root, id, 2, null);
                 late.push(`${id}: wrote`);
             } catch (error) {
                 late.push(`${id}: ${(error as Error).message}`);
+            }
+            if (late.length === 2) {
+                bothLate();
             }
         };
         const asyncBody = async () => {
@@ -750,7 +1157,7 @@ describe("transaction", () => {
         };
         expect(() => store.transaction(thenableBody)).toThrow("Resource transactions must be synchronous");
 
-        await sleep(10);
+        await lateWritten;
         expect(late).toEqual([
             "a-late: Resource transaction already ended",
             "b-late: Resource transaction already ended",
@@ -765,6 +1172,8 @@ describe("transaction", () => {
     it("rejects a timer write the body scheduled, even after the commit", async () => {
         const store = memoryStore();
         const late: string[] = [];
+        let timerRan!: () => void;
+        const timerWrite = new Promise<void>((resolve) => (timerRan = resolve));
         store.transaction(() => {
             store.put(root, "a", 1, null);
             setTimeout(() => {
@@ -774,10 +1183,11 @@ describe("transaction", () => {
                 } catch (error) {
                     late.push((error as Error).message);
                 }
+                timerRan();
             }, 0);
         });
         expect(store.get(root, "a")!.data).toBe(1);
-        await sleep(10);
+        await timerWrite;
         expect(late).toEqual(["Resource transaction already ended"]);
         expect(store.get(root, "timer")).toBeNull();
         expect(store.put(root, "timer", 2, null).data).toBe(2);
@@ -831,8 +1241,8 @@ describe("transaction", () => {
     });
 });
 
-// A batch op may carry a field `patch` of an object record (store-internal; the send
-// job's `lastInteraction` stamp). It is checked before the transaction, applied at its base revision
+// A batch op may carry a field `patch` of an object record (a client's
+// character save). It is checked before the transaction, applied at its base revision
 // inside it, normalized and stored like a write, and counted as one. What the feed carries for it is
 // in `changeFeed.test.ts`.
 describe("field patches", () => {
@@ -1051,6 +1461,72 @@ describe("field patches", () => {
     });
 });
 
+describe("plugin write patches", () => {
+    it("refuses invalid nested targets and disallowed patch forms without writing any operation in the batch", () => {
+        const registry = createKindRegistry([root, ...DEFAULT_RESOURCE_KINDS]);
+        const store = createResourceStore({ file: ":memory:", kinds: registry });
+        stores.push(store);
+        const storage = registry.get("pluginStorage")!;
+        const plugins = registry.get("plugins")!;
+        const nested = { _pluginStorage: { set: { value: 2 } } };
+        const dictionary = { _pluginStorage: { value: 1 } };
+        const cases: { label: string; kind: ResourceKind; data: unknown; patch: unknown }[] = [
+            ...[
+                { label: "array target", data: { _pluginStorage: [1] } },
+                { label: "string target", data: { _pluginStorage: "old" } },
+                { label: "missing target", data: {} },
+            ].map((entry) => ({ ...entry, kind: storage, patch: { nested } })),
+            { label: "nested on another kind", kind: root, data: dictionary, patch: { nested } },
+            {
+                label: "undeclared dictionary",
+                kind: storage,
+                data: { custom: { value: 1 } },
+                patch: { nested: { custom: { set: { value: 2 } } } },
+            },
+            { label: "nested mixed with items", kind: storage, data: dictionary, patch: { nested, order: [] } },
+            {
+                label: "outer set overlaps nested",
+                kind: storage,
+                data: dictionary,
+                patch: { nested, set: { _pluginStorage: {} } },
+            },
+            {
+                label: "outer remove overlaps nested",
+                kind: storage,
+                data: dictionary,
+                patch: { nested, remove: ["_pluginStorage"] },
+            },
+            {
+                label: "itemKey on another kind",
+                kind: root,
+                data: [{ name: "one" }],
+                patch: { itemKey: "name", order: [] },
+            },
+            ...["id", "other"].map((itemKey) => ({
+                label: `unsupported itemKey ${itemKey}`,
+                kind: plugins,
+                data: [{ id: "one", name: "first" }],
+                patch: { itemKey, order: [] },
+            })),
+        ];
+        for (const { label, kind, data, patch } of cases) {
+            const saved = store.put(kind, "main", data, store.revisionOf(kind, "main"));
+            const writes = store.writeCount();
+            expect(
+                () =>
+                    store.applyBatch([
+                        { kind: root, id: "sibling", baseRevision: null, data: { changed: true } },
+                        { kind, id: "main", baseRevision: saved.revision, patch },
+                    ]),
+                label,
+            ).toThrow(ResourceValidationError);
+            expect(store.get(kind, "main"), label).toEqual(saved);
+            expect(store.get(root, "sibling"), label).toBeNull();
+            expect(store.writeCount(), label).toBe(writes);
+        }
+    });
+});
+
 // A batch op may carry an item `patch` of an array record whose items are objects
 // with unique non-empty string ids (`modules`): `items` put whole by id, `changes` as field patches
 // of base items, and `order` the exact id sequence. Checked before the transaction
@@ -1263,5 +1739,103 @@ describe("item patches", () => {
         expect(error).toBeInstanceOf(ResourceBatchConflictError);
         expect((error as ResourceBatchConflictError).conflicts).toEqual([{ kind: "list", id: "l", revision: base }]);
         expect(store.get(root, "r")).toBeNull();
+    });
+});
+
+describe("staged install identity", () => {
+    it("keeps the live sequence high-water mark through install and a later chat delete and recreate", async () => {
+        const characters: ResourceKind = { name: "characters", schemaVersion: 1, normalize: (v) => v };
+        const registry = createKindRegistry([characters]);
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-incarnation-"));
+        dirs.push(dir);
+        const file = path.join(dir, "live.sqlite");
+        const store = createResourceStore({ file, kinds: registry });
+        stores.push(store);
+        store.put(characters, "c", { chaId: "c" }, null);
+        const create = (id: string) =>
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: id,
+                        baseRevision: null,
+                        ops: [{ op: "create", chat: { message: [] } }],
+                    },
+                ],
+            });
+        const remove = (id: string) => deleteChatThroughTrash(store, "c", id);
+        create("saved");
+        const oldToken = store.chatRevision("c", "saved");
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        for (let n = 0; n < 5; n++) {
+            create("later");
+            remove("later");
+        }
+        const db = new DatabaseSync(file, { readOnly: true });
+        const high = Number(db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq);
+        const staged = await stageSnapshot(snapshot, registry);
+        const source = new DatabaseSync(staged.file, { readOnly: true });
+        expect(source.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq).toBe(1);
+        source.close();
+        store.replaceAll(staged.file, staged.report);
+        expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 1);
+        const installedToken = store.chatRevision("c", "saved");
+        expect(installedToken).not.toBe(oldToken);
+        // A spare active chat (high + 2) lets `saved` go to the trash.
+        create("spare");
+        remove("saved");
+        create("saved");
+        expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 3);
+        expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq).toBe(high + 3);
+        // The installed incarnation's token does not reach the recreated chat.
+        expect(() =>
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "saved",
+                        baseRevision: installedToken,
+                        ops: [{ op: "meta", set: { note: "old incarnation" } }],
+                    },
+                ],
+            }),
+        ).toThrow(ResourceBatchConflictError);
+        db.close();
+    });
+
+    it("refuses a staged file changed after verification without changing rows, epoch or write count", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-install-stat-"));
+        dirs.push(dir);
+        const store = memoryStore();
+        store.put(root, "saved", 1, null);
+        const file = path.join(dir, "source.sqlite");
+        await store.backupTo(file);
+        const staged = await stageSnapshot(file, kinds);
+        store.put(root, "live", 2, null);
+        const before = { rows: store.readKinds([root]), epoch: store.epoch(), writes: store.writeCount() };
+        await verifyStagedFile(staged.file, staged.report);
+        appendFileSync(staged.file, "changed");
+        expect(() => store.replaceAll(staged.file, staged.report)).toThrow(ResourceValidationError);
+        expect({ rows: store.readKinds([root]), epoch: store.epoch(), writes: store.writeCount() }).toEqual(before);
+    });
+});
+
+it("reads asset reference text synchronously from the writer including escaped JSON and case-folded URL needles", () => {
+    const store = memoryStore();
+    const values = [
+        { text: 'assets/quote"\\\n.png' },
+        { text: "/sw/img/6173736574732F636166C3A9" },
+        { text: "unrelated" },
+    ];
+    values.forEach((value, i) => store.put(root, String(i), value, null));
+    const seen: unknown[] = [];
+    store.transaction(() => {
+        store.put(root, "inside", { text: "assets/inside" }, null);
+        store.readAssetReferenceText({ needles: ["assets/"], lowerNeedles: ["/sw/img/6173736574732f"] }, (text, json) =>
+            seen.push(json ? JSON.parse(text) : text),
+        );
+        expect(seen).toHaveLength(3);
+        expect(seen).toEqual(expect.arrayContaining([values[0], values[1], { text: "assets/inside" }]));
     });
 });

@@ -1,4 +1,4 @@
-// Port of `src/ts/process/request/openAI/requests.ts`: the client's database, fetch helpers, alert,
+// Port of the former `src/ts/process/request/openAI/requests.ts`: the client's database, fetch helpers, alert,
 // tokenizer, tool seam, and CBS parser are the request context's (`arg.ctx`).
 import { messages as language } from "../messages.ts";
 import { LLMFlags, LLMFormat, LLMProvider } from "../../../../shared/llm.ts";
@@ -9,7 +9,7 @@ import {
 import { getFreeOpenRouterModels } from "../openrouter.ts";
 import { defaultCredentialKey } from "../credentials.ts";
 import { textifyReadableStream } from "../transport.ts";
-import { simplifySchema } from "../util.ts";
+import { simplifySchema, sleep, toolRetryDelay } from "../util.ts";
 import { SseLines } from "../sseLines.ts";
 
 import { extractJSON, getOpenAIJSONSchema } from "../jsonSchema.ts";
@@ -20,6 +20,27 @@ import { applyAdditionalParameters, applyParameters, getAdditionalParameters } f
 import type { Contents, OpenAIChatExtra, OpenAIChatFull, ToolCall } from "./types.ts";
 
 import { getLocalNetworkRequestOptions, getOpenAIRequestKey, type LocalNetworkRequestOptions } from "./shared.ts";
+
+/**
+ * Builds OpenAI-compatible Chat Completions bodies (`model`, `messages`, generation fields, and optional tools),
+ * or legacy Completions bodies with a flattened `prompt`. OpenRouter can replace `messages` with a chat-template
+ * prompt; Mistral uses its own role conversion and a buffered request. Responses API requests are re-exported from
+ * server/src/llm/openAI/responses.ts.
+ *
+ * The Chat parser accumulates content, reasoning, and tool arguments from SSE deltas into whole-text snapshots.
+ * Malformed data lines are skipped; `[DONE]` stops parsing, and upstream EOF closes the stream after flushing any
+ * pending line. The tool wrapper carries every choice key except parser-only `__tool_calls`, prefixing key `"0"`
+ * with prior tool-round text and remembered markers. Tool follow-ups use a fresh parser. JSON events with a truthy
+ * top-level `error` fail the stream with the provider's message; other events without `choices` contribute no text.
+ *
+ * Buffered HTTP/shape failures become `fail` text prefixed by `messages.errors.httpError` from
+ * server/src/llm/messages.ts. Initial streaming HTTP or content-type failures return the raw body as `fail` text;
+ * a missing Content-Type counts as unsupported. Streaming tool follow-ups retry unsupported responses, then fail
+ * the stream with the last body text if the final response is HTTP 200 and the request is not aborted. Exhausted
+ * non-200 or aborted follow-ups alert and retain the accumulated answer, as do exhausted buffered follow-ups.
+ * Body read failures reject the stream; initial transport throws and malformed legacy success payloads propagate.
+ */
+
 export { requestOpenAIResponseAPI, __testResponsesAPI } from "./responses.ts";
 
 function isOfficialOpenAIURL(url: string): boolean {
@@ -35,6 +56,11 @@ function shouldUseOpenAIFlexProcessing(aiModel: string, url: string, provider: L
     return provider === LLMProvider.OpenAI || (isCustomEndpoint && isOfficialOpenAIURL(url));
 }
 
+/**
+ * Builds and previews or sends a Chat request, with provider/model flags, image input, biases, and tools applied.
+ * Mistral always takes the buffered branch. Other models refuse multi-generation with tools before sending;
+ * `arg.useStreaming` sets their final `stream` field after additional parameters and selects the response path.
+ */
 export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     let formatedChat: OpenAIChatExtra[] = [];
     const formated = arg.formated;
@@ -223,7 +249,11 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
     }
 
     if (aiModel === "openrouter" && db.openrouterRequestModel === "risu/free") {
-        openrouterRequestModel = await getFreeOpenRouterModels(arg.ctx);
+        const discovery = await getFreeOpenRouterModels(arg.ctx, getOpenAIRequestKey(arg, db.openrouterKey));
+        if (!discovery.ok) {
+            return { type: "fail", result: discovery.reason };
+        }
+        openrouterRequestModel = discovery.model;
     }
 
     if (arg.modelInfo.flags.includes(LLMFlags.DeveloperRole)) {
@@ -653,7 +683,7 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
             };
         }
 
-        if (!da.headers.get("Content-Type")!.includes("text/event-stream")) {
+        if (!(da.headers.get("Content-Type") ?? "").includes("text/event-stream")) {
             return {
                 type: "fail",
                 result: await textifyReadableStream(da.body!),
@@ -688,6 +718,12 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
     return requestHTTPOpenAI(replacerURL, body, headers, arg, localNetworkOptions);
 }
 
+/**
+ * Sends a prepared buffered Chat/Completions body and reads text, reasoning, JSON extraction, or multiple choices.
+ * Tool responses append to `body.messages` and recurse, retrying failed follow-ups up to `db.requestRetrys` times;
+ * exhausted follow-ups alert and return the text/remembered markers from the preceding round as a success.
+ * Malformed successful payloads return `fail` with the HTTP error prefix from server/src/llm/messages.ts.
+ */
 export async function requestHTTPOpenAI(
     replacerURL: string,
     body: any,
@@ -793,44 +829,40 @@ export async function requestHTTPOpenAI(
                     }
                     try {
                         const functionArgs = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
-                        if (arg.tools && arg.tools.length > 0) {
-                            const tool = arg.tools.find((t) => t.name === toolCall.function.name);
-                            if (!tool) {
+                        const tool = arg.tools?.find((t) => t.name === toolCall.function.name);
+                        if (!tool) {
+                            messages.push({
+                                role: "tool",
+                                content: "No tool found with name: " + toolCall.function.name,
+                                tool_call_id: toolCall.id,
+                            });
+                        } else {
+                            const parsed = functionArgs;
+                            const x = (await arg.ctx.tools.call(tool.name, parsed)).filter((m) => m.type === "text");
+                            if (x.length > 0) {
                                 messages.push({
                                     role: "tool",
-                                    content: "No tool found with name: " + toolCall.function.name,
+                                    content: x[0].text,
                                     tool_call_id: toolCall.id,
                                 });
-                            } else {
-                                const parsed = functionArgs;
-                                const x = (await arg.ctx.tools.call(tool.name, parsed)).filter(
-                                    (m) => m.type === "text",
-                                );
-                                if (x.length > 0) {
-                                    messages.push({
-                                        role: "tool",
-                                        content: x[0].text,
-                                        tool_call_id: toolCall.id,
-                                    });
-                                    if (arg.rememberToolUsage) {
-                                        callCodes.push(
-                                            await arg.ctx.tools.encode({
-                                                call: {
-                                                    id: toolCall.id,
-                                                    name: toolCall.function.name,
-                                                    arg: toolCall.function.arguments,
-                                                },
-                                                response: x,
-                                            }),
-                                        );
-                                    }
-                                } else {
-                                    messages.push({
-                                        role: "tool",
-                                        content: "Tool call failed with no text response",
-                                        tool_call_id: toolCall.id,
-                                    });
+                                if (arg.rememberToolUsage) {
+                                    callCodes.push(
+                                        await arg.ctx.tools.encode({
+                                            call: {
+                                                id: toolCall.id,
+                                                name: toolCall.function.name,
+                                                arg: toolCall.function.arguments,
+                                            },
+                                            response: x,
+                                        }),
+                                    );
                                 }
+                            } else {
+                                messages.push({
+                                    role: "tool",
+                                    content: "Tool call failed with no text response",
+                                    tool_call_id: toolCall.id,
+                                });
                             }
                         }
                     } catch (error) {
@@ -850,10 +882,17 @@ export async function requestHTTPOpenAI(
 
                 do {
                     attempt++;
+                    if (attempt > 1) arg.ctx.reportRetry?.();
                     resRec = await requestHTTPOpenAI(replacerURL, body, headers, arg, networkOptions);
 
                     if (resRec.type != "fail") {
                         break;
+                    }
+                    if (attempt <= db.requestRetrys) {
+                        await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                        if (arg.abortSignal?.aborted) {
+                            break;
+                        }
                     }
                 } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 
@@ -927,6 +966,11 @@ export async function requestHTTPOpenAI(
     };
 }
 
+/**
+ * Sends buffered legacy Completions with `##` role sections and a final Response cue, using NanoGPT's configured
+ * model/endpoint or `gpt-3.5-turbo-instruct`. Preview returns a success containing an unsupported-preview message.
+ * HTTP failures use server/src/llm/messages.ts; a successful payload without `choices[0].text` throws.
+ */
 export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
     const db = arg.ctx.db;
@@ -1019,6 +1063,13 @@ export async function requestOpenAILegacyInstruct(arg: RequestDataArgumentExtend
     };
 }
 
+/**
+ * The OpenAI Chat stream parser, one per response body (a tool follow-up builds a fresh one). Each `data:` event is
+ * applied once; a malformed line is skipped on its own, and `[DONE]` ends the parse. Content (per choice index with
+ * `multiGen`, else at key `"0"`), reasoning, and tool argument deltas are concatenated, and at most one cumulative
+ * `StreamResponseChunk` snapshot is emitted per read that applied an event (the flush emits one if none was). Tool
+ * calls (`__tool_calls`) ride on every snapshot, so they survive to the final one.
+ */
 function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8Array, StreamResponseChunk> {
     const lines = new SseLines();
     const readed: Record<string, string> = { "0": "" };
@@ -1038,6 +1089,7 @@ function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8A
 
     const applyLines = (completeLines: string[]) => {
         let applied = false;
+        let failure: Error | undefined;
         for (const line of completeLines) {
             if (done) break;
             if (!line.startsWith("data:")) continue;
@@ -1049,6 +1101,17 @@ function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8A
             }
             try {
                 const event = JSON.parse(data);
+                if (event && typeof event === "object" && event.error) {
+                    done = true;
+                    failure = new Error(
+                        typeof event.error === "string"
+                            ? event.error
+                            : typeof event.error.message === "string"
+                              ? event.error.message
+                              : JSON.stringify(event.error),
+                    );
+                    break;
+                }
                 for (const choice of event.choices ?? []) {
                     const delta = choice.delta;
                     const content = delta?.content ?? choice.text;
@@ -1080,6 +1143,7 @@ function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8A
                 // A malformed data line must not hide the following events.
             }
         }
+        if (failure) throw failure;
         return applied;
     };
 
@@ -1201,44 +1265,42 @@ function wrapToolStream(
                             }
                             try {
                                 const functionArgs = JSON.parse(toolCall.function.arguments);
-                                if (arg.tools && arg.tools.length > 0) {
-                                    const tool = arg.tools.find((t) => t.name === toolCall.function.name);
-                                    if (!tool) {
+                                const tool = arg.tools?.find((t) => t.name === toolCall.function.name);
+                                if (!tool) {
+                                    messages.push({
+                                        role: "tool",
+                                        content: "No tool found with name: " + toolCall.function.name,
+                                        tool_call_id: toolCall.id,
+                                    });
+                                } else {
+                                    const parsed = functionArgs;
+                                    const x = (await arg.ctx.tools.call(tool.name, parsed)).filter(
+                                        (m) => m.type === "text",
+                                    );
+                                    if (x.length > 0) {
                                         messages.push({
                                             role: "tool",
-                                            content: "No tool found with name: " + toolCall.function.name,
+                                            content: x[0].text,
                                             tool_call_id: toolCall.id,
                                         });
-                                    } else {
-                                        const parsed = functionArgs;
-                                        const x = (await arg.ctx.tools.call(tool.name, parsed)).filter(
-                                            (m) => m.type === "text",
-                                        );
-                                        if (x.length > 0) {
-                                            messages.push({
-                                                role: "tool",
-                                                content: x[0].text,
-                                                tool_call_id: toolCall.id,
-                                            });
-                                            if (arg.rememberToolUsage) {
-                                                callCodes.push(
-                                                    await arg.ctx.tools.encode({
-                                                        call: {
-                                                            id: toolCall.id,
-                                                            name: toolCall.function.name,
-                                                            arg: toolCall.function.arguments,
-                                                        },
-                                                        response: x,
-                                                    }),
-                                                );
-                                            }
-                                        } else {
-                                            messages.push({
-                                                role: "tool",
-                                                content: "Tool call failed with no text response",
-                                                tool_call_id: toolCall.id,
-                                            });
+                                        if (arg.rememberToolUsage) {
+                                            callCodes.push(
+                                                await arg.ctx.tools.encode({
+                                                    call: {
+                                                        id: toolCall.id,
+                                                        name: toolCall.function.name,
+                                                        arg: toolCall.function.arguments,
+                                                    },
+                                                    response: x,
+                                                }),
+                                            );
                                         }
+                                    } else {
+                                        messages.push({
+                                            role: "tool",
+                                            content: "Tool call failed with no text response",
+                                            tool_call_id: toolCall.id,
+                                        });
                                     }
                                 }
                             } catch (error) {
@@ -1258,6 +1320,7 @@ function wrapToolStream(
 
                         do {
                             attempt++;
+                            if (attempt > 1) arg.ctx.reportRetry?.();
                             resRec = await arg.ctx.transport.fetchStream(replacerURL, {
                                 body: JSON.stringify(body),
                                 method: "POST",
@@ -1271,15 +1334,24 @@ function wrapToolStream(
 
                             if (
                                 resRec.status == 200 &&
-                                resRec.headers.get("Content-Type")!.includes("text/event-stream")
+                                (resRec.headers.get("Content-Type") ?? "").includes("text/event-stream")
                             ) {
                                 // `fetchStream` logged and records this call itself.
                                 errorFlag = false;
                                 break;
                             }
+                            if (attempt <= db.requestRetrys) {
+                                await sleep(toolRetryDelay(attempt), arg.abortSignal);
+                                if (arg.abortSignal?.aborted) {
+                                    break;
+                                }
+                            }
                         } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 
                         if (errorFlag) {
+                            if (resRec.status === 200 && !arg.abortSignal?.aborted) {
+                                throw new Error(await textifyReadableStream(resRec.body!));
+                            }
                             arg.ctx.alertError(`Failed to fetch model response after tool execution`);
                             return controller.close();
                         }
@@ -1301,7 +1373,8 @@ function wrapToolStream(
 
                 lastValue = value;
 
-                controller.enqueue({ "0": (prefix ? prefix + "\n\n" : "") + content });
+                const { __tool_calls, ...rest } = value ?? {};
+                controller.enqueue({ ...rest, "0": (prefix ? prefix + "\n\n" : "") + content });
             }
         },
     });
